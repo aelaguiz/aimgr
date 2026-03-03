@@ -3,13 +3,15 @@ import path from "node:path";
 
 function formatTimestampForBackup(date = new Date()) {
   const pad2 = (n) => String(n).padStart(2, "0");
+  const pad3 = (n) => String(n).padStart(3, "0");
   const yyyy = String(date.getFullYear());
   const mm = pad2(date.getMonth() + 1);
   const dd = pad2(date.getDate());
   const hh = pad2(date.getHours());
   const mi = pad2(date.getMinutes());
   const ss = pad2(date.getSeconds());
-  return `${yyyy}${mm}${dd}-${hh}${mi}${ss}`;
+  const ms = pad3(date.getMilliseconds());
+  return `${yyyy}${mm}${dd}-${hh}${mi}${ss}${ms}`;
 }
 
 function isObject(value) {
@@ -28,6 +30,7 @@ function parseArgs(argv) {
     home: undefined,
     state: undefined,
     json: false,
+    probe: false,
     write: false,
     help: false,
   };
@@ -46,6 +49,10 @@ function parseArgs(argv) {
     }
     if (arg === "--json") {
       opts.json = true;
+      continue;
+    }
+    if (arg === "--probe") {
+      opts.probe = true;
       continue;
     }
     if (arg === "--write" || arg === "--apply") {
@@ -69,7 +76,7 @@ function printHelp() {
     "aimgr — AI account manager (plaintext files, SSOT, no guessing).",
     "",
     "Usage:",
-    "  aimgr status [--home <dir>] [--state <path>] [--json]",
+    "  aimgr status [--home <dir>] [--state <path>] [--json] [--probe]",
     "  aimgr adopt openclaw [--home <dir>] [--state <path>] [--write]",
     "  aimgr relabel openclaw <fromProfileId> <toProfileId> [--home <dir>] [--state <path>] [--write]",
     "  aimgr pin openclaw <agentId> <profileId> [--home <dir>] [--state <path>] [--write]",
@@ -79,6 +86,7 @@ function printHelp() {
     "  --home <dir>    Override HOME for reading/writing state (default: real HOME).",
     "  --state <path>  Override aimgr state file path (default: <home>/.aimgr/secrets.json).",
     "  --json          JSON output (status only).",
+    "  --probe         Fetch provider usage/status from network (status only).",
     "  --write         Actually write changes for adopt/sync (default: dry-run).",
     "",
   ];
@@ -149,15 +157,50 @@ function loadAimgrState(statePath) {
 }
 
 function sanitizeForStatus(value) {
-  const secretKeys = new Set([
-    "access",
-    "refresh",
-    "token",
-    "key",
-    "accessToken",
-    "refreshToken",
-    "idToken",
-  ]);
+  const exactSecretKeys = new Set(
+    [
+      // Common OpenClaw OAuthCredential fields (pi-ai OAuthCredentials)
+      "access",
+      "refresh",
+      "expires",
+      // Common OAuth2 spellings
+      "access_token",
+      "refresh_token",
+      "id_token",
+      // Common API key spellings
+      "key",
+      "apikey",
+      "api_key",
+      "client_secret",
+      // Common generic spellings
+      "token",
+      "secret",
+      "password",
+      "cookie",
+      "session",
+      // CamelCase variants we’ve seen in other CLIs
+      "accessToken",
+      "refreshToken",
+      "idToken",
+    ].map((k) => String(k).toLowerCase()),
+  );
+
+  const isLikelySecretKey = (key) => {
+    const raw = String(key ?? "");
+    const k = raw.trim().toLowerCase();
+    if (k.length === 0) return false;
+    if (exactSecretKeys.has(k)) return true;
+
+    // Catch obvious variants: e.g. "openaiAccessToken", "oauth_refresh_token", "sessionToken".
+    if (k.includes("token")) return true;
+    if (k.includes("secret")) return true;
+    if (k.includes("password")) return true;
+    if (k === "key" || k.endsWith("_key") || k.endsWith("key")) return true;
+    if (k.includes("cookie")) return true;
+    if (k.includes("session")) return true;
+
+    return false;
+  };
 
   const seen = new WeakSet();
   const walk = (v) => {
@@ -175,7 +218,7 @@ function sanitizeForStatus(value) {
 
     const out = {};
     for (const [k, child] of Object.entries(v)) {
-      if (secretKeys.has(k) && typeof child === "string") {
+      if (isLikelySecretKey(k) && typeof child === "string") {
         out[k] = "[redacted]";
         continue;
       }
@@ -185,6 +228,48 @@ function sanitizeForStatus(value) {
   };
 
   return walk(value);
+}
+
+function sanitizeLabelForProfileId(label) {
+  const raw = String(label ?? "").trim().toLowerCase();
+  const safe = raw
+    .replace(/@.*$/, "") // strip domain if email-ish
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return safe || "imported";
+}
+
+function suggestRelabeledProfileIdForDefault(originalProfileId, credential, alreadyUsedProfileIds) {
+  const cred = isObject(credential) ? credential : {};
+  const provider = normalizeProviderId(cred.provider ?? String(originalProfileId).split(":")[0]);
+
+  const email = typeof cred.email === "string" ? cred.email : null;
+  const accountId = typeof cred.accountId === "string" ? cred.accountId : null;
+
+  let baseLabel = null;
+  if (email && email.includes("@")) {
+    baseLabel = sanitizeLabelForProfileId(email.split("@")[0]);
+  }
+  if (!baseLabel && accountId && accountId.length >= 6) {
+    baseLabel = `acct_${sanitizeLabelForProfileId(accountId.slice(-6))}`;
+  }
+  if (!baseLabel) {
+    baseLabel = "imported";
+  }
+
+  let candidate = `${provider}:${baseLabel}`;
+  if (!alreadyUsedProfileIds.has(candidate)) {
+    return candidate;
+  }
+
+  // Deterministic de-dupe: append _2, _3, ...
+  for (let i = 2; i <= 1000; i += 1) {
+    const next = `${provider}:${baseLabel}_${i}`;
+    if (!alreadyUsedProfileIds.has(next)) {
+      return next;
+    }
+  }
+  throw new Error(`Failed to generate a unique profileId for ${originalProfileId}`);
 }
 
 function listDirNames(dirPath) {
@@ -269,21 +354,47 @@ function buildOpenclawWarnings(allStoresByAgent) {
     }
   }
 
-  // Per-agent: missing pin for openai-codex (order missing/empty)
-  for (const [agentId, s] of Object.entries(allStoresByAgent)) {
-    if (agentId === "main") continue;
-    if (!s) continue;
-    const order = s.order ?? {};
-    const list = Array.isArray(order["openai-codex"]) ? order["openai-codex"] : null;
-    if (!list || list.length === 0) {
+  return warnings;
+}
+
+function buildOpenclawPinWarnings(state, openclawStoresByAgent) {
+  const warnings = [];
+  const pins = isObject(state.openclaw?.agentPins) ? state.openclaw.agentPins : {};
+  for (const [agentId, pinnedProfileId] of Object.entries(pins)) {
+    if (typeof pinnedProfileId !== "string" || pinnedProfileId.trim().length === 0) {
+      continue;
+    }
+    const store = openclawStoresByAgent[agentId];
+    if (!store) {
       warnings.push({
-        kind: "openclaw_missing_order_pin",
+        kind: "openclaw_pin_missing_store",
         agentId,
         provider: "openai-codex",
+        pinnedProfileId,
+      });
+      continue;
+    }
+    const list = Array.isArray(store.order?.["openai-codex"]) ? store.order["openai-codex"] : null;
+    if (!list) {
+      warnings.push({
+        kind: "openclaw_pin_not_enforced",
+        agentId,
+        provider: "openai-codex",
+        pinnedProfileId,
+        reason: "missing_order",
+      });
+      continue;
+    }
+    if (list.length !== 1 || String(list[0]) !== pinnedProfileId) {
+      warnings.push({
+        kind: "openclaw_pin_not_enforced",
+        agentId,
+        provider: "openai-codex",
+        pinnedProfileId,
+        actual: list,
       });
     }
   }
-
   return warnings;
 }
 
@@ -349,7 +460,86 @@ function buildAimgrWarnings(state) {
   return warnings;
 }
 
-function buildStatus(params) {
+function clampPercent(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.min(100, num));
+}
+
+async function fetchJsonWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchCodexUsageSnapshot({ accessToken, accountId, timeoutMs }) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "User-Agent": "CodexBar",
+    Accept: "application/json",
+    ...(accountId ? { "ChatGPT-Account-Id": accountId } : {}),
+  };
+
+  const res = await fetchJsonWithTimeout(
+    "https://chatgpt.com/backend-api/wham/usage",
+    { method: "GET", headers },
+    timeoutMs,
+  );
+
+  if (!res.ok) {
+    return {
+      provider: "openai-codex",
+      ok: false,
+      status: res.status,
+      tokenExpired: res.status === 401 || res.status === 403,
+    };
+  }
+
+  const data = await res.json();
+  const windows = [];
+
+  const primary = data?.rate_limit?.primary_window;
+  if (primary) {
+    const windowHours = Math.round(((primary.limit_window_seconds || 10800) * 1.0) / 3600);
+    windows.push({
+      label: `${windowHours}h`,
+      usedPercent: clampPercent(primary.used_percent || 0),
+      resetAt: primary.reset_at ? primary.reset_at * 1000 : undefined,
+    });
+  }
+
+  const secondary = data?.rate_limit?.secondary_window;
+  if (secondary) {
+    const windowHours = Math.round(((secondary.limit_window_seconds || 86400) * 1.0) / 3600);
+    const label = windowHours >= 168 ? "Week" : windowHours >= 24 ? "Day" : `${windowHours}h`;
+    windows.push({
+      label,
+      usedPercent: clampPercent(secondary.used_percent || 0),
+      resetAt: secondary.reset_at ? secondary.reset_at * 1000 : undefined,
+    });
+  }
+
+  let plan = data?.plan_type;
+  const balanceRaw = data?.credits?.balance;
+  if (balanceRaw !== undefined && balanceRaw !== null) {
+    const balance = typeof balanceRaw === "number" ? balanceRaw : parseFloat(balanceRaw) || 0;
+    plan = plan ? `${plan} ($${balance.toFixed(2)})` : `$${balance.toFixed(2)}`;
+  }
+
+  return {
+    provider: "openai-codex",
+    ok: true,
+    windows,
+    plan,
+  };
+}
+
+async function buildStatus(params) {
   const homeDir = resolveHomeDir(params.home);
   const statePath = resolveAimgrStatePath(params);
   const state = loadAimgrState(statePath);
@@ -365,12 +555,46 @@ function buildStatus(params) {
   const warnings = [
     ...buildAimgrWarnings(state),
     ...buildOpenclawWarnings(openclawStoresByAgent),
+    ...buildOpenclawPinWarnings(state, openclawStoresByAgent),
   ];
 
-  const accounts = Object.entries(state.accounts ?? {}).map(([accountId, account]) => ({
-    accountId,
+  const accountsByLabel = isObject(state.accounts) ? state.accounts : {};
+  const accounts = Object.entries(accountsByLabel ?? {}).map(([label, account]) => ({
+    label,
     ...(sanitizeForStatus(account) ?? {}),
   }));
+
+  const probes = {};
+  if (params.probe) {
+    const codexUsage = {};
+    for (const [label, account] of Object.entries(accountsByLabel)) {
+      if (!isObject(account)) continue;
+      if (normalizeProviderId(account.provider) !== "openai-codex") continue;
+      const oc = isObject(account.openclaw) ? account.openclaw : null;
+      const cred = oc && isObject(oc.credential) ? oc.credential : null;
+      const accessToken = cred && typeof cred.access === "string" ? cred.access : null;
+      const accountId = typeof account.accountId === "string" ? account.accountId : null;
+      if (!accessToken) {
+        codexUsage[label] = { provider: "openai-codex", ok: false, status: "missing_access_token" };
+        continue;
+      }
+      try {
+        codexUsage[label] = await fetchCodexUsageSnapshot({
+          accessToken,
+          accountId,
+          timeoutMs: 8000,
+        });
+      } catch (err) {
+        codexUsage[label] = {
+          provider: "openai-codex",
+          ok: false,
+          status: "error",
+          error: String(err?.message ?? err),
+        };
+      }
+    }
+    probes.openaiCodexUsage = codexUsage;
+  }
 
   return {
     aimgr: {
@@ -383,6 +607,7 @@ function buildStatus(params) {
       agentsDir: openclawAgentsDir,
       agents: openclawStoresByAgent,
     },
+    probes,
     warnings,
   };
 }
@@ -444,14 +669,30 @@ function adoptOpenclaw(params) {
     keep.push(...list);
   }
 
+  const usedProfileIds = new Set(keep.map((e) => e.profileId));
   for (const { profileId, cred } of keep) {
-    const label = String(profileId).split(":").slice(1).join(":") || profileId;
-    next.accounts[label] = {
+    let effectiveProfileId = profileId;
+    if (String(profileId).endsWith(":default")) {
+      // Hard invariant: no *:default in steady state. If OpenClaw has a legacy default profile,
+      // adopt it into aimgr under a deterministic non-default label (email local-part preferred,
+      // else accountId suffix).
+      effectiveProfileId = suggestRelabeledProfileIdForDefault(profileId, cred, usedProfileIds);
+      usedProfileIds.add(effectiveProfileId);
+    }
+
+    const label = String(effectiveProfileId).split(":").slice(1).join(":") || effectiveProfileId;
+    let uniqueLabel = label;
+    for (let i = 2; next.accounts[uniqueLabel]; i += 1) {
+      uniqueLabel = `${label}_${i}`;
+    }
+
+    next.accounts[uniqueLabel] = {
       provider: "openai-codex",
       email: typeof cred.email === "string" ? cred.email : null,
       accountId: typeof cred.accountId === "string" ? cred.accountId : null,
       openclaw: {
-        profileId,
+        profileId: effectiveProfileId,
+        originalProfileId: profileId === effectiveProfileId ? undefined : profileId,
         credential: cred,
         source: mainStorePath,
       },
@@ -492,6 +733,9 @@ function relabelOpenclawProfile(params, fromProfileId, toProfileId) {
   }
   if (typeof toProfileId !== "string" || toProfileId.trim().length === 0) {
     throw new Error("toProfileId is required.");
+  }
+  if (String(toProfileId).trim().toLowerCase().endsWith(":default")) {
+    throw new Error(`Refusing to relabel to *:default (${toProfileId}). Managed profiles must be labeled.`);
   }
 
   const next = structuredClone(prev);
@@ -691,8 +935,26 @@ function syncOpenclaw(params) {
       continue;
     }
     const { storePath, store } = readOpenclawAuthStore(homeDir, agentId);
+    const pinnedProfileId = pins[agentId];
     if (!store) {
-      // No store file (yet). That's fine — OpenClaw will inherit/merge from main.
+      if (typeof pinnedProfileId === "string" && pinnedProfileId.trim().length > 0) {
+        if (!desiredProfileIds.has(pinnedProfileId)) {
+          throw new Error(
+            `OpenClaw pin references unknown profileId: agent=${agentId} profile=${pinnedProfileId}`,
+          );
+        }
+
+        const minimal = {
+          version: 1,
+          profiles: {},
+          order: { "openai-codex": [pinnedProfileId] },
+          lastGood: { "openai-codex": pinnedProfileId },
+        };
+        if (params.write) {
+          writeJsonFileWithBackup(storePath, minimal);
+          writes.push(storePath);
+        }
+      }
       continue;
     }
     const raw = store ?? { version: 1, profiles: {} };
@@ -721,7 +983,6 @@ function syncOpenclaw(params) {
     }
 
     // If pinned, enforce single-profile order + lastGood.
-    const pinnedProfileId = pins[agentId];
     if (typeof pinnedProfileId === "string" && pinnedProfileId.trim().length > 0) {
       if (!desiredProfileIds.has(pinnedProfileId)) {
         throw new Error(
@@ -769,7 +1030,7 @@ export async function main(argv) {
   }
 
   if (cmd === "status") {
-    const status = buildStatus(opts);
+    const status = await buildStatus(opts);
     if (opts.json) {
       process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
       return;

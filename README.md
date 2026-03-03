@@ -17,6 +17,7 @@ Example:
 
 ```bash
 ./bin/aimgr.js status --home ~/workspace/agents/work/aimgr/sandbox/home
+./bin/aimgr.js status --home ~/workspace/agents/work/aimgr/sandbox/home --json --probe
 ./bin/aimgr.js adopt openclaw --home ~/workspace/agents/work/aimgr/sandbox/home --write
 ./bin/aimgr.js status --home ~/workspace/agents/work/aimgr/sandbox/home
 ```
@@ -26,4 +27,3 @@ Example:
 - `aimgr status` — read-only health + drift report
 - `aimgr adopt openclaw` — import OpenClaw OAuth profiles into aimgr (SSOT)
 - `aimgr sync openclaw` — rewrite OpenClaw auth stores from aimgr (no `*:default`)
-
