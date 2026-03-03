@@ -12,7 +12,9 @@
   },
   "scripts": {
     "lint": "node --check ./bin/aimgr.js && node --check ./src/cli.js",
-    "test": "node ./src/cli.js --help > /dev/null"
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "0.55.1"
   }
 }
-
