@@ -1019,6 +1019,37 @@ function syncOpenclaw(params) {
   return { wrote: true, writes };
 }
 
+function formatDurationRough(ms) {
+  const abs = Math.abs(ms);
+  const sign = ms < 0 ? "-" : "";
+  const minutes = Math.round(abs / 60000);
+  if (minutes < 60) return `${sign}${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${sign}${hours}h`;
+  const days = Math.round(hours / 24);
+  return `${sign}${days}d`;
+}
+
+function formatExpiresIn(expiresMs) {
+  if (!Number.isFinite(Number(expiresMs))) return "unknown";
+  const delta = Number(expiresMs) - Date.now();
+  if (delta <= 0) return `expired (${formatDurationRough(delta)})`;
+  return formatDurationRough(delta);
+}
+
+function formatCodexUsageSummary(snapshot) {
+  if (!snapshot) return "not probed";
+  if (snapshot.ok !== true) {
+    if (snapshot.tokenExpired) return "expired";
+    if (snapshot.status) return `error:${snapshot.status}`;
+    return "error";
+  }
+  const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
+  if (windows.length === 0) return "ok";
+  const parts = windows.map((w) => `${w.label} ${Math.round(w.usedPercent)}%`);
+  return parts.join(" · ");
+}
+
 export async function main(argv) {
   const { opts, positional } = parseArgs(argv);
   const cmd = positional[0];
@@ -1036,13 +1067,47 @@ export async function main(argv) {
       return;
     }
     const warnings = status.warnings ?? [];
+    const probes = isObject(status.probes) ? status.probes : {};
+    const codexUsage = isObject(probes.openaiCodexUsage) ? probes.openaiCodexUsage : {};
+
     process.stdout.write(`aimgr state: ${status.aimgr.statePath}\n`);
-    process.stdout.write(`aimgr accounts: ${status.aimgr.accounts.length}\n`);
     process.stdout.write(`openclaw home: ${status.openclaw.homeDir}\n`);
-    process.stdout.write(`openclaw agents: ${Object.keys(status.openclaw.agents).length}\n`);
-    process.stdout.write(`warnings: ${warnings.length}\n`);
+    process.stdout.write("\n");
+
+    const accounts = Array.isArray(status.aimgr.accounts) ? status.aimgr.accounts : [];
+    process.stdout.write(`Accounts (${accounts.length})\n`);
+    for (const a of accounts.toSorted((x, y) => String(x.label).localeCompare(String(y.label)))) {
+      const provider = a.provider ? String(a.provider) : "?";
+      const label = a.label ? String(a.label) : "?";
+      const accountId = a.accountId ? String(a.accountId) : null;
+      const email = a.email ? String(a.email) : null;
+      const profileId = a.openclaw?.profileId ? String(a.openclaw.profileId) : null;
+      const expiresMs = a.openclaw?.credential?.expires;
+      const expiresIn = formatExpiresIn(expiresMs);
+      const usage = provider === "openai-codex" ? formatCodexUsageSummary(codexUsage[label]) : "n/a";
+      const identity = email ? `email:${email}` : accountId ? `accountId:${accountId}` : "identity:unknown";
+      process.stdout.write(
+        `- ${provider} ${label} ${identity} profile=${profileId ?? "?"} expires=${expiresIn} usage=${usage}\n`,
+      );
+    }
+
+    const pins = status.aimgr?.openclaw?.agentPins;
+    if (isObject(pins) && Object.keys(pins).length > 0) {
+      process.stdout.write("\n");
+      process.stdout.write("OpenClaw pins\n");
+      for (const [agentId, profileId] of Object.entries(pins).toSorted((a, b) => a[0].localeCompare(b[0]))) {
+        process.stdout.write(`- ${agentId} -> ${profileId}\n`);
+      }
+    }
+
+    process.stdout.write("\n");
+    process.stdout.write(`Warnings (${warnings.length})\n`);
     for (const w of warnings.slice(0, 50)) {
-      process.stdout.write(`- ${w.kind} ${w.agentId ? `agent=${w.agentId}` : ""}\n`);
+      const parts = [`- ${w.kind}`];
+      if (w.agentId) parts.push(`agent=${w.agentId}`);
+      if (w.profileId) parts.push(`profile=${w.profileId}`);
+      if (w.pinnedProfileId) parts.push(`pinned=${w.pinnedProfileId}`);
+      process.stdout.write(`${parts.join(" ")}\n`);
     }
     return;
   }
