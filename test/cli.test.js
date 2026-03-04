@@ -216,6 +216,24 @@ test("buildOpenclawModelSyncOps enforces openai-codex/gpt-5.2 for pinned agents"
   ]);
 });
 
+test("buildOpenclawModelSyncOps supports per-agent desired model refs", () => {
+  const agentsList = [
+    { id: "agent_boss", model: "openai-codex/gpt-5.2" },
+    { id: "agent_claudalyst", model: "openai-codex/gpt-5.2" },
+  ];
+
+  const ops = buildOpenclawModelSyncOps({
+    agentsList,
+    pinnedAgentIds: ["agent_boss", "agent_claudalyst"],
+    modelRefByAgentId: {
+      agent_boss: "openai-codex/gpt-5.2",
+      agent_claudalyst: "anthropic/claude-opus-4-6",
+    },
+  });
+
+  assert.deepEqual(ops, [{ path: "agents.list[1].model", value: "\"anthropic/claude-opus-4-6\"" }]);
+});
+
 test("planEvenLabelAssignments spreads unpinned agents evenly across pool labels", () => {
   const { assignments } = planEvenLabelAssignments({
     candidateAgentIds: ["agent_a", "agent_b", "agent_c", "agent_d", "agent_e", "agent_boss"],

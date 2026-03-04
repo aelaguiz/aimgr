@@ -62,7 +62,12 @@ What happens:
 4) `aim` auto-pins `agent_boss -> boss` if `~/.openclaw/agents/agent_boss/…` exists.
 5) `aim` syncs OpenClaw derived state (`auth-profiles.json`, model enforcement, and session cleanup).
 
-Important: OpenClaw sync is **Codex-only** right now. Logging in an `anthropic` label stores tokens in AIM, but does not try to rewrite OpenClaw state.
+Important: OpenClaw sync supports both `openai-codex` and `anthropic` now. When an OpenClaw agent is pinned to a label, AIM will:
+
+- write labeled auth profiles into OpenClaw (`<provider>:<label>`, e.g. `openai-codex:boss`, `anthropic:claudalyst`)
+- set the pinned agent’s model to a provider-appropriate default:
+  - `openai-codex` → `openai-codex/gpt-5.2`
+  - `anthropic` → `anthropic/claude-opus-4-6`
 
 ### 3) Pin other OpenClaw agents to accounts (pooling)
 
@@ -194,7 +199,7 @@ Shorthand for `aim login <label>`, plus:
 - falls back to OAuth login (opens browser)
   - `anthropic` requires a paste step (by design; we don’t guess)
 - auto-pins `agent_<label> -> <label>` when that agent exists on disk
-- syncs OpenClaw derived state (Codex-only for now)
+- syncs OpenClaw derived state
 
 Examples:
 
