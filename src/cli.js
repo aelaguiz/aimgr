@@ -6,6 +6,7 @@ import { loginOpenAICodex, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
 
 const SCHEMA_VERSION = "0.1";
 const OPENAI_CODEX_PROVIDER = "openai-codex";
+const OPENCLAW_ENFORCED_CODEX_MODEL = "openai-codex/gpt-5.2";
 
 function formatTimestampForBackup(date = new Date()) {
   const pad2 = (n) => String(n).padStart(2, "0");
@@ -41,7 +42,7 @@ function normalizeLabel(input) {
       `Invalid label: ${label}. Use lowercase letters, numbers, '_' and '-' (e.g. boss, coder2).`,
     );
   }
-  const reserved = new Set(["status", "login", "pin", "apply", "help"]);
+  const reserved = new Set(["status", "login", "pin", "apply", "sync", "help"]);
   if (reserved.has(label)) {
     throw new Error(`Refusing label=${label} (reserved CLI word). Pick a different label (e.g. boss, coder2).`);
   }
@@ -109,7 +110,8 @@ function printHelp() {
     "  aim login <label>",
     "  aim <label>            # shorthand for: aim login <label> (also auto-pins agent_<label> if present)",
     "  aim pin <openclaw_agent_id> <label>   # rare: manual override / non-standard mapping",
-    "  aim apply",
+    "  aim apply             # sync OpenClaw derived state from ~/.aimgr/secrets.json",
+    "  aim sync openclaw     # explicit alias for apply",
     "",
     "Notes:",
     "  - SSOT file: ~/.aimgr/secrets.json (auto-backed-up on every write).",
@@ -142,6 +144,122 @@ function resolveAimgrStatePath(params) {
 
 function resolveOpenclawAuthStorePath(homeDir, agentId) {
   return path.join(homeDir, ".openclaw", "agents", agentId, "agent", "auth-profiles.json");
+}
+
+export function extractOpenclawConfigAgentModelPrimary(rawModel) {
+  if (!rawModel) return null;
+  if (typeof rawModel === "string") {
+    const trimmed = rawModel.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (!isObject(rawModel)) return null;
+  const primary = rawModel.primary;
+  if (typeof primary !== "string") return null;
+  const trimmed = primary.trim();
+  return trimmed ? trimmed : null;
+}
+
+export function buildOpenclawModelSyncOps({ agentsList, pinnedAgentIds }) {
+  const list = Array.isArray(agentsList) ? agentsList : [];
+  const ids = Array.isArray(pinnedAgentIds) ? pinnedAgentIds : [];
+
+  const indexById = new Map();
+  for (let i = 0; i < list.length; i += 1) {
+    const entry = list[i];
+    if (!isObject(entry)) continue;
+    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+    if (!id) continue;
+    if (!indexById.has(id)) {
+      indexById.set(id, i);
+    }
+  }
+
+  const ops = [];
+  for (const agentIdRaw of ids) {
+    const agentId = normalizeAgentId(agentIdRaw);
+    const idx = indexById.get(agentId);
+    if (idx === undefined) {
+      throw new Error(`OpenClaw agent id not found in config agents.list: ${agentId}`);
+    }
+    const entry = list[idx];
+    const currentPrimary = extractOpenclawConfigAgentModelPrimary(entry?.model);
+    if (currentPrimary === OPENCLAW_ENFORCED_CODEX_MODEL) {
+      continue;
+    }
+
+    const modelValue = entry?.model;
+    if (isObject(modelValue)) {
+      ops.push({
+        path: `agents.list[${idx}].model.primary`,
+        value: JSON.stringify(OPENCLAW_ENFORCED_CODEX_MODEL),
+      });
+      if (Object.hasOwn(modelValue, "fallbacks")) {
+        ops.push({ path: `agents.list[${idx}].model.fallbacks`, value: "[]" });
+      }
+      continue;
+    }
+
+    ops.push({
+      path: `agents.list[${idx}].model`,
+      value: JSON.stringify(OPENCLAW_ENFORCED_CODEX_MODEL),
+    });
+  }
+
+  return ops;
+}
+
+function readOpenclawAgentsListFromConfig() {
+  const result = spawnSync("openclaw", ["config", "get", "agents.list", "--json"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) {
+    throw new Error(`Failed to run openclaw config get: ${String(result.error?.message ?? result.error)}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `openclaw config get failed (exit ${result.status}). ` +
+        `${String(result.stderr ?? "").trim() || String(result.stdout ?? "").trim()}`,
+    );
+  }
+  const raw = String(result.stdout ?? "").trim();
+  if (!raw) {
+    throw new Error("openclaw config get agents.list returned empty output.");
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      throw new Error("expected JSON array");
+    }
+    return parsed;
+  } catch (err) {
+    throw new Error(`Failed to parse JSON from openclaw config get agents.list: ${String(err?.message ?? err)}`);
+  }
+}
+
+function applyOpenclawModelSyncOps(ops) {
+  const list = Array.isArray(ops) ? ops : [];
+  const applied = [];
+  for (const op of list) {
+    if (!op || typeof op.path !== "string" || typeof op.value !== "string") {
+      throw new Error("Invalid model sync op (expected {path,value} strings).");
+    }
+    const result = spawnSync("openclaw", ["config", "set", "--strict-json", op.path, op.value], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.error) {
+      throw new Error(`Failed to run openclaw config set ${op.path}: ${String(result.error?.message ?? result.error)}`);
+    }
+    if (result.status !== 0) {
+      throw new Error(
+        `openclaw config set failed for ${op.path} (exit ${result.status}). ` +
+          `${String(result.stderr ?? "").trim() || String(result.stdout ?? "").trim()}`,
+      );
+    }
+    applied.push({ path: op.path, value: op.value });
+  }
+  return applied;
 }
 
 function readJsonFile(filePath) {
@@ -1101,9 +1219,30 @@ function applyOpenclawFromState(params, state) {
   return { wrote };
 }
 
+function syncOpenclawFromState(params, state) {
+  const auth = applyOpenclawFromState(params, state);
+
+  // Config/model sync is intentionally skipped in sandbox mode to keep `--home`
+  // as a safe dev/test escape hatch (and to avoid requiring `openclaw` in CI).
+  if (params.home) {
+    return { auth, models: { skipped: true, reason: "home_override" } };
+  }
+
+  const pins = isObject(state.pins?.openclaw) ? state.pins.openclaw : {};
+  const pinnedAgentIds = Object.keys(pins);
+  if (pinnedAgentIds.length === 0) {
+    return { auth, models: { skipped: true, reason: "no_pins" } };
+  }
+
+  const agentsList = readOpenclawAgentsListFromConfig();
+  const ops = buildOpenclawModelSyncOps({ agentsList, pinnedAgentIds });
+  const applied = applyOpenclawModelSyncOps(ops);
+  return { auth, models: { enforcedModel: OPENCLAW_ENFORCED_CODEX_MODEL, ops: applied } };
+}
+
 export async function main(argv) {
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "apply"]);
+  const knownCmds = new Set(["status", "login", "pin", "apply", "sync"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -1151,8 +1290,8 @@ export async function main(argv) {
 
     writeJsonFileWithBackup(statePath, state);
 
-    const applied = applyOpenclawFromState(opts, state);
-    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, label, applied }), null, 2)}\n`);
+    const synced = syncOpenclawFromState(opts, state);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, label, synced }), null, 2)}\n`);
     return;
   }
 
@@ -1168,15 +1307,31 @@ export async function main(argv) {
     state.schemaVersion = SCHEMA_VERSION;
     writeJsonFileWithBackup(statePath, state);
 
-    const applied = applyOpenclawFromState(opts, state);
-    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, pin: { agentId, label }, applied }), null, 2)}\n`);
+    const synced = syncOpenclawFromState(opts, state);
+    process.stdout.write(
+      `${JSON.stringify(sanitizeForStatus({ ok: true, pin: { agentId, label }, synced }), null, 2)}\n`,
+    );
     return;
   }
 
   if (cmd === "apply") {
     const state = loadAimgrState(statePath);
-    const applied = applyOpenclawFromState(opts, state);
-    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, applied }), null, 2)}\n`);
+    const synced = syncOpenclawFromState(opts, state);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, synced }), null, 2)}\n`);
+    return;
+  }
+
+  if (cmd === "sync") {
+    const system = String(positional[1] ?? "").trim().toLowerCase();
+    if (!system) {
+      throw new Error('Missing sync target. Usage: aim sync openclaw');
+    }
+    if (system !== "openclaw") {
+      throw new Error(`Unsupported sync target: ${system} (only "openclaw" is supported in v0).`);
+    }
+    const state = loadAimgrState(statePath);
+    const synced = syncOpenclawFromState(opts, state);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, synced }), null, 2)}\n`);
     return;
   }
 

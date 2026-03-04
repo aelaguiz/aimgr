@@ -4,7 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { discoverOpenclawBrowserProfiles, main } from "../src/cli.js";
+import {
+  buildOpenclawModelSyncOps,
+  discoverOpenclawBrowserProfiles,
+  extractOpenclawConfigAgentModelPrimary,
+  main,
+} from "../src/cli.js";
 
 function mkTempHome() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aimgr-test-"));
@@ -147,4 +152,33 @@ test("discoverOpenclawBrowserProfiles reads user-data/Local State for friendly n
   assert.equal(profiles[0].profileId, "agent-boss");
   assert.equal(profiles[0].userName, "boss@fun.country");
   assert.equal(profiles[1].profileId, "coder");
+});
+
+test("extractOpenclawConfigAgentModelPrimary handles string/object/null", () => {
+  assert.equal(extractOpenclawConfigAgentModelPrimary(null), null);
+  assert.equal(extractOpenclawConfigAgentModelPrimary(undefined), null);
+  assert.equal(extractOpenclawConfigAgentModelPrimary(" openai/gpt-5.2 "), "openai/gpt-5.2");
+  assert.equal(extractOpenclawConfigAgentModelPrimary({ primary: "openai-codex/gpt-5.2" }), "openai-codex/gpt-5.2");
+  assert.equal(extractOpenclawConfigAgentModelPrimary({ primary: 123 }), null);
+});
+
+test("buildOpenclawModelSyncOps enforces openai-codex/gpt-5.2 for pinned agents", () => {
+  const agentsList = [
+    { id: "agent_boss", model: "openai/gpt-5.2" },
+    { id: "agent_coder", model: { primary: "openai-codex/gpt-5.2" } },
+    { id: "agent_lessons", model: null },
+    { id: "agent_growth_analyst", model: { primary: "openai-codex/gpt-5.3-codex", fallbacks: ["openai/gpt-5.2"] } },
+  ];
+
+  const ops = buildOpenclawModelSyncOps({
+    agentsList,
+    pinnedAgentIds: ["agent_boss", "agent_coder", "agent_lessons", "agent_growth_analyst"],
+  });
+
+  assert.deepEqual(ops, [
+    { path: "agents.list[0].model", value: "\"openai-codex/gpt-5.2\"" },
+    { path: "agents.list[2].model", value: "\"openai-codex/gpt-5.2\"" },
+    { path: "agents.list[3].model.primary", value: "\"openai-codex/gpt-5.2\"" },
+    { path: "agents.list[3].model.fallbacks", value: "[]" },
+  ]);
 });
