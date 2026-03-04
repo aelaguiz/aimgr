@@ -235,6 +235,10 @@ function resolveOpenclawAuthStorePath(homeDir, agentId) {
   return path.join(homeDir, ".openclaw", "agents", agentId, "agent", "auth-profiles.json");
 }
 
+function resolveOpenclawSessionsStorePath(homeDir, agentId) {
+  return path.join(homeDir, ".openclaw", "agents", agentId, "sessions", "sessions.json");
+}
+
 export function extractOpenclawConfigAgentModelPrimary(rawModel) {
   if (!rawModel) return null;
   if (typeof rawModel === "string") {
@@ -295,6 +299,182 @@ export function buildOpenclawModelSyncOps({ agentsList, pinnedAgentIds }) {
   }
 
   return ops;
+}
+
+function parseProviderModelRef(raw) {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return null;
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0 || slash === trimmed.length - 1) return null;
+  return {
+    provider: trimmed.slice(0, slash).trim(),
+    model: trimmed.slice(slash + 1).trim(),
+  };
+}
+
+export function extractSessionModelRefFromEntry(entry) {
+  if (!isObject(entry)) return null;
+  const runtimeModel = typeof entry.model === "string" ? entry.model.trim() : "";
+  const runtimeProvider = typeof entry.modelProvider === "string" ? entry.modelProvider.trim() : "";
+  if (runtimeModel) {
+    if (runtimeProvider) {
+      return { source: "runtime", provider: runtimeProvider, model: runtimeModel };
+    }
+    const parsed = parseProviderModelRef(runtimeModel);
+    if (parsed) return { source: "runtime", provider: parsed.provider, model: parsed.model };
+    return { source: "runtime", provider: null, model: runtimeModel };
+  }
+
+  const modelOverride = typeof entry.modelOverride === "string" ? entry.modelOverride.trim() : "";
+  const providerOverride = typeof entry.providerOverride === "string" ? entry.providerOverride.trim() : "";
+  if (modelOverride) {
+    const parsed = parseProviderModelRef(modelOverride);
+    if (parsed) return { source: "override", provider: parsed.provider, model: parsed.model };
+    return { source: "override", provider: providerOverride || null, model: modelOverride };
+  }
+
+  return null;
+}
+
+export function sessionEntryNeedsModelReset({ entry, desiredProvider, desiredModel }) {
+  const provider = String(desiredProvider ?? "").trim();
+  const model = String(desiredModel ?? "").trim();
+  if (!provider || !model) {
+    throw new Error("sessionEntryNeedsModelReset requires desiredProvider + desiredModel.");
+  }
+
+  const parsed = extractSessionModelRefFromEntry(entry);
+  if (parsed?.provider && parsed.provider !== provider) return true;
+  if (parsed?.model && parsed.model !== model) return true;
+
+  const authProfileOverride = typeof entry?.authProfileOverride === "string" ? entry.authProfileOverride.trim() : "";
+  if (authProfileOverride && !authProfileOverride.startsWith(`${provider}:`)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function resetSessionEntryToDefaults({ entry, desiredProvider, desiredModel }) {
+  if (!isObject(entry)) return { changed: false, entry };
+  const provider = String(desiredProvider ?? "").trim();
+  const model = String(desiredModel ?? "").trim();
+  if (!provider || !model) {
+    throw new Error("resetSessionEntryToDefaults requires desiredProvider + desiredModel.");
+  }
+
+  const next = structuredClone(entry);
+  let changed = false;
+
+  // Clear runtime model identity — it overrides everything else on restart.
+  if (next.model !== undefined) {
+    delete next.model;
+    changed = true;
+  }
+  if (next.modelProvider !== undefined) {
+    delete next.modelProvider;
+    changed = true;
+  }
+
+  // Clear explicit per-session override so the session follows agent defaults.
+  if (next.modelOverride !== undefined) {
+    delete next.modelOverride;
+    changed = true;
+  }
+  if (next.providerOverride !== undefined) {
+    delete next.providerOverride;
+    changed = true;
+  }
+
+  // Auth profiles are provider-scoped; clear overrides that can't possibly match.
+  const authProfileOverride = typeof next.authProfileOverride === "string" ? next.authProfileOverride.trim() : "";
+  if (authProfileOverride && !authProfileOverride.startsWith(`${provider}:`)) {
+    delete next.authProfileOverride;
+    delete next.authProfileOverrideSource;
+    delete next.authProfileOverrideCompactionCount;
+    changed = true;
+  }
+
+  // If we're migrating models, clear stale fallback notices.
+  if (next.fallbackNoticeSelectedModel !== undefined) {
+    delete next.fallbackNoticeSelectedModel;
+    changed = true;
+  }
+  if (next.fallbackNoticeActiveModel !== undefined) {
+    delete next.fallbackNoticeActiveModel;
+    changed = true;
+  }
+  if (next.fallbackNoticeReason !== undefined) {
+    delete next.fallbackNoticeReason;
+    changed = true;
+  }
+
+  if (changed && typeof next.updatedAt === "number") {
+    next.updatedAt = Date.now();
+  }
+
+  return { changed, entry: next };
+}
+
+export function scanOpenclawSessionsStoreForKeysNeedingModelReset({ store, desiredProvider, desiredModel }) {
+  const s = isObject(store) ? store : null;
+  if (!s) return [];
+  const keys = [];
+  for (const [key, entry] of Object.entries(s)) {
+    if (sessionEntryNeedsModelReset({ entry, desiredProvider, desiredModel })) {
+      keys.push(key);
+    }
+  }
+  return keys;
+}
+
+function applyOpenclawSessionsDiskResets({ homeDir, agentId, desiredProvider, desiredModel }) {
+  const storePath = resolveOpenclawSessionsStorePath(homeDir, agentId);
+  const existing = readJsonFile(storePath);
+  if (!existing) {
+    return { storePath, exists: false, sessionsTotal: 0, sessionsWouldChange: 0, sessionsChanged: 0 };
+  }
+  if (!isObject(existing)) {
+    throw new Error(`OpenClaw sessions store is not an object map: ${storePath}`);
+  }
+
+  const keys = scanOpenclawSessionsStoreForKeysNeedingModelReset({
+    store: existing,
+    desiredProvider,
+    desiredModel,
+  });
+  if (keys.length === 0) {
+    return {
+      storePath,
+      exists: true,
+      sessionsTotal: Object.keys(existing).length,
+      sessionsWouldChange: 0,
+      sessionsChanged: 0,
+    };
+  }
+
+  const next = structuredClone(existing);
+  let changedCount = 0;
+  for (const key of keys) {
+    const current = next[key];
+    const patched = resetSessionEntryToDefaults({ entry: current, desiredProvider, desiredModel });
+    if (patched.changed) {
+      next[key] = patched.entry;
+      changedCount += 1;
+    }
+  }
+
+  if (changedCount > 0) {
+    writeJsonFileWithBackup(storePath, next);
+  }
+
+  return {
+    storePath,
+    exists: true,
+    sessionsTotal: Object.keys(existing).length,
+    sessionsWouldChange: keys.length,
+    sessionsChanged: changedCount,
+  };
 }
 
 function readOpenclawAgentsListFromConfig() {
@@ -1314,19 +1494,53 @@ function syncOpenclawFromState(params, state) {
   // Config/model sync is intentionally skipped in sandbox mode to keep `--home`
   // as a safe dev/test escape hatch (and to avoid requiring `openclaw` in CI).
   if (params.home) {
-    return { auth, models: { skipped: true, reason: "home_override" } };
+    return { auth, models: { skipped: true, reason: "home_override" }, sessions: { skipped: true, reason: "home_override" } };
   }
 
   const pins = isObject(state.pins?.openclaw) ? state.pins.openclaw : {};
   const pinnedAgentIds = Object.keys(pins);
   if (pinnedAgentIds.length === 0) {
-    return { auth, models: { skipped: true, reason: "no_pins" } };
+    return { auth, models: { skipped: true, reason: "no_pins" }, sessions: { skipped: true, reason: "no_pins" } };
   }
 
   const agentsList = readOpenclawAgentsListFromConfig();
   const ops = buildOpenclawModelSyncOps({ agentsList, pinnedAgentIds });
   const applied = applyOpenclawModelSyncOps(ops);
-  return { auth, models: { enforcedModel: OPENCLAW_ENFORCED_CODEX_MODEL, ops: applied } };
+
+  const enforced = parseProviderModelRef(OPENCLAW_ENFORCED_CODEX_MODEL);
+  if (!enforced?.provider || !enforced?.model) {
+    throw new Error(`Invalid enforced model ref: ${OPENCLAW_ENFORCED_CODEX_MODEL}`);
+  }
+
+  const homeDir = resolveHomeDir(params.home);
+  const perAgent = [];
+  let filesChanged = 0;
+  let sessionsChanged = 0;
+  for (const agentIdRaw of pinnedAgentIds) {
+    const agentId = normalizeAgentId(agentIdRaw);
+    const result = applyOpenclawSessionsDiskResets({
+      homeDir,
+      agentId,
+      desiredProvider: enforced.provider,
+      desiredModel: enforced.model,
+    });
+    perAgent.push({ agentId, ...result });
+    if (result.sessionsChanged > 0) {
+      filesChanged += 1;
+      sessionsChanged += result.sessionsChanged;
+    }
+  }
+
+  return {
+    auth,
+    models: { enforcedModel: OPENCLAW_ENFORCED_CODEX_MODEL, ops: applied },
+    sessions: {
+      enforcedModel: OPENCLAW_ENFORCED_CODEX_MODEL,
+      filesChanged,
+      sessionsChanged,
+      perAgent: perAgent.filter((p) => p.sessionsWouldChange > 0),
+    },
+  };
 }
 
 export async function main(argv) {

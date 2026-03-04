@@ -8,8 +8,12 @@ import {
   buildOpenclawModelSyncOps,
   discoverOpenclawBrowserProfiles,
   extractOpenclawConfigAgentModelPrimary,
+  extractSessionModelRefFromEntry,
   main,
   planEvenLabelAssignments,
+  resetSessionEntryToDefaults,
+  scanOpenclawSessionsStoreForKeysNeedingModelReset,
+  sessionEntryNeedsModelReset,
 } from "../src/cli.js";
 
 function mkTempHome() {
@@ -201,4 +205,111 @@ test("planEvenLabelAssignments spreads unpinned agents evenly across pool labels
     agent_d: "boss",
     agent_e: "illustrator",
   });
+});
+
+test("sessionEntryNeedsModelReset detects runtime/override/provider drift vs desired model", () => {
+  const desiredProvider = "openai-codex";
+  const desiredModel = "gpt-5.2";
+
+  assert.equal(
+    sessionEntryNeedsModelReset({ entry: { modelProvider: "openai", model: "gpt-5.2" }, desiredProvider, desiredModel }),
+    true,
+  );
+
+  assert.equal(
+    sessionEntryNeedsModelReset({
+      entry: { modelProvider: "openai-codex", model: "gpt-5.2" },
+      desiredProvider,
+      desiredModel,
+    }),
+    false,
+  );
+
+  assert.equal(
+    sessionEntryNeedsModelReset({
+      entry: { providerOverride: "openai", modelOverride: "gpt-5.2" },
+      desiredProvider,
+      desiredModel,
+    }),
+    true,
+  );
+
+  assert.equal(
+    sessionEntryNeedsModelReset({
+      entry: { modelOverride: "openai/gpt-5.2" },
+      desiredProvider,
+      desiredModel,
+    }),
+    true,
+  );
+
+  assert.equal(
+    sessionEntryNeedsModelReset({
+      entry: { authProfileOverride: "openai:default" },
+      desiredProvider,
+      desiredModel,
+    }),
+    true,
+  );
+});
+
+test("resetSessionEntryToDefaults clears runtime/override/authProfile fields", () => {
+  const desiredProvider = "openai-codex";
+  const desiredModel = "gpt-5.2";
+
+  const before = {
+    updatedAt: 1,
+    modelProvider: "openai",
+    model: "gpt-5.2",
+    providerOverride: "openai",
+    modelOverride: "gpt-5.2",
+    authProfileOverride: "openai:default",
+    authProfileOverrideSource: "user",
+    authProfileOverrideCompactionCount: 2,
+    fallbackNoticeSelectedModel: "openai/gpt-5.2",
+    fallbackNoticeActiveModel: "openai/gpt-5.2",
+    fallbackNoticeReason: "fallback",
+  };
+
+  const patched = resetSessionEntryToDefaults({ entry: before, desiredProvider, desiredModel });
+  assert.equal(patched.changed, true);
+  assert.equal(patched.entry.modelProvider, undefined);
+  assert.equal(patched.entry.model, undefined);
+  assert.equal(patched.entry.providerOverride, undefined);
+  assert.equal(patched.entry.modelOverride, undefined);
+  assert.equal(patched.entry.authProfileOverride, undefined);
+  assert.equal(patched.entry.authProfileOverrideSource, undefined);
+  assert.equal(patched.entry.authProfileOverrideCompactionCount, undefined);
+  assert.equal(patched.entry.fallbackNoticeSelectedModel, undefined);
+  assert.equal(patched.entry.fallbackNoticeActiveModel, undefined);
+  assert.equal(patched.entry.fallbackNoticeReason, undefined);
+  assert.ok(typeof patched.entry.updatedAt === "number");
+  assert.ok(patched.entry.updatedAt > 1);
+});
+
+test("extractSessionModelRefFromEntry prefers runtime over override", () => {
+  const parsed = extractSessionModelRefFromEntry({
+    modelProvider: "openai",
+    model: "gpt-5.2",
+    providerOverride: "openai-codex",
+    modelOverride: "gpt-5.2",
+  });
+  assert.deepEqual(parsed, { source: "runtime", provider: "openai", model: "gpt-5.2" });
+});
+
+test("scanOpenclawSessionsStoreForKeysNeedingModelReset finds mismatched keys", () => {
+  const desiredProvider = "openai-codex";
+  const desiredModel = "gpt-5.2";
+
+  const keys = scanOpenclawSessionsStoreForKeysNeedingModelReset({
+    store: {
+      k1: { modelProvider: "openai", model: "gpt-5.2" },
+      k2: { modelProvider: "openai-codex", model: "gpt-5.2" },
+      k3: { providerOverride: "openai", modelOverride: "gpt-4.1" },
+    },
+    desiredProvider,
+    desiredModel,
+  });
+
+  assert.deepEqual(keys.toSorted(), ["k1", "k3"]);
 });
