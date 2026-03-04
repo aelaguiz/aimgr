@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import readline from "node:readline/promises";
 import { loginOpenAICodex, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
 
@@ -475,6 +475,78 @@ function applyOpenclawSessionsDiskResets({ homeDir, agentId, desiredProvider, de
     sessionsWouldChange: keys.length,
     sessionsChanged: changedCount,
   };
+}
+
+function spawnQuiet(cmd, cmdArgs, options) {
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, cmdArgs, {
+      stdio: ["ignore", "ignore", "pipe"],
+      ...options,
+    });
+
+    let stderr = "";
+    proc.stderr.on("data", (d) => {
+      stderr += d.toString("utf8");
+      if (stderr.length > 10_000) {
+        stderr = stderr.slice(stderr.length - 10_000);
+      }
+    });
+
+    proc.on("close", (code) => {
+      resolve({ code: code ?? 1, stderr: stderr.trim() });
+    });
+  });
+}
+
+function probeOpenclawGateway({ timeoutMs }) {
+  const params = JSON.stringify({ limit: 1 });
+  const result = spawnSync(
+    "openclaw",
+    ["gateway", "call", "sessions.list", "--params", params, "--json", "--timeout", String(timeoutMs)],
+    { encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] },
+  );
+
+  if (result.error) {
+    return { ok: false, reason: "spawn_error", error: String(result.error?.message ?? result.error) };
+  }
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      reason: "nonzero_exit",
+      status: result.status,
+      stderr: String(result.stderr ?? "").trim(),
+    };
+  }
+
+  return { ok: true };
+}
+
+async function applySessionsModelViaGateway({ keys, modelRef, timeoutMs }) {
+  const failures = [];
+  const concurrency = 6;
+  let idx = 0;
+
+  const worker = async () => {
+    while (true) {
+      const nextIndex = idx;
+      idx += 1;
+      if (nextIndex >= keys.length) return;
+
+      const key = keys[nextIndex];
+      const params = JSON.stringify({ key, model: modelRef });
+      const call = await spawnQuiet(
+        "openclaw",
+        ["gateway", "call", "sessions.patch", "--params", params, "--json", "--timeout", String(timeoutMs)],
+        {},
+      );
+      if (call.code !== 0) {
+        failures.push({ key, error: call.stderr || `exit ${call.code}` });
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, keys.length) }, () => worker()));
+  return { ok: failures.length === 0, failures };
 }
 
 function readOpenclawAgentsListFromConfig() {
@@ -1488,7 +1560,7 @@ function applyOpenclawFromState(params, state) {
   return { wrote };
 }
 
-function syncOpenclawFromState(params, state) {
+async function syncOpenclawFromState(params, state) {
   const auth = applyOpenclawFromState(params, state);
 
   // Config/model sync is intentionally skipped in sandbox mode to keep `--home`
@@ -1513,7 +1585,88 @@ function syncOpenclawFromState(params, state) {
   }
 
   const homeDir = resolveHomeDir(params.home);
-  const perAgent = [];
+  const perAgentScan = [];
+  const keysToPatch = [];
+
+  for (const agentIdRaw of pinnedAgentIds) {
+    const agentId = normalizeAgentId(agentIdRaw);
+    const storePath = resolveOpenclawSessionsStorePath(homeDir, agentId);
+    const existing = readJsonFile(storePath);
+
+    if (!existing) {
+      perAgentScan.push({
+        agentId,
+        storePath,
+        exists: false,
+        sessionsTotal: 0,
+        sessionsWouldChange: 0,
+      });
+      continue;
+    }
+    if (!isObject(existing)) {
+      throw new Error(`OpenClaw sessions store is not an object map: ${storePath}`);
+    }
+
+    const keys = scanOpenclawSessionsStoreForKeysNeedingModelReset({
+      store: existing,
+      desiredProvider: enforced.provider,
+      desiredModel: enforced.model,
+    });
+
+    perAgentScan.push({
+      agentId,
+      storePath,
+      exists: true,
+      sessionsTotal: Object.keys(existing).length,
+      sessionsWouldChange: keys.length,
+    });
+
+    keysToPatch.push(...keys);
+  }
+
+  if (keysToPatch.length === 0) {
+    return {
+      auth,
+      models: { enforcedModel: OPENCLAW_ENFORCED_CODEX_MODEL, ops: applied },
+      sessions: { skipped: true, reason: "no_session_changes_needed" },
+    };
+  }
+
+  const gatewayProbe = probeOpenclawGateway({ timeoutMs: 4000 });
+  let gateway = { attempted: false };
+  if (gatewayProbe.ok) {
+    gateway.attempted = true;
+    const patched = await applySessionsModelViaGateway({
+      keys: keysToPatch,
+      modelRef: OPENCLAW_ENFORCED_CODEX_MODEL,
+      timeoutMs: 20000,
+    });
+    gateway = {
+      attempted: true,
+      ok: patched.ok,
+      failures: patched.failures.slice(0, 10),
+      failuresCount: patched.failures.length,
+    };
+    if (patched.ok) {
+      return {
+        auth,
+        models: { enforcedModel: OPENCLAW_ENFORCED_CODEX_MODEL, ops: applied },
+        sessions: {
+          enforcedModel: OPENCLAW_ENFORCED_CODEX_MODEL,
+          mode: "gateway",
+          gateway,
+          sessionsWouldChange: keysToPatch.length,
+          sessionsChanged: keysToPatch.length,
+          perAgent: perAgentScan.filter((p) => p.sessionsWouldChange > 0),
+        },
+      };
+    }
+  } else {
+    gateway = { attempted: false, ok: false, reason: gatewayProbe.reason, stderr: gatewayProbe.stderr };
+  }
+
+  // Gateway was unavailable or had failures: patch disk as a persistent fallback.
+  const perAgentDisk = [];
   let filesChanged = 0;
   let sessionsChanged = 0;
   for (const agentIdRaw of pinnedAgentIds) {
@@ -1524,7 +1677,7 @@ function syncOpenclawFromState(params, state) {
       desiredProvider: enforced.provider,
       desiredModel: enforced.model,
     });
-    perAgent.push({ agentId, ...result });
+    perAgentDisk.push({ agentId, ...result });
     if (result.sessionsChanged > 0) {
       filesChanged += 1;
       sessionsChanged += result.sessionsChanged;
@@ -1536,9 +1689,11 @@ function syncOpenclawFromState(params, state) {
     models: { enforcedModel: OPENCLAW_ENFORCED_CODEX_MODEL, ops: applied },
     sessions: {
       enforcedModel: OPENCLAW_ENFORCED_CODEX_MODEL,
+      mode: "disk",
+      gateway,
       filesChanged,
       sessionsChanged,
-      perAgent: perAgent.filter((p) => p.sessionsWouldChange > 0),
+      perAgent: perAgentDisk.filter((p) => p.sessionsWouldChange > 0),
     },
   };
 }
@@ -1593,7 +1748,7 @@ export async function main(argv) {
 
     writeJsonFileWithBackup(statePath, state);
 
-    const synced = syncOpenclawFromState(opts, state);
+    const synced = await syncOpenclawFromState(opts, state);
     process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, label, synced }), null, 2)}\n`);
     return;
   }
@@ -1610,7 +1765,7 @@ export async function main(argv) {
     state.schemaVersion = SCHEMA_VERSION;
     writeJsonFileWithBackup(statePath, state);
 
-    const synced = syncOpenclawFromState(opts, state);
+    const synced = await syncOpenclawFromState(opts, state);
     process.stdout.write(
       `${JSON.stringify(sanitizeForStatus({ ok: true, pin: { agentId, label }, synced }), null, 2)}\n`,
     );
@@ -1672,7 +1827,7 @@ export async function main(argv) {
     state.schemaVersion = SCHEMA_VERSION;
     writeJsonFileWithBackup(statePath, state);
 
-    const synced = syncOpenclawFromState(opts, state);
+    const synced = await syncOpenclawFromState(opts, state);
     process.stdout.write(
       `${JSON.stringify(
         sanitizeForStatus({
@@ -1694,7 +1849,7 @@ export async function main(argv) {
 
   if (cmd === "apply") {
     const state = loadAimgrState(statePath);
-    const synced = syncOpenclawFromState(opts, state);
+    const synced = await syncOpenclawFromState(opts, state);
     process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, synced }), null, 2)}\n`);
     return;
   }
@@ -1708,7 +1863,7 @@ export async function main(argv) {
       throw new Error(`Unsupported sync target: ${system} (only "openclaw" is supported in v0).`);
     }
     const state = loadAimgrState(statePath);
-    const synced = syncOpenclawFromState(opts, state);
+    const synced = await syncOpenclawFromState(opts, state);
     process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, synced }), null, 2)}\n`);
     return;
   }
