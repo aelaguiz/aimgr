@@ -42,7 +42,7 @@ function normalizeLabel(input) {
       `Invalid label: ${label}. Use lowercase letters, numbers, '_' and '-' (e.g. boss, coder2).`,
     );
   }
-  const reserved = new Set(["status", "login", "pin", "apply", "sync", "help"]);
+  const reserved = new Set(["status", "login", "pin", "autopin", "apply", "sync", "help"]);
   if (reserved.has(label)) {
     throw new Error(`Refusing label=${label} (reserved CLI word). Pick a different label (e.g. boss, coder2).`);
   }
@@ -69,6 +69,7 @@ function parseArgs(argv) {
     state: undefined,
     json: false,
     help: false,
+    pool: undefined,
   };
   const positional = [];
 
@@ -86,6 +87,11 @@ function parseArgs(argv) {
     }
     if (arg === "--json") {
       opts.json = true;
+      continue;
+    }
+    if (arg === "--pool") {
+      opts.pool = argv[i + 1];
+      i += 1;
       continue;
     }
     if (arg === "--help" || arg === "-h") {
@@ -110,6 +116,7 @@ function printHelp() {
     "  aim login <label>",
     "  aim <label>            # shorthand for: aim login <label> (also auto-pins agent_<label> if present)",
     "  aim pin <openclaw_agent_id> <label>   # rare: manual override / non-standard mapping",
+    "  aim autopin openclaw [--pool boss,lessons,...]  # pin all unpinned OpenClaw agents evenly across labels",
     "  aim apply             # sync OpenClaw derived state from ~/.aimgr/secrets.json",
     "  aim sync openclaw     # explicit alias for apply",
     "",
@@ -124,6 +131,88 @@ function printHelp() {
     "",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
+}
+
+function parseCsvList(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function resolveAutopinPoolLabels({ state, poolArg }) {
+  ensureStateShape(state);
+  const explicit = parseCsvList(poolArg);
+  if (explicit.length > 0) {
+    return explicit.map((label) => normalizeLabel(label));
+  }
+
+  const reserved = new Set(["coder", "coder2", "growth"]);
+  const discovered = [];
+  for (const [labelRaw, account] of Object.entries(state.accounts)) {
+    if (!isObject(account)) continue;
+    const provider = normalizeProviderId(account.provider ?? OPENAI_CODEX_PROVIDER);
+    if (provider !== OPENAI_CODEX_PROVIDER) continue;
+    const label = normalizeLabel(labelRaw);
+    if (reserved.has(label)) continue;
+    discovered.push(label);
+  }
+
+  return discovered.toSorted((a, b) => a.localeCompare(b));
+}
+
+export function planEvenLabelAssignments({ candidateAgentIds, existingPinsByAgentId, poolLabels }) {
+  const agents = Array.isArray(candidateAgentIds) ? candidateAgentIds : [];
+  const pins = isObject(existingPinsByAgentId) ? existingPinsByAgentId : {};
+  const pool = Array.isArray(poolLabels) ? poolLabels : [];
+
+  const normalizedPool = [...new Set(pool.map((label) => normalizeLabel(label)))];
+  if (normalizedPool.length === 0) {
+    throw new Error("autopin requires a non-empty pool of labels.");
+  }
+
+  const counts = new Map(normalizedPool.map((label) => [label, 0]));
+  for (const labelRaw of Object.values(pins)) {
+    if (typeof labelRaw !== "string") continue;
+    let label;
+    try {
+      label = normalizeLabel(labelRaw);
+    } catch {
+      continue;
+    }
+    if (!counts.has(label)) continue;
+    counts.set(label, counts.get(label) + 1);
+  }
+
+  const uniqueCandidates = [...new Set(agents.map((id) => normalizeAgentId(id)))].toSorted((a, b) =>
+    a.localeCompare(b),
+  );
+  const assignments = {};
+
+  const pickLeastUsedLabel = () => {
+    let bestLabel = normalizedPool[0];
+    let bestCount = counts.get(bestLabel);
+    for (let i = 1; i < normalizedPool.length; i += 1) {
+      const label = normalizedPool[i];
+      const count = counts.get(label);
+      if (count < bestCount) {
+        bestLabel = label;
+        bestCount = count;
+      }
+    }
+    return bestLabel;
+  };
+
+  for (const agentId of uniqueCandidates) {
+    if (Object.hasOwn(pins, agentId)) continue;
+    const label = pickLeastUsedLabel();
+    assignments[agentId] = label;
+    counts.set(label, counts.get(label) + 1);
+  }
+
+  return { assignments, poolLabels: normalizedPool };
 }
 
 function resolveHomeDir(cliHome) {
@@ -1242,7 +1331,7 @@ function syncOpenclawFromState(params, state) {
 
 export async function main(argv) {
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "apply", "sync"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "apply", "sync"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -1310,6 +1399,81 @@ export async function main(argv) {
     const synced = syncOpenclawFromState(opts, state);
     process.stdout.write(
       `${JSON.stringify(sanitizeForStatus({ ok: true, pin: { agentId, label }, synced }), null, 2)}\n`,
+    );
+    return;
+  }
+
+  if (cmd === "autopin") {
+    const system = String(positional[1] ?? "").trim().toLowerCase();
+    if (!system) {
+      throw new Error('Missing autopin target. Usage: aim autopin openclaw [--pool boss,lessons,...]');
+    }
+    if (system !== "openclaw") {
+      throw new Error(`Unsupported autopin target: ${system} (only "openclaw" is supported in v0).`);
+    }
+
+    const state = loadAimgrState(statePath);
+    ensureStateShape(state);
+
+    const poolLabels = resolveAutopinPoolLabels({ state, poolArg: opts.pool });
+    if (poolLabels.length === 0) {
+      throw new Error(
+        "No pool labels available for autopin. " +
+          "Either pass --pool boss,lessons,... or login additional labels via `aim <label>` first.",
+      );
+    }
+
+    for (const label of poolLabels) {
+      if (!isObject(state.accounts[label])) {
+        throw new Error(`Unknown label in autopin pool: ${label}. Add it by running \`aim ${label}\` first.`);
+      }
+      const cred = getCodexCredential(state, label);
+      if (!cred) {
+        throw new Error(`Missing openai-codex credentials for label=${label}. Run \`aim ${label}\` to login first.`);
+      }
+    }
+
+    const agentsList = readOpenclawAgentsListFromConfig();
+    const allAgentIds = agentsList
+      .map((entry) => {
+        const id = typeof entry?.id === "string" ? entry.id.trim() : "";
+        return id ? normalizeAgentId(id) : null;
+      })
+      .filter(Boolean);
+
+    const pinnedAgentIds = Object.keys(state.pins.openclaw);
+    const pinnedSet = new Set(pinnedAgentIds);
+    const candidateAgentIds = allAgentIds.filter((agentId) => !pinnedSet.has(agentId));
+
+    const { assignments } = planEvenLabelAssignments({
+      candidateAgentIds,
+      existingPinsByAgentId: state.pins.openclaw,
+      poolLabels,
+    });
+
+    for (const [agentId, label] of Object.entries(assignments)) {
+      state.pins.openclaw[agentId] = label;
+    }
+
+    state.schemaVersion = SCHEMA_VERSION;
+    writeJsonFileWithBackup(statePath, state);
+
+    const synced = syncOpenclawFromState(opts, state);
+    process.stdout.write(
+      `${JSON.stringify(
+        sanitizeForStatus({
+          ok: true,
+          autopin: {
+            system,
+            poolLabels,
+            added: Object.keys(assignments).length,
+            skippedAlreadyPinned: pinnedAgentIds.length,
+          },
+          synced,
+        }),
+        null,
+        2,
+      )}\n`,
     );
     return;
   }

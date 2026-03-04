@@ -9,6 +9,7 @@ import {
   discoverOpenclawBrowserProfiles,
   extractOpenclawConfigAgentModelPrimary,
   main,
+  planEvenLabelAssignments,
 } from "../src/cli.js";
 
 function mkTempHome() {
@@ -181,4 +182,23 @@ test("buildOpenclawModelSyncOps enforces openai-codex/gpt-5.2 for pinned agents"
     { path: "agents.list[3].model.primary", value: "\"openai-codex/gpt-5.2\"" },
     { path: "agents.list[3].model.fallbacks", value: "[]" },
   ]);
+});
+
+test("planEvenLabelAssignments spreads unpinned agents evenly across pool labels", () => {
+  const { assignments } = planEvenLabelAssignments({
+    candidateAgentIds: ["agent_a", "agent_b", "agent_c", "agent_d", "agent_e", "agent_boss"],
+    existingPinsByAgentId: {
+      agent_boss: "boss",
+      agent_illustrator: "illustrator",
+    },
+    poolLabels: ["boss", "illustrator", "lessons", "product_growth", "qa"],
+  });
+
+  assert.deepEqual(assignments, {
+    agent_a: "lessons",
+    agent_b: "product_growth",
+    agent_c: "qa",
+    agent_d: "boss",
+    agent_e: "illustrator",
+  });
 });
