@@ -10,6 +10,7 @@ import {
   extractOpenclawConfigAgentModelPrimary,
   extractSessionModelRefFromEntry,
   main,
+  parseAnthropicAuthorizationPaste,
   planEvenLabelAssignments,
   resetSessionEntryToDefaults,
   scanOpenclawSessionsStoreForKeysNeedingModelReset,
@@ -50,6 +51,7 @@ test("status --json never leaks access/refresh tokens", async () => {
     schemaVersion: "0.1",
     accounts: {
       boss: { provider: "openai-codex", openclawBrowserProfile: "agent-boss" },
+      claude: { provider: "anthropic", openclawBrowserProfile: "agent-claude" },
     },
     pins: { openclaw: {} },
     credentials: {
@@ -59,6 +61,13 @@ test("status --json never leaks access/refresh tokens", async () => {
           refresh: "REFRESH_TOKEN_SHOULD_NOT_LEAK",
           expiresAt: new Date(Date.now() + 3600_000).toISOString(),
           accountId: "acct_123",
+        },
+      },
+      anthropic: {
+        claude: {
+          access: "ANTHROPIC_ACCESS_SHOULD_NOT_LEAK",
+          refresh: "ANTHROPIC_REFRESH_SHOULD_NOT_LEAK",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
         },
       },
     },
@@ -86,12 +95,31 @@ test("status --json never leaks access/refresh tokens", async () => {
     const out = await runCli(["status", "--json", "--home", home]);
     assert.doesNotMatch(out, /ACCESS_TOKEN_SHOULD_NOT_LEAK/);
     assert.doesNotMatch(out, /REFRESH_TOKEN_SHOULD_NOT_LEAK/);
+    assert.doesNotMatch(out, /ANTHROPIC_ACCESS_SHOULD_NOT_LEAK/);
+    assert.doesNotMatch(out, /ANTHROPIC_REFRESH_SHOULD_NOT_LEAK/);
     const parsed = JSON.parse(out);
-    assert.equal(parsed.accounts[0].label, "boss");
-    assert.equal(parsed.accounts[0].provider, "openai-codex");
+    const boss = parsed.accounts.find((a) => a.label === "boss");
+    const claude = parsed.accounts.find((a) => a.label === "claude");
+    assert.equal(boss.provider, "openai-codex");
+    assert.equal(claude.provider, "anthropic");
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+test("parseAnthropicAuthorizationPaste accepts callback URLs and code#state", () => {
+  assert.equal(
+    parseAnthropicAuthorizationPaste(
+      "https://console.anthropic.com/oauth/code/callback?code=CODE123&state=STATE456",
+    ),
+    "CODE123#STATE456",
+  );
+
+  assert.equal(parseAnthropicAuthorizationPaste("CODE123#STATE456"), "CODE123#STATE456");
+
+  assert.equal(parseAnthropicAuthorizationPaste("code=CODE123&state=STATE456"), "CODE123#STATE456");
+
+  assert.throws(() => parseAnthropicAuthorizationPaste("https://console.anthropic.com/oauth/code/callback?code=CODE123"));
 });
 
 test("apply writes OpenClaw auth-profiles.json with labeled profile ids", async () => {

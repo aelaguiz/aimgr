@@ -16,7 +16,8 @@ This repo is intentionally “no-magic”: when something is unclear, we read up
 - **`aimgr` is the SSOT:** we store credentials + mappings in `~/.aimgr/secrets.json`. Downstream stores are *derived outputs* and may be overwritten.
 - **Plaintext secrets on disk:** no Keychain, no encryption, no secret manager. Just a flat file and automatic backups.
 - **Everything is labeled:** we do **not** accept a steady state where accounts collapse to `*:default` (especially `openai-codex:default`).
-- **One model (for now):** when syncing OpenClaw, pinned agents are forced to `openai-codex/gpt-5.2` and fallbacks are cleared.
+- **Providers are explicit:** each label has a `provider` (today: `openai-codex` or `anthropic`).
+- **One OpenClaw model (for now):** when syncing OpenClaw, pinned agents are forced to `openai-codex/gpt-5.2` and fallbacks are cleared.
 
 ## Quickstart (what you actually type)
 
@@ -52,10 +53,16 @@ aim boss
 What happens:
 
 1) If `boss` doesn’t have an OpenClaw browser profile selected yet, `aim` will list OpenClaw browser profiles it finds and ask you to pick one.
+2) If `boss` doesn’t have a provider configured yet, `aim` prompts you to pick one (default is `openai-codex`).
 2) `aim` opens the OAuth URL in **that** browser profile.
-3) Tokens are stored in `~/.aimgr/secrets.json`.
+3) If the provider is:
+   - `openai-codex`: the login completes automatically via localhost callback.
+   - `anthropic`: you’ll do an extra step: paste the callback URL from your browser back into the CLI.
+4) Tokens are stored in `~/.aimgr/secrets.json`.
 4) `aim` auto-pins `agent_boss -> boss` if `~/.openclaw/agents/agent_boss/…` exists.
 5) `aim` syncs OpenClaw derived state (`auth-profiles.json`, model enforcement, and session cleanup).
+
+Important: OpenClaw sync is **Codex-only** right now. Logging in an `anthropic` label stores tokens in AIM, but does not try to rewrite OpenClaw state.
 
 ### 3) Pin other OpenClaw agents to accounts (pooling)
 
@@ -120,6 +127,10 @@ This is the real shape (tokens shown as placeholders):
       "provider": "openai-codex",
       "openclawBrowserProfile": "agent-boss",
       "expect": { "email": "boss@fun.country" }
+    },
+    "claude": {
+      "provider": "anthropic",
+      "openclawBrowserProfile": "agent-claude"
     }
   },
   "pins": {
@@ -135,6 +146,13 @@ This is the real shape (tokens shown as placeholders):
         "refresh": "…",
         "expiresAt": "2026-03-13T03:21:00.000Z",
         "accountId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      }
+    },
+    "anthropic": {
+      "claude": {
+        "access": "…",
+        "refresh": "…",
+        "expiresAt": "2026-03-13T03:21:00.000Z"
       }
     }
   }
@@ -171,10 +189,12 @@ aim status --json | jq .
 Shorthand for `aim login <label>`, plus:
 
 - ensures the label has a chosen OpenClaw browser profile (prompts if needed)
+- ensures the label has an explicit provider (prompts if needed)
 - refreshes tokens when possible (no browser)
 - falls back to OAuth login (opens browser)
+  - `anthropic` requires a paste step (by design; we don’t guess)
 - auto-pins `agent_<label> -> <label>` when that agent exists on disk
-- syncs OpenClaw derived state
+- syncs OpenClaw derived state (Codex-only for now)
 
 Examples:
 
@@ -182,6 +202,7 @@ Examples:
 aim boss
 aim coder2
 aim product_growth
+aim claude
 ```
 
 ### `aim login <label>`

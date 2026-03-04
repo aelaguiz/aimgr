@@ -2,11 +2,29 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import readline from "node:readline/promises";
-import { loginOpenAICodex, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
+import { loginAnthropic, loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
 
 const SCHEMA_VERSION = "0.1";
 const OPENAI_CODEX_PROVIDER = "openai-codex";
+const ANTHROPIC_PROVIDER = "anthropic";
 const OPENCLAW_ENFORCED_CODEX_MODEL = "openai-codex/gpt-5.2";
+
+const SUPPORTED_OAUTH_PROVIDERS = new Map([
+  [
+    OPENAI_CODEX_PROVIDER,
+    {
+      id: OPENAI_CODEX_PROVIDER,
+      name: "OpenAI Codex (ChatGPT Plus/Pro subscription)",
+    },
+  ],
+  [
+    ANTHROPIC_PROVIDER,
+    {
+      id: ANTHROPIC_PROVIDER,
+      name: "Anthropic (Claude Pro/Max subscription)",
+    },
+  ],
+]);
 
 function formatTimestampForBackup(date = new Date()) {
   const pad2 = (n) => String(n).padStart(2, "0");
@@ -122,7 +140,7 @@ function printHelp() {
     "",
     "Notes:",
     "  - SSOT file: ~/.aimgr/secrets.json (auto-backed-up on every write).",
-    "  - V0 supports: openai-codex (ChatGPT/Codex OAuth) on macOS.",
+    "  - V0 supports: openai-codex (ChatGPT/Codex OAuth) + anthropic (Claude Pro/Max OAuth) on macOS.",
     "  - OAuth runs inside OpenClaw browser profiles under ~/.openclaw/browser/*/user-data.",
     "",
     "Developer options (rare):",
@@ -939,6 +957,24 @@ function resolveOpenclawBrowserProfileFromInput({ input, profiles }) {
   return raw;
 }
 
+async function promptLine(message, { defaultValue } = {}) {
+  if (!process.stdin.isTTY) {
+    throw new Error(`Cannot prompt for input (stdin is not a TTY). Needed: ${message}`);
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const answer = await rl.question(`${message.trim()} `);
+      const value = String(answer ?? "").trim();
+      if (value.length > 0) return value;
+      if (defaultValue !== undefined) return String(defaultValue);
+    }
+  } finally {
+    rl.close();
+  }
+}
+
 async function promptRequiredLine(message) {
   if (!process.stdin.isTTY) {
     throw new Error(`Cannot prompt for input (stdin is not a TTY). Needed: ${message}`);
@@ -956,6 +992,88 @@ async function promptRequiredLine(message) {
   }
 }
 
+function resolveSupportedProviderFromInput(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+
+  if (raw === "1") return OPENAI_CODEX_PROVIDER;
+  if (raw === "2") return ANTHROPIC_PROVIDER;
+
+  const normalized = normalizeProviderId(raw);
+  if (normalized === "codex") return OPENAI_CODEX_PROVIDER;
+  if (normalized === "claude") return ANTHROPIC_PROVIDER;
+
+  return SUPPORTED_OAUTH_PROVIDERS.has(normalized) ? normalized : null;
+}
+
+async function ensureProviderConfiguredForLabel({ state, label }) {
+  ensureStateShape(state);
+  const existing = state.accounts[label];
+  const raw = typeof existing?.provider === "string" ? existing.provider.trim() : "";
+  const normalized = raw ? normalizeProviderId(raw) : "";
+  if (normalized && SUPPORTED_OAUTH_PROVIDERS.has(normalized)) {
+    return normalized;
+  }
+
+  process.stdout.write(`No provider configured for label "${label}" yet.\n`);
+  process.stdout.write("Pick provider:\n");
+  process.stdout.write(`  1) ${OPENAI_CODEX_PROVIDER} — ${SUPPORTED_OAUTH_PROVIDERS.get(OPENAI_CODEX_PROVIDER).name}\n`);
+  process.stdout.write(`  2) ${ANTHROPIC_PROVIDER} — ${SUPPORTED_OAUTH_PROVIDERS.get(ANTHROPIC_PROVIDER).name}\n`);
+  process.stdout.write("\n");
+
+  // Default to OpenAI Codex to preserve the common fast path: "aim boss" → press Enter → continue.
+  // If you want Claude Max, type "2" or "anthropic".
+  const answer = await promptLine(`Provider for "${label}" (1-2 or id) [1]:`, { defaultValue: "1" });
+  const provider = resolveSupportedProviderFromInput(answer);
+  if (!provider) {
+    throw new Error(`Unsupported provider selection: ${answer}`);
+  }
+
+  state.accounts[label] = {
+    ...(isObject(existing) ? existing : {}),
+    provider,
+  };
+
+  return provider;
+}
+
+export function parseAnthropicAuthorizationPaste(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) {
+    throw new Error("Missing Anthropic callback input.");
+  }
+
+  // Accept a full callback URL (preferred UX).
+  try {
+    const url = new URL(raw);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    if (code && state) return `${code}#${state}`;
+  } catch {
+    // not a URL
+  }
+
+  // Accept the raw library format.
+  if (raw.includes("#")) {
+    const [code, state] = raw.split("#", 2);
+    if (code && state) return `${code}#${state}`;
+  }
+
+  // Accept "code=...&state=..." (or "?code=...&state=...").
+  if (raw.includes("code=") && raw.includes("state=")) {
+    const query = raw.startsWith("?") ? raw.slice(1) : raw;
+    const params = new URLSearchParams(query);
+    const code = params.get("code");
+    const state = params.get("state");
+    if (code && state) return `${code}#${state}`;
+  }
+
+  throw new Error(
+    "Invalid Anthropic callback input. Paste the full callback URL from your browser address bar " +
+      '(looks like "https://console.anthropic.com/oauth/code/callback?code=...&state=..."), or paste "code#state".',
+  );
+}
+
 function ensureStateShape(state) {
   state.accounts = isObject(state.accounts) ? state.accounts : {};
   state.pins = isObject(state.pins) ? state.pins : { openclaw: {} };
@@ -964,11 +1082,20 @@ function ensureStateShape(state) {
   state.credentials[OPENAI_CODEX_PROVIDER] = isObject(state.credentials[OPENAI_CODEX_PROVIDER])
     ? state.credentials[OPENAI_CODEX_PROVIDER]
     : {};
+  state.credentials[ANTHROPIC_PROVIDER] = isObject(state.credentials[ANTHROPIC_PROVIDER])
+    ? state.credentials[ANTHROPIC_PROVIDER]
+    : {};
 }
 
 function getCodexCredential(state, label) {
   ensureStateShape(state);
   const byLabel = state.credentials[OPENAI_CODEX_PROVIDER];
+  return isObject(byLabel?.[label]) ? byLabel[label] : null;
+}
+
+function getAnthropicCredential(state, label) {
+  ensureStateShape(state);
+  const byLabel = state.credentials[ANTHROPIC_PROVIDER];
   return isObject(byLabel?.[label]) ? byLabel[label] : null;
 }
 
@@ -1010,9 +1137,13 @@ async function ensureCodexAccountConfig({ state, label, homeDir }) {
     throw new Error(`accounts.${label} must be an object (got ${typeof existing})`);
   }
 
-  const provider = normalizeProviderId(existing?.provider ?? OPENAI_CODEX_PROVIDER);
-  if (provider && provider !== OPENAI_CODEX_PROVIDER) {
-    throw new Error(`accounts.${label}.provider=${provider} is not supported in v0 (only openai-codex).`);
+  const providerRaw = typeof existing?.provider === "string" ? existing.provider.trim() : "";
+  const provider = normalizeProviderId(providerRaw || OPENAI_CODEX_PROVIDER);
+  if (!SUPPORTED_OAUTH_PROVIDERS.has(provider)) {
+    throw new Error(
+      `accounts.${label}.provider=${providerRaw || "(missing)"} is not supported. ` +
+        `Supported: ${Array.from(SUPPORTED_OAUTH_PROVIDERS.keys()).join(", ")}`,
+    );
   }
 
   const openclawBrowserProfile =
@@ -1025,7 +1156,7 @@ async function ensureCodexAccountConfig({ state, label, homeDir }) {
   ) {
     state.accounts[label] = {
       ...(existing ? existing : {}),
-      provider: OPENAI_CODEX_PROVIDER,
+      provider,
       openclawBrowserProfile,
     };
     delete state.accounts[label].chromeProfileDirectory;
@@ -1076,7 +1207,7 @@ async function ensureCodexAccountConfig({ state, label, homeDir }) {
 
       state.accounts[label] = {
         ...(existing ? existing : {}),
-        provider: OPENAI_CODEX_PROVIDER,
+        provider,
         openclawBrowserProfile: profileId,
       };
       delete state.accounts[label].chromeProfileDirectory;
@@ -1176,6 +1307,71 @@ async function refreshOrLoginCodex({ state, label, homeDir, openclawBrowserProfi
     refresh: creds.refresh,
     expiresAt,
     accountId,
+  };
+}
+
+async function refreshOrLoginAnthropic({ state, label, homeDir, openclawBrowserProfile }) {
+  const existing = getAnthropicCredential(state, label);
+  const existingRefresh = existing && typeof existing.refresh === "string" ? existing.refresh : null;
+
+  const openclawStateDir = resolveOpenclawStateDir({ homeDir });
+  const userDataDir = resolveOpenclawBrowserUserDataDir({
+    openclawStateDir,
+    profileId: openclawBrowserProfile,
+  });
+
+  // Try refresh first (fast + no browser).
+  if (existingRefresh) {
+    try {
+      const updated = await refreshAnthropicToken(existingRefresh);
+      const expiresAt = toIsoFromExpiresMs(updated.expires);
+      if (!expiresAt) {
+        throw new Error("refresh returned no expires");
+      }
+
+      return {
+        access: updated.access,
+        refresh: updated.refresh,
+        expiresAt,
+      };
+    } catch (err) {
+      process.stdout.write(`Refresh failed for ${label}; falling back to OAuth login (${String(err?.message ?? err)}).\n`);
+    }
+  }
+
+  // Full OAuth login (opens browser, then requires a paste).
+  const creds = await loginAnthropic(
+    (url) => {
+      process.stdout.write(`OAuth URL:\n${url}\n\n`);
+      const opened = openChromeUserDataDirForUrl({ url, userDataDir });
+      if (!opened.ok) {
+        process.stdout.write(
+          [
+            `Failed to auto-open OpenClaw browser profile (${opened.reason}).`,
+            `Open the URL manually in the correct OpenClaw browser profile (user-data dir):`,
+            `  ${userDataDir}`,
+            "",
+          ].join("\n") + "\n",
+        );
+      }
+    },
+    async () => {
+      const paste = await promptRequiredLine(
+        'Paste the callback URL from your browser (looks like "https://console.anthropic.com/oauth/code/callback?code=...&state=..."):',
+      );
+      return parseAnthropicAuthorizationPaste(paste);
+    },
+  );
+
+  const expiresAt = toIsoFromExpiresMs(creds.expires);
+  if (!expiresAt) {
+    throw new Error("OAuth succeeded but no expires was returned. Refusing to store ambiguous credentials.");
+  }
+
+  return {
+    access: creds.access,
+    refresh: creds.refresh,
+    expiresAt,
   };
 }
 
@@ -1294,25 +1490,29 @@ function buildWarningsFromState(state) {
 
   ensureStateShape(state);
   const accounts = isObject(state.accounts) ? state.accounts : {};
-  const credsByLabel = state.credentials[OPENAI_CODEX_PROVIDER];
+  const codexCredsByLabel = state.credentials[OPENAI_CODEX_PROVIDER];
+  const anthropicCredsByLabel = state.credentials[ANTHROPIC_PROVIDER];
 
   // Missing creds
   for (const [label, account] of Object.entries(accounts)) {
     if (!isObject(account)) continue;
-    if (normalizeProviderId(account.provider) !== OPENAI_CODEX_PROVIDER) continue;
+    const provider = normalizeProviderId(account.provider);
     const openclawBrowserProfile =
       typeof account.openclawBrowserProfile === "string" ? account.openclawBrowserProfile.trim() : "";
     if (!openclawBrowserProfile) {
-      warnings.push({ kind: "missing_openclaw_browser_profile", provider: OPENAI_CODEX_PROVIDER, label });
+      warnings.push({ kind: "missing_openclaw_browser_profile", provider: provider || "unknown", label });
     }
-    if (!isObject(credsByLabel[label])) {
+    if (provider === OPENAI_CODEX_PROVIDER && !isObject(codexCredsByLabel[label])) {
       warnings.push({ kind: "missing_credentials", provider: OPENAI_CODEX_PROVIDER, label });
+    }
+    if (provider === ANTHROPIC_PROVIDER && !isObject(anthropicCredsByLabel[label])) {
+      warnings.push({ kind: "missing_credentials", provider: ANTHROPIC_PROVIDER, label });
     }
   }
 
   // Collisions (accountId -> multiple labels)
   const byAccountId = new Map();
-  for (const [label, cred] of Object.entries(credsByLabel)) {
+  for (const [label, cred] of Object.entries(codexCredsByLabel)) {
     if (!isObject(cred)) continue;
     const accountId = typeof cred.accountId === "string" ? cred.accountId : null;
     if (!accountId) continue;
@@ -1334,7 +1534,12 @@ function buildWarningsFromState(state) {
       warnings.push({ kind: "pin_points_to_missing_account", system: "openclaw", agentId, label });
       continue;
     }
-    if (!isObject(credsByLabel[label])) {
+    const provider = normalizeProviderId(accounts[label]?.provider);
+    if (provider !== OPENAI_CODEX_PROVIDER) {
+      warnings.push({ kind: "pin_points_to_wrong_provider", system: "openclaw", agentId, label, provider });
+      continue;
+    }
+    if (!isObject(codexCredsByLabel[label])) {
       warnings.push({ kind: "pin_points_to_missing_credentials", system: "openclaw", agentId, label });
     }
   }
@@ -1349,8 +1554,9 @@ async function buildStatusView({ statePath, state }) {
   const usageByLabel = {};
 
   // Probe usage by default (fail-loud-but-not-fake: unknown if fetch fails).
-  const credsByLabel = state.credentials[OPENAI_CODEX_PROVIDER];
-  const probes = Object.entries(credsByLabel)
+  const codexCredsByLabel = state.credentials[OPENAI_CODEX_PROVIDER];
+  const anthropicCredsByLabel = state.credentials[ANTHROPIC_PROVIDER];
+  const probes = Object.entries(codexCredsByLabel)
     .filter(([, cred]) => isObject(cred) && typeof cred.access === "string")
     .map(async ([label, cred]) => {
       const accessToken = cred.access;
@@ -1378,7 +1584,7 @@ async function buildStatusView({ statePath, state }) {
     const browser = openclawBrowserProfile ? { openclawBrowserProfile } : undefined;
 
     if (provider === OPENAI_CODEX_PROVIDER) {
-      const cred = isObject(credsByLabel[label]) ? credsByLabel[label] : null;
+      const cred = isObject(codexCredsByLabel[label]) ? codexCredsByLabel[label] : null;
       const accountId = cred && typeof cred.accountId === "string" ? cred.accountId : null;
       const expiresAt = cred && typeof cred.expiresAt === "string" ? cred.expiresAt : null;
       accounts.push({
@@ -1395,6 +1601,24 @@ async function buildStatusView({ statePath, state }) {
           ...(expiresAt ? { expiresIn: formatExpiresIn(expiresAt) } : {}),
         },
         usage: usageByLabel[label] ?? { provider, ok: false, status: "unknown" },
+      });
+      continue;
+    }
+
+    if (provider === ANTHROPIC_PROVIDER) {
+      const cred = isObject(anthropicCredsByLabel[label]) ? anthropicCredsByLabel[label] : null;
+      const expiresAt = cred && typeof cred.expiresAt === "string" ? cred.expiresAt : null;
+      accounts.push({
+        label,
+        provider,
+        ...(browser ? { browser } : {}),
+        identity: { ...(expectEmail ? { expectEmail } : {}) },
+        credentials: {
+          status: cred ? "ok" : "missing",
+          ...(expiresAt ? { expiresAt } : {}),
+          ...(expiresAt ? { expiresIn: formatExpiresIn(expiresAt) } : {}),
+        },
+        usage: { ok: false, status: "n/a" },
       });
       continue;
     }
@@ -1732,24 +1956,36 @@ export async function main(argv) {
     const state = loadAimgrState(statePath);
     ensureStateShape(state);
 
+    const provider = await ensureProviderConfiguredForLabel({ state, label });
     const openclawBrowserProfile = await ensureCodexAccountConfig({ state, label, homeDir });
-    const cred = await refreshOrLoginCodex({ state, label, homeDir, openclawBrowserProfile });
-    state.credentials[OPENAI_CODEX_PROVIDER][label] = cred;
 
-    // Auto-pin: eliminate the common "second step" by pinning agent_<label> -> <label>
-    // (only if that OpenClaw agent exists on disk).
-    const openclawStateDir = resolveOpenclawStateDir({ homeDir });
-    const inferredAgentId = inferOpenclawAgentIdForLabel({ openclawStateDir, label });
-    if (inferredAgentId) {
-      state.pins.openclaw[inferredAgentId] = label;
+    if (provider === OPENAI_CODEX_PROVIDER) {
+      const cred = await refreshOrLoginCodex({ state, label, homeDir, openclawBrowserProfile });
+      state.credentials[OPENAI_CODEX_PROVIDER][label] = cred;
+
+      // Auto-pin: eliminate the common "second step" by pinning agent_<label> -> <label>
+      // (only if that OpenClaw agent exists on disk).
+      const openclawStateDir = resolveOpenclawStateDir({ homeDir });
+      const inferredAgentId = inferOpenclawAgentIdForLabel({ openclawStateDir, label });
+      if (inferredAgentId) {
+        state.pins.openclaw[inferredAgentId] = label;
+      }
+    } else if (provider === ANTHROPIC_PROVIDER) {
+      const cred = await refreshOrLoginAnthropic({ state, label, homeDir, openclawBrowserProfile });
+      state.credentials[ANTHROPIC_PROVIDER][label] = cred;
+    } else {
+      throw new Error(`Provider not supported: ${provider}`);
     }
 
     state.schemaVersion = SCHEMA_VERSION;
 
     writeJsonFileWithBackup(statePath, state);
 
-    const synced = await syncOpenclawFromState(opts, state);
-    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, label, synced }), null, 2)}\n`);
+    const synced =
+      provider === OPENAI_CODEX_PROVIDER
+        ? await syncOpenclawFromState(opts, state)
+        : { skipped: true, reason: "provider_not_openclaw_managed", provider };
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, label, provider, synced }), null, 2)}\n`);
     return;
   }
 
@@ -1760,6 +1996,13 @@ export async function main(argv) {
     ensureStateShape(state);
     if (!isObject(state.accounts[label])) {
       throw new Error(`Unknown label: ${label}. Add it by running \`aim login ${label}\` first.`);
+    }
+    const provider = normalizeProviderId(state.accounts[label]?.provider);
+    if (provider !== OPENAI_CODEX_PROVIDER) {
+      throw new Error(
+        `Refusing to pin OpenClaw agent to label=${label} provider=${provider || "unknown"}. ` +
+          `OpenClaw sync in aimgr v0 only supports ${OPENAI_CODEX_PROVIDER}.`,
+      );
     }
     state.pins.openclaw[agentId] = label;
     state.schemaVersion = SCHEMA_VERSION;
