@@ -1473,6 +1473,165 @@ async function fetchCodexUsageSnapshot({ accessToken, accountId, timeoutMs }) {
   };
 }
 
+function buildClaudeUsageWindows(data) {
+  const windows = [];
+
+  if (data?.five_hour?.utilization !== undefined) {
+    windows.push({
+      label: "5h",
+      usedPercent: clampPercent(data.five_hour.utilization),
+      resetAt: data.five_hour.resets_at ? new Date(data.five_hour.resets_at).getTime() : undefined,
+    });
+  }
+
+  if (data?.seven_day?.utilization !== undefined) {
+    windows.push({
+      label: "Week",
+      usedPercent: clampPercent(data.seven_day.utilization),
+      resetAt: data.seven_day.resets_at ? new Date(data.seven_day.resets_at).getTime() : undefined,
+    });
+  }
+
+  if (data?.seven_day_sonnet?.utilization !== undefined) {
+    windows.push({
+      label: "Sonnet",
+      usedPercent: clampPercent(data.seven_day_sonnet.utilization),
+      resetAt: data.seven_day_sonnet.resets_at ? new Date(data.seven_day_sonnet.resets_at).getTime() : undefined,
+    });
+  }
+
+  if (data?.seven_day_opus?.utilization !== undefined) {
+    windows.push({
+      label: "Opus",
+      usedPercent: clampPercent(data.seven_day_opus.utilization),
+      resetAt: data.seven_day_opus.resets_at ? new Date(data.seven_day_opus.resets_at).getTime() : undefined,
+    });
+  }
+
+  return windows;
+}
+
+function resolveClaudeWebSessionKey() {
+  const direct = process.env.CLAUDE_AI_SESSION_KEY?.trim() ?? process.env.CLAUDE_WEB_SESSION_KEY?.trim();
+  if (direct?.startsWith("sk-ant-")) {
+    return direct;
+  }
+
+  const cookieHeader = process.env.CLAUDE_WEB_COOKIE?.trim();
+  if (!cookieHeader) {
+    return undefined;
+  }
+  const stripped = cookieHeader.replace(/^cookie:\s*/i, "");
+  const match = stripped.match(/(?:^|;\s*)sessionKey=([^;\s]+)/i);
+  const value = match?.[1]?.trim();
+  return value?.startsWith("sk-ant-") ? value : undefined;
+}
+
+async function fetchClaudeWebUsage({ sessionKey, timeoutMs }) {
+  const headers = {
+    Cookie: `sessionKey=${sessionKey}`,
+    Accept: "application/json",
+  };
+
+  const orgRes = await fetchJsonWithTimeout(
+    "https://claude.ai/api/organizations",
+    { method: "GET", headers },
+    timeoutMs,
+  );
+  if (!orgRes.ok) {
+    return null;
+  }
+
+  const orgs = await orgRes.json();
+  const orgId = typeof orgs?.[0]?.uuid === "string" ? orgs[0].uuid.trim() : "";
+  if (!orgId) {
+    return null;
+  }
+
+  const usageRes = await fetchJsonWithTimeout(
+    `https://claude.ai/api/organizations/${orgId}/usage`,
+    { method: "GET", headers },
+    timeoutMs,
+  );
+  if (!usageRes.ok) {
+    return null;
+  }
+
+  const data = await usageRes.json();
+  const windows = buildClaudeUsageWindows(data);
+  if (windows.length === 0) {
+    return null;
+  }
+
+  return {
+    provider: ANTHROPIC_PROVIDER,
+    ok: true,
+    windows,
+  };
+}
+
+async function fetchClaudeUsageSnapshot({ accessToken, timeoutMs }) {
+  const res = await fetchJsonWithTimeout(
+    "https://api.anthropic.com/api/oauth/usage",
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "User-Agent": "aimgr",
+        Accept: "application/json",
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "oauth-2025-04-20",
+      },
+    },
+    timeoutMs,
+  );
+
+  if (!res.ok) {
+    let message;
+    try {
+      const data = await res.json();
+      const raw = data?.error?.message;
+      if (typeof raw === "string" && raw.trim()) {
+        message = raw.trim();
+      }
+    } catch {
+      // ignore parse errors
+    }
+
+    const missingScope = res.status === 403 && message?.includes("scope requirement user:profile");
+    if (missingScope) {
+      const sessionKey = resolveClaudeWebSessionKey();
+      if (sessionKey) {
+        const web = await fetchClaudeWebUsage({ sessionKey, timeoutMs });
+        if (web) {
+          return web;
+        }
+      }
+    }
+
+    return {
+      provider: ANTHROPIC_PROVIDER,
+      ok: false,
+      status: res.status,
+      ...(message ? { error: message } : {}),
+      ...(missingScope ? { missingScope: true } : {}),
+      ...(!missingScope && (res.status === 401 || res.status === 403) ? { tokenExpired: true } : {}),
+    };
+  }
+
+  const data = await res.json();
+  const windows = buildClaudeUsageWindows(data);
+  const opusUnavailable =
+    Object.hasOwn(data ?? {}, "seven_day_opus") && (data?.seven_day_opus === null || data?.seven_day_opus === undefined);
+
+  return {
+    provider: ANTHROPIC_PROVIDER,
+    ok: true,
+    windows,
+    ...(opusUnavailable ? { opusUnavailable: true } : {}),
+  };
+}
+
 function formatDurationRough(ms) {
   const abs = Math.abs(ms);
   const sign = ms < 0 ? "-" : "";
@@ -1496,6 +1655,19 @@ function formatCodexUsageSummary(snapshot) {
   if (!snapshot) return "unknown";
   if (snapshot.ok !== true) {
     if (snapshot.tokenExpired) return "expired";
+    if (snapshot.status) return `error:${snapshot.status}`;
+    return "error";
+  }
+  const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
+  if (windows.length === 0) return "ok";
+  return windows.map((w) => `${w.label} ${Math.round(w.usedPercent)}%`).join(" · ");
+}
+
+function formatClaudeUsageSummary(snapshot) {
+  if (!snapshot) return "unknown";
+  if (snapshot.ok !== true) {
+    if (snapshot.tokenExpired) return "expired";
+    if (snapshot.missingScope) return "missing-scope";
     if (snapshot.status) return `error:${snapshot.status}`;
     return "error";
   }
@@ -1579,31 +1751,116 @@ function buildWarningsFromState(state) {
   return warnings;
 }
 
-async function buildStatusView({ statePath, state }) {
+function buildWarningsFromStatusAccounts(accounts) {
+  const warnings = [];
+  const now = Date.now();
+
+  for (const account of Array.isArray(accounts) ? accounts : []) {
+    if (!account) continue;
+    const provider = normalizeProviderId(account.provider);
+    const label = typeof account.label === "string" ? account.label : null;
+    if (!label) continue;
+
+    const expiresAt =
+      account.credentials && typeof account.credentials.expiresAt === "string" ? account.credentials.expiresAt : null;
+    const expiresMs = expiresAt ? parseExpiresAtToMs(expiresAt) : null;
+    if (expiresMs !== null && expiresMs <= now) {
+      warnings.push({
+        kind: "credentials_expired",
+        provider: provider || "unknown",
+        label,
+        expiresAt,
+      });
+    }
+
+    const usage = account.usage;
+    if (isObject(usage) && usage.ok !== true && usage.tokenExpired) {
+      warnings.push({
+        kind: "token_invalid_or_expired",
+        provider: provider || "unknown",
+        label,
+        ...(usage.status ? { status: usage.status } : {}),
+      });
+    }
+
+    if (provider === ANTHROPIC_PROVIDER && isObject(usage) && usage.ok === true && usage.opusUnavailable) {
+      warnings.push({
+        kind: "anthropic_opus_usage_unavailable",
+        provider: ANTHROPIC_PROVIDER,
+        label,
+      });
+    }
+  }
+
+  return warnings;
+}
+
+async function buildStatusView({ statePath, state, homeDir }) {
   ensureStateShape(state);
 
   const accounts = [];
   const usageByLabel = {};
+  const usageKey = (provider, label) => `${normalizeProviderId(provider)}:${normalizeLabel(label)}`;
+
+  const browserProfileById = new Map();
+  if (homeDir) {
+    const openclawStateDir = resolveOpenclawStateDir({ homeDir });
+    const profiles = discoverOpenclawBrowserProfiles({ openclawStateDir });
+    for (const profile of profiles) {
+      browserProfileById.set(profile.profileId, profile);
+    }
+  }
 
   // Probe usage by default (fail-loud-but-not-fake: unknown if fetch fails).
   const codexCredsByLabel = state.credentials[OPENAI_CODEX_PROVIDER];
   const anthropicCredsByLabel = state.credentials[ANTHROPIC_PROVIDER];
-  const probes = Object.entries(codexCredsByLabel)
-    .filter(([, cred]) => isObject(cred) && typeof cred.access === "string")
-    .map(async ([label, cred]) => {
-      const accessToken = cred.access;
-      const accountId = typeof cred.accountId === "string" ? cred.accountId : null;
-      try {
-        usageByLabel[label] = await fetchCodexUsageSnapshot({ accessToken, accountId, timeoutMs: 8000 });
-      } catch (err) {
-        usageByLabel[label] = {
-          provider: OPENAI_CODEX_PROVIDER,
-          ok: false,
-          status: "error",
-          error: String(err?.message ?? err),
-        };
-      }
-    });
+  const probes = [];
+
+  for (const [label, cred] of Object.entries(codexCredsByLabel)) {
+    if (!isObject(cred) || typeof cred.access !== "string") continue;
+    probes.push(
+      (async () => {
+        const accessToken = cred.access;
+        const accountId = typeof cred.accountId === "string" ? cred.accountId : null;
+        try {
+          usageByLabel[usageKey(OPENAI_CODEX_PROVIDER, label)] = await fetchCodexUsageSnapshot({
+            accessToken,
+            accountId,
+            timeoutMs: 8000,
+          });
+        } catch (err) {
+          usageByLabel[usageKey(OPENAI_CODEX_PROVIDER, label)] = {
+            provider: OPENAI_CODEX_PROVIDER,
+            ok: false,
+            status: "error",
+            error: String(err?.message ?? err),
+          };
+        }
+      })(),
+    );
+  }
+
+  for (const [label, cred] of Object.entries(anthropicCredsByLabel)) {
+    if (!isObject(cred) || typeof cred.access !== "string") continue;
+    probes.push(
+      (async () => {
+        const accessToken = cred.access;
+        try {
+          usageByLabel[usageKey(ANTHROPIC_PROVIDER, label)] = await fetchClaudeUsageSnapshot({
+            accessToken,
+            timeoutMs: 8000,
+          });
+        } catch (err) {
+          usageByLabel[usageKey(ANTHROPIC_PROVIDER, label)] = {
+            provider: ANTHROPIC_PROVIDER,
+            ok: false,
+            status: "error",
+            error: String(err?.message ?? err),
+          };
+        }
+      })(),
+    );
+  }
 
   await Promise.all(probes);
 
@@ -1614,6 +1871,9 @@ async function buildStatusView({ statePath, state }) {
     const openclawBrowserProfile =
       typeof account.openclawBrowserProfile === "string" ? account.openclawBrowserProfile.trim() : "";
     const browser = openclawBrowserProfile ? { openclawBrowserProfile } : undefined;
+    const browserIdentity = openclawBrowserProfile ? browserProfileById.get(openclawBrowserProfile) : null;
+    const browserUserName = typeof browserIdentity?.userName === "string" ? browserIdentity.userName : null;
+    const browserGaiaName = typeof browserIdentity?.gaiaName === "string" ? browserIdentity.gaiaName : null;
 
     if (provider === OPENAI_CODEX_PROVIDER) {
       const cred = isObject(codexCredsByLabel[label]) ? codexCredsByLabel[label] : null;
@@ -1626,13 +1886,15 @@ async function buildStatusView({ statePath, state }) {
         identity: {
           ...(expectEmail ? { expectEmail } : {}),
           ...(accountId ? { accountId } : {}),
+          ...(browserUserName ? { browserUserName } : {}),
+          ...(browserGaiaName ? { browserGaiaName } : {}),
         },
         credentials: {
           status: cred ? "ok" : "missing",
           ...(expiresAt ? { expiresAt } : {}),
           ...(expiresAt ? { expiresIn: formatExpiresIn(expiresAt) } : {}),
         },
-        usage: usageByLabel[label] ?? { provider, ok: false, status: "unknown" },
+        usage: usageByLabel[usageKey(provider, label)] ?? { provider, ok: false, status: "unknown" },
       });
       continue;
     }
@@ -1644,13 +1906,17 @@ async function buildStatusView({ statePath, state }) {
         label,
         provider,
         ...(browser ? { browser } : {}),
-        identity: { ...(expectEmail ? { expectEmail } : {}) },
+        identity: {
+          ...(expectEmail ? { expectEmail } : {}),
+          ...(browserUserName ? { browserUserName } : {}),
+          ...(browserGaiaName ? { browserGaiaName } : {}),
+        },
         credentials: {
           status: cred ? "ok" : "missing",
           ...(expiresAt ? { expiresAt } : {}),
           ...(expiresAt ? { expiresIn: formatExpiresIn(expiresAt) } : {}),
         },
-        usage: { ok: false, status: "n/a" },
+        usage: usageByLabel[usageKey(provider, label)] ?? { provider, ok: false, status: cred ? "unknown" : "n/a" },
       });
       continue;
     }
@@ -1672,7 +1938,7 @@ async function buildStatusView({ statePath, state }) {
     statePath,
     accounts: accounts.toSorted((a, b) => a.label.localeCompare(b.label)),
     pins: { openclaw: sanitizeForStatus(pins) },
-    warnings: buildWarningsFromState(state),
+    warnings: [...buildWarningsFromState(state), ...buildWarningsFromStatusAccounts(accounts)],
   };
 }
 
@@ -1688,13 +1954,22 @@ function renderStatusText(view) {
         ? `expectEmail:${a.identity.expectEmail}`
         : a.identity?.accountId
           ? `accountId:${a.identity.accountId}`
+          : a.identity?.browserUserName
+            ? `browserUser:${a.identity.browserUserName}`
+            : a.identity?.browserGaiaName
+              ? `browser:${a.identity.browserGaiaName}`
           : "identity:unknown";
     const browser =
       typeof a.browser?.openclawBrowserProfile === "string" && a.browser.openclawBrowserProfile.trim()
         ? `browser=${a.browser.openclawBrowserProfile.trim()}`
         : null;
     const expires = a.credentials?.expiresIn ? `expires=${a.credentials.expiresIn}` : "expires=unknown";
-    const usage = a.provider === OPENAI_CODEX_PROVIDER ? `usage=${formatCodexUsageSummary(a.usage)}` : "usage=n/a";
+    const usage =
+      a.provider === OPENAI_CODEX_PROVIDER
+        ? `usage=${formatCodexUsageSummary(a.usage)}`
+        : a.provider === ANTHROPIC_PROVIDER
+          ? `usage=${formatClaudeUsageSummary(a.usage)}`
+          : "usage=n/a";
     lines.push(`- ${a.provider} ${a.label} ${identity} ${expires} ${usage}${browser ? ` ${browser}` : ""}`);
   }
 
@@ -1714,8 +1989,10 @@ function renderStatusText(view) {
   for (const w of warnings.slice(0, 50)) {
     const parts = [`- ${w.kind}`];
     if (w.label) parts.push(`label=${w.label}`);
+    if (w.provider) parts.push(`provider=${w.provider}`);
     if (w.agentId) parts.push(`agent=${w.agentId}`);
     if (w.accountId) parts.push(`accountId=${w.accountId}`);
+    if (w.status) parts.push(`status=${w.status}`);
     lines.push(parts.join(" "));
   }
 
@@ -2029,7 +2306,7 @@ export async function main(argv) {
 
   if (cmd === "status") {
     const state = loadAimgrState(statePath);
-    const view = await buildStatusView({ statePath, state });
+    const view = await buildStatusView({ statePath, state, homeDir });
     if (opts.json) {
       process.stdout.write(`${JSON.stringify(sanitizeForStatus(view), null, 2)}\n`);
       return;

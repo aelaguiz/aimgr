@@ -74,21 +74,39 @@ test("status --json never leaks access/refresh tokens", async () => {
   });
 
   const origFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        plan_type: "pro",
-        rate_limit: {
-          primary_window: {
-            used_percent: 10,
-            limit_window_seconds: 10800,
-            reset_at: Math.floor(Date.now() / 1000) + 3600,
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 10,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
           },
-        },
-      }),
-    };
+        }),
+      };
+    }
+
+    if (u.includes("api.anthropic.com/api/oauth/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 12, resets_at: "2026-03-10T00:00:00Z" },
+          seven_day: { utilization: 34, resets_at: "2026-03-12T00:00:00Z" },
+          seven_day_opus: { utilization: 44 },
+        }),
+      };
+    }
+
+    throw new Error(`Unexpected fetch url in test: ${u}`);
   };
 
   try {
@@ -102,6 +120,81 @@ test("status --json never leaks access/refresh tokens", async () => {
     const claude = parsed.accounts.find((a) => a.label === "claude");
     assert.equal(boss.provider, "openai-codex");
     assert.equal(claude.provider, "anthropic");
+    assert.equal(claude.usage.ok, true);
+    assert.ok(claude.usage.windows.some((w) => w.label === "Opus"));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("status warns when tokens are expired or rejected", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+
+  writeJson(statePath, {
+    schemaVersion: "0.1",
+    accounts: {
+      boss: { provider: "openai-codex", openclawBrowserProfile: "agent-boss" },
+      claude: { provider: "anthropic", openclawBrowserProfile: "agent-claude" },
+    },
+    pins: { openclaw: {} },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: "ACCESS_TOKEN",
+          refresh: "REFRESH_TOKEN",
+          expiresAt: new Date(Date.now() - 60_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {
+        claude: {
+          access: "ANTHROPIC_ACCESS",
+          refresh: "ANTHROPIC_REFRESH",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        },
+      },
+    },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 1,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+
+    if (u.includes("api.anthropic.com/api/oauth/usage")) {
+      return {
+        ok: false,
+        status: 401,
+        json: async () => ({ error: { message: "unauthorized" } }),
+      };
+    }
+
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const out = await runCli(["status", "--json", "--home", home]);
+    const parsed = JSON.parse(out);
+    const kinds = parsed.warnings.map((w) => w.kind).toSorted();
+    assert.ok(kinds.includes("credentials_expired"));
+    assert.ok(kinds.includes("token_invalid_or_expired"));
   } finally {
     globalThis.fetch = origFetch;
   }
