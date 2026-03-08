@@ -1,391 +1,384 @@
 # aimgr
 
-`aimgr` (CLI: `aim`) is a small, opinionated **AI account manager** for people running **multiple paid AI accounts** and needing those accounts wired cleanly into downstream automation tooling (today: **OpenClaw**).
+`aimgr` (CLI: `aim`) is a small, opinionated AI account manager for people running multiple paid AI accounts and wiring them into downstream tools without guessing which account is active.
 
-The point is dead simple:
+The operating model is simple:
 
-- You should only ever need to remember the **account label** (`boss`, `coder2`, `lessons`, …).
-- You run **one command** (`aim <label>`).
-- `aimgr` opens the **right browser profile**, completes OAuth, stores tokens in **one plaintext file**, and then updates downstream tool state so the right agent uses the right account.
+- AIM stores the durable labeled account truth in `~/.aimgr/secrets.json`.
+- OpenClaw and Codex CLI are derived targets, not competing sources of truth.
+- Operators work in labels like `boss`, `lessons`, `qa`, not raw tokens or browser profiles.
 
-This repo is intentionally “no-magic”: when something is unclear, we read upstream source and match its behavior. No black boxes.
+Right now there are two real workflows:
 
-## Non-negotiables (v0)
+- Authority-host workflow: manage shared labeled accounts and compile them into OpenClaw.
+- Consumer-laptop workflow: pull the portable Codex pool from the authority host and switch local Codex CLI by label.
 
-- **No guessing / no black boxes:** adapters are written from upstream behavior (OpenClaw / Codex OAuth), not vibes.
-- **`aimgr` is the SSOT:** we store credentials + mappings in `~/.aimgr/secrets.json`. Downstream stores are *derived outputs* and may be overwritten.
-- **Plaintext secrets on disk:** no Keychain, no encryption, no secret manager. Just a flat file and automatic backups.
-- **Everything is labeled:** we do **not** accept a steady state where accounts collapse to `*:default` (especially `openai-codex:default`).
-- **Providers are explicit:** each label has a `provider` (today: `openai-codex` or `anthropic`).
-- **One OpenClaw model (for now):** when syncing OpenClaw, pinned agents are forced to `openai-codex/gpt-5.4` and fallbacks are cleared.
+## Non-negotiables
 
-## Quickstart (what you actually type)
+- AIM is the SSOT. OpenClaw/Codex auth files are derived outputs.
+- Secrets are plaintext on disk on purpose. No keychain or secret manager abstraction in AIM.
+- Labels are explicit. No steady-state `default` profile semantics.
+- Provider behavior is grounded in real upstream contracts, not inferred.
+- Codex CLI target management is file-backed only in v1. Keyring/`auto` homes fail loud.
+- The current human-facing authority for the shared Codex pool is `agents@amirs-mac-studio`.
 
-### 0) Prereqs
+## Install
 
-- macOS (OAuth flow uses a localhost callback + opens Chrome)
+### Prereqs
+
+- macOS
 - Node.js `>= 20`
-- `openclaw` installed and on your `PATH` (AIM calls `openclaw config …` and optionally `openclaw gateway call …`)
-- Google Chrome installed (AIM launches Chrome via `open -a "Google Chrome" …`)
-- OpenClaw browser profiles already exist on disk under `~/.openclaw/browser/*/user-data`
-  - If they don’t exist yet, run OpenClaw’s browser/profile flow once to create them.
+- Google Chrome installed
+- `openclaw` installed and on your `PATH` if you are using the authority/OpenClaw workflow
+- A file-backed Codex home if you want AIM to manage your real `~/.codex`
 
-### 1) Install the CLI from this repo
+### Global install from this checkout
 
-This repo is not published to npm (v0), so the expected dev install is:
+For normal local use while iterating on this repo, use `npm link`:
 
 ```bash
-cd <wherever-you-cloned>/aimgr
+cd /Users/aelaguiz/workspace/aimgr
 npm install
 npm link
 
+which aim
 aim --help
 ```
 
-You should now have both `aim` and `aimgr` available (same command; `aim` is shorter).
+That gives you both `aim` and `aimgr` globally from this working tree.
 
-### 2) Login one account label (single command)
+If you want a fixed installed snapshot instead of a live symlink:
+
+```bash
+cd /Users/aelaguiz/workspace/aimgr
+npm install -g .
+```
+
+## Quickstart
+
+### Authority host: manage labeled accounts for OpenClaw
+
+Use this on the machine that owns the shared AIM state and OpenClaw/browser profiles.
+
+Login or refresh a label:
 
 ```bash
 aim boss
 ```
 
-What happens:
+That flow:
 
-1) If `boss` doesn’t have an OpenClaw browser profile selected yet, `aim` will list OpenClaw browser profiles it finds and ask you to pick one.
-2) If `boss` doesn’t have a provider configured yet, `aim` prompts you to pick one (default is `openai-codex`).
-2) `aim` opens the OAuth URL in **that** browser profile.
-3) If the provider is:
-   - `openai-codex`: the login completes automatically via localhost callback.
-   - `anthropic`: you’ll do an extra step: paste the callback URL from your browser back into the CLI.
-4) Tokens are stored in `~/.aimgr/secrets.json`.
-4) `aim` auto-pins `agent_boss -> boss` if `~/.openclaw/agents/agent_boss/…` exists.
-5) `aim` syncs OpenClaw derived state (`auth-profiles.json`, model enforcement, and session cleanup).
+1. Ensures the label has a provider.
+2. Ensures the label is mapped to the right OpenClaw browser profile.
+3. Runs refresh if possible, otherwise browser OAuth.
+4. Stores credentials in `~/.aimgr/secrets.json`.
+5. Auto-pins `agent_<label>` when present.
+6. Syncs derived OpenClaw state.
 
-Important: OpenClaw sync supports both `openai-codex` and `anthropic` now. When an OpenClaw agent is pinned to a label, AIM will:
-
-- write labeled auth profiles into OpenClaw (`<provider>:<label>`, e.g. `openai-codex:boss`, `anthropic:claudalyst`)
-- set the pinned agent’s model to a provider-appropriate default:
-  - `openai-codex` → `openai-codex/gpt-5.4`
-  - `anthropic` → `anthropic/claude-opus-4-6`
-
-### 3) Pin other OpenClaw agents to accounts (pooling)
-
-Pin one agent to one label:
+Explicit OpenClaw operations still work as before:
 
 ```bash
 aim pin agent_lessons boss
-```
-
-Or distribute **all remaining unpinned OpenClaw agents** evenly across a pool of labels:
-
-```bash
-aim autopin openclaw --pool boss,lessons,product_growth,qa,illustrator
-```
-
-### 4) Apply/sync OpenClaw (explicit)
-
-```bash
+aim autopin openclaw --pool boss,lessons,qa,illustrator
 aim sync openclaw
-# (alias)
 aim apply
 ```
 
-## Mental model
+### Consumer laptop: switch local Codex CLI by label
 
-### Labels
+Use this on your laptop when you want local Codex CLI to consume the shared labeled Codex pool from the authority host.
 
-A **label** is a human-friendly name for a paid account (examples: `boss`, `coder2`, `qa`).
+The normal operator loop is:
 
-Rules:
-
-- lowercase, digits, `_`, `-` only
-- `default` is forbidden (we never want `*:default` in steady state)
-- some CLI words are reserved (`status`, `login`, `pin`, `autopin`, `apply`, `sync`, `help`)
-
-### Accounts vs pins
-
-- **Account:** `label -> provider + browser profile + credentials`
-- **Pin:** `openclaw_agent_id -> label`
-
-When we say “pooling”, we mean: *many agents can be pinned to the same label*, so those agents share the same paid account.
-
-## SSOT file (one file; plaintext; local-only)
-
-`aim` reads and writes exactly one file by default:
-
-- `~/.aimgr/secrets.json`
-
-Every write creates an automatic timestamped backup sibling file first:
-
-- `~/.aimgr/secrets.json.bak.<timestamp>`
-
-### SSOT format (example)
-
-This is the real shape (tokens shown as placeholders):
-
-```jsonc
-{
-  "schemaVersion": "0.1",
-  "accounts": {
-    "boss": {
-      "provider": "openai-codex",
-      "openclawBrowserProfile": "agent-boss",
-      "expect": { "email": "boss@fun.country" }
-    },
-    "claude": {
-      "provider": "anthropic",
-      "openclawBrowserProfile": "agent-claude"
-    }
-  },
-  "pins": {
-    "openclaw": {
-      "agent_boss": "boss",
-      "agent_lessons": "boss"
-    }
-  },
-  "credentials": {
-    "openai-codex": {
-      "boss": {
-        "access": "…",
-        "refresh": "…",
-        "expiresAt": "2026-03-13T03:21:00.000Z",
-        "accountId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-      }
-    },
-    "anthropic": {
-      "claude": {
-        "access": "…",
-        "refresh": "…",
-        "expiresAt": "2026-03-13T03:21:00.000Z"
-      }
-    }
-  }
-}
+```bash
+aim sync codex --from agents@amirs-mac-studio
+aim codex use boss
+aim status
 ```
 
-Notes:
+What that means:
 
-- `credentials.*.*.access` + `.refresh` are **sensitive** and stored plaintext on purpose (non-negotiable).
-- `accountId` is used to prevent “wrong Chrome profile” mistakes and to query usage.
+- `aim sync codex --from agents@amirs-mac-studio` pulls the portable `openai-codex` labels and credentials from the authority host into local AIM state.
+- `aim codex use <label>` writes the managed local Codex `auth.json` for that label.
+- `aim status` shows the authority source, import freshness, active local Codex label, and warnings.
+
+Important behavior:
+
+- First-time bootstrap is explicit. If your laptop has no `~/.aimgr/secrets.json`, the first `aim sync codex --from agents@amirs-mac-studio` creates it.
+- Label switching does not run browser login on the laptop.
+- The contract is “next Codex process,” not hot-swapping an already-running long-lived Codex process.
+- If no imported replica exists yet, `aim codex use <label>` fails loud and tells you to sync first.
+
+## Codex CLI requirements
+
+AIM only manages file-backed Codex homes in v1.
+
+By default AIM targets:
+
+- AIM state: `~/.aimgr/secrets.json`
+- Codex home: `~/.codex`
+
+Check your Codex store mode:
+
+```bash
+grep -n 'cli_auth_credentials_store' ~/.codex/config.toml
+```
+
+If that is set to `keyring` or `auto`, AIM will refuse to manage the home. For the real global flow, the store should be `file` or absent.
+
+You can also point AIM at an alternate managed Codex home with `CODEX_HOME`:
+
+```bash
+export CODEX_HOME="$HOME/.codex"
+```
+
+## Safe local smoke test
+
+If you want to test the laptop flow without touching your real `~/.aimgr` or `~/.codex`, use a temp home:
+
+```bash
+cd /Users/aelaguiz/workspace/aimgr
+
+TMP_HOME="$(mktemp -d /tmp/aimgr-smoke.XXXXXX)"
+export CODEX_HOME="$TMP_HOME/.codex"
+
+node ./bin/aimgr.js sync codex --from agents@amirs-mac-studio --home "$TMP_HOME"
+node ./bin/aimgr.js status --json --home "$TMP_HOME"
+node ./bin/aimgr.js codex use boss --home "$TMP_HOME"
+node ./bin/aimgr.js status --home "$TMP_HOME"
+cat "$CODEX_HOME/auth.json"
+```
+
+What you want to see:
+
+- `sync codex` succeeds and creates `$TMP_HOME/.aimgr/secrets.json`
+- `status` shows imported labels and the authority source
+- `codex use boss` succeeds
+- `$CODEX_HOME/auth.json` exists and contains the selected account id
+
+## Real laptop smoke test
+
+Once the isolated test looks right, test the real flow:
+
+```bash
+ssh agents@amirs-mac-studio 'test -f ~/.aimgr/secrets.json && echo ok'
+
+aim sync codex --from agents@amirs-mac-studio
+aim status
+aim codex use boss
+aim status
+```
+
+Then start a fresh `codex` process and run one auth-dependent command you trust. Switch labels and repeat:
+
+```bash
+aim codex use lessons
+aim status
+```
+
+Confirm:
+
+- no browser login happens on the laptop
+- a fresh Codex process picks up the selected label
+- switching labels changes the next-process identity deterministically
 
 ## Command reference
 
 ### `aim status`
 
-Human summary of what AIM knows (accounts + pins + warnings).
+Human-readable summary of:
+
+- known labels
+- warnings
+- OpenClaw pins
+- Codex authority source/import freshness
+- active local Codex label/home/store mode
 
 ```bash
 aim status
+aim status --json
 ```
 
-`aim status` probes usage for each stored token and shows rate-limit windows when available.
+### `aim <label>` / `aim login <label>`
 
-### `aim status --json`
-
-Machine-readable status (tokens are redacted in output).
-
-```bash
-aim status --json | jq .
-```
-
-### `aim <label>` (the “one command” flow)
-
-Shorthand for `aim login <label>`, plus:
-
-- ensures the label has a chosen OpenClaw browser profile (prompts if needed)
-- ensures the label has an explicit provider (prompts if needed)
-- refreshes tokens when possible (no browser)
-- falls back to OAuth login (opens browser)
-  - `anthropic` requires a paste step (by design; we don’t guess)
-- auto-pins `agent_<label> -> <label>` when that agent exists on disk
-- syncs OpenClaw derived state
-
-Examples:
+Authority-host login/refresh flow for a label:
 
 ```bash
 aim boss
-aim coder2
-aim product_growth
-aim claude
-```
-
-### `aim login <label>`
-
-Explicit version of the same thing:
-
-```bash
 aim login boss
 ```
 
+This is the command that manages browser OAuth state and OpenClaw derived state.
+
 ### `aim pin <openclaw_agent_id> <label>`
 
-Manual pin override (rare).
+Manual OpenClaw pin override:
 
 ```bash
 aim pin agent_daily_wins_reporter boss
 ```
 
-### `aim autopin openclaw [--pool …]`
+### `aim autopin openclaw [--pool ...]`
 
-Evenly distributes *currently unpinned* OpenClaw agents across a pool of labels.
+Evenly distributes currently unpinned OpenClaw agents across a pool of labels:
 
 ```bash
-aim autopin openclaw --pool boss,lessons,qa,illustrator,product_growth
+aim autopin openclaw --pool boss,lessons,qa,illustrator
 ```
-
-If you omit `--pool`, AIM auto-discovers pool labels from accounts it knows, excluding reserved labels (`coder`, `coder2`, `growth`) by default.
 
 ### `aim sync openclaw` / `aim apply`
 
-Explicit “write all derived OpenClaw state from SSOT”.
+Explicitly rewrites derived OpenClaw state from AIM:
 
 ```bash
 aim sync openclaw
+aim apply
 ```
 
-This is safe to run repeatedly; it’s designed to be idempotent.
+### `aim sync codex --from <authority>`
 
-## How OpenClaw integration works (ground truth)
-
-This is what AIM changes in OpenClaw when you run `aim …` (without `--home`).
-
-### 1) Browser profiles: AIM uses OpenClaw-managed Chrome identities
-
-When AIM needs to do OAuth, it opens Chrome with:
-
-- a **specific OpenClaw browser profile user-data-dir**:
-  - `~/.openclaw/browser/<profileId>/user-data`
-
-AIM discovers those profiles by listing:
-
-- `~/.openclaw/browser/*/user-data`
-
-And it reads friendly names/emails from:
-
-- `~/.openclaw/browser/<profileId>/user-data/Local State`
-
-Then it launches:
+Imports or refreshes the portable Codex pool from an authority source:
 
 ```bash
-open -n -a "Google Chrome" --args --user-data-dir=<that-user-data-dir> <oauth-url>
+aim sync codex --from agents@amirs-mac-studio
 ```
 
-This is why we don’t need a separate “Chrome profile manager” inside AIM: OpenClaw’s browser profiles are already the correct SSOT for “which Chrome identity belongs to which agent/account”.
+Supported locator forms:
 
-### 2) Auth profiles: labeled, non-default OpenClaw auth store
+- `agents@amirs-mac-studio`
+- `ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json`
+- `/absolute/path/to/secrets.json`
 
-AIM writes OpenClaw auth profiles to:
+For the normal human-facing workflow, prefer `agents@amirs-mac-studio`.
 
-- `~/.openclaw/agents/main/agent/auth-profiles.json` (the shared store)
-- `~/.openclaw/agents/<agent_id>/agent/auth-profiles.json` (per-agent overrides)
+### `aim codex use <label>`
 
-Key behavior:
+Activates one imported label for local Codex CLI:
 
-- Each AIM label becomes an OpenClaw auth profile id: `openai-codex:<label>`
-- `openai-codex:default` is not used for managed accounts
-- The `main` store gets **all** managed `openai-codex:*` profiles (AIM overwrites the `openai-codex` provider set)
-- Each pinned agent store gets an `order.openai-codex = ["openai-codex:<label>"]` and `lastGood.openai-codex` set to that id
+```bash
+aim codex use boss
+```
 
-### 3) Model enforcement: pinned agents are forced to `openai-codex/gpt-5.4`
+This writes managed `auth.json` into the current Codex home, verifies readback, and updates local AIM target metadata.
 
-For each pinned agent id in `pins.openclaw`, AIM enforces:
+## State layout
 
-- `agents.list[...].model.primary = "openai-codex/gpt-5.4"`
-- if that agent had `fallbacks`, they are cleared to `[]`
+Default durable AIM state lives at:
 
-This is done by calling OpenClaw config:
+- `~/.aimgr/secrets.json`
 
-- `openclaw config get agents.list --json`
-- `openclaw config set --strict-json <path> <value>`
+Backups are created automatically on write:
 
-### 4) Session cleanup: prevent “old sessions” from reintroducing wrong models/providers
+- `~/.aimgr/secrets.json.bak.<timestamp>`
 
-When agents change provider/model, OpenClaw sessions can keep runtime/override fields like:
+Current state shape:
 
-- `modelProvider`, `model`
-- `providerOverride`, `modelOverride`
-- `authProfileOverride`, plus fallback notice fields
+```jsonc
+{
+  "schemaVersion": "0.2",
+  "accounts": {
+    "boss": {
+      "provider": "openai-codex",
+      "expect": { "email": "boss@example.com" }
+    }
+  },
+  "credentials": {
+    "openai-codex": {
+      "boss": {
+        "access": "...",
+        "refresh": "...",
+        "idToken": "...",
+        "expiresAt": "2026-03-13T03:21:00.000Z",
+        "accountId": "acct_123"
+      }
+    },
+    "anthropic": {}
+  },
+  "imports": {
+    "authority": {
+      "codex": {
+        "source": "agents@amirs-mac-studio",
+        "importedAt": "2026-03-08T03:21:00.000Z",
+        "labels": ["boss", "lessons"]
+      }
+    }
+  },
+  "targets": {
+    "openclaw": {
+      "pins": {
+        "agent_boss": "boss"
+      },
+      "browserProfiles": {
+        "boss": "agent-boss"
+      }
+    },
+    "codexCli": {
+      "activeLabel": "boss",
+      "homeDir": "/Users/you/.codex",
+      "storeMode": "file",
+      "expectedAccountId": "acct_123",
+      "lastAppliedAt": "2026-03-08T03:25:00.000Z"
+    }
+  }
+}
+```
 
-Those stale session fields can cause the gateway to “pick up” an old session on restart and keep using the wrong provider/model (and/or wrong tool references).
+Portable truth is in `accounts` and `credentials`. Machine-local downstream metadata lives under `targets.*`.
 
-On every sync, AIM scans pinned agents’ session stores:
+## OpenClaw integration
 
-- `~/.openclaw/agents/<agent_id>/sessions/sessions.json`
+OpenClaw remains the existing authority-host downstream target.
 
-If sessions need reset, AIM tries **gateway mode** first:
+AIM still:
 
-- probes: `openclaw gateway call sessions.list`
-- patches: `openclaw gateway call sessions.patch --params '{"key":"…","model":"openai-codex/gpt-5.4"}'`
+- uses OpenClaw-managed Chrome profiles under `~/.openclaw/browser/*/user-data`
+- writes labeled auth profiles into OpenClaw `auth-profiles.json`
+- enforces pinned-agent model defaults
+- cleans stale session/runtime model overrides during sync
 
-If the gateway is unavailable or patching fails, AIM falls back to **disk mode**:
-
-- it edits `sessions.json` to remove the stale runtime/override fields (with backup-on-write)
-
-## Dev/test mode: `--home` (don’t touch real state)
-
-If you pass `--home`, AIM treats that as `HOME` and writes state under it:
-
-- `<home>/.aimgr/secrets.json`
-- `<home>/.openclaw/**`
-
-And it intentionally **skips**:
-
-- OpenClaw config changes (`openclaw config set …`)
-- live gateway session patching (`openclaw gateway call …`)
-
-This is used by `npm test` and is the safe way to iterate without touching your real OpenClaw setup.
-
-## Security / risk (read this)
-
-- `~/.aimgr/secrets.json` contains plaintext OAuth tokens. This is intentional.
-- Treat it like `~/.ssh/id_rsa`:
-  - keep it local
-  - don’t back it up to random cloud drives
-  - consider `chmod 600 ~/.aimgr/secrets.json`
-- Backups are also secrets (`~/.aimgr/secrets.json.bak.*`).
+The OpenClaw-specific metadata now lives under `targets.openclaw`, but the operator commands and sync behavior are intentionally preserved.
 
 ## Troubleshooting
 
-### “Refusing to clobber: accountId=… is already assigned to label=…”
+### `aim codex use <label>` says to sync first
 
-This almost always means: you selected the wrong OpenClaw browser profile for the label.
-
-Fix:
-
-1) Run `aim <label>` again and choose the correct OpenClaw browser profile.
-2) Then re-run `aim sync openclaw`.
-
-### “No OpenClaw browser profiles discovered…”
-
-You likely don’t have OpenClaw browser profiles on disk yet.
-
-Create them via OpenClaw first (OpenClaw is the SSOT for browser identities), then retry `aim <label>`.
-
-### “Gateway service not loaded”
-
-This is an OpenClaw service/launchd issue, not an AIM issue.
-
-At a minimum, you want the gateway running so AIM can patch live sessions:
+Bootstrap the local replica:
 
 ```bash
-openclaw gateway status
-openclaw gateway install   # loads the launchd service (one-time)
-openclaw gateway start
+aim sync codex --from agents@amirs-mac-studio
 ```
 
-If you’re managing OpenClaw as a host service, prefer your host runbook / launchd tooling.
+### Codex home is rejected as `keyring` or `auto`
+
+Use a file-backed Codex home instead, or test with a temp `CODEX_HOME`.
+
+### SSH import fails
+
+Verify the authority host is reachable and has AIM state:
+
+```bash
+ssh agents@amirs-mac-studio 'test -f ~/.aimgr/secrets.json && echo ok'
+```
+
+### Wrong account still appears active after switching
+
+Start a new Codex process. AIM guarantees next-process behavior, not live hot-swap.
+
+### `aim status --json` and secrets
+
+Status output is redacted. The durable state file itself is not.
 
 ## Development
 
 ```bash
-npm test
 npm run lint
+npm test
 ```
 
-Tests use `--home` temp dirs and validate:
+Current tests cover:
 
-- we never print access/refresh tokens in `aim status --json`
-- OpenClaw auth profile writing is labeled (`openai-codex:<label>`)
-- model enforcement ops are generated correctly
-- session cleanup logic clears the right fields
+- secret redaction in `aim status --json`
+- OpenClaw auth profile writes
+- Codex authority import/bootstrap
+- Codex activation and file-backed store enforcement
+- model/session helper logic for OpenClaw

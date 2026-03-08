@@ -4,11 +4,15 @@ import { spawn, spawnSync } from "node:child_process";
 import readline from "node:readline/promises";
 import { loginAnthropic, loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
 
-const SCHEMA_VERSION = "0.1";
+const SCHEMA_VERSION = "0.2";
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const ANTHROPIC_PROVIDER = "anthropic";
 const OPENCLAW_ENFORCED_CODEX_MODEL = "openai-codex/gpt-5.4";
 const OPENCLAW_ENFORCED_ANTHROPIC_MODEL = "anthropic/claude-opus-4-6";
+const CODEX_AUTH_STORE_MODE_FILE = "file";
+const CODEX_AUTH_STORE_MODE_KEYRING = "keyring";
+const CODEX_AUTH_STORE_MODE_AUTO = "auto";
+const DEFAULT_AUTHORITY_STATE_REMOTE_PATH = "$HOME/.aimgr/secrets.json";
 
 const SUPPORTED_OAUTH_PROVIDERS = new Map([
   [
@@ -61,7 +65,7 @@ function normalizeLabel(input) {
       `Invalid label: ${label}. Use lowercase letters, numbers, '_' and '-' (e.g. boss, coder2).`,
     );
   }
-  const reserved = new Set(["status", "login", "pin", "autopin", "apply", "sync", "help"]);
+  const reserved = new Set(["status", "login", "pin", "autopin", "apply", "sync", "codex", "use", "help"]);
   if (reserved.has(label)) {
     throw new Error(`Refusing label=${label} (reserved CLI word). Pick a different label (e.g. boss, coder2).`);
   }
@@ -86,6 +90,7 @@ function parseArgs(argv) {
   const opts = {
     home: undefined,
     state: undefined,
+    from: undefined,
     json: false,
     help: false,
     pool: undefined,
@@ -101,6 +106,11 @@ function parseArgs(argv) {
     }
     if (arg === "--state") {
       opts.state = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--from") {
+      opts.from = argv[i + 1];
       i += 1;
       continue;
     }
@@ -138,15 +148,20 @@ function printHelp() {
     "  aim autopin openclaw [--pool boss,lessons,...]  # pin all unpinned OpenClaw agents evenly across labels",
     "  aim apply             # sync OpenClaw derived state from ~/.aimgr/secrets.json",
     "  aim sync openclaw     # explicit alias for apply",
+    "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
+    "  aim codex use <label> # activate one imported openai-codex label for local Codex CLI",
     "",
     "Notes:",
     "  - SSOT file: ~/.aimgr/secrets.json (auto-backed-up on every write).",
     "  - V0 supports: openai-codex (ChatGPT/Codex OAuth) + anthropic (Claude Pro/Max OAuth) on macOS.",
     "  - OAuth runs inside OpenClaw browser profiles under ~/.openclaw/browser/*/user-data.",
+    "  - Codex target management is file-backed only in v1; keyring/auto homes fail loud.",
     "",
     "Developer options (rare):",
     "  --home <dir>    Run against an alternate HOME (dev/test; e.g. /tmp/aimgr-home).",
     "  --state <path>  Override SSOT file path (default: <home>/.aimgr/secrets.json).",
+    "  --from <src>    Authority source for `aim sync codex`.",
+    "                  Examples: agents@amirs-mac-studio  |  ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json",
     "",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -656,12 +671,49 @@ function writeJsonFileWithBackup(filePath, data) {
   fs.writeFileSync(filePath, json, { encoding: "utf8" });
 }
 
+function writeTextFileIfChanged(filePath, text, { mode } = {}) {
+  const next = String(text ?? "");
+  let current = null;
+  try {
+    current = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    if (err?.code !== "ENOENT") {
+      throw err;
+    }
+  }
+  if (current === next) {
+    return { wrote: false, path: filePath };
+  }
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, next, {
+    encoding: "utf8",
+    ...(mode !== undefined ? { mode } : {}),
+  });
+  return { wrote: true, path: filePath };
+}
+
+function writeJsonFileIfChanged(filePath, data, { mode } = {}) {
+  return writeTextFileIfChanged(filePath, `${JSON.stringify(data, null, 2)}\n`, { mode });
+}
+
 function createEmptyState() {
   return {
     schemaVersion: SCHEMA_VERSION,
     accounts: {},
-    pins: { openclaw: {} },
     credentials: {},
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        pins: {},
+        browserProfiles: {},
+      },
+      codexCli: {},
+    },
   };
 }
 
@@ -716,14 +768,14 @@ function normalizeLegacyStateV0(raw) {
   }
 
   const legacyPins = isObject(raw.openclaw?.agentPins) ? raw.openclaw.agentPins : {};
-  migrated.pins.openclaw = isObject(migrated.pins.openclaw) ? migrated.pins.openclaw : {};
+  migrated.targets.openclaw.pins = isObject(migrated.targets.openclaw.pins) ? migrated.targets.openclaw.pins : {};
   for (const [agentId, profileId] of Object.entries(legacyPins)) {
     if (typeof profileId !== "string") continue;
     const parts = profileId.split(":");
     if (parts.length < 2) continue;
     const suffix = parts.slice(1).join(":");
     try {
-      migrated.pins.openclaw[agentId] = normalizeLabel(suffix);
+      migrated.targets.openclaw.pins[agentId] = normalizeLabel(suffix);
     } catch {
       // Ignore invalid pins on migration; they must be re-pinned explicitly.
     }
@@ -737,18 +789,18 @@ function loadAimgrState(statePath) {
   if (!raw) {
     return createEmptyState();
   }
+  return loadAimgrStateFromJsonValue(raw, statePath);
+}
+
+function loadAimgrStateFromJsonValue(raw, sourceDescription = "<memory>") {
   if (!isObject(raw)) {
-    throw new Error(`aimgr state must be a JSON object: ${statePath}`);
+    throw new Error(`aimgr state must be a JSON object: ${sourceDescription}`);
   }
 
   // Current SSOT shape (schemaVersion present) — keep unknown keys, but ensure we have the basics.
   if (typeof raw.schemaVersion === "string") {
     const state = structuredClone(raw);
-    state.schemaVersion = String(state.schemaVersion || SCHEMA_VERSION);
-    state.accounts = isObject(state.accounts) ? state.accounts : {};
-    state.pins = isObject(state.pins) ? state.pins : { openclaw: {} };
-    state.pins.openclaw = isObject(state.pins.openclaw) ? state.pins.openclaw : {};
-    state.credentials = isObject(state.credentials) ? state.credentials : {};
+    ensureStateShape(state);
     return state;
   }
 
@@ -1086,9 +1138,8 @@ export function parseAnthropicAuthorizationPaste(input) {
 }
 
 function ensureStateShape(state) {
+  state.schemaVersion = SCHEMA_VERSION;
   state.accounts = isObject(state.accounts) ? state.accounts : {};
-  state.pins = isObject(state.pins) ? state.pins : { openclaw: {} };
-  state.pins.openclaw = isObject(state.pins.openclaw) ? state.pins.openclaw : {};
   state.credentials = isObject(state.credentials) ? state.credentials : {};
   state.credentials[OPENAI_CODEX_PROVIDER] = isObject(state.credentials[OPENAI_CODEX_PROVIDER])
     ? state.credentials[OPENAI_CODEX_PROVIDER]
@@ -1096,6 +1147,474 @@ function ensureStateShape(state) {
   state.credentials[ANTHROPIC_PROVIDER] = isObject(state.credentials[ANTHROPIC_PROVIDER])
     ? state.credentials[ANTHROPIC_PROVIDER]
     : {};
+  state.imports = isObject(state.imports) ? state.imports : {};
+  state.imports.authority = isObject(state.imports.authority) ? state.imports.authority : {};
+  state.imports.authority.codex = isObject(state.imports.authority.codex) ? state.imports.authority.codex : {};
+  state.targets = isObject(state.targets) ? state.targets : {};
+  state.targets.openclaw = isObject(state.targets.openclaw) ? state.targets.openclaw : {};
+  state.targets.openclaw.pins = isObject(state.targets.openclaw.pins) ? state.targets.openclaw.pins : {};
+  state.targets.openclaw.browserProfiles = isObject(state.targets.openclaw.browserProfiles)
+    ? state.targets.openclaw.browserProfiles
+    : {};
+  state.targets.codexCli = isObject(state.targets.codexCli) ? state.targets.codexCli : {};
+
+  const legacyPins = isObject(state.pins?.openclaw) ? state.pins.openclaw : null;
+  if (legacyPins) {
+    for (const [agentId, label] of Object.entries(legacyPins)) {
+      if (typeof label !== "string") continue;
+      if (!Object.hasOwn(state.targets.openclaw.pins, agentId)) {
+        state.targets.openclaw.pins[agentId] = label;
+      }
+    }
+  }
+  if (Object.hasOwn(state, "pins")) {
+    delete state.pins;
+  }
+
+  for (const [label, account] of Object.entries(state.accounts)) {
+    if (!isObject(account)) continue;
+    const browserProfile =
+      typeof account.openclawBrowserProfile === "string" ? account.openclawBrowserProfile.trim() : "";
+    if (browserProfile && !Object.hasOwn(state.targets.openclaw.browserProfiles, label)) {
+      state.targets.openclaw.browserProfiles[label] = browserProfile;
+    }
+    if (Object.hasOwn(account, "openclawBrowserProfile")) {
+      delete account.openclawBrowserProfile;
+    }
+    if (Object.hasOwn(account, "chromeProfileDirectory")) {
+      delete account.chromeProfileDirectory;
+    }
+  }
+}
+
+function getAuthorityCodexImport(state) {
+  ensureStateShape(state);
+  return state.imports.authority.codex;
+}
+
+function getOpenclawTargetState(state) {
+  ensureStateShape(state);
+  return state.targets.openclaw;
+}
+
+function getOpenclawPins(state) {
+  return getOpenclawTargetState(state).pins;
+}
+
+function getOpenclawBrowserProfiles(state) {
+  return getOpenclawTargetState(state).browserProfiles;
+}
+
+function getOpenclawBrowserProfileForLabel(state, label) {
+  const profiles = getOpenclawBrowserProfiles(state);
+  const value = profiles[normalizeLabel(label)];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function setOpenclawBrowserProfileForLabel(state, label, profileId) {
+  const profiles = getOpenclawBrowserProfiles(state);
+  profiles[normalizeLabel(label)] = String(profileId ?? "").trim();
+}
+
+function getCodexTargetState(state) {
+  ensureStateShape(state);
+  return state.targets.codexCli;
+}
+
+function isLikelyJwt(value) {
+  const raw = String(value ?? "").trim();
+  const parts = raw.split(".");
+  return parts.length === 3 && parts.every((part) => part.length > 0);
+}
+
+function getImportedCodexLabels(state) {
+  const imported = getAuthorityCodexImport(state);
+  const labels = Array.isArray(imported.labels) ? imported.labels : [];
+  const normalized = [];
+  for (const label of labels) {
+    try {
+      normalized.push(normalizeLabel(label));
+    } catch {
+      // Ignore malformed imported labels in status surfaces; import paths validate strictly.
+    }
+  }
+  return [...new Set(normalized)].toSorted((a, b) => a.localeCompare(b));
+}
+
+function hasImportedCodexReplica(state) {
+  return getImportedCodexLabels(state).length > 0;
+}
+
+function resolveManagedCodexHomeDir({ homeDir }) {
+  const override = String(process.env.CODEX_HOME ?? "").trim();
+  if (override) {
+    return path.resolve(override);
+  }
+  return path.join(homeDir, ".codex");
+}
+
+function resolveCodexAuthFilePath(codexHome) {
+  return path.join(codexHome, "auth.json");
+}
+
+function resolveCodexConfigPath(codexHome) {
+  return path.join(codexHome, "config.toml");
+}
+
+function normalizeCodexStoreMode(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (raw === CODEX_AUTH_STORE_MODE_FILE) return CODEX_AUTH_STORE_MODE_FILE;
+  if (raw === CODEX_AUTH_STORE_MODE_KEYRING) return CODEX_AUTH_STORE_MODE_KEYRING;
+  if (raw === CODEX_AUTH_STORE_MODE_AUTO) return CODEX_AUTH_STORE_MODE_AUTO;
+  return null;
+}
+
+function readCodexCliStoreMode({ codexHome }) {
+  const configPath = resolveCodexConfigPath(codexHome);
+  if (!fs.existsSync(configPath)) {
+    return { storeMode: CODEX_AUTH_STORE_MODE_FILE, source: "default", configPath };
+  }
+
+  const raw = fs.readFileSync(configPath, "utf8");
+  const lines = raw.split(/\r?\n/);
+  for (const lineRaw of lines) {
+    const line = lineRaw.replace(/#.*/, "").trim();
+    if (!line) continue;
+    const match = line.match(/^cli_auth_credentials_store\s*=\s*"([^"]+)"\s*$/);
+    if (!match) continue;
+    const storeMode = normalizeCodexStoreMode(match[1]);
+    if (!storeMode) {
+      throw new Error(`Unsupported cli_auth_credentials_store value in ${configPath}: ${match[1]}`);
+    }
+    return { storeMode, source: "config", configPath };
+  }
+
+  return { storeMode: CODEX_AUTH_STORE_MODE_FILE, source: "default", configPath };
+}
+
+function ensureFileBackedCodexHome({ codexHome }) {
+  const { storeMode, source, configPath } = readCodexCliStoreMode({ codexHome });
+  if (storeMode !== CODEX_AUTH_STORE_MODE_FILE) {
+    throw new Error(
+      `Refusing to manage Codex home ${codexHome}: cli_auth_credentials_store=${storeMode} ` +
+        `(${source === "config" ? configPath : "default"}). ` +
+        "Managed Codex activation requires file-backed auth storage.",
+    );
+  }
+  return { storeMode, source, configPath };
+}
+
+function readCodexAuthFile({ codexHome }) {
+  const authPath = resolveCodexAuthFilePath(codexHome);
+  if (!fs.existsSync(authPath)) {
+    return { exists: false, authPath };
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    const tokens = isObject(parsed?.tokens) ? parsed.tokens : null;
+    const accountId = typeof tokens?.account_id === "string" ? tokens.account_id.trim() : null;
+    return {
+      exists: true,
+      ok: true,
+      authPath,
+      accountId: accountId || null,
+      json: parsed,
+    };
+  } catch (err) {
+    return {
+      exists: true,
+      ok: false,
+      authPath,
+      error: String(err?.message ?? err),
+    };
+  }
+}
+
+function assertCodexCredentialShape({ label, credential, requireFresh }) {
+  const cred = isObject(credential) ? credential : null;
+  if (!cred) {
+    throw new Error(`Missing openai-codex credentials for label=${label}.`);
+  }
+  if (typeof cred.access !== "string" || !cred.access.trim()) {
+    throw new Error(`credentials.${OPENAI_CODEX_PROVIDER}.${label}.access is missing.`);
+  }
+  if (typeof cred.refresh !== "string" || !cred.refresh.trim()) {
+    throw new Error(`credentials.${OPENAI_CODEX_PROVIDER}.${label}.refresh is missing.`);
+  }
+  if (typeof cred.accountId !== "string" || !cred.accountId.trim()) {
+    throw new Error(`credentials.${OPENAI_CODEX_PROVIDER}.${label}.accountId is missing.`);
+  }
+  const expiresMs = parseExpiresAtToMs(cred.expiresAt);
+  if (!expiresMs) {
+    throw new Error(`credentials.${OPENAI_CODEX_PROVIDER}.${label}.expiresAt is missing/invalid.`);
+  }
+  if (requireFresh && expiresMs <= Date.now()) {
+    throw new Error(`Refusing expired openai-codex credentials for label=${label}. Sync or refresh the authority first.`);
+  }
+  return cred;
+}
+
+function resolveCodexIdTokenForCredential(credential) {
+  const explicit = typeof credential?.idToken === "string" ? credential.idToken.trim() : "";
+  if (explicit) {
+    if (!isLikelyJwt(explicit)) {
+      throw new Error("Stored idToken is not a JWT.");
+    }
+    return explicit;
+  }
+
+  const access = typeof credential?.access === "string" ? credential.access.trim() : "";
+  if (isLikelyJwt(access)) {
+    // `@mariozechner/pi-ai` currently gives AIM only access/refresh/accountId for OpenAI Codex.
+    // Codex auth.json still requires a JWT-shaped `id_token`, and Codex preserves the existing
+    // id_token on refreshes that do not return a new one, so v1 seeds that field from the same
+    // access JWT claims carrier instead of inventing a second credential source.
+    return access;
+  }
+
+  throw new Error(
+    "Refusing to build Codex auth.json without a JWT-capable id token source. " +
+      "Current AIM credentials only include access/refresh data for this label.",
+  );
+}
+
+function buildCodexAuthDotJson({ credential, lastRefreshAt }) {
+  return {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: resolveCodexIdTokenForCredential(credential),
+      access_token: credential.access,
+      refresh_token: credential.refresh,
+      account_id: credential.accountId,
+    },
+    last_refresh: String(lastRefreshAt ?? new Date().toISOString()),
+  };
+}
+
+function findCodexLabelByAccountId(state, accountId) {
+  ensureStateShape(state);
+  const targetAccountId = String(accountId ?? "").trim();
+  if (!targetAccountId) return null;
+  for (const [label, cred] of Object.entries(state.credentials[OPENAI_CODEX_PROVIDER])) {
+    if (!isObject(cred)) continue;
+    if (String(cred.accountId ?? "").trim() === targetAccountId) {
+      return label;
+    }
+  }
+  return null;
+}
+
+function shellQuoteSingle(value) {
+  return `'${String(value ?? "").replace(/'/g, `'\\''`)}'`;
+}
+
+function escapeDoubleQuotedShellFragment(value) {
+  return String(value ?? "").replace(/(["\\`$])/g, "\\$1");
+}
+
+function normalizeRemoteAuthorityPath(rawPath) {
+  const input = String(rawPath ?? "").trim();
+  if (!input) {
+    throw new Error("Authority ssh locator is missing a remote state path.");
+  }
+  if (input === "~") return "$HOME";
+  if (input.startsWith("/~/")) return `$HOME/${input.slice(3)}`;
+  if (input.startsWith("~/")) return `$HOME/${input.slice(2)}`;
+  return input;
+}
+
+function buildRemoteCatCommand(remotePath) {
+  if (remotePath === "$HOME") {
+    return 'cat -- "$HOME"';
+  }
+  if (remotePath.startsWith("$HOME/")) {
+    return `cat -- "$HOME/${escapeDoubleQuotedShellFragment(remotePath.slice("$HOME/".length))}"`;
+  }
+  return `cat -- ${shellQuoteSingle(remotePath)}`;
+}
+
+export function resolveAuthorityLocator(locator) {
+  const raw = String(locator ?? "").trim();
+  if (!raw) {
+    throw new Error("Missing authority locator. Use: aim sync codex --from agents@amirs-mac-studio");
+  }
+
+  if (raw.startsWith("ssh://")) {
+    const parsed = new URL(raw);
+    if (!parsed.hostname) {
+      throw new Error(`Invalid ssh authority locator: ${raw}`);
+    }
+    const remotePath =
+      parsed.pathname && parsed.pathname !== "/"
+        ? normalizeRemoteAuthorityPath(decodeURIComponent(parsed.pathname))
+        : DEFAULT_AUTHORITY_STATE_REMOTE_PATH;
+    return {
+      kind: "ssh",
+      target: parsed.username ? `${parsed.username}@${parsed.hostname}` : parsed.hostname,
+      port: parsed.port ? String(parsed.port) : null,
+      remotePath,
+      display: raw,
+    };
+  }
+
+  const bareSshTarget = raw.match(/^[^/:\s]+@[^/:\s]+$/);
+  if (bareSshTarget) {
+    return {
+      kind: "ssh",
+      target: raw,
+      port: null,
+      remotePath: DEFAULT_AUTHORITY_STATE_REMOTE_PATH,
+      display: raw,
+    };
+  }
+
+  const scpLike = raw.match(/^([^/:\s]+(?:@[^/:\s]+)?):(.+)$/);
+  if (scpLike) {
+    return {
+      kind: "ssh",
+      target: scpLike[1],
+      port: null,
+      remotePath: normalizeRemoteAuthorityPath(scpLike[2]),
+      display: raw,
+    };
+  }
+
+  return {
+    kind: "file",
+    path: path.resolve(raw),
+    display: path.resolve(raw),
+  };
+}
+
+function loadAuthorityState(locator) {
+  const source = resolveAuthorityLocator(locator);
+  if (source.kind === "file") {
+    if (!fs.existsSync(source.path)) {
+      throw new Error(`Authority AIM state file not found: ${source.path}`);
+    }
+    return { source, state: loadAimgrState(source.path) };
+  }
+
+  const args = [];
+  if (source.port) {
+    args.push("-p", source.port);
+  }
+  args.push(source.target, buildRemoteCatCommand(source.remotePath));
+  const result = spawnSync("ssh", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) {
+    throw new Error(`Failed to read authority AIM state via ssh (${source.display}): ${String(result.error?.message ?? result.error)}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `ssh authority read failed for ${source.display} (exit ${result.status}). ` +
+        `${String(result.stderr ?? "").trim() || String(result.stdout ?? "").trim()}`,
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(String(result.stdout ?? ""));
+  } catch (err) {
+    throw new Error(`Authority AIM state is not valid JSON (${source.display}): ${String(err?.message ?? err)}`);
+  }
+  return { source, state: loadAimgrStateFromJsonValue(parsed, source.display) };
+}
+
+function buildPortableCodexCredential({ label, credential }) {
+  const cred = assertCodexCredentialShape({ label, credential, requireFresh: false });
+  const next = {
+    access: cred.access,
+    refresh: cred.refresh,
+    expiresAt: cred.expiresAt,
+    accountId: cred.accountId,
+  };
+  if (typeof cred.idToken === "string" && cred.idToken.trim()) {
+    next.idToken = cred.idToken.trim();
+  }
+  return next;
+}
+
+function importCodexFromAuthority({ from, state }) {
+  ensureStateShape(state);
+  const { source, state: authorityState } = loadAuthorityState(from);
+  ensureStateShape(authorityState);
+
+  const incomingLabels = [];
+  const incomingByLabel = new Map();
+  for (const [label, account] of Object.entries(authorityState.accounts)) {
+    if (!isObject(account)) continue;
+    if (normalizeProviderId(account.provider) !== OPENAI_CODEX_PROVIDER) continue;
+    const credential = getCodexCredential(authorityState, label);
+    if (!credential) {
+      throw new Error(`Authority state has openai-codex label=${label} without credentials.`);
+    }
+    incomingLabels.push(label);
+    incomingByLabel.set(label, {
+      account: structuredClone(account),
+      credential: buildPortableCodexCredential({ label, credential }),
+    });
+  }
+
+  if (incomingLabels.length === 0) {
+    throw new Error(`Authority ${source.display} has no importable ${OPENAI_CODEX_PROVIDER} labels.`);
+  }
+
+  const previousImported = new Set(getImportedCodexLabels(state));
+  for (const [label, incoming] of incomingByLabel.entries()) {
+    const existingAccount = state.accounts[label];
+    const existingCred = getCodexCredential(state, label);
+    if (!previousImported.has(label)) {
+      if (isObject(existingAccount) && normalizeProviderId(existingAccount.provider) !== OPENAI_CODEX_PROVIDER) {
+        throw new Error(`Refusing to overwrite non-codex label=${label} during authority import.`);
+      }
+      if (
+        isObject(existingCred) &&
+        typeof existingCred.accountId === "string" &&
+        existingCred.accountId.trim() &&
+        existingCred.accountId !== incoming.credential.accountId
+      ) {
+        throw new Error(
+          `Refusing to overwrite local openai-codex label=${label} with authority accountId=${incoming.credential.accountId}.`,
+        );
+      }
+    }
+  }
+
+  const removedLabels = [];
+  for (const label of previousImported) {
+    if (incomingByLabel.has(label)) continue;
+    delete state.accounts[label];
+    delete state.credentials[OPENAI_CODEX_PROVIDER][label];
+    removedLabels.push(label);
+  }
+
+  for (const [label, incoming] of incomingByLabel.entries()) {
+    state.accounts[label] = {
+      ...(isObject(state.accounts[label]) ? state.accounts[label] : {}),
+      ...incoming.account,
+      provider: OPENAI_CODEX_PROVIDER,
+    };
+    state.credentials[OPENAI_CODEX_PROVIDER][label] = incoming.credential;
+    assertNoCodexAccountIdCollisions(state, label, incoming.credential.accountId);
+  }
+
+  const importedAt = new Date().toISOString();
+  state.imports.authority.codex = {
+    source: source.display,
+    importedAt,
+    labels: incomingLabels.toSorted((a, b) => a.localeCompare(b)),
+  };
+
+  return {
+    source: source.display,
+    importedAt,
+    importedLabels: incomingLabels.toSorted((a, b) => a.localeCompare(b)),
+    removedLabels: removedLabels.toSorted((a, b) => a.localeCompare(b)),
+  };
 }
 
 function getCodexCredential(state, label) {
@@ -1165,8 +1684,7 @@ async function ensureCodexAccountConfig({ state, label, homeDir }) {
     );
   }
 
-  const openclawBrowserProfile =
-    typeof existing?.openclawBrowserProfile === "string" ? existing.openclawBrowserProfile.trim() : "";
+  const openclawBrowserProfile = getOpenclawBrowserProfileForLabel(state, label);
 
   const openclawStateDir = resolveOpenclawStateDir({ homeDir });
   if (
@@ -1176,9 +1694,7 @@ async function ensureCodexAccountConfig({ state, label, homeDir }) {
     state.accounts[label] = {
       ...(existing ? existing : {}),
       provider,
-      openclawBrowserProfile,
     };
-    delete state.accounts[label].chromeProfileDirectory;
     return openclawBrowserProfile;
   }
 
@@ -1227,9 +1743,8 @@ async function ensureCodexAccountConfig({ state, label, homeDir }) {
       state.accounts[label] = {
         ...(existing ? existing : {}),
         provider,
-        openclawBrowserProfile: profileId,
       };
-      delete state.accounts[label].chromeProfileDirectory;
+      setOpenclawBrowserProfileForLabel(state, label, profileId);
       return profileId;
     }
   }
@@ -1279,6 +1794,7 @@ async function refreshOrLoginCodex({ state, label, homeDir, openclawBrowserProfi
         refresh: updated.refresh,
         expiresAt,
         accountId,
+        idToken: updated.access,
       };
     } catch (err) {
       process.stdout.write(`Refresh failed for ${label}; falling back to OAuth login (${String(err?.message ?? err)}).\n`);
@@ -1326,6 +1842,7 @@ async function refreshOrLoginCodex({ state, label, homeDir, openclawBrowserProfi
     refresh: creds.refresh,
     expiresAt,
     accountId,
+    idToken: creds.access,
   };
 }
 
@@ -1651,6 +2168,12 @@ function formatExpiresIn(expiresAt) {
   return formatDurationRough(delta);
 }
 
+function formatAgeSince(isoTimestamp) {
+  const ms = parseExpiresAtToMs(isoTimestamp);
+  if (!ms) return "unknown";
+  return formatDurationRough(Date.now() - ms);
+}
+
 function formatCodexUsageSummary(snapshot) {
   if (!snapshot) return "unknown";
   if (snapshot.ok !== true) {
@@ -1676,6 +2199,189 @@ function formatClaudeUsageSummary(snapshot) {
   return windows.map((w) => `${w.label} ${Math.round(w.usedPercent)}%`).join(" · ");
 }
 
+function readCodexCliTargetStatus({ state, homeDir }) {
+  ensureStateShape(state);
+  const importMeta = getAuthorityCodexImport(state);
+  const target = getCodexTargetState(state);
+  const codexHome = resolveManagedCodexHomeDir({ homeDir });
+  let store = null;
+  let storeError = null;
+
+  try {
+    store = readCodexCliStoreMode({ codexHome });
+  } catch (err) {
+    storeError = String(err?.message ?? err);
+  }
+
+  const readback = readCodexAuthFile({ codexHome });
+  const activeLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
+  const expectedAccountId = typeof target.expectedAccountId === "string" ? target.expectedAccountId.trim() : "";
+  const actualAccountId = readback.ok ? readback.accountId : null;
+  const inferredLabel = actualAccountId ? findCodexLabelByAccountId(state, actualAccountId) : null;
+
+  return {
+    source: typeof importMeta.source === "string" ? importMeta.source.trim() || null : null,
+    importedAt: typeof importMeta.importedAt === "string" ? importMeta.importedAt.trim() || null : null,
+    importedLabels: getImportedCodexLabels(state),
+    homeDir: codexHome,
+    authPath: resolveCodexAuthFilePath(codexHome),
+    storeMode: store?.storeMode ?? null,
+    storeSource: store?.source ?? null,
+    storeConfigPath: store?.configPath ?? resolveCodexConfigPath(codexHome),
+    storeError,
+    activeLabel: activeLabel || null,
+    activeAccountPresent: activeLabel ? isObject(state.accounts[activeLabel]) : false,
+    activeCredentialPresent: activeLabel ? isObject(getCodexCredential(state, activeLabel)) : false,
+    expectedAccountId: expectedAccountId || null,
+    actualAccountId: actualAccountId || null,
+    inferredLabel: inferredLabel || null,
+    readback,
+    lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
+  };
+}
+
+function buildWarningsFromCodexTargetStatus(status) {
+  const warnings = [];
+  if (!status) return warnings;
+
+  if (status.storeError) {
+    warnings.push({
+      kind: "codex_target_config_invalid",
+      system: "codex-cli",
+      status: status.storeError,
+    });
+  } else if (status.storeMode && status.storeMode !== CODEX_AUTH_STORE_MODE_FILE) {
+    warnings.push({
+      kind: "codex_target_store_mode_unsupported",
+      system: "codex-cli",
+      status: status.storeMode,
+    });
+  }
+
+  if (!status.importedLabels?.length && status.activeLabel) {
+    warnings.push({
+      kind: "codex_import_missing",
+      system: "codex-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.activeLabel && !status.activeAccountPresent) {
+    warnings.push({
+      kind: "codex_target_label_missing",
+      system: "codex-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.activeLabel && !status.activeCredentialPresent) {
+    warnings.push({
+      kind: "codex_target_credentials_missing",
+      system: "codex-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.activeLabel && !status.readback.exists) {
+    warnings.push({
+      kind: "codex_target_missing_auth_file",
+      system: "codex-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.readback.exists && status.readback.ok !== true) {
+    warnings.push({
+      kind: "codex_target_auth_unreadable",
+      system: "codex-cli",
+      status: status.readback.error,
+    });
+  }
+
+  if (status.activeLabel && status.expectedAccountId && status.actualAccountId && status.expectedAccountId !== status.actualAccountId) {
+    warnings.push({
+      kind: "codex_target_account_mismatch",
+      system: "codex-cli",
+      label: status.activeLabel,
+      accountId: status.actualAccountId,
+      expectedAccountId: status.expectedAccountId,
+    });
+  }
+
+  if (status.activeLabel && status.inferredLabel && status.inferredLabel !== status.activeLabel) {
+    warnings.push({
+      kind: "codex_target_label_mismatch",
+      system: "codex-cli",
+      label: status.activeLabel,
+      actualLabel: status.inferredLabel,
+    });
+  }
+
+  return warnings;
+}
+
+function applyCodexCliFromState({ label, homeDir }, state) {
+  ensureStateShape(state);
+  if (!hasImportedCodexReplica(state)) {
+    throw new Error(
+      "No imported Codex replica is available on this machine yet. " +
+        "Run `aim sync codex --from agents@amirs-mac-studio` first.",
+    );
+  }
+
+  const normalizedLabel = normalizeLabel(label);
+  const account = state.accounts[normalizedLabel];
+  if (!isObject(account)) {
+    throw new Error(`Unknown imported label: ${normalizedLabel}. Run \`aim status\` to inspect the imported pool.`);
+  }
+  const provider = normalizeProviderId(account.provider);
+  if (provider !== OPENAI_CODEX_PROVIDER) {
+    throw new Error(`Refusing to activate non-Codex label=${normalizedLabel} provider=${provider || "unknown"}.`);
+  }
+
+  const credential = assertCodexCredentialShape({
+    label: normalizedLabel,
+    credential: getCodexCredential(state, normalizedLabel),
+    requireFresh: true,
+  });
+
+  const codexHome = resolveManagedCodexHomeDir({ homeDir });
+  const store = ensureFileBackedCodexHome({ codexHome });
+  const appliedAt = new Date().toISOString();
+  const authPayload = buildCodexAuthDotJson({ credential, lastRefreshAt: appliedAt });
+  const writeResult = writeJsonFileIfChanged(resolveCodexAuthFilePath(codexHome), authPayload, { mode: 0o600 });
+  const readback = readCodexAuthFile({ codexHome });
+  if (readback.ok !== true) {
+    throw new Error(`Failed to read back managed Codex auth file: ${readback.error || "unknown error"}`);
+  }
+  if (readback.accountId !== credential.accountId) {
+    throw new Error(
+      `Codex readback mismatch after apply: expected accountId=${credential.accountId}, got ${readback.accountId || "none"}.`,
+    );
+  }
+
+  const target = getCodexTargetState(state);
+  target.homeDir = codexHome;
+  target.storeMode = store.storeMode;
+  target.activeLabel = normalizedLabel;
+  target.expectedAccountId = credential.accountId;
+  target.lastAppliedAt = appliedAt;
+  target.lastReadback = {
+    authPath: readback.authPath,
+    accountId: readback.accountId,
+    checkedAt: appliedAt,
+  };
+
+  return {
+    label: normalizedLabel,
+    accountId: credential.accountId,
+    codexHome,
+    authPath: readback.authPath,
+    storeMode: store.storeMode,
+    wrote: writeResult.wrote,
+  };
+}
+
 function buildWarningsFromState(state) {
   const warnings = [];
 
@@ -1688,11 +2394,6 @@ function buildWarningsFromState(state) {
   for (const [label, account] of Object.entries(accounts)) {
     if (!isObject(account)) continue;
     const provider = normalizeProviderId(account.provider);
-    const openclawBrowserProfile =
-      typeof account.openclawBrowserProfile === "string" ? account.openclawBrowserProfile.trim() : "";
-    if (!openclawBrowserProfile) {
-      warnings.push({ kind: "missing_openclaw_browser_profile", provider: provider || "unknown", label });
-    }
     if (provider === OPENAI_CODEX_PROVIDER && !isObject(codexCredsByLabel[label])) {
       warnings.push({ kind: "missing_credentials", provider: OPENAI_CODEX_PROVIDER, label });
     }
@@ -1718,7 +2419,7 @@ function buildWarningsFromState(state) {
   }
 
   // Pins pointing to missing labels/creds
-  const pins = isObject(state.pins?.openclaw) ? state.pins.openclaw : {};
+  const pins = getOpenclawPins(state);
   for (const [agentId, label] of Object.entries(pins)) {
     if (typeof label !== "string") continue;
     if (!isObject(accounts[label])) {
@@ -1868,8 +2569,7 @@ async function buildStatusView({ statePath, state, homeDir }) {
     if (!isObject(account)) continue;
     const provider = normalizeProviderId(account.provider);
     const expectEmail = typeof account.expect?.email === "string" ? account.expect.email : null;
-    const openclawBrowserProfile =
-      typeof account.openclawBrowserProfile === "string" ? account.openclawBrowserProfile.trim() : "";
+    const openclawBrowserProfile = getOpenclawBrowserProfileForLabel(state, label);
     const browser = openclawBrowserProfile ? { openclawBrowserProfile } : undefined;
     const browserIdentity = openclawBrowserProfile ? browserProfileById.get(openclawBrowserProfile) : null;
     const browserUserName = typeof browserIdentity?.userName === "string" ? browserIdentity.userName : null;
@@ -1931,20 +2631,39 @@ async function buildStatusView({ statePath, state, homeDir }) {
     });
   }
 
-  const pins = isObject(state.pins?.openclaw) ? state.pins.openclaw : {};
+  const pins = getOpenclawPins(state);
+  const codexCli = readCodexCliTargetStatus({ state, homeDir });
 
   return {
     generatedAt: new Date().toISOString(),
     statePath,
     accounts: accounts.toSorted((a, b) => a.label.localeCompare(b.label)),
     pins: { openclaw: sanitizeForStatus(pins) },
-    warnings: [...buildWarningsFromState(state), ...buildWarningsFromStatusAccounts(accounts)],
+    imports: { authority: { codex: sanitizeForStatus(getAuthorityCodexImport(state)) } },
+    codexCli: sanitizeForStatus(codexCli),
+    warnings: [
+      ...buildWarningsFromState(state),
+      ...buildWarningsFromStatusAccounts(accounts),
+      ...buildWarningsFromCodexTargetStatus(codexCli),
+    ],
   };
 }
 
 function renderStatusText(view) {
   const lines = [];
   lines.push(`aim SSOT: ${view.statePath}`);
+
+  const authoritySource =
+    typeof view.imports?.authority?.codex?.source === "string" ? view.imports.authority.codex.source.trim() : "";
+  const authorityImportedAt =
+    typeof view.imports?.authority?.codex?.importedAt === "string" ? view.imports.authority.codex.importedAt.trim() : "";
+  const importedLabels = Array.isArray(view.codexCli?.importedLabels) ? view.codexCli.importedLabels : [];
+  if (authoritySource || importedLabels.length > 0) {
+    lines.push(`Authority import: source=${authoritySource || "none"} labels=${importedLabels.length}`);
+    if (authorityImportedAt) {
+      lines.push(`Authority import age: ${formatAgeSince(authorityImportedAt)}`);
+    }
+  }
   lines.push("");
 
   lines.push(`Accounts (${view.accounts.length})`);
@@ -1983,6 +2702,23 @@ function renderStatusText(view) {
     }
   }
 
+  if (view.codexCli) {
+    lines.push("");
+    lines.push("Codex target");
+    const targetBits = [
+      `home=${view.codexCli.homeDir}`,
+      `store=${view.codexCli.storeMode || "unknown"}`,
+      `active=${view.codexCli.activeLabel || "none"}`,
+    ];
+    if (typeof view.codexCli.actualAccountId === "string" && view.codexCli.actualAccountId.trim()) {
+      targetBits.push(`accountId=${view.codexCli.actualAccountId.trim()}`);
+    }
+    if (typeof view.codexCli.importedAt === "string" && view.codexCli.importedAt.trim()) {
+      targetBits.push(`synced=${formatAgeSince(view.codexCli.importedAt.trim())}`);
+    }
+    lines.push(`- ${targetBits.join(" ")}`);
+  }
+
   lines.push("");
   const warnings = Array.isArray(view.warnings) ? view.warnings : [];
   lines.push(`Warnings (${warnings.length})`);
@@ -1992,6 +2728,8 @@ function renderStatusText(view) {
     if (w.provider) parts.push(`provider=${w.provider}`);
     if (w.agentId) parts.push(`agent=${w.agentId}`);
     if (w.accountId) parts.push(`accountId=${w.accountId}`);
+    if (w.expectedAccountId) parts.push(`expectedAccountId=${w.expectedAccountId}`);
+    if (w.actualLabel) parts.push(`actualLabel=${w.actualLabel}`);
     if (w.status) parts.push(`status=${w.status}`);
     lines.push(parts.join(" "));
   }
@@ -2087,7 +2825,7 @@ function applyOpenclawFromState(params, state) {
   writeJsonFileWithBackup(mainStorePath, nextMain);
 
   // Per-agent pins: order override only (profiles inherited from main).
-  const pins = isObject(state.pins?.openclaw) ? state.pins.openclaw : {};
+  const pins = getOpenclawPins(state);
   const wrote = [mainStorePath];
   for (const [agentIdRaw, labelRaw] of Object.entries(pins)) {
     const agentId = normalizeAgentId(agentIdRaw);
@@ -2143,7 +2881,7 @@ async function syncOpenclawFromState(params, state) {
     return { auth, models: { skipped: true, reason: "home_override" }, sessions: { skipped: true, reason: "home_override" } };
   }
 
-  const pins = isObject(state.pins?.openclaw) ? state.pins.openclaw : {};
+  const pins = getOpenclawPins(state);
   const pinnedAgentIds = Object.keys(pins);
   if (pinnedAgentIds.length === 0) {
     return { auth, models: { skipped: true, reason: "no_pins" }, sessions: { skipped: true, reason: "no_pins" } };
@@ -2288,7 +3026,7 @@ async function syncOpenclawFromState(params, state) {
 
 export async function main(argv) {
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "autopin", "apply", "sync"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "apply", "sync", "codex"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -2338,7 +3076,7 @@ export async function main(argv) {
     const openclawStateDir = resolveOpenclawStateDir({ homeDir });
     const inferredAgentId = inferOpenclawAgentIdForLabel({ openclawStateDir, label });
     if (inferredAgentId) {
-      state.pins.openclaw[inferredAgentId] = label;
+      getOpenclawPins(state)[inferredAgentId] = label;
     }
 
     state.schemaVersion = SCHEMA_VERSION;
@@ -2362,7 +3100,7 @@ export async function main(argv) {
     if (provider !== OPENAI_CODEX_PROVIDER && provider !== ANTHROPIC_PROVIDER) {
       throw new Error(`Refusing to pin OpenClaw agent to unsupported provider=${provider || "unknown"} label=${label}.`);
     }
-    state.pins.openclaw[agentId] = label;
+    getOpenclawPins(state)[agentId] = label;
     state.schemaVersion = SCHEMA_VERSION;
     writeJsonFileWithBackup(statePath, state);
 
@@ -2411,18 +3149,18 @@ export async function main(argv) {
       })
       .filter(Boolean);
 
-    const pinnedAgentIds = Object.keys(state.pins.openclaw);
+    const pinnedAgentIds = Object.keys(getOpenclawPins(state));
     const pinnedSet = new Set(pinnedAgentIds);
     const candidateAgentIds = allAgentIds.filter((agentId) => !pinnedSet.has(agentId));
 
     const { assignments } = planEvenLabelAssignments({
       candidateAgentIds,
-      existingPinsByAgentId: state.pins.openclaw,
+      existingPinsByAgentId: getOpenclawPins(state),
       poolLabels,
     });
 
     for (const [agentId, label] of Object.entries(assignments)) {
-      state.pins.openclaw[agentId] = label;
+      getOpenclawPins(state)[agentId] = label;
     }
 
     state.schemaVersion = SCHEMA_VERSION;
@@ -2458,14 +3196,36 @@ export async function main(argv) {
   if (cmd === "sync") {
     const system = String(positional[1] ?? "").trim().toLowerCase();
     if (!system) {
-      throw new Error('Missing sync target. Usage: aim sync openclaw');
-    }
-    if (system !== "openclaw") {
-      throw new Error(`Unsupported sync target: ${system} (only "openclaw" is supported in v0).`);
+      throw new Error("Missing sync target. Usage: aim sync openclaw | aim sync codex --from agents@amirs-mac-studio");
     }
     const state = loadAimgrState(statePath);
-    const synced = await syncOpenclawFromState(opts, state);
-    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, synced }), null, 2)}\n`);
+    if (system === "openclaw") {
+      const synced = await syncOpenclawFromState(opts, state);
+      process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, synced }), null, 2)}\n`);
+      return;
+    }
+    if (system === "codex") {
+      const imported = importCodexFromAuthority({ from: opts.from, state });
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, imported }), null, 2)}\n`);
+      return;
+    }
+    throw new Error(`Unsupported sync target: ${system} (supported: openclaw, codex).`);
+  }
+
+  if (cmd === "codex") {
+    const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+    if (!subcmd) {
+      throw new Error('Missing codex subcommand. Usage: aim codex use <label>');
+    }
+    if (subcmd !== "use") {
+      throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: use).`);
+    }
+    const label = normalizeLabel(positional[2]);
+    const state = loadAimgrState(statePath);
+    const activated = applyCodexCliFromState({ label, homeDir }, state);
+    writeJsonFileWithBackup(statePath, state);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, activated }), null, 2)}\n`);
     return;
   }
 

@@ -13,6 +13,7 @@ import {
   parseAnthropicAuthorizationPaste,
   planEvenLabelAssignments,
   resetSessionEntryToDefaults,
+  resolveAuthorityLocator,
   scanOpenclawSessionsStoreForKeysNeedingModelReset,
   sessionEntryNeedsModelReset,
 } from "../src/cli.js";
@@ -25,6 +26,11 @@ function mkTempHome() {
 function writeJson(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function makeFakeJwt(payload = {}) {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.sig`;
 }
 
 async function runCli(argv) {
@@ -59,6 +65,7 @@ test("status --json never leaks access/refresh tokens", async () => {
         boss: {
           access: "ACCESS_TOKEN_SHOULD_NOT_LEAK",
           refresh: "REFRESH_TOKEN_SHOULD_NOT_LEAK",
+          idToken: "ID_TOKEN_SHOULD_NOT_LEAK",
           expiresAt: new Date(Date.now() + 3600_000).toISOString(),
           accountId: "acct_123",
         },
@@ -113,6 +120,7 @@ test("status --json never leaks access/refresh tokens", async () => {
     const out = await runCli(["status", "--json", "--home", home]);
     assert.doesNotMatch(out, /ACCESS_TOKEN_SHOULD_NOT_LEAK/);
     assert.doesNotMatch(out, /REFRESH_TOKEN_SHOULD_NOT_LEAK/);
+    assert.doesNotMatch(out, /ID_TOKEN_SHOULD_NOT_LEAK/);
     assert.doesNotMatch(out, /ANTHROPIC_ACCESS_SHOULD_NOT_LEAK/);
     assert.doesNotMatch(out, /ANTHROPIC_REFRESH_SHOULD_NOT_LEAK/);
     const parsed = JSON.parse(out);
@@ -215,6 +223,31 @@ test("parseAnthropicAuthorizationPaste accepts callback URLs and code#state", ()
   assert.throws(() => parseAnthropicAuthorizationPaste("https://console.anthropic.com/oauth/code/callback?code=CODE123"));
 });
 
+test("resolveAuthorityLocator accepts bare ssh targets for the default AIM state path", () => {
+  assert.deepEqual(resolveAuthorityLocator("agents@amirs-mac-studio"), {
+    kind: "ssh",
+    target: "agents@amirs-mac-studio",
+    port: null,
+    remotePath: "$HOME/.aimgr/secrets.json",
+    display: "agents@amirs-mac-studio",
+  });
+
+  assert.deepEqual(resolveAuthorityLocator("ssh://agents@amirs-mac-studio"), {
+    kind: "ssh",
+    target: "agents@amirs-mac-studio",
+    port: null,
+    remotePath: "$HOME/.aimgr/secrets.json",
+    display: "ssh://agents@amirs-mac-studio",
+  });
+});
+
+test("help text prefers agents@amirs-mac-studio as the authority example", async () => {
+  const out = await runCli([]);
+  assert.match(out, /aim sync codex --from <authority>/);
+  assert.match(out, /Examples: agents@amirs-mac-studio/);
+  assert.match(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
+});
+
 test("apply writes OpenClaw auth-profiles.json with labeled profile ids", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -250,6 +283,204 @@ test("apply writes OpenClaw auth-profiles.json with labeled profile ids", async 
   const agentStore = JSON.parse(fs.readFileSync(agentStorePath, "utf8"));
   assert.deepEqual(agentStore.order["openai-codex"], ["openai-codex:boss"]);
   assert.equal(agentStore.lastGood["openai-codex"], "openai-codex:boss");
+});
+
+test("sync codex bootstraps consumer state and strips authority-local OpenClaw metadata", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.1",
+    accounts: {
+      boss: { provider: "openai-codex", openclawBrowserProfile: "agent-boss" },
+    },
+    pins: { openclaw: { agent_boss: "boss" } },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: makeFakeJwt({
+            email: "boss@example.com",
+            "https://api.openai.com/auth": {
+              chatgpt_account_id: "acct_123",
+              chatgpt_plan_type: "pro",
+            },
+          }),
+          refresh: "REFRESH_TOKEN",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+    },
+  });
+
+  await runCli(["sync", "codex", "--from", authorityStatePath, "--home", consumerHome]);
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.imports.authority.codex.source, path.resolve(authorityStatePath));
+  assert.deepEqual(consumerState.imports.authority.codex.labels, ["boss"]);
+  assert.equal(consumerState.accounts.boss.provider, "openai-codex");
+  assert.equal(consumerState.accounts.boss.openclawBrowserProfile, undefined);
+  assert.deepEqual(consumerState.targets.openclaw.pins, {});
+  assert.deepEqual(consumerState.targets.openclaw.browserProfiles, {});
+  assert.equal(consumerState.targets.codexCli.activeLabel, undefined);
+  assert.equal(fs.existsSync(path.join(consumerHome, ".openclaw", "agents", "main", "agent", "auth-profiles.json")), false);
+});
+
+test("codex use fails loudly before any authority import", async () => {
+  const home = mkTempHome();
+  await assert.rejects(
+    () => runCli(["codex", "use", "boss", "--home", home]),
+    /Run `aim sync codex --from agents@amirs-mac-studio` first/,
+  );
+});
+
+test("codex use writes auth.json and status reports active imported label", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_123",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex" },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: fakeJwt,
+          refresh: "REFRESH_TOKEN",
+          idToken: fakeJwt,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "ssh://studio.local/~/.aimgr/secrets.json",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { pins: {}, browserProfiles: {} },
+      codexCli: {},
+    },
+  });
+
+  await runCli(["codex", "use", "boss", "--home", home]);
+
+  const authPath = path.join(home, ".codex", "auth.json");
+  const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
+  assert.equal(auth.OPENAI_API_KEY, null);
+  assert.equal(auth.tokens.account_id, "acct_123");
+  assert.equal(auth.tokens.access_token, fakeJwt);
+  assert.equal(auth.tokens.id_token, fakeJwt);
+
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.targets.codexCli.activeLabel, "boss");
+  assert.equal(updatedState.targets.codexCli.storeMode, "file");
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const out = await runCli(["status", "--json", "--home", home]);
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.codexCli.activeLabel, "boss");
+    assert.equal(parsed.codexCli.source, "ssh://studio.local/~/.aimgr/secrets.json");
+    assert.equal(parsed.codexCli.storeMode, "file");
+    assert.equal(parsed.codexCli.actualAccountId, "acct_123");
+    assert.ok(parsed.warnings.every((warning) => !String(warning.kind).startsWith("codex_target_")));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("codex use refuses non-file-backed Codex homes", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_123",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex" },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: fakeJwt,
+          refresh: "REFRESH_TOKEN",
+          idToken: fakeJwt,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "ssh://studio.local/~/.aimgr/secrets.json",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { pins: {}, browserProfiles: {} },
+      codexCli: {},
+    },
+  });
+
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, ".codex", "config.toml"),
+    'cli_auth_credentials_store = "auto"\n',
+    "utf8",
+  );
+
+  await assert.rejects(
+    () => runCli(["codex", "use", "boss", "--home", home]),
+    /Managed Codex activation requires file-backed auth storage/,
+  );
 });
 
 test("discoverOpenclawBrowserProfiles reads user-data/Local State for friendly names", () => {
