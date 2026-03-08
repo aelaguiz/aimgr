@@ -7,7 +7,7 @@ import { loginAnthropic, loginOpenAICodex, refreshAnthropicToken, refreshOpenAIC
 const SCHEMA_VERSION = "0.1";
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const ANTHROPIC_PROVIDER = "anthropic";
-const OPENCLAW_ENFORCED_CODEX_MODEL = "openai-codex/gpt-5.2";
+const OPENCLAW_ENFORCED_CODEX_MODEL = "openai-codex/gpt-5.4";
 const OPENCLAW_ENFORCED_ANTHROPIC_MODEL = "anthropic/claude-opus-4-6";
 
 const SUPPORTED_OAUTH_PROVIDERS = new Map([

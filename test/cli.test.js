@@ -283,17 +283,17 @@ test("discoverOpenclawBrowserProfiles reads user-data/Local State for friendly n
 test("extractOpenclawConfigAgentModelPrimary handles string/object/null", () => {
   assert.equal(extractOpenclawConfigAgentModelPrimary(null), null);
   assert.equal(extractOpenclawConfigAgentModelPrimary(undefined), null);
-  assert.equal(extractOpenclawConfigAgentModelPrimary(" openai/gpt-5.2 "), "openai/gpt-5.2");
-  assert.equal(extractOpenclawConfigAgentModelPrimary({ primary: "openai-codex/gpt-5.2" }), "openai-codex/gpt-5.2");
+  assert.equal(extractOpenclawConfigAgentModelPrimary(" openai/gpt-5.4 "), "openai/gpt-5.4");
+  assert.equal(extractOpenclawConfigAgentModelPrimary({ primary: "openai-codex/gpt-5.4" }), "openai-codex/gpt-5.4");
   assert.equal(extractOpenclawConfigAgentModelPrimary({ primary: 123 }), null);
 });
 
-test("buildOpenclawModelSyncOps enforces openai-codex/gpt-5.2 for pinned agents", () => {
+test("buildOpenclawModelSyncOps enforces openai-codex/gpt-5.4 for pinned agents", () => {
   const agentsList = [
-    { id: "agent_boss", model: "openai/gpt-5.2" },
-    { id: "agent_coder", model: { primary: "openai-codex/gpt-5.2" } },
+    { id: "agent_boss", model: "openai/gpt-5.4" },
+    { id: "agent_coder", model: { primary: "openai-codex/gpt-5.4" } },
     { id: "agent_lessons", model: null },
-    { id: "agent_growth_analyst", model: { primary: "openai-codex/gpt-5.3-codex", fallbacks: ["openai/gpt-5.2"] } },
+    { id: "agent_growth_analyst", model: { primary: "openai-codex/gpt-5.3-codex", fallbacks: ["openai/gpt-5.4"] } },
   ];
 
   const ops = buildOpenclawModelSyncOps({
@@ -302,24 +302,24 @@ test("buildOpenclawModelSyncOps enforces openai-codex/gpt-5.2 for pinned agents"
   });
 
   assert.deepEqual(ops, [
-    { path: "agents.list[0].model", value: "\"openai-codex/gpt-5.2\"" },
-    { path: "agents.list[2].model", value: "\"openai-codex/gpt-5.2\"" },
-    { path: "agents.list[3].model.primary", value: "\"openai-codex/gpt-5.2\"" },
+    { path: "agents.list[0].model", value: "\"openai-codex/gpt-5.4\"" },
+    { path: "agents.list[2].model", value: "\"openai-codex/gpt-5.4\"" },
+    { path: "agents.list[3].model.primary", value: "\"openai-codex/gpt-5.4\"" },
     { path: "agents.list[3].model.fallbacks", value: "[]" },
   ]);
 });
 
 test("buildOpenclawModelSyncOps supports per-agent desired model refs", () => {
   const agentsList = [
-    { id: "agent_boss", model: "openai-codex/gpt-5.2" },
-    { id: "agent_claudalyst", model: "openai-codex/gpt-5.2" },
+    { id: "agent_boss", model: "openai-codex/gpt-5.4" },
+    { id: "agent_claudalyst", model: "openai-codex/gpt-5.4" },
   ];
 
   const ops = buildOpenclawModelSyncOps({
     agentsList,
     pinnedAgentIds: ["agent_boss", "agent_claudalyst"],
     modelRefByAgentId: {
-      agent_boss: "openai-codex/gpt-5.2",
+      agent_boss: "openai-codex/gpt-5.4",
       agent_claudalyst: "anthropic/claude-opus-4-6",
     },
   });
@@ -348,16 +348,16 @@ test("planEvenLabelAssignments spreads unpinned agents evenly across pool labels
 
 test("sessionEntryNeedsModelReset detects runtime/override/provider drift vs desired model", () => {
   const desiredProvider = "openai-codex";
-  const desiredModel = "gpt-5.2";
+  const desiredModel = "gpt-5.4";
 
   assert.equal(
-    sessionEntryNeedsModelReset({ entry: { modelProvider: "openai", model: "gpt-5.2" }, desiredProvider, desiredModel }),
+    sessionEntryNeedsModelReset({ entry: { modelProvider: "openai", model: "gpt-5.4" }, desiredProvider, desiredModel }),
     true,
   );
 
   assert.equal(
     sessionEntryNeedsModelReset({
-      entry: { modelProvider: "openai-codex", model: "gpt-5.2" },
+      entry: { modelProvider: "openai-codex", model: "gpt-5.4" },
       desiredProvider,
       desiredModel,
     }),
@@ -366,7 +366,7 @@ test("sessionEntryNeedsModelReset detects runtime/override/provider drift vs des
 
   assert.equal(
     sessionEntryNeedsModelReset({
-      entry: { providerOverride: "openai", modelOverride: "gpt-5.2" },
+      entry: { providerOverride: "openai", modelOverride: "gpt-5.4" },
       desiredProvider,
       desiredModel,
     }),
@@ -375,7 +375,7 @@ test("sessionEntryNeedsModelReset detects runtime/override/provider drift vs des
 
   assert.equal(
     sessionEntryNeedsModelReset({
-      entry: { modelOverride: "openai/gpt-5.2" },
+      entry: { modelOverride: "openai/gpt-5.4" },
       desiredProvider,
       desiredModel,
     }),
@@ -394,19 +394,19 @@ test("sessionEntryNeedsModelReset detects runtime/override/provider drift vs des
 
 test("resetSessionEntryToDefaults clears runtime/override/authProfile fields", () => {
   const desiredProvider = "openai-codex";
-  const desiredModel = "gpt-5.2";
+  const desiredModel = "gpt-5.4";
 
   const before = {
     updatedAt: 1,
     modelProvider: "openai",
-    model: "gpt-5.2",
+    model: "gpt-5.4",
     providerOverride: "openai",
-    modelOverride: "gpt-5.2",
+    modelOverride: "gpt-5.4",
     authProfileOverride: "openai:default",
     authProfileOverrideSource: "user",
     authProfileOverrideCompactionCount: 2,
-    fallbackNoticeSelectedModel: "openai/gpt-5.2",
-    fallbackNoticeActiveModel: "openai/gpt-5.2",
+    fallbackNoticeSelectedModel: "openai/gpt-5.4",
+    fallbackNoticeActiveModel: "openai/gpt-5.4",
     fallbackNoticeReason: "fallback",
   };
 
@@ -429,21 +429,21 @@ test("resetSessionEntryToDefaults clears runtime/override/authProfile fields", (
 test("extractSessionModelRefFromEntry prefers runtime over override", () => {
   const parsed = extractSessionModelRefFromEntry({
     modelProvider: "openai",
-    model: "gpt-5.2",
+    model: "gpt-5.4",
     providerOverride: "openai-codex",
-    modelOverride: "gpt-5.2",
+    modelOverride: "gpt-5.4",
   });
-  assert.deepEqual(parsed, { source: "runtime", provider: "openai", model: "gpt-5.2" });
+  assert.deepEqual(parsed, { source: "runtime", provider: "openai", model: "gpt-5.4" });
 });
 
 test("scanOpenclawSessionsStoreForKeysNeedingModelReset finds mismatched keys", () => {
   const desiredProvider = "openai-codex";
-  const desiredModel = "gpt-5.2";
+  const desiredModel = "gpt-5.4";
 
   const keys = scanOpenclawSessionsStoreForKeysNeedingModelReset({
     store: {
-      k1: { modelProvider: "openai", model: "gpt-5.2" },
-      k2: { modelProvider: "openai-codex", model: "gpt-5.2" },
+      k1: { modelProvider: "openai", model: "gpt-5.4" },
+      k2: { modelProvider: "openai-codex", model: "gpt-5.4" },
       k3: { providerOverride: "openai", modelOverride: "gpt-4.1" },
     },
     desiredProvider,

@@ -17,7 +17,7 @@ This repo is intentionally “no-magic”: when something is unclear, we read up
 - **Plaintext secrets on disk:** no Keychain, no encryption, no secret manager. Just a flat file and automatic backups.
 - **Everything is labeled:** we do **not** accept a steady state where accounts collapse to `*:default` (especially `openai-codex:default`).
 - **Providers are explicit:** each label has a `provider` (today: `openai-codex` or `anthropic`).
-- **One OpenClaw model (for now):** when syncing OpenClaw, pinned agents are forced to `openai-codex/gpt-5.2` and fallbacks are cleared.
+- **One OpenClaw model (for now):** when syncing OpenClaw, pinned agents are forced to `openai-codex/gpt-5.4` and fallbacks are cleared.
 
 ## Quickstart (what you actually type)
 
@@ -66,7 +66,7 @@ Important: OpenClaw sync supports both `openai-codex` and `anthropic` now. When 
 
 - write labeled auth profiles into OpenClaw (`<provider>:<label>`, e.g. `openai-codex:boss`, `anthropic:claudalyst`)
 - set the pinned agent’s model to a provider-appropriate default:
-  - `openai-codex` → `openai-codex/gpt-5.2`
+  - `openai-codex` → `openai-codex/gpt-5.4`
   - `anthropic` → `anthropic/claude-opus-4-6`
 
 ### 3) Pin other OpenClaw agents to accounts (pooling)
@@ -287,11 +287,11 @@ Key behavior:
 - The `main` store gets **all** managed `openai-codex:*` profiles (AIM overwrites the `openai-codex` provider set)
 - Each pinned agent store gets an `order.openai-codex = ["openai-codex:<label>"]` and `lastGood.openai-codex` set to that id
 
-### 3) Model enforcement: pinned agents are forced to `openai-codex/gpt-5.2`
+### 3) Model enforcement: pinned agents are forced to `openai-codex/gpt-5.4`
 
 For each pinned agent id in `pins.openclaw`, AIM enforces:
 
-- `agents.list[...].model.primary = "openai-codex/gpt-5.2"`
+- `agents.list[...].model.primary = "openai-codex/gpt-5.4"`
 - if that agent had `fallbacks`, they are cleared to `[]`
 
 This is done by calling OpenClaw config:
@@ -316,7 +316,7 @@ On every sync, AIM scans pinned agents’ session stores:
 If sessions need reset, AIM tries **gateway mode** first:
 
 - probes: `openclaw gateway call sessions.list`
-- patches: `openclaw gateway call sessions.patch --params '{"key":"…","model":"openai-codex/gpt-5.2"}'`
+- patches: `openclaw gateway call sessions.patch --params '{"key":"…","model":"openai-codex/gpt-5.4"}'`
 
 If the gateway is unavailable or patching fails, AIM falls back to **disk mode**:
 
