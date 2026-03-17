@@ -13,6 +13,16 @@ const CODEX_AUTH_STORE_MODE_FILE = "file";
 const CODEX_AUTH_STORE_MODE_KEYRING = "keyring";
 const CODEX_AUTH_STORE_MODE_AUTO = "auto";
 const DEFAULT_AUTHORITY_STATE_REMOTE_PATH = "$HOME/.aimgr/secrets.json";
+const STATUS_RESET_TIMEZONE = "America/Chicago";
+const STATUS_RESET_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: STATUS_RESET_TIMEZONE,
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+  timeZoneName: "short",
+});
 
 const SUPPORTED_OAUTH_PROVIDERS = new Map([
   [
@@ -2178,14 +2188,26 @@ function formatResetAtForStatus(resetAt) {
   if (resetAt === undefined || resetAt === null) return null;
   const ms = typeof resetAt === "number" ? resetAt : Number(resetAt);
   if (!Number.isFinite(ms)) return null;
-  const iso = new Date(ms).toISOString();
-  return iso.replace(".000Z", "Z");
+  return STATUS_RESET_FORMATTER.format(new Date(ms));
+}
+
+function formatHoursUntilReset(resetAt) {
+  if (resetAt === undefined || resetAt === null) return null;
+  const ms = typeof resetAt === "number" ? resetAt : Number(resetAt);
+  if (!Number.isFinite(ms)) return null;
+  const deltaHours = (ms - Date.now()) / 3600000;
+  const roundedHours = Math.abs(Math.round(deltaHours * 10) / 10).toFixed(1);
+  if (deltaHours <= 0) return `${roundedHours}h ago`;
+  return `${roundedHours}h left`;
 }
 
 function formatUsageWindowSummary(window) {
   const used = `${window.label} ${Math.round(window.usedPercent)}%`;
   const resetAt = formatResetAtForStatus(window.resetAt);
-  return resetAt ? `${used} (resets ${resetAt})` : used;
+  const hoursUntilReset = formatHoursUntilReset(window.resetAt);
+  if (!resetAt) return used;
+  if (!hoursUntilReset) return `${used} (resets ${resetAt})`;
+  return `${used} (resets ${resetAt}, ${hoursUntilReset})`;
 }
 
 function formatCodexUsageSummary(snapshot) {

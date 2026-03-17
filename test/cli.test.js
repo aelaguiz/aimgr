@@ -211,6 +211,7 @@ test("status warns when tokens are expired or rejected", async () => {
 test("status text shows usage reset timestamps for each window", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
+  const nowMs = Date.parse("2026-03-17T20:15:21Z");
   const codexFiveHourReset = "2026-03-17T21:45:21Z";
   const codexWeekReset = "2026-03-18T17:00:45Z";
   const claudeFiveHourReset = "2026-03-17T22:10:00Z";
@@ -242,7 +243,9 @@ test("status text shows usage reset timestamps for each window", async () => {
     },
   });
 
+  const origDateNow = Date.now;
   const origFetch = globalThis.fetch;
+  Date.now = () => nowMs;
   globalThis.fetch = async (url) => {
     const u = String(url ?? "");
 
@@ -285,13 +288,18 @@ test("status text shows usage reset timestamps for each window", async () => {
 
   try {
     const out = await runCli(["status", "--home", home]);
-    assert.ok(out.includes(`usage=5h 10% (resets ${codexFiveHourReset}) · Week 20% (resets ${codexWeekReset})`));
     assert.ok(
       out.includes(
-        `usage=5h 12% (resets ${claudeFiveHourReset}) · Week 34% (resets ${claudeWeekReset}) · Opus 44%`,
+        "usage=5h 10% (resets Mar 17, 4:45 PM CDT, 1.5h left) · Week 20% (resets Mar 18, 12:00 PM CDT, 20.8h left)",
+      ),
+    );
+    assert.ok(
+      out.includes(
+        "usage=5h 12% (resets Mar 17, 5:10 PM CDT, 1.9h left) · Week 34% (resets Mar 18, 7:00 PM CDT, 27.7h left) · Opus 44%",
       ),
     );
   } finally {
+    Date.now = origDateNow;
     globalThis.fetch = origFetch;
   }
 });
