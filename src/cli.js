@@ -13,6 +13,8 @@ const CODEX_AUTH_STORE_MODE_FILE = "file";
 const CODEX_AUTH_STORE_MODE_KEYRING = "keyring";
 const CODEX_AUTH_STORE_MODE_AUTO = "auto";
 const DEFAULT_AUTHORITY_STATE_REMOTE_PATH = "$HOME/.aimgr/secrets.json";
+const INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE = "openclaw-browser-profile";
+const INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK = "manual-callback";
 const STATUS_RESET_TIMEZONE = "America/Chicago";
 const STATUS_RESET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: STATUS_RESET_TIMEZONE,
@@ -348,6 +350,41 @@ export function buildOpenclawModelSyncOps({ agentsList, pinnedAgentIds, modelRef
   }
 
   return ops;
+}
+
+function buildOpenclawAgentIndexById(agentsList) {
+  const list = Array.isArray(agentsList) ? agentsList : [];
+  const indexById = new Map();
+  for (let i = 0; i < list.length; i += 1) {
+    const entry = list[i];
+    if (!isObject(entry)) continue;
+    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+    if (!id || indexById.has(id)) continue;
+    indexById.set(id, i);
+  }
+  return indexById;
+}
+
+export function partitionOpenclawPinsByConfiguredAgents({ pinsByAgentId, agentsList }) {
+  const pins = isObject(pinsByAgentId) ? pinsByAgentId : {};
+  const indexById = buildOpenclawAgentIndexById(agentsList);
+  const activePins = {};
+  const stalePins = [];
+
+  for (const [agentIdRaw, labelRaw] of Object.entries(pins)) {
+    const agentId = normalizeAgentId(agentIdRaw);
+    const label = normalizeLabel(labelRaw);
+    if (indexById.has(agentId)) {
+      activePins[agentId] = label;
+      continue;
+    }
+    stalePins.push({ agentId, label });
+  }
+
+  return {
+    activePins,
+    stalePins: stalePins.toSorted((a, b) => a.agentId.localeCompare(b.agentId)),
+  };
 }
 
 function parseProviderModelRef(raw) {
@@ -723,6 +760,9 @@ function createEmptyState() {
         browserProfiles: {},
       },
       codexCli: {},
+      interactiveOAuth: {
+        bindings: {},
+      },
     },
   };
 }
@@ -1065,6 +1105,32 @@ async function promptRequiredLine(message) {
   }
 }
 
+function resolveOpenAICodexInteractiveLoginModeFromInput(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+  if (raw === "1") return INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE;
+  if (raw === "2") return INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK;
+
+  const normalized = raw.toLowerCase().replace(/_/g, "-");
+  if (
+    normalized === "browser" ||
+    normalized === "openclaw" ||
+    normalized === "openclaw-browser" ||
+    normalized === "openclaw-browser-profile"
+  ) {
+    return INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE;
+  }
+  if (
+    normalized === "manual" ||
+    normalized === "callback" ||
+    normalized === "manual-callback" ||
+    normalized === "external-browser"
+  ) {
+    return INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK;
+  }
+  return null;
+}
+
 function resolveSupportedProviderFromInput(input) {
   const raw = String(input ?? "").trim();
   if (!raw) return null;
@@ -1167,6 +1233,10 @@ function ensureStateShape(state) {
     ? state.targets.openclaw.browserProfiles
     : {};
   state.targets.codexCli = isObject(state.targets.codexCli) ? state.targets.codexCli : {};
+  state.targets.interactiveOAuth = isObject(state.targets.interactiveOAuth) ? state.targets.interactiveOAuth : {};
+  state.targets.interactiveOAuth.bindings = isObject(state.targets.interactiveOAuth.bindings)
+    ? state.targets.interactiveOAuth.bindings
+    : {};
 
   const legacyPins = isObject(state.pins?.openclaw) ? state.pins.openclaw : null;
   if (legacyPins) {
@@ -1188,6 +1258,21 @@ function ensureStateShape(state) {
     if (browserProfile && !Object.hasOwn(state.targets.openclaw.browserProfiles, label)) {
       state.targets.openclaw.browserProfiles[label] = browserProfile;
     }
+    const binding = state.targets.interactiveOAuth.bindings[label];
+    const bindingMode = normalizeInteractiveOAuthMode(binding?.mode);
+    const bindingProfileId = typeof binding?.profileId === "string" ? binding.profileId.trim() : "";
+    if (!bindingMode && browserProfile) {
+      state.targets.interactiveOAuth.bindings[label] = {
+        mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
+        profileId: browserProfile,
+      };
+    } else if (
+      bindingMode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE &&
+      bindingProfileId &&
+      !Object.hasOwn(state.targets.openclaw.browserProfiles, label)
+    ) {
+      state.targets.openclaw.browserProfiles[label] = bindingProfileId;
+    }
     if (Object.hasOwn(account, "openclawBrowserProfile")) {
       delete account.openclawBrowserProfile;
     }
@@ -1207,6 +1292,11 @@ function getOpenclawTargetState(state) {
   return state.targets.openclaw;
 }
 
+function getInteractiveOAuthTargetState(state) {
+  ensureStateShape(state);
+  return state.targets.interactiveOAuth;
+}
+
 function getOpenclawPins(state) {
   return getOpenclawTargetState(state).pins;
 }
@@ -1224,6 +1314,78 @@ function getOpenclawBrowserProfileForLabel(state, label) {
 function setOpenclawBrowserProfileForLabel(state, label, profileId) {
   const profiles = getOpenclawBrowserProfiles(state);
   profiles[normalizeLabel(label)] = String(profileId ?? "").trim();
+}
+
+function clearOpenclawBrowserProfileForLabel(state, label) {
+  const profiles = getOpenclawBrowserProfiles(state);
+  delete profiles[normalizeLabel(label)];
+}
+
+function getInteractiveOAuthBindings(state) {
+  return getInteractiveOAuthTargetState(state).bindings;
+}
+
+function normalizeInteractiveOAuthMode(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (raw === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
+    return INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE;
+  }
+  if (raw === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+    return INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK;
+  }
+  return null;
+}
+
+export function getInteractiveOAuthBindingForLabel(state, label) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const binding = getInteractiveOAuthBindings(state)[normalizedLabel];
+  const mode = normalizeInteractiveOAuthMode(binding?.mode);
+  const profileId = typeof binding?.profileId === "string" ? binding.profileId.trim() : "";
+
+  if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+    return { mode };
+  }
+  if (mode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE && profileId) {
+    return { mode, profileId };
+  }
+
+  const openclawBrowserProfile = getOpenclawBrowserProfileForLabel(state, normalizedLabel);
+  if (openclawBrowserProfile) {
+    return {
+      mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
+      profileId: openclawBrowserProfile,
+    };
+  }
+
+  return null;
+}
+
+function setInteractiveOAuthBindingForLabel(state, label, binding) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const mode = normalizeInteractiveOAuthMode(binding?.mode);
+  if (!mode) {
+    throw new Error(`Unsupported interactive OAuth mode for label=${normalizedLabel}.`);
+  }
+
+  const bindings = getInteractiveOAuthBindings(state);
+  if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+    bindings[normalizedLabel] = { mode };
+    clearOpenclawBrowserProfileForLabel(state, normalizedLabel);
+    return;
+  }
+
+  const profileId = String(binding?.profileId ?? "").trim();
+  if (!profileId) {
+    throw new Error(`Interactive OAuth mode ${mode} requires profileId for label=${normalizedLabel}.`);
+  }
+
+  bindings[normalizedLabel] = {
+    mode,
+    profileId,
+  };
+  setOpenclawBrowserProfileForLabel(state, normalizedLabel, profileId);
 }
 
 function getCodexTargetState(state) {
@@ -1599,6 +1761,8 @@ function importCodexFromAuthority({ from, state }) {
     if (incomingByLabel.has(label)) continue;
     delete state.accounts[label];
     delete state.credentials[OPENAI_CODEX_PROVIDER][label];
+    delete getInteractiveOAuthBindings(state)[label];
+    clearOpenclawBrowserProfileForLabel(state, label);
     removedLabels.push(label);
   }
 
@@ -1609,6 +1773,8 @@ function importCodexFromAuthority({ from, state }) {
       provider: OPENAI_CODEX_PROVIDER,
     };
     state.credentials[OPENAI_CODEX_PROVIDER][label] = incoming.credential;
+    delete getInteractiveOAuthBindings(state)[label];
+    clearOpenclawBrowserProfileForLabel(state, label);
     assertNoCodexAccountIdCollisions(state, label, incoming.credential.accountId);
   }
 
@@ -1678,7 +1844,7 @@ function toIsoFromExpiresMs(expiresMs) {
   return new Date(Number(expiresMs)).toISOString();
 }
 
-async function ensureCodexAccountConfig({ state, label, homeDir }) {
+async function ensureOpenclawBrowserProfileBinding({ state, label, homeDir }) {
   ensureStateShape(state);
   const existing = state.accounts[label];
   if (existing && !isObject(existing)) {
@@ -1770,21 +1936,80 @@ async function ensureCodexAccountConfig({ state, label, homeDir }) {
   // Unreachable: either we select from discovered profiles or we throw.
 }
 
-async function refreshOrLoginCodex({ state, label, homeDir, openclawBrowserProfile }) {
+export async function ensureOpenAICodexInteractiveLoginBinding({
+  state,
+  label,
+  homeDir,
+  promptLineImpl = promptLine,
+}) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const existingBinding = getInteractiveOAuthBindingForLabel(state, normalizedLabel);
+  if (existingBinding?.mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+    return existingBinding;
+  }
+  if (existingBinding?.mode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
+    const profileId = await ensureOpenclawBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
+    const binding = {
+      mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
+      profileId,
+    };
+    setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
+    return binding;
+  }
+
+  process.stdout.write(`No interactive login mode configured for label "${normalizedLabel}" yet.\n`);
+  process.stdout.write("Choose login mode:\n");
+  process.stdout.write("  1) OpenClaw browser profile\n");
+  process.stdout.write("  2) External browser / paste callback URL\n\n");
+
+  const answer = await promptLineImpl(`Login mode for "${normalizedLabel}" (1-2 or id) [1]:`, {
+    defaultValue: "1",
+  });
+  const mode = resolveOpenAICodexInteractiveLoginModeFromInput(answer);
+  if (!mode) {
+    throw new Error(`Unsupported OpenAI Codex login mode selection: ${answer}`);
+  }
+
+  if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+    const binding = { mode };
+    setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
+    return binding;
+  }
+
+  const profileId = await ensureOpenclawBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
+  const binding = {
+    mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
+    profileId,
+  };
+  setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
+  return binding;
+}
+
+export async function refreshOrLoginCodex({
+  state,
+  label,
+  homeDir,
+  interactiveBinding,
+  loginImpl = loginOpenAICodex,
+  refreshImpl = refreshOpenAICodexToken,
+  promptImpl = promptRequiredLine,
+  openUrlImpl = openChromeUserDataDirForUrl,
+}) {
   const existing = getCodexCredential(state, label);
   const existingRefresh = existing && typeof existing.refresh === "string" ? existing.refresh : null;
   const existingAccountId = existing && typeof existing.accountId === "string" ? existing.accountId : null;
-
-  const openclawStateDir = resolveOpenclawStateDir({ homeDir });
-  const userDataDir = resolveOpenclawBrowserUserDataDir({
-    openclawStateDir,
-    profileId: openclawBrowserProfile,
-  });
+  const binding = interactiveBinding ?? getInteractiveOAuthBindingForLabel(state, label);
+  const bindingMode = normalizeInteractiveOAuthMode(binding?.mode);
+  const openclawBrowserProfile =
+    bindingMode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE
+      ? String(binding?.profileId ?? "").trim()
+      : "";
 
   // Try refresh first (fast + no browser).
   if (existingRefresh) {
     try {
-      const updated = await refreshOpenAICodexToken(existingRefresh);
+      const updated = await refreshImpl(existingRefresh);
       const accountId = typeof updated?.accountId === "string" ? updated.accountId : "";
       if (!accountId) {
         throw new Error("refresh returned no accountId");
@@ -1811,11 +2036,37 @@ async function refreshOrLoginCodex({ state, label, homeDir, openclawBrowserProfi
     }
   }
 
-  // Full OAuth login (opens browser).
-  const creds = await loginOpenAICodex({
+  const manualCallbackPrompt = async () =>
+    await promptImpl(
+      'Paste the full callback URL from your browser address bar (looks like "http://localhost:1455/auth/callback?code=...&state=..."):',
+    );
+
+  // Full OAuth login.
+  const creds = await loginImpl({
     onAuth: ({ url }) => {
       process.stdout.write(`OAuth URL:\n${url}\n\n`);
-      const opened = openChromeUserDataDirForUrl({ url, userDataDir });
+
+      if (bindingMode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+        process.stdout.write(
+          [
+            "Open this URL in the browser on your laptop and complete login there.",
+            "When the browser lands on the localhost callback page, copy the full URL from the address bar and paste it here.",
+            "",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      if (!openclawBrowserProfile) {
+        throw new Error(`Missing OpenClaw browser profile for label=${label}.`);
+      }
+
+      const openclawStateDir = resolveOpenclawStateDir({ homeDir });
+      const userDataDir = resolveOpenclawBrowserUserDataDir({
+        openclawStateDir,
+        profileId: openclawBrowserProfile,
+      });
+      const opened = openUrlImpl({ url, userDataDir });
       if (!opened.ok) {
         process.stdout.write(
           [
@@ -1827,12 +2078,19 @@ async function refreshOrLoginCodex({ state, label, homeDir, openclawBrowserProfi
         );
       }
     },
-    onPrompt: async () => {
-      throw new Error(
-        "Manual redirect-url paste flow is not supported in aimgr v0. " +
-          "Run on the Mac host with a real browser so the localhost callback can complete.",
-      );
-    },
+    ...(bindingMode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK
+      ? {
+          onManualCodeInput: manualCallbackPrompt,
+          onPrompt: manualCallbackPrompt,
+        }
+      : {
+          onPrompt: async () => {
+            throw new Error(
+              "Manual redirect-url paste flow is not supported for browser-managed labels. " +
+                "Run on the Mac host with the configured OpenClaw browser profile so the localhost callback can complete.",
+            );
+          },
+        }),
     originator: "aimgr",
   });
 
@@ -2532,6 +2790,32 @@ function buildWarningsFromStatusAccounts(accounts) {
   return warnings;
 }
 
+function buildInteractiveLoginStatus({ state, label, provider, openclawBrowserProfile }) {
+  const normalizedProvider = normalizeProviderId(provider);
+
+  if (normalizedProvider === OPENAI_CODEX_PROVIDER) {
+    const binding = getInteractiveOAuthBindingForLabel(state, label);
+    const mode = normalizeInteractiveOAuthMode(binding?.mode);
+    if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+      return { mode };
+    }
+    if (mode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
+      const profileId = String(binding?.profileId ?? openclawBrowserProfile ?? "").trim();
+      return profileId ? { mode, profileId } : { mode };
+    }
+  }
+
+  const profileId = String(openclawBrowserProfile ?? "").trim();
+  if (profileId) {
+    return {
+      mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
+      profileId,
+    };
+  }
+
+  return null;
+}
+
 async function buildStatusView({ statePath, state, homeDir }) {
   ensureStateShape(state);
 
@@ -2607,6 +2891,7 @@ async function buildStatusView({ statePath, state, homeDir }) {
     const expectEmail = typeof account.expect?.email === "string" ? account.expect.email : null;
     const openclawBrowserProfile = getOpenclawBrowserProfileForLabel(state, label);
     const browser = openclawBrowserProfile ? { openclawBrowserProfile } : undefined;
+    const login = buildInteractiveLoginStatus({ state, label, provider, openclawBrowserProfile });
     const browserIdentity = openclawBrowserProfile ? browserProfileById.get(openclawBrowserProfile) : null;
     const browserUserName = typeof browserIdentity?.userName === "string" ? browserIdentity.userName : null;
     const browserGaiaName = typeof browserIdentity?.gaiaName === "string" ? browserIdentity.gaiaName : null;
@@ -2619,6 +2904,7 @@ async function buildStatusView({ statePath, state, homeDir }) {
         label,
         provider,
         ...(browser ? { browser } : {}),
+        ...(login ? { login } : {}),
         identity: {
           ...(expectEmail ? { expectEmail } : {}),
           ...(accountId ? { accountId } : {}),
@@ -2642,6 +2928,7 @@ async function buildStatusView({ statePath, state, homeDir }) {
         label,
         provider,
         ...(browser ? { browser } : {}),
+        ...(login ? { login } : {}),
         identity: {
           ...(expectEmail ? { expectEmail } : {}),
           ...(browserUserName ? { browserUserName } : {}),
@@ -2661,6 +2948,7 @@ async function buildStatusView({ statePath, state, homeDir }) {
       label,
       provider: provider || "unknown",
       ...(browser ? { browser } : {}),
+      ...(login ? { login } : {}),
       identity: { ...(expectEmail ? { expectEmail } : {}) },
       credentials: { status: "unknown" },
       usage: { ok: false, status: "n/a" },
@@ -2683,6 +2971,18 @@ async function buildStatusView({ statePath, state, homeDir }) {
       ...buildWarningsFromCodexTargetStatus(codexCli),
     ],
   };
+}
+
+function formatInteractiveLoginSummary(login) {
+  const mode = normalizeInteractiveOAuthMode(login?.mode);
+  if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+    return "manual-callback";
+  }
+  if (mode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
+    const profileId = typeof login?.profileId === "string" ? login.profileId.trim() : "";
+    return profileId ? `openclaw-browser:${profileId}` : "openclaw-browser";
+  }
+  return null;
 }
 
 function renderStatusText(view) {
@@ -2713,11 +3013,8 @@ function renderStatusText(view) {
             ? `browserUser:${a.identity.browserUserName}`
             : a.identity?.browserGaiaName
               ? `browser:${a.identity.browserGaiaName}`
-          : "identity:unknown";
-    const browser =
-      typeof a.browser?.openclawBrowserProfile === "string" && a.browser.openclawBrowserProfile.trim()
-        ? `browser=${a.browser.openclawBrowserProfile.trim()}`
-        : null;
+              : "identity:unknown";
+    const login = formatInteractiveLoginSummary(a.login);
     const expires = a.credentials?.expiresIn ? `expires=${a.credentials.expiresIn}` : "expires=unknown";
     const usage =
       a.provider === OPENAI_CODEX_PROVIDER
@@ -2725,7 +3022,7 @@ function renderStatusText(view) {
         : a.provider === ANTHROPIC_PROVIDER
           ? `usage=${formatClaudeUsageSummary(a.usage)}`
           : "usage=n/a";
-    lines.push(`- ${a.provider} ${a.label} ${identity} ${expires} ${usage}${browser ? ` ${browser}` : ""}`);
+    lines.push(`- ${a.provider} ${a.label}${login ? ` login=${login}` : ""} ${identity} ${expires} ${usage}`);
   }
 
   const pins = isObject(view.pins?.openclaw) ? view.pins.openclaw : {};
@@ -2773,7 +3070,7 @@ function renderStatusText(view) {
   return `${lines.join("\n")}\n`;
 }
 
-function applyOpenclawFromState(params, state) {
+function applyOpenclawFromState(params, state, { pinsOverride } = {}) {
   const homeDir = resolveHomeDir(params.home);
   ensureStateShape(state);
 
@@ -2861,7 +3158,7 @@ function applyOpenclawFromState(params, state) {
   writeJsonFileWithBackup(mainStorePath, nextMain);
 
   // Per-agent pins: order override only (profiles inherited from main).
-  const pins = getOpenclawPins(state);
+  const pins = isObject(pinsOverride) ? pinsOverride : getOpenclawPins(state);
   const wrote = [mainStorePath];
   for (const [agentIdRaw, labelRaw] of Object.entries(pins)) {
     const agentId = normalizeAgentId(agentIdRaw);
@@ -2909,18 +3206,47 @@ function applyOpenclawFromState(params, state) {
 }
 
 async function syncOpenclawFromState(params, state) {
-  const auth = applyOpenclawFromState(params, state);
+  let agentsList = null;
+  let activePins = getOpenclawPins(state);
+  let stalePinWarnings = [];
+
+  if (!params.home) {
+    agentsList = readOpenclawAgentsListFromConfig();
+    const partition = partitionOpenclawPinsByConfiguredAgents({
+      pinsByAgentId: getOpenclawPins(state),
+      agentsList,
+    });
+    activePins = partition.activePins;
+    stalePinWarnings = partition.stalePins.map(({ agentId, label }) => ({
+      kind: "pin_points_to_missing_config_agent",
+      system: "openclaw",
+      agentId,
+      label,
+    }));
+  }
+
+  const auth = applyOpenclawFromState(params, state, { pinsOverride: activePins });
 
   // Config/model sync is intentionally skipped in sandbox mode to keep `--home`
   // as a safe dev/test escape hatch (and to avoid requiring `openclaw` in CI).
   if (params.home) {
-    return { auth, models: { skipped: true, reason: "home_override" }, sessions: { skipped: true, reason: "home_override" } };
+    return {
+      auth,
+      models: { skipped: true, reason: "home_override" },
+      sessions: { skipped: true, reason: "home_override" },
+      warnings: stalePinWarnings,
+    };
   }
 
-  const pins = getOpenclawPins(state);
+  const pins = activePins;
   const pinnedAgentIds = Object.keys(pins);
   if (pinnedAgentIds.length === 0) {
-    return { auth, models: { skipped: true, reason: "no_pins" }, sessions: { skipped: true, reason: "no_pins" } };
+    return {
+      auth,
+      models: { skipped: true, reason: "no_pins" },
+      sessions: { skipped: true, reason: "no_pins" },
+      warnings: stalePinWarnings,
+    };
   }
 
   const accounts = isObject(state.accounts) ? state.accounts : {};
@@ -2944,7 +3270,6 @@ async function syncOpenclawFromState(params, state) {
     throw new Error(`Pin references unsupported provider: agent=${agentId} label=${label} provider=${provider}`);
   }
 
-  const agentsList = readOpenclawAgentsListFromConfig();
   const ops = buildOpenclawModelSyncOps({ agentsList, pinnedAgentIds, modelRefByAgentId: desiredModelRefByAgentId });
   const applied = applyOpenclawModelSyncOps(ops);
 
@@ -3006,6 +3331,7 @@ async function syncOpenclawFromState(params, state) {
       auth,
       models: { desiredByAgentId: desiredModelRefByAgentId, ops: applied },
       sessions: { skipped: true, reason: "no_session_changes_needed" },
+      warnings: stalePinWarnings,
     };
   }
 
@@ -3057,6 +3383,7 @@ async function syncOpenclawFromState(params, state) {
       sessionsWouldChange: patchOps.length,
       perAgent: perAgentDisk.filter((p) => p.sessionsWouldChange > 0),
     },
+    warnings: stalePinWarnings,
   };
 }
 
@@ -3095,12 +3422,13 @@ export async function main(argv) {
     ensureStateShape(state);
 
     const provider = await ensureProviderConfiguredForLabel({ state, label });
-    const openclawBrowserProfile = await ensureCodexAccountConfig({ state, label, homeDir });
 
     if (provider === OPENAI_CODEX_PROVIDER) {
-      const cred = await refreshOrLoginCodex({ state, label, homeDir, openclawBrowserProfile });
+      const interactiveBinding = await ensureOpenAICodexInteractiveLoginBinding({ state, label, homeDir });
+      const cred = await refreshOrLoginCodex({ state, label, homeDir, interactiveBinding });
       state.credentials[OPENAI_CODEX_PROVIDER][label] = cred;
     } else if (provider === ANTHROPIC_PROVIDER) {
+      const openclawBrowserProfile = await ensureOpenclawBrowserProfileBinding({ state, label, homeDir });
       const cred = await refreshOrLoginAnthropic({ state, label, homeDir, openclawBrowserProfile });
       state.credentials[ANTHROPIC_PROVIDER][label] = cred;
     } else {

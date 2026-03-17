@@ -7,11 +7,14 @@ import path from "node:path";
 import {
   buildOpenclawModelSyncOps,
   discoverOpenclawBrowserProfiles,
+  ensureOpenAICodexInteractiveLoginBinding,
   extractOpenclawConfigAgentModelPrimary,
   extractSessionModelRefFromEntry,
   main,
   parseAnthropicAuthorizationPaste,
+  partitionOpenclawPinsByConfiguredAgents,
   planEvenLabelAssignments,
+  refreshOrLoginCodex,
   resetSessionEntryToDefaults,
   resolveAuthorityLocator,
   scanOpenclawSessionsStoreForKeysNeedingModelReset,
@@ -319,6 +322,111 @@ test("parseAnthropicAuthorizationPaste accepts callback URLs and code#state", ()
   assert.throws(() => parseAnthropicAuthorizationPaste("https://console.anthropic.com/oauth/code/callback?code=CODE123"));
 });
 
+test("ensureOpenAICodexInteractiveLoginBinding stores manual-callback choice without OpenClaw browser state", async () => {
+  const home = mkTempHome();
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {
+      manual_label: { provider: "openai-codex" },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: { pins: {}, browserProfiles: {} },
+      codexCli: {},
+      interactiveOAuth: { bindings: {} },
+    },
+  };
+
+  const prompts = [];
+  const binding = await ensureOpenAICodexInteractiveLoginBinding({
+    state,
+    label: "manual_label",
+    homeDir: home,
+    promptLineImpl: async (question, opts) => {
+      prompts.push({ question, opts });
+      return "2";
+    },
+  });
+
+  assert.deepEqual(binding, { mode: "manual-callback" });
+  assert.deepEqual(state.targets.interactiveOAuth.bindings.manual_label, { mode: "manual-callback" });
+  assert.equal(state.targets.openclaw.browserProfiles.manual_label, undefined);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0].question, /Login mode for "manual_label"/);
+});
+
+test("refreshOrLoginCodex manual-callback prompts for callback URL and skips browser launch", async () => {
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {
+      manual_label: { provider: "openai-codex" },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: { pins: {}, browserProfiles: {} },
+      codexCli: {},
+      interactiveOAuth: { bindings: { manual_label: { mode: "manual-callback" } } },
+    },
+  };
+
+  const prompts = [];
+  const pastedValues = [];
+  let openUrlCalls = 0;
+
+  const cred = await refreshOrLoginCodex({
+    state,
+    label: "manual_label",
+    homeDir: mkTempHome(),
+    interactiveBinding: { mode: "manual-callback" },
+    loginImpl: async ({ onAuth, onManualCodeInput, onPrompt, originator }) => {
+      assert.equal(originator, "aimgr");
+      onAuth({ url: "https://auth.openai.example/authorize" });
+      pastedValues.push(await onManualCodeInput());
+      pastedValues.push(await onPrompt());
+      return {
+        access: "ACCESS_TOKEN",
+        refresh: "REFRESH_TOKEN",
+        expires: Date.now() + 3600_000,
+        accountId: "acct_manual",
+      };
+    },
+    promptImpl: async (question) => {
+      prompts.push(question);
+      return "http://localhost:1455/auth/callback?code=CODE123&state=STATE456";
+    },
+    openUrlImpl: () => {
+      openUrlCalls += 1;
+      return { ok: true };
+    },
+  });
+
+  assert.equal(openUrlCalls, 0);
+  assert.equal(prompts.length, 2);
+  assert.ok(prompts.every((question) => question.includes("Paste the full callback URL")));
+  assert.deepEqual(pastedValues, [
+    "http://localhost:1455/auth/callback?code=CODE123&state=STATE456",
+    "http://localhost:1455/auth/callback?code=CODE123&state=STATE456",
+  ]);
+  assert.equal(cred.accountId, "acct_manual");
+  assert.equal(cred.idToken, "ACCESS_TOKEN");
+});
+
 test("resolveAuthorityLocator accepts bare ssh targets for the default AIM state path", () => {
   assert.deepEqual(resolveAuthorityLocator("agents@amirs-mac-studio"), {
     kind: "ssh",
@@ -388,11 +496,10 @@ test("sync codex bootstraps consumer state and strips authority-local OpenClaw m
   const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
 
   writeJson(authorityStatePath, {
-    schemaVersion: "0.1",
+    schemaVersion: "0.2",
     accounts: {
-      boss: { provider: "openai-codex", openclawBrowserProfile: "agent-boss" },
+      boss: { provider: "openai-codex" },
     },
-    pins: { openclaw: { agent_boss: "boss" } },
     credentials: {
       "openai-codex": {
         boss: {
@@ -408,6 +515,58 @@ test("sync codex bootstraps consumer state and strips authority-local OpenClaw m
           accountId: "acct_123",
         },
       },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        pins: { agent_boss: "boss" },
+        browserProfiles: { boss: "agent-boss" },
+      },
+      codexCli: {},
+      interactiveOAuth: {
+        bindings: {
+          boss: { mode: "manual-callback" },
+        },
+      },
+    },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex" },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "old-source",
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: {
+        pins: {},
+        browserProfiles: {
+          boss: "stale-browser-profile",
+        },
+      },
+      codexCli: {},
+      interactiveOAuth: {
+        bindings: {
+          boss: { mode: "manual-callback" },
+        },
+      },
     },
   });
 
@@ -420,8 +579,49 @@ test("sync codex bootstraps consumer state and strips authority-local OpenClaw m
   assert.equal(consumerState.accounts.boss.openclawBrowserProfile, undefined);
   assert.deepEqual(consumerState.targets.openclaw.pins, {});
   assert.deepEqual(consumerState.targets.openclaw.browserProfiles, {});
+  assert.deepEqual(consumerState.targets.interactiveOAuth.bindings, {});
   assert.equal(consumerState.targets.codexCli.activeLabel, undefined);
   assert.equal(fs.existsSync(path.join(consumerHome, ".openclaw", "agents", "main", "agent", "auth-profiles.json")), false);
+});
+
+test("status text shows manual-callback and browser-managed login modes", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      manual_label: { provider: "openai-codex" },
+      claude: { provider: "anthropic" },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        pins: {},
+        browserProfiles: {
+          claude: "agent-claude",
+        },
+      },
+      codexCli: {},
+      interactiveOAuth: {
+        bindings: {
+          manual_label: { mode: "manual-callback" },
+        },
+      },
+    },
+  });
+
+  const out = await runCli(["status", "--home", home]);
+  assert.match(out, /openai-codex manual_label login=manual-callback/);
+  assert.match(out, /anthropic claude login=openclaw-browser:agent-claude/);
 });
 
 test("codex use fails loudly before any authority import", async () => {
@@ -652,6 +852,26 @@ test("buildOpenclawModelSyncOps supports per-agent desired model refs", () => {
   });
 
   assert.deepEqual(ops, [{ path: "agents.list[1].model", value: "\"anthropic/claude-opus-4-6\"" }]);
+});
+
+test("partitionOpenclawPinsByConfiguredAgents separates stale pins from active pins", () => {
+  const partition = partitionOpenclawPinsByConfiguredAgents({
+    pinsByAgentId: {
+      agent_boss: "boss",
+      agent_lessons: "lessons",
+      agent_growth_analyst: "growth",
+    },
+    agentsList: [
+      { id: "agent_boss", model: "openai-codex/gpt-5.4" },
+      { id: "agent_growth_analyst", model: "openai-codex/gpt-5.4" },
+    ],
+  });
+
+  assert.deepEqual(partition.activePins, {
+    agent_boss: "boss",
+    agent_growth_analyst: "growth",
+  });
+  assert.deepEqual(partition.stalePins, [{ agentId: "agent_lessons", label: "lessons" }]);
 });
 
 test("planEvenLabelAssignments spreads unpinned agents evenly across pool labels", () => {

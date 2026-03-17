@@ -210,6 +210,28 @@ aim login boss
 
 This is the command that manages browser OAuth state and OpenClaw derived state.
 
+For `openai-codex` labels, AIM now supports two interactive login modes:
+
+- `OpenClaw browser profile`
+- `External browser / paste callback URL`
+
+The external-browser lane is for extra ChatGPT Pro / OpenAI Pro accounts that are not browser-managed on the host. The first time you add one of those labels:
+
+```bash
+aim <label>
+```
+
+Then:
+
+1. choose `openai-codex`
+2. choose `External browser / paste callback URL`
+3. click or open the printed OAuth URL on your laptop browser
+4. finish login there
+5. copy the final `http://localhost:1455/auth/callback?...` URL from the browser address bar
+6. paste that full callback URL back into AIM on the host
+
+After that, AIM stores normal durable credentials for the label in `~/.aimgr/secrets.json`, and later refreshes/re-auth for that label reuse the same manual-callback lane automatically.
+
 ### `aim pin <openclaw_agent_id> <label>`
 
 Manual OpenClaw pin override:
@@ -312,6 +334,17 @@ Current state shape:
         "boss": "agent-boss"
       }
     },
+    "interactiveOAuth": {
+      "bindings": {
+        "boss": {
+          "mode": "openclaw-browser-profile",
+          "profileId": "agent-boss"
+        },
+        "<label>": {
+          "mode": "manual-callback"
+        }
+      }
+    },
     "codexCli": {
       "activeLabel": "boss",
       "homeDir": "/Users/you/.codex",
@@ -324,6 +357,11 @@ Current state shape:
 ```
 
 Portable truth is in `accounts` and `credentials`. Machine-local downstream metadata lives under `targets.*`.
+
+`targets.interactiveOAuth.bindings` stores how a label completes interactive OAuth on the current machine:
+
+- `openclaw-browser-profile` means AIM should use the bound OpenClaw browser profile
+- `manual-callback` means AIM should print the OAuth URL and prompt you to paste back the final callback URL
 
 ## OpenClaw integration
 
