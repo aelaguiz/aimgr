@@ -2174,6 +2174,20 @@ function formatAgeSince(isoTimestamp) {
   return formatDurationRough(Date.now() - ms);
 }
 
+function formatResetAtForStatus(resetAt) {
+  if (resetAt === undefined || resetAt === null) return null;
+  const ms = typeof resetAt === "number" ? resetAt : Number(resetAt);
+  if (!Number.isFinite(ms)) return null;
+  const iso = new Date(ms).toISOString();
+  return iso.replace(".000Z", "Z");
+}
+
+function formatUsageWindowSummary(window) {
+  const used = `${window.label} ${Math.round(window.usedPercent)}%`;
+  const resetAt = formatResetAtForStatus(window.resetAt);
+  return resetAt ? `${used} (resets ${resetAt})` : used;
+}
+
 function formatCodexUsageSummary(snapshot) {
   if (!snapshot) return "unknown";
   if (snapshot.ok !== true) {
@@ -2183,7 +2197,7 @@ function formatCodexUsageSummary(snapshot) {
   }
   const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
   if (windows.length === 0) return "ok";
-  return windows.map((w) => `${w.label} ${Math.round(w.usedPercent)}%`).join(" · ");
+  return windows.map((w) => formatUsageWindowSummary(w)).join(" · ");
 }
 
 function formatClaudeUsageSummary(snapshot) {
@@ -2196,7 +2210,7 @@ function formatClaudeUsageSummary(snapshot) {
   }
   const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
   if (windows.length === 0) return "ok";
-  return windows.map((w) => `${w.label} ${Math.round(w.usedPercent)}%`).join(" · ");
+  return windows.map((w) => formatUsageWindowSummary(w)).join(" · ");
 }
 
 function readCodexCliTargetStatus({ state, homeDir }) {

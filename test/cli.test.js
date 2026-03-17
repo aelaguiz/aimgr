@@ -208,6 +208,94 @@ test("status warns when tokens are expired or rejected", async () => {
   }
 });
 
+test("status text shows usage reset timestamps for each window", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const codexFiveHourReset = "2026-03-17T21:45:21Z";
+  const codexWeekReset = "2026-03-18T17:00:45Z";
+  const claudeFiveHourReset = "2026-03-17T22:10:00Z";
+  const claudeWeekReset = "2026-03-19T00:00:00Z";
+
+  writeJson(statePath, {
+    schemaVersion: "0.1",
+    accounts: {
+      boss: { provider: "openai-codex", openclawBrowserProfile: "agent-boss" },
+      claude: { provider: "anthropic", openclawBrowserProfile: "agent-claude" },
+    },
+    pins: { openclaw: {} },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: "ACCESS_TOKEN",
+          refresh: "REFRESH_TOKEN",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {
+        claude: {
+          access: "ANTHROPIC_ACCESS",
+          refresh: "ANTHROPIC_REFRESH",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        },
+      },
+    },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 10,
+              limit_window_seconds: 18000,
+              reset_at: Math.floor(Date.parse(codexFiveHourReset) / 1000),
+            },
+            secondary_window: {
+              used_percent: 20,
+              limit_window_seconds: 604800,
+              reset_at: Math.floor(Date.parse(codexWeekReset) / 1000),
+            },
+          },
+        }),
+      };
+    }
+
+    if (u.includes("api.anthropic.com/api/oauth/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 12, resets_at: claudeFiveHourReset },
+          seven_day: { utilization: 34, resets_at: claudeWeekReset },
+          seven_day_opus: { utilization: 44 },
+        }),
+      };
+    }
+
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const out = await runCli(["status", "--home", home]);
+    assert.ok(out.includes(`usage=5h 10% (resets ${codexFiveHourReset}) · Week 20% (resets ${codexWeekReset})`));
+    assert.ok(
+      out.includes(
+        `usage=5h 12% (resets ${claudeFiveHourReset}) · Week 34% (resets ${claudeWeekReset}) · Opus 44%`,
+      ),
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("parseAnthropicAuthorizationPaste accepts callback URLs and code#state", () => {
   assert.equal(
     parseAnthropicAuthorizationPaste(
