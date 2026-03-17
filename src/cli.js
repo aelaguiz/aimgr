@@ -2202,7 +2202,7 @@ function formatHoursUntilReset(resetAt) {
 }
 
 function formatUsageWindowSummary(window) {
-  const used = `${window.label} ${Math.round(window.usedPercent)}%`;
+  const used = `${window.label} ${Math.round(window.usedPercent)}% used`;
   const resetAt = formatResetAtForStatus(window.resetAt);
   const hoursUntilReset = formatHoursUntilReset(window.resetAt);
   if (!resetAt) return used;

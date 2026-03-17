@@ -290,12 +290,12 @@ test("status text shows usage reset timestamps for each window", async () => {
     const out = await runCli(["status", "--home", home]);
     assert.ok(
       out.includes(
-        "usage=5h 10% (resets Mar 17, 4:45 PM CDT, 1.5h left) · Week 20% (resets Mar 18, 12:00 PM CDT, 20.8h left)",
+        "usage=5h 10% used (resets Mar 17, 4:45 PM CDT, 1.5h left) · Week 20% used (resets Mar 18, 12:00 PM CDT, 20.8h left)",
       ),
     );
     assert.ok(
       out.includes(
-        "usage=5h 12% (resets Mar 17, 5:10 PM CDT, 1.9h left) · Week 34% (resets Mar 18, 7:00 PM CDT, 27.7h left) · Opus 44%",
+        "usage=5h 12% used (resets Mar 17, 5:10 PM CDT, 1.9h left) · Week 34% used (resets Mar 18, 7:00 PM CDT, 27.7h left) · Opus 44% used",
       ),
     );
   } finally {
