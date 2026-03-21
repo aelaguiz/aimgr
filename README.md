@@ -126,10 +126,12 @@ Important behavior:
 
 - Browser-managed labels use the label's explicit binding, not a guessed browser lane.
 - `aim-profile` uses `~/.aimgr/browser/<label>/user-data`.
-- `chrome-profile` uses the exact `--user-data-dir` you configured.
+- `chrome-profile` uses the exact `--user-data-dir` you configured and, when present, the exact Chrome `profile-directory`.
 - `agent-browser` uses the exact `--profile` and `--session` you configured.
 - Manual-callback labels print the OAuth URL and prompt for the final callback URL.
 - Reauth does **not** rebalance OpenClaw or mutate downstream assignments.
+
+When you pick `Use another Chrome profile` from the guided panel, AIM now lists the discovered local Chrome profiles on this Mac, tells you the exact `user-data-dir` + `profile-directory` each choice would save, and lets you confirm before writing the binding.
 
 ### 2A) Inspect or repair the browser binding
 
@@ -140,7 +142,7 @@ When you need to inspect or repair the browser substrate explicitly, use the adv
 ```bash
 aim browser show <label>
 aim browser set <label> --mode aim-profile [--seed-from-openclaw <profileId>]
-aim browser set <label> --mode chrome-profile --user-data-dir <abs-path>
+aim browser set <label> --mode chrome-profile --user-data-dir <abs-path> [--profile-directory <name>]
 aim browser set <label> --mode agent-browser --profile <abs-path> --session <name>
 aim browser set <label> --mode manual-callback
 ```

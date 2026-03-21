@@ -57,6 +57,26 @@ function writeAimBrowserLocalState(home, label, profileInfo = {}) {
   });
 }
 
+function writeChromeLocalState(home, profiles = []) {
+  const userDataDir = path.join(home, "Library", "Application Support", "Google", "Chrome");
+  const infoCache = {};
+  for (const profile of profiles) {
+    const profileDirectory = String(profile.profileDirectory ?? "").trim() || "Default";
+    fs.mkdirSync(path.join(userDataDir, profileDirectory), { recursive: true });
+    infoCache[profileDirectory] = {
+      name: profile.name ?? profileDirectory,
+      user_name: profile.userName ?? "",
+      gaia_name: profile.gaiaName ?? "",
+    };
+  }
+  writeJson(path.join(userDataDir, "Local State"), {
+    profile: {
+      info_cache: infoCache,
+    },
+  });
+  return userDataDir;
+}
+
 function writeOpenclawAuthStore(home, agentId, data) {
   writeJson(path.join(home, ".openclaw", "agents", agentId, "agent", "auth-profiles.json"), data);
 }
@@ -135,8 +155,21 @@ async function runCli(argv, deps = {}) {
     if (typeof cb === "function") cb();
     return true;
   };
+  const wrappedDeps =
+    typeof deps.promptLineImpl === "function"
+      ? {
+          ...deps,
+          promptLineImpl: async (...args) => {
+            const answer = await deps.promptLineImpl(...args);
+            if (answer === undefined) {
+              throw new Error(`test prompt exhausted for: ${String(args[0] ?? "").trim() || "<unknown prompt>"}`);
+            }
+            return answer;
+          },
+        }
+      : deps;
   try {
-    await main(argv, deps);
+    await main(argv, wrappedDeps);
   } finally {
     process.stdout.write = origWrite;
     process.exitCode = origExitCode;
@@ -154,8 +187,21 @@ async function runCliWithExitCode(argv, deps = {}) {
     if (typeof cb === "function") cb();
     return true;
   };
+  const wrappedDeps =
+    typeof deps.promptLineImpl === "function"
+      ? {
+          ...deps,
+          promptLineImpl: async (...args) => {
+            const answer = await deps.promptLineImpl(...args);
+            if (answer === undefined) {
+              throw new Error(`test prompt exhausted for: ${String(args[0] ?? "").trim() || "<unknown prompt>"}`);
+            }
+            return answer;
+          },
+        }
+      : deps;
   try {
-    await main(argv, deps);
+    await main(argv, wrappedDeps);
     return { stdout: chunks.join(""), exitCode: process.exitCode ?? 0 };
   } finally {
     process.stdout.write = origWrite;
@@ -640,6 +686,49 @@ test("launchBrowserBindingForUrl uses explicit agent-browser profile session and
   ]);
 });
 
+test("launchBrowserBindingForUrl passes chrome profile-directory through to Google Chrome", () => {
+  const home = mkTempHome();
+  const userDataDir = writeChromeLocalState(home, [
+    {
+      profileDirectory: "Profile 5",
+      name: "Marcus",
+      userName: "marcus@fun.country",
+    },
+  ]);
+
+  const calls = [];
+  const result = launchBrowserBindingForUrl({
+    binding: {
+      mode: "chrome-profile",
+      userDataDir,
+      profileDirectory: "Profile 5",
+    },
+    url: "https://example.com/login",
+    homeDir: home,
+    spawnImpl: (cmd, args, options) => {
+      calls.push({ cmd, args, options });
+      return { status: 0 };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, [
+    {
+      cmd: "open",
+      args: [
+        "-n",
+        "-a",
+        "Google Chrome",
+        "--args",
+        `--user-data-dir=${userDataDir}`,
+        "--profile-directory=Profile 5",
+        "https://example.com/login",
+      ],
+      options: { stdio: "ignore" },
+    },
+  ]);
+});
+
 test("aim browser set and show manage explicit browser bindings", async () => {
   const home = mkTempHome();
   const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
@@ -675,6 +764,51 @@ test("aim browser set and show manage explicit browser bindings", async () => {
     },
     resolvedPaths: {
       agentBrowserProfile: profileDir,
+    },
+    warnings: [],
+  });
+});
+
+test("aim browser set and show manage explicit chrome-profile bindings", async () => {
+  const home = mkTempHome();
+  const userDataDir = writeChromeLocalState(home, [
+    {
+      profileDirectory: "Profile 5",
+      name: "Marcus",
+      userName: "marcus@fun.country",
+    },
+  ]);
+
+  const setOut = await runCli([
+    "browser",
+    "set",
+    "cfo",
+    "--home",
+    home,
+    "--mode",
+    "chrome-profile",
+    "--user-data-dir",
+    userDataDir,
+    "--profile-directory",
+    "Profile 5",
+  ]);
+  const setParsed = JSON.parse(setOut);
+  assert.equal(setParsed.ok, true);
+  assert.equal(setParsed.browser.current.binding.mode, "chrome-profile");
+  assert.equal(setParsed.browser.current.binding.userDataDir, userDataDir);
+  assert.equal(setParsed.browser.current.binding.profileDirectory, "Profile 5");
+
+  const showParsed = JSON.parse(await runCli(["browser", "show", "cfo", "--home", home]));
+  assert.deepEqual(showParsed, {
+    label: "cfo",
+    reauthMode: "browser-managed",
+    binding: {
+      mode: "chrome-profile",
+      userDataDir,
+      profileDirectory: "Profile 5",
+    },
+    resolvedPaths: {
+      userDataDir,
     },
     warnings: [],
   });
@@ -892,6 +1026,85 @@ test("guided panel can adopt a suggested agent-browser binding and make the labe
     ),
   );
   assert.match(out, /Will not use a local browser for cfo\./);
+  assert.match(out, /Saved browser setup for cfo\./);
+  assert.match(out, /cfo is ready\./);
+});
+
+test("guided panel can adopt a discovered chrome profile and make the label ready", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const userDataDir = writeChromeLocalState(home, [
+    {
+      profileDirectory: "Profile 5",
+      name: "Marcus",
+      userName: "marcus@fun.country",
+    },
+    {
+      profileDirectory: "Default",
+      name: "Personal",
+      userName: "amir@fun.country",
+    },
+  ]);
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      cfo: { provider: "openai-codex" },
+    },
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const answers = ["3", "1", "1", "0"];
+  const opened = [];
+  const out = await runCli(["cfo", "--home", home], {
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    promptLineImpl: async () => answers.shift(),
+    readOpenclawBindingsFromConfigImpl: () => [],
+    readOpenclawAgentsListFromConfigImpl: () => [],
+    openUrlImpl: ({ binding, url }) => {
+      opened.push({ binding, url });
+      return { ok: true };
+    },
+    loginOpenAICodexImpl: async ({ onAuth }) => {
+      onAuth({ url: "https://chatgpt.com/oauth" });
+      return {
+        access: makeFakeJwt({ sub: "cfo" }),
+        refresh: "REFRESHED",
+        expires: Date.now() + 3600_000,
+        accountId: "acct_cfo",
+      };
+    },
+  });
+
+  const persisted = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(persisted.accounts.cfo.browser.mode, "chrome-profile");
+  assert.equal(persisted.accounts.cfo.browser.userDataDir, userDataDir);
+  assert.equal(persisted.accounts.cfo.browser.profileDirectory, "Profile 5");
+  assert.equal(persisted.accounts.cfo.reauth.mode, "browser-managed");
+  assert.equal(persisted.credentials["openai-codex"].cfo.accountId, "acct_cfo");
+  assert.deepEqual(opened, [
+    {
+      binding: {
+        mode: "chrome-profile",
+        userDataDir,
+        profileDirectory: "Profile 5",
+      },
+      url: "https://chatgpt.com/oauth",
+    },
+  ]);
+  assert.match(out, /Next screen will offer 2 discovered Chrome profiles on this Mac and let you pick one\./);
+  assert.match(out, /Option 1: Google Chrome · Marcus · marcus@fun.country\./);
+  assert.match(
+    out,
+    new RegExp(
+      `Would save Chrome user-data-dir ${userDataDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} with profile-directory "Profile 5"\\.`,
+    ),
+  );
+  assert.match(out, /Discovered Chrome profiles for cfo/);
+  assert.match(out, /Google Chrome · Marcus · marcus@fun.country/);
   assert.match(out, /Saved browser setup for cfo\./);
   assert.match(out, /cfo is ready\./);
 });

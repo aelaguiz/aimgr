@@ -228,6 +228,11 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--profile-directory") {
+      opts.profileDirectory = argv[i + 1];
+      i += 1;
+      continue;
+    }
     if (arg === "--profile") {
       opts.profile = argv[i + 1];
       i += 1;
@@ -279,7 +284,7 @@ function printHelp() {
     "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
     "  aim browser show <label>",
     "  aim browser set <label> --mode aim-profile [--seed-from-openclaw <profileId>]",
-    "  aim browser set <label> --mode chrome-profile --user-data-dir <abs-path>",
+    "  aim browser set <label> --mode chrome-profile --user-data-dir <abs-path> [--profile-directory <name>]",
     "  aim browser set <label> --mode agent-browser --profile <abs-path> --session <name>",
     "  aim browser set <label> --mode manual-callback",
     "",
@@ -298,6 +303,7 @@ function printHelp() {
     "  --mode <id>     Browser binding mode for `aim browser set`.",
     "  --seed-from-openclaw <profileId>  Optional one-time OpenClaw seed source for `--mode aim-profile`.",
     "  --user-data-dir <abs-path>        Required for `--mode chrome-profile`.",
+    "  --profile-directory <name>        Optional specific Chrome profile inside `--user-data-dir`.",
     "  --profile <abs-path>              Required for `--mode agent-browser`.",
     "  --session <name>                  Required for `--mode agent-browser`.",
     "",
@@ -1179,16 +1185,21 @@ function sanitizeForStatus(value) {
   return walk(value);
 }
 
-function openChromeUserDataDirForUrl({ url, userDataDir }) {
+function openChromeUserDataDirForUrl({ url, userDataDir, profileDirectory, spawnImpl = spawnSync }) {
   const u = String(url ?? "").trim();
   const dir = String(userDataDir ?? "").trim();
+  const profile = normalizeChromeProfileDirectory(profileDirectory);
   if (!u) return { ok: false, reason: "missing_url" };
   if (!dir) return { ok: false, reason: "missing_user_data_dir" };
   if (process.platform !== "darwin") return { ok: false, reason: "unsupported_platform" };
 
-  const result = spawnSync(
+  const chromeArgs = [`--user-data-dir=${dir}`];
+  if (profile) {
+    chromeArgs.push(`--profile-directory=${profile}`);
+  }
+  const result = spawnImpl(
     "open",
-    ["-n", "-a", "Google Chrome", "--args", `--user-data-dir=${dir}`, u],
+    ["-n", "-a", "Google Chrome", "--args", ...chromeArgs, u],
     { stdio: "ignore" },
   );
   if (result.error) {
@@ -1246,6 +1257,12 @@ function resolveAimBrowserLocalStatePath({ homeDir, label }) {
 
 function resolveChromeLocalStatePath(userDataDir) {
   return path.join(String(userDataDir ?? "").trim(), "Local State");
+}
+
+function normalizeChromeProfileDirectory(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  return raw;
 }
 
 function aimBrowserProfileExists({ homeDir, label }) {
@@ -1307,12 +1324,129 @@ function resolveOpenclawBrowserProfileLocalStatePath({ openclawStateDir, profile
   return path.join(resolveOpenclawBrowserUserDataDir({ openclawStateDir, profileId }), "Local State");
 }
 
-function readChromeDefaultProfileInfoFromLocalState(localStatePath) {
+function readChromeProfileInfoCacheFromLocalState(localStatePath) {
   const localState = readJsonFile(localStatePath);
   const cache = localState?.profile?.info_cache;
-  if (!isObject(cache)) return null;
-  const def = cache.Default;
-  return isObject(def) ? def : null;
+  return isObject(cache) ? cache : null;
+}
+
+function readChromeProfileInfoFromLocalState(localStatePath, profileDirectory = "Default") {
+  const cache = readChromeProfileInfoCacheFromLocalState(localStatePath);
+  if (!cache) return null;
+  const entry = cache[profileDirectory];
+  return isObject(entry) ? entry : null;
+}
+
+function readChromeDefaultProfileInfoFromLocalState(localStatePath) {
+  return readChromeProfileInfoFromLocalState(localStatePath, "Default");
+}
+
+function buildChromeProfileChoiceLabel(profile) {
+  const browserName = String(profile.browserName ?? "").trim() || "Chrome";
+  const profileName = String(profile.name ?? "").trim();
+  const userName = String(profile.userName ?? "").trim() || String(profile.gaiaName ?? "").trim();
+  const parts = [browserName];
+  if (profileName) parts.push(profileName);
+  if (userName) parts.push(userName);
+  return parts.join(" · ");
+}
+
+function formatChromeBrowserTarget({ userDataDir, profileDirectory, fallback = "the saved Chrome profile" }) {
+  const resolvedUserDataDir = String(userDataDir ?? "").trim();
+  const resolvedProfileDirectory = normalizeChromeProfileDirectory(profileDirectory);
+  if (resolvedUserDataDir && resolvedProfileDirectory) {
+    return `Chrome user-data-dir ${resolvedUserDataDir} with profile-directory "${resolvedProfileDirectory}"`;
+  }
+  if (resolvedUserDataDir) {
+    return `Chrome user-data-dir ${resolvedUserDataDir}`;
+  }
+  if (resolvedProfileDirectory) {
+    return `Chrome profile-directory "${resolvedProfileDirectory}"`;
+  }
+  return fallback;
+}
+
+function buildChromeProfileChoiceDetails(profile, { label, prefix = "Will save" } = {}) {
+  const normalizedLabel = normalizeLabel(label);
+  return [
+    `${prefix} ${formatChromeBrowserTarget({
+      userDataDir: profile.userDataDir,
+      profileDirectory: profile.profileDirectory,
+      fallback: `the chosen Chrome profile for ${normalizedLabel}`,
+    })}.`,
+    `AIM found it in ${resolveChromeLocalStatePath(profile.userDataDir)}.`,
+  ];
+}
+
+function buildChromeSetupOptionDetails({ label, homeDir }) {
+  const normalizedLabel = normalizeLabel(label);
+  const profiles = discoverChromeProfiles({ homeDir });
+  if (profiles.length === 0) {
+    return [
+      `Will scan local Chrome user-data-dirs on this Mac, let you pick a discovered profile if one exists, or let you enter one manually for ${normalizedLabel}.`,
+    ];
+  }
+
+  const preview = profiles.slice(0, 3).flatMap((profile, index) => [
+    `Option ${index + 1}: ${buildChromeProfileChoiceLabel(profile)}.`,
+    `Would save ${formatChromeBrowserTarget({
+      userDataDir: profile.userDataDir,
+      profileDirectory: profile.profileDirectory,
+      fallback: "the discovered Chrome profile",
+    })}.`,
+  ]);
+
+  return [
+    `Next screen will offer ${profiles.length} discovered Chrome profile${profiles.length === 1 ? "" : "s"} on this Mac and let you pick one.`,
+    ...preview,
+    ...(profiles.length > 3 ? [`Plus ${profiles.length - 3} more discovered Chrome profiles.`] : []),
+    `If none match, AIM will let you enter another Chrome user-data-dir and profile-directory manually for ${normalizedLabel}.`,
+  ];
+}
+
+function discoverChromeProfiles({ homeDir }) {
+  const baseHome = String(homeDir ?? "").trim();
+  if (!baseHome) return [];
+  const roots = [
+    { browserName: "Google Chrome", userDataDir: path.join(baseHome, "Library", "Application Support", "Google", "Chrome") },
+    { browserName: "Google Chrome Beta", userDataDir: path.join(baseHome, "Library", "Application Support", "Google", "Chrome Beta") },
+    { browserName: "Google Chrome Canary", userDataDir: path.join(baseHome, "Library", "Application Support", "Google", "Chrome Canary") },
+    { browserName: "Chromium", userDataDir: path.join(baseHome, "Library", "Application Support", "Chromium") },
+  ];
+
+  const profiles = [];
+  for (const root of roots) {
+    if (!isAbsoluteExistingDirectory(root.userDataDir)) continue;
+    const localStatePath = resolveChromeLocalStatePath(root.userDataDir);
+    const cache = readChromeProfileInfoCacheFromLocalState(localStatePath);
+    if (!cache) continue;
+    for (const [profileDirectory, info] of Object.entries(cache)) {
+      if (!isObject(info)) continue;
+      if (!isAbsoluteExistingDirectory(path.join(root.userDataDir, profileDirectory))) continue;
+      const name = typeof info.name === "string" ? info.name.trim() : "";
+      const userName = typeof info.user_name === "string" ? info.user_name.trim() : "";
+      const gaiaName = typeof info.gaia_name === "string" ? info.gaia_name.trim() : "";
+      profiles.push({
+        browserName: root.browserName,
+        userDataDir: root.userDataDir,
+        profileDirectory,
+        name: name || null,
+        userName: userName || null,
+        gaiaName: gaiaName || null,
+      });
+    }
+  }
+
+  return profiles.toSorted((a, b) => {
+    const aSignedIn = Boolean(a.userName || a.gaiaName);
+    const bSignedIn = Boolean(b.userName || b.gaiaName);
+    if (aSignedIn !== bSignedIn) return aSignedIn ? -1 : 1;
+    const byBrowser = a.browserName.localeCompare(b.browserName);
+    if (byBrowser !== 0) return byBrowser;
+    const byProfileName = String(a.name ?? "").localeCompare(String(b.name ?? ""));
+    if (byProfileName !== 0) return byProfileName;
+    return a.profileDirectory.localeCompare(b.profileDirectory);
+  });
 }
 
 export function discoverOpenclawBrowserProfiles({ openclawStateDir }) {
@@ -1744,6 +1878,12 @@ function ensureAccountShape(account, { providerHint } = {}) {
     normalizedMode === BROWSER_MODE_CHROME_PROFILE && typeof rawBrowser?.userDataDir === "string" && rawBrowser.userDataDir.trim()
       ? path.resolve(rawBrowser.userDataDir.trim())
       : null;
+  const chromeProfileDirectory =
+    normalizedMode === BROWSER_MODE_CHROME_PROFILE
+    && typeof rawBrowser?.profileDirectory === "string"
+    && rawBrowser.profileDirectory.trim()
+      ? rawBrowser.profileDirectory.trim()
+      : null;
   const agentBrowserProfile =
     normalizedMode === BROWSER_MODE_AGENT_BROWSER
     && typeof rawBrowser?.agentBrowserProfile === "string"
@@ -1763,6 +1903,7 @@ function ensureAccountShape(account, { providerHint } = {}) {
         ? {
             ...(normalizedMode ? { mode: normalizedMode } : {}),
             ...(userDataDir ? { userDataDir } : {}),
+            ...(chromeProfileDirectory ? { profileDirectory: chromeProfileDirectory } : {}),
             ...(agentBrowserProfile ? { agentBrowserProfile } : {}),
             ...(agentBrowserSession ? { agentBrowserSession } : {}),
             ...(seededFromOpenclawProfileId ? { seededFromOpenclawProfileId } : {}),
@@ -1823,6 +1964,9 @@ export function resolveBrowserBinding({ account, homeDir, label }) {
     return {
       mode,
       userDataDir: String(browser?.userDataDir ?? "").trim(),
+      ...(normalizeChromeProfileDirectory(browser?.profileDirectory)
+        ? { profileDirectory: normalizeChromeProfileDirectory(browser?.profileDirectory) }
+        : {}),
     };
   }
 
@@ -1850,6 +1994,7 @@ function resolveBrowserBindingDisplay(binding) {
     return {
       mode: binding.mode,
       ...(binding.userDataDir ? { userDataDir: binding.userDataDir } : {}),
+      ...(binding.profileDirectory ? { profileDirectory: binding.profileDirectory } : {}),
     };
   }
   return { mode: binding.mode };
@@ -1860,6 +2005,7 @@ export function setBrowserBinding({
   label,
   mode,
   userDataDir,
+  profileDirectory,
   agentBrowserProfile,
   agentBrowserSession,
   seedFromOpenclaw,
@@ -1902,6 +2048,9 @@ export function setBrowserBinding({
       );
     }
     nextBrowser.userDataDir = resolvedUserDataDir;
+    if (normalizeChromeProfileDirectory(profileDirectory)) {
+      nextBrowser.profileDirectory = normalizeChromeProfileDirectory(profileDirectory);
+    }
   } else if (normalizedMode === BROWSER_MODE_AGENT_BROWSER) {
     const resolvedProfile = normalizeAbsolutePath(agentBrowserProfile);
     const resolvedSession = String(agentBrowserSession ?? "").trim();
@@ -1972,6 +2121,7 @@ export function showBrowserBinding({ state, label, homeDir }) {
         : {
             mode: binding.mode,
             ...(binding.userDataDir ? { userDataDir: binding.userDataDir } : {}),
+            ...(binding.profileDirectory ? { profileDirectory: binding.profileDirectory } : {}),
           })
       : null,
     resolvedPaths:
@@ -2000,8 +2150,8 @@ function resolveBrowserFactsPath(binding) {
 function readBrowserFacts({ account, homeDir, label }) {
   const normalizedLabel = normalizeLabel(label);
   const binding = resolveBrowserBinding({ account, homeDir, label: normalizedLabel });
-  const localStatePath = resolveBrowserFactsPath(binding);
-  if (!binding || !localStatePath) {
+  const browserPath = resolveBrowserFactsPath(binding);
+  if (!binding || !browserPath) {
     return {
       label: normalizedLabel,
       bindingPresent: false,
@@ -2014,13 +2164,16 @@ function readBrowserFacts({ account, homeDir, label }) {
     };
   }
 
-  if (!fs.existsSync(localStatePath)) {
+  if (!fs.existsSync(browserPath)) {
     return {
       label: normalizedLabel,
       bindingPresent: true,
       exists: false,
       mode: binding.mode,
-      userDataDir: localStatePath,
+      userDataDir: browserPath,
+      ...(binding.mode === BROWSER_MODE_CHROME_PROFILE && binding.profileDirectory
+        ? { profileDirectory: binding.profileDirectory }
+        : {}),
       name: null,
       userName: null,
       gaiaName: null,
@@ -2030,7 +2183,13 @@ function readBrowserFacts({ account, homeDir, label }) {
     };
   }
 
-  const info = readChromeDefaultProfileInfoFromLocalState(resolveChromeLocalStatePath(localStatePath));
+  const info =
+    binding.mode === BROWSER_MODE_CHROME_PROFILE
+      ? readChromeProfileInfoFromLocalState(
+          resolveChromeLocalStatePath(browserPath),
+          normalizeChromeProfileDirectory(binding.profileDirectory) || "Default",
+        )
+      : readChromeDefaultProfileInfoFromLocalState(resolveChromeLocalStatePath(browserPath));
   const name = typeof info?.name === "string" ? String(info.name).trim() : "";
   const userName = typeof info?.user_name === "string" ? String(info.user_name).trim() : "";
   const gaiaName = typeof info?.gaia_name === "string" ? String(info.gaia_name).trim() : "";
@@ -2039,7 +2198,10 @@ function readBrowserFacts({ account, homeDir, label }) {
     bindingPresent: true,
     exists: true,
     mode: binding.mode,
-    userDataDir: localStatePath,
+    userDataDir: browserPath,
+    ...(binding.mode === BROWSER_MODE_CHROME_PROFILE && binding.profileDirectory
+      ? { profileDirectory: binding.profileDirectory }
+      : {}),
     name: name || null,
     userName: userName || null,
     gaiaName: gaiaName || null,
@@ -2056,13 +2218,14 @@ export function launchBrowserBindingForUrl({ binding, url, homeDir, spawnImpl = 
   }
   if (resolvedBinding.mode === BROWSER_MODE_AIM_PROFILE || resolvedBinding.mode === BROWSER_MODE_CHROME_PROFILE) {
     const userDataDir = String(resolvedBinding.userDataDir ?? "").trim();
+    const profileDirectory = normalizeChromeProfileDirectory(resolvedBinding.profileDirectory);
     if (!userDataDir) {
       return { ok: false, reason: "missing_user_data_dir" };
     }
     if (!fs.existsSync(userDataDir)) {
       return { ok: false, reason: "missing_browser_path", path: userDataDir };
     }
-    return openChromeUserDataDirForUrl({ url, userDataDir });
+    return openChromeUserDataDirForUrl({ url, userDataDir, profileDirectory, spawnImpl });
   }
   if (resolvedBinding.mode === BROWSER_MODE_AGENT_BROWSER) {
     const profile = String(resolvedBinding.agentBrowserProfile ?? "").trim();
@@ -4981,7 +5144,8 @@ function summarizeBrowserBindingForPanel({ binding, reauthMode }) {
     return "AIM browser";
   }
   if (binding.mode === BROWSER_MODE_CHROME_PROFILE) {
-    return "Chrome profile";
+    const profileDirectory = normalizeChromeProfileDirectory(binding.profileDirectory);
+    return profileDirectory ? `Chrome profile / ${profileDirectory}` : "Chrome profile";
   }
   if (binding.mode === BROWSER_MODE_AGENT_BROWSER) {
     const session = String(binding.agentBrowserSession ?? "").trim();
@@ -4998,9 +5162,11 @@ function describeConcreteBrowserTarget(binding) {
       : "the AIM browser path for this label";
   }
   if (binding.mode === BROWSER_MODE_CHROME_PROFILE) {
-    return binding.userDataDir
-      ? `Chrome user-data-dir ${binding.userDataDir}`
-      : "the saved Chrome user-data-dir";
+    return formatChromeBrowserTarget({
+      userDataDir: binding.userDataDir,
+      profileDirectory: binding.profileDirectory,
+      fallback: "the saved Chrome profile",
+    });
   }
   if (binding.mode === BROWSER_MODE_AGENT_BROWSER) {
     return formatAgentBrowserTarget({
@@ -5051,7 +5217,7 @@ function buildBrowserSetupMenuOptions({ label, homeDir, suggestions, discoveryWa
       key: "3",
       action: "setup_chrome_profile",
       label: "Use another Chrome profile",
-      details: [`Will ask for an absolute Chrome user-data-dir, save that exact path, and then start login for ${normalizedLabel}.`],
+      details: buildChromeSetupOptionDetails({ label: normalizedLabel, homeDir }),
     },
     {
       key: "4",
@@ -5242,17 +5408,93 @@ async function promptMappedChromeBinding({ state, label, promptLineImpl = prompt
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const userDataDir = await promptLineImpl(`Chrome user-data-dir for "${label}" (absolute path):`);
+    const profileDirectory = await promptLineImpl(
+      `Chrome profile-directory for "${label}" (blank for Default):`,
+    );
     try {
       const updated = setBrowserBinding({
         state,
         label,
         mode: BROWSER_MODE_CHROME_PROFILE,
         userDataDir,
+        profileDirectory: String(profileDirectory ?? "").trim() || null,
       });
       return { configured: true, updated };
     } catch (err) {
       process.stdout.write(`${String(err?.message ?? err)}\n`);
     }
+  }
+}
+
+async function chooseDiscoveredChromeBinding({
+  state,
+  label,
+  candidates,
+  promptLineImpl = promptLine,
+}) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return promptMappedChromeBinding({ state, label, promptLineImpl });
+  }
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const options = candidates.map((candidate, index) => ({
+      key: String(index + 1),
+      label: buildChromeProfileChoiceLabel(candidate),
+      details: buildChromeProfileChoiceDetails(candidate, {
+        label,
+        prefix: "Will save",
+      }),
+    }));
+    const manualKey = String(candidates.length + 1);
+    options.push({
+      key: manualKey,
+      label: "Enter another Chrome user-data-dir/profile-directory",
+      details: [
+        `Will ask for an absolute Chrome user-data-dir and optional profile-directory, then save them for ${label}.`,
+      ],
+    });
+    options.push({ key: "0", label: "Back", details: ["Makes no changes."] });
+    const choice = await promptMenuChoice({
+      title: `Discovered Chrome profiles for ${label}`,
+      options,
+      promptLineImpl,
+    });
+    if (choice === "0") {
+      return { configured: false, cancelled: true };
+    }
+    if (choice === manualKey) {
+      return promptMappedChromeBinding({ state, label, promptLineImpl });
+    }
+
+    const candidate = candidates[Number(choice) - 1];
+    const confirm = await promptMenuChoice({
+      title: `Use this Chrome profile for ${label}?`,
+      options: [
+        {
+          key: "1",
+          label: "Yes, save it",
+          details: buildChromeProfileChoiceDetails(candidate, {
+            label,
+            prefix: "Will save",
+          }),
+        },
+        { key: "0", label: "Back", details: ["Makes no changes."] },
+      ],
+      promptLineImpl,
+    });
+    if (confirm !== "1") {
+      continue;
+    }
+
+    const updated = setBrowserBinding({
+      state,
+      label,
+      mode: BROWSER_MODE_CHROME_PROFILE,
+      userDataDir: candidate.userDataDir,
+      profileDirectory: candidate.profileDirectory,
+    });
+    return { configured: true, updated, candidate };
   }
 }
 
@@ -5421,7 +5663,12 @@ async function runBrowserBindingWizard({
       return { configured: true, updated };
     }
     if (choice === "3") {
-      return promptMappedChromeBinding({ state, label: normalizedLabel, promptLineImpl });
+      return chooseDiscoveredChromeBinding({
+        state,
+        label: normalizedLabel,
+        candidates: discoverChromeProfiles({ homeDir }),
+        promptLineImpl,
+      });
     }
 
     const result = await chooseSuggestedAgentBrowserBinding({
@@ -5589,7 +5836,12 @@ async function runLabelPanelAction({
       if (action === "setup_aim_profile") {
         configured = { configured: true, updated: setBrowserBinding({ state, label: normalizedLabel, mode: BROWSER_MODE_AIM_PROFILE }) };
       } else if (action === "setup_chrome_profile") {
-        configured = await promptMappedChromeBinding({ state, label: normalizedLabel, promptLineImpl });
+        configured = await chooseDiscoveredChromeBinding({
+          state,
+          label: normalizedLabel,
+          candidates: discoverChromeProfiles({ homeDir }),
+          promptLineImpl,
+        });
       } else if (action === "setup_manual_callback") {
         configured = { configured: true, updated: setBrowserBinding({ state, label: normalizedLabel, mode: REAUTH_MODE_MANUAL_CALLBACK }) };
       } else if (action === "setup_agent_browser") {
@@ -5762,20 +6014,22 @@ export async function runLabelControlPanel({
 
 function assertNoUnexpectedBrowserSetOptions(mode, opts) {
   if (mode === REAUTH_MODE_MANUAL_CALLBACK) {
-    if (opts.seedFromOpenclaw || opts.userDataDir || opts.profile || opts.session) {
+    if (opts.seedFromOpenclaw || opts.userDataDir || opts.profileDirectory || opts.profile || opts.session) {
       throw new Error("`aim browser set --mode manual-callback` does not accept browser path/session flags.");
     }
     return;
   }
   if (mode === BROWSER_MODE_AIM_PROFILE) {
-    if (opts.userDataDir || opts.profile || opts.session) {
+    if (opts.userDataDir || opts.profileDirectory || opts.profile || opts.session) {
       throw new Error("`aim browser set --mode aim-profile` only supports optional --seed-from-openclaw <profileId>.");
     }
     return;
   }
   if (mode === BROWSER_MODE_CHROME_PROFILE) {
     if (opts.seedFromOpenclaw || opts.profile || opts.session) {
-      throw new Error("`aim browser set --mode chrome-profile` only supports --user-data-dir <abs-path>.");
+      throw new Error(
+        "`aim browser set --mode chrome-profile` only supports --user-data-dir <abs-path> and optional --profile-directory <name>.",
+      );
     }
     return;
   }
@@ -5829,6 +6083,7 @@ function setBrowserBindingFromCli({ state, label, opts }) {
       label,
       mode: BROWSER_MODE_CHROME_PROFILE,
       userDataDir: opts.userDataDir,
+      profileDirectory: opts.profileDirectory,
     });
   }
   if (!opts.profile || !opts.session) {
