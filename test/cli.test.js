@@ -16,11 +16,14 @@ import {
   planOpenclawRebalance,
   partitionOpenclawPinsByConfiguredAgents,
   pickNextBestPoolLabel,
+  projectPoolCapacity,
   rankPoolCandidates,
+  rebalanceOpenclawPool,
   refreshOrLoginCodex,
   resetSessionEntryToDefaults,
   resolveAuthorityLocator,
   scanOpenclawSessionsStoreForKeysNeedingModelReset,
+  seedAimBrowserProfileFromOpenclaw,
   sessionEntryNeedsModelReset,
 } from "../src/cli.js";
 
@@ -47,6 +50,70 @@ function writeAimBrowserLocalState(home, label, profileInfo = {}) {
       },
     },
   });
+}
+
+function writeOpenclawAuthStore(home, agentId, data) {
+  writeJson(path.join(home, ".openclaw", "agents", agentId, "agent", "auth-profiles.json"), data);
+}
+
+function writeOpenclawSessionsStore(home, agentId, data) {
+  writeJson(path.join(home, ".openclaw", "agents", agentId, "sessions", "sessions.json"), data);
+}
+
+async function withEnv(overrides, fn) {
+  const previous = new Map();
+  for (const [key, value] of Object.entries(overrides)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined || value === null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+function installFakeOpenclaw({ rootDir, agentsList }) {
+  const binDir = path.join(rootDir, "bin");
+  const agentsListPath = path.join(rootDir, "agents-list.json");
+  fs.mkdirSync(binDir, { recursive: true });
+  writeJson(agentsListPath, agentsList);
+  const scriptPath = path.join(binDir, "openclaw");
+  fs.writeFileSync(
+    scriptPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "config" && args[1] === "get" && args[2] === "agents.list" && args.includes("--json")) {
+  process.stdout.write(fs.readFileSync(${JSON.stringify(agentsListPath)}, "utf8"));
+  process.exit(0);
+}
+if (args[0] === "config" && args[1] === "set") {
+  process.exit(0);
+}
+if (args[0] === "gateway" && args[1] === "call" && args[2] === "sessions.list") {
+  process.stderr.write("fake gateway unavailable");
+  process.exit(1);
+}
+if (args[0] === "gateway" && args[1] === "call" && args[2] === "sessions.patch") {
+  process.exit(0);
+}
+process.stderr.write("unexpected openclaw args: " + args.join(" "));
+process.exit(2);
+`,
+    { encoding: "utf8", mode: 0o755 },
+  );
+  return binDir;
 }
 
 function makeFakeJwt(payload = {}) {
@@ -325,6 +392,95 @@ test("status text shows usage reset timestamps for each window", async () => {
   }
 });
 
+test("status persists migrated legacy state back to disk", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_123",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        openclawBrowserProfile: "agent-boss",
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: fakeJwt,
+          refresh: "REFRESH_TOKEN",
+          idToken: fakeJwt,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        pins: { agent_boss: "boss" },
+        browserProfiles: { boss: "agent-boss" },
+      },
+      codexCli: {},
+      interactiveOAuth: {
+        bindings: {
+          boss: { mode: "manual-callback" },
+        },
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await runCli(["status", "--json", "--home", home]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  const persisted = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(persisted.targets.openclaw.assignments, { agent_boss: "boss" });
+  assert.equal(persisted.targets.openclaw.pins, undefined);
+  assert.equal(persisted.targets.openclaw.browserProfiles, undefined);
+  assert.equal(persisted.targets.interactiveOAuth, undefined);
+  assert.equal(persisted.accounts.boss.openclawBrowserProfile, undefined);
+  assert.equal(persisted.accounts.boss.reauth.mode, "manual-callback");
+  assert.equal(persisted.accounts.boss.browser.seededFrom, "agent-boss");
+});
+
 test("parseAnthropicAuthorizationPaste accepts callback URLs and code#state", () => {
   assert.equal(
     parseAnthropicAuthorizationPaste(
@@ -470,16 +626,16 @@ test("help text prefers agents@amirs-mac-studio as the authority example", async
   assert.match(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
 });
 
-test("apply writes OpenClaw auth-profiles.json with labeled profile ids", async () => {
+test("apply materializes only assigned managed profiles and clears stale per-agent overrides", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
 
   writeJson(statePath, {
-    schemaVersion: "0.1",
+    schemaVersion: "0.2",
     accounts: {
-      boss: { provider: "openai-codex", openclawBrowserProfile: "agent-boss" },
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true }, browser: {} },
+      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true }, browser: {} },
     },
-    pins: { openclaw: { agent_boss: "boss" } },
     credentials: {
       "openai-codex": {
         boss: {
@@ -488,7 +644,48 @@ test("apply writes OpenClaw auth-profiles.json with labeled profile ids", async 
           expiresAt: new Date(Date.now() + 3600_000).toISOString(),
           accountId: "acct_123",
         },
+        qa: {
+          access: "ACCESS_TOKEN_QA",
+          refresh: "REFRESH_TOKEN_QA",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_456",
+        },
       },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: { agent_boss: "boss" },
+        exclusions: {},
+      },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  writeOpenclawAuthStore(home, "main", {
+    version: 1,
+    profiles: {
+      "openai-codex:boss": { provider: "openai-codex", type: "oauth" },
+      "openai-codex:qa": { provider: "openai-codex", type: "oauth" },
+    },
+    order: {
+      "openai-codex": ["openai-codex:boss", "openai-codex:qa"],
+    },
+  });
+  writeOpenclawAuthStore(home, "agent_stale", {
+    version: 1,
+    profiles: {},
+    order: {
+      "openai-codex": ["openai-codex:qa"],
+    },
+    lastGood: {
+      "openai-codex": "openai-codex:qa",
     },
   });
 
@@ -497,6 +694,7 @@ test("apply writes OpenClaw auth-profiles.json with labeled profile ids", async 
   const mainStorePath = path.join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json");
   const mainStore = JSON.parse(fs.readFileSync(mainStorePath, "utf8"));
   assert.ok(mainStore.profiles["openai-codex:boss"]);
+  assert.equal(mainStore.profiles["openai-codex:qa"], undefined);
   assert.equal(mainStore.profiles["openai-codex:boss"].provider, "openai-codex");
   assert.ok(Array.isArray(mainStore.order["openai-codex"]));
   assert.deepEqual(mainStore.order["openai-codex"], ["openai-codex:boss"]);
@@ -505,6 +703,144 @@ test("apply writes OpenClaw auth-profiles.json with labeled profile ids", async 
   const agentStore = JSON.parse(fs.readFileSync(agentStorePath, "utf8"));
   assert.deepEqual(agentStore.order["openai-codex"], ["openai-codex:boss"]);
   assert.equal(agentStore.lastGood["openai-codex"], "openai-codex:boss");
+
+  const staleStorePath = path.join(home, ".openclaw", "agents", "agent_stale", "agent", "auth-profiles.json");
+  const staleStore = JSON.parse(fs.readFileSync(staleStorePath, "utf8"));
+  assert.equal(staleStore.order?.["openai-codex"], undefined);
+  assert.equal(staleStore.lastGood?.["openai-codex"], undefined);
+});
+
+test("rebalance openclaw runs the real sync path and then settles to noop on repeat", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeBinDir = installFakeOpenclaw({
+    rootDir: home,
+    agentsList: [{ id: "agent_boss", model: "openai/gpt-5.4" }],
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+      qa: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: "ACCESS_BOSS",
+          refresh: "REFRESH_BOSS",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+        qa: {
+          access: "ACCESS_QA",
+          refresh: "REFRESH_QA",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_qa",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: { agent_boss: "qa" },
+        exclusions: {},
+      },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  writeOpenclawSessionsStore(home, "agent_boss", {
+    s1: {
+      modelProvider: "openai",
+      model: "gpt-5.4",
+      providerOverride: "openai",
+      modelOverride: "gpt-5.4",
+      authProfileOverride: "openai:default",
+      updatedAt: 1,
+    },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const auth = String(options?.headers?.Authorization ?? "");
+      const accessToken = auth.replace(/^Bearer\s+/i, "");
+      const usedPercent = accessToken === "ACCESS_BOSS" ? 10 : 88;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: usedPercent,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        HOME: home,
+        PATH: `${fakeBinDir}:${process.env.PATH}`,
+      },
+      async () => {
+        const firstOut = await runCli(["rebalance", "openclaw"]);
+        const first = JSON.parse(firstOut);
+        assert.equal(first.ok, true);
+        assert.equal(first.rebalanced.status, "applied");
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
+        assert.equal(updatedState.targets.openclaw.lastApplyReceipt.cleanupMode, "disk");
+
+        const mainStore = JSON.parse(
+          fs.readFileSync(path.join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json"), "utf8"),
+        );
+        assert.deepEqual(mainStore.order["openai-codex"], ["openai-codex:boss"]);
+
+        const sessions = JSON.parse(
+          fs.readFileSync(path.join(home, ".openclaw", "agents", "agent_boss", "sessions", "sessions.json"), "utf8"),
+        );
+        assert.equal(sessions.s1.modelProvider, undefined);
+        assert.equal(sessions.s1.model, undefined);
+        assert.equal(sessions.s1.providerOverride, undefined);
+        assert.equal(sessions.s1.modelOverride, undefined);
+        assert.equal(sessions.s1.authProfileOverride, undefined);
+
+        const secondOut = await runCli(["rebalance", "openclaw"]);
+        const second = JSON.parse(secondOut);
+        assert.equal(second.ok, true);
+        assert.equal(second.rebalanced.status, "noop");
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });
 
 test("sync codex bootstraps consumer state and strips authority-local OpenClaw metadata", async () => {
@@ -642,6 +978,147 @@ test("status text shows manual-callback and browser-managed login modes", async 
   const out = await runCli(["status", "--home", home]);
   assert.match(out, /openai-codex manual_label login=manual-callback/);
   assert.match(out, /anthropic claude login=aim-browser-profile/);
+});
+
+test("status --json surfaces receipt and projection branches", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_123",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, ".codex", "auth.json"),
+    `${JSON.stringify({
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: fakeJwt,
+        access_token: fakeJwt,
+        refresh_token: "REFRESH_TOKEN",
+        account_id: "acct_123",
+      },
+      last_refresh: new Date().toISOString(),
+    }, null, 2)}\n`,
+    "utf8",
+  );
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: fakeJwt,
+          refresh: "REFRESH_TOKEN",
+          idToken: fakeJwt,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "ssh://studio.local/~/.aimgr/secrets.json",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: { agent_boss: "boss" },
+        exclusions: {},
+        lastApplyReceipt: {
+          action: "rebalance_openclaw",
+          status: "applied_with_warnings",
+          observedAt: new Date().toISOString(),
+          warnings: [{ kind: "stale_pin" }],
+          blockers: [],
+        },
+      },
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_123",
+        lastSelectionReceipt: {
+          action: "codex_use",
+          status: "activated_with_warnings",
+          observedAt: new Date().toISOString(),
+          warnings: [{ kind: "readback_note" }],
+          blockers: [],
+        },
+      },
+    },
+    pool: {
+      openaiCodex: {
+        history: [
+          {
+            observedAt: new Date().toISOString(),
+            kind: "rebalance",
+            status: "blocked",
+            reason: "no_eligible_pool_account",
+          },
+          {
+            observedAt: new Date().toISOString(),
+            kind: "exhaustion",
+            label: "boss",
+            hadSpareEligibleCapacity: false,
+          },
+          {
+            observedAt: new Date().toISOString(),
+            kind: "rebalance",
+            status: "applied_with_warnings",
+          },
+        ],
+      },
+    },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 96,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const out = await runCli(["status", "--json", "--home", home]);
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.openclaw.lastApplyReceipt.status, "applied_with_warnings");
+    assert.equal(parsed.codexCli.lastSelectionReceipt.status, "activated_with_warnings");
+    assert.equal(parsed.capacity.needMoreAccounts, true);
+    assert.equal(parsed.capacity.riskLevel, "high");
+    assert.deepEqual(parsed.capacity.basedOn.currentHighUtilizationLabels, ["boss"]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });
 
 test("codex use fails loudly before any authority import", async () => {
@@ -830,6 +1307,61 @@ test("discoverOpenclawBrowserProfiles reads user-data/Local State for friendly n
   assert.equal(profiles[1].profileId, "coder");
 });
 
+test("seedAimBrowserProfileFromOpenclaw copies the source profile once and records provenance", () => {
+  const home = mkTempHome();
+  const sourceDir = path.join(home, ".openclaw", "browser", "agent-boss", "user-data");
+  fs.mkdirSync(sourceDir, { recursive: true });
+  fs.writeFileSync(path.join(sourceDir, "Cookies"), "cookie-state", "utf8");
+
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "aim-browser-profile" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  };
+
+  const first = seedAimBrowserProfileFromOpenclaw({
+    state,
+    label: "boss",
+    homeDir: home,
+    profileId: "agent-boss",
+  });
+  assert.equal(first.status, "seeded");
+  assert.equal(
+    fs.readFileSync(path.join(home, ".aimgr", "browser", "boss", "user-data", "Cookies"), "utf8"),
+    "cookie-state",
+  );
+  assert.equal(state.accounts.boss.browser.seededFrom, "agent-boss");
+  assert.ok(typeof state.accounts.boss.browser.seededAt === "string");
+
+  const second = seedAimBrowserProfileFromOpenclaw({
+    state,
+    label: "boss",
+    homeDir: home,
+    profileId: "agent-boss",
+  });
+  assert.equal(second.status, "skipped");
+});
+
 test("extractOpenclawConfigAgentModelPrimary handles string/object/null", () => {
   assert.equal(extractOpenclawConfigAgentModelPrimary(null), null);
   assert.equal(extractOpenclawConfigAgentModelPrimary(undefined), null);
@@ -958,6 +1490,112 @@ test("planOpenclawRebalance uses the shared selector and blocks when no eligible
   assert.equal(blocked.status, "blocked");
   assert.deepEqual(blocked.assignments, {});
   assert.deepEqual(blocked.skipped, [{ agentId: "agent_a", reason: "no_eligible_pool_account" }]);
+});
+
+test("projectPoolCapacity flags high risk from blocked receipts and no-spare exhaustion", () => {
+  const now = Date.parse("2026-03-21T12:00:00Z");
+  const projected = projectPoolCapacity({
+    now,
+    history: [
+      {
+        observedAt: "2026-03-20T12:00:00Z",
+        kind: "rebalance",
+        status: "blocked",
+        reason: "no_eligible_pool_account",
+      },
+      {
+        observedAt: "2026-03-19T12:00:00Z",
+        kind: "exhaustion",
+        label: "boss",
+        hadSpareEligibleCapacity: false,
+      },
+      {
+        observedAt: "2026-03-18T12:00:00Z",
+        kind: "exhaustion",
+        label: "qa",
+        hadSpareEligibleCapacity: false,
+      },
+      {
+        observedAt: "2026-03-17T12:00:00Z",
+        kind: "rebalance",
+        status: "applied_with_warnings",
+      },
+    ],
+    liveUsage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPct: 96 }],
+      },
+    },
+  });
+
+  assert.equal(projected.needMoreAccounts, true);
+  assert.equal(projected.riskLevel, "high");
+  assert.deepEqual(projected.basedOn.currentHighUtilizationLabels, ["boss"]);
+  assert.ok(projected.reasons.some((reason) => reason.includes("blocked receipt")));
+  assert.ok(projected.reasons.some((reason) => reason.includes("no spare eligible capacity")));
+});
+
+test("rebalanceOpenclawPool reports applied_with_warnings when sync returns warnings", async () => {
+  const home = mkTempHome();
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: "ACCESS_TOKEN",
+          refresh: "REFRESH_TOKEN",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  };
+
+  const result = await rebalanceOpenclawPool(
+    { home },
+    state,
+    {
+      probeUsageSnapshotsByProviderImpl: async () => ({
+        "openai-codex": {
+          boss: {
+            ok: true,
+            windows: [{ kind: "primary", usedPct: 5 }],
+          },
+        },
+        anthropic: {},
+      }),
+      readOpenclawAgentsListFromConfigImpl: () => [{ id: "agent_boss", model: "openai-codex/gpt-5.4" }],
+      syncOpenclawFromStateImpl: async () => ({
+        auth: { wrote: [] },
+        sessions: { reason: "disk" },
+        warnings: [{ kind: "test_warning", system: "openclaw" }],
+      }),
+    },
+  );
+
+  assert.equal(result.status, "applied_with_warnings");
+  assert.equal(state.targets.openclaw.lastApplyReceipt.status, "applied_with_warnings");
+  assert.equal(state.targets.openclaw.lastApplyReceipt.warnings[0].kind, "test_warning");
 });
 
 test("sessionEntryNeedsModelReset detects runtime/override/provider drift vs desired model", () => {

@@ -180,88 +180,6 @@ function printHelp() {
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
-function parseCsvList(input) {
-  const raw = String(input ?? "").trim();
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function resolveAutopinPoolLabels({ state, poolArg }) {
-  ensureStateShape(state);
-  const explicit = parseCsvList(poolArg);
-  if (explicit.length > 0) {
-    return explicit.map((label) => normalizeLabel(label));
-  }
-
-  const reserved = new Set(["coder", "coder2", "growth"]);
-  const discovered = [];
-  for (const [labelRaw, account] of Object.entries(state.accounts)) {
-    if (!isObject(account)) continue;
-    const provider = normalizeProviderId(account.provider ?? OPENAI_CODEX_PROVIDER);
-    if (provider !== OPENAI_CODEX_PROVIDER) continue;
-    const label = normalizeLabel(labelRaw);
-    if (reserved.has(label)) continue;
-    discovered.push(label);
-  }
-
-  return discovered.toSorted((a, b) => a.localeCompare(b));
-}
-
-export function planEvenLabelAssignments({ candidateAgentIds, existingPinsByAgentId, poolLabels }) {
-  const agents = Array.isArray(candidateAgentIds) ? candidateAgentIds : [];
-  const pins = isObject(existingPinsByAgentId) ? existingPinsByAgentId : {};
-  const pool = Array.isArray(poolLabels) ? poolLabels : [];
-
-  const normalizedPool = [...new Set(pool.map((label) => normalizeLabel(label)))];
-  if (normalizedPool.length === 0) {
-    throw new Error("autopin requires a non-empty pool of labels.");
-  }
-
-  const counts = new Map(normalizedPool.map((label) => [label, 0]));
-  for (const labelRaw of Object.values(pins)) {
-    if (typeof labelRaw !== "string") continue;
-    let label;
-    try {
-      label = normalizeLabel(labelRaw);
-    } catch {
-      continue;
-    }
-    if (!counts.has(label)) continue;
-    counts.set(label, counts.get(label) + 1);
-  }
-
-  const uniqueCandidates = [...new Set(agents.map((id) => normalizeAgentId(id)))].toSorted((a, b) =>
-    a.localeCompare(b),
-  );
-  const assignments = {};
-
-  const pickLeastUsedLabel = () => {
-    let bestLabel = normalizedPool[0];
-    let bestCount = counts.get(bestLabel);
-    for (let i = 1; i < normalizedPool.length; i += 1) {
-      const label = normalizedPool[i];
-      const count = counts.get(label);
-      if (count < bestCount) {
-        bestLabel = label;
-        bestCount = count;
-      }
-    }
-    return bestLabel;
-  };
-
-  for (const agentId of uniqueCandidates) {
-    if (Object.hasOwn(pins, agentId)) continue;
-    const label = pickLeastUsedLabel();
-    assignments[agentId] = label;
-    counts.set(label, counts.get(label) + 1);
-  }
-
-  return { assignments, poolLabels: normalizedPool };
-}
-
 function resolveHomeDir(cliHome) {
   const resolved = cliHome ? path.resolve(cliHome) : process.env.HOME;
   if (!resolved) {
@@ -284,6 +202,22 @@ function resolveAimgrStateDir({ homeDir }) {
 
 function resolveOpenclawAuthStorePath(homeDir, agentId) {
   return path.join(homeDir, ".openclaw", "agents", agentId, "agent", "auth-profiles.json");
+}
+
+function discoverOpenclawAgentIdsWithAuthStores(homeDir) {
+  const agentsRoot = path.join(homeDir, ".openclaw", "agents");
+  if (!fs.existsSync(agentsRoot)) {
+    return [];
+  }
+  const ids = [];
+  for (const entry of fs.readdirSync(agentsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const agentId = entry.name;
+    if (fs.existsSync(resolveOpenclawAuthStorePath(homeDir, agentId))) {
+      ids.push(agentId);
+    }
+  }
+  return ids.toSorted((a, b) => a.localeCompare(b));
 }
 
 function resolveOpenclawSessionsStorePath(homeDir, agentId) {
@@ -723,6 +657,23 @@ function writeJsonFileWithBackup(filePath, data) {
   fs.writeFileSync(filePath, json, { encoding: "utf8" });
 }
 
+function writeJsonFileWithBackupIfChanged(filePath, data) {
+  const next = `${JSON.stringify(data, null, 2)}\n`;
+  let current = null;
+  try {
+    current = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    if (err?.code !== "ENOENT") {
+      throw err;
+    }
+  }
+  if (current === next) {
+    return { wrote: false, path: filePath };
+  }
+  writeJsonFileWithBackup(filePath, data);
+  return { wrote: true, path: filePath };
+}
+
 function writeTextFileIfChanged(filePath, text, { mode } = {}) {
   const next = String(text ?? "");
   let current = null;
@@ -858,23 +809,32 @@ function loadAimgrState(statePath) {
   if (!raw) {
     return createEmptyState();
   }
-  return loadAimgrStateFromJsonValue(raw, statePath);
+  const { state, changed } = normalizeAimgrStateFromJsonValue(raw, statePath);
+  if (changed) {
+    writeJsonFileWithBackupIfChanged(statePath, state);
+  }
+  return state;
 }
 
 function loadAimgrStateFromJsonValue(raw, sourceDescription = "<memory>") {
+  return normalizeAimgrStateFromJsonValue(raw, sourceDescription).state;
+}
+
+function normalizeAimgrStateFromJsonValue(raw, sourceDescription = "<memory>") {
   if (!isObject(raw)) {
     throw new Error(`aimgr state must be a JSON object: ${sourceDescription}`);
   }
 
   // Current SSOT shape (schemaVersion present) — keep unknown keys, but ensure we have the basics.
   if (typeof raw.schemaVersion === "string") {
+    const original = JSON.stringify(raw);
     const state = structuredClone(raw);
     ensureStateShape(state);
-    return state;
+    return { state, changed: JSON.stringify(state) !== original };
   }
 
-  // Legacy shape — migrate in-memory (write happens on next mutation).
-  return normalizeLegacyStateV0(raw);
+  // Legacy shape — migrate eagerly so the persisted state stops carrying the old truth.
+  return { state: normalizeLegacyStateV0(raw), changed: true };
 }
 
 function pruneOpenaiCodexHistory(history) {
@@ -1225,13 +1185,9 @@ function ensureAccountShape(account, { providerHint } = {}) {
   };
 
   const reauth = isObject(account.reauth) ? account.reauth : {};
-  const reauthMode =
-    normalizeInteractiveOAuthMode(reauth.mode)
-    ?? (nextProvider === OPENAI_CODEX_PROVIDER || nextProvider === ANTHROPIC_PROVIDER
-      ? INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE
-      : INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK);
+  const reauthMode = normalizeInteractiveOAuthMode(reauth.mode);
   account.reauth = {
-    mode: reauthMode,
+    ...(reauthMode ? { mode: reauthMode } : {}),
     ...(typeof reauth.lastAttemptAt === "string" && reauth.lastAttemptAt.trim()
       ? { lastAttemptAt: reauth.lastAttemptAt.trim() }
       : {}),
@@ -1476,7 +1432,7 @@ function ensureStateShape(state) {
     if (migrationSource && !account.browser.seededFrom) {
       account.browser.seededFrom = migrationSource;
     }
-    if (!account.reauth.mode) {
+    if (!account.reauth.mode && (legacyBindingMode || migrationSource)) {
       account.reauth.mode =
         legacyBindingMode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK
           ? INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK
@@ -2029,7 +1985,7 @@ function toIsoFromExpiresMs(expiresMs) {
   return new Date(Number(expiresMs)).toISOString();
 }
 
-function seedAimBrowserProfileFromOpenclaw({ state, label, homeDir, profileId }) {
+export function seedAimBrowserProfileFromOpenclaw({ state, label, homeDir, profileId }) {
   const normalizedLabel = normalizeLabel(label);
   const selectedProfileId = String(profileId ?? "").trim();
   if (!selectedProfileId) {
@@ -2177,24 +2133,9 @@ export async function ensureOpenAICodexInteractiveLoginBinding({
   promptLineImpl = promptLine,
 }) {
   const normalizedLabel = normalizeLabel(label);
-  const rawAccount = isObject(state.accounts?.[normalizedLabel]) ? state.accounts[normalizedLabel] : null;
-  const rawLegacyBinding = isObject(state.targets?.interactiveOAuth?.bindings?.[normalizedLabel])
-    ? state.targets.interactiveOAuth.bindings[normalizedLabel]
-    : null;
-  const rawLegacyProfile =
-    typeof rawAccount?.openclawBrowserProfile === "string"
-      ? rawAccount.openclawBrowserProfile.trim()
-      : typeof state.targets?.openclaw?.browserProfiles?.[normalizedLabel] === "string"
-        ? state.targets.openclaw.browserProfiles[normalizedLabel].trim()
-        : "";
-  const hasConfiguredMode =
-    Boolean(normalizeInteractiveOAuthMode(rawAccount?.reauth?.mode))
-    || Boolean(normalizeInteractiveOAuthMode(rawLegacyBinding?.mode))
-    || Boolean(rawLegacyProfile);
-
   ensureStateShape(state);
   const existingBinding = getInteractiveOAuthBindingForLabel(state, normalizedLabel);
-  if (!hasConfiguredMode) {
+  if (!existingBinding?.mode) {
     process.stdout.write(`No interactive login mode configured for label "${normalizedLabel}" yet.\n`);
     process.stdout.write("Choose login mode:\n");
     process.stdout.write("  1) AIM-owned browser profile\n");
@@ -3755,23 +3696,27 @@ function applyOpenclawFromState(params, state, { pinsOverride } = {}) {
   const accounts = isObject(state.accounts) ? state.accounts : {};
   const supportedProviders = [OPENAI_CODEX_PROVIDER, ANTHROPIC_PROVIDER];
   const supportedProviderSet = new Set(supportedProviders);
+  const assignments = isObject(pinsOverride) ? pinsOverride : getOpenclawPins(state);
+  const assignedLabelsByProvider = new Map(supportedProviders.map((provider) => [provider, new Set()]));
+  const assignedLabelByAgentId = new Map();
 
-  const managedLabelsByProvider = new Map(supportedProviders.map((provider) => [provider, []]));
-  for (const [label, account] of Object.entries(accounts)) {
-    if (!isObject(account)) continue;
+  for (const [agentIdRaw, labelRaw] of Object.entries(assignments)) {
+    const agentId = normalizeAgentId(agentIdRaw);
+    const label = normalizeLabel(labelRaw);
+    const account = accounts[label];
+    if (!isObject(account)) {
+      throw new Error(`OpenClaw assignment references missing account: agent=${agentId} label=${label}`);
+    }
     const provider = normalizeProviderId(account.provider);
-    if (!supportedProviderSet.has(provider)) continue;
+    if (!supportedProviderSet.has(provider)) {
+      throw new Error(`OpenClaw assignment references unsupported provider: agent=${agentId} label=${label} provider=${provider}`);
+    }
     const credsByLabel = state.credentials[provider];
-    if (!isObject(credsByLabel?.[label])) continue;
-    managedLabelsByProvider.get(provider).push(label);
-  }
-
-  const totalManaged = Array.from(managedLabelsByProvider.values()).reduce((sum, labels) => sum + labels.length, 0);
-  if (totalManaged === 0) {
-    throw new Error(
-      "No managed accounts with credentials found in SSOT. " +
-        "Run `aim <label>` (or `aim login <label>`) to login at least one account first.",
-    );
+    if (!isObject(credsByLabel?.[label])) {
+      throw new Error(`OpenClaw assignment references label with missing credentials: agent=${agentId} label=${label} provider=${provider}`);
+    }
+    assignedLabelsByProvider.get(provider).add(label);
+    assignedLabelByAgentId.set(agentId, label);
   }
 
   // Build desired OpenClaw oauth credential records.
@@ -3779,7 +3724,7 @@ function applyOpenclawFromState(params, state, { pinsOverride } = {}) {
   const desiredProfileIdsByProvider = new Map(supportedProviders.map((provider) => [provider, []]));
 
   for (const provider of supportedProviders) {
-    const labels = managedLabelsByProvider.get(provider).toSorted((a, b) => a.localeCompare(b));
+    const labels = Array.from(assignedLabelsByProvider.get(provider)).toSorted((a, b) => a.localeCompare(b));
     const credsByLabel = state.credentials[provider];
     for (const label of labels) {
       const cred = credsByLabel[label];
@@ -3804,7 +3749,8 @@ function applyOpenclawFromState(params, state, { pinsOverride } = {}) {
     }
   }
 
-  // Main store: replace all managed-provider profiles with managed profiles.
+  // Managed OpenClaw auth materializes the current assignment map only; unassigned
+  // pool labels must not remain consumable through hidden defaults or stale per-agent stores.
   const mainStorePath = resolveOpenclawAuthStorePath(homeDir, "main");
   const mainRaw = readJsonFile(mainStorePath) ?? { version: 1, profiles: {} };
   if (!isObject(mainRaw) || !isObject(mainRaw.profiles)) {
@@ -3833,51 +3779,62 @@ function applyOpenclawFromState(params, state, { pinsOverride } = {}) {
     }
   }
 
-  writeJsonFileWithBackup(mainStorePath, nextMain);
+  const wrote = [];
+  if (writeJsonFileWithBackupIfChanged(mainStorePath, nextMain).wrote) {
+    wrote.push(mainStorePath);
+  }
 
-  // Per-agent pins: order override only (profiles inherited from main).
-  const pins = isObject(pinsOverride) ? pinsOverride : getOpenclawPins(state);
-  const wrote = [mainStorePath];
-  for (const [agentIdRaw, labelRaw] of Object.entries(pins)) {
-    const agentId = normalizeAgentId(agentIdRaw);
-    const label = normalizeLabel(labelRaw);
-    const account = accounts[label];
-    if (!isObject(account)) {
-      throw new Error(`Pin references missing account: agent=${agentId} label=${label}`);
-    }
-    const provider = normalizeProviderId(account.provider);
-    if (!supportedProviderSet.has(provider)) {
-      throw new Error(`Pin references unsupported provider: agent=${agentId} label=${label} provider=${provider}`);
-    }
-    const credsByLabel = state.credentials[provider];
-    if (!isObject(credsByLabel?.[label])) {
-      throw new Error(`Pin references label with missing credentials: agent=${agentId} label=${label} provider=${provider}`);
-    }
-    const profileId = resolveOpenclawProfileIdForProviderLabel(provider, label);
+  // Per-agent stores are assignment-only overrides. Anything not assigned must have
+  // managed-provider order/lastGood removed so assignments stay the sole steady-state truth.
+  const allAgentIds = new Set([
+    ...discoverOpenclawAgentIdsWithAuthStores(homeDir),
+    ...Array.from(assignedLabelByAgentId.keys()),
+  ]);
+  for (const agentId of Array.from(allAgentIds).toSorted((a, b) => a.localeCompare(b))) {
+    if (agentId === "main") continue;
+    const assignedLabel = assignedLabelByAgentId.get(agentId) ?? null;
+    const account = assignedLabel ? accounts[assignedLabel] : null;
+    const provider = assignedLabel ? normalizeProviderId(account?.provider) : null;
+    const profileId = assignedLabel ? resolveOpenclawProfileIdForProviderLabel(provider, assignedLabel) : null;
 
     const storePath = resolveOpenclawAuthStorePath(homeDir, agentId);
-    const existing = readJsonFile(storePath) ?? { version: 1, profiles: {} };
-    if (!isObject(existing) || !isObject(existing.profiles)) {
+    const existing = readJsonFile(storePath);
+    if (!existing && !assignedLabel) {
+      continue;
+    }
+    const base = existing ?? { version: 1, profiles: {} };
+    if (!isObject(base) || !isObject(base.profiles)) {
       throw new Error(`OpenClaw auth store is missing profiles object: ${storePath}`);
     }
-    const next = structuredClone(existing);
+    const next = structuredClone(base);
     next.version = Number(next.version ?? 1);
     next.profiles = isObject(next.profiles) ? next.profiles : {};
 
-    // Remove any local profiles for this provider to prevent drift/collisions.
     for (const [pid, c] of Object.entries(next.profiles)) {
       if (!isObject(c)) continue;
-      if (normalizeProviderId(c.provider) !== provider) continue;
+      if (!supportedProviderSet.has(normalizeProviderId(c.provider))) continue;
       delete next.profiles[pid];
     }
 
     next.order = isObject(next.order) ? next.order : {};
-    next.order[provider] = [profileId];
     next.lastGood = isObject(next.lastGood) ? next.lastGood : {};
-    next.lastGood[provider] = profileId;
+    for (const managedProvider of supportedProviders) {
+      if (assignedLabel && managedProvider === provider) {
+        next.order[managedProvider] = [profileId];
+        next.lastGood[managedProvider] = profileId;
+        continue;
+      }
+      if (Object.hasOwn(next.order, managedProvider)) {
+        delete next.order[managedProvider];
+      }
+      if (Object.hasOwn(next.lastGood, managedProvider)) {
+        delete next.lastGood[managedProvider];
+      }
+    }
 
-    writeJsonFileWithBackup(storePath, next);
-    wrote.push(storePath);
+    if (writeJsonFileWithBackupIfChanged(storePath, next).wrote) {
+      wrote.push(storePath);
+    }
   }
 
   return { wrote };
@@ -4174,11 +4131,19 @@ async function activateCodexPoolSelection({ state, homeDir }) {
   return { status, receipt, wrote: Boolean(activated.wrote) };
 }
 
-async function rebalanceOpenclawPool(params, state) {
+export async function rebalanceOpenclawPool(
+  params,
+  state,
+  {
+    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
+    readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
+    syncOpenclawFromStateImpl = syncOpenclawFromState,
+  } = {},
+) {
   ensureStateShape(state);
   const homeDir = resolveHomeDir(params.home);
   const observedAt = new Date().toISOString();
-  const usageByProvider = await probeUsageSnapshotsByProvider(state);
+  const usageByProvider = await probeUsageSnapshotsByProviderImpl(state);
   const usageByLabel = usageByProvider[OPENAI_CODEX_PROVIDER];
   const poolStatus = collectCodexPoolStatus({
     state,
@@ -4198,7 +4163,7 @@ async function rebalanceOpenclawPool(params, state) {
   );
 
   const target = getOpenclawTargetState(state);
-  const agentsList = readOpenclawAgentsListFromConfig();
+  const agentsList = readOpenclawAgentsListFromConfigImpl();
   const configuredAgents = discoverConfiguredOpenclawCodexAgents({
     agentsList,
     exclusions: getOpenclawExclusions(state),
@@ -4240,16 +4205,14 @@ async function rebalanceOpenclawPool(params, state) {
   }
 
   target.assignments = plan.assignments;
-  const synced = await syncOpenclawFromState(params, state);
+  const synced = await syncOpenclawFromStateImpl(params, state);
   const warnings = Array.isArray(synced.warnings) ? synced.warnings : [];
-  const status =
-    plan.status === "noop"
-      ? warnings.length > 0
-        ? "applied_with_warnings"
-        : "noop"
-      : warnings.length > 0
-        ? "applied_with_warnings"
-        : "applied";
+  let status = "applied";
+  if (plan.status === "noop") {
+    status = warnings.length > 0 ? "applied_with_warnings" : "noop";
+  } else if (plan.status === "applied_with_warnings" || warnings.length > 0) {
+    status = "applied_with_warnings";
+  }
 
   const receipt = {
     action: "rebalance_openclaw",
