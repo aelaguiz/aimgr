@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -124,6 +125,7 @@ function makeFakeJwt(payload = {}) {
 async function runCli(argv) {
   const chunks = [];
   const origWrite = process.stdout.write;
+  const origExitCode = process.exitCode;
   process.stdout.write = (chunk, encoding, cb) => {
     chunks.push(typeof chunk === "string" ? chunk : chunk.toString(encoding));
     if (typeof cb === "function") cb();
@@ -133,6 +135,7 @@ async function runCli(argv) {
     await main(argv);
   } finally {
     process.stdout.write = origWrite;
+    process.exitCode = origExitCode;
   }
   return chunks.join("");
 }
@@ -696,8 +699,8 @@ test("apply materializes only assigned managed profiles and clears stale per-age
   assert.ok(mainStore.profiles["openai-codex:boss"]);
   assert.equal(mainStore.profiles["openai-codex:qa"], undefined);
   assert.equal(mainStore.profiles["openai-codex:boss"].provider, "openai-codex");
-  assert.ok(Array.isArray(mainStore.order["openai-codex"]));
-  assert.deepEqual(mainStore.order["openai-codex"], ["openai-codex:boss"]);
+  assert.equal(mainStore.order?.["openai-codex"], undefined);
+  assert.equal(mainStore.lastGood?.["openai-codex"], undefined);
 
   const agentStorePath = path.join(home, ".openclaw", "agents", "agent_boss", "agent", "auth-profiles.json");
   const agentStore = JSON.parse(fs.readFileSync(agentStorePath, "utf8"));
@@ -745,7 +748,7 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
         qa: {
           access: "ACCESS_QA",
           refresh: "REFRESH_QA",
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
           accountId: "acct_qa",
         },
       },
@@ -768,11 +771,11 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
 
   writeOpenclawSessionsStore(home, "agent_boss", {
     s1: {
-      modelProvider: "openai",
+      modelProvider: "openai-codex",
       model: "gpt-5.4",
-      providerOverride: "openai",
+      providerOverride: "openai-codex",
       modelOverride: "gpt-5.4",
-      authProfileOverride: "openai:default",
+      authProfileOverride: "openai-codex:qa",
       updatedAt: 1,
     },
   });
@@ -821,7 +824,8 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
         const mainStore = JSON.parse(
           fs.readFileSync(path.join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json"), "utf8"),
         );
-        assert.deepEqual(mainStore.order["openai-codex"], ["openai-codex:boss"]);
+        assert.equal(mainStore.order?.["openai-codex"], undefined);
+        assert.equal(mainStore.lastGood?.["openai-codex"], undefined);
 
         const sessions = JSON.parse(
           fs.readFileSync(path.join(home, ".openclaw", "agents", "agent_boss", "sessions", "sessions.json"), "utf8"),
@@ -841,6 +845,264 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+test("apply fails closed for unassigned managed agents and clears stale session auth overrides", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeBinDir = installFakeOpenclaw({
+    rootDir: home,
+    agentsList: [
+      { id: "agent_boss", model: "openai/gpt-5.4" },
+      { id: "agent_idle", model: "openai-codex/gpt-5.4" },
+    ],
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: "ACCESS_BOSS",
+          refresh: "REFRESH_BOSS",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: { agent_boss: "boss" },
+        exclusions: {},
+      },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  writeOpenclawSessionsStore(home, "agent_idle", {
+    s1: {
+      modelProvider: "openai-codex",
+      model: "gpt-5.4",
+      authProfileOverride: "openai-codex:qa",
+      updatedAt: 1,
+    },
+  });
+
+  await withEnv(
+    {
+      HOME: home,
+      PATH: `${fakeBinDir}:${process.env.PATH}`,
+    },
+    async () => {
+      const out = await runCli(["apply"]);
+      const parsed = JSON.parse(out);
+      assert.equal(parsed.ok, true);
+      assert.equal(parsed.synced.sessions.mode, "disk");
+
+      const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
+
+      const idleStore = JSON.parse(
+        fs.readFileSync(path.join(home, ".openclaw", "agents", "agent_idle", "agent", "auth-profiles.json"), "utf8"),
+      );
+      assert.deepEqual(idleStore.order["openai-codex"], []);
+      assert.equal(idleStore.lastGood?.["openai-codex"], undefined);
+
+      const idleSessions = JSON.parse(
+        fs.readFileSync(path.join(home, ".openclaw", "agents", "agent_idle", "sessions", "sessions.json"), "utf8"),
+      );
+      assert.equal(idleSessions.s1.authProfileOverride, undefined);
+
+      const mainStore = JSON.parse(
+        fs.readFileSync(path.join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json"), "utf8"),
+      );
+      assert.equal(mainStore.order?.["openai-codex"], undefined);
+    },
+  );
+});
+
+test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary when agents must be skipped", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeBinDir = installFakeOpenclaw({
+    rootDir: home,
+    agentsList: [
+      { id: "agent_boss", model: "openai/gpt-5.4" },
+      { id: "agent_idle", model: "openai-codex/gpt-5.4" },
+    ],
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+      qa: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: "ACCESS_BOSS",
+          refresh: "REFRESH_BOSS",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+        qa: {
+          access: "ACCESS_QA",
+          refresh: "REFRESH_QA",
+          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
+          accountId: "acct_qa",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: { agent_boss: "qa" },
+        exclusions: {},
+      },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        HOME: home,
+        PATH: `${fakeBinDir}:${process.env.PATH}`,
+      },
+      async () => {
+        const out = await runCli(["rebalance", "openclaw"]);
+        const parsed = JSON.parse(out);
+        assert.equal(parsed.ok, true);
+        assert.equal(parsed.rebalanced.status, "applied_with_warnings");
+        assert.deepEqual(parsed.rebalanced.receipt.skipped, [{ agentId: "agent_idle", reason: "no_eligible_pool_account" }]);
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.equal(updatedState.targets.openclaw.lastApplyReceipt.status, "applied_with_warnings");
+        assert.deepEqual(updatedState.targets.openclaw.lastApplyReceipt.skipped, [{ agentId: "agent_idle", reason: "no_eligible_pool_account" }]);
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("rebalance openclaw reports blocked at the real CLI boundary when no pool account is eligible", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeBinDir = installFakeOpenclaw({
+    rootDir: home,
+    agentsList: [{ id: "agent_boss", model: "openai/gpt-5.4" }],
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: "ACCESS_BOSS",
+          refresh: "REFRESH_BOSS",
+          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: { agent_boss: "boss" },
+        exclusions: {},
+      },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const result = spawnSync(process.execPath, [path.join(process.cwd(), "bin", "aimgr.js"), "rebalance", "openclaw"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+      PATH: `${fakeBinDir}:${process.env.PATH}`,
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.rebalanced.status, "blocked");
+  assert.deepEqual(parsed.rebalanced.receipt.blockers, [{ reason: "no_eligible_pool_account" }]);
+
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.targets.openclaw.lastApplyReceipt.status, "blocked");
+  assert.deepEqual(updatedState.targets.openclaw.lastApplyReceipt.blockers, [{ reason: "no_eligible_pool_account" }]);
 });
 
 test("sync codex bootstraps consumer state and strips authority-local OpenClaw metadata", async () => {
@@ -1208,6 +1470,15 @@ test("codex use writes auth.json and status reports active imported label", asyn
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(updatedState.targets.codexCli.activeLabel, "boss");
     assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.status, "activated");
+    assert.deepEqual(updatedState.pool.openaiCodex.history.at(-1), {
+      observedAt: updatedState.targets.codexCli.lastSelectionReceipt.observedAt,
+      kind: "selection",
+      status: "activated",
+      label: "boss",
+      accountId: "acct_123",
+      hadSpareEligibleCapacity: false,
+      reason: "next_best",
+    });
 
     const out = await runCli(["status", "--json", "--home", home]);
     const parsed = JSON.parse(out);
@@ -1217,6 +1488,107 @@ test("codex use writes auth.json and status reports active imported label", asyn
     assert.equal(parsed.codexCli.actualAccountId, "acct_123");
     assert.equal(parsed.nextBestCandidate.label, "boss");
     assert.ok(parsed.warnings.every((warning) => !String(warning.kind).startsWith("codex_target_")));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("codex use skips expired labels and activates the next eligible pool account", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const qaJwt = makeFakeJwt({
+    email: "qa@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_qa",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+        qa: {
+          access: qaJwt,
+          refresh: "REFRESH_QA",
+          idToken: qaJwt,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_qa",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "ssh://studio.local/~/.aimgr/secrets.json",
+          importedAt: new Date().toISOString(),
+          labels: ["boss", "qa"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await runCli(["codex", "use", "--home", home]);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, "qa");
+    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "qa");
+    assert.deepEqual(updatedState.pool.openaiCodex.history.at(-1), {
+      observedAt: updatedState.targets.codexCli.lastSelectionReceipt.observedAt,
+      kind: "selection",
+      status: "activated",
+      label: "qa",
+      accountId: "acct_qa",
+      hadSpareEligibleCapacity: false,
+      reason: "next_best",
+    });
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -1360,6 +1732,50 @@ test("seedAimBrowserProfileFromOpenclaw copies the source profile once and recor
     profileId: "agent-boss",
   });
   assert.equal(second.status, "skipped");
+});
+
+test("real CLI login fails loud on a missing migration profile and leaves OpenClaw assignments untouched", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        browser: { seededFrom: "agent-boss" },
+        reauth: { mode: "aim-browser-profile" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: { agent_boss: "boss" },
+        exclusions: {},
+      },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  await assert.rejects(
+    () => runCli(["boss", "--home", home]),
+    /AIM browser profile is missing and no OpenClaw migration source is available on this host/,
+  );
+
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
+  assert.equal(updatedState.accounts.boss.reauth.mode, "aim-browser-profile");
+  assert.ok(typeof updatedState.accounts.boss.reauth.lastAttemptAt === "string");
 });
 
 test("extractOpenclawConfigAgentModelPrimary handles string/object/null", () => {
@@ -1642,6 +2058,24 @@ test("sessionEntryNeedsModelReset detects runtime/override/provider drift vs des
     }),
     true,
   );
+
+  assert.equal(
+    sessionEntryNeedsModelReset({
+      entry: { authProfileOverride: "openai-codex:qa" },
+      desiredProvider,
+      desiredModel,
+      desiredAuthProfileId: "openai-codex:boss",
+    }),
+    true,
+  );
+
+  assert.equal(
+    sessionEntryNeedsModelReset({
+      entry: { authProfileOverride: "openai-codex:boss" },
+      clearManagedAuthProfile: true,
+    }),
+    true,
+  );
 });
 
 test("resetSessionEntryToDefaults clears runtime/override/authProfile fields", () => {
@@ -1662,7 +2096,12 @@ test("resetSessionEntryToDefaults clears runtime/override/authProfile fields", (
     fallbackNoticeReason: "fallback",
   };
 
-  const patched = resetSessionEntryToDefaults({ entry: before, desiredProvider, desiredModel });
+  const patched = resetSessionEntryToDefaults({
+    entry: before,
+    desiredProvider,
+    desiredModel,
+    desiredAuthProfileId: "openai-codex:boss",
+  });
   assert.equal(patched.changed, true);
   assert.equal(patched.entry.modelProvider, undefined);
   assert.equal(patched.entry.model, undefined);
@@ -1697,10 +2136,12 @@ test("scanOpenclawSessionsStoreForKeysNeedingModelReset finds mismatched keys", 
       k1: { modelProvider: "openai", model: "gpt-5.4" },
       k2: { modelProvider: "openai-codex", model: "gpt-5.4" },
       k3: { providerOverride: "openai", modelOverride: "gpt-4.1" },
+      k4: { authProfileOverride: "openai-codex:qa" },
     },
     desiredProvider,
     desiredModel,
+    desiredAuthProfileId: "openai-codex:boss",
   });
 
-  assert.deepEqual(keys.toSorted(), ["k1", "k3"]);
+  assert.deepEqual(keys.toSorted(), ["k1", "k3", "k4"]);
 });
