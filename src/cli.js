@@ -1447,6 +1447,49 @@ function buildSuggestedAgentBrowserDisplay(candidate) {
   return `agent-browser · ${identity} · session=${candidate.agentBrowserSession}`;
 }
 
+function formatAgentBrowserTarget({ session, profile, fallback = "agent-browser" }) {
+  const trimmedSession = String(session ?? "").trim();
+  const trimmedProfile = String(profile ?? "").trim();
+  if (trimmedSession && trimmedProfile) {
+    return `agent-browser session "${trimmedSession}" using profile ${trimmedProfile}`;
+  }
+  if (trimmedSession) {
+    return `agent-browser session "${trimmedSession}"`;
+  }
+  if (trimmedProfile) {
+    return `agent-browser profile ${trimmedProfile}`;
+  }
+  return fallback;
+}
+
+function describeSuggestedAgentBrowserSource(candidate, label) {
+  const normalizedLabel = normalizeLabel(label);
+  const agentId = String(candidate?.agentId ?? "").trim() || "unknown-agent";
+  const configPath = String(candidate?.configPath ?? "").trim();
+  if (candidate?.source === "openclaw-binding") {
+    return `AIM found it from exact OpenClaw binding ${normalizedLabel} -> ${agentId}${configPath ? ` in ${configPath}` : ""}.`;
+  }
+  if (candidate?.source === "workspace-session-match") {
+    return `AIM found it because session "${candidate.agentBrowserSession}" exactly matches ${normalizedLabel}${configPath ? ` in ${configPath}` : ""}.`;
+  }
+  if (candidate?.source === "workspace-profile-match") {
+    return `AIM found it because profile "${path.basename(candidate.agentBrowserProfile)}" exactly matches ${normalizedLabel}${configPath ? ` in ${configPath}` : ""}.`;
+  }
+  return configPath ? `AIM found it in ${configPath}.` : "AIM found it from repo browser config.";
+}
+
+function buildSuggestedAgentBrowserDetails(candidate, { label, prefix = "Will use" } = {}) {
+  if (!candidate) return [];
+  const target = formatAgentBrowserTarget({
+    session: candidate.agentBrowserSession,
+    profile: candidate.agentBrowserProfile,
+  });
+  return [
+    `${prefix} ${target}.`,
+    describeSuggestedAgentBrowserSource(candidate, label),
+  ];
+}
+
 export function discoverSuggestedBrowserBindings({
   label,
   repoRoot,
@@ -2014,6 +2057,23 @@ async function promptRequiredLine(message) {
   }
 }
 
+function formatMenuPromptSuffix(options) {
+  const keys = (Array.isArray(options) ? options : [])
+    .map((option) => String(option?.key ?? "").trim())
+    .filter(Boolean);
+  if (keys.length === 0) return "";
+  const numeric = keys.every((key) => /^\d+$/.test(key));
+  if (!numeric) {
+    return ` (${keys.join("/")})`;
+  }
+  const sorted = keys.map((key) => Number(key)).toSorted((a, b) => a - b);
+  const contiguous = sorted.every((value, index) => index === 0 || value === sorted[index - 1] + 1);
+  if (contiguous) {
+    return ` (${sorted[0]}-${sorted[sorted.length - 1]})`;
+  }
+  return ` (${sorted.join("/")})`;
+}
+
 async function promptMenuChoice({ title, options, prompt = "Choose:", promptLineImpl = promptLine }) {
   const normalizedOptions = Array.isArray(options) ? options.filter(Boolean) : [];
   if (title) {
@@ -2021,16 +2081,23 @@ async function promptMenuChoice({ title, options, prompt = "Choose:", promptLine
   }
   for (const option of normalizedOptions) {
     process.stdout.write(`  ${option.key}. ${option.label}\n`);
+    const details = Array.isArray(option.details)
+      ? option.details
+      : typeof option.details === "string" && option.details.trim()
+        ? [option.details.trim()]
+        : [];
+    for (const detail of details) {
+      process.stdout.write(`     ${detail}\n`);
+    }
   }
   process.stdout.write("\n");
 
   const validKeys = new Set(normalizedOptions.map((option) => String(option.key)));
-  const min = normalizedOptions[0]?.key;
-  const max = normalizedOptions[normalizedOptions.length - 1]?.key;
+  const suffix = formatMenuPromptSuffix(normalizedOptions);
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const answer = await promptLineImpl(`${prompt}${min !== undefined && max !== undefined ? ` (${min}-${max})` : ""}`);
+    const answer = await promptLineImpl(`${prompt}${suffix}`);
     const choice = String(answer ?? "").trim();
     if (validKeys.has(choice)) {
       return choice;
@@ -4858,6 +4925,93 @@ function summarizeBrowserBindingForPanel({ binding, reauthMode }) {
   return binding.mode;
 }
 
+function describeConcreteBrowserTarget(binding) {
+  if (!binding) return "no configured browser binding";
+  if (binding.mode === BROWSER_MODE_AIM_PROFILE) {
+    return binding.userDataDir
+      ? `AIM browser path ${binding.userDataDir}`
+      : "the AIM browser path for this label";
+  }
+  if (binding.mode === BROWSER_MODE_CHROME_PROFILE) {
+    return binding.userDataDir
+      ? `Chrome user-data-dir ${binding.userDataDir}`
+      : "the saved Chrome user-data-dir";
+  }
+  if (binding.mode === BROWSER_MODE_AGENT_BROWSER) {
+    return formatAgentBrowserTarget({
+      session: binding.agentBrowserSession,
+      profile: binding.agentBrowserProfile,
+      fallback: "the saved agent-browser binding",
+    });
+  }
+  return `browser mode ${binding.mode}`;
+}
+
+function buildBrowserSetupMenuOptions({ label, homeDir, suggestions, discoveryWarning }) {
+  const normalizedLabel = normalizeLabel(label);
+  const suggested = Array.isArray(suggestions) ? suggestions : [];
+  const topSuggestion = suggested[0] ?? null;
+  const aimPath = resolveAimBrowserUserDataDir({ homeDir, label: normalizedLabel });
+  const agentBrowserOption = topSuggestion
+    ? {
+        key: "1",
+        action: "setup_agent_browser",
+        label: "Use the likely agent browser",
+        details: buildSuggestedAgentBrowserDetails(topSuggestion, {
+          label: normalizedLabel,
+          prefix: "Next screen will offer",
+        }),
+      }
+    : {
+        key: "1",
+        action: "setup_agent_browser",
+        label: "Use an agent-browser profile",
+        details: [
+          `Will ask for an explicit agent-browser profile path and session, then save them for ${normalizedLabel}.`,
+          ...(discoveryWarning
+            ? [`AIM could not prefill a likely match because suggestion lookup failed: ${discoveryWarning}`]
+            : []),
+        ],
+      };
+
+  return [
+    agentBrowserOption,
+    {
+      key: "2",
+      action: "setup_aim_profile",
+      label: "Use an AIM browser",
+      details: [`Will save AIM browser path ${aimPath} and then start login for ${normalizedLabel}.`],
+    },
+    {
+      key: "3",
+      action: "setup_chrome_profile",
+      label: "Use another Chrome profile",
+      details: [`Will ask for an absolute Chrome user-data-dir, save that exact path, and then start login for ${normalizedLabel}.`],
+    },
+    {
+      key: "4",
+      action: "setup_manual_callback",
+      label: "Manual callback login",
+      details: [
+        `Will not use a local browser for ${normalizedLabel}.`,
+        "If refresh is not enough, AIM will print the auth URL and ask you to paste the callback URL.",
+      ],
+    },
+    {
+      key: "5",
+      action: "show_details",
+      label: "Show advanced details",
+      details: [`Will print the raw provider, credential, and browser-binding JSON for ${normalizedLabel}.`],
+    },
+    {
+      key: "0",
+      action: "done",
+      label: "Cancel",
+      details: ["Makes no changes."],
+    },
+  ];
+}
+
 function buildLabelControlPanelState({ state, label, homeDir }) {
   ensureStateShape(state);
   const normalizedLabel = normalizeLabel(label);
@@ -4932,28 +5086,43 @@ function renderLabelControlPanel(panelState) {
   process.stdout.write(`${lines.join("\n")}\n\n`);
 }
 
-function buildLabelPanelActions(panelState) {
+function buildLabelPanelActions(panelState, { homeDir, suggestions, discoveryWarning } = {}) {
   if (panelState.panelKind === "setup") {
-    return [
-      { key: "1", action: "setup_agent_browser", label: "Use the likely agent browser" },
-      { key: "2", action: "setup_aim_profile", label: "Use an AIM browser" },
-      { key: "3", action: "setup_chrome_profile", label: "Use another Chrome profile" },
-      { key: "4", action: "setup_manual_callback", label: "Manual callback login" },
-      { key: "5", action: "show_details", label: "Show advanced details" },
-      { key: "0", action: "done", label: "Cancel" },
-    ];
+    return buildBrowserSetupMenuOptions({
+      label: panelState.label,
+      homeDir,
+      suggestions,
+      discoveryWarning,
+    });
   }
 
   const actions = [];
   const canReauth = panelState.reauthMode === REAUTH_MODE_MANUAL_CALLBACK || Boolean(panelState.binding);
+  const providerUrl = resolveProviderHomeUrl(panelState.provider);
+  const browserTarget = describeConcreteBrowserTarget(panelState.binding);
   if (panelState.panelKind === "reauth" && canReauth) {
-    actions.push({ key: "1", action: "reauth_now", label: "Reauth now" });
+    actions.push({
+      key: "1",
+      action: "reauth_now",
+      label: "Reauth now",
+      details:
+        panelState.reauthMode === REAUTH_MODE_MANUAL_CALLBACK
+          ? [
+              "Will try token refresh first.",
+              "If refresh is not enough, AIM will print the auth URL and ask you to paste the callback URL.",
+            ]
+          : [
+              "Will try token refresh first.",
+              `If refresh is not enough, AIM will open ${providerUrl || "the provider login page"} using ${browserTarget}.`,
+            ],
+    });
   }
   if (panelState.binding) {
     actions.push({
       key: String(actions.length + 1),
       action: "open_browser",
       label: "Open browser",
+      details: [`Will open ${providerUrl || "the provider home page"} using ${browserTarget}.`],
     });
   }
   if (panelState.panelKind !== "reauth" && canReauth) {
@@ -4961,22 +5130,40 @@ function buildLabelPanelActions(panelState) {
       key: String(actions.length + 1),
       action: "reauth_now",
       label: "Reauth / refresh login",
+      details:
+        panelState.reauthMode === REAUTH_MODE_MANUAL_CALLBACK
+          ? [
+              "Will try token refresh first.",
+              "If refresh is not enough, AIM will print the auth URL and ask you to paste the callback URL.",
+            ]
+          : [
+              "Will try token refresh first.",
+              `If refresh is not enough, AIM will open ${providerUrl || "the provider login page"} using ${browserTarget}.`,
+            ],
     });
   }
   actions.push({
     key: String(actions.length + 1),
     action: "change_browser_setup",
     label: "Change browser setup",
+    details: panelState.binding
+      ? [
+          `Current browser binding: ${browserTarget}.`,
+          `Will reopen setup and only save a different binding for ${panelState.label} if you confirm it.`,
+        ]
+      : [`Will reopen setup and save a browser/login path for ${panelState.label}.`],
   });
   actions.push({
     key: String(actions.length + 1),
     action: "show_details",
     label: "Show details",
+    details: [`Will print the raw provider, credential, and browser-binding JSON for ${panelState.label}.`],
   });
   actions.push({
     key: "0",
     action: "done",
     label: "Done",
+    details: ["Makes no changes."],
   });
   return actions;
 }
@@ -5039,10 +5226,18 @@ async function chooseSuggestedAgentBrowserBinding({
     const options = candidates.map((candidate, index) => ({
       key: String(index + 1),
       label: candidate.display,
+      details: buildSuggestedAgentBrowserDetails(candidate, {
+        label,
+        prefix: "Will save",
+      }),
     }));
     const manualKey = String(candidates.length + 1);
-    options.push({ key: manualKey, label: "Enter another agent-browser profile/session" });
-    options.push({ key: "0", label: "Back" });
+    options.push({
+      key: manualKey,
+      label: "Enter another agent-browser profile/session",
+      details: [`Will ask for an explicit profile path and session, then save them for ${label}.`],
+    });
+    options.push({ key: "0", label: "Back", details: ["Makes no changes."] });
     const choice = await promptMenuChoice({
       title: `Suggested browser bindings for ${label}`,
       options,
@@ -5059,8 +5254,15 @@ async function chooseSuggestedAgentBrowserBinding({
     const confirm = await promptMenuChoice({
       title: `Use this browser binding for ${label}?`,
       options: [
-        { key: "1", label: "Yes, save it" },
-        { key: "0", label: "Back" },
+        {
+          key: "1",
+          label: "Yes, save it",
+          details: buildSuggestedAgentBrowserDetails(candidate, {
+            label,
+            prefix: "Will save",
+          }),
+        },
+        { key: "0", label: "Back", details: ["Makes no changes."] },
       ],
       promptLineImpl,
     });
@@ -5129,14 +5331,12 @@ async function runBrowserBindingWizard({
 
     const choice = await promptMenuChoice({
       title: "What do you want to do?",
-      options: [
-        { key: "1", label: suggestions.length > 0 ? "Use the likely agent browser" : "Use an agent-browser profile" },
-        { key: "2", label: "Use an AIM browser" },
-        { key: "3", label: "Use another Chrome profile" },
-        { key: "4", label: "Manual callback login" },
-        { key: "5", label: "Show advanced details" },
-        { key: "0", label: "Cancel" },
-      ],
+      options: buildBrowserSetupMenuOptions({
+        label: normalizedLabel,
+        homeDir,
+        suggestions,
+        discoveryWarning,
+      }).map(({ key, label: optionLabel, details }) => ({ key, label: optionLabel, details })),
       promptLineImpl,
     });
 
@@ -5446,16 +5646,26 @@ export async function runLabelControlPanel({
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    const { suggestions, discoveryWarning } = loadSuggestedBrowserBindings({
+      label: normalizedLabel,
+      repoRoot,
+      readOpenclawBindingsFromConfigImpl,
+      readOpenclawAgentsListFromConfigImpl,
+    });
     const panelState = buildLabelControlPanelState({
       state,
       label: normalizedLabel,
       homeDir,
     });
     renderLabelControlPanel(panelState);
-    const actions = buildLabelPanelActions(panelState);
+    const actions = buildLabelPanelActions(panelState, {
+      homeDir,
+      suggestions,
+      discoveryWarning,
+    });
     const choice = await promptMenuChoice({
       title: "What do you want to do?",
-      options: actions.map(({ key, label: actionLabel }) => ({ key, label: actionLabel })),
+      options: actions.map(({ key, label: actionLabel, details }) => ({ key, label: actionLabel, details })),
       promptLineImpl,
     });
     const selected = actions.find((action) => action.key === choice);

@@ -880,6 +880,18 @@ test("guided panel can adopt a suggested agent-browser binding and make the labe
       url: "https://chatgpt.com/oauth",
     },
   ]);
+  assert.match(out, /Next screen will offer agent-browser session "agent-cfo" using profile /);
+  assert.match(out, new RegExp(profileDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(out, /AIM found it from exact OpenClaw binding cfo -> agent_cfo_bot/);
+  assert.match(
+    out,
+    new RegExp(
+      `Will save AIM browser path ${path
+        .join(home, ".aimgr", "browser", "cfo", "user-data")
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} and then start login for cfo\\.`,
+    ),
+  );
+  assert.match(out, /Will not use a local browser for cfo\./);
   assert.match(out, /Saved browser setup for cfo\./);
   assert.match(out, /cfo is ready\./);
 });
@@ -983,6 +995,7 @@ test("guided panel open browser delegates to the existing binding launcher", asy
   assert.equal(opened.length, 1);
   assert.equal(opened[0].url, "https://chatgpt.com");
   assert.equal(opened[0].binding.agentBrowserSession, "agent-cfo");
+  assert.match(out, /Will open https:\/\/chatgpt\.com using agent-browser session "agent-cfo" using profile /);
   assert.match(out, /Opened cfo in agent-browser \/ agent-cfo\./);
 });
 
@@ -1035,6 +1048,8 @@ test("guided reauth panel can refresh login and return to ready", async () => {
 
   const persisted = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(persisted.credentials["openai-codex"].cfo.refresh, "NEW_REFRESH");
+  assert.match(out, /Will try token refresh first\./);
+  assert.match(out, /If refresh is not enough, AIM will open https:\/\/chatgpt\.com using agent-browser session "agent-cfo" using profile /);
   assert.match(out, /cfo is ready\./);
 });
 
