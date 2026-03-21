@@ -1,7 +1,7 @@
 ---
 title: "AI Manager — Codex CLI OAuth Pooling + Remote Sync — Architecture Plan"
 date: 2026-03-07
-status: active
+status: superseded
 fallback_policy: forbidden
 owners: [aelaguiz]
 reviewers: [aelaguiz]
@@ -12,6 +12,9 @@ related:
   - docs/MAKE_AI_MANAGER_OWN_OAUTH_TOKEN_REFRESH_2026-03-05.md
 worklog: docs/MANAGE_CODEX_CLI_OAUTH_WITH_AIMGR_2026-03-07_WORKLOG.md
 ---
+
+> Superseded on 2026-03-21 by [DECOUPLE_AIM_ACCOUNT_POOL_FROM_AGENTS_2026-03-21.md](/Users/agents/workspace/agents/docs/DECOUPLE_AIM_ACCOUNT_POOL_FROM_AGENTS_2026-03-21.md).
+> This doc is historical design context only. Do not use it for the current operator model.
 
 # TL;DR
 

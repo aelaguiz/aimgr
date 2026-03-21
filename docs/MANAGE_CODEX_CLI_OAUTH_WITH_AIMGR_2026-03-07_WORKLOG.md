@@ -1,5 +1,8 @@
 # Worklog — AI Manager Codex CLI OAuth Pooling + Remote Sync
 
+> Superseded on 2026-03-21 by [DECOUPLE_AIM_ACCOUNT_POOL_FROM_AGENTS_2026-03-21.md](/Users/agents/workspace/agents/docs/DECOUPLE_AIM_ACCOUNT_POOL_FROM_AGENTS_2026-03-21.md).
+> Keep this only as historical implementation context.
+
 Plan doc: [MANAGE_CODEX_CLI_OAUTH_WITH_AIMGR_2026-03-07.md](/Users/aelaguiz/workspace/aimgr/docs/MANAGE_CODEX_CLI_OAUTH_WITH_AIMGR_2026-03-07.md)
 
 ## Phase 1 (State Boundaries + Worklog Bootstrap) Progress Update

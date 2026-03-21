@@ -13,7 +13,8 @@ const CODEX_AUTH_STORE_MODE_FILE = "file";
 const CODEX_AUTH_STORE_MODE_KEYRING = "keyring";
 const CODEX_AUTH_STORE_MODE_AUTO = "auto";
 const DEFAULT_AUTHORITY_STATE_REMOTE_PATH = "$HOME/.aimgr/secrets.json";
-const INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE = "openclaw-browser-profile";
+const INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE = "aim-browser-profile";
+const LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE = "openclaw-browser-profile";
 const INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK = "manual-callback";
 const STATUS_RESET_TIMEZONE = "America/Chicago";
 const STATUS_RESET_FORMATTER = new Intl.DateTimeFormat("en-US", {
@@ -77,7 +78,7 @@ function normalizeLabel(input) {
       `Invalid label: ${label}. Use lowercase letters, numbers, '_' and '-' (e.g. boss, coder2).`,
     );
   }
-  const reserved = new Set(["status", "login", "pin", "autopin", "apply", "sync", "codex", "use", "help"]);
+  const reserved = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "use", "help"]);
   if (reserved.has(label)) {
     throw new Error(`Refusing label=${label} (reserved CLI word). Pick a different label (e.g. boss, coder2).`);
   }
@@ -155,18 +156,18 @@ function printHelp() {
     "Usage:",
     "  aim status [--json]",
     "  aim login <label>",
-    "  aim <label>            # shorthand for: aim login <label> (also auto-pins agent_<label> if present)",
-    "  aim pin <openclaw_agent_id> <label>   # rare: manual override / non-standard mapping",
-    "  aim autopin openclaw [--pool boss,lessons,...]  # pin all unpinned OpenClaw agents evenly across labels",
-    "  aim apply             # sync OpenClaw derived state from ~/.aimgr/secrets.json",
+    "  aim <label>            # shorthand for: aim login <label> (account-only maintenance / reauth)",
+    "  aim rebalance openclaw # choose pooled Codex assignments for configured OpenClaw agents",
+    "  aim apply             # advanced: materialize stored OpenClaw assignments from ~/.aimgr/secrets.json",
     "  aim sync openclaw     # explicit alias for apply",
     "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
-    "  aim codex use <label> # activate one imported openai-codex label for local Codex CLI",
+    "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
     "",
     "Notes:",
     "  - SSOT file: ~/.aimgr/secrets.json (auto-backed-up on every write).",
     "  - V0 supports: openai-codex (ChatGPT/Codex OAuth) + anthropic (Claude Pro/Max OAuth) on macOS.",
-    "  - OAuth runs inside OpenClaw browser profiles under ~/.openclaw/browser/*/user-data.",
+    "  - Browser-managed OAuth runs inside AIM-owned profiles under ~/.aimgr/browser/<label>/user-data.",
+    "  - `aim pin`, `aim autopin openclaw`, and `aim codex use <label>` are removed; use `aim rebalance openclaw`, `aim apply`, and `aim codex use`.",
     "  - Codex target management is file-backed only in v1; keyring/auto homes fail loud.",
     "",
     "Developer options (rare):",
@@ -275,6 +276,10 @@ function resolveAimgrStatePath(params) {
     return path.resolve(params.state);
   }
   return path.join(homeDir, ".aimgr", "secrets.json");
+}
+
+function resolveAimgrStateDir({ homeDir }) {
+  return path.join(homeDir, ".aimgr");
 }
 
 function resolveOpenclawAuthStorePath(homeDir, agentId) {
@@ -748,21 +753,26 @@ function createEmptyState() {
   return {
     schemaVersion: SCHEMA_VERSION,
     accounts: {},
-    credentials: {},
+    credentials: {
+      [OPENAI_CODEX_PROVIDER]: {},
+      [ANTHROPIC_PROVIDER]: {},
+    },
     imports: {
       authority: {
         codex: {},
       },
     },
+    pool: {
+      openaiCodex: {
+        history: [],
+      },
+    },
     targets: {
       openclaw: {
-        pins: {},
-        browserProfiles: {},
+        assignments: {},
+        exclusions: {},
       },
       codexCli: {},
-      interactiveOAuth: {
-        bindings: {},
-      },
     },
   };
 }
@@ -791,6 +801,16 @@ function normalizeLegacyStateV0(raw) {
 
     migrated.accounts[label] = {
       provider: provider || OPENAI_CODEX_PROVIDER,
+      browser: {
+        owner: "aim",
+        ...(chromeProfileDirectory ? { seededFrom: chromeProfileDirectory } : {}),
+      },
+      reauth: {
+        mode: INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE,
+      },
+      pool: {
+        enabled: true,
+      },
       ...(chromeProfileDirectory ? { chromeProfileDirectory } : {}),
       ...(expectEmail ? { expect: { email: expectEmail } } : {}),
     };
@@ -818,14 +838,13 @@ function normalizeLegacyStateV0(raw) {
   }
 
   const legacyPins = isObject(raw.openclaw?.agentPins) ? raw.openclaw.agentPins : {};
-  migrated.targets.openclaw.pins = isObject(migrated.targets.openclaw.pins) ? migrated.targets.openclaw.pins : {};
   for (const [agentId, profileId] of Object.entries(legacyPins)) {
     if (typeof profileId !== "string") continue;
     const parts = profileId.split(":");
     if (parts.length < 2) continue;
     const suffix = parts.slice(1).join(":");
     try {
-      migrated.targets.openclaw.pins[agentId] = normalizeLabel(suffix);
+      migrated.targets.openclaw.assignments[agentId] = normalizeLabel(suffix);
     } catch {
       // Ignore invalid pins on migration; they must be re-pinned explicitly.
     }
@@ -856,6 +875,30 @@ function loadAimgrStateFromJsonValue(raw, sourceDescription = "<memory>") {
 
   // Legacy shape — migrate in-memory (write happens on next mutation).
   return normalizeLegacyStateV0(raw);
+}
+
+function pruneOpenaiCodexHistory(history) {
+  const list = Array.isArray(history) ? history.filter((entry) => isObject(entry)) : [];
+  const cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000;
+  const filtered = list.filter((entry) => {
+    const observedAtMs = parseExpiresAtToMs(entry.observedAt);
+    return observedAtMs !== null && observedAtMs >= cutoffMs;
+  });
+  const limited = filtered.slice(-200);
+  return limited.map((entry) => {
+    const next = {
+      observedAt: String(entry.observedAt),
+      kind: String(entry.kind),
+    };
+    if (typeof entry.status === "string" && entry.status.trim()) next.status = entry.status.trim();
+    if (typeof entry.label === "string" && entry.label.trim()) next.label = entry.label.trim();
+    if (typeof entry.accountId === "string" && entry.accountId.trim()) next.accountId = entry.accountId.trim();
+    if (typeof entry.reason === "string" && entry.reason.trim()) next.reason = entry.reason.trim();
+    if (typeof entry.hadSpareEligibleCapacity === "boolean") {
+      next.hadSpareEligibleCapacity = entry.hadSpareEligibleCapacity;
+    }
+    return next;
+  });
 }
 
 function sanitizeForStatus(value) {
@@ -939,6 +982,22 @@ function openChromeUserDataDirForUrl({ url, userDataDir }) {
 
 function resolveOpenclawStateDir({ homeDir }) {
   return path.join(homeDir, ".openclaw");
+}
+
+function resolveAimBrowserRootDir({ homeDir }) {
+  return path.join(resolveAimgrStateDir({ homeDir }), "browser");
+}
+
+function resolveAimBrowserUserDataDir({ homeDir, label }) {
+  return path.join(resolveAimBrowserRootDir({ homeDir }), normalizeLabel(label), "user-data");
+}
+
+function resolveAimBrowserLocalStatePath({ homeDir, label }) {
+  return path.join(resolveAimBrowserUserDataDir({ homeDir, label }), "Local State");
+}
+
+function aimBrowserProfileExists({ homeDir, label }) {
+  return fs.existsSync(resolveAimBrowserUserDataDir({ homeDir, label }));
 }
 
 function openclawAgentExists({ openclawStateDir, agentId }) {
@@ -1031,6 +1090,50 @@ export function discoverOpenclawBrowserProfiles({ openclawStateDir }) {
   });
 }
 
+function readAimBrowserFacts({ homeDir, label }) {
+  const userDataDir = resolveAimBrowserUserDataDir({ homeDir, label });
+  if (!fs.existsSync(userDataDir)) {
+    return {
+      label: normalizeLabel(label),
+      exists: false,
+      userDataDir,
+      name: null,
+      userName: null,
+      gaiaName: null,
+    };
+  }
+
+  const info = readChromeDefaultProfileInfoFromLocalState(resolveAimBrowserLocalStatePath({ homeDir, label }));
+  const name = typeof info?.name === "string" ? String(info.name).trim() : "";
+  const userName = typeof info?.user_name === "string" ? String(info.user_name).trim() : "";
+  const gaiaName = typeof info?.gaia_name === "string" ? String(info.gaia_name).trim() : "";
+
+  return {
+    label: normalizeLabel(label),
+    exists: true,
+    userDataDir,
+    name: name || null,
+    userName: userName || null,
+    gaiaName: gaiaName || null,
+  };
+}
+
+function discoverAimBrowserProfiles({ homeDir }) {
+  const browserRoot = resolveAimBrowserRootDir({ homeDir });
+  const labels = listDirectories(browserRoot);
+  return labels
+    .map((labelRaw) => {
+      try {
+        const label = normalizeLabel(labelRaw);
+        return readAimBrowserFacts({ homeDir, label });
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .toSorted((a, b) => a.label.localeCompare(b.label));
+}
+
 function formatOpenclawBrowserProfileChoice(profile) {
   const parts = [profile.profileId];
   const name = profile.name && profile.name !== profile.profileId ? profile.name : null;
@@ -1068,6 +1171,86 @@ function resolveOpenclawBrowserProfileFromInput({ input, profiles }) {
   if (direct) return direct;
 
   return raw;
+}
+
+function getAccountRecord(state, label, { create = false } = {}) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const existing = state.accounts[normalizedLabel];
+  if (isObject(existing)) {
+    return existing;
+  }
+  if (!create) return null;
+  state.accounts[normalizedLabel] = {};
+  return state.accounts[normalizedLabel];
+}
+
+function getAccountBrowserState(state, label, { create = false } = {}) {
+  const account = getAccountRecord(state, label, { create });
+  if (!account) return null;
+  return account.browser;
+}
+
+function getAccountReauthState(state, label, { create = false } = {}) {
+  const account = getAccountRecord(state, label, { create });
+  if (!account) return null;
+  return account.reauth;
+}
+
+function getAccountPoolState(state, label, { create = false } = {}) {
+  const account = getAccountRecord(state, label, { create });
+  if (!account) return null;
+  return account.pool;
+}
+
+function ensureAccountShape(account, { providerHint } = {}) {
+  const nextProvider =
+    normalizeProviderId(account?.provider ?? providerHint ?? OPENAI_CODEX_PROVIDER) || OPENAI_CODEX_PROVIDER;
+  account.provider = nextProvider;
+  account.expect = isObject(account.expect) ? account.expect : {};
+
+  const browser = isObject(account.browser) ? account.browser : {};
+  account.browser = {
+    owner: "aim",
+    ...(typeof browser.seededFrom === "string" && browser.seededFrom.trim()
+      ? { seededFrom: browser.seededFrom.trim() }
+      : {}),
+    ...(typeof browser.seededAt === "string" && browser.seededAt.trim() ? { seededAt: browser.seededAt.trim() } : {}),
+    ...(typeof browser.verifiedAt === "string" && browser.verifiedAt.trim()
+      ? { verifiedAt: browser.verifiedAt.trim() }
+      : {}),
+    ...(typeof browser.conflictReason === "string" && browser.conflictReason.trim()
+      ? { conflictReason: browser.conflictReason.trim() }
+      : {}),
+  };
+
+  const reauth = isObject(account.reauth) ? account.reauth : {};
+  const reauthMode =
+    normalizeInteractiveOAuthMode(reauth.mode)
+    ?? (nextProvider === OPENAI_CODEX_PROVIDER || nextProvider === ANTHROPIC_PROVIDER
+      ? INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE
+      : INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK);
+  account.reauth = {
+    mode: reauthMode,
+    ...(typeof reauth.lastAttemptAt === "string" && reauth.lastAttemptAt.trim()
+      ? { lastAttemptAt: reauth.lastAttemptAt.trim() }
+      : {}),
+    ...(typeof reauth.lastVerifiedAt === "string" && reauth.lastVerifiedAt.trim()
+      ? { lastVerifiedAt: reauth.lastVerifiedAt.trim() }
+      : {}),
+    ...(typeof reauth.blockedReason === "string" && reauth.blockedReason.trim()
+      ? { blockedReason: reauth.blockedReason.trim() }
+      : {}),
+  };
+
+  const pool = isObject(account.pool) ? account.pool : {};
+  account.pool = {
+    enabled: pool.enabled !== false,
+    ...(typeof pool.disabledReason === "string" && pool.disabledReason.trim()
+      ? { disabledReason: pool.disabledReason.trim() }
+      : {}),
+    ...(typeof pool.disabledAt === "string" && pool.disabledAt.trim() ? { disabledAt: pool.disabledAt.trim() } : {}),
+  };
 }
 
 async function promptLine(message, { defaultValue } = {}) {
@@ -1108,17 +1291,20 @@ async function promptRequiredLine(message) {
 function resolveOpenAICodexInteractiveLoginModeFromInput(input) {
   const raw = String(input ?? "").trim();
   if (!raw) return null;
-  if (raw === "1") return INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE;
+  if (raw === "1") return INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
   if (raw === "2") return INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK;
 
   const normalized = raw.toLowerCase().replace(/_/g, "-");
   if (
     normalized === "browser" ||
+    normalized === "aim" ||
+    normalized === "aim-browser" ||
+    normalized === "aim-browser-profile" ||
     normalized === "openclaw" ||
     normalized === "openclaw-browser" ||
     normalized === "openclaw-browser-profile"
   ) {
-    return INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE;
+    return INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
   }
   if (
     normalized === "manual" ||
@@ -1214,6 +1400,7 @@ export function parseAnthropicAuthorizationPaste(input) {
 }
 
 function ensureStateShape(state) {
+  // Durable SSOT lives on account records plus the pooled target blocks below.
   state.schemaVersion = SCHEMA_VERSION;
   state.accounts = isObject(state.accounts) ? state.accounts : {};
   state.credentials = isObject(state.credentials) ? state.credentials : {};
@@ -1226,24 +1413,25 @@ function ensureStateShape(state) {
   state.imports = isObject(state.imports) ? state.imports : {};
   state.imports.authority = isObject(state.imports.authority) ? state.imports.authority : {};
   state.imports.authority.codex = isObject(state.imports.authority.codex) ? state.imports.authority.codex : {};
+  state.pool = isObject(state.pool) ? state.pool : {};
+  state.pool.openaiCodex = isObject(state.pool.openaiCodex) ? state.pool.openaiCodex : {};
+  state.pool.openaiCodex.history = pruneOpenaiCodexHistory(state.pool.openaiCodex.history);
   state.targets = isObject(state.targets) ? state.targets : {};
   state.targets.openclaw = isObject(state.targets.openclaw) ? state.targets.openclaw : {};
-  state.targets.openclaw.pins = isObject(state.targets.openclaw.pins) ? state.targets.openclaw.pins : {};
-  state.targets.openclaw.browserProfiles = isObject(state.targets.openclaw.browserProfiles)
-    ? state.targets.openclaw.browserProfiles
+  state.targets.openclaw.assignments = isObject(state.targets.openclaw.assignments)
+    ? state.targets.openclaw.assignments
+    : {};
+  state.targets.openclaw.exclusions = isObject(state.targets.openclaw.exclusions)
+    ? state.targets.openclaw.exclusions
     : {};
   state.targets.codexCli = isObject(state.targets.codexCli) ? state.targets.codexCli : {};
-  state.targets.interactiveOAuth = isObject(state.targets.interactiveOAuth) ? state.targets.interactiveOAuth : {};
-  state.targets.interactiveOAuth.bindings = isObject(state.targets.interactiveOAuth.bindings)
-    ? state.targets.interactiveOAuth.bindings
-    : {};
 
   const legacyPins = isObject(state.pins?.openclaw) ? state.pins.openclaw : null;
   if (legacyPins) {
     for (const [agentId, label] of Object.entries(legacyPins)) {
       if (typeof label !== "string") continue;
-      if (!Object.hasOwn(state.targets.openclaw.pins, agentId)) {
-        state.targets.openclaw.pins[agentId] = label;
+      if (!Object.hasOwn(state.targets.openclaw.assignments, agentId)) {
+        state.targets.openclaw.assignments[agentId] = label;
       }
     }
   }
@@ -1251,34 +1439,73 @@ function ensureStateShape(state) {
     delete state.pins;
   }
 
+  const legacyAssignments = isObject(state.targets.openclaw.pins) ? state.targets.openclaw.pins : {};
+  for (const [agentId, label] of Object.entries(legacyAssignments)) {
+    if (typeof label !== "string") continue;
+    if (!Object.hasOwn(state.targets.openclaw.assignments, agentId)) {
+      state.targets.openclaw.assignments[agentId] = normalizeLabel(label);
+    }
+  }
+
+  const legacyBrowserProfiles = isObject(state.targets.openclaw.browserProfiles) ? state.targets.openclaw.browserProfiles : {};
+  const legacyBindings = isObject(state.targets.interactiveOAuth?.bindings) ? state.targets.interactiveOAuth.bindings : {};
+
   for (const [label, account] of Object.entries(state.accounts)) {
     if (!isObject(account)) continue;
     const browserProfile =
       typeof account.openclawBrowserProfile === "string" ? account.openclawBrowserProfile.trim() : "";
-    if (browserProfile && !Object.hasOwn(state.targets.openclaw.browserProfiles, label)) {
-      state.targets.openclaw.browserProfiles[label] = browserProfile;
+    const legacyBinding = legacyBindings[label];
+    const legacyBindingMode = normalizeInteractiveOAuthMode(legacyBinding?.mode);
+    const legacyBindingProfileId =
+      typeof legacyBinding?.profileId === "string" ? legacyBinding.profileId.trim() : "";
+
+    if (!isObject(account.browser)) {
+      account.browser = {};
     }
-    const binding = state.targets.interactiveOAuth.bindings[label];
-    const bindingMode = normalizeInteractiveOAuthMode(binding?.mode);
-    const bindingProfileId = typeof binding?.profileId === "string" ? binding.profileId.trim() : "";
-    if (!bindingMode && browserProfile) {
-      state.targets.interactiveOAuth.bindings[label] = {
-        mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
-        profileId: browserProfile,
-      };
-    } else if (
-      bindingMode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE &&
-      bindingProfileId &&
-      !Object.hasOwn(state.targets.openclaw.browserProfiles, label)
-    ) {
-      state.targets.openclaw.browserProfiles[label] = bindingProfileId;
+    if (!isObject(account.reauth)) {
+      account.reauth = {};
     }
+    if (!isObject(account.pool)) {
+      account.pool = {};
+    }
+
+    const migrationSource =
+      browserProfile
+      || (typeof legacyBrowserProfiles[label] === "string" ? legacyBrowserProfiles[label].trim() : "")
+      || legacyBindingProfileId;
+    if (migrationSource && !account.browser.seededFrom) {
+      account.browser.seededFrom = migrationSource;
+    }
+    if (!account.reauth.mode) {
+      account.reauth.mode =
+        legacyBindingMode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK
+          ? INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK
+          : INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
+    }
+    ensureAccountShape(account, { providerHint: account.provider });
+
     if (Object.hasOwn(account, "openclawBrowserProfile")) {
       delete account.openclawBrowserProfile;
     }
     if (Object.hasOwn(account, "chromeProfileDirectory")) {
       delete account.chromeProfileDirectory;
     }
+  }
+  if (Object.hasOwn(state.targets.openclaw, "pins")) {
+    delete state.targets.openclaw.pins;
+  }
+  if (Object.hasOwn(state.targets.openclaw, "browserProfiles")) {
+    delete state.targets.openclaw.browserProfiles;
+  }
+  if (isObject(state.targets.interactiveOAuth)) {
+    delete state.targets.interactiveOAuth;
+  }
+
+  if (Object.hasOwn(state.targets.codexCli, "storeMode")) {
+    delete state.targets.codexCli.storeMode;
+  }
+  if (Object.hasOwn(state.targets.codexCli, "lastReadback")) {
+    delete state.targets.codexCli.lastReadback;
   }
 }
 
@@ -1292,43 +1519,25 @@ function getOpenclawTargetState(state) {
   return state.targets.openclaw;
 }
 
-function getInteractiveOAuthTargetState(state) {
-  ensureStateShape(state);
-  return state.targets.interactiveOAuth;
+function getOpenclawAssignments(state) {
+  return getOpenclawTargetState(state).assignments;
 }
 
 function getOpenclawPins(state) {
-  return getOpenclawTargetState(state).pins;
+  return getOpenclawAssignments(state);
 }
 
-function getOpenclawBrowserProfiles(state) {
-  return getOpenclawTargetState(state).browserProfiles;
-}
-
-function getOpenclawBrowserProfileForLabel(state, label) {
-  const profiles = getOpenclawBrowserProfiles(state);
-  const value = profiles[normalizeLabel(label)];
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function setOpenclawBrowserProfileForLabel(state, label, profileId) {
-  const profiles = getOpenclawBrowserProfiles(state);
-  profiles[normalizeLabel(label)] = String(profileId ?? "").trim();
-}
-
-function clearOpenclawBrowserProfileForLabel(state, label) {
-  const profiles = getOpenclawBrowserProfiles(state);
-  delete profiles[normalizeLabel(label)];
-}
-
-function getInteractiveOAuthBindings(state) {
-  return getInteractiveOAuthTargetState(state).bindings;
+function getOpenclawExclusions(state) {
+  return getOpenclawTargetState(state).exclusions;
 }
 
 function normalizeInteractiveOAuthMode(value) {
   const raw = String(value ?? "").trim().toLowerCase();
-  if (raw === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
-    return INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE;
+  if (raw === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE) {
+    return INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
+  }
+  if (raw === LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
+    return INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
   }
   if (raw === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
     return INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK;
@@ -1338,27 +1547,9 @@ function normalizeInteractiveOAuthMode(value) {
 
 export function getInteractiveOAuthBindingForLabel(state, label) {
   ensureStateShape(state);
-  const normalizedLabel = normalizeLabel(label);
-  const binding = getInteractiveOAuthBindings(state)[normalizedLabel];
-  const mode = normalizeInteractiveOAuthMode(binding?.mode);
-  const profileId = typeof binding?.profileId === "string" ? binding.profileId.trim() : "";
-
-  if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
-    return { mode };
-  }
-  if (mode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE && profileId) {
-    return { mode, profileId };
-  }
-
-  const openclawBrowserProfile = getOpenclawBrowserProfileForLabel(state, normalizedLabel);
-  if (openclawBrowserProfile) {
-    return {
-      mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
-      profileId: openclawBrowserProfile,
-    };
-  }
-
-  return null;
+  const reauth = getAccountReauthState(state, label);
+  if (!reauth) return null;
+  return { mode: normalizeInteractiveOAuthMode(reauth.mode) };
 }
 
 function setInteractiveOAuthBindingForLabel(state, label, binding) {
@@ -1368,24 +1559,8 @@ function setInteractiveOAuthBindingForLabel(state, label, binding) {
   if (!mode) {
     throw new Error(`Unsupported interactive OAuth mode for label=${normalizedLabel}.`);
   }
-
-  const bindings = getInteractiveOAuthBindings(state);
-  if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
-    bindings[normalizedLabel] = { mode };
-    clearOpenclawBrowserProfileForLabel(state, normalizedLabel);
-    return;
-  }
-
-  const profileId = String(binding?.profileId ?? "").trim();
-  if (!profileId) {
-    throw new Error(`Interactive OAuth mode ${mode} requires profileId for label=${normalizedLabel}.`);
-  }
-
-  bindings[normalizedLabel] = {
-    mode,
-    profileId,
-  };
-  setOpenclawBrowserProfileForLabel(state, normalizedLabel, profileId);
+  const reauth = getAccountReauthState(state, normalizedLabel, { create: true });
+  reauth.mode = mode;
 }
 
 function getCodexTargetState(state) {
@@ -1761,20 +1936,30 @@ function importCodexFromAuthority({ from, state }) {
     if (incomingByLabel.has(label)) continue;
     delete state.accounts[label];
     delete state.credentials[OPENAI_CODEX_PROVIDER][label];
-    delete getInteractiveOAuthBindings(state)[label];
-    clearOpenclawBrowserProfileForLabel(state, label);
+    if (state.targets.codexCli?.activeLabel === label) {
+      delete state.targets.codexCli.activeLabel;
+      delete state.targets.codexCli.expectedAccountId;
+      delete state.targets.codexCli.lastSelectionReceipt;
+    }
     removedLabels.push(label);
   }
 
   for (const [label, incoming] of incomingByLabel.entries()) {
+    const existingLocal = isObject(state.accounts[label]) ? state.accounts[label] : {};
+    const incomingExpect = isObject(incoming.account.expect) ? structuredClone(incoming.account.expect) : null;
+    const incomingPool = isObject(incoming.account.pool) ? structuredClone(incoming.account.pool) : null;
+    const incomingReauthMode = normalizeInteractiveOAuthMode(incoming.account?.reauth?.mode);
     state.accounts[label] = {
-      ...(isObject(state.accounts[label]) ? state.accounts[label] : {}),
-      ...incoming.account,
+      ...(isObject(existingLocal.reauth) ? { reauth: structuredClone(existingLocal.reauth) } : {}),
       provider: OPENAI_CODEX_PROVIDER,
+      ...(incomingExpect ? { expect: incomingExpect } : isObject(existingLocal.expect) ? { expect: structuredClone(existingLocal.expect) } : {}),
+      ...(incomingPool ? { pool: incomingPool } : isObject(existingLocal.pool) ? { pool: structuredClone(existingLocal.pool) } : {}),
     };
+    ensureAccountShape(state.accounts[label], { providerHint: OPENAI_CODEX_PROVIDER });
+    if (incomingReauthMode) {
+      state.accounts[label].reauth.mode = incomingReauthMode;
+    }
     state.credentials[OPENAI_CODEX_PROVIDER][label] = incoming.credential;
-    delete getInteractiveOAuthBindings(state)[label];
-    clearOpenclawBrowserProfileForLabel(state, label);
     assertNoCodexAccountIdCollisions(state, label, incoming.credential.accountId);
   }
 
@@ -1844,55 +2029,108 @@ function toIsoFromExpiresMs(expiresMs) {
   return new Date(Number(expiresMs)).toISOString();
 }
 
-async function ensureOpenclawBrowserProfileBinding({ state, label, homeDir }) {
+function seedAimBrowserProfileFromOpenclaw({ state, label, homeDir, profileId }) {
+  const normalizedLabel = normalizeLabel(label);
+  const selectedProfileId = String(profileId ?? "").trim();
+  if (!selectedProfileId) {
+    throw new Error(`Cannot seed AIM browser profile for label=${normalizedLabel} without an OpenClaw profile id.`);
+  }
+
+  const openclawStateDir = resolveOpenclawStateDir({ homeDir });
+  const sourceUserDataDir = resolveOpenclawBrowserUserDataDir({
+    openclawStateDir,
+    profileId: selectedProfileId,
+  });
+  if (!fs.existsSync(sourceUserDataDir)) {
+    throw new Error(
+      `Cannot seed AIM browser profile for label=${normalizedLabel}: ` +
+        `OpenClaw profile "${selectedProfileId}" does not exist under ${path.join(openclawStateDir, "browser")}.`,
+    );
+  }
+
+  const targetUserDataDir = resolveAimBrowserUserDataDir({ homeDir, label: normalizedLabel });
+  if (fs.existsSync(targetUserDataDir)) {
+    return { status: "skipped", label: normalizedLabel, profileId: selectedProfileId, userDataDir: targetUserDataDir };
+  }
+
+  fs.mkdirSync(path.dirname(targetUserDataDir), { recursive: true });
+  fs.cpSync(sourceUserDataDir, targetUserDataDir, {
+    recursive: true,
+    force: false,
+    errorOnExist: true,
+  });
+
+  const browser = getAccountBrowserState(state, normalizedLabel, { create: true });
+  browser.owner = "aim";
+  browser.seededFrom = selectedProfileId;
+  browser.seededAt = new Date().toISOString();
+  if (Object.hasOwn(browser, "conflictReason")) {
+    delete browser.conflictReason;
+  }
+
+  return { status: "seeded", label: normalizedLabel, profileId: selectedProfileId, userDataDir: targetUserDataDir };
+}
+
+async function ensureAimBrowserProfileBinding({ state, label, homeDir }) {
   ensureStateShape(state);
-  const existing = state.accounts[label];
+  const normalizedLabel = normalizeLabel(label);
+  const existing = state.accounts[normalizedLabel];
   if (existing && !isObject(existing)) {
-    throw new Error(`accounts.${label} must be an object (got ${typeof existing})`);
+    throw new Error(`accounts.${normalizedLabel} must be an object (got ${typeof existing})`);
   }
 
   const providerRaw = typeof existing?.provider === "string" ? existing.provider.trim() : "";
   const provider = normalizeProviderId(providerRaw || OPENAI_CODEX_PROVIDER);
   if (!SUPPORTED_OAUTH_PROVIDERS.has(provider)) {
     throw new Error(
-      `accounts.${label}.provider=${providerRaw || "(missing)"} is not supported. ` +
+      `accounts.${normalizedLabel}.provider=${providerRaw || "(missing)"} is not supported. ` +
         `Supported: ${Array.from(SUPPORTED_OAUTH_PROVIDERS.keys()).join(", ")}`,
     );
   }
 
-  const openclawBrowserProfile = getOpenclawBrowserProfileForLabel(state, label);
+  state.accounts[normalizedLabel] = {
+    ...(existing ? existing : {}),
+    provider,
+  };
+  ensureAccountShape(state.accounts[normalizedLabel], { providerHint: provider });
 
-  const openclawStateDir = resolveOpenclawStateDir({ homeDir });
-  if (
-    openclawBrowserProfile &&
-    openclawBrowserProfileExists({ openclawStateDir, profileId: openclawBrowserProfile })
-  ) {
-    state.accounts[label] = {
-      ...(existing ? existing : {}),
-      provider,
-    };
-    return openclawBrowserProfile;
+  const browser = getAccountBrowserState(state, normalizedLabel, { create: true });
+  const targetUserDataDir = resolveAimBrowserUserDataDir({ homeDir, label: normalizedLabel });
+  if (typeof browser.conflictReason === "string" && browser.conflictReason.trim()) {
+    throw new Error(
+      `AIM browser profile for label=${normalizedLabel} is blocked by conflict: ${browser.conflictReason}. ` +
+        "Fix the browser/account mismatch before retrying.",
+    );
+  }
+  if (fs.existsSync(targetUserDataDir)) {
+    return targetUserDataDir;
   }
 
-  if (openclawBrowserProfile) {
+  const openclawStateDir = resolveOpenclawStateDir({ homeDir });
+  const storedSeedSource = typeof browser.seededFrom === "string" ? browser.seededFrom.trim() : "";
+  if (storedSeedSource) {
+    if (openclawBrowserProfileExists({ openclawStateDir, profileId: storedSeedSource })) {
+      seedAimBrowserProfileFromOpenclaw({ state, label: normalizedLabel, homeDir, profileId: storedSeedSource });
+      return targetUserDataDir;
+    }
     process.stdout.write(
-      `Stored OpenClaw browser profile "${openclawBrowserProfile}" for label "${label}" not found under:\n` +
+      `Stored migration source "${storedSeedSource}" for label "${normalizedLabel}" was not found under:\n` +
         `  ${path.join(openclawStateDir, "browser")}\n` +
-        "Pick a valid OpenClaw browser profile so we don't silently create a fresh browser identity.\n\n",
+        "Pick a valid OpenClaw browser profile to seed the AIM-owned browser dir.\n\n",
     );
   }
 
   if (!fs.existsSync(openclawStateDir)) {
     throw new Error(
-      "OpenClaw state directory not found. " +
-        `Expected: ${openclawStateDir}. ` +
-        "Run OpenClaw once (or set up its state dir), then retry.",
+      "AIM browser profile is missing and no OpenClaw migration source is available on this host. " +
+        `Expected OpenClaw state under: ${openclawStateDir}. ` +
+        "Run on the Mac host or create the AIM-owned browser dir before retrying.",
     );
   }
 
   const profiles = discoverOpenclawBrowserProfiles({ openclawStateDir });
   if (profiles.length > 0) {
-    process.stdout.write(`OpenClaw browser profiles found (from ${path.join(openclawStateDir, "browser")}):\n`);
+    process.stdout.write(`OpenClaw browser profiles available for one-time AIM seeding (from ${path.join(openclawStateDir, "browser")}):\n`);
     profiles.forEach((profile, idx) => {
       process.stdout.write(`  ${idx + 1}) ${formatOpenclawBrowserProfileChoice(profile)}\n`);
     });
@@ -1901,7 +2139,7 @@ async function ensureOpenclawBrowserProfileBinding({ state, label, homeDir }) {
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const answer = await promptRequiredLine(
-        `Pick OpenClaw browser profile for label "${label}" (number 1-${profiles.length}, or type the profile id):`,
+        `Pick OpenClaw browser profile to seed AIM label "${normalizedLabel}" (number 1-${profiles.length}, or type the profile id):`,
       );
       const profileId = resolveOpenclawBrowserProfileFromInput({ input: answer, profiles });
       if (!profileId) {
@@ -1916,20 +2154,16 @@ async function ensureOpenclawBrowserProfileBinding({ state, label, homeDir }) {
         continue;
       }
 
-      state.accounts[label] = {
-        ...(existing ? existing : {}),
-        provider,
-      };
-      setOpenclawBrowserProfileForLabel(state, label, profileId);
-      return profileId;
+      seedAimBrowserProfileFromOpenclaw({ state, label: normalizedLabel, homeDir, profileId });
+      return targetUserDataDir;
     }
   }
 
   if (profiles.length === 0) {
     throw new Error(
-      "No OpenClaw browser profiles discovered on this host. " +
+      "No OpenClaw browser profiles discovered to seed the AIM-owned browser dir. " +
         `Expected at least one profile under: ${path.join(openclawStateDir, "browser")}. ` +
-        "Start OpenClaw browser management to create profiles, then retry.",
+        "Start OpenClaw browser management to create profiles, or use manual-callback mode for this label.",
     );
   }
 
@@ -1942,48 +2176,65 @@ export async function ensureOpenAICodexInteractiveLoginBinding({
   homeDir,
   promptLineImpl = promptLine,
 }) {
-  ensureStateShape(state);
   const normalizedLabel = normalizeLabel(label);
+  const rawAccount = isObject(state.accounts?.[normalizedLabel]) ? state.accounts[normalizedLabel] : null;
+  const rawLegacyBinding = isObject(state.targets?.interactiveOAuth?.bindings?.[normalizedLabel])
+    ? state.targets.interactiveOAuth.bindings[normalizedLabel]
+    : null;
+  const rawLegacyProfile =
+    typeof rawAccount?.openclawBrowserProfile === "string"
+      ? rawAccount.openclawBrowserProfile.trim()
+      : typeof state.targets?.openclaw?.browserProfiles?.[normalizedLabel] === "string"
+        ? state.targets.openclaw.browserProfiles[normalizedLabel].trim()
+        : "";
+  const hasConfiguredMode =
+    Boolean(normalizeInteractiveOAuthMode(rawAccount?.reauth?.mode))
+    || Boolean(normalizeInteractiveOAuthMode(rawLegacyBinding?.mode))
+    || Boolean(rawLegacyProfile);
+
+  ensureStateShape(state);
   const existingBinding = getInteractiveOAuthBindingForLabel(state, normalizedLabel);
-  if (existingBinding?.mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
-    return existingBinding;
-  }
-  if (existingBinding?.mode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
-    const profileId = await ensureOpenclawBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
+  if (!hasConfiguredMode) {
+    process.stdout.write(`No interactive login mode configured for label "${normalizedLabel}" yet.\n`);
+    process.stdout.write("Choose login mode:\n");
+    process.stdout.write("  1) AIM-owned browser profile\n");
+    process.stdout.write("  2) External browser / paste callback URL\n\n");
+
+    const answer = await promptLineImpl(`Login mode for "${normalizedLabel}" (1-2 or id) [1]:`, {
+      defaultValue: "1",
+    });
+    const mode = resolveOpenAICodexInteractiveLoginModeFromInput(answer);
+    if (!mode) {
+      throw new Error(`Unsupported OpenAI Codex login mode selection: ${answer}`);
+    }
+
+    if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+      const binding = { mode };
+      setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
+      return binding;
+    }
+
+    await ensureAimBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
     const binding = {
-      mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
-      profileId,
+      mode: INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE,
     };
     setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
     return binding;
   }
 
-  process.stdout.write(`No interactive login mode configured for label "${normalizedLabel}" yet.\n`);
-  process.stdout.write("Choose login mode:\n");
-  process.stdout.write("  1) OpenClaw browser profile\n");
-  process.stdout.write("  2) External browser / paste callback URL\n\n");
-
-  const answer = await promptLineImpl(`Login mode for "${normalizedLabel}" (1-2 or id) [1]:`, {
-    defaultValue: "1",
-  });
-  const mode = resolveOpenAICodexInteractiveLoginModeFromInput(answer);
-  if (!mode) {
-    throw new Error(`Unsupported OpenAI Codex login mode selection: ${answer}`);
+  if (existingBinding?.mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+    return existingBinding;
   }
-
-  if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
-    const binding = { mode };
+  if (existingBinding?.mode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE) {
+    await ensureAimBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
+    const binding = {
+      mode: INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE,
+    };
     setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
     return binding;
   }
 
-  const profileId = await ensureOpenclawBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
-  const binding = {
-    mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
-    profileId,
-  };
-  setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
-  return binding;
+  throw new Error(`Unable to resolve interactive login mode for label=${normalizedLabel}.`);
 }
 
 export async function refreshOrLoginCodex({
@@ -1995,15 +2246,15 @@ export async function refreshOrLoginCodex({
   refreshImpl = refreshOpenAICodexToken,
   promptImpl = promptRequiredLine,
   openUrlImpl = openChromeUserDataDirForUrl,
-}) {
+  }) {
   const existing = getCodexCredential(state, label);
   const existingRefresh = existing && typeof existing.refresh === "string" ? existing.refresh : null;
   const existingAccountId = existing && typeof existing.accountId === "string" ? existing.accountId : null;
   const binding = interactiveBinding ?? getInteractiveOAuthBindingForLabel(state, label);
   const bindingMode = normalizeInteractiveOAuthMode(binding?.mode);
-  const openclawBrowserProfile =
-    bindingMode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE
-      ? String(binding?.profileId ?? "").trim()
+  const aimBrowserUserDataDir =
+    bindingMode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE
+      ? resolveAimBrowserUserDataDir({ homeDir, label })
       : "";
 
   // Try refresh first (fast + no browser).
@@ -2057,22 +2308,17 @@ export async function refreshOrLoginCodex({
         return;
       }
 
-      if (!openclawBrowserProfile) {
-        throw new Error(`Missing OpenClaw browser profile for label=${label}.`);
+      if (!aimBrowserUserDataDir) {
+        throw new Error(`Missing AIM browser profile for label=${label}.`);
       }
 
-      const openclawStateDir = resolveOpenclawStateDir({ homeDir });
-      const userDataDir = resolveOpenclawBrowserUserDataDir({
-        openclawStateDir,
-        profileId: openclawBrowserProfile,
-      });
-      const opened = openUrlImpl({ url, userDataDir });
+      const opened = openUrlImpl({ url, userDataDir: aimBrowserUserDataDir });
       if (!opened.ok) {
         process.stdout.write(
           [
-            `Failed to auto-open OpenClaw browser profile (${opened.reason}).`,
-            `Open the URL manually in the correct OpenClaw browser profile (user-data dir):`,
-            `  ${userDataDir}`,
+            `Failed to auto-open AIM browser profile (${opened.reason}).`,
+            "Open the URL manually in the correct AIM-owned browser profile (user-data dir):",
+            `  ${aimBrowserUserDataDir}`,
             "",
           ].join("\n") + "\n",
         );
@@ -2087,7 +2333,7 @@ export async function refreshOrLoginCodex({
           onPrompt: async () => {
             throw new Error(
               "Manual redirect-url paste flow is not supported for browser-managed labels. " +
-                "Run on the Mac host with the configured OpenClaw browser profile so the localhost callback can complete.",
+                "Run on the Mac host with the AIM-owned browser profile so the localhost callback can complete.",
             );
           },
         }),
@@ -2114,15 +2360,10 @@ export async function refreshOrLoginCodex({
   };
 }
 
-async function refreshOrLoginAnthropic({ state, label, homeDir, openclawBrowserProfile }) {
+async function refreshOrLoginAnthropic({ state, label, homeDir }) {
   const existing = getAnthropicCredential(state, label);
   const existingRefresh = existing && typeof existing.refresh === "string" ? existing.refresh : null;
-
-  const openclawStateDir = resolveOpenclawStateDir({ homeDir });
-  const userDataDir = resolveOpenclawBrowserUserDataDir({
-    openclawStateDir,
-    profileId: openclawBrowserProfile,
-  });
+  const userDataDir = resolveAimBrowserUserDataDir({ homeDir, label });
 
   // Try refresh first (fast + no browser).
   if (existingRefresh) {
@@ -2151,8 +2392,8 @@ async function refreshOrLoginAnthropic({ state, label, homeDir, openclawBrowserP
       if (!opened.ok) {
         process.stdout.write(
           [
-            `Failed to auto-open OpenClaw browser profile (${opened.reason}).`,
-            `Open the URL manually in the correct OpenClaw browser profile (user-data dir):`,
+            `Failed to auto-open AIM browser profile (${opened.reason}).`,
+            "Open the URL manually in the correct AIM-owned browser profile (user-data dir):",
             `  ${userDataDir}`,
             "",
           ].join("\n") + "\n",
@@ -2177,6 +2418,41 @@ async function refreshOrLoginAnthropic({ state, label, homeDir, openclawBrowserP
     refresh: creds.refresh,
     expiresAt,
   };
+}
+
+function recordAccountMaintenanceAttempt(state, label) {
+  const observedAt = new Date().toISOString();
+  const reauth = getAccountReauthState(state, label, { create: true });
+  reauth.lastAttemptAt = observedAt;
+  return observedAt;
+}
+
+function recordAccountMaintenanceSuccess(state, label, { homeDir, observedAt }) {
+  const verifiedAt = String(observedAt ?? new Date().toISOString());
+  const reauth = getAccountReauthState(state, label, { create: true });
+  reauth.lastAttemptAt = verifiedAt;
+  reauth.lastVerifiedAt = verifiedAt;
+  if (Object.hasOwn(reauth, "blockedReason")) {
+    delete reauth.blockedReason;
+  }
+
+  const browser = getAccountBrowserState(state, label, { create: true });
+  browser.owner = "aim";
+  if (browser.conflictReason) {
+    delete browser.conflictReason;
+  }
+  if (aimBrowserProfileExists({ homeDir, label })) {
+    browser.verifiedAt = verifiedAt;
+  }
+}
+
+function recordAccountMaintenanceFailure(state, label, { observedAt, blockedReason } = {}) {
+  const failedAt = String(observedAt ?? new Date().toISOString());
+  const reauth = getAccountReauthState(state, label, { create: true });
+  reauth.lastAttemptAt = failedAt;
+  if (typeof blockedReason === "string" && blockedReason.trim()) {
+    reauth.blockedReason = blockedReason.trim();
+  }
 }
 
 function clampPercent(value) {
@@ -2493,6 +2769,441 @@ function formatClaudeUsageSummary(snapshot) {
   return windows.map((w) => formatUsageWindowSummary(w)).join(" · ");
 }
 
+function getCodexUsagePercents(snapshot) {
+  if (!snapshot || snapshot.ok !== true) {
+    return { primaryUsedPct: 100, secondaryUsedPct: 100 };
+  }
+  const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
+  return {
+    primaryUsedPct: clampPercent(windows[0]?.usedPercent ?? 100),
+    secondaryUsedPct: clampPercent(windows[1]?.usedPercent ?? 100),
+  };
+}
+
+async function probeUsageSnapshotsByProvider(state) {
+  ensureStateShape(state);
+  const usageByProvider = {
+    [OPENAI_CODEX_PROVIDER]: {},
+    [ANTHROPIC_PROVIDER]: {},
+  };
+  const probes = [];
+
+  for (const [label, cred] of Object.entries(state.credentials[OPENAI_CODEX_PROVIDER])) {
+    if (!isObject(cred) || typeof cred.access !== "string") continue;
+    probes.push(
+      (async () => {
+        const accountId = typeof cred.accountId === "string" ? cred.accountId.trim() : null;
+        try {
+          usageByProvider[OPENAI_CODEX_PROVIDER][label] = await fetchCodexUsageSnapshot({
+            accessToken: cred.access,
+            accountId,
+            timeoutMs: 8000,
+          });
+        } catch (err) {
+          usageByProvider[OPENAI_CODEX_PROVIDER][label] = {
+            provider: OPENAI_CODEX_PROVIDER,
+            ok: false,
+            status: "error",
+            error: String(err?.message ?? err),
+          };
+        }
+      })(),
+    );
+  }
+
+  for (const [label, cred] of Object.entries(state.credentials[ANTHROPIC_PROVIDER])) {
+    if (!isObject(cred) || typeof cred.access !== "string") continue;
+    probes.push(
+      (async () => {
+        try {
+          usageByProvider[ANTHROPIC_PROVIDER][label] = await fetchClaudeUsageSnapshot({
+            accessToken: cred.access,
+            timeoutMs: 8000,
+          });
+        } catch (err) {
+          usageByProvider[ANTHROPIC_PROVIDER][label] = {
+            provider: ANTHROPIC_PROVIDER,
+            ok: false,
+            status: "error",
+            error: String(err?.message ?? err),
+          };
+        }
+      })(),
+    );
+  }
+
+  await Promise.all(probes);
+  return usageByProvider;
+}
+
+export function derivePoolAccountStatus({ account, credentials, browserFacts, now }) {
+  const snapshotNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const normalizedAccount = isObject(account) ? account : {};
+  const reauth = isObject(normalizedAccount.reauth) ? normalizedAccount.reauth : {};
+  const browser = isObject(normalizedAccount.browser) ? normalizedAccount.browser : {};
+  const provider = normalizeProviderId(normalizedAccount.provider);
+  const browserMode = normalizeInteractiveOAuthMode(reauth.mode);
+  const blockedReason = typeof reauth.blockedReason === "string" ? reauth.blockedReason.trim() : "";
+  const conflictReason = typeof browser.conflictReason === "string" ? browser.conflictReason.trim() : "";
+  const expectedEmail =
+    typeof normalizedAccount.expect?.email === "string" ? normalizedAccount.expect.email.trim().toLowerCase() : "";
+  const browserEmail =
+    typeof browserFacts?.userName === "string" ? browserFacts.userName.trim().toLowerCase() : "";
+
+  if (conflictReason) {
+    return {
+      operatorStatus: "blocked",
+      detailReason: "conflict",
+      eligible: false,
+      actionRequired: "fix_conflict",
+      reason: conflictReason,
+    };
+  }
+  if (expectedEmail && browserEmail && expectedEmail !== browserEmail) {
+    return {
+      operatorStatus: "blocked",
+      detailReason: "conflict",
+      eligible: false,
+      actionRequired: "fix_conflict",
+      reason: `Browser identity ${browserEmail} does not match expected ${expectedEmail}.`,
+    };
+  }
+  if (blockedReason) {
+    return {
+      operatorStatus: "blocked",
+      eligible: false,
+      actionRequired: "fix_blocker",
+      reason: blockedReason,
+    };
+  }
+
+  if (browserMode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE && browserFacts?.exists !== true) {
+    return {
+      operatorStatus: "reauth",
+      detailReason: "missing_browser",
+      eligible: false,
+      actionRequired: "run_aim_label",
+      reason: "AIM-owned browser profile is missing for this label.",
+    };
+  }
+
+  if (
+    browserMode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE
+    && typeof browser.seededAt === "string"
+    && browser.seededAt.trim()
+    && !(typeof browser.verifiedAt === "string" && browser.verifiedAt.trim())
+  ) {
+    return {
+      operatorStatus: "reauth",
+      detailReason: "seeded_unverified",
+      eligible: false,
+      actionRequired: "run_aim_label",
+      reason: "AIM browser profile was seeded but not yet verified by a successful AIM-managed login or refresh.",
+    };
+  }
+
+  const credential = isObject(credentials) ? credentials : null;
+  const expiresMs = parseExpiresAtToMs(credential?.expiresAt);
+  const hasFreshCredentials =
+    credential
+    && typeof credential.access === "string"
+    && credential.access.trim()
+    && typeof credential.refresh === "string"
+    && credential.refresh.trim()
+    && expiresMs !== null
+    && expiresMs > snapshotNow
+    && (provider !== OPENAI_CODEX_PROVIDER || typeof credential.accountId === "string" && credential.accountId.trim());
+
+  if (!hasFreshCredentials) {
+    return {
+      operatorStatus: "reauth",
+      detailReason: "missing_credentials",
+      eligible: false,
+      actionRequired: "run_aim_label",
+      reason:
+        expiresMs !== null && expiresMs <= snapshotNow
+          ? "Credentials are expired."
+          : "No currently usable credentials are stored for this label.",
+    };
+  }
+
+  if (browserMode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+    return {
+      operatorStatus: "ready",
+      detailReason: "manual_mode",
+      eligible: true,
+      actionRequired: null,
+      reason: "Ready; recovery path uses manual callback/SSO when needed.",
+    };
+  }
+
+  return {
+    operatorStatus: "ready",
+    eligible: true,
+    actionRequired: null,
+    reason: "Ready for selection and rebalance.",
+  };
+}
+
+function isUsageSnapshotExhausted(snapshot) {
+  if (!snapshot) return false;
+  if (snapshot.ok !== true) {
+    return snapshot.status === 429 || snapshot.status === 409 || /rate limit|exhaust/i.test(String(snapshot.error ?? ""));
+  }
+  const { primaryUsedPct, secondaryUsedPct } = getCodexUsagePercents(snapshot);
+  return primaryUsedPct >= 95 || secondaryUsedPct >= 95;
+}
+
+function getCodexPoolLabels(state) {
+  ensureStateShape(state);
+  return Object.entries(state.accounts)
+    .filter(([, account]) => isObject(account))
+    .filter(([, account]) => normalizeProviderId(account.provider) === OPENAI_CODEX_PROVIDER)
+    .filter(([label]) => getAccountPoolState(state, label)?.enabled !== false)
+    .map(([label]) => normalizeLabel(label))
+    .toSorted((a, b) => a.localeCompare(b));
+}
+
+function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
+  const labels = getCodexPoolLabels(state);
+  const byLabel = {};
+  const eligibleLabels = [];
+
+  for (const label of labels) {
+    const account = state.accounts[label];
+    const browserFacts = readAimBrowserFacts({ homeDir, label });
+    const status = derivePoolAccountStatus({
+      account,
+      credentials: getCodexCredential(state, label),
+      browserFacts,
+      now,
+    });
+    const usage = usageByLabel[label] ?? null;
+    const usageOk = usage?.ok === true && Array.isArray(usage.windows) && usage.windows.length > 0;
+    const eligible = status.eligible && usageOk;
+    byLabel[label] = {
+      ...status,
+      label,
+      browserFacts,
+      usage,
+      eligible,
+      poolEnabled: getAccountPoolState(state, label)?.enabled !== false,
+      usageReason: usageOk ? null : "usage_unavailable",
+    };
+    if (eligible) {
+      eligibleLabels.push(label);
+    }
+  }
+
+  return { labels, byLabel, eligibleLabels };
+}
+
+export function rankPoolCandidates({ labels, usage, currentLabel, assignedCounts, now }) {
+  const normalizedLabels = [...new Set((Array.isArray(labels) ? labels : []).map((label) => normalizeLabel(label)))];
+  const counts = isObject(assignedCounts) ? assignedCounts : {};
+  const current = typeof currentLabel === "string" ? normalizeLabel(currentLabel) : null;
+  const candidates = normalizedLabels.map((label) => {
+    const snapshot = usage?.[label] ?? null;
+    const { primaryUsedPct, secondaryUsedPct } = getCodexUsagePercents(snapshot);
+    return {
+      label,
+      accountId: null,
+      primaryUsedPct,
+      secondaryUsedPct,
+      assignedCount: Number.isFinite(Number(counts[label])) ? Number(counts[label]) : 0,
+      keptCurrent: false,
+      reasons: [],
+      observedAt: Number.isFinite(Number(now)) ? Number(now) : Date.now(),
+    };
+  });
+
+  candidates.sort((a, b) => {
+    if (a.primaryUsedPct !== b.primaryUsedPct) return a.primaryUsedPct - b.primaryUsedPct;
+    if (a.secondaryUsedPct !== b.secondaryUsedPct) return a.secondaryUsedPct - b.secondaryUsedPct;
+    if (a.assignedCount !== b.assignedCount) return a.assignedCount - b.assignedCount;
+    return a.label.localeCompare(b.label);
+  });
+
+  if (current) {
+    const best = candidates[0] ?? null;
+    const currentCandidate = candidates.find((candidate) => candidate.label === current) ?? null;
+    if (
+      best
+      && currentCandidate
+      && currentCandidate.primaryUsedPct <= best.primaryUsedPct + 10
+      && currentCandidate.secondaryUsedPct <= best.secondaryUsedPct + 10
+    ) {
+      currentCandidate.keptCurrent = true;
+      currentCandidate.reasons.push("within_keep_current_threshold");
+      candidates.splice(candidates.indexOf(currentCandidate), 1);
+      candidates.unshift(currentCandidate);
+    }
+  }
+
+  return candidates;
+}
+
+export function pickNextBestPoolLabel({ rankedCandidates }) {
+  const candidates = Array.isArray(rankedCandidates) ? rankedCandidates : [];
+  return candidates[0] ?? null;
+}
+
+function discoverConfiguredOpenclawCodexAgents({ agentsList, exclusions }) {
+  const excluded = isObject(exclusions) ? exclusions : {};
+  return (Array.isArray(agentsList) ? agentsList : [])
+    .map((entry) => {
+      const id = typeof entry?.id === "string" ? entry.id.trim() : "";
+      if (!id) return null;
+      const normalizedId = normalizeAgentId(id);
+      if (typeof excluded[normalizedId] === "string" && excluded[normalizedId].trim()) {
+        return null;
+      }
+      const currentPrimary = extractOpenclawConfigAgentModelPrimary(entry?.model);
+      if (!currentPrimary) return normalizedId;
+      const parsed = parseProviderModelRef(currentPrimary);
+      if (parsed?.provider === ANTHROPIC_PROVIDER) return null;
+      return normalizedId;
+    })
+    .filter(Boolean)
+    .toSorted((a, b) => a.localeCompare(b));
+}
+
+export function planOpenclawRebalance({ configuredAgents, currentAssignments, eligibleLabels, usage, now }) {
+  const agentIds = [...new Set((Array.isArray(configuredAgents) ? configuredAgents : []).map((agentId) => normalizeAgentId(agentId)))].toSorted((a, b) =>
+    a.localeCompare(b),
+  );
+  const existingAssignments = isObject(currentAssignments) ? currentAssignments : {};
+  const labels = [...new Set((Array.isArray(eligibleLabels) ? eligibleLabels : []).map((label) => normalizeLabel(label)))];
+  const nextAssignments = {};
+  const moved = [];
+  const unchanged = [];
+  const skipped = [];
+  const assignedCounts = Object.fromEntries(labels.map((label) => [label, 0]));
+
+  for (const agentId of agentIds) {
+    if (labels.length === 0) {
+      skipped.push({ agentId, reason: "no_eligible_pool_account" });
+      continue;
+    }
+
+    const currentLabelRaw = typeof existingAssignments[agentId] === "string" ? existingAssignments[agentId] : null;
+    const currentLabel = currentLabelRaw ? normalizeLabel(currentLabelRaw) : null;
+    const rankedCandidates = rankPoolCandidates({
+      labels,
+      usage,
+      currentLabel,
+      assignedCounts,
+      now,
+    });
+    const selection = pickNextBestPoolLabel({ rankedCandidates });
+    if (!selection) {
+      skipped.push({ agentId, reason: "no_eligible_pool_account" });
+      continue;
+    }
+
+    nextAssignments[agentId] = selection.label;
+    assignedCounts[selection.label] = (assignedCounts[selection.label] ?? 0) + 1;
+
+    if (currentLabel === selection.label) {
+      unchanged.push({ agentId, label: selection.label });
+    } else {
+      moved.push({ agentId, from: currentLabel ?? null, to: selection.label, reason: selection.keptCurrent ? "kept_current" : "next_best" });
+    }
+  }
+
+  let status = "applied";
+  if (agentIds.length === 0 || skipped.length === agentIds.length) {
+    status = "blocked";
+  } else if (moved.length === 0 && skipped.length === 0) {
+    status = "noop";
+  } else if (skipped.length > 0) {
+    status = "applied_with_warnings";
+  }
+
+  return {
+    assignments: nextAssignments,
+    moved,
+    unchanged,
+    skipped,
+    status,
+  };
+}
+
+function appendOpenaiCodexHistory(state, entries) {
+  ensureStateShape(state);
+  const current = Array.isArray(state.pool.openaiCodex.history) ? state.pool.openaiCodex.history : [];
+  const additions = (Array.isArray(entries) ? entries : []).filter((entry) => isObject(entry));
+  state.pool.openaiCodex.history = pruneOpenaiCodexHistory([...current, ...additions]);
+}
+
+function buildExhaustionHistoryEntries({ state, usage, eligibleLabels, observedAt }) {
+  const eligible = new Set(Array.isArray(eligibleLabels) ? eligibleLabels : []);
+  const entries = [];
+
+  for (const [label, snapshot] of Object.entries(isObject(usage) ? usage : {})) {
+    if (!isUsageSnapshotExhausted(snapshot)) continue;
+    const cred = getCodexCredential(state, label);
+    entries.push({
+      observedAt,
+      kind: "exhaustion",
+      label,
+      ...(typeof cred?.accountId === "string" && cred.accountId.trim() ? { accountId: cred.accountId.trim() } : {}),
+      hadSpareEligibleCapacity: Array.from(eligible).some((candidate) => candidate !== label),
+      reason: snapshot?.ok === true ? "usage_window_95" : `provider_status_${snapshot?.status ?? "error"}`,
+    });
+  }
+
+  return entries;
+}
+
+export function projectPoolCapacity({ history, liveUsage, horizonDays = 7, lookbackDays = 14, now }) {
+  const snapshotNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const cutoffMs = snapshotNow - Number(lookbackDays) * 24 * 60 * 60 * 1000;
+  const events = (Array.isArray(history) ? history : []).filter((entry) => {
+    if (!isObject(entry)) return false;
+    const observedAtMs = parseExpiresAtToMs(entry.observedAt);
+    return observedAtMs !== null && observedAtMs >= cutoffMs;
+  });
+
+  const blockedNoEligible = events.filter((entry) => entry.status === "blocked" && entry.reason === "no_eligible_pool_account").length;
+  const warningReceipts = events.filter((entry) => typeof entry.status === "string" && entry.status.endsWith("_with_warnings")).length;
+  const spareExhaustions = events.filter((entry) => entry.kind === "exhaustion" && entry.hadSpareEligibleCapacity === true).length;
+  const noSpareExhaustions = events.filter((entry) => entry.kind === "exhaustion" && entry.hadSpareEligibleCapacity === false).length;
+  const currentHighUtilizationLabels = Object.entries(isObject(liveUsage) ? liveUsage : {})
+    .filter(([, snapshot]) => isUsageSnapshotExhausted(snapshot))
+    .map(([label]) => label)
+    .toSorted((a, b) => a.localeCompare(b));
+
+  const needMoreAccounts = blockedNoEligible >= 1 || noSpareExhaustions >= 2;
+  let riskLevel = "low";
+  if (needMoreAccounts) {
+    riskLevel = "high";
+  } else if (spareExhaustions >= 1 || warningReceipts >= 2) {
+    riskLevel = "medium";
+  }
+
+  const reasons = [];
+  if (blockedNoEligible > 0) reasons.push(`${blockedNoEligible} blocked receipt(s) reported no eligible pool account.`);
+  if (noSpareExhaustions > 0) reasons.push(`${noSpareExhaustions} exhaustion event(s) occurred with no spare eligible capacity.`);
+  if (spareExhaustions > 0) reasons.push(`${spareExhaustions} exhaustion event(s) occurred but spare eligible capacity existed.`);
+  if (warningReceipts > 0) reasons.push(`${warningReceipts} recent receipt(s) completed with warnings.`);
+
+  return {
+    needMoreAccounts,
+    riskLevel,
+    reasons,
+    basedOn: {
+      horizonDays,
+      lookbackDays,
+      blockedNoEligible,
+      warningReceipts,
+      spareExhaustions,
+      noSpareExhaustions,
+      currentHighUtilizationLabels,
+    },
+  };
+}
+
 function readCodexCliTargetStatus({ state, homeDir }) {
   ensureStateShape(state);
   const importMeta = getAuthorityCodexImport(state);
@@ -2530,6 +3241,7 @@ function readCodexCliTargetStatus({ state, homeDir }) {
     actualAccountId: actualAccountId || null,
     inferredLabel: inferredLabel || null,
     readback,
+    lastSelectionReceipt: isObject(target.lastSelectionReceipt) ? target.lastSelectionReceipt : null,
     lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
   };
 }
@@ -2616,7 +3328,7 @@ function buildWarningsFromCodexTargetStatus(status) {
 
 function applyCodexCliFromState({ label, homeDir }, state) {
   ensureStateShape(state);
-  if (!hasImportedCodexReplica(state)) {
+  if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
     throw new Error(
       "No imported Codex replica is available on this machine yet. " +
         "Run `aim sync codex --from agents@amirs-mac-studio` first.",
@@ -2656,15 +3368,9 @@ function applyCodexCliFromState({ label, homeDir }, state) {
 
   const target = getCodexTargetState(state);
   target.homeDir = codexHome;
-  target.storeMode = store.storeMode;
   target.activeLabel = normalizedLabel;
   target.expectedAccountId = credential.accountId;
   target.lastAppliedAt = appliedAt;
-  target.lastReadback = {
-    authPath: readback.authPath,
-    accountId: readback.accountId,
-    checkedAt: appliedAt,
-  };
 
   return {
     label: normalizedLabel,
@@ -2712,25 +3418,25 @@ function buildWarningsFromState(state) {
     }
   }
 
-  // Pins pointing to missing labels/creds
-  const pins = getOpenclawPins(state);
-  for (const [agentId, label] of Object.entries(pins)) {
+  // Stored assignments pointing to missing labels/creds
+  const assignments = getOpenclawAssignments(state);
+  for (const [agentId, label] of Object.entries(assignments)) {
     if (typeof label !== "string") continue;
     if (!isObject(accounts[label])) {
-      warnings.push({ kind: "pin_points_to_missing_account", system: "openclaw", agentId, label });
+      warnings.push({ kind: "assignment_points_to_missing_account", system: "openclaw", agentId, label });
       continue;
     }
     const provider = normalizeProviderId(accounts[label]?.provider);
     if (provider === OPENAI_CODEX_PROVIDER) {
       if (!isObject(codexCredsByLabel[label])) {
-        warnings.push({ kind: "pin_points_to_missing_credentials", system: "openclaw", agentId, label });
+        warnings.push({ kind: "assignment_points_to_missing_credentials", system: "openclaw", agentId, label });
       }
       continue;
     }
     if (provider === ANTHROPIC_PROVIDER) {
       if (!isObject(anthropicCredsByLabel[label])) {
         warnings.push({
-          kind: "pin_points_to_missing_credentials",
+          kind: "assignment_points_to_missing_credentials",
           system: "openclaw",
           agentId,
           label,
@@ -2740,7 +3446,7 @@ function buildWarningsFromState(state) {
       continue;
     }
 
-    warnings.push({ kind: "pin_points_to_unsupported_provider", system: "openclaw", agentId, label, provider });
+    warnings.push({ kind: "assignment_points_to_unsupported_provider", system: "openclaw", agentId, label, provider });
   }
 
   return warnings;
@@ -2790,184 +3496,130 @@ function buildWarningsFromStatusAccounts(accounts) {
   return warnings;
 }
 
-function buildInteractiveLoginStatus({ state, label, provider, openclawBrowserProfile }) {
-  const normalizedProvider = normalizeProviderId(provider);
-
-  if (normalizedProvider === OPENAI_CODEX_PROVIDER) {
-    const binding = getInteractiveOAuthBindingForLabel(state, label);
-    const mode = normalizeInteractiveOAuthMode(binding?.mode);
-    if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
-      return { mode };
-    }
-    if (mode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
-      const profileId = String(binding?.profileId ?? openclawBrowserProfile ?? "").trim();
-      return profileId ? { mode, profileId } : { mode };
-    }
-  }
-
-  const profileId = String(openclawBrowserProfile ?? "").trim();
-  if (profileId) {
-    return {
-      mode: INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE,
-      profileId,
-    };
-  }
-
-  return null;
+function buildInteractiveLoginStatus({ state, label }) {
+  const binding = getInteractiveOAuthBindingForLabel(state, label);
+  const mode = normalizeInteractiveOAuthMode(binding?.mode);
+  return mode ? { mode } : null;
 }
 
 async function buildStatusView({ statePath, state, homeDir }) {
   ensureStateShape(state);
-
+  const usageByProvider = await probeUsageSnapshotsByProvider(state);
+  const codexPool = collectCodexPoolStatus({
+    state,
+    homeDir,
+    usageByLabel: usageByProvider[OPENAI_CODEX_PROVIDER],
+    now: Date.now(),
+  });
   const accounts = [];
-  const usageByLabel = {};
-  const usageKey = (provider, label) => `${normalizeProviderId(provider)}:${normalizeLabel(label)}`;
-
-  const browserProfileById = new Map();
-  if (homeDir) {
-    const openclawStateDir = resolveOpenclawStateDir({ homeDir });
-    const profiles = discoverOpenclawBrowserProfiles({ openclawStateDir });
-    for (const profile of profiles) {
-      browserProfileById.set(profile.profileId, profile);
-    }
-  }
-
-  // Probe usage by default (fail-loud-but-not-fake: unknown if fetch fails).
-  const codexCredsByLabel = state.credentials[OPENAI_CODEX_PROVIDER];
-  const anthropicCredsByLabel = state.credentials[ANTHROPIC_PROVIDER];
-  const probes = [];
-
-  for (const [label, cred] of Object.entries(codexCredsByLabel)) {
-    if (!isObject(cred) || typeof cred.access !== "string") continue;
-    probes.push(
-      (async () => {
-        const accessToken = cred.access;
-        const accountId = typeof cred.accountId === "string" ? cred.accountId : null;
-        try {
-          usageByLabel[usageKey(OPENAI_CODEX_PROVIDER, label)] = await fetchCodexUsageSnapshot({
-            accessToken,
-            accountId,
-            timeoutMs: 8000,
-          });
-        } catch (err) {
-          usageByLabel[usageKey(OPENAI_CODEX_PROVIDER, label)] = {
-            provider: OPENAI_CODEX_PROVIDER,
-            ok: false,
-            status: "error",
-            error: String(err?.message ?? err),
-          };
-        }
-      })(),
-    );
-  }
-
-  for (const [label, cred] of Object.entries(anthropicCredsByLabel)) {
-    if (!isObject(cred) || typeof cred.access !== "string") continue;
-    probes.push(
-      (async () => {
-        const accessToken = cred.access;
-        try {
-          usageByLabel[usageKey(ANTHROPIC_PROVIDER, label)] = await fetchClaudeUsageSnapshot({
-            accessToken,
-            timeoutMs: 8000,
-          });
-        } catch (err) {
-          usageByLabel[usageKey(ANTHROPIC_PROVIDER, label)] = {
-            provider: ANTHROPIC_PROVIDER,
-            ok: false,
-            status: "error",
-            error: String(err?.message ?? err),
-          };
-        }
-      })(),
-    );
-  }
-
-  await Promise.all(probes);
 
   for (const [label, account] of Object.entries(state.accounts)) {
     if (!isObject(account)) continue;
     const provider = normalizeProviderId(account.provider);
     const expectEmail = typeof account.expect?.email === "string" ? account.expect.email : null;
-    const openclawBrowserProfile = getOpenclawBrowserProfileForLabel(state, label);
-    const browser = openclawBrowserProfile ? { openclawBrowserProfile } : undefined;
-    const login = buildInteractiveLoginStatus({ state, label, provider, openclawBrowserProfile });
-    const browserIdentity = openclawBrowserProfile ? browserProfileById.get(openclawBrowserProfile) : null;
-    const browserUserName = typeof browserIdentity?.userName === "string" ? browserIdentity.userName : null;
-    const browserGaiaName = typeof browserIdentity?.gaiaName === "string" ? browserIdentity.gaiaName : null;
-
-    if (provider === OPENAI_CODEX_PROVIDER) {
-      const cred = isObject(codexCredsByLabel[label]) ? codexCredsByLabel[label] : null;
-      const accountId = cred && typeof cred.accountId === "string" ? cred.accountId : null;
-      const expiresAt = cred && typeof cred.expiresAt === "string" ? cred.expiresAt : null;
-      accounts.push({
-        label,
-        provider,
-        ...(browser ? { browser } : {}),
-        ...(login ? { login } : {}),
-        identity: {
-          ...(expectEmail ? { expectEmail } : {}),
-          ...(accountId ? { accountId } : {}),
-          ...(browserUserName ? { browserUserName } : {}),
-          ...(browserGaiaName ? { browserGaiaName } : {}),
-        },
-        credentials: {
-          status: cred ? "ok" : "missing",
-          ...(expiresAt ? { expiresAt } : {}),
-          ...(expiresAt ? { expiresIn: formatExpiresIn(expiresAt) } : {}),
-        },
-        usage: usageByLabel[usageKey(provider, label)] ?? { provider, ok: false, status: "unknown" },
-      });
-      continue;
-    }
-
-    if (provider === ANTHROPIC_PROVIDER) {
-      const cred = isObject(anthropicCredsByLabel[label]) ? anthropicCredsByLabel[label] : null;
-      const expiresAt = cred && typeof cred.expiresAt === "string" ? cred.expiresAt : null;
-      accounts.push({
-        label,
-        provider,
-        ...(browser ? { browser } : {}),
-        ...(login ? { login } : {}),
-        identity: {
-          ...(expectEmail ? { expectEmail } : {}),
-          ...(browserUserName ? { browserUserName } : {}),
-          ...(browserGaiaName ? { browserGaiaName } : {}),
-        },
-        credentials: {
-          status: cred ? "ok" : "missing",
-          ...(expiresAt ? { expiresAt } : {}),
-          ...(expiresAt ? { expiresIn: formatExpiresIn(expiresAt) } : {}),
-        },
-        usage: usageByLabel[usageKey(provider, label)] ?? { provider, ok: false, status: cred ? "unknown" : "n/a" },
-      });
-      continue;
-    }
+    const browserFacts = homeDir ? readAimBrowserFacts({ homeDir, label }) : { exists: false };
+    const login = buildInteractiveLoginStatus({ state, label });
+    const cred =
+      provider === OPENAI_CODEX_PROVIDER
+        ? getCodexCredential(state, label)
+        : provider === ANTHROPIC_PROVIDER
+          ? getAnthropicCredential(state, label)
+          : null;
+    const expiresAt = cred && typeof cred.expiresAt === "string" ? cred.expiresAt : null;
+    const accountId = cred && typeof cred.accountId === "string" ? cred.accountId : null;
+    const usage = usageByProvider[provider]?.[label] ?? { provider, ok: false, status: cred ? "unknown" : "n/a" };
+    const operator =
+      provider === OPENAI_CODEX_PROVIDER
+        ? (codexPool.byLabel[label]
+          ?? {
+            ...derivePoolAccountStatus({ account, credentials: cred, browserFacts, now: Date.now() }),
+            eligible: false,
+            poolEnabled: getAccountPoolState(state, label)?.enabled !== false,
+          })
+        : derivePoolAccountStatus({ account, credentials: cred, browserFacts, now: Date.now() });
 
     accounts.push({
       label,
       provider: provider || "unknown",
-      ...(browser ? { browser } : {}),
+      operator: {
+        status: operator?.operatorStatus ?? "blocked",
+        detailReason: operator?.detailReason ?? null,
+        eligible: operator?.eligible === true,
+        actionRequired: operator?.actionRequired ?? null,
+        reason: operator?.reason ?? "Unknown account state.",
+      },
       ...(login ? { login } : {}),
-      identity: { ...(expectEmail ? { expectEmail } : {}) },
-      credentials: { status: "unknown" },
-      usage: { ok: false, status: "n/a" },
+      browser: {
+        owner: "aim",
+        exists: browserFacts.exists === true,
+        ...(typeof account.browser?.seededFrom === "string" && account.browser.seededFrom.trim()
+          ? { seededFrom: account.browser.seededFrom.trim() }
+          : {}),
+        ...(typeof account.browser?.seededAt === "string" && account.browser.seededAt.trim()
+          ? { seededAt: account.browser.seededAt.trim() }
+          : {}),
+        ...(typeof account.browser?.verifiedAt === "string" && account.browser.verifiedAt.trim()
+          ? { verifiedAt: account.browser.verifiedAt.trim() }
+          : {}),
+      },
+      identity: {
+        ...(expectEmail ? { expectEmail } : {}),
+        ...(accountId ? { accountId } : {}),
+        ...(browserFacts.userName ? { browserUserName: browserFacts.userName } : {}),
+        ...(browserFacts.gaiaName ? { browserGaiaName: browserFacts.gaiaName } : {}),
+      },
+      credentials: {
+        status: cred ? "ok" : "missing",
+        ...(expiresAt ? { expiresAt } : {}),
+        ...(expiresAt ? { expiresIn: formatExpiresIn(expiresAt) } : {}),
+      },
+      usage,
     });
   }
 
-  const pins = getOpenclawPins(state);
   const codexCli = readCodexCliTargetStatus({ state, homeDir });
+  const nextBestCandidate = pickNextBestPoolLabel({
+    rankedCandidates: rankPoolCandidates({
+      labels: codexPool.eligibleLabels,
+      usage: usageByProvider[OPENAI_CODEX_PROVIDER],
+      currentLabel: codexCli.activeLabel,
+      now: Date.now(),
+    }),
+  });
+  const capacity = projectPoolCapacity({
+    history: state.pool.openaiCodex.history,
+    liveUsage: usageByProvider[OPENAI_CODEX_PROVIDER],
+    now: Date.now(),
+  });
+
+  const statusRank = { blocked: 0, reauth: 1, ready: 2 };
+  const sortedAccounts = accounts.toSorted((a, b) => {
+    const aRank = statusRank[a.operator?.status] ?? 99;
+    const bRank = statusRank[b.operator?.status] ?? 99;
+    if (aRank !== bRank) return aRank - bRank;
+    return a.label.localeCompare(b.label);
+  });
 
   return {
     generatedAt: new Date().toISOString(),
     statePath,
-    accounts: accounts.toSorted((a, b) => a.label.localeCompare(b.label)),
-    pins: { openclaw: sanitizeForStatus(pins) },
+    accounts: sortedAccounts,
+    openclaw: {
+      assignments: sanitizeForStatus(getOpenclawAssignments(state)),
+      exclusions: sanitizeForStatus(getOpenclawExclusions(state)),
+      lastApplyReceipt: sanitizeForStatus(getOpenclawTargetState(state).lastApplyReceipt ?? null),
+      lastRebalancedAt:
+        typeof getOpenclawTargetState(state).lastRebalancedAt === "string"
+          ? getOpenclawTargetState(state).lastRebalancedAt
+          : null,
+    },
+    nextBestCandidate: sanitizeForStatus(nextBestCandidate),
+    capacity: sanitizeForStatus(capacity),
     imports: { authority: { codex: sanitizeForStatus(getAuthorityCodexImport(state)) } },
     codexCli: sanitizeForStatus(codexCli),
     warnings: [
       ...buildWarningsFromState(state),
-      ...buildWarningsFromStatusAccounts(accounts),
+      ...buildWarningsFromStatusAccounts(sortedAccounts),
       ...buildWarningsFromCodexTargetStatus(codexCli),
     ],
   };
@@ -2978,9 +3630,8 @@ function formatInteractiveLoginSummary(login) {
   if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
     return "manual-callback";
   }
-  if (mode === INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
-    const profileId = typeof login?.profileId === "string" ? login.profileId.trim() : "";
-    return profileId ? `openclaw-browser:${profileId}` : "openclaw-browser";
+  if (mode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE) {
+    return "aim-browser-profile";
   }
   return null;
 }
@@ -3022,17 +3673,29 @@ function renderStatusText(view) {
         : a.provider === ANTHROPIC_PROVIDER
           ? `usage=${formatClaudeUsageSummary(a.usage)}`
           : "usage=n/a";
-    lines.push(`- ${a.provider} ${a.label}${login ? ` login=${login}` : ""} ${identity} ${expires} ${usage}`);
+    const operatorBits = [
+      `${a.operator?.status || "unknown"}`,
+      a.operator?.detailReason ? `detail=${a.operator.detailReason}` : null,
+      a.operator?.actionRequired ? `action=${a.operator.actionRequired}` : null,
+    ].filter(Boolean);
+    lines.push(`- ${operatorBits.join(" ")} ${a.provider} ${a.label}${login ? ` login=${login}` : ""} ${identity} ${expires} ${usage}`);
   }
 
-  const pins = isObject(view.pins?.openclaw) ? view.pins.openclaw : {};
-  const pinEntries = Object.entries(pins);
-  if (pinEntries.length > 0) {
+  const assignments = isObject(view.openclaw?.assignments) ? view.openclaw.assignments : {};
+  const assignmentEntries = Object.entries(assignments);
+  if (assignmentEntries.length > 0) {
     lines.push("");
-    lines.push("OpenClaw pins");
-    for (const [agentId, label] of pinEntries.toSorted((x, y) => x[0].localeCompare(y[0]))) {
+    lines.push("OpenClaw assignments");
+    for (const [agentId, label] of assignmentEntries.toSorted((x, y) => x[0].localeCompare(y[0]))) {
       lines.push(`- ${agentId} -> ${label}`);
     }
+  }
+
+  if (view.openclaw?.lastApplyReceipt?.status) {
+    lines.push("");
+    lines.push(
+      `Last rebalance: status=${view.openclaw.lastApplyReceipt.status} observed=${view.openclaw.lastApplyReceipt.observedAt || "unknown"}`,
+    );
   }
 
   if (view.codexCli) {
@@ -3050,6 +3713,21 @@ function renderStatusText(view) {
       targetBits.push(`synced=${formatAgeSince(view.codexCli.importedAt.trim())}`);
     }
     lines.push(`- ${targetBits.join(" ")}`);
+  }
+
+  if (view.nextBestCandidate?.label) {
+    lines.push("");
+    lines.push(
+      `Next best Codex label: ${view.nextBestCandidate.label} ` +
+        `(primary=${view.nextBestCandidate.primaryUsedPct}% secondary=${view.nextBestCandidate.secondaryUsedPct}%)`,
+    );
+  }
+
+  if (view.capacity) {
+    lines.push("");
+    lines.push(
+      `Capacity: needMoreAccounts=${view.capacity.needMoreAccounts ? "yes" : "no"} risk=${view.capacity.riskLevel}`,
+    );
   }
 
   lines.push("");
@@ -3387,9 +4065,226 @@ async function syncOpenclawFromState(params, state) {
   };
 }
 
+async function activateCodexPoolSelection({ state, homeDir }) {
+  ensureStateShape(state);
+  // Structural target validation comes first: if this machine's Codex home is not
+  // AIM-manageable, fail loud before doing pool selection or usage probing.
+  ensureFileBackedCodexHome({ codexHome: resolveManagedCodexHomeDir({ homeDir }) });
+  const observedAt = new Date().toISOString();
+  const usageByProvider = await probeUsageSnapshotsByProvider(state);
+  const usageByLabel = usageByProvider[OPENAI_CODEX_PROVIDER];
+  const poolStatus = collectCodexPoolStatus({
+    state,
+    homeDir,
+    usageByLabel,
+    now: Date.parse(observedAt),
+  });
+
+  appendOpenaiCodexHistory(
+    state,
+    buildExhaustionHistoryEntries({
+      state,
+      usage: usageByLabel,
+      eligibleLabels: poolStatus.eligibleLabels,
+      observedAt,
+    }),
+  );
+
+  if (poolStatus.labels.length === 0) {
+    throw new Error(
+      "No Codex pool labels are available on this machine yet. " +
+        "Run `aim sync codex --from agents@amirs-mac-studio` first.",
+    );
+  }
+
+  const target = getCodexTargetState(state);
+  if (poolStatus.eligibleLabels.length === 0) {
+    const receipt = {
+      action: "codex_use",
+      status: "blocked",
+      observedAt,
+      previousLabel: typeof target.activeLabel === "string" ? target.activeLabel.trim() || undefined : undefined,
+      warnings: [],
+      blockers: [{ reason: "no_eligible_pool_account" }],
+      reasons: [],
+      wroteAuthJson: false,
+    };
+    target.lastSelectionReceipt = receipt;
+    appendOpenaiCodexHistory(state, [
+      {
+        observedAt,
+        kind: "selection",
+        status: "blocked",
+        reason: "no_eligible_pool_account",
+        hadSpareEligibleCapacity: false,
+      },
+    ]);
+    return { status: "blocked", receipt, wrote: false };
+  }
+
+  const currentTarget = readCodexCliTargetStatus({ state, homeDir });
+  const rankedCandidates = rankPoolCandidates({
+    labels: poolStatus.eligibleLabels,
+    usage: usageByLabel,
+    currentLabel: currentTarget.activeLabel,
+    now: Date.parse(observedAt),
+  });
+  const selection = pickNextBestPoolLabel({ rankedCandidates });
+  if (!selection) {
+    throw new Error("Failed to select a next-best Codex pool label.");
+  }
+
+  const activated = applyCodexCliFromState({ label: selection.label, homeDir }, state);
+  const postStatus = readCodexCliTargetStatus({ state, homeDir });
+  const warnings = buildWarningsFromCodexTargetStatus(postStatus);
+  const status =
+    !activated.wrote && currentTarget.activeLabel === selection.label && currentTarget.expectedAccountId === activated.accountId
+      ? "noop"
+      : warnings.length > 0
+        ? "activated_with_warnings"
+        : "activated";
+
+  const receipt = {
+    action: "codex_use",
+    status,
+    observedAt,
+    previousLabel: currentTarget.activeLabel ?? undefined,
+    label: selection.label,
+    accountId: activated.accountId,
+    keptCurrent: Boolean(selection.keptCurrent),
+    reasons: Array.isArray(selection.reasons) ? selection.reasons : [],
+    authPath: activated.authPath,
+    wroteAuthJson: Boolean(activated.wrote),
+    warnings,
+    blockers: [],
+  };
+  target.lastSelectionReceipt = receipt;
+  appendOpenaiCodexHistory(state, [
+    {
+      observedAt,
+      kind: "selection",
+      status,
+      label: selection.label,
+      accountId: activated.accountId,
+      hadSpareEligibleCapacity: poolStatus.eligibleLabels.length > 1,
+      reason: selection.keptCurrent ? "kept_current" : "next_best",
+    },
+  ]);
+
+  return { status, receipt, wrote: Boolean(activated.wrote) };
+}
+
+async function rebalanceOpenclawPool(params, state) {
+  ensureStateShape(state);
+  const homeDir = resolveHomeDir(params.home);
+  const observedAt = new Date().toISOString();
+  const usageByProvider = await probeUsageSnapshotsByProvider(state);
+  const usageByLabel = usageByProvider[OPENAI_CODEX_PROVIDER];
+  const poolStatus = collectCodexPoolStatus({
+    state,
+    homeDir,
+    usageByLabel,
+    now: Date.parse(observedAt),
+  });
+
+  appendOpenaiCodexHistory(
+    state,
+    buildExhaustionHistoryEntries({
+      state,
+      usage: usageByLabel,
+      eligibleLabels: poolStatus.eligibleLabels,
+      observedAt,
+    }),
+  );
+
+  const target = getOpenclawTargetState(state);
+  const agentsList = readOpenclawAgentsListFromConfig();
+  const configuredAgents = discoverConfiguredOpenclawCodexAgents({
+    agentsList,
+    exclusions: getOpenclawExclusions(state),
+  });
+  const plan = planOpenclawRebalance({
+    configuredAgents,
+    currentAssignments: getOpenclawAssignments(state),
+    eligibleLabels: poolStatus.eligibleLabels,
+    usage: usageByLabel,
+    now: Date.parse(observedAt),
+  });
+
+  target.lastRebalancedAt = observedAt;
+
+  if (plan.status === "blocked") {
+    const receipt = {
+      action: "rebalance_openclaw",
+      status: "blocked",
+      observedAt,
+      cleanupMode: null,
+      assignments: sanitizeForStatus(getOpenclawAssignments(state)),
+      moved: [],
+      unchanged: [],
+      skipped: plan.skipped,
+      warnings: [],
+      blockers: [{ reason: "no_eligible_pool_account" }],
+    };
+    target.lastApplyReceipt = receipt;
+    appendOpenaiCodexHistory(state, [
+      {
+        observedAt,
+        kind: "rebalance",
+        status: "blocked",
+        reason: "no_eligible_pool_account",
+        hadSpareEligibleCapacity: false,
+      },
+    ]);
+    return { status: "blocked", receipt };
+  }
+
+  target.assignments = plan.assignments;
+  const synced = await syncOpenclawFromState(params, state);
+  const warnings = Array.isArray(synced.warnings) ? synced.warnings : [];
+  const status =
+    plan.status === "noop"
+      ? warnings.length > 0
+        ? "applied_with_warnings"
+        : "noop"
+      : warnings.length > 0
+        ? "applied_with_warnings"
+        : "applied";
+
+  const receipt = {
+    action: "rebalance_openclaw",
+    status,
+    observedAt,
+    cleanupMode:
+      typeof synced.sessions?.mode === "string"
+        ? synced.sessions.mode
+        : typeof synced.sessions?.reason === "string"
+          ? synced.sessions.reason
+          : null,
+    assignments: sanitizeForStatus(plan.assignments),
+    moved: plan.moved,
+    unchanged: plan.unchanged,
+    skipped: plan.skipped,
+    warnings,
+    blockers: [],
+  };
+  target.lastApplyReceipt = receipt;
+  appendOpenaiCodexHistory(state, [
+    {
+      observedAt,
+      kind: "rebalance",
+      status,
+      hadSpareEligibleCapacity: poolStatus.eligibleLabels.length > 1,
+      reason: status === "noop" ? "unchanged_assignments" : "rebalanced",
+    },
+  ]);
+
+  return { status, receipt, synced };
+}
+
 export async function main(argv) {
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "autopin", "apply", "sync", "codex"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -3422,131 +4317,78 @@ export async function main(argv) {
     ensureStateShape(state);
 
     const provider = await ensureProviderConfiguredForLabel({ state, label });
+    const attemptedAt = recordAccountMaintenanceAttempt(state, label);
 
-    if (provider === OPENAI_CODEX_PROVIDER) {
-      const interactiveBinding = await ensureOpenAICodexInteractiveLoginBinding({ state, label, homeDir });
-      const cred = await refreshOrLoginCodex({ state, label, homeDir, interactiveBinding });
-      state.credentials[OPENAI_CODEX_PROVIDER][label] = cred;
-    } else if (provider === ANTHROPIC_PROVIDER) {
-      const openclawBrowserProfile = await ensureOpenclawBrowserProfileBinding({ state, label, homeDir });
-      const cred = await refreshOrLoginAnthropic({ state, label, homeDir, openclawBrowserProfile });
-      state.credentials[ANTHROPIC_PROVIDER][label] = cred;
-    } else {
-      throw new Error(`Provider not supported: ${provider}`);
+    try {
+      if (provider === OPENAI_CODEX_PROVIDER) {
+        const interactiveBinding = await ensureOpenAICodexInteractiveLoginBinding({ state, label, homeDir });
+        const cred = await refreshOrLoginCodex({ state, label, homeDir, interactiveBinding });
+        state.credentials[OPENAI_CODEX_PROVIDER][label] = cred;
+      } else if (provider === ANTHROPIC_PROVIDER) {
+        await ensureAimBrowserProfileBinding({ state, label, homeDir });
+        const cred = await refreshOrLoginAnthropic({ state, label, homeDir });
+        state.credentials[ANTHROPIC_PROVIDER][label] = cred;
+      } else {
+        throw new Error(`Provider not supported: ${provider}`);
+      }
+
+      recordAccountMaintenanceSuccess(state, label, { homeDir, observedAt: attemptedAt });
+      state.schemaVersion = SCHEMA_VERSION;
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(
+        `${JSON.stringify(
+          sanitizeForStatus({
+            ok: true,
+            label,
+            provider,
+            maintenance: {
+              status: "ready",
+              observedAt: attemptedAt,
+            },
+          }),
+          null,
+          2,
+        )}\n`,
+      );
+      return;
+    } catch (err) {
+      const message = String(err?.message ?? err);
+      recordAccountMaintenanceFailure(state, label, {
+        observedAt: attemptedAt,
+        ...(message.match(/conflict|does not match|unsupported/i) ? { blockedReason: message } : {}),
+      });
+      writeJsonFileWithBackup(statePath, state);
+      throw err;
     }
-
-    // Auto-pin: eliminate the common "second step" by pinning agent_<label> -> <label>
-    // (only if that OpenClaw agent exists on disk).
-    const openclawStateDir = resolveOpenclawStateDir({ homeDir });
-    const inferredAgentId = inferOpenclawAgentIdForLabel({ openclawStateDir, label });
-    if (inferredAgentId) {
-      getOpenclawPins(state)[inferredAgentId] = label;
-    }
-
-    state.schemaVersion = SCHEMA_VERSION;
-
-    writeJsonFileWithBackup(statePath, state);
-
-    const synced = await syncOpenclawFromState(opts, state);
-    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, label, provider, synced }), null, 2)}\n`);
-    return;
   }
 
   if (cmd === "pin") {
-    const agentId = normalizeAgentId(positional[1]);
-    const label = normalizeLabel(positional[2]);
-    const state = loadAimgrState(statePath);
-    ensureStateShape(state);
-    if (!isObject(state.accounts[label])) {
-      throw new Error(`Unknown label: ${label}. Add it by running \`aim login ${label}\` first.`);
-    }
-    const provider = normalizeProviderId(state.accounts[label]?.provider);
-    if (provider !== OPENAI_CODEX_PROVIDER && provider !== ANTHROPIC_PROVIDER) {
-      throw new Error(`Refusing to pin OpenClaw agent to unsupported provider=${provider || "unknown"} label=${label}.`);
-    }
-    getOpenclawPins(state)[agentId] = label;
-    state.schemaVersion = SCHEMA_VERSION;
-    writeJsonFileWithBackup(statePath, state);
-
-    const synced = await syncOpenclawFromState(opts, state);
-    process.stdout.write(
-      `${JSON.stringify(sanitizeForStatus({ ok: true, pin: { agentId, label }, synced }), null, 2)}\n`,
-    );
-    return;
+    throw new Error("`aim pin` was removed. Use `aim rebalance openclaw` for selection and `aim apply` only to materialize stored assignments.");
   }
 
   if (cmd === "autopin") {
     const system = String(positional[1] ?? "").trim().toLowerCase();
     if (!system) {
-      throw new Error('Missing autopin target. Usage: aim autopin openclaw [--pool boss,lessons,...]');
+      throw new Error('Missing autopin target. `aim autopin openclaw` was removed; use `aim rebalance openclaw`.');
+    }
+    throw new Error("`aim autopin openclaw` was removed. Use `aim rebalance openclaw`.");
+  }
+
+  if (cmd === "rebalance") {
+    const system = String(positional[1] ?? "").trim().toLowerCase();
+    if (!system) {
+      throw new Error("Missing rebalance target. Usage: aim rebalance openclaw");
     }
     if (system !== "openclaw") {
-      throw new Error(`Unsupported autopin target: ${system} (only "openclaw" is supported in v0).`);
+      throw new Error(`Unsupported rebalance target: ${system} (supported: openclaw).`);
     }
-
     const state = loadAimgrState(statePath);
-    ensureStateShape(state);
-
-    const poolLabels = resolveAutopinPoolLabels({ state, poolArg: opts.pool });
-    if (poolLabels.length === 0) {
-      throw new Error(
-        "No pool labels available for autopin. " +
-          "Either pass --pool boss,lessons,... or login additional labels via `aim <label>` first.",
-      );
-    }
-
-    for (const label of poolLabels) {
-      if (!isObject(state.accounts[label])) {
-        throw new Error(`Unknown label in autopin pool: ${label}. Add it by running \`aim ${label}\` first.`);
-      }
-      const cred = getCodexCredential(state, label);
-      if (!cred) {
-        throw new Error(`Missing openai-codex credentials for label=${label}. Run \`aim ${label}\` to login first.`);
-      }
-    }
-
-    const agentsList = readOpenclawAgentsListFromConfig();
-    const allAgentIds = agentsList
-      .map((entry) => {
-        const id = typeof entry?.id === "string" ? entry.id.trim() : "";
-        return id ? normalizeAgentId(id) : null;
-      })
-      .filter(Boolean);
-
-    const pinnedAgentIds = Object.keys(getOpenclawPins(state));
-    const pinnedSet = new Set(pinnedAgentIds);
-    const candidateAgentIds = allAgentIds.filter((agentId) => !pinnedSet.has(agentId));
-
-    const { assignments } = planEvenLabelAssignments({
-      candidateAgentIds,
-      existingPinsByAgentId: getOpenclawPins(state),
-      poolLabels,
-    });
-
-    for (const [agentId, label] of Object.entries(assignments)) {
-      getOpenclawPins(state)[agentId] = label;
-    }
-
-    state.schemaVersion = SCHEMA_VERSION;
+    const rebalanced = await rebalanceOpenclawPool(opts, state);
     writeJsonFileWithBackup(statePath, state);
-
-    const synced = await syncOpenclawFromState(opts, state);
-    process.stdout.write(
-      `${JSON.stringify(
-        sanitizeForStatus({
-          ok: true,
-          autopin: {
-            system,
-            poolLabels,
-            added: Object.keys(assignments).length,
-            skippedAlreadyPinned: pinnedAgentIds.length,
-          },
-          synced,
-        }),
-        null,
-        2,
-      )}\n`,
-    );
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: rebalanced.status !== "blocked", rebalanced }), null, 2)}\n`);
+    if (rebalanced.status === "blocked") {
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -3580,16 +4422,21 @@ export async function main(argv) {
   if (cmd === "codex") {
     const subcmd = String(positional[1] ?? "").trim().toLowerCase();
     if (!subcmd) {
-      throw new Error('Missing codex subcommand. Usage: aim codex use <label>');
+      throw new Error("Missing codex subcommand. Usage: aim codex use");
     }
     if (subcmd !== "use") {
       throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: use).`);
     }
-    const label = normalizeLabel(positional[2]);
     const state = loadAimgrState(statePath);
-    const activated = applyCodexCliFromState({ label, homeDir }, state);
+    if (String(positional[2] ?? "").trim()) {
+      throw new Error("`aim codex use <label>` was removed. Use `aim codex use` for next-best selection or `aim <label>` if the account needs reauth.");
+    }
+    const activated = await activateCodexPoolSelection({ state, homeDir });
     writeJsonFileWithBackup(statePath, state);
-    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, activated }), null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);
+    if (activated.status === "blocked") {
+      process.exitCode = 1;
+    }
     return;
   }
 

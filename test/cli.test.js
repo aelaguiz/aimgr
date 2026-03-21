@@ -6,14 +6,17 @@ import path from "node:path";
 
 import {
   buildOpenclawModelSyncOps,
+  derivePoolAccountStatus,
   discoverOpenclawBrowserProfiles,
   ensureOpenAICodexInteractiveLoginBinding,
   extractOpenclawConfigAgentModelPrimary,
   extractSessionModelRefFromEntry,
   main,
   parseAnthropicAuthorizationPaste,
+  planOpenclawRebalance,
   partitionOpenclawPinsByConfiguredAgents,
-  planEvenLabelAssignments,
+  pickNextBestPoolLabel,
+  rankPoolCandidates,
   refreshOrLoginCodex,
   resetSessionEntryToDefaults,
   resolveAuthorityLocator,
@@ -29,6 +32,21 @@ function mkTempHome() {
 function writeJson(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function writeAimBrowserLocalState(home, label, profileInfo = {}) {
+  writeJson(path.join(home, ".aimgr", "browser", label, "user-data", "Local State"), {
+    profile: {
+      info_cache: {
+        Default: {
+          name: label,
+          user_name: "",
+          gaia_name: "",
+          ...profileInfo,
+        },
+      },
+    },
+  });
 }
 
 function makeFakeJwt(payload = {}) {
@@ -339,10 +357,10 @@ test("ensureOpenAICodexInteractiveLoginBinding stores manual-callback choice wit
       },
     },
     targets: {
-      openclaw: { pins: {}, browserProfiles: {} },
+      openclaw: { assignments: {}, exclusions: {} },
       codexCli: {},
-      interactiveOAuth: { bindings: {} },
     },
+    pool: { openaiCodex: { history: [] } },
   };
 
   const prompts = [];
@@ -357,8 +375,8 @@ test("ensureOpenAICodexInteractiveLoginBinding stores manual-callback choice wit
   });
 
   assert.deepEqual(binding, { mode: "manual-callback" });
-  assert.deepEqual(state.targets.interactiveOAuth.bindings.manual_label, { mode: "manual-callback" });
-  assert.equal(state.targets.openclaw.browserProfiles.manual_label, undefined);
+  assert.equal(state.accounts.manual_label.reauth.mode, "manual-callback");
+  assert.equal(state.accounts.manual_label.browser?.seededFrom, undefined);
   assert.equal(prompts.length, 1);
   assert.match(prompts[0].question, /Login mode for "manual_label"/);
 });
@@ -576,10 +594,13 @@ test("sync codex bootstraps consumer state and strips authority-local OpenClaw m
   assert.equal(consumerState.imports.authority.codex.source, path.resolve(authorityStatePath));
   assert.deepEqual(consumerState.imports.authority.codex.labels, ["boss"]);
   assert.equal(consumerState.accounts.boss.provider, "openai-codex");
-  assert.equal(consumerState.accounts.boss.openclawBrowserProfile, undefined);
-  assert.deepEqual(consumerState.targets.openclaw.pins, {});
-  assert.deepEqual(consumerState.targets.openclaw.browserProfiles, {});
-  assert.deepEqual(consumerState.targets.interactiveOAuth.bindings, {});
+  assert.equal(consumerState.accounts.boss.browser?.seededFrom, undefined);
+  assert.equal(consumerState.accounts.boss.reauth?.mode, "manual-callback");
+  assert.deepEqual(consumerState.targets.openclaw.assignments, {});
+  assert.deepEqual(consumerState.targets.openclaw.exclusions, {});
+  assert.equal(consumerState.targets.openclaw.pins, undefined);
+  assert.equal(consumerState.targets.openclaw.browserProfiles, undefined);
+  assert.equal(consumerState.targets.interactiveOAuth, undefined);
   assert.equal(consumerState.targets.codexCli.activeLabel, undefined);
   assert.equal(fs.existsSync(path.join(consumerHome, ".openclaw", "agents", "main", "agent", "auth-profiles.json")), false);
 });
@@ -587,12 +608,17 @@ test("sync codex bootstraps consumer state and strips authority-local OpenClaw m
 test("status text shows manual-callback and browser-managed login modes", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeAimBrowserLocalState(home, "claude", {
+    name: "claude",
+    user_name: "claude@example.com",
+    gaia_name: "Claude",
+  });
 
   writeJson(statePath, {
     schemaVersion: "0.2",
     accounts: {
-      manual_label: { provider: "openai-codex" },
-      claude: { provider: "anthropic" },
+      manual_label: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      claude: { provider: "anthropic", reauth: { mode: "aim-browser-profile" } },
     },
     credentials: {
       "openai-codex": {},
@@ -605,29 +631,23 @@ test("status text shows manual-callback and browser-managed login modes", async 
     },
     targets: {
       openclaw: {
-        pins: {},
-        browserProfiles: {
-          claude: "agent-claude",
-        },
+        assignments: {},
+        exclusions: {},
       },
       codexCli: {},
-      interactiveOAuth: {
-        bindings: {
-          manual_label: { mode: "manual-callback" },
-        },
-      },
     },
+    pool: { openaiCodex: { history: [] } },
   });
 
   const out = await runCli(["status", "--home", home]);
   assert.match(out, /openai-codex manual_label login=manual-callback/);
-  assert.match(out, /anthropic claude login=openclaw-browser:agent-claude/);
+  assert.match(out, /anthropic claude login=aim-browser-profile/);
 });
 
 test("codex use fails loudly before any authority import", async () => {
   const home = mkTempHome();
   await assert.rejects(
-    () => runCli(["codex", "use", "boss", "--home", home]),
+    () => runCli(["codex", "use", "--home", home]),
     /Run `aim sync codex --from agents@amirs-mac-studio` first/,
   );
 });
@@ -646,7 +666,7 @@ test("codex use writes auth.json and status reports active imported label", asyn
   writeJson(statePath, {
     schemaVersion: "0.2",
     accounts: {
-      boss: { provider: "openai-codex" },
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
     },
     credentials: {
       "openai-codex": {
@@ -670,23 +690,11 @@ test("codex use writes auth.json and status reports active imported label", asyn
       },
     },
     targets: {
-      openclaw: { pins: {}, browserProfiles: {} },
+      openclaw: { assignments: {}, exclusions: {} },
       codexCli: {},
     },
+    pool: { openaiCodex: { history: [] } },
   });
-
-  await runCli(["codex", "use", "boss", "--home", home]);
-
-  const authPath = path.join(home, ".codex", "auth.json");
-  const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
-  assert.equal(auth.OPENAI_API_KEY, null);
-  assert.equal(auth.tokens.account_id, "acct_123");
-  assert.equal(auth.tokens.access_token, fakeJwt);
-  assert.equal(auth.tokens.id_token, fakeJwt);
-
-  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(updatedState.targets.codexCli.activeLabel, "boss");
-  assert.equal(updatedState.targets.codexCli.storeMode, "file");
 
   const origFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -711,12 +719,26 @@ test("codex use writes auth.json and status reports active imported label", asyn
   };
 
   try {
+    await runCli(["codex", "use", "--home", home]);
+
+    const authPath = path.join(home, ".codex", "auth.json");
+    const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    assert.equal(auth.OPENAI_API_KEY, null);
+    assert.equal(auth.tokens.account_id, "acct_123");
+    assert.equal(auth.tokens.access_token, fakeJwt);
+    assert.equal(auth.tokens.id_token, fakeJwt);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, "boss");
+    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.status, "activated");
+
     const out = await runCli(["status", "--json", "--home", home]);
     const parsed = JSON.parse(out);
     assert.equal(parsed.codexCli.activeLabel, "boss");
     assert.equal(parsed.codexCli.source, "ssh://studio.local/~/.aimgr/secrets.json");
     assert.equal(parsed.codexCli.storeMode, "file");
     assert.equal(parsed.codexCli.actualAccountId, "acct_123");
+    assert.equal(parsed.nextBestCandidate.label, "boss");
     assert.ok(parsed.warnings.every((warning) => !String(warning.kind).startsWith("codex_target_")));
   } finally {
     globalThis.fetch = origFetch;
@@ -737,7 +759,7 @@ test("codex use refuses non-file-backed Codex homes", async () => {
   writeJson(statePath, {
     schemaVersion: "0.2",
     accounts: {
-      boss: { provider: "openai-codex" },
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
     },
     credentials: {
       "openai-codex": {
@@ -761,9 +783,10 @@ test("codex use refuses non-file-backed Codex homes", async () => {
       },
     },
     targets: {
-      openclaw: { pins: {}, browserProfiles: {} },
+      openclaw: { assignments: {}, exclusions: {} },
       codexCli: {},
     },
+    pool: { openaiCodex: { history: [] } },
   });
 
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
@@ -774,7 +797,7 @@ test("codex use refuses non-file-backed Codex homes", async () => {
   );
 
   await assert.rejects(
-    () => runCli(["codex", "use", "boss", "--home", home]),
+    () => runCli(["codex", "use", "--home", home]),
     /Managed Codex activation requires file-backed auth storage/,
   );
 });
@@ -874,23 +897,67 @@ test("partitionOpenclawPinsByConfiguredAgents separates stale pins from active p
   assert.deepEqual(partition.stalePins, [{ agentId: "agent_lessons", label: "lessons" }]);
 });
 
-test("planEvenLabelAssignments spreads unpinned agents evenly across pool labels", () => {
-  const { assignments } = planEvenLabelAssignments({
-    candidateAgentIds: ["agent_a", "agent_b", "agent_c", "agent_d", "agent_e", "agent_boss"],
-    existingPinsByAgentId: {
-      agent_boss: "boss",
-      agent_illustrator: "illustrator",
+test("rankPoolCandidates keeps current label when it stays within the keep-current threshold", () => {
+  const ranked = rankPoolCandidates({
+    labels: ["boss", "qa"],
+    currentLabel: "boss",
+    usage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPct: 18 }, { kind: "secondary", usedPct: 12 }],
+      },
+      qa: {
+        ok: true,
+        windows: [{ kind: "primary", usedPct: 12 }, { kind: "secondary", usedPct: 10 }],
+      },
     },
-    poolLabels: ["boss", "illustrator", "lessons", "product_growth", "qa"],
+    assignedCounts: { boss: 0, qa: 0 },
+    now: Date.now(),
   });
 
-  assert.deepEqual(assignments, {
-    agent_a: "lessons",
-    agent_b: "product_growth",
-    agent_c: "qa",
-    agent_d: "boss",
-    agent_e: "illustrator",
+  assert.equal(ranked[0].label, "boss");
+  assert.equal(ranked[0].keptCurrent, true);
+  assert.deepEqual(ranked[0].reasons, ["within_keep_current_threshold"]);
+  assert.equal(pickNextBestPoolLabel({ rankedCandidates: ranked }).label, "boss");
+});
+
+test("planOpenclawRebalance uses the shared selector and blocks when no eligible labels remain", () => {
+  const plan = planOpenclawRebalance({
+    configuredAgents: ["agent_a", "agent_b"],
+    currentAssignments: { agent_a: "boss" },
+    eligibleLabels: ["boss", "qa"],
+    usage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPct: 18 }, { kind: "secondary", usedPct: 12 }],
+      },
+      qa: {
+        ok: true,
+        windows: [{ kind: "primary", usedPct: 12 }, { kind: "secondary", usedPct: 10 }],
+      },
+    },
+    now: Date.now(),
   });
+
+  assert.equal(plan.status, "applied");
+  assert.deepEqual(plan.assignments, {
+    agent_a: "boss",
+    agent_b: "qa",
+  });
+  assert.deepEqual(plan.unchanged, [{ agentId: "agent_a", label: "boss" }]);
+  assert.deepEqual(plan.moved, [{ agentId: "agent_b", from: null, to: "qa", reason: "next_best" }]);
+
+  const blocked = planOpenclawRebalance({
+    configuredAgents: ["agent_a"],
+    currentAssignments: { agent_a: "boss" },
+    eligibleLabels: [],
+    usage: {},
+    now: Date.now(),
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.deepEqual(blocked.assignments, {});
+  assert.deepEqual(blocked.skipped, [{ agentId: "agent_a", reason: "no_eligible_pool_account" }]);
 });
 
 test("sessionEntryNeedsModelReset detects runtime/override/provider drift vs desired model", () => {
