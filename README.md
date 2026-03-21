@@ -131,7 +131,7 @@ Important behavior:
 - Manual-callback labels print the OAuth URL and prompt for the final callback URL.
 - Reauth does **not** rebalance OpenClaw or mutate downstream assignments.
 
-When you pick `Use another Chrome profile` from the guided panel, AIM now lists the discovered local Chrome profiles on this Mac, tells you the exact `user-data-dir` + `profile-directory` each choice would save, and lets you confirm before writing the binding.
+When you pick `Use another Chrome profile` from the guided panel, AIM now lists the discovered raw Chrome-style browser homes on this Mac, including OpenClaw browser homes and host Chrome profiles. It tells you the exact `user-data-dir` + `profile-directory` each choice would save, and lets you confirm before writing the binding.
 
 ### 2A) Inspect or repair the browser binding
 

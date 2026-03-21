@@ -77,6 +77,22 @@ function writeChromeLocalState(home, profiles = []) {
   return userDataDir;
 }
 
+function writeOpenclawBrowserLocalState(home, profileId, profileInfo = {}) {
+  writeJson(path.join(home, ".openclaw", "browser", profileId, "user-data", "Local State"), {
+    profile: {
+      info_cache: {
+        Default: {
+          name: profileId,
+          user_name: "",
+          gaia_name: "",
+          ...profileInfo,
+        },
+      },
+    },
+  });
+  return path.join(home, ".openclaw", "browser", profileId, "user-data");
+}
+
 function writeOpenclawAuthStore(home, agentId, data) {
   writeJson(path.join(home, ".openclaw", "agents", agentId, "agent", "auth-profiles.json"), data);
 }
@@ -1105,6 +1121,77 @@ test("guided panel can adopt a discovered chrome profile and make the label read
   );
   assert.match(out, /Discovered Chrome profiles for cfo/);
   assert.match(out, /Google Chrome · Marcus · marcus@fun.country/);
+  assert.match(out, /Saved browser setup for cfo\./);
+  assert.match(out, /cfo is ready\./);
+});
+
+test("guided panel can adopt a discovered OpenClaw browser home through the chrome-profile lane", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const openclawUserDataDir = writeOpenclawBrowserLocalState(home, "agent-cfo", {
+    name: "Marcus",
+    user_name: "marcus@fun.country",
+  });
+  writeChromeLocalState(home, [
+    {
+      profileDirectory: "Profile 1",
+      name: "Personal",
+      userName: "amir@fun.country",
+    },
+  ]);
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      cfo: { provider: "openai-codex" },
+    },
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const answers = ["3", "1", "1", "0"];
+  const opened = [];
+  const out = await runCli(["cfo", "--home", home], {
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    promptLineImpl: async () => answers.shift(),
+    readOpenclawBindingsFromConfigImpl: () => [],
+    readOpenclawAgentsListFromConfigImpl: () => [],
+    openUrlImpl: ({ binding, url }) => {
+      opened.push({ binding, url });
+      return { ok: true };
+    },
+    loginOpenAICodexImpl: async ({ onAuth }) => {
+      onAuth({ url: "https://chatgpt.com/oauth" });
+      return {
+        access: makeFakeJwt({ sub: "cfo" }),
+        refresh: "REFRESHED",
+        expires: Date.now() + 3600_000,
+        accountId: "acct_cfo",
+      };
+    },
+  });
+
+  const persisted = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(persisted.accounts.cfo.browser.mode, "chrome-profile");
+  assert.equal(persisted.accounts.cfo.browser.userDataDir, openclawUserDataDir);
+  assert.equal(persisted.accounts.cfo.browser.profileDirectory, undefined);
+  assert.equal(persisted.accounts.cfo.reauth.mode, "browser-managed");
+  assert.deepEqual(opened, [
+    {
+      binding: {
+        mode: "chrome-profile",
+        userDataDir: openclawUserDataDir,
+      },
+      url: "https://chatgpt.com/oauth",
+    },
+  ]);
+  assert.match(out, /Includes 1 OpenClaw browser home and 1 host Chrome profile\./);
+  assert.match(out, /Option 1: OpenClaw browser · agent-cfo · Marcus · marcus@fun\.country\./);
+  assert.match(out, /Discovered Chrome profiles for cfo/);
+  assert.match(out, /OpenClaw browser · agent-cfo · Marcus · marcus@fun\.country/);
+  assert.match(out, /This is OpenClaw browser profile "agent-cfo"\./);
   assert.match(out, /Saved browser setup for cfo\./);
   assert.match(out, /cfo is ready\./);
 });
