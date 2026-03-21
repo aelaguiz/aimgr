@@ -140,6 +140,25 @@ async function runCli(argv) {
   return chunks.join("");
 }
 
+async function runCliWithExitCode(argv) {
+  const chunks = [];
+  const origWrite = process.stdout.write;
+  const origExitCode = process.exitCode;
+  process.exitCode = 0;
+  process.stdout.write = (chunk, encoding, cb) => {
+    chunks.push(typeof chunk === "string" ? chunk : chunk.toString(encoding));
+    if (typeof cb === "function") cb();
+    return true;
+  };
+  try {
+    await main(argv);
+    return { stdout: chunks.join(""), exitCode: process.exitCode ?? 0 };
+  } finally {
+    process.stdout.write = origWrite;
+    process.exitCode = origExitCode;
+  }
+}
+
 test("status --json never leaks access/refresh tokens", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -1493,6 +1512,119 @@ test("codex use writes auth.json and status reports active imported label", asyn
   }
 });
 
+test("codex use clears stale managed auth when no pool account is eligible", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_123",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(home, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: fakeJwt,
+      access_token: fakeJwt,
+      refresh_token: "REFRESH_TOKEN",
+      account_id: "acct_123",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: fakeJwt,
+          refresh: "REFRESH_TOKEN",
+          idToken: fakeJwt,
+          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "ssh://studio.local/~/.aimgr/secrets.json",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_123",
+        lastAppliedAt: new Date().toISOString(),
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = await runCliWithExitCode(["codex", "use", "--home", home]);
+    assert.equal(result.exitCode, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.activated.status, "blocked");
+    assert.equal(parsed.activated.receipt.previousLabel, "boss");
+    assert.deepEqual(parsed.activated.receipt.blockers, [{ reason: "no_eligible_pool_account" }]);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, undefined);
+    assert.equal(updatedState.targets.codexCli.expectedAccountId, undefined);
+    assert.equal(updatedState.targets.codexCli.lastAppliedAt, undefined);
+    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.status, "blocked");
+    assert.deepEqual(updatedState.pool.openaiCodex.history.at(-1), {
+      observedAt: updatedState.targets.codexCli.lastSelectionReceipt.observedAt,
+      kind: "selection",
+      status: "blocked",
+      reason: "no_eligible_pool_account",
+      hadSpareEligibleCapacity: false,
+    });
+    assert.equal(fs.existsSync(path.join(home, ".codex", "auth.json")), false);
+
+    const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+    assert.equal(status.codexCli.activeLabel, null);
+    assert.equal(status.codexCli.readback.exists, false);
+    assert.equal(status.codexCli.lastSelectionReceipt.status, "blocked");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("codex use skips expired labels and activates the next eligible pool account", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -1649,6 +1781,128 @@ test("codex use refuses non-file-backed Codex homes", async () => {
     () => runCli(["codex", "use", "--home", home]),
     /Managed Codex activation requires file-backed auth storage/,
   );
+});
+
+test("sync codex clears stale managed auth when the active imported label is removed", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+  const qaJwt = makeFakeJwt({
+    email: "qa@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_qa",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      qa: { provider: "openai-codex" },
+    },
+    credentials: {
+      "openai-codex": {
+        qa: {
+          access: qaJwt,
+          refresh: "REFRESH_QA",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_qa",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  writeJson(path.join(consumerHome, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: bossJwt,
+      access_token: bossJwt,
+      refresh_token: "REFRESH_BOSS",
+      account_id: "acct_boss",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+        qa: {
+          access: qaJwt,
+          refresh: "REFRESH_QA",
+          idToken: qaJwt,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_qa",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "old-source",
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss", "qa"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_boss",
+        lastAppliedAt: new Date().toISOString(),
+        lastSelectionReceipt: {
+          action: "codex_use",
+          status: "activated",
+          label: "boss",
+          observedAt: new Date().toISOString(),
+        },
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  await runCli(["sync", "codex", "--from", authorityStatePath, "--home", consumerHome]);
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.accounts.boss, undefined);
+  assert.equal(consumerState.credentials["openai-codex"].boss, undefined);
+  assert.equal(consumerState.targets.codexCli.activeLabel, undefined);
+  assert.equal(consumerState.targets.codexCli.expectedAccountId, undefined);
+  assert.equal(consumerState.targets.codexCli.lastAppliedAt, undefined);
+  assert.equal(consumerState.targets.codexCli.lastSelectionReceipt, undefined);
+  assert.equal(fs.existsSync(path.join(consumerHome, ".codex", "auth.json")), false);
 });
 
 test("discoverOpenclawBrowserProfiles reads user-data/Local State for friendly names", () => {

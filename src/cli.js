@@ -1734,6 +1734,22 @@ function readCodexAuthFile({ codexHome }) {
   }
 }
 
+// Codex and Paperclip both inherit this managed file-backed auth target on the host.
+// If AIM cannot pick an eligible pool account, the old file and active-target metadata
+// must be cleared so the previous machine account cannot survive as a hidden fallback.
+function clearManagedCodexCliActivation({ state, homeDir }) {
+  ensureStateShape(state);
+  const codexHome = resolveManagedCodexHomeDir({ homeDir });
+  const authPath = resolveCodexAuthFilePath(codexHome);
+  fs.rmSync(authPath, { force: true });
+
+  const target = getCodexTargetState(state);
+  delete target.homeDir;
+  delete target.activeLabel;
+  delete target.expectedAccountId;
+  delete target.lastAppliedAt;
+}
+
 function assertCodexCredentialShape({ label, credential, requireFresh }) {
   const cred = isObject(credential) ? credential : null;
   if (!cred) {
@@ -1941,7 +1957,7 @@ function buildPortableCodexCredential({ label, credential }) {
   return next;
 }
 
-function importCodexFromAuthority({ from, state }) {
+function importCodexFromAuthority({ from, state, homeDir }) {
   ensureStateShape(state);
   const { source, state: authorityState } = loadAuthorityState(from);
   ensureStateShape(authorityState);
@@ -1990,11 +2006,12 @@ function importCodexFromAuthority({ from, state }) {
   const removedLabels = [];
   for (const label of previousImported) {
     if (incomingByLabel.has(label)) continue;
+    const currentTarget = readCodexCliTargetStatus({ state, homeDir });
+    const removedLabelWasLiveTarget = currentTarget.activeLabel === label || currentTarget.inferredLabel === label;
     delete state.accounts[label];
     delete state.credentials[OPENAI_CODEX_PROVIDER][label];
-    if (state.targets.codexCli?.activeLabel === label) {
-      delete state.targets.codexCli.activeLabel;
-      delete state.targets.codexCli.expectedAccountId;
+    if (removedLabelWasLiveTarget) {
+      clearManagedCodexCliActivation({ state, homeDir });
       delete state.targets.codexCli.lastSelectionReceipt;
     }
     removedLabels.push(label);
@@ -4228,11 +4245,13 @@ async function activateCodexPoolSelection({ state, homeDir }) {
 
   const target = getCodexTargetState(state);
   if (poolStatus.eligibleLabels.length === 0) {
+    const currentTarget = readCodexCliTargetStatus({ state, homeDir });
+    clearManagedCodexCliActivation({ state, homeDir });
     const receipt = {
       action: "codex_use",
       status: "blocked",
       observedAt,
-      previousLabel: typeof target.activeLabel === "string" ? target.activeLabel.trim() || undefined : undefined,
+      previousLabel: currentTarget.activeLabel ?? currentTarget.inferredLabel ?? undefined,
       warnings: [],
       blockers: [{ reason: "no_eligible_pool_account" }],
       reasons: [],
@@ -4546,7 +4565,7 @@ export async function main(argv) {
       return;
     }
     if (system === "codex") {
-      const imported = importCodexFromAuthority({ from: opts.from, state });
+      const imported = importCodexFromAuthority({ from: opts.from, state, homeDir });
       writeJsonFileWithBackup(statePath, state);
       process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, imported }), null, 2)}\n`);
       return;
