@@ -67,6 +67,46 @@ function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function resolveExecutableOnPath(commandName, { extraSearchPaths = [] } = {}) {
+  const normalized = String(commandName ?? "").trim();
+  if (!normalized) return null;
+  const searchDirs = [
+    ...extraSearchPaths,
+    ...String(process.env.PATH ?? "")
+      .split(path.delimiter)
+      .map((entry) => String(entry ?? "").trim())
+      .filter(Boolean),
+  ];
+  const seen = new Set();
+  for (const dir of searchDirs) {
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    const candidate = path.join(dir, normalized);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function resolveAgentBrowserCommand({ spawnImpl = spawnSync } = {}) {
+  if (spawnImpl !== spawnSync) {
+    return "agent-browser";
+  }
+  return resolveExecutableOnPath("agent-browser", {
+    extraSearchPaths: [
+      path.resolve(DEFAULT_AGENTS_REPO_ROOT, "..", "bin"),
+      path.resolve(DEFAULT_AGENTS_REPO_ROOT, "..", "tools", "agent-browser", "node_modules", ".bin"),
+    ],
+  }) || "agent-browser";
+}
+
+function formatBrowserLaunchFailure(opened) {
+  const reason = String(opened?.reason ?? "unknown").trim() || "unknown";
+  const detail = String(opened?.error ?? "").trim();
+  return detail ? `${reason}: ${detail}` : reason;
+}
+
 function normalizeProviderId(provider) {
   return String(provider ?? "")
     .trim()
@@ -1150,7 +1190,7 @@ function spawnAgentBrowserOpen({ url, profile, session, cwd, spawnImpl = spawnSy
   if (!resolvedCwd) return { ok: false, reason: "missing_launch_cwd" };
 
   const result = spawnImpl(
-    "agent-browser",
+    resolveAgentBrowserCommand({ spawnImpl }),
     ["--profile", resolvedProfile, "--session-name", resolvedSession, "--headed", "open", resolvedUrl],
     { stdio: "ignore", cwd: resolvedCwd },
   );
@@ -3318,7 +3358,7 @@ export async function refreshOrLoginCodex({
 
       process.stdout.write(
         [
-          `Failed to auto-open configured browser binding (${opened.reason}).`,
+          `Failed to auto-open configured browser binding (${formatBrowserLaunchFailure(opened)}).`,
           "Open the URL manually in the exact configured browser identity:",
           ...(browserBinding.mode === BROWSER_MODE_AGENT_BROWSER
             ? [
@@ -3446,7 +3486,7 @@ async function refreshOrLoginAnthropic({
 
       process.stdout.write(
         [
-          `Failed to auto-open configured browser binding (${opened.reason}).`,
+          `Failed to auto-open configured browser binding (${formatBrowserLaunchFailure(opened)}).`,
           "Open the URL manually in the exact configured browser identity and paste the callback URL here:",
           ...(browserBinding.mode === BROWSER_MODE_AGENT_BROWSER
             ? [
@@ -5504,7 +5544,7 @@ async function runLabelPanelAction({
       if (opened.reason === "missing_browser_path") {
         process.stdout.write(`Configured browser path is missing: ${opened.path}\n\n`);
       } else {
-        process.stdout.write(`Failed to open browser (${opened.reason}).\n\n`);
+        process.stdout.write(`Failed to open browser (${formatBrowserLaunchFailure(opened)}).\n\n`);
       }
       return { done: false };
     }
