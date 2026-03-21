@@ -634,7 +634,7 @@ test("launchBrowserBindingForUrl uses explicit agent-browser profile session and
   assert.deepEqual(calls, [
     {
       cmd: "agent-browser",
-      args: ["--profile", profileDir, "--session", "agent-cfo", "--headed", "open", "https://example.com/login"],
+      args: ["--profile", profileDir, "--session-name", "agent-cfo", "--headed", "open", "https://example.com/login"],
       options: { stdio: "ignore", cwd: home },
     },
   ]);

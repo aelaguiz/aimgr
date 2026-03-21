@@ -1151,7 +1151,7 @@ function spawnAgentBrowserOpen({ url, profile, session, cwd, spawnImpl = spawnSy
 
   const result = spawnImpl(
     "agent-browser",
-    ["--profile", resolvedProfile, "--session", resolvedSession, "--headed", "open", resolvedUrl],
+    ["--profile", resolvedProfile, "--session-name", resolvedSession, "--headed", "open", resolvedUrl],
     { stdio: "ignore", cwd: resolvedCwd },
   );
   if (result?.error) {
