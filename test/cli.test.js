@@ -1625,6 +1625,142 @@ test("codex use clears stale managed auth when no pool account is eligible", asy
   }
 });
 
+test("codex use blocks instead of selecting a weekly-exhausted ready account", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const cratejoyJwt = makeFakeJwt({
+    email: "cratejoy@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_cratejoy",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const funCountryJwt = makeFakeJwt({
+    email: "fun-country@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_fun_country",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const personalJwt = makeFakeJwt({
+    email: "personal@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_personal",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(home, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: cratejoyJwt,
+      access_token: cratejoyJwt,
+      refresh_token: "REFRESH_CRATEJOY",
+      account_id: "acct_cratejoy",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      amir_cratejoy_personal: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      amir_elaguizy_fun_country: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      amir_personal: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        amir_cratejoy_personal: {
+          access: cratejoyJwt,
+          refresh: "REFRESH_CRATEJOY",
+          idToken: cratejoyJwt,
+          expiresAt: new Date(Date.now() + 6 * 24 * 3600_000).toISOString(),
+          accountId: "acct_cratejoy",
+        },
+        amir_elaguizy_fun_country: {
+          access: funCountryJwt,
+          refresh: "REFRESH_FUN_COUNTRY",
+          idToken: funCountryJwt,
+          expiresAt: new Date(Date.now() + 6 * 24 * 3600_000).toISOString(),
+          accountId: "acct_fun_country",
+        },
+        amir_personal: {
+          access: personalJwt,
+          refresh: "REFRESH_PERSONAL",
+          idToken: personalJwt,
+          expiresAt: new Date(Date.now() + 6 * 24 * 3600_000).toISOString(),
+          accountId: "acct_personal",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["amir_cratejoy_personal", "amir_elaguizy_fun_country", "amir_personal"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "amir_cratejoy_personal",
+        expectedAccountId: "acct_cratejoy",
+        lastAppliedAt: new Date().toISOString(),
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 0,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 5 * 3600,
+            },
+            secondary_window: {
+              used_percent: accountId === "acct_cratejoy" ? 99 : 100,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = await runCliWithExitCode(["codex", "use", "--home", home]);
+    assert.equal(result.exitCode, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.activated.status, "blocked");
+    assert.deepEqual(parsed.activated.receipt.blockers, [{ reason: "no_eligible_pool_account" }]);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, undefined);
+    assert.equal(fs.existsSync(path.join(home, ".codex", "auth.json")), false);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("codex use skips expired labels and activates the next eligible pool account", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -2106,11 +2242,11 @@ test("rankPoolCandidates keeps current label when it stays within the keep-curre
     usage: {
       boss: {
         ok: true,
-        windows: [{ kind: "primary", usedPct: 18 }, { kind: "secondary", usedPct: 12 }],
+        windows: [{ kind: "primary", usedPercent: 18 }, { kind: "secondary", usedPercent: 12 }],
       },
       qa: {
         ok: true,
-        windows: [{ kind: "primary", usedPct: 12 }, { kind: "secondary", usedPct: 10 }],
+        windows: [{ kind: "primary", usedPercent: 12 }, { kind: "secondary", usedPercent: 10 }],
       },
     },
     assignedCounts: { boss: 0, qa: 0 },
@@ -2131,11 +2267,11 @@ test("planOpenclawRebalance uses the shared selector and blocks when no eligible
     usage: {
       boss: {
         ok: true,
-        windows: [{ kind: "primary", usedPct: 18 }, { kind: "secondary", usedPct: 12 }],
+        windows: [{ kind: "primary", usedPercent: 18 }, { kind: "secondary", usedPercent: 12 }],
       },
       qa: {
         ok: true,
-        windows: [{ kind: "primary", usedPct: 12 }, { kind: "secondary", usedPct: 10 }],
+        windows: [{ kind: "primary", usedPercent: 12 }, { kind: "secondary", usedPercent: 10 }],
       },
     },
     now: Date.now(),
@@ -2194,7 +2330,7 @@ test("projectPoolCapacity flags high risk from blocked receipts and no-spare exh
     liveUsage: {
       boss: {
         ok: true,
-        windows: [{ kind: "primary", usedPct: 96 }],
+        windows: [{ kind: "primary", usedPercent: 96 }],
       },
     },
   });
@@ -2249,7 +2385,7 @@ test("rebalanceOpenclawPool reports applied_with_warnings when sync returns warn
         "openai-codex": {
           boss: {
             ok: true,
-            windows: [{ kind: "primary", usedPct: 5 }],
+            windows: [{ kind: "primary", usedPercent: 5 }],
           },
         },
         anthropic: {},

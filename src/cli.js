@@ -2833,8 +2833,8 @@ function getCodexUsagePercents(snapshot) {
   }
   const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
   return {
-    primaryUsedPct: clampPercent(windows[0]?.usedPercent ?? 100),
-    secondaryUsedPct: clampPercent(windows[1]?.usedPercent ?? 100),
+    primaryUsedPct: clampPercent(windows[0]?.usedPercent ?? 0),
+    secondaryUsedPct: clampPercent(windows[1]?.usedPercent ?? 0),
   };
 }
 
@@ -3038,7 +3038,7 @@ function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
     });
     const usage = usageByLabel[label] ?? null;
     const usageOk = usage?.ok === true && Array.isArray(usage.windows) && usage.windows.length > 0;
-    const eligible = status.eligible && usageOk;
+    const eligible = status.eligible && usageOk && !isUsageSnapshotExhausted(usage);
     byLabel[label] = {
       ...status,
       label,
