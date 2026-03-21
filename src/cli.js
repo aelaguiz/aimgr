@@ -101,6 +101,27 @@ function resolveAgentBrowserCommand({ spawnImpl = spawnSync } = {}) {
   }) || "agent-browser";
 }
 
+function activateAgentBrowserApp({ spawnImpl = spawnSync } = {}) {
+  if (spawnImpl !== spawnSync) {
+    return { ok: true };
+  }
+  if (process.platform !== "darwin") {
+    return { ok: true };
+  }
+  const result = spawnImpl(
+    "osascript",
+    ["-e", 'tell application "Google Chrome for Testing" to activate'],
+    { stdio: "ignore" },
+  );
+  if (result?.error) {
+    return { ok: false, reason: "activate_error", error: String(result.error?.message ?? result.error) };
+  }
+  if (result?.status !== 0) {
+    return { ok: false, reason: "activate_nonzero", status: result.status };
+  }
+  return { ok: true };
+}
+
 function formatBrowserLaunchFailure(opened) {
   const reason = String(opened?.reason ?? "unknown").trim() || "unknown";
   const detail = String(opened?.error ?? "").trim();
@@ -1199,6 +1220,10 @@ function spawnAgentBrowserOpen({ url, profile, session, cwd, spawnImpl = spawnSy
   }
   if (result?.status !== 0) {
     return { ok: false, reason: "nonzero_exit", status: result.status };
+  }
+  const activated = activateAgentBrowserApp({ spawnImpl });
+  if (!activated.ok) {
+    return activated;
   }
   return { ok: true };
 }
