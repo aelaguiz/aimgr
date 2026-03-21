@@ -12,6 +12,7 @@ import {
   ensureOpenAICodexInteractiveLoginBinding,
   extractOpenclawConfigAgentModelPrimary,
   extractSessionModelRefFromEntry,
+  launchBrowserBindingForUrl,
   main,
   parseAnthropicAuthorizationPaste,
   planOpenclawRebalance,
@@ -23,6 +24,8 @@ import {
   refreshOrLoginCodex,
   resetSessionEntryToDefaults,
   resolveAuthorityLocator,
+  setBrowserBinding,
+  showBrowserBinding,
   scanOpenclawSessionsStoreForKeysNeedingModelReset,
   seedAimBrowserProfileFromOpenclaw,
   sessionEntryNeedsModelReset,
@@ -500,7 +503,7 @@ test("status persists migrated legacy state back to disk", async () => {
   assert.equal(persisted.targets.interactiveOAuth, undefined);
   assert.equal(persisted.accounts.boss.openclawBrowserProfile, undefined);
   assert.equal(persisted.accounts.boss.reauth.mode, "manual-callback");
-  assert.equal(persisted.accounts.boss.browser.seededFrom, "agent-boss");
+  assert.equal(persisted.accounts.boss.browser, null);
 });
 
 test("parseAnthropicAuthorizationPaste accepts callback URLs and code#state", () => {
@@ -557,6 +560,145 @@ test("ensureOpenAICodexInteractiveLoginBinding stores manual-callback choice wit
   assert.equal(state.accounts.manual_label.browser?.seededFrom, undefined);
   assert.equal(prompts.length, 1);
   assert.match(prompts[0].question, /Login mode for "manual_label"/);
+});
+
+test("ensureOpenAICodexInteractiveLoginBinding stores explicit agent-browser binding when prompted", async () => {
+  const home = mkTempHome();
+  const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
+  fs.mkdirSync(profileDir, { recursive: true });
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {
+      cfo: { provider: "openai-codex" },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  };
+
+  const answers = ["1", "3", profileDir, "agent-cfo"];
+  const binding = await ensureOpenAICodexInteractiveLoginBinding({
+    state,
+    label: "cfo",
+    homeDir: home,
+    promptLineImpl: async () => answers.shift(),
+  });
+
+  assert.equal(binding.mode, "browser-managed");
+  assert.deepEqual(binding.binding, {
+    mode: "agent-browser",
+    agentBrowserProfile: profileDir,
+    agentBrowserSession: "agent-cfo",
+  });
+  assert.equal(state.accounts.cfo.reauth.mode, "browser-managed");
+  assert.deepEqual(state.accounts.cfo.browser, {
+    mode: "agent-browser",
+    agentBrowserProfile: profileDir,
+    agentBrowserSession: "agent-cfo",
+  });
+});
+
+test("launchBrowserBindingForUrl uses explicit agent-browser profile session and neutral cwd", () => {
+  const home = mkTempHome();
+  const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const calls = [];
+  const result = launchBrowserBindingForUrl({
+    binding: {
+      mode: "agent-browser",
+      agentBrowserProfile: profileDir,
+      agentBrowserSession: "agent-cfo",
+    },
+    url: "https://example.com/login",
+    homeDir: home,
+    spawnImpl: (cmd, args, options) => {
+      calls.push({ cmd, args, options });
+      return { status: 0 };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, [
+    {
+      cmd: "agent-browser",
+      args: ["--profile", profileDir, "--session", "agent-cfo", "--headed", "open", "https://example.com/login"],
+      options: { stdio: "ignore", cwd: home },
+    },
+  ]);
+});
+
+test("aim browser set and show manage explicit browser bindings", async () => {
+  const home = mkTempHome();
+  const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const setOut = await runCli([
+    "browser",
+    "set",
+    "cfo",
+    "--home",
+    home,
+    "--mode",
+    "agent-browser",
+    "--profile",
+    profileDir,
+    "--session",
+    "agent-cfo",
+  ]);
+  const setParsed = JSON.parse(setOut);
+  assert.equal(setParsed.ok, true);
+  assert.equal(setParsed.browser.current.binding.mode, "agent-browser");
+  assert.equal(setParsed.browser.current.binding.profile, profileDir);
+  assert.equal(setParsed.browser.current.binding.session, "agent-cfo");
+
+  const showParsed = JSON.parse(await runCli(["browser", "show", "cfo", "--home", home]));
+  assert.deepEqual(showParsed, {
+    label: "cfo",
+    reauthMode: "browser-managed",
+    binding: {
+      mode: "agent-browser",
+      profile: profileDir,
+      session: "agent-cfo",
+    },
+    resolvedPaths: {
+      agentBrowserProfile: profileDir,
+    },
+    warnings: [],
+  });
+});
+
+test("aim browser set fails loud when agent-browser session is missing", async () => {
+  const home = mkTempHome();
+  const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  await assert.rejects(
+    () =>
+      runCli([
+        "browser",
+        "set",
+        "cfo",
+        "--home",
+        home,
+        "--mode",
+        "agent-browser",
+        "--profile",
+        profileDir,
+      ]),
+    /requires --profile <abs-path> and --session <name>/,
+  );
 });
 
 test("refreshOrLoginCodex manual-callback prompts for callback URL and skips browser launch", async () => {
@@ -1258,7 +1400,7 @@ test("status text shows manual-callback and browser-managed login modes", async 
 
   const out = await runCli(["status", "--home", home]);
   assert.match(out, /openai-codex manual_label login=manual-callback/);
-  assert.match(out, /anthropic claude login=aim-browser-profile/);
+  assert.match(out, /anthropic claude login=aim-profile/);
 });
 
 test("status --json surfaces receipt and projection branches", async () => {
@@ -2242,7 +2384,7 @@ test("seedAimBrowserProfileFromOpenclaw copies the source profile once and recor
     fs.readFileSync(path.join(home, ".aimgr", "browser", "boss", "user-data", "Cookies"), "utf8"),
     "cookie-state",
   );
-  assert.equal(state.accounts.boss.browser.seededFrom, "agent-boss");
+  assert.equal(state.accounts.boss.browser.seededFromOpenclawProfileId, "agent-boss");
   assert.ok(typeof state.accounts.boss.browser.seededAt === "string");
 
   const second = seedAimBrowserProfileFromOpenclaw({
@@ -2294,7 +2436,7 @@ test("real CLI login fails loud on a missing migration profile and leaves OpenCl
 
   const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
-  assert.equal(updatedState.accounts.boss.reauth.mode, "aim-browser-profile");
+  assert.equal(updatedState.accounts.boss.reauth.mode, "browser-managed");
   assert.ok(typeof updatedState.accounts.boss.reauth.lastAttemptAt === "string");
 });
 
@@ -2318,9 +2460,9 @@ test("derivePoolAccountStatus keeps fresh browser-managed credentials ready when
   });
 
   assert.equal(status.operatorStatus, "ready");
-  assert.equal(status.detailReason, "missing_browser");
+  assert.equal(status.detailReason, "binding_missing_for_future_reauth");
   assert.equal(status.eligible, true);
-  assert.equal(status.actionRequired, "run_aim_label");
+  assert.equal(status.actionRequired, "run_aim_browser_set");
 });
 
 test("extractOpenclawConfigAgentModelPrimary handles string/object/null", () => {

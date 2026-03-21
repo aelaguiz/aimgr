@@ -13,9 +13,13 @@ const CODEX_AUTH_STORE_MODE_FILE = "file";
 const CODEX_AUTH_STORE_MODE_KEYRING = "keyring";
 const CODEX_AUTH_STORE_MODE_AUTO = "auto";
 const DEFAULT_AUTHORITY_STATE_REMOTE_PATH = "$HOME/.aimgr/secrets.json";
-const INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE = "aim-browser-profile";
+const REAUTH_MODE_BROWSER_MANAGED = "browser-managed";
+const REAUTH_MODE_MANUAL_CALLBACK = "manual-callback";
+const LEGACY_INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE = "aim-browser-profile";
 const LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE = "openclaw-browser-profile";
-const INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK = "manual-callback";
+const BROWSER_MODE_AIM_PROFILE = "aim-profile";
+const BROWSER_MODE_CHROME_PROFILE = "chrome-profile";
+const BROWSER_MODE_AGENT_BROWSER = "agent-browser";
 const STATUS_RESET_TIMEZONE = "America/Chicago";
 const STATUS_RESET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: STATUS_RESET_TIMEZONE,
@@ -78,7 +82,21 @@ function normalizeLabel(input) {
       `Invalid label: ${label}. Use lowercase letters, numbers, '_' and '-' (e.g. boss, coder2).`,
     );
   }
-  const reserved = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "use", "help"]);
+  const reserved = new Set([
+    "status",
+    "login",
+    "pin",
+    "autopin",
+    "rebalance",
+    "apply",
+    "sync",
+    "codex",
+    "browser",
+    "use",
+    "show",
+    "set",
+    "help",
+  ]);
   if (reserved.has(label)) {
     throw new Error(`Refusing label=${label} (reserved CLI word). Pick a different label (e.g. boss, coder2).`);
   }
@@ -104,6 +122,11 @@ function parseArgs(argv) {
     home: undefined,
     state: undefined,
     from: undefined,
+    mode: undefined,
+    seedFromOpenclaw: undefined,
+    userDataDir: undefined,
+    profile: undefined,
+    session: undefined,
     json: false,
     help: false,
     pool: undefined,
@@ -124,6 +147,31 @@ function parseArgs(argv) {
     }
     if (arg === "--from") {
       opts.from = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--mode") {
+      opts.mode = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--seed-from-openclaw") {
+      opts.seedFromOpenclaw = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--user-data-dir") {
+      opts.userDataDir = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--profile") {
+      opts.profile = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--session") {
+      opts.session = argv[i + 1];
       i += 1;
       continue;
     }
@@ -162,11 +210,16 @@ function printHelp() {
     "  aim sync openclaw     # explicit alias for apply",
     "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
     "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
+    "  aim browser show <label>",
+    "  aim browser set <label> --mode aim-profile [--seed-from-openclaw <profileId>]",
+    "  aim browser set <label> --mode chrome-profile --user-data-dir <abs-path>",
+    "  aim browser set <label> --mode agent-browser --profile <abs-path> --session <name>",
+    "  aim browser set <label> --mode manual-callback",
     "",
     "Notes:",
     "  - SSOT file: ~/.aimgr/secrets.json (auto-backed-up on every write).",
     "  - V0 supports: openai-codex (ChatGPT/Codex OAuth) + anthropic (Claude Pro/Max OAuth) on macOS.",
-    "  - Browser-managed OAuth runs inside AIM-owned profiles under ~/.aimgr/browser/<label>/user-data.",
+    "  - Browser-managed OAuth supports explicit per-label bindings: aim-profile, chrome-profile, or agent-browser.",
     "  - `aim pin`, `aim autopin openclaw`, and `aim codex use <label>` are removed; use `aim rebalance openclaw`, `aim apply`, and `aim codex use`.",
     "  - Codex target management is file-backed only in v1; keyring/auto homes fail loud.",
     "",
@@ -175,6 +228,11 @@ function printHelp() {
     "  --state <path>  Override SSOT file path (default: <home>/.aimgr/secrets.json).",
     "  --from <src>    Authority source for `aim sync codex`.",
     "                  Examples: agents@amirs-mac-studio  |  ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json",
+    "  --mode <id>     Browser binding mode for `aim browser set`.",
+    "  --seed-from-openclaw <profileId>  Optional one-time OpenClaw seed source for `--mode aim-profile`.",
+    "  --user-data-dir <abs-path>        Required for `--mode chrome-profile`.",
+    "  --profile <abs-path>              Required for `--mode agent-browser`.",
+    "  --session <name>                  Required for `--mode agent-browser`.",
     "",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -853,11 +911,11 @@ function normalizeLegacyStateV0(raw) {
     migrated.accounts[label] = {
       provider: provider || OPENAI_CODEX_PROVIDER,
       browser: {
-        owner: "aim",
-        ...(chromeProfileDirectory ? { seededFrom: chromeProfileDirectory } : {}),
+        mode: chromeProfileDirectory ? BROWSER_MODE_CHROME_PROFILE : BROWSER_MODE_AIM_PROFILE,
+        ...(chromeProfileDirectory ? { userDataDir: chromeProfileDirectory } : {}),
       },
       reauth: {
-        mode: INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE,
+        mode: REAUTH_MODE_BROWSER_MANAGED,
       },
       pool: {
         enabled: true,
@@ -977,7 +1035,6 @@ function sanitizeForStatus(value) {
       "secret",
       "password",
       "cookie",
-      "session",
       "accessToken",
       "refreshToken",
       "idToken",
@@ -992,7 +1049,6 @@ function sanitizeForStatus(value) {
     if (k.includes("secret")) return true;
     if (k.includes("password")) return true;
     if (k.includes("cookie")) return true;
-    if (k.includes("session")) return true;
     if (k === "key" || k.endsWith("_key") || k.endsWith("key")) return true;
     return false;
   };
@@ -1040,6 +1096,30 @@ function openChromeUserDataDirForUrl({ url, userDataDir }) {
   return { ok: true };
 }
 
+function spawnAgentBrowserOpen({ url, profile, session, cwd, spawnImpl = spawnSync }) {
+  const resolvedUrl = String(url ?? "").trim();
+  const resolvedProfile = String(profile ?? "").trim();
+  const resolvedSession = String(session ?? "").trim();
+  const resolvedCwd = String(cwd ?? "").trim();
+  if (!resolvedUrl) return { ok: false, reason: "missing_url" };
+  if (!resolvedProfile) return { ok: false, reason: "missing_agent_browser_profile" };
+  if (!resolvedSession) return { ok: false, reason: "missing_agent_browser_session" };
+  if (!resolvedCwd) return { ok: false, reason: "missing_launch_cwd" };
+
+  const result = spawnImpl(
+    "agent-browser",
+    ["--profile", resolvedProfile, "--session", resolvedSession, "--headed", "open", resolvedUrl],
+    { stdio: "ignore", cwd: resolvedCwd },
+  );
+  if (result?.error) {
+    return { ok: false, reason: "spawn_error", error: String(result.error?.message ?? result.error) };
+  }
+  if (result?.status !== 0) {
+    return { ok: false, reason: "nonzero_exit", status: result.status };
+  }
+  return { ok: true };
+}
+
 function resolveOpenclawStateDir({ homeDir }) {
   return path.join(homeDir, ".openclaw");
 }
@@ -1056,8 +1136,22 @@ function resolveAimBrowserLocalStatePath({ homeDir, label }) {
   return path.join(resolveAimBrowserUserDataDir({ homeDir, label }), "Local State");
 }
 
+function resolveChromeLocalStatePath(userDataDir) {
+  return path.join(String(userDataDir ?? "").trim(), "Local State");
+}
+
 function aimBrowserProfileExists({ homeDir, label }) {
   return fs.existsSync(resolveAimBrowserUserDataDir({ homeDir, label }));
+}
+
+function isAbsoluteExistingDirectory(dirPath) {
+  const raw = String(dirPath ?? "").trim();
+  if (!raw || !path.isAbsolute(raw)) return false;
+  try {
+    return fs.statSync(raw).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function openclawAgentExists({ openclawStateDir, agentId }) {
@@ -1248,6 +1342,9 @@ function getAccountRecord(state, label, { create = false } = {}) {
 function getAccountBrowserState(state, label, { create = false } = {}) {
   const account = getAccountRecord(state, label, { create });
   if (!account) return null;
+  if (create && !isObject(account.browser)) {
+    account.browser = {};
+  }
   return account.browser;
 }
 
@@ -1263,26 +1360,115 @@ function getAccountPoolState(state, label, { create = false } = {}) {
   return account.pool;
 }
 
+function normalizeInteractiveOAuthMode(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === REAUTH_MODE_BROWSER_MANAGED) {
+    return REAUTH_MODE_BROWSER_MANAGED;
+  }
+  if (raw === LEGACY_INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE) {
+    return REAUTH_MODE_BROWSER_MANAGED;
+  }
+  if (raw === LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
+    return REAUTH_MODE_BROWSER_MANAGED;
+  }
+  if (raw === REAUTH_MODE_MANUAL_CALLBACK) {
+    return REAUTH_MODE_MANUAL_CALLBACK;
+  }
+  return null;
+}
+
+export function normalizeBrowserBindingMode(value) {
+  const raw = String(value ?? "").trim().toLowerCase().replace(/_/g, "-");
+  if (!raw) return null;
+  if (raw === "1" || raw === BROWSER_MODE_AIM_PROFILE || raw === "aim" || raw === "aim-profile") {
+    return BROWSER_MODE_AIM_PROFILE;
+  }
+  if (raw === "2" || raw === BROWSER_MODE_CHROME_PROFILE || raw === "chrome" || raw === "chrome-profile") {
+    return BROWSER_MODE_CHROME_PROFILE;
+  }
+  if (
+    raw === "3"
+    || raw === BROWSER_MODE_AGENT_BROWSER
+    || raw === "agent"
+    || raw === "agent-browser"
+    || raw === "agent-browser-profile"
+  ) {
+    return BROWSER_MODE_AGENT_BROWSER;
+  }
+  return null;
+}
+
+function normalizeAbsolutePath(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const resolved = path.resolve(raw);
+  return path.isAbsolute(resolved) ? resolved : null;
+}
+
+function browserBindingNeedsMode(browser) {
+  return (
+    typeof browser?.seededFromOpenclawProfileId === "string"
+    || typeof browser?.seededFrom === "string"
+    || typeof browser?.seededAt === "string"
+    || typeof browser?.verifiedAt === "string"
+    || typeof browser?.conflictReason === "string"
+  );
+}
+
 function ensureAccountShape(account, { providerHint } = {}) {
   const nextProvider =
     normalizeProviderId(account?.provider ?? providerHint ?? OPENAI_CODEX_PROVIDER) || OPENAI_CODEX_PROVIDER;
   account.provider = nextProvider;
   account.expect = isObject(account.expect) ? account.expect : {};
 
-  const browser = isObject(account.browser) ? account.browser : {};
-  account.browser = {
-    owner: "aim",
-    ...(typeof browser.seededFrom === "string" && browser.seededFrom.trim()
-      ? { seededFrom: browser.seededFrom.trim() }
-      : {}),
-    ...(typeof browser.seededAt === "string" && browser.seededAt.trim() ? { seededAt: browser.seededAt.trim() } : {}),
-    ...(typeof browser.verifiedAt === "string" && browser.verifiedAt.trim()
-      ? { verifiedAt: browser.verifiedAt.trim() }
-      : {}),
-    ...(typeof browser.conflictReason === "string" && browser.conflictReason.trim()
-      ? { conflictReason: browser.conflictReason.trim() }
-      : {}),
-  };
+  const rawBrowser = isObject(account.browser) ? account.browser : null;
+  const normalizedMode = normalizeBrowserBindingMode(rawBrowser?.mode)
+    || (rawBrowser && browserBindingNeedsMode(rawBrowser) ? BROWSER_MODE_AIM_PROFILE : null);
+  const seededFromOpenclawProfileId =
+    typeof rawBrowser?.seededFromOpenclawProfileId === "string" && rawBrowser.seededFromOpenclawProfileId.trim()
+      ? rawBrowser.seededFromOpenclawProfileId.trim()
+      : typeof rawBrowser?.seededFrom === "string" && rawBrowser.seededFrom.trim()
+        ? rawBrowser.seededFrom.trim()
+        : null;
+  const seededAt = typeof rawBrowser?.seededAt === "string" && rawBrowser.seededAt.trim() ? rawBrowser.seededAt.trim() : null;
+  const verifiedAt =
+    typeof rawBrowser?.verifiedAt === "string" && rawBrowser.verifiedAt.trim() ? rawBrowser.verifiedAt.trim() : null;
+  const conflictReason =
+    typeof rawBrowser?.conflictReason === "string" && rawBrowser.conflictReason.trim()
+      ? rawBrowser.conflictReason.trim()
+      : null;
+  const userDataDir =
+    normalizedMode === BROWSER_MODE_CHROME_PROFILE && typeof rawBrowser?.userDataDir === "string" && rawBrowser.userDataDir.trim()
+      ? path.resolve(rawBrowser.userDataDir.trim())
+      : null;
+  const agentBrowserProfile =
+    normalizedMode === BROWSER_MODE_AGENT_BROWSER
+    && typeof rawBrowser?.agentBrowserProfile === "string"
+    && rawBrowser.agentBrowserProfile.trim()
+      ? path.resolve(rawBrowser.agentBrowserProfile.trim())
+      : null;
+  const agentBrowserSession =
+    normalizedMode === BROWSER_MODE_AGENT_BROWSER
+    && typeof rawBrowser?.agentBrowserSession === "string"
+    && rawBrowser.agentBrowserSession.trim()
+      ? rawBrowser.agentBrowserSession.trim()
+      : null;
+  account.browser =
+    normalizeInteractiveOAuthMode(account?.reauth?.mode) === REAUTH_MODE_MANUAL_CALLBACK
+      ? null
+      : normalizedMode || seededFromOpenclawProfileId || seededAt || verifiedAt || conflictReason
+        ? {
+            ...(normalizedMode ? { mode: normalizedMode } : {}),
+            ...(userDataDir ? { userDataDir } : {}),
+            ...(agentBrowserProfile ? { agentBrowserProfile } : {}),
+            ...(agentBrowserSession ? { agentBrowserSession } : {}),
+            ...(seededFromOpenclawProfileId ? { seededFromOpenclawProfileId } : {}),
+            ...(seededAt ? { seededAt } : {}),
+            ...(verifiedAt ? { verifiedAt } : {}),
+            ...(conflictReason ? { conflictReason } : {}),
+          }
+        : null;
 
   const reauth = isObject(account.reauth) ? account.reauth : {};
   const reauthMode = normalizeInteractiveOAuthMode(reauth.mode);
@@ -1307,6 +1493,296 @@ function ensureAccountShape(account, { providerHint } = {}) {
       : {}),
     ...(typeof pool.disabledAt === "string" && pool.disabledAt.trim() ? { disabledAt: pool.disabledAt.trim() } : {}),
   };
+}
+
+// Browser substrate is configurable per label, but the binding itself is explicit AIM state.
+// Do not infer from agent workspaces, agent ids, or the implicit default agent-browser session.
+export function resolveBrowserBinding({ account, homeDir, label }) {
+  const normalizedAccount = isObject(account) ? account : {};
+  const reauthMode = normalizeInteractiveOAuthMode(normalizedAccount?.reauth?.mode);
+  if (reauthMode !== REAUTH_MODE_BROWSER_MANAGED) {
+    return null;
+  }
+
+  const browser = isObject(normalizedAccount.browser) ? normalizedAccount.browser : null;
+  const mode = normalizeBrowserBindingMode(browser?.mode);
+  if (!mode) {
+    return null;
+  }
+
+  if (mode === BROWSER_MODE_AIM_PROFILE) {
+    return {
+      mode,
+      ...(homeDir && label ? { userDataDir: resolveAimBrowserUserDataDir({ homeDir, label }) } : {}),
+    };
+  }
+
+  if (mode === BROWSER_MODE_CHROME_PROFILE) {
+    return {
+      mode,
+      userDataDir: String(browser?.userDataDir ?? "").trim(),
+    };
+  }
+
+  if (mode === BROWSER_MODE_AGENT_BROWSER) {
+    return {
+      mode,
+      agentBrowserProfile: String(browser?.agentBrowserProfile ?? "").trim(),
+      agentBrowserSession: String(browser?.agentBrowserSession ?? "").trim(),
+    };
+  }
+
+  return null;
+}
+
+function resolveBrowserBindingDisplay(binding) {
+  if (!binding) return null;
+  if (binding.mode === BROWSER_MODE_AGENT_BROWSER) {
+    return {
+      mode: binding.mode,
+      agentBrowserProfile: binding.agentBrowserProfile,
+      agentBrowserSession: binding.agentBrowserSession,
+    };
+  }
+  if (binding.mode === BROWSER_MODE_CHROME_PROFILE || binding.mode === BROWSER_MODE_AIM_PROFILE) {
+    return {
+      mode: binding.mode,
+      ...(binding.userDataDir ? { userDataDir: binding.userDataDir } : {}),
+    };
+  }
+  return { mode: binding.mode };
+}
+
+export function setBrowserBinding({
+  state,
+  label,
+  mode,
+  userDataDir,
+  agentBrowserProfile,
+  agentBrowserSession,
+  seedFromOpenclaw,
+}) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const account = getAccountRecord(state, normalizedLabel, { create: true });
+  ensureAccountShape(account, { providerHint: account.provider });
+
+  const normalizedMode = String(mode ?? "").trim() === REAUTH_MODE_MANUAL_CALLBACK
+    ? REAUTH_MODE_MANUAL_CALLBACK
+    : normalizeBrowserBindingMode(mode);
+  if (!normalizedMode) {
+    throw new Error(
+      `Unsupported browser mode for label=${normalizedLabel}: ${String(mode ?? "").trim() || "(missing)"}.`,
+    );
+  }
+
+  const previous = JSON.stringify({
+    reauth: account.reauth,
+    browser: account.browser,
+  });
+
+  if (normalizedMode === REAUTH_MODE_MANUAL_CALLBACK) {
+    account.reauth.mode = REAUTH_MODE_MANUAL_CALLBACK;
+    account.browser = null;
+    return { label: normalizedLabel, mode: normalizedMode, changed: previous !== JSON.stringify({ reauth: account.reauth, browser: account.browser }), warnings: [] };
+  }
+
+  const nextBrowser = { mode: normalizedMode };
+  if (normalizedMode === BROWSER_MODE_AIM_PROFILE) {
+    if (seedFromOpenclaw) {
+      nextBrowser.seededFromOpenclawProfileId = String(seedFromOpenclaw).trim();
+    }
+  } else if (normalizedMode === BROWSER_MODE_CHROME_PROFILE) {
+    const resolvedUserDataDir = normalizeAbsolutePath(userDataDir);
+    if (!resolvedUserDataDir || !isAbsoluteExistingDirectory(resolvedUserDataDir)) {
+      throw new Error(
+        `Mapped Chrome profile for label=${normalizedLabel} requires an existing absolute --user-data-dir (got ${String(userDataDir ?? "").trim() || "(missing)"}).`,
+      );
+    }
+    nextBrowser.userDataDir = resolvedUserDataDir;
+  } else if (normalizedMode === BROWSER_MODE_AGENT_BROWSER) {
+    const resolvedProfile = normalizeAbsolutePath(agentBrowserProfile);
+    const resolvedSession = String(agentBrowserSession ?? "").trim();
+    if (!resolvedProfile || !isAbsoluteExistingDirectory(resolvedProfile)) {
+      throw new Error(
+        `Mapped agent-browser profile for label=${normalizedLabel} requires an existing absolute --profile (got ${String(agentBrowserProfile ?? "").trim() || "(missing)"}).`,
+      );
+    }
+    if (!resolvedSession) {
+      throw new Error(`Mapped agent-browser profile for label=${normalizedLabel} requires --session.`);
+    }
+    nextBrowser.agentBrowserProfile = resolvedProfile;
+    nextBrowser.agentBrowserSession = resolvedSession;
+  }
+
+  if (typeof account.browser?.verifiedAt === "string" && account.browser.verifiedAt.trim()) {
+    nextBrowser.verifiedAt = account.browser.verifiedAt.trim();
+  }
+  if (typeof account.browser?.seededAt === "string" && account.browser.seededAt.trim()) {
+    nextBrowser.seededAt = account.browser.seededAt.trim();
+  }
+  if (typeof account.browser?.conflictReason === "string" && account.browser.conflictReason.trim()) {
+    nextBrowser.conflictReason = account.browser.conflictReason.trim();
+  }
+  if (
+    normalizedMode === BROWSER_MODE_AIM_PROFILE
+    && !nextBrowser.seededFromOpenclawProfileId
+    && typeof account.browser?.seededFromOpenclawProfileId === "string"
+    && account.browser.seededFromOpenclawProfileId.trim()
+  ) {
+    nextBrowser.seededFromOpenclawProfileId = account.browser.seededFromOpenclawProfileId.trim();
+  }
+
+  account.reauth.mode = REAUTH_MODE_BROWSER_MANAGED;
+  account.browser = nextBrowser;
+  ensureAccountShape(account, { providerHint: account.provider });
+  return {
+    label: normalizedLabel,
+    mode: normalizedMode,
+    changed: previous !== JSON.stringify({ reauth: account.reauth, browser: account.browser }),
+    warnings: [],
+  };
+}
+
+export function showBrowserBinding({ state, label, homeDir }) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const account = getAccountRecord(state, normalizedLabel);
+  if (!account) {
+    throw new Error(`Unknown label: ${normalizedLabel}.`);
+  }
+  const reauthMode = normalizeInteractiveOAuthMode(account?.reauth?.mode);
+  const binding = resolveBrowserBinding({ account, homeDir, label: normalizedLabel });
+  const warnings = [];
+  if (reauthMode === REAUTH_MODE_BROWSER_MANAGED && !binding) {
+    warnings.push({ reason: "binding_missing_for_future_reauth" });
+  }
+  return {
+    label: normalizedLabel,
+    reauthMode: reauthMode ?? null,
+    binding: binding
+      ? (binding.mode === BROWSER_MODE_AGENT_BROWSER
+        ? {
+            mode: binding.mode,
+            profile: binding.agentBrowserProfile,
+            session: binding.agentBrowserSession,
+          }
+        : {
+            mode: binding.mode,
+            ...(binding.userDataDir ? { userDataDir: binding.userDataDir } : {}),
+          })
+      : null,
+    resolvedPaths:
+      binding?.mode === BROWSER_MODE_AGENT_BROWSER
+        ? {
+            agentBrowserProfile: binding.agentBrowserProfile,
+          }
+        : binding?.userDataDir
+          ? { userDataDir: binding.userDataDir }
+          : null,
+    warnings,
+  };
+}
+
+function resolveBrowserFactsPath(binding) {
+  if (!binding) return null;
+  if (binding.mode === BROWSER_MODE_AGENT_BROWSER) {
+    return String(binding.agentBrowserProfile ?? "").trim() || null;
+  }
+  if (binding.mode === BROWSER_MODE_AIM_PROFILE || binding.mode === BROWSER_MODE_CHROME_PROFILE) {
+    return String(binding.userDataDir ?? "").trim() || null;
+  }
+  return null;
+}
+
+function readBrowserFacts({ account, homeDir, label }) {
+  const normalizedLabel = normalizeLabel(label);
+  const binding = resolveBrowserBinding({ account, homeDir, label: normalizedLabel });
+  const localStatePath = resolveBrowserFactsPath(binding);
+  if (!binding || !localStatePath) {
+    return {
+      label: normalizedLabel,
+      bindingPresent: false,
+      exists: false,
+      mode: null,
+      userDataDir: null,
+      name: null,
+      userName: null,
+      gaiaName: null,
+    };
+  }
+
+  if (!fs.existsSync(localStatePath)) {
+    return {
+      label: normalizedLabel,
+      bindingPresent: true,
+      exists: false,
+      mode: binding.mode,
+      userDataDir: localStatePath,
+      name: null,
+      userName: null,
+      gaiaName: null,
+      ...(binding.mode === BROWSER_MODE_AGENT_BROWSER
+        ? { agentBrowserSession: binding.agentBrowserSession || null }
+        : {}),
+    };
+  }
+
+  const info = readChromeDefaultProfileInfoFromLocalState(resolveChromeLocalStatePath(localStatePath));
+  const name = typeof info?.name === "string" ? String(info.name).trim() : "";
+  const userName = typeof info?.user_name === "string" ? String(info.user_name).trim() : "";
+  const gaiaName = typeof info?.gaia_name === "string" ? String(info.gaia_name).trim() : "";
+  return {
+    label: normalizedLabel,
+    bindingPresent: true,
+    exists: true,
+    mode: binding.mode,
+    userDataDir: localStatePath,
+    name: name || null,
+    userName: userName || null,
+    gaiaName: gaiaName || null,
+    ...(binding.mode === BROWSER_MODE_AGENT_BROWSER
+      ? { agentBrowserSession: binding.agentBrowserSession || null }
+      : {}),
+  };
+}
+
+export function launchBrowserBindingForUrl({ binding, url, homeDir, spawnImpl = spawnSync }) {
+  const resolvedBinding = isObject(binding) ? binding : null;
+  if (!resolvedBinding) {
+    return { ok: false, reason: "missing_binding" };
+  }
+  if (resolvedBinding.mode === BROWSER_MODE_AIM_PROFILE || resolvedBinding.mode === BROWSER_MODE_CHROME_PROFILE) {
+    const userDataDir = String(resolvedBinding.userDataDir ?? "").trim();
+    if (!userDataDir) {
+      return { ok: false, reason: "missing_user_data_dir" };
+    }
+    if (!fs.existsSync(userDataDir)) {
+      return { ok: false, reason: "missing_browser_path", path: userDataDir };
+    }
+    return openChromeUserDataDirForUrl({ url, userDataDir });
+  }
+  if (resolvedBinding.mode === BROWSER_MODE_AGENT_BROWSER) {
+    const profile = String(resolvedBinding.agentBrowserProfile ?? "").trim();
+    const session = String(resolvedBinding.agentBrowserSession ?? "").trim();
+    if (!profile) {
+      return { ok: false, reason: "missing_agent_browser_profile" };
+    }
+    if (!fs.existsSync(profile)) {
+      return { ok: false, reason: "missing_browser_path", path: profile };
+    }
+    if (!session) {
+      return { ok: false, reason: "missing_agent_browser_session" };
+    }
+    return spawnAgentBrowserOpen({
+      url,
+      profile,
+      session,
+      cwd: homeDir,
+      spawnImpl,
+    });
+  }
+  return { ok: false, reason: "unsupported_binding_mode" };
 }
 
 async function promptLine(message, { defaultValue } = {}) {
@@ -1347,12 +1823,13 @@ async function promptRequiredLine(message) {
 function resolveOpenAICodexInteractiveLoginModeFromInput(input) {
   const raw = String(input ?? "").trim();
   if (!raw) return null;
-  if (raw === "1") return INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
-  if (raw === "2") return INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK;
+  if (raw === "1") return REAUTH_MODE_BROWSER_MANAGED;
+  if (raw === "2") return REAUTH_MODE_MANUAL_CALLBACK;
 
   const normalized = raw.toLowerCase().replace(/_/g, "-");
   if (
     normalized === "browser" ||
+    normalized === "browser-managed" ||
     normalized === "aim" ||
     normalized === "aim-browser" ||
     normalized === "aim-browser-profile" ||
@@ -1360,7 +1837,7 @@ function resolveOpenAICodexInteractiveLoginModeFromInput(input) {
     normalized === "openclaw-browser" ||
     normalized === "openclaw-browser-profile"
   ) {
-    return INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
+    return REAUTH_MODE_BROWSER_MANAGED;
   }
   if (
     normalized === "manual" ||
@@ -1368,9 +1845,18 @@ function resolveOpenAICodexInteractiveLoginModeFromInput(input) {
     normalized === "manual-callback" ||
     normalized === "external-browser"
   ) {
-    return INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK;
+    return REAUTH_MODE_MANUAL_CALLBACK;
   }
   return null;
+}
+
+function resolveBrowserModeSelectionFromInput(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+  if (raw === "1") return BROWSER_MODE_AIM_PROFILE;
+  if (raw === "2") return BROWSER_MODE_CHROME_PROFILE;
+  if (raw === "3") return BROWSER_MODE_AGENT_BROWSER;
+  return normalizeBrowserBindingMode(raw);
 }
 
 function resolveSupportedProviderFromInput(input) {
@@ -1514,9 +2000,13 @@ function ensureStateShape(state) {
     const legacyBindingMode = normalizeInteractiveOAuthMode(legacyBinding?.mode);
     const legacyBindingProfileId =
       typeof legacyBinding?.profileId === "string" ? legacyBinding.profileId.trim() : "";
+    const legacyChromeProfileDirectory =
+      typeof account.chromeProfileDirectory === "string" ? account.chromeProfileDirectory.trim() : "";
+    const existingReauthRaw = String(account?.reauth?.mode ?? "").trim().toLowerCase();
+    const existingReauthMode = normalizeInteractiveOAuthMode(existingReauthRaw);
 
     if (!isObject(account.browser)) {
-      account.browser = {};
+      account.browser = account.browser === null ? null : {};
     }
     if (!isObject(account.reauth)) {
       account.reauth = {};
@@ -1529,14 +2019,34 @@ function ensureStateShape(state) {
       browserProfile
       || (typeof legacyBrowserProfiles[label] === "string" ? legacyBrowserProfiles[label].trim() : "")
       || legacyBindingProfileId;
-    if (migrationSource && !account.browser.seededFrom) {
-      account.browser.seededFrom = migrationSource;
+    if (!isObject(account.browser) && (migrationSource || legacyChromeProfileDirectory || existingReauthRaw)) {
+      account.browser = {};
     }
-    if (!account.reauth.mode && (legacyBindingMode || migrationSource)) {
+    if (migrationSource && !account.browser.seededFromOpenclawProfileId) {
+      account.browser.seededFromOpenclawProfileId = migrationSource;
+    }
+    if (legacyChromeProfileDirectory && !account.browser.userDataDir) {
+      account.browser.userDataDir = legacyChromeProfileDirectory;
+    }
+    if (
+      isObject(account.browser)
+      && !account.browser.mode
+      && (
+        legacyChromeProfileDirectory
+        || migrationSource
+        || existingReauthRaw === LEGACY_INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE
+        || existingReauthRaw === LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE
+      )
+    ) {
+      account.browser.mode = legacyChromeProfileDirectory ? BROWSER_MODE_CHROME_PROFILE : BROWSER_MODE_AIM_PROFILE;
+    }
+    if (!account.reauth.mode && (legacyBindingMode || migrationSource || legacyChromeProfileDirectory)) {
       account.reauth.mode =
-        legacyBindingMode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK
-          ? INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK
-          : INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
+        legacyBindingMode === REAUTH_MODE_MANUAL_CALLBACK
+          ? REAUTH_MODE_MANUAL_CALLBACK
+          : REAUTH_MODE_BROWSER_MANAGED;
+    } else if (existingReauthMode) {
+      account.reauth.mode = existingReauthMode;
     }
     ensureAccountShape(account, { providerHint: account.provider });
 
@@ -1587,25 +2097,17 @@ function getOpenclawExclusions(state) {
   return getOpenclawTargetState(state).exclusions;
 }
 
-function normalizeInteractiveOAuthMode(value) {
-  const raw = String(value ?? "").trim().toLowerCase();
-  if (raw === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE) {
-    return INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
-  }
-  if (raw === LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE) {
-    return INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE;
-  }
-  if (raw === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
-    return INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK;
-  }
-  return null;
-}
-
 export function getInteractiveOAuthBindingForLabel(state, label) {
   ensureStateShape(state);
   const reauth = getAccountReauthState(state, label);
   if (!reauth) return null;
-  return { mode: normalizeInteractiveOAuthMode(reauth.mode) };
+  const mode = normalizeInteractiveOAuthMode(reauth.mode);
+  const account = getAccountRecord(state, label);
+  const browserBinding = resolveBrowserBinding({ account, label });
+  return {
+    ...(mode ? { mode } : {}),
+    ...(browserBinding ? { binding: browserBinding } : {}),
+  };
 }
 
 function setInteractiveOAuthBindingForLabel(state, label, binding) {
@@ -1617,6 +2119,9 @@ function setInteractiveOAuthBindingForLabel(state, label, binding) {
   }
   const reauth = getAccountReauthState(state, normalizedLabel, { create: true });
   reauth.mode = mode;
+  if (mode === REAUTH_MODE_MANUAL_CALLBACK) {
+    state.accounts[normalizedLabel].browser = null;
+  }
 }
 
 function getCodexTargetState(state) {
@@ -2022,15 +2527,23 @@ function importCodexFromAuthority({ from, state, homeDir }) {
     const incomingExpect = isObject(incoming.account.expect) ? structuredClone(incoming.account.expect) : null;
     const incomingPool = isObject(incoming.account.pool) ? structuredClone(incoming.account.pool) : null;
     const incomingReauthMode = normalizeInteractiveOAuthMode(incoming.account?.reauth?.mode);
+    const existingBrowser =
+      existingLocal.browser === null
+        ? null
+        : isObject(existingLocal.browser)
+          ? structuredClone(existingLocal.browser)
+          : undefined;
     state.accounts[label] = {
       ...(isObject(existingLocal.reauth) ? { reauth: structuredClone(existingLocal.reauth) } : {}),
       provider: OPENAI_CODEX_PROVIDER,
+      ...(existingBrowser !== undefined ? { browser: existingBrowser } : {}),
       ...(incomingExpect ? { expect: incomingExpect } : isObject(existingLocal.expect) ? { expect: structuredClone(existingLocal.expect) } : {}),
       ...(incomingPool ? { pool: incomingPool } : isObject(existingLocal.pool) ? { pool: structuredClone(existingLocal.pool) } : {}),
     };
     ensureAccountShape(state.accounts[label], { providerHint: OPENAI_CODEX_PROVIDER });
     if (incomingReauthMode) {
       state.accounts[label].reauth.mode = incomingReauthMode;
+      ensureAccountShape(state.accounts[label], { providerHint: OPENAI_CODEX_PROVIDER });
     }
     state.credentials[OPENAI_CODEX_PROVIDER][label] = incoming.credential;
     assertNoCodexAccountIdCollisions(state, label, incoming.credential.accountId);
@@ -2134,8 +2647,8 @@ export function seedAimBrowserProfileFromOpenclaw({ state, label, homeDir, profi
   });
 
   const browser = getAccountBrowserState(state, normalizedLabel, { create: true });
-  browser.owner = "aim";
-  browser.seededFrom = selectedProfileId;
+  browser.mode = BROWSER_MODE_AIM_PROFILE;
+  browser.seededFromOpenclawProfileId = selectedProfileId;
   browser.seededAt = new Date().toISOString();
   if (Object.hasOwn(browser, "conflictReason")) {
     delete browser.conflictReason;
@@ -2168,6 +2681,7 @@ async function ensureAimBrowserProfileBinding({ state, label, homeDir }) {
   ensureAccountShape(state.accounts[normalizedLabel], { providerHint: provider });
 
   const browser = getAccountBrowserState(state, normalizedLabel, { create: true });
+  browser.mode = BROWSER_MODE_AIM_PROFILE;
   const targetUserDataDir = resolveAimBrowserUserDataDir({ homeDir, label: normalizedLabel });
   if (typeof browser.conflictReason === "string" && browser.conflictReason.trim()) {
     throw new Error(
@@ -2180,7 +2694,8 @@ async function ensureAimBrowserProfileBinding({ state, label, homeDir }) {
   }
 
   const openclawStateDir = resolveOpenclawStateDir({ homeDir });
-  const storedSeedSource = typeof browser.seededFrom === "string" ? browser.seededFrom.trim() : "";
+  const storedSeedSource =
+    typeof browser.seededFromOpenclawProfileId === "string" ? browser.seededFromOpenclawProfileId.trim() : "";
   if (storedSeedSource) {
     if (openclawBrowserProfileExists({ openclawStateDir, profileId: storedSeedSource })) {
       seedAimBrowserProfileFromOpenclaw({ state, label: normalizedLabel, homeDir, profileId: storedSeedSource });
@@ -2243,56 +2758,169 @@ async function ensureAimBrowserProfileBinding({ state, label, homeDir }) {
   // Unreachable: either we select from discovered profiles or we throw.
 }
 
+function getRepairBindingCommand(label) {
+  return `aim browser set ${label} --mode ...`;
+}
+
+function getMissingBindingActionForLabel(label) {
+  return {
+    actionRequired: "run_aim_browser_set",
+    repairCommand: getRepairBindingCommand(label),
+  };
+}
+
+function getMissingBrowserActionForBinding({ label, bindingMode }) {
+  if (bindingMode === BROWSER_MODE_AIM_PROFILE) {
+    return {
+      actionRequired: "run_aim_label",
+      repairCommand: `aim ${label}`,
+    };
+  }
+  return getMissingBindingActionForLabel(label);
+}
+
+function assertMappedBrowserBindingExists({ label, binding }) {
+  if (!binding) {
+    throw new Error(
+      `Browser-managed reauth for label=${label} requires an explicit browser binding. ` +
+        `Repair it with \`${getRepairBindingCommand(label)}\`.`,
+    );
+  }
+
+  if (binding.mode === BROWSER_MODE_CHROME_PROFILE) {
+    if (!binding.userDataDir) {
+      throw new Error(
+        `Mapped Chrome binding for label=${label} is incomplete. Repair it with ` +
+          `\`aim browser set ${label} --mode chrome-profile --user-data-dir <abs-path>\`.`,
+      );
+    }
+    if (!fs.existsSync(binding.userDataDir)) {
+      throw new Error(
+        `Mapped Chrome profile for label=${label} is missing: ${binding.userDataDir}. ` +
+          `Repair it with \`aim browser set ${label} --mode chrome-profile --user-data-dir <abs-path>\`.`,
+      );
+    }
+    return binding;
+  }
+
+  if (binding.mode === BROWSER_MODE_AGENT_BROWSER) {
+    if (!binding.agentBrowserProfile || !binding.agentBrowserSession) {
+      throw new Error(
+        `Mapped agent-browser binding for label=${label} is incomplete. Repair it with ` +
+          `\`aim browser set ${label} --mode agent-browser --profile <abs-path> --session <name>\`.`,
+      );
+    }
+    if (!fs.existsSync(binding.agentBrowserProfile)) {
+      throw new Error(
+        `Mapped agent-browser profile for label=${label} is missing: ${binding.agentBrowserProfile}. ` +
+          `Repair it with \`aim browser set ${label} --mode agent-browser --profile <abs-path> --session <name>\`.`,
+      );
+    }
+    return binding;
+  }
+
+  return binding;
+}
+
+async function ensureInteractiveLoginBindingForProvider({
+  state,
+  label,
+  homeDir,
+  provider,
+  promptLineImpl = promptLine,
+}) {
+  const normalizedLabel = normalizeLabel(label);
+  ensureStateShape(state);
+  const account = getAccountRecord(state, normalizedLabel, { create: true });
+  ensureAccountShape(account, { providerHint: provider });
+  const existing = getInteractiveOAuthBindingForLabel(state, normalizedLabel);
+  const existingMode = normalizeInteractiveOAuthMode(existing?.mode);
+
+  if (existingMode === REAUTH_MODE_MANUAL_CALLBACK) {
+    return getInteractiveOAuthBindingForLabel(state, normalizedLabel);
+  }
+
+  if (existingMode === REAUTH_MODE_BROWSER_MANAGED) {
+    const existingBinding = resolveBrowserBinding({ account, homeDir, label: normalizedLabel });
+    if (!existingBinding) {
+      process.stdout.write(`Label "${normalizedLabel}" is browser-managed but has no explicit browser binding yet.\n`);
+    } else if (existingBinding?.mode === BROWSER_MODE_AIM_PROFILE) {
+      await ensureAimBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
+      return getInteractiveOAuthBindingForLabel(state, normalizedLabel);
+    } else {
+      assertMappedBrowserBindingExists({ label: normalizedLabel, binding: existingBinding });
+      return getInteractiveOAuthBindingForLabel(state, normalizedLabel);
+    }
+  }
+
+  if (!existingMode) {
+    process.stdout.write(`No interactive login mode configured for label "${normalizedLabel}" yet.\n`);
+    process.stdout.write("Choose login mode:\n");
+    process.stdout.write("  1) browser-managed\n");
+    process.stdout.write("  2) manual-callback\n\n");
+    const answer = await promptLineImpl(`Login mode for "${normalizedLabel}" (1-2 or id) [1]:`, {
+      defaultValue: "1",
+    });
+    const selectedReauthMode = resolveOpenAICodexInteractiveLoginModeFromInput(answer);
+    if (!selectedReauthMode) {
+      throw new Error(`Unsupported login mode selection for label=${normalizedLabel}: ${answer}`);
+    }
+
+    if (selectedReauthMode === REAUTH_MODE_MANUAL_CALLBACK) {
+      setBrowserBinding({ state, label: normalizedLabel, mode: REAUTH_MODE_MANUAL_CALLBACK });
+      return getInteractiveOAuthBindingForLabel(state, normalizedLabel);
+    }
+  }
+
+  process.stdout.write(`Browser mode for "${normalizedLabel}"?\n`);
+  process.stdout.write("  1) AIM-managed profile\n");
+  process.stdout.write("  2) mapped Chrome profile\n");
+  process.stdout.write("  3) mapped agent-browser profile\n\n");
+  const browserModeAnswer = await promptLineImpl(`Browser mode for "${normalizedLabel}" (1-3 or id) [1]:`, {
+    defaultValue: "1",
+  });
+  const browserMode = resolveBrowserModeSelectionFromInput(browserModeAnswer);
+  if (!browserMode) {
+    throw new Error(`Unsupported browser mode selection for label=${normalizedLabel}: ${browserModeAnswer}`);
+  }
+
+  if (browserMode === BROWSER_MODE_AIM_PROFILE) {
+    setBrowserBinding({ state, label: normalizedLabel, mode: BROWSER_MODE_AIM_PROFILE });
+    await ensureAimBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
+    return getInteractiveOAuthBindingForLabel(state, normalizedLabel);
+  }
+
+  if (browserMode === BROWSER_MODE_CHROME_PROFILE) {
+    const userDataDir = await promptLineImpl(`Chrome user-data-dir for "${normalizedLabel}" (absolute path):`);
+    setBrowserBinding({ state, label: normalizedLabel, mode: BROWSER_MODE_CHROME_PROFILE, userDataDir });
+    return getInteractiveOAuthBindingForLabel(state, normalizedLabel);
+  }
+
+  const agentBrowserProfile = await promptLineImpl(`agent-browser profile path for "${normalizedLabel}" (absolute path):`);
+  const agentBrowserSession = await promptLineImpl(`agent-browser session for "${normalizedLabel}":`);
+  setBrowserBinding({
+    state,
+    label: normalizedLabel,
+    mode: BROWSER_MODE_AGENT_BROWSER,
+    agentBrowserProfile,
+    agentBrowserSession,
+  });
+  return getInteractiveOAuthBindingForLabel(state, normalizedLabel);
+}
+
 export async function ensureOpenAICodexInteractiveLoginBinding({
   state,
   label,
   homeDir,
   promptLineImpl = promptLine,
 }) {
-  const normalizedLabel = normalizeLabel(label);
-  ensureStateShape(state);
-  const existingBinding = getInteractiveOAuthBindingForLabel(state, normalizedLabel);
-  if (!existingBinding?.mode) {
-    process.stdout.write(`No interactive login mode configured for label "${normalizedLabel}" yet.\n`);
-    process.stdout.write("Choose login mode:\n");
-    process.stdout.write("  1) AIM-owned browser profile\n");
-    process.stdout.write("  2) External browser / paste callback URL\n\n");
-
-    const answer = await promptLineImpl(`Login mode for "${normalizedLabel}" (1-2 or id) [1]:`, {
-      defaultValue: "1",
-    });
-    const mode = resolveOpenAICodexInteractiveLoginModeFromInput(answer);
-    if (!mode) {
-      throw new Error(`Unsupported OpenAI Codex login mode selection: ${answer}`);
-    }
-
-    if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
-      const binding = { mode };
-      setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
-      return binding;
-    }
-
-    await ensureAimBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
-    const binding = {
-      mode: INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE,
-    };
-    setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
-    return binding;
-  }
-
-  if (existingBinding?.mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
-    return existingBinding;
-  }
-  if (existingBinding?.mode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE) {
-    await ensureAimBrowserProfileBinding({ state, label: normalizedLabel, homeDir });
-    const binding = {
-      mode: INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE,
-    };
-    setInteractiveOAuthBindingForLabel(state, normalizedLabel, binding);
-    return binding;
-  }
-
-  throw new Error(`Unable to resolve interactive login mode for label=${normalizedLabel}.`);
+  return ensureInteractiveLoginBindingForProvider({
+    state,
+    label,
+    homeDir,
+    provider: OPENAI_CODEX_PROVIDER,
+    promptLineImpl,
+  });
 }
 
 export async function refreshOrLoginCodex({
@@ -2303,17 +2931,23 @@ export async function refreshOrLoginCodex({
   loginImpl = loginOpenAICodex,
   refreshImpl = refreshOpenAICodexToken,
   promptImpl = promptRequiredLine,
-  openUrlImpl = openChromeUserDataDirForUrl,
+  openUrlImpl = launchBrowserBindingForUrl,
   }) {
   const existing = getCodexCredential(state, label);
   const existingRefresh = existing && typeof existing.refresh === "string" ? existing.refresh : null;
   const existingAccountId = existing && typeof existing.accountId === "string" ? existing.accountId : null;
   const binding = interactiveBinding ?? getInteractiveOAuthBindingForLabel(state, label);
   const bindingMode = normalizeInteractiveOAuthMode(binding?.mode);
-  const aimBrowserUserDataDir =
-    bindingMode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE
-      ? resolveAimBrowserUserDataDir({ homeDir, label })
-      : "";
+  const browserBinding =
+    bindingMode === REAUTH_MODE_BROWSER_MANAGED
+      ? (() => {
+          const resolved = resolveBrowserBinding({ account: getAccountRecord(state, label), homeDir, label });
+          if (resolved?.mode === BROWSER_MODE_AIM_PROFILE) {
+            return { ...resolved, userDataDir: resolveAimBrowserUserDataDir({ homeDir, label }) };
+          }
+          return assertMappedBrowserBindingExists({ label, binding: resolved });
+        })()
+      : null;
 
   // Try refresh first (fast + no browser).
   if (existingRefresh) {
@@ -2355,7 +2989,7 @@ export async function refreshOrLoginCodex({
     onAuth: ({ url }) => {
       process.stdout.write(`OAuth URL:\n${url}\n\n`);
 
-      if (bindingMode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+      if (bindingMode === REAUTH_MODE_MANUAL_CALLBACK) {
         process.stdout.write(
           [
             "Open this URL in the browser on your laptop and complete login there.",
@@ -2366,23 +3000,51 @@ export async function refreshOrLoginCodex({
         return;
       }
 
-      if (!aimBrowserUserDataDir) {
-        throw new Error(`Missing AIM browser profile for label=${label}.`);
+      if (!browserBinding) {
+        throw new Error(`Missing browser binding for label=${label}.`);
       }
 
-      const opened = openUrlImpl({ url, userDataDir: aimBrowserUserDataDir });
-      if (!opened.ok) {
-        process.stdout.write(
-          [
-            `Failed to auto-open AIM browser profile (${opened.reason}).`,
-            "Open the URL manually in the correct AIM-owned browser profile (user-data dir):",
-            `  ${aimBrowserUserDataDir}`,
-            "",
-          ].join("\n") + "\n",
+      const opened = openUrlImpl({ binding: browserBinding, url, homeDir });
+      if (opened.ok) {
+        return;
+      }
+
+      if (opened.reason === "missing_browser_path") {
+        throw new Error(
+          `Configured browser binding for label=${label} is missing on disk: ${opened.path}. ` +
+            `Repair it with \`${getRepairBindingCommand(label)}\`.`,
         );
       }
+
+      if (opened.reason === "missing_agent_browser_session") {
+        throw new Error(
+          `Configured agent-browser binding for label=${label} is missing its session. ` +
+            `Repair it with \`aim browser set ${label} --mode agent-browser --profile <abs-path> --session <name>\`.`,
+        );
+      }
+
+      if (opened.reason === "missing_user_data_dir") {
+        throw new Error(
+          `Configured Chrome binding for label=${label} is incomplete. ` +
+            `Repair it with \`${getRepairBindingCommand(label)}\`.`,
+        );
+      }
+
+      process.stdout.write(
+        [
+          `Failed to auto-open configured browser binding (${opened.reason}).`,
+          "Open the URL manually in the exact configured browser identity:",
+          ...(browserBinding.mode === BROWSER_MODE_AGENT_BROWSER
+            ? [
+                `  agent-browser profile: ${browserBinding.agentBrowserProfile}`,
+                `  agent-browser session: ${browserBinding.agentBrowserSession}`,
+              ]
+            : [`  user-data dir: ${browserBinding.userDataDir}`]),
+          "",
+        ].join("\n") + "\n",
+      );
     },
-    ...(bindingMode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK
+    ...(bindingMode === REAUTH_MODE_MANUAL_CALLBACK
       ? {
           onManualCodeInput: manualCallbackPrompt,
           onPrompt: manualCallbackPrompt,
@@ -2391,7 +3053,7 @@ export async function refreshOrLoginCodex({
           onPrompt: async () => {
             throw new Error(
               "Manual redirect-url paste flow is not supported for browser-managed labels. " +
-                "Run on the Mac host with the AIM-owned browser profile so the localhost callback can complete.",
+                "Run on the Mac host with the configured browser binding so the localhost callback can complete.",
             );
           },
         }),
@@ -2418,15 +3080,35 @@ export async function refreshOrLoginCodex({
   };
 }
 
-async function refreshOrLoginAnthropic({ state, label, homeDir }) {
+async function refreshOrLoginAnthropic({
+  state,
+  label,
+  homeDir,
+  interactiveBinding,
+  loginImpl = loginAnthropic,
+  refreshImpl = refreshAnthropicToken,
+  promptImpl = promptRequiredLine,
+  openUrlImpl = launchBrowserBindingForUrl,
+}) {
   const existing = getAnthropicCredential(state, label);
   const existingRefresh = existing && typeof existing.refresh === "string" ? existing.refresh : null;
-  const userDataDir = resolveAimBrowserUserDataDir({ homeDir, label });
+  const binding = interactiveBinding ?? getInteractiveOAuthBindingForLabel(state, label);
+  const bindingMode = normalizeInteractiveOAuthMode(binding?.mode);
+  const browserBinding =
+    bindingMode === REAUTH_MODE_BROWSER_MANAGED
+      ? (() => {
+          const resolved = resolveBrowserBinding({ account: getAccountRecord(state, label), homeDir, label });
+          if (resolved?.mode === BROWSER_MODE_AIM_PROFILE) {
+            return { ...resolved, userDataDir: resolveAimBrowserUserDataDir({ homeDir, label }) };
+          }
+          return assertMappedBrowserBindingExists({ label, binding: resolved });
+        })()
+      : null;
 
   // Try refresh first (fast + no browser).
   if (existingRefresh) {
     try {
-      const updated = await refreshAnthropicToken(existingRefresh);
+      const updated = await refreshImpl(existingRefresh);
       const expiresAt = toIsoFromExpiresMs(updated.expires);
       if (!expiresAt) {
         throw new Error("refresh returned no expires");
@@ -2442,28 +3124,55 @@ async function refreshOrLoginAnthropic({ state, label, homeDir }) {
     }
   }
 
-  // Full OAuth login (opens browser, then requires a paste).
-  const creds = await loginAnthropic(
+  const manualCallbackPrompt = async () =>
+    await promptImpl(
+      'Paste the callback URL from your browser (looks like "https://console.anthropic.com/oauth/code/callback?code=...&state=..."):',
+    );
+
+  const creds = await loginImpl(
     (url) => {
       process.stdout.write(`OAuth URL:\n${url}\n\n`);
-      const opened = openChromeUserDataDirForUrl({ url, userDataDir });
-      if (!opened.ok) {
+      if (bindingMode === REAUTH_MODE_MANUAL_CALLBACK) {
         process.stdout.write(
           [
-            `Failed to auto-open AIM browser profile (${opened.reason}).`,
-            "Open the URL manually in the correct AIM-owned browser profile (user-data dir):",
-            `  ${userDataDir}`,
+            "Open this URL in the browser on your laptop and complete login there.",
+            "When the browser lands on the Anthropic callback page, copy the full callback URL and paste it here.",
             "",
-          ].join("\n") + "\n",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      if (!browserBinding) {
+        throw new Error(`Missing browser binding for label=${label}.`);
+      }
+
+      const opened = openUrlImpl({ binding: browserBinding, url, homeDir });
+      if (opened.ok) {
+        return;
+      }
+      if (opened.reason === "missing_browser_path") {
+        throw new Error(
+          `Configured browser binding for label=${label} is missing on disk: ${opened.path}. ` +
+            `Repair it with \`${getRepairBindingCommand(label)}\`.`,
         );
       }
-    },
-    async () => {
-      const paste = await promptRequiredLine(
-        'Paste the callback URL from your browser (looks like "https://console.anthropic.com/oauth/code/callback?code=...&state=..."):',
+
+      process.stdout.write(
+        [
+          `Failed to auto-open configured browser binding (${opened.reason}).`,
+          "Open the URL manually in the exact configured browser identity and paste the callback URL here:",
+          ...(browserBinding.mode === BROWSER_MODE_AGENT_BROWSER
+            ? [
+                `  agent-browser profile: ${browserBinding.agentBrowserProfile}`,
+                `  agent-browser session: ${browserBinding.agentBrowserSession}`,
+              ]
+            : [`  user-data dir: ${browserBinding.userDataDir}`]),
+          "",
+        ].join("\n") + "\n",
       );
-      return parseAnthropicAuthorizationPaste(paste);
     },
+    async () => parseAnthropicAuthorizationPaste(await manualCallbackPrompt()),
   );
 
   const expiresAt = toIsoFromExpiresMs(creds.expires);
@@ -2495,11 +3204,11 @@ function recordAccountMaintenanceSuccess(state, label, { homeDir, observedAt }) 
   }
 
   const browser = getAccountBrowserState(state, label, { create: true });
-  browser.owner = "aim";
-  if (browser.conflictReason) {
+  if (browser && browser.conflictReason) {
     delete browser.conflictReason;
   }
-  if (aimBrowserProfileExists({ homeDir, label })) {
+  const binding = resolveBrowserBinding({ account: getAccountRecord(state, label), homeDir, label });
+  if (browser && binding) {
     browser.verifiedAt = verifiedAt;
   }
 }
@@ -2894,13 +3603,14 @@ async function probeUsageSnapshotsByProvider(state) {
   return usageByProvider;
 }
 
-export function derivePoolAccountStatus({ account, credentials, browserFacts, now }) {
+export function derivePoolAccountStatus({ account, label, credentials, browserFacts, now }) {
   const snapshotNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
   const normalizedAccount = isObject(account) ? account : {};
   const reauth = isObject(normalizedAccount.reauth) ? normalizedAccount.reauth : {};
   const browser = isObject(normalizedAccount.browser) ? normalizedAccount.browser : {};
   const provider = normalizeProviderId(normalizedAccount.provider);
   const browserMode = normalizeInteractiveOAuthMode(reauth.mode);
+  const bindingMode = normalizeBrowserBindingMode(browser.mode);
   const blockedReason = typeof reauth.blockedReason === "string" ? reauth.blockedReason.trim() : "";
   const conflictReason = typeof browser.conflictReason === "string" ? browser.conflictReason.trim() : "";
   const expectedEmail =
@@ -2946,29 +3656,62 @@ export function derivePoolAccountStatus({ account, credentials, browserFacts, no
     };
   }
 
-  // Missing AIM browser state is a recovery problem, not a "can't use this label now" problem,
-  // as long as fresh credentials still exist. Selection must follow live usable creds first.
-  if (browserMode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE && browserFacts?.exists !== true) {
+  if (browserMode === REAUTH_MODE_BROWSER_MANAGED && browserFacts?.bindingPresent !== true) {
+    if (hasFreshCredentials) {
+      return {
+        operatorStatus: "ready",
+        detailReason: "binding_missing_for_future_reauth",
+        eligible: true,
+        actionRequired: "run_aim_browser_set",
+        reason:
+          "Credentials are still usable now; set an explicit browser binding before the next browser-managed reauth.",
+      };
+    }
+    return {
+      operatorStatus: "reauth",
+      detailReason: "binding_missing_for_future_reauth",
+      eligible: false,
+      actionRequired: "run_aim_browser_set",
+      reason: "No explicit browser binding is configured for this browser-managed label.",
+    };
+  }
+
+  if (
+    browserMode === REAUTH_MODE_BROWSER_MANAGED
+    && browserFacts?.bindingPresent === true
+    && browserFacts?.exists !== true
+  ) {
+    const missingAction = getMissingBrowserActionForBinding({
+      label: normalizeLabel(label),
+      bindingMode,
+    });
     if (hasFreshCredentials) {
       return {
         operatorStatus: "ready",
         detailReason: "missing_browser",
         eligible: true,
-        actionRequired: "run_aim_label",
-        reason: "Credentials are still usable now; run `aim <label>` later to recreate the missing AIM-owned browser profile.",
+        actionRequired: missingAction.actionRequired,
+        reason:
+          bindingMode === BROWSER_MODE_AIM_PROFILE
+            ? "Credentials are still usable now; run `aim <label>` later to recreate the missing AIM-managed browser profile."
+            : "Credentials are still usable now; repair the missing mapped browser binding before the next browser-managed reauth.",
       };
     }
     return {
       operatorStatus: "reauth",
       detailReason: "missing_browser",
       eligible: false,
-      actionRequired: "run_aim_label",
-      reason: "AIM-owned browser profile is missing for this label.",
+      actionRequired: missingAction.actionRequired,
+      reason:
+        bindingMode === BROWSER_MODE_AIM_PROFILE
+          ? "AIM-managed browser profile is missing for this label."
+          : "Configured browser binding cannot be resolved on disk.",
     };
   }
 
   if (
-    browserMode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE
+    browserMode === REAUTH_MODE_BROWSER_MANAGED
+    && bindingMode === BROWSER_MODE_AIM_PROFILE
     && typeof browser.seededAt === "string"
     && browser.seededAt.trim()
     && !(typeof browser.verifiedAt === "string" && browser.verifiedAt.trim())
@@ -3005,7 +3748,7 @@ export function derivePoolAccountStatus({ account, credentials, browserFacts, no
     };
   }
 
-  if (browserMode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+  if (browserMode === REAUTH_MODE_MANUAL_CALLBACK) {
     return {
       operatorStatus: "ready",
       detailReason: "manual_mode",
@@ -3049,9 +3792,10 @@ function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
 
   for (const label of labels) {
     const account = state.accounts[label];
-    const browserFacts = readAimBrowserFacts({ homeDir, label });
+    const browserFacts = readBrowserFacts({ account, homeDir, label });
     const status = derivePoolAccountStatus({
       account,
+      label,
       credentials: getCodexCredential(state, label),
       browserFacts,
       now,
@@ -3584,7 +4328,13 @@ function buildWarningsFromStatusAccounts(accounts) {
 function buildInteractiveLoginStatus({ state, label }) {
   const binding = getInteractiveOAuthBindingForLabel(state, label);
   const mode = normalizeInteractiveOAuthMode(binding?.mode);
-  return mode ? { mode } : null;
+  return mode
+    ? {
+        mode,
+        bindingPresent: Boolean(binding?.binding),
+        ...(binding?.binding ? { binding: resolveBrowserBindingDisplay(binding.binding) } : {}),
+      }
+    : null;
 }
 
 async function buildStatusView({ statePath, state, homeDir }) {
@@ -3602,7 +4352,9 @@ async function buildStatusView({ statePath, state, homeDir }) {
     if (!isObject(account)) continue;
     const provider = normalizeProviderId(account.provider);
     const expectEmail = typeof account.expect?.email === "string" ? account.expect.email : null;
-    const browserFacts = homeDir ? readAimBrowserFacts({ homeDir, label }) : { exists: false };
+    const browserFacts = homeDir
+      ? readBrowserFacts({ account, homeDir, label })
+      : { exists: false, bindingPresent: false, mode: null };
     const login = buildInteractiveLoginStatus({ state, label });
     const cred =
       provider === OPENAI_CODEX_PROVIDER
@@ -3617,11 +4369,11 @@ async function buildStatusView({ statePath, state, homeDir }) {
       provider === OPENAI_CODEX_PROVIDER
         ? (codexPool.byLabel[label]
           ?? {
-            ...derivePoolAccountStatus({ account, credentials: cred, browserFacts, now: Date.now() }),
+            ...derivePoolAccountStatus({ account, label, credentials: cred, browserFacts, now: Date.now() }),
             eligible: false,
             poolEnabled: getAccountPoolState(state, label)?.enabled !== false,
           })
-        : derivePoolAccountStatus({ account, credentials: cred, browserFacts, now: Date.now() });
+        : derivePoolAccountStatus({ account, label, credentials: cred, browserFacts, now: Date.now() });
 
     accounts.push({
       label,
@@ -3635,10 +4387,11 @@ async function buildStatusView({ statePath, state, homeDir }) {
       },
       ...(login ? { login } : {}),
       browser: {
-        owner: "aim",
+        bindingPresent: browserFacts.bindingPresent === true,
         exists: browserFacts.exists === true,
-        ...(typeof account.browser?.seededFrom === "string" && account.browser.seededFrom.trim()
-          ? { seededFrom: account.browser.seededFrom.trim() }
+        ...(normalizeBrowserBindingMode(account.browser?.mode) ? { mode: normalizeBrowserBindingMode(account.browser?.mode) } : {}),
+        ...(typeof account.browser?.seededFromOpenclawProfileId === "string" && account.browser.seededFromOpenclawProfileId.trim()
+          ? { seededFromOpenclawProfileId: account.browser.seededFromOpenclawProfileId.trim() }
           : {}),
         ...(typeof account.browser?.seededAt === "string" && account.browser.seededAt.trim()
           ? { seededAt: account.browser.seededAt.trim() }
@@ -3646,6 +4399,8 @@ async function buildStatusView({ statePath, state, homeDir }) {
         ...(typeof account.browser?.verifiedAt === "string" && account.browser.verifiedAt.trim()
           ? { verifiedAt: account.browser.verifiedAt.trim() }
           : {}),
+        ...(browserFacts.userDataDir ? { resolvedPath: browserFacts.userDataDir } : {}),
+        ...(browserFacts.mode ? { resolvedMode: browserFacts.mode } : {}),
       },
       identity: {
         ...(expectEmail ? { expectEmail } : {}),
@@ -3712,11 +4467,22 @@ async function buildStatusView({ statePath, state, homeDir }) {
 
 function formatInteractiveLoginSummary(login) {
   const mode = normalizeInteractiveOAuthMode(login?.mode);
-  if (mode === INTERACTIVE_OAUTH_MODE_MANUAL_CALLBACK) {
+  if (mode === REAUTH_MODE_MANUAL_CALLBACK) {
     return "manual-callback";
   }
-  if (mode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE) {
-    return "aim-browser-profile";
+  const bindingMode = normalizeBrowserBindingMode(login?.binding?.mode);
+  if (bindingMode === BROWSER_MODE_AIM_PROFILE) {
+    return "aim-profile";
+  }
+  if (bindingMode === BROWSER_MODE_CHROME_PROFILE) {
+    return "chrome-profile";
+  }
+  if (bindingMode === BROWSER_MODE_AGENT_BROWSER) {
+    const session = String(login?.binding?.agentBrowserSession ?? "").trim();
+    return session ? `agent-browser:${session}` : "agent-browser";
+  }
+  if (mode === REAUTH_MODE_BROWSER_MANAGED) {
+    return "browser-managed";
   }
   return null;
 }
@@ -3831,6 +4597,89 @@ function renderStatusText(view) {
   }
 
   return `${lines.join("\n")}\n`;
+}
+
+function assertNoUnexpectedBrowserSetOptions(mode, opts) {
+  if (mode === REAUTH_MODE_MANUAL_CALLBACK) {
+    if (opts.seedFromOpenclaw || opts.userDataDir || opts.profile || opts.session) {
+      throw new Error("`aim browser set --mode manual-callback` does not accept browser path/session flags.");
+    }
+    return;
+  }
+  if (mode === BROWSER_MODE_AIM_PROFILE) {
+    if (opts.userDataDir || opts.profile || opts.session) {
+      throw new Error("`aim browser set --mode aim-profile` only supports optional --seed-from-openclaw <profileId>.");
+    }
+    return;
+  }
+  if (mode === BROWSER_MODE_CHROME_PROFILE) {
+    if (opts.seedFromOpenclaw || opts.profile || opts.session) {
+      throw new Error("`aim browser set --mode chrome-profile` only supports --user-data-dir <abs-path>.");
+    }
+    return;
+  }
+  if (mode === BROWSER_MODE_AGENT_BROWSER && (opts.seedFromOpenclaw || opts.userDataDir)) {
+    throw new Error("`aim browser set --mode agent-browser` requires --profile <abs-path> and --session <name> only.");
+  }
+}
+
+function setBrowserBindingFromCli({ state, label, opts }) {
+  const requestedModeRaw = String(opts.mode ?? "").trim();
+  if (!requestedModeRaw) {
+    throw new Error(
+      "Missing --mode for `aim browser set`. Supported: aim-profile, chrome-profile, agent-browser, manual-callback.",
+    );
+  }
+
+  if (requestedModeRaw === "generic-chrome") {
+    throw new Error(
+      "Unsupported browser mode: generic-chrome. Use `--mode chrome-profile --user-data-dir <abs-path>` instead.",
+    );
+  }
+
+  const requestedReauthMode = normalizeInteractiveOAuthMode(requestedModeRaw);
+  if (requestedReauthMode === REAUTH_MODE_MANUAL_CALLBACK) {
+    assertNoUnexpectedBrowserSetOptions(REAUTH_MODE_MANUAL_CALLBACK, opts);
+    return setBrowserBinding({ state, label, mode: REAUTH_MODE_MANUAL_CALLBACK });
+  }
+
+  const bindingMode = normalizeBrowserBindingMode(requestedModeRaw);
+  if (!bindingMode) {
+    throw new Error(
+      `Unsupported browser mode: ${requestedModeRaw}. Supported: aim-profile, chrome-profile, agent-browser, manual-callback.`,
+    );
+  }
+
+  assertNoUnexpectedBrowserSetOptions(bindingMode, opts);
+  if (bindingMode === BROWSER_MODE_AIM_PROFILE) {
+    return setBrowserBinding({
+      state,
+      label,
+      mode: BROWSER_MODE_AIM_PROFILE,
+      seedFromOpenclaw: opts.seedFromOpenclaw,
+    });
+  }
+  if (bindingMode === BROWSER_MODE_CHROME_PROFILE) {
+    if (!opts.userDataDir) {
+      throw new Error("`aim browser set --mode chrome-profile` requires --user-data-dir <abs-path>.");
+    }
+    return setBrowserBinding({
+      state,
+      label,
+      mode: BROWSER_MODE_CHROME_PROFILE,
+      userDataDir: opts.userDataDir,
+    });
+  }
+  if (!opts.profile || !opts.session) {
+    throw new Error("`aim browser set --mode agent-browser` requires --profile <abs-path> and --session <name>.");
+  }
+  return setBrowserBinding({
+    state,
+    label,
+    mode: BROWSER_MODE_AGENT_BROWSER,
+    agentBrowserProfile: opts.profile,
+    agentBrowserSession: opts.session,
+  });
 }
 
 function applyOpenclawFromState(params, state, { pinsOverride, managedAgentIds } = {}) {
@@ -4458,7 +5307,7 @@ export async function rebalanceOpenclawPool(
 
 export async function main(argv) {
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "browser"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -4499,8 +5348,13 @@ export async function main(argv) {
         const cred = await refreshOrLoginCodex({ state, label, homeDir, interactiveBinding });
         state.credentials[OPENAI_CODEX_PROVIDER][label] = cred;
       } else if (provider === ANTHROPIC_PROVIDER) {
-        await ensureAimBrowserProfileBinding({ state, label, homeDir });
-        const cred = await refreshOrLoginAnthropic({ state, label, homeDir });
+        const interactiveBinding = await ensureInteractiveLoginBindingForProvider({
+          state,
+          label,
+          homeDir,
+          provider: ANTHROPIC_PROVIDER,
+        });
+        const cred = await refreshOrLoginAnthropic({ state, label, homeDir, interactiveBinding });
         state.credentials[ANTHROPIC_PROVIDER][label] = cred;
       } else {
         throw new Error(`Provider not supported: ${provider}`);
@@ -4534,6 +5388,40 @@ export async function main(argv) {
       writeJsonFileWithBackup(statePath, state);
       throw err;
     }
+  }
+
+  if (cmd === "browser") {
+    const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+    if (!subcmd) {
+      throw new Error("Missing browser subcommand. Usage: aim browser show <label> | aim browser set <label> --mode ...");
+    }
+    const label = normalizeLabel(positional[2]);
+    const state = loadAimgrState(statePath);
+    if (subcmd === "show") {
+      const shown = showBrowserBinding({ state, label, homeDir });
+      process.stdout.write(`${JSON.stringify(sanitizeForStatus(shown), null, 2)}\n`);
+      return;
+    }
+    if (subcmd === "set") {
+      const updated = setBrowserBindingFromCli({ state, label, opts });
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(
+        `${JSON.stringify(
+          sanitizeForStatus({
+            ok: true,
+            browser: {
+              label,
+              updated,
+              current: showBrowserBinding({ state, label, homeDir }),
+            },
+          }),
+          null,
+          2,
+        )}\n`,
+      );
+      return;
+    }
+    throw new Error(`Unsupported browser subcommand: ${subcmd} (supported: show, set).`);
   }
 
   if (cmd === "pin") {

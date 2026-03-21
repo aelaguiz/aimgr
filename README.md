@@ -9,7 +9,11 @@
 The operating model is intentionally simple:
 
 - `~/.aimgr/secrets.json` is the durable SSOT
-- `~/.aimgr/browser/<label>/user-data` is the AIM-owned browser home for browser-managed labels
+- browser binding is explicit per label:
+  - `aim-profile` -> `~/.aimgr/browser/<label>/user-data`
+  - `chrome-profile` -> explicit raw Chrome `user-data-dir`
+  - `agent-browser` -> explicit `profile` + `session`
+  - `manual-callback` -> no local browser binding
 - OpenClaw assignments and local Codex `auth.json` are derived outputs
 - operators think in labels like `boss`, `lessons`, and `qa`, not raw tokens or profile IDs
 
@@ -98,9 +102,32 @@ That flow:
 
 Important behavior:
 
-- Browser-managed labels use the AIM-owned browser dir at `~/.aimgr/browser/<label>/user-data`.
+- Browser-managed labels use the label's explicit binding, not a guessed browser lane.
+- `aim-profile` uses `~/.aimgr/browser/<label>/user-data`.
+- `chrome-profile` uses the exact `--user-data-dir` you configured.
+- `agent-browser` uses the exact `--profile` and `--session` you configured.
 - Manual-callback labels print the OAuth URL and prompt for the final callback URL.
 - Reauth does **not** rebalance OpenClaw or mutate downstream assignments.
+
+### 2A) Inspect or repair the browser binding
+
+Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, and `aim codex use`.
+
+When you need to inspect or repair the browser substrate explicitly, use:
+
+```bash
+aim browser show <label>
+aim browser set <label> --mode aim-profile [--seed-from-openclaw <profileId>]
+aim browser set <label> --mode chrome-profile --user-data-dir <abs-path>
+aim browser set <label> --mode agent-browser --profile <abs-path> --session <name>
+aim browser set <label> --mode manual-callback
+```
+
+Non-negotiables:
+
+- AIM never guesses from a workspace-local `agent-browser.json`.
+- AIM never uses the implicit `default` `agent-browser` session.
+- There is no supported "generic Chrome somehow" mode.
 
 ### 3) Rebalance OpenClaw from the shared pool
 
