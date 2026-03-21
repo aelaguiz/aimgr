@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import { loginAnthropic, loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
 
@@ -20,6 +21,7 @@ const LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE = "openclaw-browser
 const BROWSER_MODE_AIM_PROFILE = "aim-profile";
 const BROWSER_MODE_CHROME_PROFILE = "chrome-profile";
 const BROWSER_MODE_AGENT_BROWSER = "agent-browser";
+const DEFAULT_AGENTS_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
 const STATUS_RESET_TIMEZONE = "America/Chicago";
 const STATUS_RESET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: STATUS_RESET_TIMEZONE,
@@ -197,14 +199,18 @@ function parseArgs(argv) {
   return { opts, positional };
 }
 
+function isInteractiveTerminal({ stdin = process.stdin, stdout = process.stdout } = {}) {
+  return Boolean(stdin?.isTTY) && Boolean(stdout?.isTTY);
+}
+
 function printHelp() {
   const lines = [
     "aim — AI account manager (label-only; one-file SSOT; plaintext on disk).",
     "",
     "Usage:",
     "  aim status [--json]",
-    "  aim login <label>",
-    "  aim <label>            # shorthand for: aim login <label> (account-only maintenance / reauth)",
+    "  aim <label>            # primary human path: guided label panel on a TTY; one-shot login in non-interactive use",
+    "  aim login <label>      # one-shot maintenance / automation / admin lane",
     "  aim rebalance openclaw # choose pooled Codex assignments for configured OpenClaw agents",
     "  aim apply             # advanced: materialize stored OpenClaw assignments from ~/.aimgr/secrets.json",
     "  aim sync openclaw     # explicit alias for apply",
@@ -244,6 +250,14 @@ function resolveHomeDir(cliHome) {
     throw new Error("No HOME available. Provide --home.");
   }
   return resolved;
+}
+
+function resolveAgentsRepoRoot({ repoRoot } = {}) {
+  const explicit = normalizeAbsolutePath(repoRoot);
+  if (explicit && fs.existsSync(explicit)) return explicit;
+  const envRoot = normalizeAbsolutePath(process.env.WORKSPACE_DIR);
+  if (envRoot && fs.existsSync(envRoot)) return envRoot;
+  return DEFAULT_AGENTS_REPO_ROOT;
 }
 
 function resolveAimgrStatePath(params) {
@@ -763,6 +777,35 @@ function readOpenclawAgentsListFromConfig() {
     return parsed;
   } catch (err) {
     throw new Error(`Failed to parse JSON from openclaw config get agents.list: ${String(err?.message ?? err)}`);
+  }
+}
+
+function readOpenclawBindingsFromConfig() {
+  const result = spawnSync("openclaw", ["config", "get", "bindings", "--json"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) {
+    throw new Error(`Failed to run openclaw config get bindings: ${String(result.error?.message ?? result.error)}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `openclaw config get bindings failed (exit ${result.status}). ` +
+        `${String(result.stderr ?? "").trim() || String(result.stdout ?? "").trim()}`,
+    );
+  }
+  const raw = String(result.stdout ?? "").trim();
+  if (!raw) {
+    throw new Error("openclaw config get bindings returned empty output.");
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      throw new Error("expected JSON array");
+    }
+    return parsed;
+  } catch (err) {
+    throw new Error(`Failed to parse JSON from openclaw config get bindings: ${String(err?.message ?? err)}`);
   }
 }
 
@@ -1327,6 +1370,157 @@ function resolveOpenclawBrowserProfileFromInput({ input, profiles }) {
   return raw;
 }
 
+function normalizeDiscoveryToken(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function readAgentBrowserConfigFromWorkspace(workspacePath, { agentId, agentName } = {}) {
+  const workspace = normalizeAbsolutePath(workspacePath);
+  if (!workspace || !fs.existsSync(workspace)) return null;
+  const configPath = path.join(workspace, "agent-browser.json");
+  if (!fs.existsSync(configPath)) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isObject(parsed)) return null;
+
+  const session = String(parsed.session ?? "").trim();
+  const profile = normalizeAbsolutePath(parsed.profile);
+  if (!session || !profile || !isAbsoluteExistingDirectory(profile)) {
+    return null;
+  }
+
+  return {
+    agentId: String(agentId ?? "").trim() || path.basename(workspace),
+    agentName: String(agentName ?? "").trim() || null,
+    workspace,
+    configPath,
+    agentBrowserSession: session,
+    agentBrowserProfile: profile,
+  };
+}
+
+function readRepoAgentBrowserConfigs({ repoRoot, agentsList }) {
+  const entries = [];
+  const seenWorkspaces = new Set();
+  const list = Array.isArray(agentsList) ? agentsList : [];
+
+  for (const agent of list) {
+    if (!isObject(agent)) continue;
+    const candidate = readAgentBrowserConfigFromWorkspace(agent.workspace, {
+      agentId: agent.id,
+      agentName: agent.name,
+    });
+    if (!candidate) continue;
+    if (seenWorkspaces.has(candidate.workspace)) continue;
+    seenWorkspaces.add(candidate.workspace);
+    entries.push(candidate);
+  }
+
+  const resolvedRepoRoot = resolveAgentsRepoRoot({ repoRoot });
+  const agentsDir = path.join(resolvedRepoRoot, "agents");
+  for (const dirName of listDirectories(agentsDir)) {
+    const workspace = path.join(agentsDir, dirName);
+    const candidate = readAgentBrowserConfigFromWorkspace(workspace, {
+      agentId: dirName,
+    });
+    if (!candidate) continue;
+    if (seenWorkspaces.has(candidate.workspace)) continue;
+    seenWorkspaces.add(candidate.workspace);
+    entries.push(candidate);
+  }
+
+  return entries;
+}
+
+function buildSuggestedAgentBrowserDisplay(candidate) {
+  const agentName = String(candidate.agentName ?? "").trim();
+  const agentId = String(candidate.agentId ?? "").trim();
+  const identity = agentName || agentId || path.basename(String(candidate.workspace ?? "").trim());
+  return `agent-browser · ${identity} · session=${candidate.agentBrowserSession}`;
+}
+
+export function discoverSuggestedBrowserBindings({
+  label,
+  repoRoot,
+  bindings,
+  agentsList,
+}) {
+  const normalizedLabel = normalizeLabel(label);
+  const labelToken = normalizeDiscoveryToken(normalizedLabel);
+  const agentPrefixedToken = normalizeDiscoveryToken(`agent-${normalizedLabel}`);
+  const bindingList = Array.isArray(bindings) ? bindings : [];
+  const agentBrowserConfigs = readRepoAgentBrowserConfigs({ repoRoot, agentsList });
+  const matchedBindingsByAgentId = new Map();
+
+  for (const binding of bindingList) {
+    if (!isObject(binding)) continue;
+    if (String(binding?.match?.channel ?? "").trim() !== "slack") continue;
+    const accountId = String(binding?.match?.accountId ?? "").trim();
+    const agentId = String(binding?.agentId ?? "").trim();
+    if (!agentId) continue;
+    if (normalizeDiscoveryToken(accountId) === labelToken) {
+      matchedBindingsByAgentId.set(agentId, binding);
+    }
+  }
+
+  const deduped = new Map();
+  for (const candidate of agentBrowserConfigs) {
+    const sessionToken = normalizeDiscoveryToken(candidate.agentBrowserSession);
+    const profileToken = normalizeDiscoveryToken(path.basename(candidate.agentBrowserProfile));
+    let source = null;
+    let confidence = null;
+    let rank = null;
+
+    if (matchedBindingsByAgentId.has(candidate.agentId)) {
+      source = "openclaw-binding";
+      confidence = "strong";
+      rank = 0;
+    } else if (sessionToken === labelToken || sessionToken === agentPrefixedToken) {
+      source = "workspace-session-match";
+      confidence = "secondary";
+      rank = 1;
+    } else if (profileToken === labelToken || profileToken === agentPrefixedToken) {
+      source = "workspace-profile-match";
+      confidence = "secondary";
+      rank = 2;
+    }
+
+    if (!source) continue;
+
+    const key = `${candidate.agentBrowserProfile}\u0000${candidate.agentBrowserSession}`;
+    const existing = deduped.get(key);
+    const next = {
+      mode: BROWSER_MODE_AGENT_BROWSER,
+      agentId: candidate.agentId,
+      agentName: candidate.agentName,
+      workspace: candidate.workspace,
+      configPath: candidate.configPath,
+      agentBrowserProfile: candidate.agentBrowserProfile,
+      agentBrowserSession: candidate.agentBrowserSession,
+      source,
+      confidence,
+      rank,
+      display: buildSuggestedAgentBrowserDisplay(candidate),
+    };
+    if (!existing || next.rank < existing.rank || (next.rank === existing.rank && next.agentId.localeCompare(existing.agentId) < 0)) {
+      deduped.set(key, next);
+    }
+  }
+
+  return [...deduped.values()].toSorted((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return a.agentId.localeCompare(b.agentId);
+  });
+}
+
 function getAccountRecord(state, label, { create = false } = {}) {
   ensureStateShape(state);
   const normalizedLabel = normalizeLabel(label);
@@ -1820,6 +2014,31 @@ async function promptRequiredLine(message) {
   }
 }
 
+async function promptMenuChoice({ title, options, prompt = "Choose:", promptLineImpl = promptLine }) {
+  const normalizedOptions = Array.isArray(options) ? options.filter(Boolean) : [];
+  if (title) {
+    process.stdout.write(`${title}\n`);
+  }
+  for (const option of normalizedOptions) {
+    process.stdout.write(`  ${option.key}. ${option.label}\n`);
+  }
+  process.stdout.write("\n");
+
+  const validKeys = new Set(normalizedOptions.map((option) => String(option.key)));
+  const min = normalizedOptions[0]?.key;
+  const max = normalizedOptions[normalizedOptions.length - 1]?.key;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const answer = await promptLineImpl(`${prompt}${min !== undefined && max !== undefined ? ` (${min}-${max})` : ""}`);
+    const choice = String(answer ?? "").trim();
+    if (validKeys.has(choice)) {
+      return choice;
+    }
+    process.stdout.write(`Invalid choice: "${choice}". Try again.\n`);
+  }
+}
+
 function resolveOpenAICodexInteractiveLoginModeFromInput(input) {
   const raw = String(input ?? "").trim();
   if (!raw) return null;
@@ -1873,7 +2092,7 @@ function resolveSupportedProviderFromInput(input) {
   return SUPPORTED_OAUTH_PROVIDERS.has(normalized) ? normalized : null;
 }
 
-async function ensureProviderConfiguredForLabel({ state, label }) {
+async function ensureProviderConfiguredForLabel({ state, label, promptLineImpl = promptLine }) {
   ensureStateShape(state);
   const existing = state.accounts[label];
   const raw = typeof existing?.provider === "string" ? existing.provider.trim() : "";
@@ -1890,7 +2109,7 @@ async function ensureProviderConfiguredForLabel({ state, label }) {
 
   // Default to OpenAI Codex to preserve the common fast path: "aim boss" → press Enter → continue.
   // If you want Claude Max, type "2" or "anthropic".
-  const answer = await promptLine(`Provider for "${label}" (1-2 or id) [1]:`, { defaultValue: "1" });
+  const answer = await promptLineImpl(`Provider for "${label}" (1-2 or id) [1]:`, { defaultValue: "1" });
   const provider = resolveSupportedProviderFromInput(answer);
   if (!provider) {
     throw new Error(`Unsupported provider selection: ${answer}`);
@@ -4599,6 +4818,673 @@ function renderStatusText(view) {
   return `${lines.join("\n")}\n`;
 }
 
+function resolveProviderPanelLabel(provider) {
+  if (provider === OPENAI_CODEX_PROVIDER) return "ChatGPT login";
+  if (provider === ANTHROPIC_PROVIDER) return "Claude login";
+  return "Login";
+}
+
+function resolveProviderHomeUrl(provider) {
+  if (provider === OPENAI_CODEX_PROVIDER) return "https://chatgpt.com";
+  if (provider === ANTHROPIC_PROVIDER) return "https://claude.ai";
+  return null;
+}
+
+function resolveCredentialHealth(credential) {
+  if (!isObject(credential)) return "unknown";
+  const expiresAt = parseExpiresAtToMs(credential.expiresAt);
+  if (!expiresAt) return "unknown";
+  if (expiresAt <= Date.now()) return "expired";
+  return "valid";
+}
+
+function summarizeBrowserBindingForPanel({ binding, reauthMode }) {
+  if (reauthMode === REAUTH_MODE_MANUAL_CALLBACK) {
+    return "manual callback";
+  }
+  if (!binding) {
+    return "not configured";
+  }
+  if (binding.mode === BROWSER_MODE_AIM_PROFILE) {
+    return "AIM browser";
+  }
+  if (binding.mode === BROWSER_MODE_CHROME_PROFILE) {
+    return "Chrome profile";
+  }
+  if (binding.mode === BROWSER_MODE_AGENT_BROWSER) {
+    const session = String(binding.agentBrowserSession ?? "").trim();
+    return session ? `agent-browser / ${session}` : "agent-browser";
+  }
+  return binding.mode;
+}
+
+function buildLabelControlPanelState({ state, label, homeDir }) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const account = getAccountRecord(state, normalizedLabel, { create: true });
+  ensureAccountShape(account, { providerHint: account.provider });
+
+  const provider = normalizeProviderId(account.provider);
+  const credential =
+    provider === OPENAI_CODEX_PROVIDER
+      ? getCodexCredential(state, normalizedLabel)
+      : provider === ANTHROPIC_PROVIDER
+        ? getAnthropicCredential(state, normalizedLabel)
+        : null;
+  const browserFacts = readBrowserFacts({ account, homeDir, label: normalizedLabel });
+  const operator = derivePoolAccountStatus({
+    account,
+    label: normalizedLabel,
+    credentials: credential,
+    browserFacts,
+    now: Date.now(),
+  });
+  const reauthMode = normalizeInteractiveOAuthMode(account?.reauth?.mode);
+  const binding = resolveBrowserBinding({ account, homeDir, label: normalizedLabel });
+  const credentialHealth = resolveCredentialHealth(credential);
+  const needsSetup =
+    !reauthMode
+    || (reauthMode === REAUTH_MODE_BROWSER_MANAGED && !binding && credentialHealth !== "valid");
+
+  let panelKind = "ready";
+  if (needsSetup) {
+    panelKind = "setup";
+  } else if (operator?.operatorStatus === "blocked") {
+    panelKind = "blocked";
+  } else if (operator?.operatorStatus === "reauth") {
+    panelKind = "reauth";
+  }
+
+  let reason = null;
+  if (panelKind === "setup") {
+    reason = !reauthMode
+      ? "No login mode is configured yet."
+      : operator?.reason ?? "Finish browser/login setup for this label.";
+  } else if (typeof operator?.reason === "string" && operator.reason.trim()) {
+    reason = operator.reason.trim();
+  }
+
+  return {
+    label: normalizedLabel,
+    provider,
+    providerLabel: resolveProviderPanelLabel(provider),
+    credentialHealth,
+    reauthMode,
+    binding,
+    browserFacts,
+    operator,
+    panelKind,
+    reason,
+    browserSummary: summarizeBrowserBindingForPanel({ binding, reauthMode }),
+  };
+}
+
+function renderLabelControlPanel(panelState) {
+  const lines = [];
+  const provider = panelState.provider || "provider-not-set";
+  lines.push(`${panelState.label} · ${provider}`);
+  lines.push(`Status: ${panelState.panelKind === "setup" ? "setup needed" : panelState.panelKind}`);
+  if (panelState.reason) {
+    lines.push(`Why: ${panelState.reason}`);
+  }
+  lines.push(`${panelState.providerLabel}: ${panelState.credentialHealth}`);
+  lines.push(`Browser: ${panelState.browserSummary}`);
+  process.stdout.write(`${lines.join("\n")}\n\n`);
+}
+
+function buildLabelPanelActions(panelState) {
+  if (panelState.panelKind === "setup") {
+    return [
+      { key: "1", action: "setup_agent_browser", label: "Use the likely agent browser" },
+      { key: "2", action: "setup_aim_profile", label: "Use an AIM browser" },
+      { key: "3", action: "setup_chrome_profile", label: "Use another Chrome profile" },
+      { key: "4", action: "setup_manual_callback", label: "Manual callback login" },
+      { key: "5", action: "show_details", label: "Show advanced details" },
+      { key: "0", action: "done", label: "Cancel" },
+    ];
+  }
+
+  const actions = [];
+  const canReauth = panelState.reauthMode === REAUTH_MODE_MANUAL_CALLBACK || Boolean(panelState.binding);
+  if (panelState.panelKind === "reauth" && canReauth) {
+    actions.push({ key: "1", action: "reauth_now", label: "Reauth now" });
+  }
+  if (panelState.binding) {
+    actions.push({
+      key: String(actions.length + 1),
+      action: "open_browser",
+      label: "Open browser",
+    });
+  }
+  if (panelState.panelKind !== "reauth" && canReauth) {
+    actions.push({
+      key: String(actions.length + 1),
+      action: "reauth_now",
+      label: "Reauth / refresh login",
+    });
+  }
+  actions.push({
+    key: String(actions.length + 1),
+    action: "change_browser_setup",
+    label: "Change browser setup",
+  });
+  actions.push({
+    key: String(actions.length + 1),
+    action: "show_details",
+    label: "Show details",
+  });
+  actions.push({
+    key: "0",
+    action: "done",
+    label: "Done",
+  });
+  return actions;
+}
+
+function showLabelAdvancedDetails({ state, label, homeDir }) {
+  const details = showBrowserBinding({ state, label, homeDir });
+  process.stdout.write(`${JSON.stringify(sanitizeForStatus(details), null, 2)}\n\n`);
+}
+
+async function promptMappedChromeBinding({ state, label, promptLineImpl = promptLine }) {
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const userDataDir = await promptLineImpl(`Chrome user-data-dir for "${label}" (absolute path):`);
+    try {
+      const updated = setBrowserBinding({
+        state,
+        label,
+        mode: BROWSER_MODE_CHROME_PROFILE,
+        userDataDir,
+      });
+      return { configured: true, updated };
+    } catch (err) {
+      process.stdout.write(`${String(err?.message ?? err)}\n`);
+    }
+  }
+}
+
+async function promptManualAgentBrowserBinding({ state, label, promptLineImpl = promptLine }) {
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const agentBrowserProfile = await promptLineImpl(`agent-browser profile path for "${label}" (absolute path):`);
+    const agentBrowserSession = await promptLineImpl(`agent-browser session for "${label}":`);
+    try {
+      const updated = setBrowserBinding({
+        state,
+        label,
+        mode: BROWSER_MODE_AGENT_BROWSER,
+        agentBrowserProfile,
+        agentBrowserSession,
+      });
+      return { configured: true, updated };
+    } catch (err) {
+      process.stdout.write(`${String(err?.message ?? err)}\n`);
+    }
+  }
+}
+
+async function chooseSuggestedAgentBrowserBinding({
+  state,
+  label,
+  candidates,
+  promptLineImpl = promptLine,
+}) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return promptManualAgentBrowserBinding({ state, label, promptLineImpl });
+  }
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const options = candidates.map((candidate, index) => ({
+      key: String(index + 1),
+      label: candidate.display,
+    }));
+    const manualKey = String(candidates.length + 1);
+    options.push({ key: manualKey, label: "Enter another agent-browser profile/session" });
+    options.push({ key: "0", label: "Back" });
+    const choice = await promptMenuChoice({
+      title: `Suggested browser bindings for ${label}`,
+      options,
+      promptLineImpl,
+    });
+    if (choice === "0") {
+      return { configured: false, cancelled: true };
+    }
+    if (choice === manualKey) {
+      return promptManualAgentBrowserBinding({ state, label, promptLineImpl });
+    }
+
+    const candidate = candidates[Number(choice) - 1];
+    const confirm = await promptMenuChoice({
+      title: `Use this browser binding for ${label}?`,
+      options: [
+        { key: "1", label: "Yes, save it" },
+        { key: "0", label: "Back" },
+      ],
+      promptLineImpl,
+    });
+    if (confirm !== "1") {
+      continue;
+    }
+
+    const updated = setBrowserBinding({
+      state,
+      label,
+      mode: BROWSER_MODE_AGENT_BROWSER,
+      agentBrowserProfile: candidate.agentBrowserProfile,
+      agentBrowserSession: candidate.agentBrowserSession,
+    });
+    return { configured: true, updated, candidate };
+  }
+}
+
+function loadSuggestedBrowserBindings({
+  label,
+  repoRoot,
+  readOpenclawBindingsFromConfigImpl = readOpenclawBindingsFromConfig,
+  readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
+}) {
+  try {
+    return {
+      suggestions: discoverSuggestedBrowserBindings({
+        label,
+        repoRoot,
+        bindings: readOpenclawBindingsFromConfigImpl(),
+        agentsList: readOpenclawAgentsListFromConfigImpl(),
+      }),
+      discoveryWarning: null,
+    };
+  } catch (err) {
+    return {
+      suggestions: [],
+      discoveryWarning: String(err?.message ?? err),
+    };
+  }
+}
+
+async function runBrowserBindingWizard({
+  state,
+  label,
+  homeDir,
+  repoRoot,
+  promptLineImpl = promptLine,
+  readOpenclawBindingsFromConfigImpl = readOpenclawBindingsFromConfig,
+  readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
+}) {
+  const normalizedLabel = normalizeLabel(label);
+  let { suggestions, discoveryWarning } = loadSuggestedBrowserBindings({
+    label: normalizedLabel,
+    repoRoot,
+    readOpenclawBindingsFromConfigImpl,
+    readOpenclawAgentsListFromConfigImpl,
+  });
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    if (discoveryWarning) {
+      process.stdout.write(`Suggestion lookup unavailable: ${discoveryWarning}\n`);
+      discoveryWarning = null;
+    }
+
+    const choice = await promptMenuChoice({
+      title: "What do you want to do?",
+      options: [
+        { key: "1", label: suggestions.length > 0 ? "Use the likely agent browser" : "Use an agent-browser profile" },
+        { key: "2", label: "Use an AIM browser" },
+        { key: "3", label: "Use another Chrome profile" },
+        { key: "4", label: "Manual callback login" },
+        { key: "5", label: "Show advanced details" },
+        { key: "0", label: "Cancel" },
+      ],
+      promptLineImpl,
+    });
+
+    if (choice === "0") {
+      return { configured: false, cancelled: true };
+    }
+    if (choice === "5") {
+      showLabelAdvancedDetails({ state, label: normalizedLabel, homeDir });
+      continue;
+    }
+    if (choice === "4") {
+      const updated = setBrowserBinding({ state, label: normalizedLabel, mode: REAUTH_MODE_MANUAL_CALLBACK });
+      return { configured: true, updated };
+    }
+    if (choice === "2") {
+      const updated = setBrowserBinding({ state, label: normalizedLabel, mode: BROWSER_MODE_AIM_PROFILE });
+      return { configured: true, updated };
+    }
+    if (choice === "3") {
+      return promptMappedChromeBinding({ state, label: normalizedLabel, promptLineImpl });
+    }
+
+    const result = await chooseSuggestedAgentBrowserBinding({
+      state,
+      label: normalizedLabel,
+      candidates: suggestions,
+      promptLineImpl,
+    });
+    if (!result.cancelled) {
+      return result;
+    }
+  }
+}
+
+async function performLabelMaintenance({
+  state,
+  label,
+  homeDir,
+  promptLineImpl = promptLine,
+  promptImpl = promptRequiredLine,
+  openUrlImpl = launchBrowserBindingForUrl,
+  loginOpenAICodexImpl = loginOpenAICodex,
+  refreshOpenAICodexImpl = refreshOpenAICodexToken,
+  loginAnthropicImpl = loginAnthropic,
+  refreshAnthropicImpl = refreshAnthropicToken,
+}) {
+  const normalizedLabel = normalizeLabel(label);
+  const provider = await ensureProviderConfiguredForLabel({
+    state,
+    label: normalizedLabel,
+    promptLineImpl,
+  });
+  const attemptedAt = recordAccountMaintenanceAttempt(state, normalizedLabel);
+
+  try {
+    if (provider === OPENAI_CODEX_PROVIDER) {
+      const interactiveBinding = await ensureOpenAICodexInteractiveLoginBinding({
+        state,
+        label: normalizedLabel,
+        homeDir,
+        promptLineImpl,
+      });
+      const cred = await refreshOrLoginCodex({
+        state,
+        label: normalizedLabel,
+        homeDir,
+        interactiveBinding,
+        loginImpl: loginOpenAICodexImpl,
+        refreshImpl: refreshOpenAICodexImpl,
+        promptImpl,
+        openUrlImpl,
+      });
+      state.credentials[OPENAI_CODEX_PROVIDER][normalizedLabel] = cred;
+    } else if (provider === ANTHROPIC_PROVIDER) {
+      const interactiveBinding = await ensureInteractiveLoginBindingForProvider({
+        state,
+        label: normalizedLabel,
+        homeDir,
+        provider: ANTHROPIC_PROVIDER,
+        promptLineImpl,
+      });
+      const cred = await refreshOrLoginAnthropic({
+        state,
+        label: normalizedLabel,
+        homeDir,
+        interactiveBinding,
+        loginImpl: loginAnthropicImpl,
+        refreshImpl: refreshAnthropicImpl,
+        promptImpl,
+        openUrlImpl,
+      });
+      state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = cred;
+    } else {
+      throw new Error(`Provider not supported: ${provider}`);
+    }
+
+    recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
+    state.schemaVersion = SCHEMA_VERSION;
+    return {
+      ok: true,
+      label: normalizedLabel,
+      provider,
+      maintenance: {
+        status: "ready",
+        observedAt: attemptedAt,
+      },
+    };
+  } catch (err) {
+    const message = String(err?.message ?? err);
+    recordAccountMaintenanceFailure(state, normalizedLabel, {
+      observedAt: attemptedAt,
+      ...(message.match(/conflict|does not match|unsupported/i) ? { blockedReason: message } : {}),
+    });
+    state.schemaVersion = SCHEMA_VERSION;
+    throw err;
+  }
+}
+
+function reportPanelActionError(err) {
+  process.stdout.write(`${String(err?.message ?? err)}\n\n`);
+}
+
+async function runLabelPanelAction({
+  action,
+  statePath,
+  state,
+  label,
+  homeDir,
+  repoRoot,
+  promptLineImpl = promptLine,
+  promptImpl = promptRequiredLine,
+  openUrlImpl = launchBrowserBindingForUrl,
+  readOpenclawBindingsFromConfigImpl = readOpenclawBindingsFromConfig,
+  readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
+  loginOpenAICodexImpl = loginOpenAICodex,
+  refreshOpenAICodexImpl = refreshOpenAICodexToken,
+  loginAnthropicImpl = loginAnthropic,
+  refreshAnthropicImpl = refreshAnthropicToken,
+}) {
+  const normalizedLabel = normalizeLabel(label);
+  if (action === "done") {
+    return { done: true };
+  }
+
+  if (action === "show_details") {
+    showLabelAdvancedDetails({ state, label: normalizedLabel, homeDir });
+    return { done: false };
+  }
+
+  if (action === "open_browser") {
+    const account = getAccountRecord(state, normalizedLabel, { create: true });
+    const binding = resolveBrowserBinding({ account, homeDir, label: normalizedLabel });
+    if (!binding) {
+      process.stdout.write(`No browser binding is configured for ${normalizedLabel}.\n\n`);
+      return { done: false };
+    }
+    const provider = normalizeProviderId(account.provider);
+    const url = resolveProviderHomeUrl(provider);
+    if (!url) {
+      process.stdout.write(`No browser home URL is configured for provider=${provider || "unknown"}.\n\n`);
+      return { done: false };
+    }
+    const opened = openUrlImpl({ binding, url, homeDir });
+    if (!opened.ok) {
+      if (opened.reason === "missing_browser_path") {
+        process.stdout.write(`Configured browser path is missing: ${opened.path}\n\n`);
+      } else {
+        process.stdout.write(`Failed to open browser (${opened.reason}).\n\n`);
+      }
+      return { done: false };
+    }
+    process.stdout.write(`Opened ${normalizedLabel} in ${summarizeBrowserBindingForPanel({ binding, reauthMode: account?.reauth?.mode })}.\n\n`);
+    return { done: false };
+  }
+
+  if (
+    action === "setup_agent_browser"
+    || action === "setup_aim_profile"
+    || action === "setup_chrome_profile"
+    || action === "setup_manual_callback"
+    || action === "change_browser_setup"
+  ) {
+    try {
+      let configured = null;
+      if (action === "setup_aim_profile") {
+        configured = { configured: true, updated: setBrowserBinding({ state, label: normalizedLabel, mode: BROWSER_MODE_AIM_PROFILE }) };
+      } else if (action === "setup_chrome_profile") {
+        configured = await promptMappedChromeBinding({ state, label: normalizedLabel, promptLineImpl });
+      } else if (action === "setup_manual_callback") {
+        configured = { configured: true, updated: setBrowserBinding({ state, label: normalizedLabel, mode: REAUTH_MODE_MANUAL_CALLBACK }) };
+      } else if (action === "setup_agent_browser") {
+        const { suggestions, discoveryWarning } = loadSuggestedBrowserBindings({
+          label: normalizedLabel,
+          repoRoot,
+          readOpenclawBindingsFromConfigImpl,
+          readOpenclawAgentsListFromConfigImpl,
+        });
+        if (discoveryWarning) {
+          process.stdout.write(`Suggestion lookup unavailable: ${discoveryWarning}\n`);
+        }
+        configured = await chooseSuggestedAgentBrowserBinding({
+          state,
+          label: normalizedLabel,
+          candidates: suggestions,
+          promptLineImpl,
+        });
+      } else {
+        configured = await runBrowserBindingWizard({
+          state,
+          label: normalizedLabel,
+          homeDir,
+          repoRoot,
+          promptLineImpl,
+          readOpenclawBindingsFromConfigImpl,
+          readOpenclawAgentsListFromConfigImpl,
+        });
+      }
+
+      if (!configured?.configured) {
+        process.stdout.write("Browser setup unchanged.\n\n");
+        return { done: false };
+      }
+
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(`Saved browser setup for ${normalizedLabel}.\n\n`);
+
+      if (action !== "change_browser_setup") {
+        try {
+          await performLabelMaintenance({
+            state,
+            label: normalizedLabel,
+            homeDir,
+            promptLineImpl,
+            promptImpl,
+            openUrlImpl,
+            loginOpenAICodexImpl,
+            refreshOpenAICodexImpl,
+            loginAnthropicImpl,
+            refreshAnthropicImpl,
+          });
+          writeJsonFileWithBackup(statePath, state);
+          process.stdout.write(`${normalizedLabel} is ready.\n\n`);
+        } catch (err) {
+          writeJsonFileWithBackup(statePath, state);
+          reportPanelActionError(err);
+        }
+      }
+      return { done: false };
+    } catch (err) {
+      reportPanelActionError(err);
+      return { done: false };
+    }
+  }
+
+  if (action === "reauth_now") {
+    try {
+      await performLabelMaintenance({
+        state,
+        label: normalizedLabel,
+        homeDir,
+        promptLineImpl,
+        promptImpl,
+        openUrlImpl,
+        loginOpenAICodexImpl,
+        refreshOpenAICodexImpl,
+        loginAnthropicImpl,
+        refreshAnthropicImpl,
+      });
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(`${normalizedLabel} is ready.\n\n`);
+    } catch (err) {
+      writeJsonFileWithBackup(statePath, state);
+      reportPanelActionError(err);
+    }
+    return { done: false };
+  }
+
+  throw new Error(`Unsupported panel action: ${action}`);
+}
+
+export async function runLabelControlPanel({
+  statePath,
+  state,
+  label,
+  homeDir,
+  repoRoot,
+  promptLineImpl = promptLine,
+  promptImpl = promptRequiredLine,
+  openUrlImpl = launchBrowserBindingForUrl,
+  readOpenclawBindingsFromConfigImpl = readOpenclawBindingsFromConfig,
+  readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
+  loginOpenAICodexImpl = loginOpenAICodex,
+  refreshOpenAICodexImpl = refreshOpenAICodexToken,
+  loginAnthropicImpl = loginAnthropic,
+  refreshAnthropicImpl = refreshAnthropicToken,
+}) {
+  const normalizedLabel = normalizeLabel(label);
+  const beforeProvider = getAccountRecord(state, normalizedLabel)?.provider ?? null;
+  const provider = await ensureProviderConfiguredForLabel({
+    state,
+    label: normalizedLabel,
+    promptLineImpl,
+  });
+  if (provider && provider !== beforeProvider) {
+    writeJsonFileWithBackup(statePath, state);
+  }
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const panelState = buildLabelControlPanelState({
+      state,
+      label: normalizedLabel,
+      homeDir,
+    });
+    renderLabelControlPanel(panelState);
+    const actions = buildLabelPanelActions(panelState);
+    const choice = await promptMenuChoice({
+      title: "What do you want to do?",
+      options: actions.map(({ key, label: actionLabel }) => ({ key, label: actionLabel })),
+      promptLineImpl,
+    });
+    const selected = actions.find((action) => action.key === choice);
+    const result = await runLabelPanelAction({
+      action: selected?.action,
+      statePath,
+      state,
+      label: normalizedLabel,
+      homeDir,
+      repoRoot,
+      promptLineImpl,
+      promptImpl,
+      openUrlImpl,
+      readOpenclawBindingsFromConfigImpl,
+      readOpenclawAgentsListFromConfigImpl,
+      loginOpenAICodexImpl,
+      refreshOpenAICodexImpl,
+      loginAnthropicImpl,
+      refreshAnthropicImpl,
+    });
+    if (result?.done) {
+      return {
+        ok: true,
+        label: normalizedLabel,
+      };
+    }
+  }
+}
+
 function assertNoUnexpectedBrowserSetOptions(mode, opts) {
   if (mode === REAUTH_MODE_MANUAL_CALLBACK) {
     if (opts.seedFromOpenclaw || opts.userDataDir || opts.profile || opts.session) {
@@ -5305,7 +6191,22 @@ export async function rebalanceOpenclawPool(
   return { status, receipt, synced };
 }
 
-export async function main(argv) {
+export async function main(argv, deps = {}) {
+  const {
+    stdin = process.stdin,
+    stdout = process.stdout,
+    repoRoot,
+    promptLineImpl = promptLine,
+    promptImpl = promptRequiredLine,
+    openUrlImpl = launchBrowserBindingForUrl,
+    readOpenclawBindingsFromConfigImpl = readOpenclawBindingsFromConfig,
+    readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
+    runLabelControlPanelImpl = runLabelControlPanel,
+    loginOpenAICodexImpl = loginOpenAICodex,
+    refreshOpenAICodexImpl = refreshOpenAICodexToken,
+    loginAnthropicImpl = loginAnthropic,
+    refreshAnthropicImpl = refreshAnthropicToken,
+  } = deps;
   const { opts, positional } = parseArgs(argv);
   const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "browser"]);
   let cmd = positional[0];
@@ -5338,53 +6239,49 @@ export async function main(argv) {
     const label = normalizeLabel(shorthandLabel ?? positional[1]);
     const state = loadAimgrState(statePath);
     ensureStateShape(state);
-
-    const provider = await ensureProviderConfiguredForLabel({ state, label });
-    const attemptedAt = recordAccountMaintenanceAttempt(state, label);
+    if (shorthandLabel && isInteractiveTerminal({ stdin, stdout })) {
+      await runLabelControlPanelImpl({
+        statePath,
+        state,
+        label,
+        homeDir,
+        repoRoot: resolveAgentsRepoRoot({ repoRoot }),
+        promptLineImpl,
+        promptImpl,
+        openUrlImpl,
+        readOpenclawBindingsFromConfigImpl,
+        readOpenclawAgentsListFromConfigImpl,
+        loginOpenAICodexImpl,
+        refreshOpenAICodexImpl,
+        loginAnthropicImpl,
+        refreshAnthropicImpl,
+      });
+      return;
+    }
 
     try {
-      if (provider === OPENAI_CODEX_PROVIDER) {
-        const interactiveBinding = await ensureOpenAICodexInteractiveLoginBinding({ state, label, homeDir });
-        const cred = await refreshOrLoginCodex({ state, label, homeDir, interactiveBinding });
-        state.credentials[OPENAI_CODEX_PROVIDER][label] = cred;
-      } else if (provider === ANTHROPIC_PROVIDER) {
-        const interactiveBinding = await ensureInteractiveLoginBindingForProvider({
-          state,
-          label,
-          homeDir,
-          provider: ANTHROPIC_PROVIDER,
-        });
-        const cred = await refreshOrLoginAnthropic({ state, label, homeDir, interactiveBinding });
-        state.credentials[ANTHROPIC_PROVIDER][label] = cred;
-      } else {
-        throw new Error(`Provider not supported: ${provider}`);
-      }
-
-      recordAccountMaintenanceSuccess(state, label, { homeDir, observedAt: attemptedAt });
-      state.schemaVersion = SCHEMA_VERSION;
+      const result = await performLabelMaintenance({
+        state,
+        label,
+        homeDir,
+        promptLineImpl,
+        promptImpl,
+        openUrlImpl,
+        loginOpenAICodexImpl,
+        refreshOpenAICodexImpl,
+        loginAnthropicImpl,
+        refreshAnthropicImpl,
+      });
       writeJsonFileWithBackup(statePath, state);
       process.stdout.write(
         `${JSON.stringify(
-          sanitizeForStatus({
-            ok: true,
-            label,
-            provider,
-            maintenance: {
-              status: "ready",
-              observedAt: attemptedAt,
-            },
-          }),
+          sanitizeForStatus(result),
           null,
           2,
         )}\n`,
       );
       return;
     } catch (err) {
-      const message = String(err?.message ?? err);
-      recordAccountMaintenanceFailure(state, label, {
-        observedAt: attemptedAt,
-        ...(message.match(/conflict|does not match|unsupported/i) ? { blockedReason: message } : {}),
-      });
       writeJsonFileWithBackup(statePath, state);
       throw err;
     }

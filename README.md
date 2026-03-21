@@ -23,7 +23,7 @@ One AIM-owned account pool, one obvious operator path, and no legacy drift.
 
 That means:
 
-- `aim <label>` is for account maintenance and reauth
+- `aim <label>` is the primary human path
 - `aim rebalance openclaw` is the canonical OpenClaw assignment command
 - `aim codex use` is the canonical local Codex selection command
 - `aim pin`, `aim autopin openclaw`, and `aim codex use <label>` are removed
@@ -88,11 +88,33 @@ Status answers the core operator questions:
 
 ```bash
 aim boss
-# or
+```
+
+On a TTY, `aim <label>` is the human front door. It opens a guided label panel with numbered choices:
+
+```text
+$ aim boss
+
+boss · openai-codex
+Status: ready
+ChatGPT login: valid
+Browser: agent-browser / agent-boss
+
+What do you want to do?
+  1. Open browser
+  2. Reauth / refresh login
+  3. Change browser setup
+  4. Show details
+  0. Done
+```
+
+Use explicit `aim login <label>` only when you want the one-shot maintenance/admin lane:
+
+```bash
 aim login boss
 ```
 
-That flow:
+The maintenance flow:
 
 1. ensures the label has a provider
 2. uses the label's configured login rail
@@ -113,7 +135,7 @@ Important behavior:
 
 Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, and `aim codex use`.
 
-When you need to inspect or repair the browser substrate explicitly, use:
+When you need to inspect or repair the browser substrate explicitly, use the advanced/admin surface:
 
 ```bash
 aim browser show <label>
@@ -292,12 +314,18 @@ aim status --json
 
 ### `aim <label>` / `aim login <label>`
 
-Account maintenance for a label:
+Primary human path plus explicit admin lane:
 
 ```bash
 aim boss
 aim login boss
 ```
+
+Rules:
+
+- `aim <label>` opens the guided label panel on a TTY
+- non-TTY `aim <label>` behaves like explicit `aim login <label>`
+- `aim login <label>` keeps the one-shot JSON-style maintenance contract for scripts/tests/admin use
 
 ### `aim rebalance openclaw`
 

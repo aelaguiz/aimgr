@@ -7,6 +7,7 @@ import path from "node:path";
 
 import {
   buildOpenclawModelSyncOps,
+  discoverSuggestedBrowserBindings,
   derivePoolAccountStatus,
   discoverOpenclawBrowserProfiles,
   ensureOpenAICodexInteractiveLoginBinding,
@@ -125,7 +126,7 @@ function makeFakeJwt(payload = {}) {
   return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.sig`;
 }
 
-async function runCli(argv) {
+async function runCli(argv, deps = {}) {
   const chunks = [];
   const origWrite = process.stdout.write;
   const origExitCode = process.exitCode;
@@ -135,7 +136,7 @@ async function runCli(argv) {
     return true;
   };
   try {
-    await main(argv);
+    await main(argv, deps);
   } finally {
     process.stdout.write = origWrite;
     process.exitCode = origExitCode;
@@ -143,7 +144,7 @@ async function runCli(argv) {
   return chunks.join("");
 }
 
-async function runCliWithExitCode(argv) {
+async function runCliWithExitCode(argv, deps = {}) {
   const chunks = [];
   const origWrite = process.stdout.write;
   const origExitCode = process.exitCode;
@@ -154,7 +155,7 @@ async function runCliWithExitCode(argv) {
     return true;
   };
   try {
-    await main(argv);
+    await main(argv, deps);
     return { stdout: chunks.join(""), exitCode: process.exitCode ?? 0 };
   } finally {
     process.stdout.write = origWrite;
@@ -699,6 +700,342 @@ test("aim browser set fails loud when agent-browser session is missing", async (
       ]),
     /requires --profile <abs-path> and --session <name>/,
   );
+});
+
+test("discoverSuggestedBrowserBindings prefers exact OpenClaw binding and dedupes identical profile/session candidates", () => {
+  const repoRoot = mkTempHome();
+  const profileDir = path.join(repoRoot, ".agent-browser", "profiles", "agent-cfo");
+  const cfoWorkspace = path.join(repoRoot, "agents", "agent_cfo_bot");
+  const duplicateWorkspace = path.join(repoRoot, "agents", "agent_cfo_shadow");
+  const officeWorkspace = path.join(repoRoot, "agents", "agent_office");
+
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.mkdirSync(cfoWorkspace, { recursive: true });
+  fs.mkdirSync(duplicateWorkspace, { recursive: true });
+  fs.mkdirSync(officeWorkspace, { recursive: true });
+  fs.writeFileSync(
+    path.join(cfoWorkspace, "agent-browser.json"),
+    JSON.stringify({ session: "agent-cfo", profile: profileDir, headed: true }, null, 2),
+  );
+  fs.writeFileSync(
+    path.join(duplicateWorkspace, "agent-browser.json"),
+    JSON.stringify({ session: "agent-cfo", profile: profileDir, headed: true }, null, 2),
+  );
+  fs.writeFileSync(
+    path.join(officeWorkspace, "agent-browser.json"),
+    JSON.stringify({ session: "agent-office", profile: path.join(repoRoot, ".agent-browser", "profiles", "agent-office"), headed: true }, null, 2),
+  );
+  fs.mkdirSync(path.join(repoRoot, ".agent-browser", "profiles", "agent-office"), { recursive: true });
+
+  const results = discoverSuggestedBrowserBindings({
+    label: "cfo",
+    repoRoot,
+    bindings: [
+      {
+        agentId: "agent_cfo_bot",
+        match: { channel: "slack", accountId: "cfo" },
+      },
+    ],
+    agentsList: [
+      { id: "agent_cfo_bot", name: "CFO Bot", workspace: cfoWorkspace },
+      { id: "agent_cfo_shadow", name: "CFO Shadow", workspace: duplicateWorkspace },
+      { id: "agent_office", name: "Office", workspace: officeWorkspace },
+    ],
+  });
+
+  assert.equal(results[0].source, "openclaw-binding");
+  assert.equal(results[0].agentId, "agent_cfo_bot");
+  assert.equal(
+    results.filter(
+      (candidate) =>
+        candidate.agentBrowserProfile === profileDir && candidate.agentBrowserSession === "agent-cfo",
+    ).length,
+    1,
+  );
+});
+
+test("TTY shorthand label routes into the guided control panel", async () => {
+  const home = mkTempHome();
+  let invoked = null;
+
+  await main(["cfo", "--home", home], {
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    runLabelControlPanelImpl: async (args) => {
+      invoked = args;
+    },
+  });
+
+  assert.equal(invoked.label, "cfo");
+  assert.equal(invoked.homeDir, home);
+});
+
+test("non-TTY shorthand label keeps the one-shot maintenance contract", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      cfo: {
+        provider: "openai-codex",
+        reauth: { mode: "manual-callback" },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        cfo: {
+          access: makeFakeJwt({ sub: "old" }),
+          refresh: "OLD_REFRESH",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          accountId: "acct_cfo",
+        },
+      },
+      anthropic: {},
+    },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const out = await runCli(["cfo", "--home", home], {
+    stdin: { isTTY: false },
+    stdout: { isTTY: false },
+    runLabelControlPanelImpl: async () => {
+      throw new Error("panel should not run in non-interactive mode");
+    },
+    refreshOpenAICodexImpl: async () => ({
+      access: makeFakeJwt({ sub: "fresh" }),
+      refresh: "NEW_REFRESH",
+      expires: Date.now() + 3600_000,
+      accountId: "acct_cfo",
+    }),
+  });
+
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.label, "cfo");
+  assert.equal(parsed.provider, "openai-codex");
+});
+
+test("guided panel can adopt a suggested agent-browser binding and make the label ready", async () => {
+  const home = mkTempHome();
+  const repoRoot = path.join(home, "repo");
+  const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
+  const workspace = path.join(repoRoot, "agents", "agent_cfo_bot");
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(
+    path.join(workspace, "agent-browser.json"),
+    JSON.stringify({ session: "agent-cfo", profile: profileDir, headed: true }, null, 2),
+  );
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      cfo: { provider: "openai-codex" },
+    },
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const answers = ["1", "1", "1", "0"];
+  const opened = [];
+  const out = await runCli(["cfo", "--home", home], {
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    repoRoot,
+    promptLineImpl: async () => answers.shift(),
+    readOpenclawBindingsFromConfigImpl: () => [{ agentId: "agent_cfo_bot", match: { channel: "slack", accountId: "cfo" } }],
+    readOpenclawAgentsListFromConfigImpl: () => [{ id: "agent_cfo_bot", name: "CFO Bot", workspace }],
+    openUrlImpl: ({ binding, url }) => {
+      opened.push({ binding, url });
+      return { ok: true };
+    },
+    loginOpenAICodexImpl: async ({ onAuth }) => {
+      onAuth({ url: "https://chatgpt.com/oauth" });
+      return {
+        access: makeFakeJwt({ sub: "cfo" }),
+        refresh: "REFRESHED",
+        expires: Date.now() + 3600_000,
+        accountId: "acct_cfo",
+      };
+    },
+  });
+
+  const persisted = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(persisted.accounts.cfo.browser.mode, "agent-browser");
+  assert.equal(persisted.accounts.cfo.browser.agentBrowserProfile, profileDir);
+  assert.equal(persisted.accounts.cfo.browser.agentBrowserSession, "agent-cfo");
+  assert.equal(persisted.accounts.cfo.reauth.mode, "browser-managed");
+  assert.equal(persisted.credentials["openai-codex"].cfo.accountId, "acct_cfo");
+  assert.deepEqual(opened, [
+    {
+      binding: {
+        mode: "agent-browser",
+        agentBrowserProfile: profileDir,
+        agentBrowserSession: "agent-cfo",
+      },
+      url: "https://chatgpt.com/oauth",
+    },
+  ]);
+  assert.match(out, /Saved browser setup for cfo\./);
+  assert.match(out, /cfo is ready\./);
+});
+
+test("guided ready panel can show details and change browser setup", async () => {
+  const home = mkTempHome();
+  const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  fs.mkdirSync(profileDir, { recursive: true });
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      cfo: {
+        provider: "openai-codex",
+        reauth: { mode: "browser-managed" },
+        browser: {
+          mode: "agent-browser",
+          agentBrowserProfile: profileDir,
+          agentBrowserSession: "agent-cfo",
+        },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        cfo: {
+          access: makeFakeJwt({ sub: "cfo" }),
+          refresh: "REFRESH",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_cfo",
+        },
+      },
+      anthropic: {},
+    },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const answers = ["4", "3", "4", "0"];
+  const out = await runCli(["cfo", "--home", home], {
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    promptLineImpl: async () => answers.shift(),
+    readOpenclawBindingsFromConfigImpl: () => [],
+    readOpenclawAgentsListFromConfigImpl: () => [],
+  });
+
+  const persisted = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(persisted.accounts.cfo.reauth.mode, "manual-callback");
+  assert.equal(persisted.accounts.cfo.browser, null);
+  assert.match(out, /"mode": "agent-browser"/);
+  assert.match(out, /"session": "agent-cfo"/);
+});
+
+test("guided panel open browser delegates to the existing binding launcher", async () => {
+  const home = mkTempHome();
+  const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  fs.mkdirSync(profileDir, { recursive: true });
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      cfo: {
+        provider: "openai-codex",
+        reauth: { mode: "browser-managed" },
+        browser: {
+          mode: "agent-browser",
+          agentBrowserProfile: profileDir,
+          agentBrowserSession: "agent-cfo",
+        },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        cfo: {
+          access: makeFakeJwt({ sub: "cfo" }),
+          refresh: "REFRESH",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_cfo",
+        },
+      },
+      anthropic: {},
+    },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const answers = ["1", "0"];
+  const opened = [];
+  const out = await runCli(["cfo", "--home", home], {
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    promptLineImpl: async () => answers.shift(),
+    openUrlImpl: ({ binding, url }) => {
+      opened.push({ binding, url });
+      return { ok: true };
+    },
+  });
+
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0].url, "https://chatgpt.com");
+  assert.equal(opened[0].binding.agentBrowserSession, "agent-cfo");
+  assert.match(out, /Opened cfo in agent-browser \/ agent-cfo\./);
+});
+
+test("guided reauth panel can refresh login and return to ready", async () => {
+  const home = mkTempHome();
+  const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  fs.mkdirSync(profileDir, { recursive: true });
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      cfo: {
+        provider: "openai-codex",
+        reauth: { mode: "browser-managed" },
+        browser: {
+          mode: "agent-browser",
+          agentBrowserProfile: profileDir,
+          agentBrowserSession: "agent-cfo",
+        },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        cfo: {
+          access: makeFakeJwt({ sub: "cfo-old" }),
+          refresh: "OLD_REFRESH",
+          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
+          accountId: "acct_cfo",
+        },
+      },
+      anthropic: {},
+    },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const answers = ["1", "0"];
+  const out = await runCli(["cfo", "--home", home], {
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    promptLineImpl: async () => answers.shift(),
+    refreshOpenAICodexImpl: async () => ({
+      access: makeFakeJwt({ sub: "cfo-new" }),
+      refresh: "NEW_REFRESH",
+      expires: Date.now() + 3600_000,
+      accountId: "acct_cfo",
+    }),
+  });
+
+  const persisted = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(persisted.credentials["openai-codex"].cfo.refresh, "NEW_REFRESH");
+  assert.match(out, /cfo is ready\./);
 });
 
 test("refreshOrLoginCodex manual-callback prompts for callback URL and skips browser launch", async () => {
