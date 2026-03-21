@@ -1761,6 +1761,136 @@ test("codex use blocks instead of selecting a weekly-exhausted ready account", a
   }
 });
 
+test("codex use selects fresh browser-managed labels even when the AIM browser dir is missing", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const lessonsJwt = makeFakeJwt({
+    email: "lessons@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_lessons",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const coder2Jwt = makeFakeJwt({
+    email: "coder2@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_coder2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const cratejoyJwt = makeFakeJwt({
+    email: "cratejoy@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_cratejoy",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      lessons: { provider: "openai-codex", reauth: { mode: "aim-browser-profile" }, browser: {} },
+      coder2: { provider: "openai-codex", reauth: { mode: "aim-browser-profile" }, browser: {} },
+      amir_cratejoy_personal: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        lessons: {
+          access: lessonsJwt,
+          refresh: "REFRESH_LESSONS",
+          idToken: lessonsJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_lessons",
+        },
+        coder2: {
+          access: coder2Jwt,
+          refresh: "REFRESH_CODER2",
+          idToken: coder2Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_coder2",
+        },
+        amir_cratejoy_personal: {
+          access: cratejoyJwt,
+          refresh: "REFRESH_CRATEJOY",
+          idToken: cratejoyJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_cratejoy",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["lessons", "coder2", "amir_cratejoy_personal"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "amir_cratejoy_personal",
+        expectedAccountId: "acct_cratejoy",
+        lastAppliedAt: new Date().toISOString(),
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      const secondaryUsedPercent =
+        accountId === "acct_lessons" ? 44 : accountId === "acct_coder2" ? 51 : 99;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 0,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 5 * 3600,
+            },
+            secondary_window: {
+              used_percent: secondaryUsedPercent,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = JSON.parse(await runCli(["codex", "use", "--home", home]));
+    assert.equal(result.ok, true);
+    assert.equal(result.activated.status, "activated");
+    assert.equal(result.activated.receipt.label, "lessons");
+
+    const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
+    assert.equal(auth.tokens.account_id, "acct_lessons");
+
+    const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+    const lessons = status.accounts.find((account) => account.label === "lessons");
+    assert.equal(lessons.operator.status, "ready");
+    assert.equal(lessons.operator.detailReason, "missing_browser");
+    assert.equal(status.codexCli.activeLabel, "lessons");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("codex use skips expired labels and activates the next eligible pool account", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -2166,6 +2296,31 @@ test("real CLI login fails loud on a missing migration profile and leaves OpenCl
   assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
   assert.equal(updatedState.accounts.boss.reauth.mode, "aim-browser-profile");
   assert.ok(typeof updatedState.accounts.boss.reauth.lastAttemptAt === "string");
+});
+
+test("derivePoolAccountStatus keeps fresh browser-managed credentials ready when the AIM browser is missing", () => {
+  const now = Date.now();
+
+  const status = derivePoolAccountStatus({
+    account: {
+      provider: "openai-codex",
+      reauth: { mode: "aim-browser-profile" },
+      browser: {},
+    },
+    credentials: {
+      access: "ACCESS_TOKEN",
+      refresh: "REFRESH_TOKEN",
+      expiresAt: new Date(now + 3600_000).toISOString(),
+      accountId: "acct_123",
+    },
+    browserFacts: { exists: false },
+    now,
+  });
+
+  assert.equal(status.operatorStatus, "ready");
+  assert.equal(status.detailReason, "missing_browser");
+  assert.equal(status.eligible, true);
+  assert.equal(status.actionRequired, "run_aim_label");
 });
 
 test("extractOpenclawConfigAgentModelPrimary handles string/object/null", () => {

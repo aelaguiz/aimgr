@@ -2907,6 +2907,17 @@ export function derivePoolAccountStatus({ account, credentials, browserFacts, no
     typeof normalizedAccount.expect?.email === "string" ? normalizedAccount.expect.email.trim().toLowerCase() : "";
   const browserEmail =
     typeof browserFacts?.userName === "string" ? browserFacts.userName.trim().toLowerCase() : "";
+  const credential = isObject(credentials) ? credentials : null;
+  const expiresMs = parseExpiresAtToMs(credential?.expiresAt);
+  const hasFreshCredentials =
+    credential
+    && typeof credential.access === "string"
+    && credential.access.trim()
+    && typeof credential.refresh === "string"
+    && credential.refresh.trim()
+    && expiresMs !== null
+    && expiresMs > snapshotNow
+    && (provider !== OPENAI_CODEX_PROVIDER || typeof credential.accountId === "string" && credential.accountId.trim());
 
   if (conflictReason) {
     return {
@@ -2935,7 +2946,18 @@ export function derivePoolAccountStatus({ account, credentials, browserFacts, no
     };
   }
 
+  // Missing AIM browser state is a recovery problem, not a "can't use this label now" problem,
+  // as long as fresh credentials still exist. Selection must follow live usable creds first.
   if (browserMode === INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE && browserFacts?.exists !== true) {
+    if (hasFreshCredentials) {
+      return {
+        operatorStatus: "ready",
+        detailReason: "missing_browser",
+        eligible: true,
+        actionRequired: "run_aim_label",
+        reason: "Credentials are still usable now; run `aim <label>` later to recreate the missing AIM-owned browser profile.",
+      };
+    }
     return {
       operatorStatus: "reauth",
       detailReason: "missing_browser",
@@ -2951,6 +2973,16 @@ export function derivePoolAccountStatus({ account, credentials, browserFacts, no
     && browser.seededAt.trim()
     && !(typeof browser.verifiedAt === "string" && browser.verifiedAt.trim())
   ) {
+    if (hasFreshCredentials) {
+      return {
+        operatorStatus: "ready",
+        detailReason: "seeded_unverified",
+        eligible: true,
+        actionRequired: "run_aim_label",
+        reason:
+          "Credentials are still usable now; run `aim <label>` later to verify the seeded AIM-owned browser profile.",
+      };
+    }
     return {
       operatorStatus: "reauth",
       detailReason: "seeded_unverified",
@@ -2959,18 +2991,6 @@ export function derivePoolAccountStatus({ account, credentials, browserFacts, no
       reason: "AIM browser profile was seeded but not yet verified by a successful AIM-managed login or refresh.",
     };
   }
-
-  const credential = isObject(credentials) ? credentials : null;
-  const expiresMs = parseExpiresAtToMs(credential?.expiresAt);
-  const hasFreshCredentials =
-    credential
-    && typeof credential.access === "string"
-    && credential.access.trim()
-    && typeof credential.refresh === "string"
-    && credential.refresh.trim()
-    && expiresMs !== null
-    && expiresMs > snapshotNow
-    && (provider !== OPENAI_CODEX_PROVIDER || typeof credential.accountId === "string" && credential.accountId.trim());
 
   if (!hasFreshCredentials) {
     return {
