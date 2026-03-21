@@ -80,6 +80,7 @@ Status answers the core operator questions:
 
 - which labels are `ready`, `reauth`, or `blocked`
 - what OpenClaw currently has assigned
+- how the last weighted rebalance spread agents across accounts
 - what the local Codex target currently has selected
 - what the next-best eligible account would be
 - whether the pool needs more capacity
@@ -164,13 +165,17 @@ aim rebalance openclaw
 This command:
 
 - evaluates pooled label readiness plus live usage
-- keeps current assignments when they stay within the keep-current threshold
+- refreshes AIM’s per-agent demand ledger from OpenClaw session token counters
+- spreads agents many-to-one across remaining account headroom instead of burning one label per agent
+- keeps current assignments when they stay within weighted hysteresis
 - writes the derived OpenClaw assignments
-- records an explicit receipt:
+- records an explicit receipt with `allocationMode` plus `perAccountLoad`:
   - `applied`
   - `noop`
   - `applied_with_warnings`
   - `blocked`
+
+When recent session history exists, rebalance is demand-weighted. When it does not, cold-start agents use an explicit equal-share baseline until AIM has real usage.
 
 If you only want to recompile the current recorded assignments into OpenClaw without reselection:
 
@@ -306,6 +311,7 @@ Human-readable or JSON summary of:
 - labels and operator states
 - warnings
 - OpenClaw assignments and last rebalance receipt
+- weighted spread details (`allocationMode`, `perAccountLoad`)
 - Codex authority source, active label, and last selection receipt
 - next-best candidate and capacity projection
 
@@ -336,6 +342,12 @@ Selects pooled Codex labels for configured OpenClaw agents and writes the derive
 ```bash
 aim rebalance openclaw
 ```
+
+The rebalance planner is intentionally different from Codex next-best label selection:
+
+- it imports per-agent OpenClaw session token counters into AIM’s demand ledger
+- it can assign multiple agents to the same account when remaining headroom supports that
+- it only skips agents when projected weighted demand exceeds remaining eligible supply
 
 ### `aim sync openclaw` / `aim apply`
 

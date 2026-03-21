@@ -17,11 +17,14 @@ import {
   main,
   parseAnthropicAuthorizationPaste,
   planOpenclawRebalance,
+  planWeightedOpenclawRebalance,
   partitionOpenclawPinsByConfiguredAgents,
   pickNextBestPoolLabel,
   projectPoolCapacity,
   rankPoolCandidates,
+  readOpenclawAgentTokenUsage,
   rebalanceOpenclawPool,
+  refreshOpenclawAgentDemandLedger,
   refreshOrLoginCodex,
   resetSessionEntryToDefaults,
   resolveAuthorityLocator,
@@ -1749,13 +1752,14 @@ test("apply fails closed for unassigned managed agents and clears stale session 
   );
 });
 
-test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary when agents must be skipped", async () => {
+test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary when weighted demand exceeds supply", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeBinDir = installFakeOpenclaw({
     rootDir: home,
     agentsList: [
       { id: "agent_boss", model: "openai/gpt-5.4" },
+      { id: "agent_light", model: "openai-codex/gpt-5.4" },
       { id: "agent_idle", model: "openai-codex/gpt-5.4" },
     ],
   });
@@ -1787,7 +1791,7 @@ test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary
         qa: {
           access: "ACCESS_QA",
           refresh: "REFRESH_QA",
-          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
           accountId: "acct_qa",
         },
       },
@@ -1800,7 +1804,7 @@ test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary
     },
     targets: {
       openclaw: {
-        assignments: { agent_boss: "qa" },
+        assignments: { agent_boss: "boss", agent_light: "qa", agent_idle: "qa" },
         exclusions: {},
       },
       codexCli: {},
@@ -1808,10 +1812,24 @@ test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary
     pool: { openaiCodex: { history: [] } },
   });
 
+  const now = Date.now();
+  writeOpenclawSessionsStore(home, "agent_boss", {
+    s1: { updatedAt: now, inputTokens: 120, outputTokens: 30, totalTokens: 150 },
+  });
+  writeOpenclawSessionsStore(home, "agent_light", {
+    s1: { updatedAt: now, inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+  });
+  writeOpenclawSessionsStore(home, "agent_idle", {
+    s1: { updatedAt: now, inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+  });
+
   const origFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, options) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
+      const auth = String(options?.headers?.Authorization ?? "");
+      const accessToken = auth.replace(/^Bearer\s+/i, "");
+      const usedPercent = accessToken === "ACCESS_BOSS" ? 50 : 90;
       return {
         ok: true,
         status: 200,
@@ -1819,7 +1837,7 @@ test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary
           plan_type: "pro",
           rate_limit: {
             primary_window: {
-              used_percent: 5,
+              used_percent: usedPercent,
               limit_window_seconds: 10800,
               reset_at: Math.floor(Date.now() / 1000) + 3600,
             },
@@ -1841,11 +1859,26 @@ test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary
         const parsed = JSON.parse(out);
         assert.equal(parsed.ok, true);
         assert.equal(parsed.rebalanced.status, "applied_with_warnings");
-        assert.deepEqual(parsed.rebalanced.receipt.skipped, [{ agentId: "agent_idle", reason: "no_eligible_pool_account" }]);
+        assert.deepEqual(
+          parsed.rebalanced.receipt.skipped.map(({ agentId, reason }) => ({ agentId, reason })),
+          [
+            { agentId: "agent_light", reason: "projected_demand_exceeds_eligible_supply" },
+            { agentId: "agent_idle", reason: "projected_demand_exceeds_eligible_supply" },
+          ],
+        );
+        assert.equal(parsed.rebalanced.receipt.allocationMode, "demand_weighted");
+        assert.equal(parsed.rebalanced.receipt.perAccountLoad.find((entry) => entry.label === "boss")?.carriedAgentCount, 1);
 
         const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
         assert.equal(updatedState.targets.openclaw.lastApplyReceipt.status, "applied_with_warnings");
-        assert.deepEqual(updatedState.targets.openclaw.lastApplyReceipt.skipped, [{ agentId: "agent_idle", reason: "no_eligible_pool_account" }]);
+        assert.equal(updatedState.targets.openclaw.lastApplyReceipt.allocationMode, "demand_weighted");
+        assert.deepEqual(
+          updatedState.targets.openclaw.lastApplyReceipt.skipped.map(({ agentId, reason }) => ({ agentId, reason })),
+          [
+            { agentId: "agent_light", reason: "projected_demand_exceeds_eligible_supply" },
+            { agentId: "agent_idle", reason: "projected_demand_exceeds_eligible_supply" },
+          ],
+        );
       },
     );
   } finally {
@@ -3208,43 +3241,154 @@ test("rankPoolCandidates keeps current label when it stays within the keep-curre
   assert.equal(pickNextBestPoolLabel({ rankedCandidates: ranked }).label, "boss");
 });
 
-test("planOpenclawRebalance uses the shared selector and blocks when no eligible labels remain", () => {
-  const plan = planOpenclawRebalance({
-    configuredAgents: ["agent_a", "agent_b"],
+test("refreshOpenclawAgentDemandLedger imports OpenClaw session counters and seeds cold-start demand", () => {
+  const home = mkTempHome();
+  const now = Date.parse("2026-03-21T12:00:00Z");
+  const recent = now - 60_000;
+  const stale = now - 10 * 24 * 60 * 60 * 1000;
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {},
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [], agentDemand: {} } },
+  };
+
+  writeOpenclawSessionsStore(home, "agent_heavy", {
+    s1: { updatedAt: recent, inputTokens: 120, outputTokens: 30, totalTokens: 150 },
+    s2: { updatedAt: recent, inputTokens: 60, outputTokens: 10, totalTokens: 70 },
+    stale: { updatedAt: stale, inputTokens: 999, outputTokens: 999, totalTokens: 999 },
+  });
+  writeOpenclawSessionsStore(home, "agent_cold", {
+    s1: { updatedAt: recent, inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  });
+
+  const refreshed = refreshOpenclawAgentDemandLedger({
+    state,
+    homeDir: home,
+    configuredAgents: ["agent_heavy", "agent_cold"],
+    now,
+    lookbackDays: 7,
+  });
+
+  assert.equal(refreshed.allocationMode, "demand_weighted");
+  assert.equal(readOpenclawAgentTokenUsage({ homeDir: home, agentId: "agent_heavy", now, lookbackDays: 7 }).totalTokens, 220);
+  assert.deepEqual(state.pool.openaiCodex.agentDemand.agent_heavy, {
+    updatedAt: new Date(now).toISOString(),
+    lookbackDays: 7,
+    source: "openclaw-session-tokens",
+    inputTokens: 180,
+    outputTokens: 40,
+    totalTokens: 220,
+    demandWeight: 220,
+  });
+  assert.deepEqual(state.pool.openaiCodex.agentDemand.agent_cold, {
+    updatedAt: new Date(now).toISOString(),
+    lookbackDays: 7,
+    source: "cold-start-equal-share",
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    demandWeight: 220,
+  });
+});
+
+test("planWeightedOpenclawRebalance supports many-to-one cold-start spread without burning labels after one use", () => {
+  const plan = planWeightedOpenclawRebalance({
+    configuredAgents: ["agent_a", "agent_b", "agent_c"],
     currentAssignments: { agent_a: "boss" },
     eligibleLabels: ["boss", "qa"],
     usage: {
       boss: {
         ok: true,
-        windows: [{ kind: "primary", usedPercent: 18 }, { kind: "secondary", usedPercent: 12 }],
+        windows: [{ kind: "primary", usedPercent: 10 }, { kind: "secondary", usedPercent: 10 }],
       },
       qa: {
         ok: true,
-        windows: [{ kind: "primary", usedPercent: 12 }, { kind: "secondary", usedPercent: 10 }],
+        windows: [{ kind: "primary", usedPercent: 40 }, { kind: "secondary", usedPercent: 40 }],
       },
     },
+    agentDemand: {},
     now: Date.now(),
   });
 
   assert.equal(plan.status, "applied");
+  assert.equal(plan.allocationMode, "cold_start_equal_share");
   assert.deepEqual(plan.assignments, {
     agent_a: "boss",
     agent_b: "qa",
+    agent_c: "boss",
   });
-  assert.deepEqual(plan.unchanged, [{ agentId: "agent_a", label: "boss" }]);
-  assert.deepEqual(plan.moved, [{ agentId: "agent_b", from: null, to: "qa", reason: "next_best" }]);
+  assert.equal(plan.perAccountLoad.find((entry) => entry.label === "boss")?.carriedAgentCount, 2);
+  assert.deepEqual(plan.unchanged[0], {
+    agentId: "agent_a",
+    label: "boss",
+    reason: "kept_current_hysteresis",
+    demandWeight: 1,
+    demandSource: "cold-start-equal-share",
+    targetDemandWeight: 1.8,
+    projectedDemandWeight: 1,
+  });
 
   const blocked = planOpenclawRebalance({
     configuredAgents: ["agent_a"],
     currentAssignments: { agent_a: "boss" },
     eligibleLabels: [],
     usage: {},
+    agentDemand: {},
     now: Date.now(),
   });
 
   assert.equal(blocked.status, "blocked");
   assert.deepEqual(blocked.assignments, {});
   assert.deepEqual(blocked.skipped, [{ agentId: "agent_a", reason: "no_eligible_pool_account" }]);
+  assert.deepEqual(blocked.blockers, [{ reason: "no_eligible_pool_account" }]);
+});
+
+test("planWeightedOpenclawRebalance skips agents only when projected demand exceeds weighted supply", () => {
+  const plan = planWeightedOpenclawRebalance({
+    configuredAgents: ["agent_heavy", "agent_medium", "agent_light", "agent_idle"],
+    currentAssignments: {
+      agent_heavy: "boss",
+      agent_medium: "boss",
+      agent_light: "qa",
+      agent_idle: "qa",
+    },
+    eligibleLabels: ["boss", "qa"],
+    usage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 50 }, { kind: "secondary", usedPercent: 50 }],
+      },
+      qa: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 90 }, { kind: "secondary", usedPercent: 90 }],
+      },
+    },
+    agentDemand: {
+      agent_heavy: { source: "openclaw-session-tokens", demandWeight: 150 },
+      agent_medium: { source: "openclaw-session-tokens", demandWeight: 50 },
+      agent_light: { source: "openclaw-session-tokens", demandWeight: 30 },
+      agent_idle: { source: "openclaw-session-tokens", demandWeight: 20 },
+    },
+    now: Date.now(),
+  });
+
+  assert.equal(plan.status, "applied_with_warnings");
+  assert.equal(plan.allocationMode, "demand_weighted");
+  assert.deepEqual(plan.assignments, {
+    agent_heavy: "boss",
+    agent_medium: "boss",
+  });
+  assert.deepEqual(
+    plan.skipped.map(({ agentId, reason }) => ({ agentId, reason })),
+    [
+      { agentId: "agent_light", reason: "projected_demand_exceeds_eligible_supply" },
+      { agentId: "agent_idle", reason: "projected_demand_exceeds_eligible_supply" },
+    ],
+  );
+  assert.equal(plan.perAccountLoad.find((entry) => entry.label === "boss")?.carriedDemandWeight, 200);
 });
 
 test("projectPoolCapacity flags high risk from blocked receipts and no-spare exhaustion", () => {
@@ -3275,6 +3419,12 @@ test("projectPoolCapacity flags high risk from blocked receipts and no-spare exh
         kind: "rebalance",
         status: "applied_with_warnings",
       },
+      {
+        observedAt: "2026-03-16T12:00:00Z",
+        kind: "rebalance",
+        status: "applied_with_warnings",
+        reason: "projected_demand_exceeds_eligible_supply",
+      },
     ],
     liveUsage: {
       boss: {
@@ -3282,13 +3432,31 @@ test("projectPoolCapacity flags high risk from blocked receipts and no-spare exh
         windows: [{ kind: "primary", usedPercent: 96 }],
       },
     },
+    agentDemand: {
+      agent_heavy: { source: "openclaw-session-tokens", demandWeight: 150 },
+      agent_cold: { source: "cold-start-equal-share", demandWeight: 75 },
+    },
+    lastApplyReceipt: {
+      perAccountLoad: [
+        {
+          label: "boss",
+          carriedAgentCount: 3,
+          carriedDemandWeight: 180,
+          targetDemandWeight: 120,
+        },
+      ],
+    },
   });
 
   assert.equal(projected.needMoreAccounts, true);
   assert.equal(projected.riskLevel, "high");
   assert.deepEqual(projected.basedOn.currentHighUtilizationLabels, ["boss"]);
+  assert.equal(projected.basedOn.knownAgentDemandCount, 1);
+  assert.equal(projected.basedOn.coldStartAgentCount, 1);
+  assert.equal(projected.byAccountPressure[0].label, "boss");
   assert.ok(projected.reasons.some((reason) => reason.includes("blocked receipt")));
   assert.ok(projected.reasons.some((reason) => reason.includes("no spare eligible capacity")));
+  assert.ok(projected.reasons.some((reason) => reason.includes("overflowed projected demand")));
 });
 
 test("rebalanceOpenclawPool reports applied_with_warnings when sync returns warnings", async () => {

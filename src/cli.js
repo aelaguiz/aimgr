@@ -23,6 +23,10 @@ const BROWSER_MODE_CHROME_PROFILE = "chrome-profile";
 const BROWSER_MODE_AGENT_BROWSER = "agent-browser";
 const DEFAULT_AGENTS_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
 const STATUS_RESET_TIMEZONE = "America/Chicago";
+const DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS = 7;
+const MIN_AGENT_DEMAND_WEIGHT = 1;
+const KEEP_CURRENT_DEMAND_RATIO_THRESHOLD = 0.15;
+const KEEP_CURRENT_OVERFLOW_WEIGHT_FACTOR = 0.25;
 const STATUS_RESET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: STATUS_RESET_TIMEZONE,
   month: "short",
@@ -984,6 +988,7 @@ function createEmptyState() {
     pool: {
       openaiCodex: {
         history: [],
+        agentDemand: {},
       },
     },
     targets: {
@@ -1105,6 +1110,30 @@ function normalizeAimgrStateFromJsonValue(raw, sourceDescription = "<memory>") {
   return { state: normalizeLegacyStateV0(raw), changed: true };
 }
 
+function parseTimestampLikeToMs(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeDemandWeight(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return fallback;
+  }
+  return numeric;
+}
+
+function roundDemandWeight(value) {
+  return Math.round(normalizeDemandWeight(value) * 100) / 100;
+}
+
 function pruneOpenaiCodexHistory(history) {
   const list = Array.isArray(history) ? history.filter((entry) => isObject(entry)) : [];
   const cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000;
@@ -1127,6 +1156,35 @@ function pruneOpenaiCodexHistory(history) {
     }
     return next;
   });
+}
+
+function pruneOpenaiCodexAgentDemand(agentDemand) {
+  const entries = isObject(agentDemand) ? agentDemand : {};
+  const next = {};
+  for (const [agentIdRaw, entry] of Object.entries(entries)) {
+    try {
+      const agentId = normalizeAgentId(agentIdRaw);
+      const current = isObject(entry) ? entry : {};
+      const updatedAtMs = parseTimestampLikeToMs(current.updatedAt);
+      const lookbackDays = Math.max(1, Math.round(normalizeDemandWeight(current.lookbackDays, DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS)));
+      const source =
+        current.source === "openclaw-session-tokens" || current.source === "cold-start-equal-share"
+          ? current.source
+          : "cold-start-equal-share";
+      next[agentId] = {
+        updatedAt: updatedAtMs !== null ? new Date(updatedAtMs).toISOString() : new Date(0).toISOString(),
+        lookbackDays,
+        source,
+        inputTokens: roundDemandWeight(current.inputTokens),
+        outputTokens: roundDemandWeight(current.outputTokens),
+        totalTokens: roundDemandWeight(current.totalTokens),
+        demandWeight: roundDemandWeight(Math.max(MIN_AGENT_DEMAND_WEIGHT, normalizeDemandWeight(current.demandWeight, MIN_AGENT_DEMAND_WEIGHT))),
+      };
+    } catch {
+      // Ignore malformed demand-ledger entries; the next rebalance refresh will restore them if needed.
+    }
+  }
+  return next;
 }
 
 function sanitizeForStatus(value) {
@@ -2543,6 +2601,7 @@ function ensureStateShape(state) {
   state.pool = isObject(state.pool) ? state.pool : {};
   state.pool.openaiCodex = isObject(state.pool.openaiCodex) ? state.pool.openaiCodex : {};
   state.pool.openaiCodex.history = pruneOpenaiCodexHistory(state.pool.openaiCodex.history);
+  state.pool.openaiCodex.agentDemand = pruneOpenaiCodexAgentDemand(state.pool.openaiCodex.agentDemand);
   state.targets = isObject(state.targets) ? state.targets : {};
   state.targets.openclaw = isObject(state.targets.openclaw) ? state.targets.openclaw : {};
   state.targets.openclaw.assignments = isObject(state.targets.openclaw.assignments)
@@ -2668,6 +2727,11 @@ function getAuthorityCodexImport(state) {
 function getOpenclawTargetState(state) {
   ensureStateShape(state);
   return state.targets.openclaw;
+}
+
+function getOpenclawAgentDemandState(state) {
+  ensureStateShape(state);
+  return state.pool.openaiCodex.agentDemand;
 }
 
 function getOpenclawAssignments(state) {
@@ -4455,6 +4519,161 @@ export function pickNextBestPoolLabel({ rankedCandidates }) {
   return candidates[0] ?? null;
 }
 
+function buildLabelCapacityInfo(snapshot) {
+  const { primaryUsedPct, secondaryUsedPct } = getCodexUsagePercents(snapshot);
+  const windows = Array.isArray(snapshot?.windows) ? snapshot.windows : [];
+  const secondaryRemainingPct = windows.length > 1 ? clampPercent(100 - secondaryUsedPct) : clampPercent(100 - primaryUsedPct);
+  const primaryRemainingPct = clampPercent(100 - primaryUsedPct);
+  const bottleneckUsedPct = Math.max(primaryUsedPct, windows.length > 1 ? secondaryUsedPct : primaryUsedPct);
+  const remainingPct = Math.min(primaryRemainingPct, secondaryRemainingPct);
+  return {
+    primaryUsedPct,
+    secondaryUsedPct,
+    primaryRemainingPct,
+    secondaryRemainingPct,
+    bottleneckUsedPct,
+    remainingPct,
+  };
+}
+
+export function readOpenclawAgentTokenUsage({
+  homeDir,
+  agentId,
+  now = Date.now(),
+  lookbackDays = DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS,
+}) {
+  const normalizedAgentId = normalizeAgentId(agentId);
+  const storePath = resolveOpenclawSessionsStorePath(homeDir, normalizedAgentId);
+  const existing = readJsonFile(storePath);
+  if (!existing) {
+    return {
+      agentId: normalizedAgentId,
+      storePath,
+      exists: false,
+      sessionsTotal: 0,
+      sessionsConsidered: 0,
+      sessionsWithTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      latestSessionAt: null,
+    };
+  }
+  if (!isObject(existing)) {
+    throw new Error(`OpenClaw sessions store is not an object map: ${storePath}`);
+  }
+
+  const snapshotNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const cutoffMs = snapshotNow - Math.max(1, Number(lookbackDays)) * 24 * 60 * 60 * 1000;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let sessionsConsidered = 0;
+  let sessionsWithTokens = 0;
+  let latestSessionAtMs = null;
+
+  for (const entry of Object.values(existing)) {
+    if (!isObject(entry)) continue;
+    const updatedAtMs = parseTimestampLikeToMs(entry.updatedAt);
+    if (updatedAtMs === null || updatedAtMs < cutoffMs) continue;
+    sessionsConsidered += 1;
+
+    const entryInputTokens = normalizeDemandWeight(entry.inputTokens, 0);
+    const entryOutputTokens = normalizeDemandWeight(entry.outputTokens, 0);
+    const rawTotalTokens = Number(entry.totalTokens);
+    const entryTotalTokens =
+      Number.isFinite(rawTotalTokens) && rawTotalTokens >= 0 ? rawTotalTokens : entryInputTokens + entryOutputTokens;
+    if (entryInputTokens <= 0 && entryOutputTokens <= 0 && entryTotalTokens <= 0) {
+      continue;
+    }
+
+    inputTokens += entryInputTokens;
+    outputTokens += entryOutputTokens;
+    totalTokens += entryTotalTokens;
+    sessionsWithTokens += 1;
+    if (latestSessionAtMs === null || updatedAtMs > latestSessionAtMs) {
+      latestSessionAtMs = updatedAtMs;
+    }
+  }
+
+  return {
+    agentId: normalizedAgentId,
+    storePath,
+    exists: true,
+    sessionsTotal: Object.keys(existing).length,
+    sessionsConsidered,
+    sessionsWithTokens,
+    inputTokens: roundDemandWeight(inputTokens),
+    outputTokens: roundDemandWeight(outputTokens),
+    totalTokens: roundDemandWeight(totalTokens),
+    latestSessionAt: latestSessionAtMs !== null ? new Date(latestSessionAtMs).toISOString() : null,
+  };
+}
+
+export function refreshOpenclawAgentDemandLedger({
+  state,
+  homeDir,
+  configuredAgents,
+  now = Date.now(),
+  lookbackDays = DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS,
+}) {
+  // AIM owns the durable demand ledger; OpenClaw session stores are read-only inputs.
+  // Do not rebalance directly from raw session files in multiple places or the allocator will drift.
+  ensureStateShape(state);
+  const snapshotNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const normalizedLookbackDays = Math.max(1, Math.round(normalizeDemandWeight(lookbackDays, DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS)));
+  const agentIds = [...new Set((Array.isArray(configuredAgents) ? configuredAgents : []).map((agentId) => normalizeAgentId(agentId)))].toSorted((a, b) =>
+    a.localeCompare(b),
+  );
+  const ledger = getOpenclawAgentDemandState(state);
+  const usageByAgent = new Map();
+  const observedWeights = [];
+
+  for (const agentId of agentIds) {
+    const usage = readOpenclawAgentTokenUsage({
+      homeDir,
+      agentId,
+      now: snapshotNow,
+      lookbackDays: normalizedLookbackDays,
+    });
+    usageByAgent.set(agentId, usage);
+    if (usage.totalTokens > 0) {
+      observedWeights.push(usage.totalTokens);
+    }
+  }
+
+  const fallbackDemandWeight = Math.max(
+    MIN_AGENT_DEMAND_WEIGHT,
+    observedWeights.length > 0
+      ? observedWeights.reduce((sum, weight) => sum + weight, 0) / observedWeights.length
+      : MIN_AGENT_DEMAND_WEIGHT,
+  );
+  const allocationMode = observedWeights.length > 0 ? "demand_weighted" : "cold_start_equal_share";
+  const updatedAt = new Date(snapshotNow).toISOString();
+
+  for (const agentId of agentIds) {
+    const usage = usageByAgent.get(agentId);
+    const source = usage && usage.totalTokens > 0 ? "openclaw-session-tokens" : "cold-start-equal-share";
+    ledger[agentId] = {
+      updatedAt,
+      lookbackDays: normalizedLookbackDays,
+      source,
+      inputTokens: roundDemandWeight(usage?.inputTokens ?? 0),
+      outputTokens: roundDemandWeight(usage?.outputTokens ?? 0),
+      totalTokens: roundDemandWeight(usage?.totalTokens ?? 0),
+      demandWeight: roundDemandWeight(source === "openclaw-session-tokens" ? usage.totalTokens : fallbackDemandWeight),
+    };
+  }
+
+  return {
+    allocationMode,
+    lookbackDays: normalizedLookbackDays,
+    observedAgentCount: observedWeights.length,
+    coldStartAgentCount: agentIds.length - observedWeights.length,
+    demandByAgent: Object.fromEntries(agentIds.map((agentId) => [agentId, ledger[agentId]])),
+  };
+}
+
 function discoverConfiguredOpenclawCodexAgents({ agentsList, exclusions }) {
   const excluded = isObject(exclusions) ? exclusions : {};
   return (Array.isArray(agentsList) ? agentsList : [])
@@ -4475,60 +4694,313 @@ function discoverConfiguredOpenclawCodexAgents({ agentsList, exclusions }) {
     .toSorted((a, b) => a.localeCompare(b));
 }
 
-export function planOpenclawRebalance({ configuredAgents, currentAssignments, eligibleLabels, usage, now }) {
+function buildWeightedRebalanceSupply({ labels, usage, currentAssignments, demandByAgent, allocationMode }) {
+  const normalizedLabels = [...new Set((Array.isArray(labels) ? labels : []).map((label) => normalizeLabel(label)))];
+  const existingAssignments = isObject(currentAssignments) ? currentAssignments : {};
+  const demand = isObject(demandByAgent) ? demandByAgent : {};
+  const currentLoadByLabel = Object.fromEntries(normalizedLabels.map((label) => [label, 0]));
+  const calibrationRates = [];
+  const byLabel = {};
+
+  for (const [agentIdRaw, labelRaw] of Object.entries(existingAssignments)) {
+    if (typeof labelRaw !== "string") continue;
+    const label = normalizeLabel(labelRaw);
+    if (!Object.hasOwn(currentLoadByLabel, label)) continue;
+    const agentId = normalizeAgentId(agentIdRaw);
+    currentLoadByLabel[label] += normalizeDemandWeight(demand[agentId]?.demandWeight, MIN_AGENT_DEMAND_WEIGHT);
+  }
+
+  for (const label of normalizedLabels) {
+    const capacity = buildLabelCapacityInfo(usage?.[label] ?? null);
+    const currentLoadWeight = normalizeDemandWeight(currentLoadByLabel[label], 0);
+    const calibrationRate =
+      currentLoadWeight > 0 && capacity.bottleneckUsedPct > 0 ? currentLoadWeight / capacity.bottleneckUsedPct : null;
+    if (calibrationRate !== null && Number.isFinite(calibrationRate) && calibrationRate > 0) {
+      calibrationRates.push(calibrationRate);
+    }
+    byLabel[label] = {
+      ...capacity,
+      currentLoadWeight: roundDemandWeight(currentLoadWeight),
+      calibrationRate,
+      capacityBudgetWeight: null,
+      targetUnits: Math.max(0, capacity.remainingPct),
+    };
+  }
+
+  const fleetCalibrationRate =
+    calibrationRates.length > 0 ? calibrationRates.reduce((sum, rate) => sum + rate, 0) / calibrationRates.length : null;
+  const canBudgetDemand = allocationMode === "demand_weighted" && fleetCalibrationRate !== null;
+
+  if (canBudgetDemand) {
+    for (const label of normalizedLabels) {
+      const entry = byLabel[label];
+      const rate = entry.calibrationRate ?? fleetCalibrationRate;
+      const capacityBudgetWeight = rate !== null ? Math.max(0, entry.remainingPct * rate) : 0;
+      entry.capacityBudgetWeight = roundDemandWeight(capacityBudgetWeight);
+      entry.targetUnits = entry.capacityBudgetWeight;
+    }
+  }
+
+  return {
+    byLabel,
+    budgetingEnabled: canBudgetDemand,
+  };
+}
+
+function buildWeightedRebalanceCandidate({
+  label,
+  supply,
+  assignedDemandByLabel,
+  assignedCounts,
+  agentWeight,
+}) {
+  const currentAssignedDemand = normalizeDemandWeight(assignedDemandByLabel[label], 0);
+  const targetDemandWeight = normalizeDemandWeight(supply.targetDemandWeight, 0);
+  const projectedDemandWeight = currentAssignedDemand + agentWeight;
+  const overflowWeight = Math.max(0, projectedDemandWeight - targetDemandWeight);
+  const projectedDemandRatio =
+    targetDemandWeight > 0 ? projectedDemandWeight / targetDemandWeight : (projectedDemandWeight > 0 ? Number.POSITIVE_INFINITY : 0);
+  const remainingBudgetWeight =
+    supply.capacityBudgetWeight === null ? Number.POSITIVE_INFINITY : Math.max(0, supply.capacityBudgetWeight - currentAssignedDemand);
+
+  return {
+    label,
+    assignedCount: Number.isFinite(Number(assignedCounts[label])) ? Number(assignedCounts[label]) : 0,
+    currentAssignedDemandWeight: roundDemandWeight(currentAssignedDemand),
+    targetDemandWeight: roundDemandWeight(targetDemandWeight),
+    projectedDemandWeight: roundDemandWeight(projectedDemandWeight),
+    overflowWeight: roundDemandWeight(overflowWeight),
+    projectedDemandRatio,
+    remainingBudgetWeight: Number.isFinite(remainingBudgetWeight) ? roundDemandWeight(remainingBudgetWeight) : null,
+    capacityBudgetWeight: supply.capacityBudgetWeight,
+    primaryRemainingPct: supply.primaryRemainingPct,
+    secondaryRemainingPct: supply.secondaryRemainingPct,
+    keptCurrent: false,
+    reasons: [],
+  };
+}
+
+function shouldKeepCurrentWeightedAssignment({ currentCandidate, bestCandidate, agentWeight }) {
+  if (!currentCandidate || !bestCandidate) return false;
+  return (
+    currentCandidate.overflowWeight <= bestCandidate.overflowWeight + agentWeight * KEEP_CURRENT_OVERFLOW_WEIGHT_FACTOR
+    && currentCandidate.projectedDemandRatio <= bestCandidate.projectedDemandRatio + KEEP_CURRENT_DEMAND_RATIO_THRESHOLD
+  );
+}
+
+function buildWeightedPerAccountLoad({ labels, assignments, assignedDemandByLabel, targetDemandByLabel, supplyByLabel }) {
+  const agentsByLabel = Object.fromEntries((Array.isArray(labels) ? labels : []).map((label) => [label, []]));
+  for (const [agentIdRaw, labelRaw] of Object.entries(isObject(assignments) ? assignments : {})) {
+    const label = normalizeLabel(labelRaw);
+    if (!Object.hasOwn(agentsByLabel, label)) continue;
+    agentsByLabel[label].push(normalizeAgentId(agentIdRaw));
+  }
+
+  return Object.entries(agentsByLabel)
+    .map(([label, agentIds]) => {
+      const supply = supplyByLabel[label] ?? {};
+      return {
+        label,
+        assignedAgents: agentIds.toSorted((a, b) => a.localeCompare(b)),
+        carriedAgentCount: agentIds.length,
+        carriedDemandWeight: roundDemandWeight(assignedDemandByLabel[label] ?? 0),
+        targetDemandWeight: roundDemandWeight(targetDemandByLabel[label] ?? 0),
+        ...(supply.capacityBudgetWeight !== null ? { capacityBudgetWeight: roundDemandWeight(supply.capacityBudgetWeight ?? 0) } : {}),
+        primaryRemainingPct: supply.primaryRemainingPct ?? 0,
+        secondaryRemainingPct: supply.secondaryRemainingPct ?? 0,
+      };
+    })
+    .toSorted((a, b) => a.label.localeCompare(b.label));
+}
+
+export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignments, eligibleLabels, usage, agentDemand, now }) {
+  // This is intentionally not the same primitive as Codex "next best label".
+  // Rebalance is many-to-one demand allocation across remaining account headroom, with low-churn hysteresis.
   const agentIds = [...new Set((Array.isArray(configuredAgents) ? configuredAgents : []).map((agentId) => normalizeAgentId(agentId)))].toSorted((a, b) =>
     a.localeCompare(b),
   );
   const existingAssignments = isObject(currentAssignments) ? currentAssignments : {};
   const labels = [...new Set((Array.isArray(eligibleLabels) ? eligibleLabels : []).map((label) => normalizeLabel(label)))];
-  const availableLabels = [...labels];
   const nextAssignments = {};
   const moved = [];
   const unchanged = [];
   const skipped = [];
+  const blockers = [];
   const assignedCounts = Object.fromEntries(labels.map((label) => [label, 0]));
+  const assignedDemandByLabel = Object.fromEntries(labels.map((label) => [label, 0]));
+  const demandLedger = isObject(agentDemand) ? agentDemand : {};
+  const allocationMode = Object.values(demandLedger).some((entry) => entry?.source === "openclaw-session-tokens")
+    ? "demand_weighted"
+    : "cold_start_equal_share";
 
-  for (const agentId of agentIds) {
-    if (availableLabels.length === 0) {
+  if (labels.length === 0) {
+    for (const agentId of agentIds) {
       skipped.push({ agentId, reason: "no_eligible_pool_account" });
-      continue;
     }
+    blockers.push({ reason: "no_eligible_pool_account" });
+    return {
+      assignments: nextAssignments,
+      moved,
+      unchanged,
+      skipped,
+      blockers,
+      status: "blocked",
+      allocationMode,
+      perAccountLoad: [],
+    };
+  }
 
+  const demandByAgent = Object.fromEntries(
+    agentIds.map((agentId) => {
+      const entry = isObject(demandLedger[agentId]) ? demandLedger[agentId] : {};
+      return [
+        agentId,
+        {
+          source:
+            entry.source === "openclaw-session-tokens" || entry.source === "cold-start-equal-share"
+              ? entry.source
+              : "cold-start-equal-share",
+          demandWeight: roundDemandWeight(Math.max(MIN_AGENT_DEMAND_WEIGHT, normalizeDemandWeight(entry.demandWeight, MIN_AGENT_DEMAND_WEIGHT))),
+        },
+      ];
+    }),
+  );
+  const supply = buildWeightedRebalanceSupply({
+    labels,
+    usage,
+    currentAssignments: existingAssignments,
+    demandByAgent,
+    allocationMode,
+  });
+  const targetUnitsTotal = labels.reduce((sum, label) => sum + normalizeDemandWeight(supply.byLabel[label]?.targetUnits, 0), 0);
+  if (targetUnitsTotal <= 0) {
+    for (const agentId of agentIds) {
+      const demand = demandByAgent[agentId];
+      skipped.push({
+        agentId,
+        reason: "projected_demand_exceeds_eligible_supply",
+        demandWeight: demand.demandWeight,
+        demandSource: demand.source,
+      });
+    }
+    blockers.push({ reason: "projected_demand_exceeds_eligible_supply" });
+    return {
+      assignments: nextAssignments,
+      moved,
+      unchanged,
+      skipped,
+      blockers,
+      status: "blocked",
+      allocationMode,
+      perAccountLoad: [],
+    };
+  }
+
+  const totalDemandWeight = agentIds.reduce((sum, agentId) => sum + demandByAgent[agentId].demandWeight, 0);
+  const targetDemandByLabel = Object.fromEntries(
+    labels.map((label) => [
+      label,
+      totalDemandWeight <= 0
+        ? 0
+        : (normalizeDemandWeight(supply.byLabel[label]?.targetUnits, 0) / targetUnitsTotal) * totalDemandWeight,
+    ]),
+  );
+  const agentIdsByDemand = [...agentIds].sort((a, b) => {
+    const aDemand = demandByAgent[a].demandWeight;
+    const bDemand = demandByAgent[b].demandWeight;
+    if (aDemand !== bDemand) return bDemand - aDemand;
+    const aCurrent = typeof existingAssignments[a] === "string" && labels.includes(normalizeLabel(existingAssignments[a])) ? 1 : 0;
+    const bCurrent = typeof existingAssignments[b] === "string" && labels.includes(normalizeLabel(existingAssignments[b])) ? 1 : 0;
+    if (aCurrent !== bCurrent) return bCurrent - aCurrent;
+    return a.localeCompare(b);
+  });
+
+  for (const agentId of agentIdsByDemand) {
     const currentLabelRaw = typeof existingAssignments[agentId] === "string" ? existingAssignments[agentId] : null;
     const normalizedCurrentLabel = currentLabelRaw ? normalizeLabel(currentLabelRaw) : null;
-    const currentLabel =
-      normalizedCurrentLabel && availableLabels.includes(normalizedCurrentLabel) ? normalizedCurrentLabel : null;
-    const rankedCandidates = rankPoolCandidates({
-      labels: availableLabels,
-      usage,
-      currentLabel,
-      assignedCounts,
-      now,
-    });
-    const selection = pickNextBestPoolLabel({ rankedCandidates });
+    const currentLabel = normalizedCurrentLabel && labels.includes(normalizedCurrentLabel) ? normalizedCurrentLabel : null;
+    const demand = demandByAgent[agentId];
+    const candidates = labels
+      .map((label) =>
+        buildWeightedRebalanceCandidate({
+          label,
+          supply: {
+            ...supply.byLabel[label],
+            targetDemandWeight: targetDemandByLabel[label],
+          },
+          assignedDemandByLabel,
+          assignedCounts,
+          agentWeight: demand.demandWeight,
+        }),
+      )
+      .filter((candidate) => candidate.capacityBudgetWeight === null || (candidate.remainingBudgetWeight ?? 0) + 1e-9 >= demand.demandWeight)
+      .toSorted((a, b) => {
+        if (a.overflowWeight !== b.overflowWeight) return a.overflowWeight - b.overflowWeight;
+        if (a.projectedDemandRatio !== b.projectedDemandRatio) return a.projectedDemandRatio - b.projectedDemandRatio;
+        if (a.primaryRemainingPct !== b.primaryRemainingPct) return b.primaryRemainingPct - a.primaryRemainingPct;
+        if (a.secondaryRemainingPct !== b.secondaryRemainingPct) return b.secondaryRemainingPct - a.secondaryRemainingPct;
+        if (a.assignedCount !== b.assignedCount) return a.assignedCount - b.assignedCount;
+        return a.label.localeCompare(b.label);
+      });
+    const bestCandidate = candidates[0] ?? null;
+    const currentCandidate = candidates.find((candidate) => candidate.label === currentLabel) ?? null;
+    let selection = bestCandidate;
+    if (shouldKeepCurrentWeightedAssignment({ currentCandidate, bestCandidate, agentWeight: demand.demandWeight })) {
+      currentCandidate.keptCurrent = true;
+      currentCandidate.reasons.push("within_weighted_hysteresis");
+      selection = currentCandidate;
+    }
+
     if (!selection) {
-      skipped.push({ agentId, reason: "no_eligible_pool_account" });
+      skipped.push({
+        agentId,
+        reason: "projected_demand_exceeds_eligible_supply",
+        demandWeight: demand.demandWeight,
+        demandSource: demand.source,
+      });
       continue;
     }
 
     nextAssignments[agentId] = selection.label;
     assignedCounts[selection.label] = (assignedCounts[selection.label] ?? 0) + 1;
-    const selectedIdx = availableLabels.indexOf(selection.label);
-    if (selectedIdx >= 0) {
-      availableLabels.splice(selectedIdx, 1);
-    }
+    assignedDemandByLabel[selection.label] = roundDemandWeight(
+      normalizeDemandWeight(assignedDemandByLabel[selection.label], 0) + demand.demandWeight,
+    );
 
     if (currentLabel === selection.label) {
-      unchanged.push({ agentId, label: selection.label });
+      unchanged.push({
+        agentId,
+        label: selection.label,
+        reason: selection.keptCurrent ? "kept_current_hysteresis" : "weighted_best_fit",
+        demandWeight: demand.demandWeight,
+        demandSource: demand.source,
+        targetDemandWeight: selection.targetDemandWeight,
+        projectedDemandWeight: selection.projectedDemandWeight,
+      });
     } else {
-      moved.push({ agentId, from: currentLabel ?? null, to: selection.label, reason: selection.keptCurrent ? "kept_current" : "next_best" });
+      moved.push({
+        agentId,
+        from: normalizedCurrentLabel ?? null,
+        to: selection.label,
+        reason: selection.keptCurrent ? "kept_current_hysteresis" : "weighted_best_fit",
+        demandWeight: demand.demandWeight,
+        demandSource: demand.source,
+        targetDemandWeight: selection.targetDemandWeight,
+        projectedDemandWeight: selection.projectedDemandWeight,
+      });
     }
   }
 
   let status = "applied";
-  if (agentIds.length === 0 || skipped.length === agentIds.length) {
+  if (agentIds.length === 0) {
+    status = "noop";
+  } else if (skipped.length > 0 && skipped.length === agentIds.length) {
+    const blockedReason = skipped.every((entry) => entry.reason === "projected_demand_exceeds_eligible_supply")
+      ? "projected_demand_exceeds_eligible_supply"
+      : "no_eligible_pool_account";
+    blockers.push({ reason: blockedReason });
     status = "blocked";
-  } else if (moved.length === 0 && skipped.length === 0) {
+  } else if (agentIds.length > 0 && moved.length === 0 && skipped.length === 0) {
     status = "noop";
   } else if (skipped.length > 0) {
     status = "applied_with_warnings";
@@ -4539,8 +5011,21 @@ export function planOpenclawRebalance({ configuredAgents, currentAssignments, el
     moved,
     unchanged,
     skipped,
+    blockers,
     status,
+    allocationMode,
+    perAccountLoad: buildWeightedPerAccountLoad({
+      labels,
+      assignments: nextAssignments,
+      assignedDemandByLabel,
+      targetDemandByLabel,
+      supplyByLabel: supply.byLabel,
+    }),
   };
+}
+
+export function planOpenclawRebalance(params) {
+  return planWeightedOpenclawRebalance(params);
 }
 
 function appendOpenaiCodexHistory(state, entries) {
@@ -4570,7 +5055,15 @@ function buildExhaustionHistoryEntries({ state, usage, eligibleLabels, observedA
   return entries;
 }
 
-export function projectPoolCapacity({ history, liveUsage, horizonDays = 7, lookbackDays = 14, now }) {
+export function projectPoolCapacity({
+  history,
+  liveUsage,
+  agentDemand,
+  lastApplyReceipt,
+  horizonDays = 7,
+  lookbackDays = 14,
+  now,
+}) {
   const snapshotNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
   const cutoffMs = snapshotNow - Number(lookbackDays) * 24 * 60 * 60 * 1000;
   const events = (Array.isArray(history) ? history : []).filter((entry) => {
@@ -4580,6 +5073,7 @@ export function projectPoolCapacity({ history, liveUsage, horizonDays = 7, lookb
   });
 
   const blockedNoEligible = events.filter((entry) => entry.status === "blocked" && entry.reason === "no_eligible_pool_account").length;
+  const demandOverflowReceipts = events.filter((entry) => entry.reason === "projected_demand_exceeds_eligible_supply").length;
   const warningReceipts = events.filter((entry) => typeof entry.status === "string" && entry.status.endsWith("_with_warnings")).length;
   const spareExhaustions = events.filter((entry) => entry.kind === "exhaustion" && entry.hadSpareEligibleCapacity === true).length;
   const noSpareExhaustions = events.filter((entry) => entry.kind === "exhaustion" && entry.hadSpareEligibleCapacity === false).length;
@@ -4587,8 +5081,42 @@ export function projectPoolCapacity({ history, liveUsage, horizonDays = 7, lookb
     .filter(([, snapshot]) => isUsageSnapshotExhausted(snapshot))
     .map(([label]) => label)
     .toSorted((a, b) => a.localeCompare(b));
+  const agentDemandEntries = Object.values(isObject(agentDemand) ? agentDemand : {});
+  const knownAgentDemandCount = agentDemandEntries.filter((entry) => entry?.source === "openclaw-session-tokens").length;
+  const coldStartAgentCount = agentDemandEntries.filter((entry) => entry?.source === "cold-start-equal-share").length;
+  const perAccountLoad = Array.isArray(lastApplyReceipt?.perAccountLoad) ? lastApplyReceipt.perAccountLoad : [];
+  const byAccountPressure = perAccountLoad
+    .map((entry) => {
+      if (!isObject(entry) || typeof entry.label !== "string") return null;
+      const label = normalizeLabel(entry.label);
+      const carriedDemandWeight = roundDemandWeight(entry.carriedDemandWeight);
+      const targetDemandWeight = roundDemandWeight(entry.targetDemandWeight);
+      const pressureRatio =
+        targetDemandWeight > 0 ? roundDemandWeight(carriedDemandWeight / targetDemandWeight) : null;
+      const capacity = buildLabelCapacityInfo(liveUsage?.[label] ?? null);
+      return {
+        label,
+        carriedAgentCount: Math.max(0, Math.round(normalizeDemandWeight(entry.carriedAgentCount, 0))),
+        carriedDemandWeight,
+        targetDemandWeight,
+        ...(typeof entry.capacityBudgetWeight === "number"
+          ? { capacityBudgetWeight: roundDemandWeight(entry.capacityBudgetWeight) }
+          : {}),
+        pressureRatio,
+        overTargetDemandWeight: roundDemandWeight(Math.max(0, carriedDemandWeight - targetDemandWeight)),
+        primaryRemainingPct: capacity.primaryRemainingPct,
+        secondaryRemainingPct: capacity.secondaryRemainingPct,
+      };
+    })
+    .filter(Boolean)
+    .toSorted((a, b) => {
+      const aRatio = Number.isFinite(a.pressureRatio) ? a.pressureRatio : -1;
+      const bRatio = Number.isFinite(b.pressureRatio) ? b.pressureRatio : -1;
+      if (aRatio !== bRatio) return bRatio - aRatio;
+      return a.label.localeCompare(b.label);
+    });
 
-  const needMoreAccounts = blockedNoEligible >= 1 || noSpareExhaustions >= 2;
+  const needMoreAccounts = blockedNoEligible >= 1 || noSpareExhaustions >= 2 || demandOverflowReceipts >= 1;
   let riskLevel = "low";
   if (needMoreAccounts) {
     riskLevel = "high";
@@ -4598,9 +5126,15 @@ export function projectPoolCapacity({ history, liveUsage, horizonDays = 7, lookb
 
   const reasons = [];
   if (blockedNoEligible > 0) reasons.push(`${blockedNoEligible} blocked receipt(s) reported no eligible pool account.`);
+  if (demandOverflowReceipts > 0) reasons.push(`${demandOverflowReceipts} recent rebalance receipt(s) overflowed projected demand beyond eligible supply.`);
   if (noSpareExhaustions > 0) reasons.push(`${noSpareExhaustions} exhaustion event(s) occurred with no spare eligible capacity.`);
   if (spareExhaustions > 0) reasons.push(`${spareExhaustions} exhaustion event(s) occurred but spare eligible capacity existed.`);
   if (warningReceipts > 0) reasons.push(`${warningReceipts} recent receipt(s) completed with warnings.`);
+  for (const pressure of byAccountPressure.filter((entry) => entry.overTargetDemandWeight > 0)) {
+    reasons.push(
+      `${pressure.label} is carrying ${pressure.carriedAgentCount} agent(s) at ${pressure.carriedDemandWeight} demand weight, above its ${pressure.targetDemandWeight} target.`,
+    );
+  }
 
   return {
     needMoreAccounts,
@@ -4610,11 +5144,15 @@ export function projectPoolCapacity({ history, liveUsage, horizonDays = 7, lookb
       horizonDays,
       lookbackDays,
       blockedNoEligible,
+      demandOverflowReceipts,
       warningReceipts,
       spareExhaustions,
       noSpareExhaustions,
       currentHighUtilizationLabels,
+      knownAgentDemandCount,
+      coldStartAgentCount,
     },
+    ...(byAccountPressure.length > 0 ? { byAccountPressure } : {}),
   };
 }
 
@@ -5014,6 +5552,8 @@ async function buildStatusView({ statePath, state, homeDir }) {
   const capacity = projectPoolCapacity({
     history: state.pool.openaiCodex.history,
     liveUsage: usageByProvider[OPENAI_CODEX_PROVIDER],
+    agentDemand: state.pool.openaiCodex.agentDemand,
+    lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
     now: Date.now(),
   });
 
@@ -5132,6 +5672,15 @@ function renderStatusText(view) {
     lines.push(
       `Last rebalance: status=${view.openclaw.lastApplyReceipt.status} observed=${view.openclaw.lastApplyReceipt.observedAt || "unknown"}`,
     );
+    const perAccountLoad = Array.isArray(view.openclaw?.lastApplyReceipt?.perAccountLoad)
+      ? view.openclaw.lastApplyReceipt.perAccountLoad
+      : [];
+    if (perAccountLoad.length > 0) {
+      const spread = perAccountLoad
+        .map((entry) => `${entry.label}=${entry.carriedAgentCount} agent(s)/${entry.carriedDemandWeight}w`)
+        .join(", ");
+      lines.push(`Spread: mode=${view.openclaw.lastApplyReceipt.allocationMode || "unknown"} ${spread}`);
+    }
   }
 
   if (view.codexCli) {
@@ -6715,28 +7264,39 @@ export async function rebalanceOpenclawPool(
     agentsList,
     exclusions: getOpenclawExclusions(state),
   });
-  const plan = planOpenclawRebalance({
+  const demandRefresh = refreshOpenclawAgentDemandLedger({
+    state,
+    homeDir,
+    configuredAgents,
+    now: Date.parse(observedAt),
+    lookbackDays: DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS,
+  });
+  const plan = planWeightedOpenclawRebalance({
     configuredAgents,
     currentAssignments: getOpenclawAssignments(state),
     eligibleLabels: poolStatus.eligibleLabels,
     usage: usageByLabel,
+    agentDemand: demandRefresh.demandByAgent,
     now: Date.parse(observedAt),
   });
 
   target.lastRebalancedAt = observedAt;
 
   if (plan.status === "blocked") {
+    const blockerReason = typeof plan.blockers?.[0]?.reason === "string" ? plan.blockers[0].reason : "no_eligible_pool_account";
     const receipt = {
       action: "rebalance_openclaw",
       status: "blocked",
       observedAt,
       cleanupMode: null,
+      allocationMode: plan.allocationMode,
       assignments: sanitizeForStatus(getOpenclawAssignments(state)),
       moved: [],
       unchanged: [],
       skipped: plan.skipped,
+      perAccountLoad: plan.perAccountLoad,
       warnings: [],
-      blockers: [{ reason: "no_eligible_pool_account" }],
+      blockers: plan.blockers,
     };
     target.lastApplyReceipt = receipt;
     appendOpenaiCodexHistory(state, [
@@ -6744,7 +7304,7 @@ export async function rebalanceOpenclawPool(
         observedAt,
         kind: "rebalance",
         status: "blocked",
-        reason: "no_eligible_pool_account",
+        reason: blockerReason,
         hadSpareEligibleCapacity: false,
       },
     ]);
@@ -6765,6 +7325,7 @@ export async function rebalanceOpenclawPool(
     action: "rebalance_openclaw",
     status,
     observedAt,
+    allocationMode: plan.allocationMode,
     cleanupMode:
       typeof synced.sessions?.mode === "string"
         ? synced.sessions.mode
@@ -6775,6 +7336,7 @@ export async function rebalanceOpenclawPool(
     moved: plan.moved,
     unchanged: plan.unchanged,
     skipped: plan.skipped,
+    perAccountLoad: plan.perAccountLoad,
     warnings,
     blockers: [],
   };
@@ -6785,7 +7347,12 @@ export async function rebalanceOpenclawPool(
       kind: "rebalance",
       status,
       hadSpareEligibleCapacity: poolStatus.eligibleLabels.length > 1,
-      reason: status === "noop" ? "unchanged_assignments" : "rebalanced",
+      reason:
+        plan.skipped.some((entry) => entry.reason === "projected_demand_exceeds_eligible_supply")
+          ? "projected_demand_exceeds_eligible_supply"
+          : status === "noop"
+            ? "unchanged_assignments"
+            : "rebalanced",
     },
   ]);
 
