@@ -2152,7 +2152,16 @@ test("status --json surfaces receipt and projection branches", async () => {
         lastApplyReceipt: {
           action: "rebalance_openclaw",
           status: "applied_with_warnings",
+          allocationMode: "demand_weighted",
           observedAt: new Date().toISOString(),
+          perAccountLoad: [
+            {
+              label: "boss",
+              carriedAgentCount: 3,
+              carriedDemandWeight: 180,
+              targetDemandWeight: 120,
+            },
+          ],
           warnings: [{ kind: "stale_pin" }],
           blockers: [],
         },
@@ -2171,6 +2180,16 @@ test("status --json surfaces receipt and projection branches", async () => {
     },
     pool: {
       openaiCodex: {
+        agentDemand: {
+          agent_heavy: {
+            source: "openclaw-session-tokens",
+            demandWeight: 150,
+          },
+          agent_cold: {
+            source: "cold-start-equal-share",
+            demandWeight: 75,
+          },
+        },
         history: [
           {
             observedAt: new Date().toISOString(),
@@ -2220,10 +2239,24 @@ test("status --json surfaces receipt and projection branches", async () => {
     const out = await runCli(["status", "--json", "--home", home]);
     const parsed = JSON.parse(out);
     assert.equal(parsed.openclaw.lastApplyReceipt.status, "applied_with_warnings");
+    assert.equal(parsed.openclaw.lastApplyReceipt.allocationMode, "demand_weighted");
+    assert.equal(parsed.openclaw.lastApplyReceipt.perAccountLoad[0].label, "boss");
+    assert.equal(parsed.openclaw.lastApplyReceipt.perAccountLoad[0].carriedAgentCount, 3);
+    assert.equal(parsed.openclaw.lastApplyReceipt.perAccountLoad[0].carriedDemandWeight, 180);
     assert.equal(parsed.codexCli.lastSelectionReceipt.status, "activated_with_warnings");
     assert.equal(parsed.capacity.needMoreAccounts, true);
     assert.equal(parsed.capacity.riskLevel, "high");
     assert.deepEqual(parsed.capacity.basedOn.currentHighUtilizationLabels, ["boss"]);
+    assert.equal(parsed.capacity.basedOn.knownAgentDemandCount, 1);
+    assert.equal(parsed.capacity.basedOn.coldStartAgentCount, 1);
+    assert.equal(parsed.capacity.byAccountPressure[0].label, "boss");
+    assert.equal(parsed.capacity.byAccountPressure[0].carriedAgentCount, 3);
+    assert.equal(parsed.capacity.byAccountPressure[0].carriedDemandWeight, 180);
+    assert.equal(parsed.capacity.byAccountPressure[0].overTargetDemandWeight, 60);
+
+    const textOut = await runCli(["status", "--home", home]);
+    assert.match(textOut, /Last rebalance: status=applied_with_warnings observed=/);
+    assert.match(textOut, /Spread: mode=demand_weighted boss=3 agent\(s\)\/180w/);
   } finally {
     globalThis.fetch = origFetch;
   }
