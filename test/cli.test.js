@@ -435,7 +435,7 @@ test("status warns when tokens are expired or rejected", async () => {
   }
 });
 
-test("status text shows usage reset timestamps for each window", async () => {
+test("status defaults to the pool panel and keeps reset countdowns behind --accounts", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const nowMs = Date.parse("2026-03-17T20:15:21Z");
@@ -515,11 +515,25 @@ test("status text shows usage reset timestamps for each window", async () => {
 
   try {
     const out = await runCli(["status", "--home", home]);
-    assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
-    assert.match(out, /boss\s+ready\s+aim-profile\s+\S+\s+10%\s+1\.5h\s+20%\s+20\.8h\s+openai-codex/);
-    assert.match(out, /claude\s+ready\s+aim-profile\s+\S+\s+12%\s+1\.9h\s+34%\s+27\.7h\s+anthropic/);
+    assert.match(out, /POOL NOW/);
+    assert.match(out, /WINDOWS/);
+    assert.match(out, /PROJECTION @ CURRENT RATE/);
+    assert.doesNotMatch(out, /ACCOUNTS \(/);
     assert.doesNotMatch(out, /Usage detail/);
     assert.doesNotMatch(out, /usage=5h/);
+
+    const accountsOut = await runCli(["status", "--accounts", "--home", home]);
+    assert.match(accountsOut, /ACCOUNTS \(2\)/);
+    assert.match(accountsOut, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
+    assert.match(accountsOut, /boss\s+ready\s+aim-profile\s+\S+\s+10%\s+1\.5h\s+20%\s+20\.8h\s+openai-codex/);
+    assert.match(accountsOut, /claude\s+ready\s+aim-profile\s+\S+\s+12%\s+1\.9h\s+34%\s+27\.7h\s+anthropic/);
+
+    const compactOut = await runCli(["status", "--compact", "--home", home]);
+    assert.match(compactOut, /^load=/);
+    assert.match(compactOut, /spare=/);
+    assert.match(compactOut, /5h_floor=/);
+    assert.match(compactOut, /7d_floor=/);
+    assert.match(compactOut, /eta=/);
   } finally {
     Date.now = origDateNow;
     globalThis.fetch = origFetch;
@@ -2210,8 +2224,8 @@ test("status text shows manual-callback and browser-managed login modes", async 
     pool: { openaiCodex: { history: [] } },
   });
 
-  const out = await runCli(["status", "--home", home]);
-  assert.match(out, /Accounts \(2\)/);
+  const out = await runCli(["status", "--accounts", "--home", home]);
+  assert.match(out, /ACCOUNTS \(2\)/);
   assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
   assert.match(out, /claude\s+reauth\s+aim-profile\s+--\s+--\s+--\s+--\s+--\s+anthropic\s+missing_credentials/);
   assert.match(out, /manual_label\s+reauth\s+manual-callback\s+--\s+--\s+--\s+--\s+--\s+openai-codex\s+missing_credentials/);
@@ -2382,12 +2396,52 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.equal(parsed.capacity.byAccountPressure[0].carriedAgentCount, 3);
     assert.equal(parsed.capacity.byAccountPressure[0].carriedDemandWeight, 180);
     assert.equal(parsed.capacity.byAccountPressure[0].overTargetDemandWeight, 60);
+    assert.equal(parsed.pool_now.ready_accounts, 1);
+    assert.equal(parsed.pool_now.total_accounts, 1);
+    assert.equal(parsed.pool_now.active_agents, 3);
+    assert.equal(parsed.pool_now.total_agents, 3);
+    assert.equal(parsed.pool_now.assigned_load_w, 180);
+    assert.equal(parsed.pool_now.usable_capacity_w, 120);
+    assert.equal(parsed.pool_now.pool_load_pct, 150);
+    assert.equal(parsed.pool_now.spare_w, 0);
+    assert.equal(parsed.pool_now.spare_heavy, 0);
+    assert.equal(parsed.pool_now.spare_medium, 0);
+    assert.equal(parsed.pool_now.spare_light, 0);
+    assert.equal(parsed.windows.pool_5h_used_pct, 96);
+    assert.equal(parsed.windows.floor_5h_label, "boss");
+    assert.equal(parsed.windows.floor_7d_label, "boss");
+    assert.equal(parsed.pressure.recent_overflows_14d, 0);
+    assert.equal(parsed.pressure.rebalances_blocked_14d, 1);
+    assert.equal(parsed.pressure.rebalances_warn_14d, 1);
+    assert.equal(parsed.pressure.cold_start_agents, 1);
+    assert.equal(parsed.pressure.over_target_accounts, 1);
+    assert.equal(parsed.projection.first_constraint, "5h");
+    assert.equal(parsed.projection.first_constraint_label, "boss");
+    assert.equal(parsed.projection.overflow_eta_h, 0);
+    assert.ok(parsed.projection.load_pct_6h > parsed.pool_now.pool_load_pct);
+    assert.ok(parsed.projection.load_pct_24h >= parsed.projection.load_pct_6h);
+    assert.ok(parsed.projection.load_pct_72h >= parsed.projection.load_pct_24h);
+    assert.ok(parsed.projection.load_pct_7d >= parsed.projection.load_pct_72h);
 
     const textOut = await runCli(["status", "--home", home]);
+    assert.match(textOut, /POOL NOW/);
+    assert.match(textOut, /WINDOWS/);
+    assert.match(textOut, /PRESSURE/);
+    assert.match(textOut, /PROJECTION @ CURRENT RATE/);
     assert.doesNotMatch(textOut, /OpenClaw assignments/);
+    assert.doesNotMatch(textOut, /ACCOUNTS \(/);
     assert.doesNotMatch(textOut, /agent_boss -> boss/);
-    assert.match(textOut, /Last rebalance: status=applied_with_warnings observed=/);
-    assert.match(textOut, /Spread: mode=demand_weighted boss=3 agent\(s\)\/180w/);
+    assert.match(textOut, /LAST REBALANCE/);
+    assert.match(textOut, /status\s+applied_with_warnings/);
+    assert.match(textOut, /allocation_mode\s+demand_weighted/);
+    assert.match(textOut, /Spread: boss=3 agent\(s\)\/180w/);
+
+    const compactOut = await runCli(["status", "--compact", "--home", home]);
+    assert.match(compactOut, /^load=150(?:\.0)?%  spare=0w  5h_floor=\d+(?:\.\d+)?%\(boss\)  7d_floor=\d+(?:\.\d+)?%\(boss\)  eta=0(?:\.0)?h\n$/);
+
+    const textOutWithAccounts = await runCli(["status", "--accounts", "--home", home]);
+    assert.match(textOutWithAccounts, /ACCOUNTS \(1\)/);
+    assert.match(textOutWithAccounts, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
 
     const textOutWithAssignments = await runCli(["status", "--assignments", "--home", home]);
     assert.match(textOutWithAssignments, /OpenClaw assignments/);

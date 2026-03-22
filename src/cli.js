@@ -195,6 +195,8 @@ function parseArgs(argv) {
     profile: undefined,
     session: undefined,
     json: false,
+    compact: false,
+    accounts: false,
     help: false,
     pool: undefined,
   };
@@ -251,6 +253,14 @@ function parseArgs(argv) {
       opts.json = true;
       continue;
     }
+    if (arg === "--compact") {
+      opts.compact = true;
+      continue;
+    }
+    if (arg === "--accounts") {
+      opts.accounts = true;
+      continue;
+    }
     if (arg === "--assignments") {
       opts.assignments = true;
       continue;
@@ -282,7 +292,7 @@ function printHelp() {
     "aim — AI account manager (label-only; one-file SSOT; plaintext on disk).",
     "",
     "Usage:",
-    "  aim status [--json] [--assignments]",
+    "  aim status [--json] [--compact] [--accounts] [--assignments]",
     "  aim <label>            # primary human path: guided label panel on a TTY; one-shot login in non-interactive use",
     "  aim login <label>      # one-shot maintenance / automation / admin lane",
     "  aim rebalance openclaw # choose pooled Codex assignments for configured OpenClaw agents",
@@ -2781,6 +2791,22 @@ function getOpenclawExclusions(state) {
   return getOpenclawTargetState(state).exclusions;
 }
 
+function discoverStatusConfiguredOpenclawCodexAgents(state) {
+  const exclusions = getOpenclawExclusions(state);
+  const demandAgents = Object.keys(getOpenclawAgentDemandState(state) ?? {});
+  const assignmentAgents = Object.entries(getOpenclawAssignments(state) ?? {})
+    .filter(([, labelRaw]) => {
+      if (typeof labelRaw !== "string") return false;
+      const label = normalizeLabel(labelRaw);
+      return normalizeProviderId(getAccountRecord(state, label)?.provider) === OPENAI_CODEX_PROVIDER;
+    })
+    .map(([agentIdRaw]) => normalizeAgentId(agentIdRaw));
+
+  return [...new Set([...demandAgents, ...assignmentAgents])]
+    .filter((agentId) => !(typeof exclusions?.[agentId] === "string" && exclusions[agentId].trim()))
+    .toSorted((a, b) => a.localeCompare(b));
+}
+
 export function getInteractiveOAuthBindingForLabel(state, label) {
   ensureStateShape(state);
   const reauth = getAccountReauthState(state, label);
@@ -5162,6 +5188,325 @@ export function projectPoolCapacity({
   };
 }
 
+function inferWindowHours(windowLabel) {
+  const raw = String(windowLabel ?? "").trim();
+  if (!raw) return null;
+  const hoursMatch = raw.match(/^(\d+(?:\.\d+)?)h$/i);
+  if (hoursMatch) {
+    const hours = Number(hoursMatch[1]);
+    return Number.isFinite(hours) && hours > 0 ? hours : null;
+  }
+  if (/^day$/i.test(raw)) return 24;
+  if (/^week$/i.test(raw)) return 168;
+  return null;
+}
+
+function roundMetric(value, decimals = 1) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const factor = 10 ** decimals;
+  return Math.round(number * factor) / factor;
+}
+
+function formatMetricValue(value, { decimals = 1, suffix = "", integer = false } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  const rendered = integer
+    ? String(Math.round(number))
+    : number.toFixed(decimals).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+  return `${rendered}${suffix}`;
+}
+
+function formatStatusBlockRows(rows) {
+  const normalized = (Array.isArray(rows) ? rows : []).map((row) => [
+    String(row?.[0] ?? ""),
+    String(row?.[1] ?? ""),
+    String(row?.[2] ?? ""),
+  ]);
+  if (normalized.length === 0) return [];
+  const keyWidth = normalized.reduce((max, row) => Math.max(max, row[0].length), 0);
+  const valueWidth = normalized.reduce((max, row) => Math.max(max, row[1].length), 0);
+  return normalized.map(([key, value, extra]) => {
+    const base = `${key.padEnd(keyWidth)}  ${value.padEnd(valueWidth)}`.trimEnd();
+    return extra ? `${base}  ${extra}` : base;
+  });
+}
+
+function buildStatusDemandByAgent({ configuredAgents, agentDemand }) {
+  const ids = Array.isArray(configuredAgents) ? configuredAgents : [];
+  const ledger = isObject(agentDemand) ? agentDemand : {};
+  const observed = ids
+    .map((agentId) => normalizeDemandWeight(ledger[normalizeAgentId(agentId)]?.demandWeight, 0))
+    .filter((weight) => weight > 0);
+  const fallbackDemandWeight = Math.max(
+    MIN_AGENT_DEMAND_WEIGHT,
+    observed.length > 0 ? observed.reduce((sum, weight) => sum + weight, 0) / observed.length : MIN_AGENT_DEMAND_WEIGHT,
+  );
+  return Object.fromEntries(
+    ids.map((agentIdRaw) => {
+      const agentId = normalizeAgentId(agentIdRaw);
+      const entry = isObject(ledger[agentId]) ? ledger[agentId] : {};
+      return [
+        agentId,
+        {
+          demandWeight: roundDemandWeight(Math.max(MIN_AGENT_DEMAND_WEIGHT, normalizeDemandWeight(entry.demandWeight, fallbackDemandWeight))),
+          source:
+            entry.source === "openclaw-session-tokens" || entry.source === "cold-start-equal-share"
+              ? entry.source
+              : "cold-start-equal-share",
+        },
+      ];
+    }),
+  );
+}
+
+function deriveDemandBucketWeights(demandByAgent) {
+  const weights = Object.values(isObject(demandByAgent) ? demandByAgent : {})
+    .map((entry) => normalizeDemandWeight(entry?.demandWeight, 0))
+    .filter((weight) => weight > 0)
+    .sort((a, b) => a - b);
+  if (weights.length === 0) {
+    return { lightWeight: 1, mediumWeight: 2, heavyWeight: 4 };
+  }
+  const pick = (fraction) => {
+    const index = Math.max(0, Math.min(weights.length - 1, Math.floor((weights.length - 1) * fraction)));
+    return weights[index];
+  };
+  const lightWeight = roundDemandWeight(Math.max(MIN_AGENT_DEMAND_WEIGHT, pick(0.25)));
+  const mediumWeight = roundDemandWeight(Math.max(lightWeight, pick(0.5)));
+  const heavyWeight = roundDemandWeight(Math.max(mediumWeight, pick(0.75)));
+  return { lightWeight, mediumWeight, heavyWeight };
+}
+
+function buildStatusLabelWeights({ eligibleLabels, liveUsage, demandByAgent, lastApplyReceipt }) {
+  const labels = [...new Set((Array.isArray(eligibleLabels) ? eligibleLabels : []).map((label) => normalizeLabel(label)))];
+  if (labels.length === 0) return {};
+
+  const receiptEntries = new Map();
+  for (const entry of Array.isArray(lastApplyReceipt?.perAccountLoad) ? lastApplyReceipt.perAccountLoad : []) {
+    if (!isObject(entry) || typeof entry.label !== "string") continue;
+    const label = normalizeLabel(entry.label);
+    receiptEntries.set(
+      label,
+      roundDemandWeight(
+        Math.max(
+          0,
+          normalizeDemandWeight(entry.capacityBudgetWeight, normalizeDemandWeight(entry.targetDemandWeight, normalizeDemandWeight(entry.carriedDemandWeight, 0))),
+        ),
+      ),
+    );
+  }
+
+  const totalDemandWeight = Object.values(isObject(demandByAgent) ? demandByAgent : {}).reduce(
+    (sum, entry) => sum + normalizeDemandWeight(entry?.demandWeight, 0),
+    0,
+  );
+  const totalRemainingPct = labels.reduce(
+    (sum, label) => sum + Math.max(0, buildLabelCapacityInfo(liveUsage?.[label] ?? null).planningRemainingPct),
+    0,
+  );
+
+  return Object.fromEntries(
+    labels.map((label) => {
+      const fromReceipt = receiptEntries.get(label);
+      const fallbackWeight =
+        totalDemandWeight > 0 && totalRemainingPct > 0
+          ? (Math.max(0, buildLabelCapacityInfo(liveUsage?.[label] ?? null).planningRemainingPct) / totalRemainingPct) * totalDemandWeight
+          : 1;
+      return [label, roundDemandWeight(fromReceipt > 0 ? fromReceipt : fallbackWeight)];
+    }),
+  );
+}
+
+function buildAssignedDemandByLabel({ eligibleLabels, configuredAgents, currentAssignments, demandByAgent }) {
+  const labels = [...new Set((Array.isArray(eligibleLabels) ? eligibleLabels : []).map((label) => normalizeLabel(label)))];
+  const labelSet = new Set(labels);
+  const assignedDemandByLabel = Object.fromEntries(labels.map((label) => [label, 0]));
+  const assignedCountsByLabel = Object.fromEntries(labels.map((label) => [label, 0]));
+  const assignments = isObject(currentAssignments) ? currentAssignments : {};
+  const configuredSet = new Set((Array.isArray(configuredAgents) ? configuredAgents : []).map((agentId) => normalizeAgentId(agentId)));
+  const demand = isObject(demandByAgent) ? demandByAgent : {};
+
+  for (const [agentIdRaw, labelRaw] of Object.entries(assignments)) {
+    const agentId = normalizeAgentId(agentIdRaw);
+    if (!configuredSet.has(agentId)) continue;
+    if (typeof labelRaw !== "string") continue;
+    const label = normalizeLabel(labelRaw);
+    if (!labelSet.has(label)) continue;
+    assignedCountsByLabel[label] += 1;
+    assignedDemandByLabel[label] = roundDemandWeight(
+      normalizeDemandWeight(assignedDemandByLabel[label], 0) + normalizeDemandWeight(demand[agentId]?.demandWeight, MIN_AGENT_DEMAND_WEIGHT),
+    );
+  }
+
+  return { assignedDemandByLabel, assignedCountsByLabel };
+}
+
+function summarizePoolWindow({ eligibleLabels, liveUsage, labelWeights, index, now }) {
+  const labels = [...new Set((Array.isArray(eligibleLabels) ? eligibleLabels : []).map((label) => normalizeLabel(label)))];
+  const weights = isObject(labelWeights) ? labelWeights : {};
+  let totalWeight = 0;
+  let usedWeighted = 0;
+  let remainingWeight = 0;
+  let rateWeightPerHour = 0;
+  let floorPct = null;
+  let floorLabel = null;
+
+  for (const label of labels) {
+    const snapshot = liveUsage?.[label];
+    const windows = Array.isArray(snapshot?.windows) ? snapshot.windows : [];
+    const window = windows[index] ?? windows[windows.length - 1] ?? null;
+    if (!window) continue;
+    const weight = normalizeDemandWeight(weights[label], 0);
+    if (weight <= 0) continue;
+    const usedPct = clampPercent(window.usedPercent ?? 0);
+    const remainingPct = clampPercent(100 - usedPct);
+    totalWeight += weight;
+    usedWeighted += weight * usedPct;
+    remainingWeight += weight * (remainingPct / 100);
+    if (floorPct === null || remainingPct < floorPct) {
+      floorPct = remainingPct;
+      floorLabel = label;
+    }
+
+    const totalHours = inferWindowHours(window.label);
+    const resetAtMs = typeof window.resetAt === "number" ? window.resetAt : Number(window.resetAt);
+    if (!Number.isFinite(totalHours) || totalHours <= 0 || !Number.isFinite(resetAtMs)) continue;
+    const hoursRemaining = Math.max(0, Math.min(totalHours, (resetAtMs - now) / 3600000));
+    const hoursElapsed = Math.max(0, totalHours - hoursRemaining);
+    if (hoursElapsed <= 0 || usedPct <= 0) continue;
+    rateWeightPerHour += (weight * (usedPct / 100)) / hoursElapsed;
+  }
+
+  const usedPct = totalWeight > 0 ? usedWeighted / totalWeight : 0;
+  return {
+    usedPct: roundMetric(usedPct, 1) ?? 0,
+    remainingWeight: roundDemandWeight(remainingWeight),
+    floorPct: roundMetric(floorPct ?? 0, 1) ?? 0,
+    floorLabel,
+    rateWeightPerHour: roundDemandWeight(rateWeightPerHour),
+  };
+}
+
+function buildPoolInstrumentSummary({
+  state,
+  accounts,
+  codexPool,
+  liveUsage,
+  agentDemand,
+  currentAssignments,
+  lastApplyReceipt,
+  configuredCodexAgents,
+  now = Date.now(),
+}) {
+  const poolLabels = getCodexPoolLabels(state).map((label) => normalizeLabel(label)).toSorted((a, b) => a.localeCompare(b));
+  const accountMap = new Map((Array.isArray(accounts) ? accounts : []).map((account) => [account.label, account]));
+  const readyLabels = poolLabels.filter((label) => accountMap.get(label)?.operator?.status === "ready");
+  const observableLabels = readyLabels.filter((label) => {
+    const windows = Array.isArray(liveUsage?.[label]?.windows) ? liveUsage[label].windows : [];
+    return liveUsage?.[label]?.ok === true && windows.length > 0;
+  });
+  const receiptPerAccountLoad = Array.isArray(lastApplyReceipt?.perAccountLoad) ? lastApplyReceipt.perAccountLoad : [];
+  const readyAccounts = readyLabels.length;
+  const totalAccounts = poolLabels.length;
+  const totalAgents = Array.isArray(configuredCodexAgents) ? configuredCodexAgents.length : 0;
+  const demandByAgent = buildStatusDemandByAgent({ configuredAgents: configuredCodexAgents, agentDemand });
+  const labelWeights = buildStatusLabelWeights({
+    eligibleLabels: observableLabels,
+    liveUsage,
+    demandByAgent,
+    lastApplyReceipt,
+  });
+  const { assignedDemandByLabel, assignedCountsByLabel } = buildAssignedDemandByLabel({
+    eligibleLabels: poolLabels,
+    configuredAgents: configuredCodexAgents,
+    currentAssignments,
+    demandByAgent,
+  });
+  const receiptAssignedLoadW = roundDemandWeight(
+    receiptPerAccountLoad.reduce((sum, entry) => sum + normalizeDemandWeight(entry?.carriedDemandWeight, 0), 0),
+  );
+  const receiptActiveAgents = Math.max(
+    0,
+    Math.round(receiptPerAccountLoad.reduce((sum, entry) => sum + normalizeDemandWeight(entry?.carriedAgentCount, 0), 0)),
+  );
+  const assignedLoadW = receiptAssignedLoadW > 0
+    ? receiptAssignedLoadW
+    : roundDemandWeight(
+        Object.values(assignedDemandByLabel).reduce((sum, weight) => sum + normalizeDemandWeight(weight, 0), 0),
+      );
+  const usableCapacityW = roundDemandWeight(
+    observableLabels.reduce((sum, label) => sum + normalizeDemandWeight(labelWeights[label], 0), 0),
+  );
+  const spareW = roundDemandWeight(Math.max(0, usableCapacityW - assignedLoadW));
+  const activeAgents = receiptActiveAgents > 0
+    ? receiptActiveAgents
+    : poolLabels.reduce((sum, label) => sum + Math.max(0, Math.round(normalizeDemandWeight(assignedCountsByLabel[label], 0))), 0);
+  const poolLoadPct = usableCapacityW > 0 ? roundMetric((assignedLoadW / usableCapacityW) * 100, 1) ?? 0 : 0;
+  const bucketWeights = deriveDemandBucketWeights(demandByAgent);
+  const window5 = summarizePoolWindow({ eligibleLabels: observableLabels, liveUsage, labelWeights, index: 0, now });
+  const window7 = summarizePoolWindow({ eligibleLabels: observableLabels, liveUsage, labelWeights, index: 1, now });
+  const overTargetAccounts = receiptPerAccountLoad.filter((entry) => {
+    if (!isObject(entry)) return false;
+    return roundDemandWeight(Math.max(0, normalizeDemandWeight(entry.carriedDemandWeight, 0) - normalizeDemandWeight(entry.targetDemandWeight, 0))) > 0;
+  }).length;
+  const projectionRateWph = window7.rateWeightPerHour > 0 ? window7.rateWeightPerHour : window5.rateWeightPerHour;
+  const projectLoadPct = (hours) => (
+    usableCapacityW > 0 ? roundMetric(((assignedLoadW + projectionRateWph * hours) / usableCapacityW) * 100, 1) ?? 0 : 0
+  );
+  const overflowEtaH =
+    projectionRateWph > 0
+      ? (spareW > 0 ? roundMetric(spareW / projectionRateWph, 1) : 0)
+      : null;
+  const eta5 = window5.rateWeightPerHour > 0 ? roundMetric(window5.remainingWeight / window5.rateWeightPerHour, 1) : null;
+  const eta7 = window7.rateWeightPerHour > 0 ? roundMetric(window7.remainingWeight / window7.rateWeightPerHour, 1) : null;
+  const firstConstraint =
+    eta5 !== null && (eta7 === null || eta5 <= eta7) ? "5h" : eta7 !== null ? "7d" : null;
+  const firstConstraintLabel = firstConstraint === "5h" ? window5.floorLabel : firstConstraint === "7d" ? window7.floorLabel : null;
+
+  return {
+    pool_now: {
+      ready_accounts: readyAccounts,
+      total_accounts: totalAccounts,
+      active_agents: activeAgents,
+      total_agents: totalAgents,
+      assigned_load_w: assignedLoadW,
+      usable_capacity_w: usableCapacityW,
+      pool_load_pct: poolLoadPct,
+      spare_w: spareW,
+      spare_heavy: Math.max(0, Math.floor(spareW / bucketWeights.heavyWeight)),
+      spare_medium: Math.max(0, Math.floor(spareW / bucketWeights.mediumWeight)),
+      spare_light: Math.max(0, Math.floor(spareW / bucketWeights.lightWeight)),
+    },
+    windows: {
+      pool_5h_used_pct: window5.usedPct,
+      pool_5h_remaining_w: window5.remainingWeight,
+      pool_7d_used_pct: window7.usedPct,
+      pool_7d_remaining_w: window7.remainingWeight,
+      floor_5h_pct: window5.floorPct,
+      floor_5h_label: window5.floorLabel,
+      floor_7d_pct: window7.floorPct,
+      floor_7d_label: window7.floorLabel,
+    },
+    pressure: {
+      recent_overflows_14d: Math.max(0, Math.round(normalizeDemandWeight(codexPool?.capacityProjection?.basedOn?.demandOverflowReceipts, 0))),
+      rebalances_blocked_14d: Math.max(0, Math.round(normalizeDemandWeight(codexPool?.capacityProjection?.basedOn?.blockedNoEligible, 0))),
+      rebalances_warn_14d: Math.max(0, Math.round(normalizeDemandWeight(codexPool?.capacityProjection?.basedOn?.warningReceipts, 0))),
+      cold_start_agents: Math.max(0, Math.round(normalizeDemandWeight(codexPool?.capacityProjection?.basedOn?.coldStartAgentCount, 0))),
+      over_target_accounts: overTargetAccounts,
+    },
+    projection: {
+      load_pct_6h: projectLoadPct(6),
+      load_pct_24h: projectLoadPct(24),
+      load_pct_72h: projectLoadPct(72),
+      load_pct_7d: projectLoadPct(24 * 7),
+      overflow_eta_h: overflowEtaH,
+      first_constraint: firstConstraint,
+      first_constraint_label: firstConstraintLabel,
+    },
+  };
+}
+
 function readCodexCliTargetStatus({ state, homeDir }) {
   ensureStateShape(state);
   const importMeta = getAuthorityCodexImport(state);
@@ -5469,6 +5814,7 @@ function buildInteractiveLoginStatus({ state, label }) {
 async function buildStatusView({ statePath, state, homeDir }) {
   ensureStateShape(state);
   const usageByProvider = await probeUsageSnapshotsByProvider(state);
+  const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
   const codexPool = collectCodexPoolStatus({
     state,
     homeDir,
@@ -5562,6 +5908,18 @@ async function buildStatusView({ statePath, state, homeDir }) {
     lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
     now: Date.now(),
   });
+  codexPool.capacityProjection = capacity;
+  const poolInstrument = buildPoolInstrumentSummary({
+    state,
+    accounts,
+    codexPool,
+    liveUsage: usageByProvider[OPENAI_CODEX_PROVIDER],
+    agentDemand: state.pool.openaiCodex.agentDemand,
+    currentAssignments: getOpenclawAssignments(state),
+    lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
+    configuredCodexAgents,
+    now: Date.now(),
+  });
 
   const statusRank = { blocked: 0, reauth: 1, ready: 2 };
   const sortedAccounts = accounts.toSorted((a, b) => {
@@ -5585,6 +5943,10 @@ async function buildStatusView({ statePath, state, homeDir }) {
           : null,
     },
     nextBestCandidate: sanitizeForStatus(nextBestCandidate),
+    pool_now: sanitizeForStatus(poolInstrument.pool_now),
+    windows: sanitizeForStatus(poolInstrument.windows),
+    pressure: sanitizeForStatus(poolInstrument.pressure),
+    projection: sanitizeForStatus(poolInstrument.projection),
     capacity: sanitizeForStatus(capacity),
     imports: { authority: { codex: sanitizeForStatus(getAuthorityCodexImport(state)) } },
     codexCli: sanitizeForStatus(codexCli),
@@ -5686,7 +6048,18 @@ function formatStatusTable(rows) {
   ));
 }
 
-function renderStatusText(view, { showAssignments = false } = {}) {
+function renderStatusCompactText(view) {
+  const load = formatMetricValue(view.pool_now?.pool_load_pct, { decimals: 1, suffix: "%" });
+  const spare = formatMetricValue(view.pool_now?.spare_w, { integer: true, suffix: "w" });
+  const floor5 = formatMetricValue(view.windows?.floor_5h_pct, { decimals: 1, suffix: "%" });
+  const floor7 = formatMetricValue(view.windows?.floor_7d_pct, { decimals: 1, suffix: "%" });
+  const eta = formatMetricValue(view.projection?.overflow_eta_h, { decimals: 1, suffix: "h" });
+  const floor5Label = typeof view.windows?.floor_5h_label === "string" && view.windows.floor_5h_label.trim() ? view.windows.floor_5h_label.trim() : "none";
+  const floor7Label = typeof view.windows?.floor_7d_label === "string" && view.windows.floor_7d_label.trim() ? view.windows.floor_7d_label.trim() : "none";
+  return `load=${load}  spare=${spare}  5h_floor=${floor5}(${floor5Label})  7d_floor=${floor7}(${floor7Label})  eta=${eta}\n`;
+}
+
+function renderStatusText(view, { showAssignments = false, showAccounts = false } = {}) {
   const lines = [];
   lines.push(`aim SSOT: ${view.statePath}`);
 
@@ -5703,23 +6076,80 @@ function renderStatusText(view, { showAssignments = false } = {}) {
   }
   lines.push("");
 
-  lines.push(`Accounts (${view.accounts.length})`);
-  const accountRows = [
-    ["label", "st", "login", "exp", "5h_used", "5h_in", "wk_used", "wk_in", "provider", "flags"],
-    ...view.accounts.map((account) => [
-      account.label,
-      account.operator?.status || "unknown",
-      formatInteractiveLoginSummary(account.login) || "--",
-      formatStatusAccountExpiryCell(account.credentials?.expiresIn),
-      formatStatusAccountUsedCell(account.usage, 0),
-      formatStatusAccountResetCell(account.usage, 0),
-      formatStatusAccountUsedCell(account.usage, 1),
-      formatStatusAccountResetCell(account.usage, 1),
-      account.provider || "unknown",
-      buildStatusAccountFlags(account),
+  lines.push("POOL NOW");
+  lines.push(
+    ...formatStatusBlockRows([
+      ["ready_accounts", `${view.pool_now?.ready_accounts ?? 0}/${view.pool_now?.total_accounts ?? 0}`],
+      ["active_agents", `${view.pool_now?.active_agents ?? 0}/${view.pool_now?.total_agents ?? 0}`],
+      ["assigned_load_w", formatMetricValue(view.pool_now?.assigned_load_w, { integer: true })],
+      ["usable_capacity_w", formatMetricValue(view.pool_now?.usable_capacity_w, { integer: true })],
+      ["pool_load_pct", formatMetricValue(view.pool_now?.pool_load_pct, { decimals: 1 })],
+      ["spare_w", formatMetricValue(view.pool_now?.spare_w, { integer: true })],
+      ["spare_heavy", formatMetricValue(view.pool_now?.spare_heavy, { integer: true })],
+      ["spare_medium", formatMetricValue(view.pool_now?.spare_medium, { integer: true })],
+      ["spare_light", formatMetricValue(view.pool_now?.spare_light, { integer: true })],
     ]),
-  ];
-  lines.push(...formatStatusTable(accountRows));
+  );
+
+  lines.push("");
+  lines.push("WINDOWS");
+  lines.push(
+    ...formatStatusBlockRows([
+      ["pool_5h_used_pct", formatMetricValue(view.windows?.pool_5h_used_pct, { decimals: 1 })],
+      ["pool_5h_remaining_w", formatMetricValue(view.windows?.pool_5h_remaining_w, { integer: true })],
+      ["pool_7d_used_pct", formatMetricValue(view.windows?.pool_7d_used_pct, { decimals: 1 })],
+      ["pool_7d_remaining_w", formatMetricValue(view.windows?.pool_7d_remaining_w, { integer: true })],
+      ["floor_5h_pct", formatMetricValue(view.windows?.floor_5h_pct, { decimals: 1 }), view.windows?.floor_5h_label ? `label=${view.windows.floor_5h_label}` : ""],
+      ["floor_7d_pct", formatMetricValue(view.windows?.floor_7d_pct, { decimals: 1 }), view.windows?.floor_7d_label ? `label=${view.windows.floor_7d_label}` : ""],
+    ]),
+  );
+
+  lines.push("");
+  lines.push("PRESSURE");
+  lines.push(
+    ...formatStatusBlockRows([
+      ["recent_overflows_14d", formatMetricValue(view.pressure?.recent_overflows_14d, { integer: true })],
+      ["rebalances_blocked_14d", formatMetricValue(view.pressure?.rebalances_blocked_14d, { integer: true })],
+      ["rebalances_warn_14d", formatMetricValue(view.pressure?.rebalances_warn_14d, { integer: true })],
+      ["cold_start_agents", formatMetricValue(view.pressure?.cold_start_agents, { integer: true })],
+      ["over_target_accounts", formatMetricValue(view.pressure?.over_target_accounts, { integer: true })],
+    ]),
+  );
+
+  lines.push("");
+  lines.push("PROJECTION @ CURRENT RATE");
+  lines.push(
+    ...formatStatusBlockRows([
+      ["load_pct_6h", formatMetricValue(view.projection?.load_pct_6h, { decimals: 1 })],
+      ["load_pct_24h", formatMetricValue(view.projection?.load_pct_24h, { decimals: 1 })],
+      ["load_pct_72h", formatMetricValue(view.projection?.load_pct_72h, { decimals: 1 })],
+      ["load_pct_7d", formatMetricValue(view.projection?.load_pct_7d, { decimals: 1 })],
+      ["overflow_eta_h", formatMetricValue(view.projection?.overflow_eta_h, { decimals: 1 })],
+      ["first_constraint", view.projection?.first_constraint || "--"],
+      ["first_constraint_label", view.projection?.first_constraint_label || "--"],
+    ]),
+  );
+
+  if (showAccounts) {
+    lines.push("");
+    lines.push(`ACCOUNTS (${view.accounts.length})`);
+    const accountRows = [
+      ["label", "st", "login", "exp", "5h_used", "5h_in", "wk_used", "wk_in", "provider", "flags"],
+      ...view.accounts.map((account) => [
+        account.label,
+        account.operator?.status || "unknown",
+        formatInteractiveLoginSummary(account.login) || "--",
+        formatStatusAccountExpiryCell(account.credentials?.expiresIn),
+        formatStatusAccountUsedCell(account.usage, 0),
+        formatStatusAccountResetCell(account.usage, 0),
+        formatStatusAccountUsedCell(account.usage, 1),
+        formatStatusAccountResetCell(account.usage, 1),
+        account.provider || "unknown",
+        buildStatusAccountFlags(account),
+      ]),
+    ];
+    lines.push(...formatStatusTable(accountRows));
+  }
 
   const assignments = isObject(view.openclaw?.assignments) ? view.openclaw.assignments : {};
   const assignmentEntries = Object.entries(assignments);
@@ -5733,8 +6163,14 @@ function renderStatusText(view, { showAssignments = false } = {}) {
 
   if (view.openclaw?.lastApplyReceipt?.status) {
     lines.push("");
+    lines.push("LAST REBALANCE");
     lines.push(
-      `Last rebalance: status=${view.openclaw.lastApplyReceipt.status} observed=${view.openclaw.lastApplyReceipt.observedAt || "unknown"}`,
+      ...formatStatusBlockRows([
+        ["status", view.openclaw.lastApplyReceipt.status || "--"],
+        ["observed_at", view.openclaw.lastApplyReceipt.observedAt || "--"],
+        ["allocation_mode", view.openclaw.lastApplyReceipt.allocationMode || "--"],
+        ["moved_agents", formatMetricValue(view.openclaw.lastApplyReceipt.moved?.length ?? 0, { integer: true })],
+      ]),
     );
     const perAccountLoad = Array.isArray(view.openclaw?.lastApplyReceipt?.perAccountLoad)
       ? view.openclaw.lastApplyReceipt.perAccountLoad
@@ -5743,45 +6179,38 @@ function renderStatusText(view, { showAssignments = false } = {}) {
       const spread = perAccountLoad
         .map((entry) => `${entry.label}=${entry.carriedAgentCount} agent(s)/${entry.carriedDemandWeight}w`)
         .join(", ");
-      lines.push(`Spread: mode=${view.openclaw.lastApplyReceipt.allocationMode || "unknown"} ${spread}`);
+      lines.push(`Spread: ${spread}`);
     }
   }
 
   if (view.codexCli) {
     lines.push("");
-    lines.push("Codex target");
-    const targetBits = [
-      `home=${view.codexCli.homeDir}`,
-      `store=${view.codexCli.storeMode || "unknown"}`,
-      `active=${view.codexCli.activeLabel || "none"}`,
-    ];
-    if (typeof view.codexCli.actualAccountId === "string" && view.codexCli.actualAccountId.trim()) {
-      targetBits.push(`accountId=${view.codexCli.actualAccountId.trim()}`);
-    }
-    if (typeof view.codexCli.importedAt === "string" && view.codexCli.importedAt.trim()) {
-      targetBits.push(`synced=${formatAgeSince(view.codexCli.importedAt.trim())}`);
-    }
-    lines.push(`- ${targetBits.join(" ")}`);
+    lines.push("CODEX");
+    lines.push(
+      ...formatStatusBlockRows([
+        ["active_label", view.codexCli.activeLabel || "none"],
+        ["account_id", view.codexCli.actualAccountId || "--"],
+        ["store", view.codexCli.storeMode || "unknown"],
+        ["synced_age", view.codexCli.importedAt ? formatAgeSince(view.codexCli.importedAt.trim()) : "--"],
+      ]),
+    );
   }
 
   if (view.nextBestCandidate?.label) {
     lines.push("");
+    lines.push("NEXT BEST CODEX");
     lines.push(
-      `Next best Codex label: ${view.nextBestCandidate.label} ` +
-        `(primary=${view.nextBestCandidate.primaryUsedPct}% secondary=${view.nextBestCandidate.secondaryUsedPct}%)`,
-    );
-  }
-
-  if (view.capacity) {
-    lines.push("");
-    lines.push(
-      `Capacity: needMoreAccounts=${view.capacity.needMoreAccounts ? "yes" : "no"} risk=${view.capacity.riskLevel}`,
+      ...formatStatusBlockRows([
+        ["label", view.nextBestCandidate.label],
+        ["primary_used_pct", formatMetricValue(view.nextBestCandidate.primaryUsedPct, { integer: true })],
+        ["secondary_used_pct", formatMetricValue(view.nextBestCandidate.secondaryUsedPct, { integer: true })],
+      ]),
     );
   }
 
   lines.push("");
   const warnings = Array.isArray(view.warnings) ? view.warnings : [];
-  lines.push(`Warnings (${warnings.length})`);
+  lines.push(`WARNINGS (${warnings.length})`);
   for (const w of warnings.slice(0, 50)) {
     const parts = [`- ${w.kind}`];
     if (w.label) parts.push(`label=${w.label}`);
@@ -7495,7 +7924,11 @@ export async function main(argv, deps = {}) {
       process.stdout.write(`${JSON.stringify(sanitizeForStatus(view), null, 2)}\n`);
       return;
     }
-    process.stdout.write(renderStatusText(view, { showAssignments: opts.assignments === true }));
+    if (opts.compact) {
+      process.stdout.write(renderStatusCompactText(view));
+      return;
+    }
+    process.stdout.write(renderStatusText(view, { showAssignments: opts.assignments === true, showAccounts: opts.accounts === true }));
     return;
   }
 
