@@ -5644,16 +5644,6 @@ function formatStatusAccountResetCell(usage, index) {
   return `${deltaHours.toFixed(1)}h`;
 }
 
-function formatStatusAccountUsageDetail(account) {
-  if (account?.provider === OPENAI_CODEX_PROVIDER) {
-    return formatCodexUsageSummary(account.usage);
-  }
-  if (account?.provider === ANTHROPIC_PROVIDER) {
-    return formatClaudeUsageSummary(account.usage);
-  }
-  return "n/a";
-}
-
 function buildStatusAccountFlags(account) {
   const flags = [];
   const detailReason = String(account?.operator?.detailReason ?? "").trim();
@@ -5724,19 +5714,6 @@ function renderStatusText(view) {
     ]),
   ];
   lines.push(...formatStatusTable(accountRows));
-
-  const usageDetailLines = view.accounts
-    .map((account) => {
-      const summary = formatStatusAccountUsageDetail(account);
-      if (!summary || summary === "unknown" || summary === "n/a" || summary === "ok") return null;
-      return `- ${account.label} usage=${summary}`;
-    })
-    .filter(Boolean);
-  if (usageDetailLines.length > 0) {
-    lines.push("");
-    lines.push("Usage detail");
-    lines.push(...usageDetailLines);
-  }
 
   const assignments = isObject(view.openclaw?.assignments) ? view.openclaw.assignments : {};
   const assignmentEntries = Object.entries(assignments);

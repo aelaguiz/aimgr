@@ -470,16 +470,8 @@ test("status text shows usage reset timestamps for each window", async () => {
     assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
     assert.match(out, /boss\s+ready\s+aim-profile\s+\S+\s+10%\s+1\.5h\s+20%\s+20\.8h\s+openai-codex/);
     assert.match(out, /claude\s+ready\s+aim-profile\s+\S+\s+12%\s+1\.9h\s+34%\s+27\.7h\s+anthropic/);
-    assert.ok(
-      out.includes(
-        "usage=5h 10% used (resets Mar 17, 4:45 PM CDT, 1.5h left) · Week 20% used (resets Mar 18, 12:00 PM CDT, 20.8h left)",
-      ),
-    );
-    assert.ok(
-      out.includes(
-        "usage=5h 12% used (resets Mar 17, 5:10 PM CDT, 1.9h left) · Week 34% used (resets Mar 18, 7:00 PM CDT, 27.7h left) · Opus 44% used",
-      ),
-    );
+    assert.doesNotMatch(out, /Usage detail/);
+    assert.doesNotMatch(out, /usage=5h/);
   } finally {
     Date.now = origDateNow;
     globalThis.fetch = origFetch;
