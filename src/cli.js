@@ -793,6 +793,37 @@ function probeOpenclawGateway({ timeoutMs }) {
   return { ok: true };
 }
 
+function restartOpenclawGateway({ timeoutMs }) {
+  const result = spawnSync(
+    "openclaw",
+    ["gateway", "restart"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
+    },
+  );
+
+  if (result.error) {
+    return { ok: false, reason: "spawn_error", error: String(result.error?.message ?? result.error) };
+  }
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      reason: "nonzero_exit",
+      status: result.status,
+      stdout: String(result.stdout ?? "").trim(),
+      stderr: String(result.stderr ?? "").trim(),
+    };
+  }
+
+  return {
+    ok: true,
+    status: "restarted",
+    stdout: String(result.stdout ?? "").trim(),
+  };
+}
+
 async function applySessionsModelViaGatewayOps({ ops, timeoutMs }) {
   const failures = [];
   const concurrency = 6;
@@ -6975,6 +7006,7 @@ async function syncOpenclawFromState(params, state) {
       auth,
       models: { skipped: true, reason: "home_override" },
       sessions: { skipped: true, reason: "home_override" },
+      restart: { skipped: true, reason: "home_override" },
       warnings: staleAssignmentWarnings,
     };
   }
@@ -7107,6 +7139,18 @@ async function syncOpenclawFromState(params, state) {
     0,
   );
   if (totalSessionsWouldChange === 0) {
+    const restartNeeded = auth.wrote.length > 0 || applied.length > 0;
+    const restart =
+      restartNeeded
+        ? restartOpenclawGateway({ timeoutMs: 30000 })
+        : { skipped: true, reason: "no_runtime_changes" };
+    if (restart.ok === false) {
+      throw new Error(
+        `openclaw gateway restart failed (${restart.reason})` +
+          `${restart.status ? ` exit=${restart.status}` : ""}` +
+          `${restart.stderr ? `: ${restart.stderr}` : restart.error ? `: ${restart.error}` : ""}`,
+      );
+    }
     return {
       auth,
       models:
@@ -7114,6 +7158,7 @@ async function syncOpenclawFromState(params, state) {
           ? { desiredByAgentId: desiredModelRefByAgentId, ops: applied }
           : { skipped: true, reason: "no_assignments" },
       sessions: { skipped: true, reason: "no_session_changes_needed" },
+      restart,
       warnings: staleAssignmentWarnings,
     };
   }
@@ -7161,6 +7206,15 @@ async function syncOpenclawFromState(params, state) {
     }
   }
 
+  const restart = restartOpenclawGateway({ timeoutMs: 30000 });
+  if (restart.ok === false) {
+    throw new Error(
+      `openclaw gateway restart failed (${restart.reason})` +
+        `${restart.status ? ` exit=${restart.status}` : ""}` +
+        `${restart.stderr ? `: ${restart.stderr}` : restart.error ? `: ${restart.error}` : ""}`,
+    );
+  }
+
   return {
     auth,
     models:
@@ -7175,6 +7229,7 @@ async function syncOpenclawFromState(params, state) {
       sessionsWouldChange: totalSessionsWouldChange,
       perAgent: perAgentDisk.filter((p) => p.sessionsWouldChange > 0),
     },
+    restart,
     warnings: staleAssignmentWarnings,
   };
 }

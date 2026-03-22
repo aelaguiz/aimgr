@@ -130,8 +130,10 @@ async function withEnv(overrides, fn) {
 function installFakeOpenclaw({ rootDir, agentsList }) {
   const binDir = path.join(rootDir, "bin");
   const agentsListPath = path.join(rootDir, "agents-list.json");
+  const restartLogPath = path.join(rootDir, "openclaw-gateway-restarts.json");
   fs.mkdirSync(binDir, { recursive: true });
   writeJson(agentsListPath, agentsList);
+  writeJson(restartLogPath, []);
   const scriptPath = path.join(binDir, "openclaw");
   fs.writeFileSync(
     scriptPath,
@@ -143,6 +145,26 @@ if (args[0] === "config" && args[1] === "get" && args[2] === "agents.list" && ar
   process.exit(0);
 }
 if (args[0] === "config" && args[1] === "set") {
+  const strictJsonIdx = args.indexOf("--strict-json");
+  const pathArg = strictJsonIdx >= 0 ? args[strictJsonIdx + 1] : null;
+  const valueRaw = strictJsonIdx >= 0 ? args[strictJsonIdx + 2] : null;
+  const match = typeof pathArg === "string" ? pathArg.match(/^agents\\.list\\[(\\d+)\\]\\.model(?:\\.(primary|fallbacks))?$/) : null;
+  if (match && typeof valueRaw === "string") {
+    const list = JSON.parse(fs.readFileSync(${JSON.stringify(agentsListPath)}, "utf8"));
+    const idx = Number.parseInt(match[1], 10);
+    const field = match[2] || null;
+    const nextValue = JSON.parse(valueRaw);
+    const entry = list[idx] || {};
+    if (!field) {
+      entry.model = nextValue;
+    } else {
+      const currentModel = entry && typeof entry.model === "object" && entry.model !== null ? entry.model : {};
+      currentModel[field] = nextValue;
+      entry.model = currentModel;
+    }
+    list[idx] = entry;
+    fs.writeFileSync(${JSON.stringify(agentsListPath)}, JSON.stringify(list, null, 2) + "\\n");
+  }
   process.exit(0);
 }
 if (args[0] === "gateway" && args[1] === "call" && args[2] === "sessions.list") {
@@ -152,12 +174,26 @@ if (args[0] === "gateway" && args[1] === "call" && args[2] === "sessions.list") 
 if (args[0] === "gateway" && args[1] === "call" && args[2] === "sessions.patch") {
   process.exit(0);
 }
+if (args[0] === "gateway" && args[1] === "restart") {
+  const existing = fs.existsSync(${JSON.stringify(restartLogPath)})
+    ? JSON.parse(fs.readFileSync(${JSON.stringify(restartLogPath)}, "utf8"))
+    : [];
+  existing.push({ at: new Date().toISOString() });
+  fs.writeFileSync(${JSON.stringify(restartLogPath)}, JSON.stringify(existing, null, 2) + "\\n");
+  process.stdout.write("restarted\\n");
+  process.exit(0);
+}
 process.stderr.write("unexpected openclaw args: " + args.join(" "));
 process.exit(2);
 `,
     { encoding: "utf8", mode: 0o755 },
   );
   return binDir;
+}
+
+function readFakeOpenclawRestarts(rootDir) {
+  const restartLogPath = path.join(rootDir, "openclaw-gateway-restarts.json");
+  return JSON.parse(fs.readFileSync(restartLogPath, "utf8"));
 }
 
 function makeFakeJwt(payload = {}) {
@@ -1708,6 +1744,7 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
         const first = JSON.parse(firstOut);
         assert.equal(first.ok, true);
         assert.equal(first.rebalanced.status, "applied");
+        assert.equal(readFakeOpenclawRestarts(home).length, 1);
 
         const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
         assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
@@ -1732,6 +1769,7 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
         const second = JSON.parse(secondOut);
         assert.equal(second.ok, true);
         assert.equal(second.rebalanced.status, "noop");
+        assert.equal(readFakeOpenclawRestarts(home).length, 1);
       },
     );
   } finally {
@@ -1805,6 +1843,7 @@ test("apply fails closed for unassigned managed agents and clears stale session 
       const parsed = JSON.parse(out);
       assert.equal(parsed.ok, true);
       assert.equal(parsed.synced.sessions.mode, "disk");
+      assert.equal(readFakeOpenclawRestarts(home).length, 1);
 
       const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
       assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
@@ -2017,6 +2056,7 @@ test("rebalance openclaw reports blocked at the real CLI boundary when no pool a
   });
 
   assert.equal(result.status, 1);
+  assert.equal(readFakeOpenclawRestarts(home).length, 0);
   const parsed = JSON.parse(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.rebalanced.status, "blocked");
