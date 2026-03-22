@@ -2329,8 +2329,14 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.equal(parsed.capacity.byAccountPressure[0].overTargetDemandWeight, 60);
 
     const textOut = await runCli(["status", "--home", home]);
+    assert.doesNotMatch(textOut, /OpenClaw assignments/);
+    assert.doesNotMatch(textOut, /agent_boss -> boss/);
     assert.match(textOut, /Last rebalance: status=applied_with_warnings observed=/);
     assert.match(textOut, /Spread: mode=demand_weighted boss=3 agent\(s\)\/180w/);
+
+    const textOutWithAssignments = await runCli(["status", "--assignments", "--home", home]);
+    assert.match(textOutWithAssignments, /OpenClaw assignments/);
+    assert.match(textOutWithAssignments, /- agent_boss -> boss/);
   } finally {
     globalThis.fetch = origFetch;
   }

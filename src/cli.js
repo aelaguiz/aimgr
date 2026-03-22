@@ -251,6 +251,10 @@ function parseArgs(argv) {
       opts.json = true;
       continue;
     }
+    if (arg === "--assignments") {
+      opts.assignments = true;
+      continue;
+    }
     if (arg === "--pool") {
       opts.pool = argv[i + 1];
       i += 1;
@@ -278,7 +282,7 @@ function printHelp() {
     "aim — AI account manager (label-only; one-file SSOT; plaintext on disk).",
     "",
     "Usage:",
-    "  aim status [--json]",
+    "  aim status [--json] [--assignments]",
     "  aim <label>            # primary human path: guided label panel on a TTY; one-shot login in non-interactive use",
     "  aim login <label>      # one-shot maintenance / automation / admin lane",
     "  aim rebalance openclaw # choose pooled Codex assignments for configured OpenClaw agents",
@@ -5680,7 +5684,7 @@ function formatStatusTable(rows) {
   ));
 }
 
-function renderStatusText(view) {
+function renderStatusText(view, { showAssignments = false } = {}) {
   const lines = [];
   lines.push(`aim SSOT: ${view.statePath}`);
 
@@ -5717,7 +5721,7 @@ function renderStatusText(view) {
 
   const assignments = isObject(view.openclaw?.assignments) ? view.openclaw.assignments : {};
   const assignmentEntries = Object.entries(assignments);
-  if (assignmentEntries.length > 0) {
+  if (showAssignments && assignmentEntries.length > 0) {
     lines.push("");
     lines.push("OpenClaw assignments");
     for (const [agentId, label] of assignmentEntries.toSorted((x, y) => x[0].localeCompare(y[0]))) {
@@ -7458,7 +7462,7 @@ export async function main(argv, deps = {}) {
       process.stdout.write(`${JSON.stringify(sanitizeForStatus(view), null, 2)}\n`);
       return;
     }
-    process.stdout.write(renderStatusText(view));
+    process.stdout.write(renderStatusText(view, { showAssignments: opts.assignments === true }));
     return;
   }
 
