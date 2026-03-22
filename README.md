@@ -4,7 +4,7 @@
 
 - keep labeled paid-account truth in AIM
 - keep browser ownership in AIM
-- compile that truth into downstream targets like OpenClaw and local Codex CLI
+- compile that truth into downstream targets like OpenClaw, local Codex CLI, and local Pi CLI
 
 The operating model is intentionally simple:
 
@@ -14,7 +14,7 @@ The operating model is intentionally simple:
   - `chrome-profile` -> explicit raw Chrome `user-data-dir`
   - `agent-browser` -> explicit `profile` + `session`
   - `manual-callback` -> no local browser binding
-- OpenClaw assignments and local Codex `auth.json` are derived outputs
+- OpenClaw assignments plus local Codex/Pi `auth.json` are derived outputs
 - operators think in labels like `boss`, `lessons`, and `qa`, not raw tokens or profile IDs
 
 ## North star
@@ -26,12 +26,13 @@ That means:
 - `aim <label>` is the primary human path
 - `aim rebalance openclaw` is the canonical OpenClaw assignment command
 - `aim codex use` is the canonical local Codex selection command
-- `aim pin`, `aim autopin openclaw`, and `aim codex use <label>` are removed
+- `aim pi use` is the canonical local Pi selection command
+- `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim pi use` are removed
 
 ## Non-negotiables
 
 - AIM is the only durable credential SSOT.
-- OpenClaw and Codex CLI are derived targets, not competing truth.
+- OpenClaw, Codex CLI, and Pi CLI are derived targets, not competing truth.
 - Operator-facing account state collapses to `ready`, `reauth`, or `blocked`.
 - Labels are explicit; there is no steady-state `default` account semantics.
 - Codex target management is file-backed only in v1. `keyring` and `auto` fail loud.
@@ -95,6 +96,7 @@ Status answers the core operator questions:
 - what OpenClaw currently has assigned
 - how the last weighted rebalance spread agents across accounts
 - what the local Codex target currently has selected
+- what the local Pi target currently has selected
 - what the next-best eligible account would be
 - whether the pool needs more capacity
 
@@ -149,7 +151,7 @@ When you pick `Use another Chrome profile` from the guided panel, AIM now lists 
 
 ### 2A) Inspect or repair the browser binding
 
-Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, and `aim codex use`.
+Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim codex use`, and `aim pi use`.
 
 When you need to inspect or repair the browser substrate explicitly, use the advanced/admin surface:
 
@@ -227,6 +229,36 @@ This command:
 
 The contract is "next Codex process", not hot-swapping an already-running long-lived process.
 
+### 4A) Activate local Pi CLI from the shared pool
+
+Pi uses the same pooled OpenAI/Codex account selector as local Codex CLI, but writes Pi's canonical auth store instead of `~/.codex/auth.json`.
+
+By default AIM targets:
+
+- Pi agent dir: `~/.pi/agent`
+- Pi auth path: `~/.pi/agent/auth.json`
+
+You can override the Pi target dir with `PI_CODING_AGENT_DIR`.
+
+```bash
+aim pi use
+```
+
+This command:
+
+- probes current pooled usage
+- selects the next-best eligible pooled label with the same weighted ranking and hysteresis rules as `aim codex use`
+- writes Pi's canonical `auth.json`
+- preserves unrelated non-OpenAI Pi providers already present in that file
+- verifies readback
+- records a selection receipt:
+  - `activated`
+  - `noop`
+  - `activated_with_warnings`
+  - `blocked`
+
+The contract is "next Pi process", not mutating an already-running Pi session in place.
+
 ## Removed commands
 
 These commands are intentionally removed and now hard-error with migration guidance:
@@ -235,6 +267,7 @@ These commands are intentionally removed and now hard-error with migration guida
 aim pin <openclaw_agent_id> <label>
 aim autopin openclaw --pool ...
 aim codex use <label>
+aim pi use <label>
 ```
 
 Use:
@@ -242,6 +275,7 @@ Use:
 - `aim <label>` for reauth
 - `aim rebalance openclaw` for OpenClaw assignment selection
 - `aim codex use` for local Codex selection
+- `aim pi use` for local Pi selection
 
 ## Codex CLI requirements
 

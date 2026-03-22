@@ -300,6 +300,7 @@ function printHelp() {
     "  aim sync openclaw     # explicit alias for apply",
     "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
     "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
+    "  aim pi use            # activate the next-best pooled openai-codex label for local Pi CLI",
     "  aim browser show <label>",
     "  aim browser set <label> --mode aim-profile [--seed-from-openclaw <profileId>]",
     "  aim browser set <label> --mode chrome-profile --user-data-dir <abs-path> [--profile-directory <name>]",
@@ -310,7 +311,7 @@ function printHelp() {
     "  - SSOT file: ~/.aimgr/secrets.json (auto-backed-up on every write).",
     "  - V0 supports: openai-codex (ChatGPT/Codex OAuth) + anthropic (Claude Pro/Max OAuth) on macOS.",
     "  - Browser-managed OAuth supports explicit per-label bindings: aim-profile, chrome-profile, or agent-browser.",
-    "  - `aim pin`, `aim autopin openclaw`, and `aim codex use <label>` are removed; use `aim rebalance openclaw`, `aim apply`, and `aim codex use`.",
+    "  - `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim pi use` are removed; use `aim rebalance openclaw`, `aim apply`, `aim codex use`, and `aim pi use`.",
     "  - Codex target management is file-backed only in v1; keyring/auto homes fail loud.",
     "",
     "Developer options (rare):",
@@ -1042,6 +1043,7 @@ function createEmptyState() {
         exclusions: {},
       },
       codexCli: {},
+      piCli: {},
     },
   };
 }
@@ -2656,6 +2658,7 @@ function ensureStateShape(state) {
     ? state.targets.openclaw.exclusions
     : {};
   state.targets.codexCli = isObject(state.targets.codexCli) ? state.targets.codexCli : {};
+  state.targets.piCli = isObject(state.targets.piCli) ? state.targets.piCli : {};
 
   const legacyPins = isObject(state.pins?.openclaw) ? state.pins.openclaw : null;
   if (legacyPins) {
@@ -2762,6 +2765,9 @@ function ensureStateShape(state) {
   if (Object.hasOwn(state.targets.codexCli, "lastReadback")) {
     delete state.targets.codexCli.lastReadback;
   }
+  if (Object.hasOwn(state.targets.piCli, "lastReadback")) {
+    delete state.targets.piCli.lastReadback;
+  }
 }
 
 function getAuthorityCodexImport(state) {
@@ -2839,6 +2845,11 @@ function getCodexTargetState(state) {
   return state.targets.codexCli;
 }
 
+function getPiTargetState(state) {
+  ensureStateShape(state);
+  return state.targets.piCli;
+}
+
 function isLikelyJwt(value) {
   const raw = String(value ?? "").trim();
   const parts = raw.split(".");
@@ -2871,8 +2882,20 @@ function resolveManagedCodexHomeDir({ homeDir }) {
   return path.join(homeDir, ".codex");
 }
 
+function resolveManagedPiAgentDir({ homeDir }) {
+  const override = String(process.env.PI_CODING_AGENT_DIR ?? "").trim();
+  if (override) {
+    return path.resolve(override);
+  }
+  return path.join(homeDir, ".pi", "agent");
+}
+
 function resolveCodexAuthFilePath(codexHome) {
   return path.join(codexHome, "auth.json");
+}
+
+function resolvePiAuthFilePath(agentDir) {
+  return path.join(agentDir, "auth.json");
 }
 
 function resolveCodexConfigPath(codexHome) {
@@ -2949,6 +2972,39 @@ function readCodexAuthFile({ codexHome }) {
   }
 }
 
+function readPiAuthFile({ agentDir }) {
+  const authPath = resolvePiAuthFilePath(agentDir);
+  if (!fs.existsSync(authPath)) {
+    return { exists: false, authPath };
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    if (!isObject(parsed)) {
+      throw new Error("Pi auth.json is not a JSON object.");
+    }
+    const providerEntry = isObject(parsed?.[OPENAI_CODEX_PROVIDER]) ? parsed[OPENAI_CODEX_PROVIDER] : null;
+    const accountId = typeof providerEntry?.accountId === "string" ? providerEntry.accountId.trim() : null;
+    const providerEntryType = typeof providerEntry?.type === "string" ? providerEntry.type.trim() : null;
+    return {
+      exists: true,
+      ok: true,
+      authPath,
+      accountId: accountId || null,
+      providerEntryPresent: Boolean(providerEntry),
+      providerEntryType: providerEntryType || null,
+      json: parsed,
+    };
+  } catch (err) {
+    return {
+      exists: true,
+      ok: false,
+      authPath,
+      error: String(err?.message ?? err),
+    };
+  }
+}
+
 // Codex and Paperclip both inherit this managed file-backed auth target on the host.
 // If AIM cannot pick an eligible pool account, the old file and active-target metadata
 // must be cleared so the previous machine account cannot survive as a hidden fallback.
@@ -2960,6 +3016,32 @@ function clearManagedCodexCliActivation({ state, homeDir }) {
 
   const target = getCodexTargetState(state);
   delete target.homeDir;
+  delete target.activeLabel;
+  delete target.expectedAccountId;
+  delete target.lastAppliedAt;
+}
+
+// Pi auth.json is a multi-provider store. AIM owns only the `openai-codex` entry there,
+// so clearing managed Pi activation must preserve any unrelated Pi providers.
+function clearManagedPiCliActivation({ state, homeDir }) {
+  ensureStateShape(state);
+  const agentDir = resolveManagedPiAgentDir({ homeDir });
+  const authPath = resolvePiAuthFilePath(agentDir);
+  if (fs.existsSync(authPath)) {
+    const current = readPiAuthFile({ agentDir });
+    if (current.ok !== true) {
+      throw new Error(`Refusing to mutate unreadable Pi auth file: ${current.error || authPath}`);
+    }
+    if (isObject(current.json) && Object.hasOwn(current.json, OPENAI_CODEX_PROVIDER)) {
+      const next = { ...current.json };
+      delete next[OPENAI_CODEX_PROVIDER];
+      writeJsonFileIfChanged(authPath, next, { mode: 0o600 });
+    }
+  }
+
+  const target = getPiTargetState(state);
+  delete target.agentDir;
+  delete target.authPath;
   delete target.activeLabel;
   delete target.expectedAccountId;
   delete target.lastAppliedAt;
@@ -3023,6 +3105,20 @@ function buildCodexAuthDotJson({ credential, lastRefreshAt }) {
       account_id: credential.accountId,
     },
     last_refresh: String(lastRefreshAt ?? new Date().toISOString()),
+  };
+}
+
+function buildPiAuthEntry({ credential }) {
+  const expiresMs = parseExpiresAtToMs(credential?.expiresAt);
+  if (!expiresMs) {
+    throw new Error("Refusing to build Pi auth.json without a valid expiresAt timestamp.");
+  }
+  return {
+    type: "oauth",
+    access: credential.access,
+    refresh: credential.refresh,
+    expires: expiresMs,
+    accountId: credential.accountId,
   };
 }
 
@@ -3222,12 +3318,18 @@ function importCodexFromAuthority({ from, state, homeDir }) {
   for (const label of previousImported) {
     if (incomingByLabel.has(label)) continue;
     const currentTarget = readCodexCliTargetStatus({ state, homeDir });
+    const currentPiTarget = readPiCliTargetStatus({ state, homeDir });
     const removedLabelWasLiveTarget = currentTarget.activeLabel === label || currentTarget.inferredLabel === label;
+    const removedLabelWasLivePiTarget = currentPiTarget.activeLabel === label || currentPiTarget.inferredLabel === label;
     delete state.accounts[label];
     delete state.credentials[OPENAI_CODEX_PROVIDER][label];
     if (removedLabelWasLiveTarget) {
       clearManagedCodexCliActivation({ state, homeDir });
       delete state.targets.codexCli.lastSelectionReceipt;
+    }
+    if (removedLabelWasLivePiTarget) {
+      clearManagedPiCliActivation({ state, homeDir });
+      delete state.targets.piCli.lastSelectionReceipt;
     }
     removedLabels.push(label);
   }
@@ -5634,6 +5736,35 @@ function readCodexCliTargetStatus({ state, homeDir }) {
   };
 }
 
+function readPiCliTargetStatus({ state, homeDir }) {
+  ensureStateShape(state);
+  const importMeta = getAuthorityCodexImport(state);
+  const target = getPiTargetState(state);
+  const agentDir = resolveManagedPiAgentDir({ homeDir });
+  const readback = readPiAuthFile({ agentDir });
+  const activeLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
+  const expectedAccountId = typeof target.expectedAccountId === "string" ? target.expectedAccountId.trim() : "";
+  const actualAccountId = readback.ok ? readback.accountId : null;
+  const inferredLabel = actualAccountId ? findCodexLabelByAccountId(state, actualAccountId) : null;
+
+  return {
+    source: typeof importMeta.source === "string" ? importMeta.source.trim() || null : null,
+    importedAt: typeof importMeta.importedAt === "string" ? importMeta.importedAt.trim() || null : null,
+    importedLabels: getImportedCodexLabels(state),
+    agentDir,
+    authPath: resolvePiAuthFilePath(agentDir),
+    activeLabel: activeLabel || null,
+    activeAccountPresent: activeLabel ? isObject(state.accounts[activeLabel]) : false,
+    activeCredentialPresent: activeLabel ? isObject(getCodexCredential(state, activeLabel)) : false,
+    expectedAccountId: expectedAccountId || null,
+    actualAccountId: actualAccountId || null,
+    inferredLabel: inferredLabel || null,
+    readback,
+    lastSelectionReceipt: isObject(target.lastSelectionReceipt) ? target.lastSelectionReceipt : null,
+    lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
+  };
+}
+
 function buildWarningsFromCodexTargetStatus(status) {
   const warnings = [];
   if (!status) return warnings;
@@ -5714,6 +5845,95 @@ function buildWarningsFromCodexTargetStatus(status) {
   return warnings;
 }
 
+function buildWarningsFromPiTargetStatus(status) {
+  const warnings = [];
+  if (!status) return warnings;
+
+  if (!status.importedLabels?.length && status.activeLabel) {
+    warnings.push({
+      kind: "pi_import_missing",
+      system: "pi-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.activeLabel && !status.activeAccountPresent) {
+    warnings.push({
+      kind: "pi_target_label_missing",
+      system: "pi-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.activeLabel && !status.activeCredentialPresent) {
+    warnings.push({
+      kind: "pi_target_credentials_missing",
+      system: "pi-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.activeLabel && !status.readback.exists) {
+    warnings.push({
+      kind: "pi_target_missing_auth_file",
+      system: "pi-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.readback.exists && status.readback.ok !== true) {
+    warnings.push({
+      kind: "pi_target_auth_unreadable",
+      system: "pi-cli",
+      status: status.readback.error,
+    });
+  }
+
+  if (status.activeLabel && status.readback.ok === true && !status.readback.providerEntryPresent) {
+    warnings.push({
+      kind: "pi_target_missing_provider_entry",
+      system: "pi-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (
+    status.activeLabel
+    && status.readback.ok === true
+    && status.readback.providerEntryPresent
+    && status.readback.providerEntryType
+    && status.readback.providerEntryType !== "oauth"
+  ) {
+    warnings.push({
+      kind: "pi_target_provider_entry_invalid",
+      system: "pi-cli",
+      label: status.activeLabel,
+      status: status.readback.providerEntryType,
+    });
+  }
+
+  if (status.activeLabel && status.expectedAccountId && status.actualAccountId && status.expectedAccountId !== status.actualAccountId) {
+    warnings.push({
+      kind: "pi_target_account_mismatch",
+      system: "pi-cli",
+      label: status.activeLabel,
+      accountId: status.actualAccountId,
+      expectedAccountId: status.expectedAccountId,
+    });
+  }
+
+  if (status.activeLabel && status.inferredLabel && status.inferredLabel !== status.activeLabel) {
+    warnings.push({
+      kind: "pi_target_label_mismatch",
+      system: "pi-cli",
+      label: status.activeLabel,
+      actualLabel: status.inferredLabel,
+    });
+  }
+
+  return warnings;
+}
+
 function applyCodexCliFromState({ label, homeDir }, state) {
   ensureStateShape(state);
   if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
@@ -5766,6 +5986,67 @@ function applyCodexCliFromState({ label, homeDir }, state) {
     codexHome,
     authPath: readback.authPath,
     storeMode: store.storeMode,
+    wrote: writeResult.wrote,
+  };
+}
+
+function applyPiCliFromState({ label, homeDir }, state) {
+  ensureStateShape(state);
+  if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
+    throw new Error(
+      "No imported Codex replica is available on this machine yet. " +
+        "Run `aim sync codex --from agents@amirs-mac-studio` first.",
+    );
+  }
+
+  const normalizedLabel = normalizeLabel(label);
+  const account = state.accounts[normalizedLabel];
+  if (!isObject(account)) {
+    throw new Error(`Unknown imported label: ${normalizedLabel}. Run \`aim status\` to inspect the imported pool.`);
+  }
+  const provider = normalizeProviderId(account.provider);
+  if (provider !== OPENAI_CODEX_PROVIDER) {
+    throw new Error(`Refusing to activate non-Codex label=${normalizedLabel} provider=${provider || "unknown"} for Pi.`);
+  }
+
+  const credential = assertCodexCredentialShape({
+    label: normalizedLabel,
+    credential: getCodexCredential(state, normalizedLabel),
+    requireFresh: true,
+  });
+
+  const agentDir = resolveManagedPiAgentDir({ homeDir });
+  const existing = readPiAuthFile({ agentDir });
+  if (existing.exists && existing.ok !== true) {
+    throw new Error(`Failed to read current Pi auth file before apply: ${existing.error || "unknown error"}`);
+  }
+  const authPayload = {
+    ...(existing.ok === true && isObject(existing.json) ? existing.json : {}),
+    [OPENAI_CODEX_PROVIDER]: buildPiAuthEntry({ credential }),
+  };
+  const writeResult = writeJsonFileIfChanged(resolvePiAuthFilePath(agentDir), authPayload, { mode: 0o600 });
+  const readback = readPiAuthFile({ agentDir });
+  if (readback.ok !== true) {
+    throw new Error(`Failed to read back managed Pi auth file: ${readback.error || "unknown error"}`);
+  }
+  if (readback.accountId !== credential.accountId) {
+    throw new Error(
+      `Pi readback mismatch after apply: expected accountId=${credential.accountId}, got ${readback.accountId || "none"}.`,
+    );
+  }
+
+  const target = getPiTargetState(state);
+  target.agentDir = agentDir;
+  target.authPath = readback.authPath;
+  target.activeLabel = normalizedLabel;
+  target.expectedAccountId = credential.accountId;
+  target.lastAppliedAt = new Date().toISOString();
+
+  return {
+    label: normalizedLabel,
+    accountId: credential.accountId,
+    agentDir,
+    authPath: readback.authPath,
     wrote: writeResult.wrote,
   };
 }
@@ -5978,6 +6259,7 @@ async function buildStatusView({ statePath, state, homeDir }) {
   }
 
   const codexCli = readCodexCliTargetStatus({ state, homeDir });
+  const piCli = readPiCliTargetStatus({ state, homeDir });
   const openclawTarget = getOpenclawTargetState(state);
   const nextBestCandidate = pickNextBestPoolLabel({
     rankedCandidates: rankPoolCandidates({
@@ -6040,10 +6322,12 @@ async function buildStatusView({ statePath, state, homeDir }) {
     capacity: sanitizeForStatus(capacity),
     imports: { authority: { codex: sanitizeForStatus(getAuthorityCodexImport(state)) } },
     codexCli: sanitizeForStatus(codexCli),
+    piCli: sanitizeForStatus(piCli),
     warnings: [
       ...buildWarningsFromState(state),
       ...buildWarningsFromStatusAccounts(sortedAccounts),
       ...buildWarningsFromCodexTargetStatus(codexCli),
+      ...buildWarningsFromPiTargetStatus(piCli),
     ],
   };
 }
@@ -7849,6 +8133,120 @@ async function activateCodexPoolSelection({ state, homeDir }) {
   return { status, receipt, wrote: Boolean(activated.wrote) };
 }
 
+async function activatePiPoolSelection({ state, homeDir }) {
+  ensureStateShape(state);
+  const observedAt = new Date().toISOString();
+  const usageByProvider = await probeUsageSnapshotsByProvider(state);
+  const usageByLabel = usageByProvider[OPENAI_CODEX_PROVIDER];
+  const poolStatus = collectCodexPoolStatus({
+    state,
+    homeDir,
+    usageByLabel,
+    now: Date.parse(observedAt),
+  });
+
+  appendOpenaiCodexHistory(
+    state,
+    buildExhaustionHistoryEntries({
+      state,
+      usage: usageByLabel,
+      eligibleLabels: poolStatus.eligibleLabels,
+      observedAt,
+    }),
+  );
+
+  if (poolStatus.labels.length === 0) {
+    throw new Error(
+      "No Codex pool labels are available on this machine yet. " +
+        "Run `aim sync codex --from agents@amirs-mac-studio` first.",
+    );
+  }
+
+  const target = getPiTargetState(state);
+  if (poolStatus.eligibleLabels.length === 0) {
+    const currentTarget = readPiCliTargetStatus({ state, homeDir });
+    clearManagedPiCliActivation({ state, homeDir });
+    const receipt = {
+      action: "pi_use",
+      status: "blocked",
+      observedAt,
+      previousLabel: currentTarget.activeLabel ?? currentTarget.inferredLabel ?? undefined,
+      warnings: [],
+      blockers: [{ reason: "no_eligible_pool_account" }],
+      reasons: [],
+      wroteAuthJson: false,
+    };
+    target.lastSelectionReceipt = receipt;
+    appendOpenaiCodexHistory(state, [
+      {
+        observedAt,
+        kind: "selection",
+        status: "blocked",
+        reason: "no_eligible_pool_account",
+        hadSpareEligibleCapacity: false,
+      },
+    ]);
+    return { status: "blocked", receipt, wrote: false };
+  }
+
+  const currentTarget = readPiCliTargetStatus({ state, homeDir });
+  const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
+  const currentAssignments = getOpenclawAssignments(state);
+  const rankedCandidates = rankPoolCandidates({
+    labels: poolStatus.eligibleLabels,
+    usage: usageByLabel,
+    currentLabel: currentTarget.activeLabel,
+    currentAssignments,
+    configuredAgents: configuredCodexAgents,
+    agentDemand: state.pool.openaiCodex.agentDemand,
+    lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
+    now: Date.parse(observedAt),
+  });
+  const selection = pickNextBestPoolLabel({ rankedCandidates });
+  if (!selection) {
+    throw new Error("Failed to select a next-best Pi pool label.");
+  }
+
+  const activated = applyPiCliFromState({ label: selection.label, homeDir }, state);
+  const postStatus = readPiCliTargetStatus({ state, homeDir });
+  const warnings = buildWarningsFromPiTargetStatus(postStatus);
+  const status =
+    !activated.wrote && currentTarget.activeLabel === selection.label && currentTarget.expectedAccountId === activated.accountId
+      ? "noop"
+      : warnings.length > 0
+        ? "activated_with_warnings"
+        : "activated";
+
+  const receipt = {
+    action: "pi_use",
+    status,
+    observedAt,
+    previousLabel: currentTarget.activeLabel ?? undefined,
+    label: selection.label,
+    accountId: activated.accountId,
+    keptCurrent: Boolean(selection.keptCurrent),
+    reasons: Array.isArray(selection.reasons) ? selection.reasons : [],
+    authPath: activated.authPath,
+    wroteAuthJson: Boolean(activated.wrote),
+    warnings,
+    blockers: [],
+  };
+  target.lastSelectionReceipt = receipt;
+  appendOpenaiCodexHistory(state, [
+    {
+      observedAt,
+      kind: "selection",
+      status,
+      label: selection.label,
+      accountId: activated.accountId,
+      hadSpareEligibleCapacity: poolStatus.eligibleLabels.length > 1,
+      reason: selection.keptCurrent ? "kept_current" : "next_best",
+    },
+  ]);
+
+  return { status, receipt, wrote: Boolean(activated.wrote) };
+}
+
 export async function rebalanceOpenclawPool(
   params,
   state,
@@ -8019,7 +8417,7 @@ export async function main(argv, deps = {}) {
     refreshAnthropicImpl = refreshAnthropicToken,
   } = deps;
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "browser"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "pi", "browser"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -8211,6 +8609,27 @@ export async function main(argv, deps = {}) {
       throw new Error("`aim codex use <label>` was removed. Use `aim codex use` for next-best selection or `aim <label>` if the account needs reauth.");
     }
     const activated = await activateCodexPoolSelection({ state, homeDir });
+    writeJsonFileWithBackup(statePath, state);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);
+    if (activated.status === "blocked") {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (cmd === "pi") {
+    const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+    if (!subcmd) {
+      throw new Error("Missing pi subcommand. Usage: aim pi use");
+    }
+    if (subcmd !== "use") {
+      throw new Error(`Unsupported pi subcommand: ${subcmd} (supported: use).`);
+    }
+    const state = loadAimgrState(statePath);
+    if (String(positional[2] ?? "").trim()) {
+      throw new Error("`aim pi use <label>` was removed. Use `aim pi use` for next-best selection or `aim <label>` if the account needs reauth.");
+    }
+    const activated = await activatePiPoolSelection({ state, homeDir });
     writeJsonFileWithBackup(statePath, state);
     process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);
     if (activated.status === "blocked") {

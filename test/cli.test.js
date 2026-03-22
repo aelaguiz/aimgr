@@ -279,6 +279,15 @@ async function runCliWithExitCode(argv, deps = {}) {
 test("status --json never leaks access/refresh tokens", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(path.join(home, ".pi", "agent", "auth.json"), {
+    "openai-codex": {
+      type: "oauth",
+      access: "PI_ACCESS_SHOULD_NOT_LEAK",
+      refresh: "PI_REFRESH_SHOULD_NOT_LEAK",
+      expires: Date.now() + 3600_000,
+      accountId: "acct_123",
+    },
+  });
 
   writeJson(statePath, {
     schemaVersion: "0.1",
@@ -303,6 +312,14 @@ test("status --json never leaks access/refresh tokens", async () => {
           refresh: "ANTHROPIC_REFRESH_SHOULD_NOT_LEAK",
           expiresAt: new Date(Date.now() + 3600_000).toISOString(),
         },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      piCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_123",
       },
     },
   });
@@ -350,6 +367,8 @@ test("status --json never leaks access/refresh tokens", async () => {
     assert.doesNotMatch(out, /ID_TOKEN_SHOULD_NOT_LEAK/);
     assert.doesNotMatch(out, /ANTHROPIC_ACCESS_SHOULD_NOT_LEAK/);
     assert.doesNotMatch(out, /ANTHROPIC_REFRESH_SHOULD_NOT_LEAK/);
+    assert.doesNotMatch(out, /PI_ACCESS_SHOULD_NOT_LEAK/);
+    assert.doesNotMatch(out, /PI_REFRESH_SHOULD_NOT_LEAK/);
     const parsed = JSON.parse(out);
     const boss = parsed.accounts.find((a) => a.label === "boss");
     const claude = parsed.accounts.find((a) => a.label === "claude");
@@ -357,6 +376,8 @@ test("status --json never leaks access/refresh tokens", async () => {
     assert.equal(claude.provider, "anthropic");
     assert.equal(claude.usage.ok, true);
     assert.ok(claude.usage.windows.some((w) => w.label === "Opus"));
+    assert.equal(parsed.piCli.activeLabel, "boss");
+    assert.equal(parsed.piCli.actualAccountId, "acct_123");
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -1590,6 +1611,7 @@ test("resolveAuthorityLocator accepts bare ssh targets for the default AIM state
 test("help text prefers agents@amirs-mac-studio as the authority example", async () => {
   const out = await runCli([]);
   assert.match(out, /aim sync codex --from <authority>/);
+  assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
   assert.match(out, /Examples: agents@amirs-mac-studio/);
   assert.match(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
 });
@@ -3217,6 +3239,360 @@ test("codex use refuses non-file-backed Codex homes", async () => {
   );
 });
 
+test("pi use writes auth.json, preserves non-openai providers, and status reports the active Pi target", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const piAgentDir = path.join(home, ".pi-test", "agent");
+  const fakeJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_123",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(piAgentDir, "auth.json"), {
+    anthropic: {
+      type: "api_key",
+      key: "ANTHROPIC_KEY",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: fakeJwt,
+          refresh: "REFRESH_TOKEN",
+          idToken: fakeJwt,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "ssh://studio.local/~/.aimgr/secrets.json",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        PI_CODING_AGENT_DIR: piAgentDir,
+      },
+      async () => {
+        const out = JSON.parse(await runCli(["pi", "use", "--home", home]));
+        assert.equal(out.ok, true);
+        assert.equal(out.activated.status, "activated");
+        assert.equal(out.activated.receipt.label, "boss");
+
+        const auth = JSON.parse(fs.readFileSync(path.join(piAgentDir, "auth.json"), "utf8"));
+        assert.deepEqual(auth.anthropic, { type: "api_key", key: "ANTHROPIC_KEY" });
+        assert.deepEqual(auth["openai-codex"], {
+          type: "oauth",
+          access: fakeJwt,
+          refresh: "REFRESH_TOKEN",
+          expires: auth["openai-codex"].expires,
+          accountId: "acct_123",
+        });
+        assert.equal(typeof auth["openai-codex"].expires, "number");
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.equal(updatedState.targets.piCli.activeLabel, "boss");
+        assert.equal(updatedState.targets.piCli.expectedAccountId, "acct_123");
+        assert.equal(updatedState.targets.piCli.lastSelectionReceipt.status, "activated");
+
+        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+        assert.equal(status.piCli.activeLabel, "boss");
+        assert.equal(status.piCli.actualAccountId, "acct_123");
+        assert.equal(status.piCli.authPath, path.join(piAgentDir, "auth.json"));
+        assert.equal(status.piCli.readback.providerEntryPresent, true);
+        assert.equal(status.piCli.readback.providerEntryType, "oauth");
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("pi use clears stale managed openai-codex auth and preserves other Pi providers when no pool account is eligible", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const piAgentDir = path.join(home, ".pi-test", "agent");
+  const fakeJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_123",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(piAgentDir, "auth.json"), {
+    anthropic: {
+      type: "api_key",
+      key: "ANTHROPIC_KEY",
+    },
+    "openai-codex": {
+      type: "oauth",
+      access: fakeJwt,
+      refresh: "REFRESH_TOKEN",
+      expires: Date.now() + 3600_000,
+      accountId: "acct_123",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: fakeJwt,
+          refresh: "REFRESH_TOKEN",
+          idToken: fakeJwt,
+          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "ssh://studio.local/~/.aimgr/secrets.json",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      piCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_123",
+        lastAppliedAt: new Date().toISOString(),
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        PI_CODING_AGENT_DIR: piAgentDir,
+      },
+      async () => {
+        const result = await runCliWithExitCode(["pi", "use", "--home", home]);
+        assert.equal(result.exitCode, 1);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.ok, false);
+        assert.equal(parsed.activated.status, "blocked");
+        assert.deepEqual(parsed.activated.receipt.blockers, [{ reason: "no_eligible_pool_account" }]);
+
+        const auth = JSON.parse(fs.readFileSync(path.join(piAgentDir, "auth.json"), "utf8"));
+        assert.deepEqual(auth, {
+          anthropic: {
+            type: "api_key",
+            key: "ANTHROPIC_KEY",
+          },
+        });
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.equal(updatedState.targets.piCli.activeLabel, undefined);
+        assert.equal(updatedState.targets.piCli.expectedAccountId, undefined);
+        assert.equal(updatedState.targets.piCli.lastAppliedAt, undefined);
+        assert.equal(updatedState.targets.piCli.lastSelectionReceipt.status, "blocked");
+
+        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+        assert.equal(status.piCli.activeLabel, null);
+        assert.equal(status.piCli.readback.exists, true);
+        assert.equal(status.piCli.readback.providerEntryPresent, false);
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("pi use prefers weekly pool headroom over the lowest short-window usage", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const piAgentDir = path.join(home, ".pi-test", "agent");
+  const qaJwt = makeFakeJwt({
+    email: "qa@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_qa",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro2Jwt = makeFakeJwt({
+    email: "pro2@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      pro2: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        qa: {
+          access: qaJwt,
+          refresh: "REFRESH_QA",
+          idToken: qaJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_qa",
+        },
+        pro2: {
+          access: pro2Jwt,
+          refresh: "REFRESH_PRO2",
+          idToken: pro2Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro2",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["qa", "pro2"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      const primaryUsedPercent = accountId === "acct_qa" ? 0 : 2;
+      const secondaryUsedPercent = accountId === "acct_qa" ? 92 : 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: primaryUsedPercent,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: secondaryUsedPercent,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 6 * 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        PI_CODING_AGENT_DIR: piAgentDir,
+      },
+      async () => {
+        const result = JSON.parse(await runCli(["pi", "use", "--home", home]));
+        assert.equal(result.ok, true);
+        assert.equal(result.activated.status, "activated");
+        assert.equal(result.activated.receipt.label, "pro2");
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.equal(updatedState.targets.piCli.activeLabel, "pro2");
+        assert.equal(updatedState.targets.piCli.lastSelectionReceipt.label, "pro2");
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("sync codex clears stale managed auth when the active imported label is removed", async () => {
   const authorityHome = mkTempHome();
   const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
@@ -3275,6 +3651,15 @@ test("sync codex clears stale managed auth when the active imported label is rem
     },
     last_refresh: new Date().toISOString(),
   });
+  writeJson(path.join(consumerHome, ".pi", "agent", "auth.json"), {
+    "openai-codex": {
+      type: "oauth",
+      access: bossJwt,
+      refresh: "REFRESH_BOSS",
+      expires: Date.now() + 3600_000,
+      accountId: "acct_boss",
+    },
+  });
 
   writeJson(consumerStatePath, {
     schemaVersion: "0.2",
@@ -3323,6 +3708,17 @@ test("sync codex clears stale managed auth when the active imported label is rem
           observedAt: new Date().toISOString(),
         },
       },
+      piCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_boss",
+        lastAppliedAt: new Date().toISOString(),
+        lastSelectionReceipt: {
+          action: "pi_use",
+          status: "activated",
+          label: "boss",
+          observedAt: new Date().toISOString(),
+        },
+      },
     },
     pool: { openaiCodex: { history: [] } },
   });
@@ -3336,7 +3732,13 @@ test("sync codex clears stale managed auth when the active imported label is rem
   assert.equal(consumerState.targets.codexCli.expectedAccountId, undefined);
   assert.equal(consumerState.targets.codexCli.lastAppliedAt, undefined);
   assert.equal(consumerState.targets.codexCli.lastSelectionReceipt, undefined);
+  assert.equal(consumerState.targets.piCli.activeLabel, undefined);
+  assert.equal(consumerState.targets.piCli.expectedAccountId, undefined);
+  assert.equal(consumerState.targets.piCli.lastAppliedAt, undefined);
+  assert.equal(consumerState.targets.piCli.lastSelectionReceipt, undefined);
   assert.equal(fs.existsSync(path.join(consumerHome, ".codex", "auth.json")), false);
+  const piAuth = JSON.parse(fs.readFileSync(path.join(consumerHome, ".pi", "agent", "auth.json"), "utf8"));
+  assert.deepEqual(piAuth, {});
 });
 
 test("discoverOpenclawBrowserProfiles reads user-data/Local State for friendly names", () => {
