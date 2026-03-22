@@ -5630,6 +5630,20 @@ function formatStatusAccountUsedCell(usage, index) {
   return `${Math.round(Number(usedPercent))}%`;
 }
 
+function formatStatusAccountResetCell(usage, index) {
+  if (!usage || usage.ok !== true) return "--";
+  const windows = Array.isArray(usage.windows) ? usage.windows : [];
+  const resetAt = windows[index]?.resetAt;
+  const ms = typeof resetAt === "number" ? resetAt : Number(resetAt);
+  if (!Number.isFinite(ms)) return "--";
+  const deltaHours = (ms - Date.now()) / 3600000;
+  if (deltaHours <= 0) return "0h";
+  if (deltaHours >= 48) {
+    return `${(deltaHours / 24).toFixed(1)}d`;
+  }
+  return `${deltaHours.toFixed(1)}h`;
+}
+
 function formatStatusAccountUsageDetail(account) {
   if (account?.provider === OPENAI_CODEX_PROVIDER) {
     return formatCodexUsageSummary(account.usage);
@@ -5695,14 +5709,16 @@ function renderStatusText(view) {
 
   lines.push(`Accounts (${view.accounts.length})`);
   const accountRows = [
-    ["label", "st", "login", "exp", "5h_used", "wk_used", "provider", "flags"],
+    ["label", "st", "login", "exp", "5h_used", "5h_in", "wk_used", "wk_in", "provider", "flags"],
     ...view.accounts.map((account) => [
       account.label,
       account.operator?.status || "unknown",
       formatInteractiveLoginSummary(account.login) || "--",
       formatStatusAccountExpiryCell(account.credentials?.expiresIn),
       formatStatusAccountUsedCell(account.usage, 0),
+      formatStatusAccountResetCell(account.usage, 0),
       formatStatusAccountUsedCell(account.usage, 1),
+      formatStatusAccountResetCell(account.usage, 1),
       account.provider || "unknown",
       buildStatusAccountFlags(account),
     ]),

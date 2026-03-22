@@ -467,6 +467,9 @@ test("status text shows usage reset timestamps for each window", async () => {
 
   try {
     const out = await runCli(["status", "--home", home]);
+    assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
+    assert.match(out, /boss\s+ready\s+aim-profile\s+\S+\s+10%\s+1\.5h\s+20%\s+20\.8h\s+openai-codex/);
+    assert.match(out, /claude\s+ready\s+aim-profile\s+\S+\s+12%\s+1\.9h\s+34%\s+27\.7h\s+anthropic/);
     assert.ok(
       out.includes(
         "usage=5h 10% used (resets Mar 17, 4:45 PM CDT, 1.5h left) · Week 20% used (resets Mar 18, 12:00 PM CDT, 20.8h left)",
@@ -2162,9 +2165,9 @@ test("status text shows manual-callback and browser-managed login modes", async 
 
   const out = await runCli(["status", "--home", home]);
   assert.match(out, /Accounts \(2\)/);
-  assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+wk_used\s+provider\s+flags/);
-  assert.match(out, /claude\s+reauth\s+aim-profile\s+--\s+--\s+--\s+anthropic\s+missing_credentials/);
-  assert.match(out, /manual_label\s+reauth\s+manual-callback\s+--\s+--\s+--\s+openai-codex\s+missing_credentials/);
+  assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
+  assert.match(out, /claude\s+reauth\s+aim-profile\s+--\s+--\s+--\s+--\s+--\s+anthropic\s+missing_credentials/);
+  assert.match(out, /manual_label\s+reauth\s+manual-callback\s+--\s+--\s+--\s+--\s+--\s+openai-codex\s+missing_credentials/);
 });
 
 test("status --json surfaces receipt and projection branches", async () => {
