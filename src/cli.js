@@ -5612,6 +5612,70 @@ function formatInteractiveLoginSummary(login) {
   return null;
 }
 
+function formatStatusAccountExpiryCell(expiresIn) {
+  const raw = String(expiresIn ?? "").trim();
+  if (!raw || raw === "unknown") return "--";
+  const expiredMatch = raw.match(/^expired \((.+)\)$/i);
+  if (expiredMatch?.[1]) {
+    return expiredMatch[1].trim();
+  }
+  return raw;
+}
+
+function formatStatusAccountUsedCell(usage, index) {
+  if (!usage || usage.ok !== true) return "--";
+  const windows = Array.isArray(usage.windows) ? usage.windows : [];
+  const usedPercent = windows[index]?.usedPercent;
+  if (!Number.isFinite(Number(usedPercent))) return "--";
+  return `${Math.round(Number(usedPercent))}%`;
+}
+
+function formatStatusAccountUsageDetail(account) {
+  if (account?.provider === OPENAI_CODEX_PROVIDER) {
+    return formatCodexUsageSummary(account.usage);
+  }
+  if (account?.provider === ANTHROPIC_PROVIDER) {
+    return formatClaudeUsageSummary(account.usage);
+  }
+  return "n/a";
+}
+
+function buildStatusAccountFlags(account) {
+  const flags = [];
+  const detailReason = String(account?.operator?.detailReason ?? "").trim();
+  if (detailReason === "missing_browser" || detailReason === "binding_missing_for_future_reauth") {
+    flags.push("missing_browser");
+  } else if (detailReason && detailReason !== "manual_mode") {
+    flags.push(detailReason);
+  }
+
+  if (account?.usage?.ok === true) {
+    const windows = Array.isArray(account.usage.windows) ? account.usage.windows : [];
+    if (Number(windows[0]?.usedPercent) >= 100) {
+      flags.push("5h_full");
+    }
+    if (Number(windows[1]?.usedPercent) >= 100) {
+      flags.push("week_full");
+    }
+  }
+
+  return flags.length > 0 ? flags.join(",") : "-";
+}
+
+function formatStatusTable(rows) {
+  const normalizedRows = Array.isArray(rows) ? rows : [];
+  if (normalizedRows.length === 0) return [];
+  const widths = normalizedRows[0].map((header, index) => (
+    normalizedRows.reduce((max, row) => Math.max(max, String(row[index] ?? "").length), String(header ?? "").length)
+  ));
+  return normalizedRows.map((row) => (
+    row
+      .map((value, index) => String(value ?? "").padEnd(widths[index]))
+      .join("  ")
+      .trimEnd()
+  ));
+}
+
 function renderStatusText(view) {
   const lines = [];
   lines.push(`aim SSOT: ${view.statePath}`);
@@ -5630,31 +5694,32 @@ function renderStatusText(view) {
   lines.push("");
 
   lines.push(`Accounts (${view.accounts.length})`);
-  for (const a of view.accounts) {
-    const identity =
-      a.identity?.expectEmail
-        ? `expectEmail:${a.identity.expectEmail}`
-        : a.identity?.accountId
-          ? `accountId:${a.identity.accountId}`
-          : a.identity?.browserUserName
-            ? `browserUser:${a.identity.browserUserName}`
-            : a.identity?.browserGaiaName
-              ? `browser:${a.identity.browserGaiaName}`
-              : "identity:unknown";
-    const login = formatInteractiveLoginSummary(a.login);
-    const expires = a.credentials?.expiresIn ? `expires=${a.credentials.expiresIn}` : "expires=unknown";
-    const usage =
-      a.provider === OPENAI_CODEX_PROVIDER
-        ? `usage=${formatCodexUsageSummary(a.usage)}`
-        : a.provider === ANTHROPIC_PROVIDER
-          ? `usage=${formatClaudeUsageSummary(a.usage)}`
-          : "usage=n/a";
-    const operatorBits = [
-      `${a.operator?.status || "unknown"}`,
-      a.operator?.detailReason ? `detail=${a.operator.detailReason}` : null,
-      a.operator?.actionRequired ? `action=${a.operator.actionRequired}` : null,
-    ].filter(Boolean);
-    lines.push(`- ${operatorBits.join(" ")} ${a.provider} ${a.label}${login ? ` login=${login}` : ""} ${identity} ${expires} ${usage}`);
+  const accountRows = [
+    ["label", "st", "login", "exp", "5h_used", "wk_used", "provider", "flags"],
+    ...view.accounts.map((account) => [
+      account.label,
+      account.operator?.status || "unknown",
+      formatInteractiveLoginSummary(account.login) || "--",
+      formatStatusAccountExpiryCell(account.credentials?.expiresIn),
+      formatStatusAccountUsedCell(account.usage, 0),
+      formatStatusAccountUsedCell(account.usage, 1),
+      account.provider || "unknown",
+      buildStatusAccountFlags(account),
+    ]),
+  ];
+  lines.push(...formatStatusTable(accountRows));
+
+  const usageDetailLines = view.accounts
+    .map((account) => {
+      const summary = formatStatusAccountUsageDetail(account);
+      if (!summary || summary === "unknown" || summary === "n/a" || summary === "ok") return null;
+      return `- ${account.label} usage=${summary}`;
+    })
+    .filter(Boolean);
+  if (usageDetailLines.length > 0) {
+    lines.push("");
+    lines.push("Usage detail");
+    lines.push(...usageDetailLines);
   }
 
   const assignments = isObject(view.openclaw?.assignments) ? view.openclaw.assignments : {};
@@ -6030,6 +6095,7 @@ async function promptMappedChromeBinding({ state, label, promptLineImpl = prompt
     const userDataDir = await promptLineImpl(`Chrome user-data-dir for "${label}" (absolute path):`);
     const profileDirectory = await promptLineImpl(
       `Chrome profile-directory for "${label}" (blank for Default):`,
+      { defaultValue: "" },
     );
     try {
       const updated = setBrowserBinding({

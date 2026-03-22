@@ -1199,6 +1199,83 @@ test("guided panel can adopt a discovered OpenClaw browser home through the chro
   assert.match(out, /cfo is ready\./);
 });
 
+test("manual chrome-profile entry accepts blank profile-directory as Default", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const userDataDir = path.join(home, "Library", "Application Support", "Google", "Chrome-Pro1");
+  fs.mkdirSync(path.join(userDataDir, "Default"), { recursive: true });
+  writeJson(path.join(userDataDir, "Local State"), {
+    profile: {
+      info_cache: {
+        Default: {
+          name: "Pro1",
+          user_name: "pro1@fun.country",
+          gaia_name: "",
+        },
+      },
+    },
+  });
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex" },
+    },
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const answers = ["3", userDataDir, "0"];
+  const opened = [];
+  let sawBlankDefault = false;
+  const out = await runCli(["pro1", "--home", home], {
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    promptLineImpl: async (message, opts = {}) => {
+      if (String(message).includes('Chrome profile-directory for "pro1"')) {
+        assert.equal(opts.defaultValue, "");
+        sawBlankDefault = true;
+        return opts.defaultValue;
+      }
+      return answers.shift();
+    },
+    readOpenclawBindingsFromConfigImpl: () => [],
+    readOpenclawAgentsListFromConfigImpl: () => [],
+    openUrlImpl: ({ binding, url }) => {
+      opened.push({ binding, url });
+      return { ok: true };
+    },
+    loginOpenAICodexImpl: async ({ onAuth }) => {
+      onAuth({ url: "https://chatgpt.com/oauth" });
+      return {
+        access: makeFakeJwt({ sub: "pro1" }),
+        refresh: "REFRESHED",
+        expires: Date.now() + 3600_000,
+        accountId: "acct_pro1",
+      };
+    },
+  });
+
+  const persisted = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(sawBlankDefault, true);
+  assert.equal(persisted.accounts.pro1.browser.mode, "chrome-profile");
+  assert.equal(persisted.accounts.pro1.browser.userDataDir, userDataDir);
+  assert.equal(persisted.accounts.pro1.browser.profileDirectory, undefined);
+  assert.equal(persisted.accounts.pro1.reauth.mode, "browser-managed");
+  assert.deepEqual(opened, [
+    {
+      binding: {
+        mode: "chrome-profile",
+        userDataDir,
+      },
+      url: "https://chatgpt.com/oauth",
+    },
+  ]);
+  assert.match(out, /Saved browser setup for pro1\./);
+  assert.match(out, /pro1 is ready\./);
+});
+
 test("guided ready panel can show details and change browser setup", async () => {
   const home = mkTempHome();
   const profileDir = path.join(home, ".agent-browser", "profiles", "agent-cfo");
@@ -2084,8 +2161,10 @@ test("status text shows manual-callback and browser-managed login modes", async 
   });
 
   const out = await runCli(["status", "--home", home]);
-  assert.match(out, /openai-codex manual_label login=manual-callback/);
-  assert.match(out, /anthropic claude login=aim-profile/);
+  assert.match(out, /Accounts \(2\)/);
+  assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+wk_used\s+provider\s+flags/);
+  assert.match(out, /claude\s+reauth\s+aim-profile\s+--\s+--\s+--\s+anthropic\s+missing_credentials/);
+  assert.match(out, /manual_label\s+reauth\s+manual-callback\s+--\s+--\s+--\s+openai-codex\s+missing_credentials/);
 });
 
 test("status --json surfaces receipt and projection branches", async () => {
