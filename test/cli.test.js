@@ -700,7 +700,10 @@ test("launchBrowserBindingForUrl uses explicit agent-browser profile session and
   ]);
 });
 
-test("launchBrowserBindingForUrl passes chrome profile-directory through to Google Chrome", () => {
+test(
+  "launchBrowserBindingForUrl passes chrome profile-directory through to Google Chrome",
+  { skip: process.platform !== "darwin" },
+  () => {
   const home = mkTempHome();
   const userDataDir = writeChromeLocalState(home, [
     {
@@ -741,7 +744,8 @@ test("launchBrowserBindingForUrl passes chrome profile-directory through to Goog
       options: { stdio: "ignore" },
     },
   ]);
-});
+  },
+);
 
 test("aim browser set and show manage explicit browser bindings", async () => {
   const home = mkTempHome();
