@@ -9,7 +9,11 @@
 The operating model is intentionally simple:
 
 - `~/.aimgr/secrets.json` is the durable SSOT
-- `~/.aimgr/browser/<label>/user-data` is the AIM-owned browser home for browser-managed labels
+- browser binding is explicit per label:
+  - `aim-profile` -> `~/.aimgr/browser/<label>/user-data`
+  - `chrome-profile` -> explicit raw Chrome `user-data-dir`
+  - `agent-browser` -> explicit `profile` + `session`
+  - `manual-callback` -> no local browser binding
 - OpenClaw assignments and local Codex `auth.json` are derived outputs
 - operators think in labels like `boss`, `lessons`, and `qa`, not raw tokens or profile IDs
 
@@ -19,7 +23,7 @@ One AIM-owned account pool, one obvious operator path, and no legacy drift.
 
 That means:
 
-- `aim <label>` is for account maintenance and reauth
+- `aim <label>` is the primary human path
 - `aim rebalance openclaw` is the canonical OpenClaw assignment command
 - `aim codex use` is the canonical local Codex selection command
 - `aim pin`, `aim autopin openclaw`, and `aim codex use <label>` are removed
@@ -89,6 +93,7 @@ Status answers the core operator questions:
 
 - which labels are `ready`, `reauth`, or `blocked`
 - what OpenClaw currently has assigned
+- how the last weighted rebalance spread agents across accounts
 - what the local Codex target currently has selected
 - what the next-best eligible account would be
 - whether the pool needs more capacity
@@ -97,11 +102,33 @@ Status answers the core operator questions:
 
 ```bash
 aim boss
-# or
+```
+
+On a TTY, `aim <label>` is the human front door. It opens a guided label panel with numbered choices:
+
+```text
+$ aim boss
+
+boss · openai-codex
+Status: ready
+ChatGPT login: valid
+Browser: agent-browser / agent-boss
+
+What do you want to do?
+  1. Open browser
+  2. Reauth / refresh login
+  3. Change browser setup
+  4. Show details
+  0. Done
+```
+
+Use explicit `aim login <label>` only when you want the one-shot maintenance/admin lane:
+
+```bash
 aim login boss
 ```
 
-That flow:
+The maintenance flow:
 
 1. ensures the label has a provider
 2. uses the label's configured login rail
@@ -111,9 +138,34 @@ That flow:
 
 Important behavior:
 
-- Browser-managed labels use the AIM-owned browser dir at `~/.aimgr/browser/<label>/user-data`.
+- Browser-managed labels use the label's explicit binding, not a guessed browser lane.
+- `aim-profile` uses `~/.aimgr/browser/<label>/user-data`.
+- `chrome-profile` uses the exact `--user-data-dir` you configured and, when present, the exact Chrome `profile-directory`.
+- `agent-browser` uses the exact `--profile` and `--session` you configured.
 - Manual-callback labels print the OAuth URL and prompt for the final callback URL.
 - Reauth does **not** rebalance OpenClaw or mutate downstream assignments.
+
+When you pick `Use another Chrome profile` from the guided panel, AIM now lists the discovered raw Chrome-style browser homes on this Mac, including OpenClaw browser homes and host Chrome profiles. It tells you the exact `user-data-dir` + `profile-directory` each choice would save, and lets you confirm before writing the binding.
+
+### 2A) Inspect or repair the browser binding
+
+Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, and `aim codex use`.
+
+When you need to inspect or repair the browser substrate explicitly, use the advanced/admin surface:
+
+```bash
+aim browser show <label>
+aim browser set <label> --mode aim-profile [--seed-from-openclaw <profileId>]
+aim browser set <label> --mode chrome-profile --user-data-dir <abs-path> [--profile-directory <name>]
+aim browser set <label> --mode agent-browser --profile <abs-path> --session <name>
+aim browser set <label> --mode manual-callback
+```
+
+Non-negotiables:
+
+- AIM never guesses from a workspace-local `agent-browser.json`.
+- AIM never uses the implicit `default` `agent-browser` session.
+- There is no supported "generic Chrome somehow" mode.
 
 ### 3) Rebalance OpenClaw from the shared pool
 
@@ -126,13 +178,17 @@ aim rebalance openclaw
 This command:
 
 - evaluates pooled label readiness plus live usage
-- keeps current assignments when they stay within the keep-current threshold
+- refreshes AIM’s per-agent demand ledger from OpenClaw session token counters
+- spreads agents many-to-one across remaining account headroom instead of burning one label per agent
+- keeps current assignments when they stay within weighted hysteresis
 - writes the derived OpenClaw assignments
-- records an explicit receipt:
+- records an explicit receipt with `allocationMode` plus `perAccountLoad`:
   - `applied`
   - `noop`
   - `applied_with_warnings`
   - `blocked`
+
+When recent session history exists, rebalance is demand-weighted. When it does not, cold-start agents use an explicit equal-share baseline until AIM has real usage.
 
 If you only want to recompile the current recorded assignments into OpenClaw without reselection:
 
@@ -268,6 +324,7 @@ Human-readable or JSON summary of:
 - labels and operator states
 - warnings
 - OpenClaw assignments and last rebalance receipt
+- weighted spread details (`allocationMode`, `perAccountLoad`)
 - Codex authority source, active label, and last selection receipt
 - next-best candidate and capacity projection
 
@@ -278,12 +335,18 @@ aim status --json
 
 ### `aim <label>` / `aim login <label>`
 
-Account maintenance for a label:
+Primary human path plus explicit admin lane:
 
 ```bash
 aim boss
 aim login boss
 ```
+
+Rules:
+
+- `aim <label>` opens the guided label panel on a TTY
+- non-TTY `aim <label>` behaves like explicit `aim login <label>`
+- `aim login <label>` keeps the one-shot JSON-style maintenance contract for scripts/tests/admin use
 
 ### `aim rebalance openclaw`
 
@@ -292,6 +355,12 @@ Selects pooled Codex labels for configured OpenClaw agents and writes the derive
 ```bash
 aim rebalance openclaw
 ```
+
+The rebalance planner is intentionally different from Codex next-best label selection:
+
+- it imports per-agent OpenClaw session token counters into AIM’s demand ledger
+- it can assign multiple agents to the same account when remaining headroom supports that
+- it only skips agents when projected weighted demand exceeds remaining eligible supply
 
 ### `aim sync openclaw` / `aim apply`
 
