@@ -130,9 +130,11 @@ async function withEnv(overrides, fn) {
 function installFakeOpenclaw({ rootDir, agentsList }) {
   const binDir = path.join(rootDir, "bin");
   const agentsListPath = path.join(rootDir, "agents-list.json");
+  const sessionPatchLogPath = path.join(rootDir, "openclaw-sessions-patch-log.json");
   const restartLogPath = path.join(rootDir, "openclaw-gateway-restarts.json");
   fs.mkdirSync(binDir, { recursive: true });
   writeJson(agentsListPath, agentsList);
+  writeJson(sessionPatchLogPath, []);
   writeJson(restartLogPath, []);
   const scriptPath = path.join(binDir, "openclaw");
   fs.writeFileSync(
@@ -172,6 +174,11 @@ if (args[0] === "gateway" && args[1] === "call" && args[2] === "sessions.list") 
   process.exit(1);
 }
 if (args[0] === "gateway" && args[1] === "call" && args[2] === "sessions.patch") {
+  const existing = fs.existsSync(${JSON.stringify(sessionPatchLogPath)})
+    ? JSON.parse(fs.readFileSync(${JSON.stringify(sessionPatchLogPath)}, "utf8"))
+    : [];
+  existing.push({ at: new Date().toISOString(), args });
+  fs.writeFileSync(${JSON.stringify(sessionPatchLogPath)}, JSON.stringify(existing, null, 2) + "\\n");
   process.exit(0);
 }
 if (args[0] === "gateway" && args[1] === "restart") {
@@ -194,6 +201,11 @@ process.exit(2);
 function readFakeOpenclawRestarts(rootDir) {
   const restartLogPath = path.join(rootDir, "openclaw-gateway-restarts.json");
   return JSON.parse(fs.readFileSync(restartLogPath, "utf8"));
+}
+
+function readFakeOpenclawSessionPatches(rootDir) {
+  const sessionPatchLogPath = path.join(rootDir, "openclaw-sessions-patch-log.json");
+  return JSON.parse(fs.readFileSync(sessionPatchLogPath, "utf8"));
 }
 
 function makeFakeJwt(payload = {}) {
@@ -1745,6 +1757,7 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
         assert.equal(first.ok, true);
         assert.equal(first.rebalanced.status, "applied");
         assert.equal(readFakeOpenclawRestarts(home).length, 1);
+        assert.equal(readFakeOpenclawSessionPatches(home).length, 0);
 
         const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
         assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
@@ -1844,6 +1857,7 @@ test("apply fails closed for unassigned managed agents and clears stale session 
       assert.equal(parsed.ok, true);
       assert.equal(parsed.synced.sessions.mode, "disk");
       assert.equal(readFakeOpenclawRestarts(home).length, 1);
+      assert.equal(readFakeOpenclawSessionPatches(home).length, 0);
 
       const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
       assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
@@ -1867,7 +1881,7 @@ test("apply fails closed for unassigned managed agents and clears stale session 
   );
 });
 
-test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary when weighted demand exceeds supply", async () => {
+test("rebalance openclaw applies the weekly-share target at the real CLI boundary", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeBinDir = installFakeOpenclaw({
@@ -1973,27 +1987,24 @@ test("rebalance openclaw surfaces applied_with_warnings at the real CLI boundary
         const out = await runCli(["rebalance", "openclaw"]);
         const parsed = JSON.parse(out);
         assert.equal(parsed.ok, true);
-        assert.equal(parsed.rebalanced.status, "applied_with_warnings");
-        assert.deepEqual(
-          parsed.rebalanced.receipt.skipped.map(({ agentId, reason }) => ({ agentId, reason })),
-          [
-            { agentId: "agent_light", reason: "projected_demand_exceeds_eligible_supply" },
-            { agentId: "agent_idle", reason: "projected_demand_exceeds_eligible_supply" },
-          ],
-        );
+        assert.equal(parsed.rebalanced.status, "applied");
+        assert.deepEqual(parsed.rebalanced.receipt.skipped, []);
         assert.equal(parsed.rebalanced.receipt.allocationMode, "demand_weighted");
-        assert.equal(parsed.rebalanced.receipt.perAccountLoad.find((entry) => entry.label === "boss")?.carriedAgentCount, 1);
+        assert.equal(parsed.rebalanced.receipt.perAccountLoad.find((entry) => entry.label === "boss")?.carriedAgentCount, 2);
+        assert.equal(parsed.rebalanced.receipt.perAccountLoad.find((entry) => entry.label === "qa")?.carriedAgentCount, 1);
+        assert.deepEqual(parsed.rebalanced.receipt.moved.map(({ agentId, from, to }) => ({ agentId, from, to })), [
+          { agentId: "agent_idle", from: "qa", to: "boss" },
+        ]);
 
         const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-        assert.equal(updatedState.targets.openclaw.lastApplyReceipt.status, "applied_with_warnings");
+        assert.equal(updatedState.targets.openclaw.lastApplyReceipt.status, "applied");
         assert.equal(updatedState.targets.openclaw.lastApplyReceipt.allocationMode, "demand_weighted");
-        assert.deepEqual(
-          updatedState.targets.openclaw.lastApplyReceipt.skipped.map(({ agentId, reason }) => ({ agentId, reason })),
-          [
-            { agentId: "agent_light", reason: "projected_demand_exceeds_eligible_supply" },
-            { agentId: "agent_idle", reason: "projected_demand_exceeds_eligible_supply" },
-          ],
-        );
+        assert.deepEqual(updatedState.targets.openclaw.lastApplyReceipt.skipped, []);
+        assert.deepEqual(updatedState.targets.openclaw.assignments, {
+          agent_boss: "boss",
+          agent_light: "qa",
+          agent_idle: "boss",
+        });
       },
     );
   } finally {
@@ -3503,7 +3514,36 @@ test("planWeightedOpenclawRebalance supports many-to-one cold-start spread witho
   assert.deepEqual(blocked.blockers, [{ reason: "no_eligible_pool_account" }]);
 });
 
-test("planWeightedOpenclawRebalance skips agents only when projected demand exceeds weighted supply", () => {
+test("planWeightedOpenclawRebalance spreads by weekly remaining before short-window headroom", () => {
+  const plan = planWeightedOpenclawRebalance({
+    configuredAgents: ["agent_a", "agent_b", "agent_c"],
+    currentAssignments: {},
+    eligibleLabels: ["boss", "office"],
+    usage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 20 }, { kind: "secondary", usedPercent: 60 }],
+      },
+      office: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 80 }, { kind: "secondary", usedPercent: 0 }],
+      },
+    },
+    agentDemand: {},
+    now: Date.now(),
+  });
+
+  assert.equal(plan.status, "applied");
+  assert.deepEqual(plan.assignments, {
+    agent_a: "office",
+    agent_b: "office",
+    agent_c: "boss",
+  });
+  assert.equal(plan.perAccountLoad.find((entry) => entry.label === "office")?.carriedAgentCount, 2);
+  assert.equal(plan.perAccountLoad.find((entry) => entry.label === "boss")?.carriedAgentCount, 1);
+});
+
+test("planWeightedOpenclawRebalance spreads demand across the weekly pool without burning lower-headroom labels", () => {
   const plan = planWeightedOpenclawRebalance({
     configuredAgents: ["agent_heavy", "agent_medium", "agent_light", "agent_idle"],
     currentAssignments: {
@@ -3532,20 +3572,107 @@ test("planWeightedOpenclawRebalance skips agents only when projected demand exce
     now: Date.now(),
   });
 
-  assert.equal(plan.status, "applied_with_warnings");
+  assert.equal(plan.status, "noop");
   assert.equal(plan.allocationMode, "demand_weighted");
   assert.deepEqual(plan.assignments, {
     agent_heavy: "boss",
     agent_medium: "boss",
+    agent_light: "qa",
+    agent_idle: "qa",
   });
-  assert.deepEqual(
-    plan.skipped.map(({ agentId, reason }) => ({ agentId, reason })),
-    [
-      { agentId: "agent_light", reason: "projected_demand_exceeds_eligible_supply" },
-      { agentId: "agent_idle", reason: "projected_demand_exceeds_eligible_supply" },
-    ],
-  );
+  assert.deepEqual(plan.skipped, []);
+  assert.equal(plan.moved.length, 0);
   assert.equal(plan.perAccountLoad.find((entry) => entry.label === "boss")?.carriedDemandWeight, 200);
+  assert.equal(plan.perAccountLoad.find((entry) => entry.label === "qa")?.carriedDemandWeight, 50);
+});
+
+test("planWeightedOpenclawRebalance is stable on immediate repeat when weekly headroom is unchanged", () => {
+  const first = planWeightedOpenclawRebalance({
+    configuredAgents: ["agent_heavy", "agent_medium", "agent_light", "agent_idle"],
+    currentAssignments: {
+      agent_heavy: "coder",
+      agent_medium: "pro1",
+      agent_light: "boss",
+      agent_idle: "growth",
+    },
+    eligibleLabels: ["boss", "coder", "growth", "office", "pro1", "pro2"],
+    usage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 15 }, { kind: "secondary", usedPercent: 45 }],
+      },
+      coder: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 10 }, { kind: "secondary", usedPercent: 20 }],
+      },
+      growth: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 20 }, { kind: "secondary", usedPercent: 55 }],
+      },
+      office: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 0 }],
+      },
+      pro1: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 0 }],
+      },
+      pro2: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 0 }],
+      },
+    },
+    agentDemand: {
+      agent_heavy: { source: "openclaw-session-tokens", demandWeight: 150 },
+      agent_medium: { source: "openclaw-session-tokens", demandWeight: 90 },
+      agent_light: { source: "openclaw-session-tokens", demandWeight: 40 },
+      agent_idle: { source: "openclaw-session-tokens", demandWeight: 20 },
+    },
+    now: Date.now(),
+  });
+
+  const second = planWeightedOpenclawRebalance({
+    configuredAgents: ["agent_heavy", "agent_medium", "agent_light", "agent_idle"],
+    currentAssignments: first.assignments,
+    eligibleLabels: ["boss", "coder", "growth", "office", "pro1", "pro2"],
+    usage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 15 }, { kind: "secondary", usedPercent: 45 }],
+      },
+      coder: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 10 }, { kind: "secondary", usedPercent: 20 }],
+      },
+      growth: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 20 }, { kind: "secondary", usedPercent: 55 }],
+      },
+      office: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 0 }],
+      },
+      pro1: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 0 }],
+      },
+      pro2: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 0 }],
+      },
+    },
+    agentDemand: {
+      agent_heavy: { source: "openclaw-session-tokens", demandWeight: 150 },
+      agent_medium: { source: "openclaw-session-tokens", demandWeight: 90 },
+      agent_light: { source: "openclaw-session-tokens", demandWeight: 40 },
+      agent_idle: { source: "openclaw-session-tokens", demandWeight: 20 },
+    },
+    now: Date.now(),
+  });
+
+  assert.equal(second.status, "noop");
+  assert.deepEqual(second.assignments, first.assignments);
+  assert.equal(second.moved.length, 0);
 });
 
 test("projectPoolCapacity flags high risk from blocked receipts and no-spare exhaustion", () => {
@@ -3676,6 +3803,92 @@ test("rebalanceOpenclawPool reports applied_with_warnings when sync returns warn
   assert.equal(result.status, "applied_with_warnings");
   assert.equal(state.targets.openclaw.lastApplyReceipt.status, "applied_with_warnings");
   assert.equal(state.targets.openclaw.lastApplyReceipt.warnings[0].kind, "test_warning");
+});
+
+test("rebalanceOpenclawPool preserves configured non-codex assignments while rebalancing the codex pool", async () => {
+  const home = mkTempHome();
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+      claudalyst: {
+        provider: "anthropic",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: "ACCESS_TOKEN",
+          refresh: "REFRESH_TOKEN",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {
+        claudalyst: {
+          access: "ACCESS_ANTHROPIC",
+          refresh: "REFRESH_ANTHROPIC",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        },
+      },
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: {
+          agent_boss: "boss",
+          agent_claudalyst: "claudalyst",
+        },
+        exclusions: {},
+      },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  };
+
+  const result = await rebalanceOpenclawPool(
+    { home },
+    state,
+    {
+      probeUsageSnapshotsByProviderImpl: async () => ({
+        "openai-codex": {
+          boss: {
+            ok: true,
+            windows: [{ kind: "primary", usedPercent: 5 }, { kind: "secondary", usedPercent: 5 }],
+          },
+        },
+        anthropic: {},
+      }),
+      readOpenclawAgentsListFromConfigImpl: () => [
+        { id: "agent_boss", model: "openai-codex/gpt-5.4" },
+        { id: "agent_claudalyst", model: "anthropic/claude-sonnet-4.5" },
+      ],
+      syncOpenclawFromStateImpl: async () => ({
+        auth: { wrote: [] },
+        sessions: { reason: "disk" },
+        warnings: [],
+      }),
+    },
+  );
+
+  assert.equal(result.status, "noop");
+  assert.deepEqual(state.targets.openclaw.assignments, {
+    agent_boss: "boss",
+    agent_claudalyst: "claudalyst",
+  });
+  assert.equal(state.targets.openclaw.lastApplyReceipt.assignments.agent_claudalyst, "claudalyst");
 });
 
 test("sessionEntryNeedsModelReset detects runtime/override/provider drift vs desired model", () => {

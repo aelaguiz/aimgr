@@ -4559,15 +4559,18 @@ function buildLabelCapacityInfo(snapshot) {
   const windows = Array.isArray(snapshot?.windows) ? snapshot.windows : [];
   const secondaryRemainingPct = windows.length > 1 ? clampPercent(100 - secondaryUsedPct) : clampPercent(100 - primaryUsedPct);
   const primaryRemainingPct = clampPercent(100 - primaryUsedPct);
+  const planningUsedPct = windows.length > 1 ? secondaryUsedPct : primaryUsedPct;
+  const planningRemainingPct = windows.length > 1 ? secondaryRemainingPct : primaryRemainingPct;
   const bottleneckUsedPct = Math.max(primaryUsedPct, windows.length > 1 ? secondaryUsedPct : primaryUsedPct);
-  const remainingPct = Math.min(primaryRemainingPct, secondaryRemainingPct);
   return {
     primaryUsedPct,
     secondaryUsedPct,
     primaryRemainingPct,
     secondaryRemainingPct,
+    planningUsedPct,
+    planningRemainingPct,
     bottleneckUsedPct,
-    remainingPct,
+    remainingPct: planningRemainingPct,
   };
 }
 
@@ -4729,56 +4732,24 @@ function discoverConfiguredOpenclawCodexAgents({ agentsList, exclusions }) {
     .toSorted((a, b) => a.localeCompare(b));
 }
 
-function buildWeightedRebalanceSupply({ labels, usage, currentAssignments, demandByAgent, allocationMode }) {
+function buildWeightedRebalanceSupply({ labels, usage }) {
   const normalizedLabels = [...new Set((Array.isArray(labels) ? labels : []).map((label) => normalizeLabel(label)))];
-  const existingAssignments = isObject(currentAssignments) ? currentAssignments : {};
-  const demand = isObject(demandByAgent) ? demandByAgent : {};
-  const currentLoadByLabel = Object.fromEntries(normalizedLabels.map((label) => [label, 0]));
-  const calibrationRates = [];
   const byLabel = {};
 
-  for (const [agentIdRaw, labelRaw] of Object.entries(existingAssignments)) {
-    if (typeof labelRaw !== "string") continue;
-    const label = normalizeLabel(labelRaw);
-    if (!Object.hasOwn(currentLoadByLabel, label)) continue;
-    const agentId = normalizeAgentId(agentIdRaw);
-    currentLoadByLabel[label] += normalizeDemandWeight(demand[agentId]?.demandWeight, MIN_AGENT_DEMAND_WEIGHT);
-  }
-
+  // Weekly remaining headroom is the allocator SSOT.
+  // Do not derive target capacity from current assignments or repeat rebalances will churn.
   for (const label of normalizedLabels) {
     const capacity = buildLabelCapacityInfo(usage?.[label] ?? null);
-    const currentLoadWeight = normalizeDemandWeight(currentLoadByLabel[label], 0);
-    const calibrationRate =
-      currentLoadWeight > 0 && capacity.bottleneckUsedPct > 0 ? currentLoadWeight / capacity.bottleneckUsedPct : null;
-    if (calibrationRate !== null && Number.isFinite(calibrationRate) && calibrationRate > 0) {
-      calibrationRates.push(calibrationRate);
-    }
     byLabel[label] = {
       ...capacity,
-      currentLoadWeight: roundDemandWeight(currentLoadWeight),
-      calibrationRate,
       capacityBudgetWeight: null,
       targetUnits: Math.max(0, capacity.remainingPct),
     };
   }
 
-  const fleetCalibrationRate =
-    calibrationRates.length > 0 ? calibrationRates.reduce((sum, rate) => sum + rate, 0) / calibrationRates.length : null;
-  const canBudgetDemand = allocationMode === "demand_weighted" && fleetCalibrationRate !== null;
-
-  if (canBudgetDemand) {
-    for (const label of normalizedLabels) {
-      const entry = byLabel[label];
-      const rate = entry.calibrationRate ?? fleetCalibrationRate;
-      const capacityBudgetWeight = rate !== null ? Math.max(0, entry.remainingPct * rate) : 0;
-      entry.capacityBudgetWeight = roundDemandWeight(capacityBudgetWeight);
-      entry.targetUnits = entry.capacityBudgetWeight;
-    }
-  }
-
   return {
     byLabel,
-    budgetingEnabled: canBudgetDemand,
+    budgetingEnabled: true,
   };
 }
 
@@ -4900,12 +4871,10 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
       ];
     }),
   );
+  const totalDemandWeight = agentIds.reduce((sum, agentId) => sum + demandByAgent[agentId].demandWeight, 0);
   const supply = buildWeightedRebalanceSupply({
     labels,
     usage,
-    currentAssignments: existingAssignments,
-    demandByAgent,
-    allocationMode,
   });
   const targetUnitsTotal = labels.reduce((sum, label) => sum + normalizeDemandWeight(supply.byLabel[label]?.targetUnits, 0), 0);
   if (targetUnitsTotal <= 0) {
@@ -4931,7 +4900,6 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
     };
   }
 
-  const totalDemandWeight = agentIds.reduce((sum, agentId) => sum + demandByAgent[agentId].demandWeight, 0);
   const targetDemandByLabel = Object.fromEntries(
     labels.map((label) => [
       label,
@@ -4940,6 +4908,10 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
         : (normalizeDemandWeight(supply.byLabel[label]?.targetUnits, 0) / targetUnitsTotal) * totalDemandWeight,
     ]),
   );
+  for (const label of labels) {
+    if (!isObject(supply.byLabel[label])) continue;
+    supply.byLabel[label].capacityBudgetWeight = roundDemandWeight(targetDemandByLabel[label]);
+  }
   const agentIdsByDemand = [...agentIds].sort((a, b) => {
     const aDemand = demandByAgent[a].demandWeight;
     const bDemand = demandByAgent[b].demandWeight;
@@ -4968,12 +4940,11 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
           agentWeight: demand.demandWeight,
         }),
       )
-      .filter((candidate) => candidate.capacityBudgetWeight === null || (candidate.remainingBudgetWeight ?? 0) + 1e-9 >= demand.demandWeight)
       .toSorted((a, b) => {
         if (a.overflowWeight !== b.overflowWeight) return a.overflowWeight - b.overflowWeight;
         if (a.projectedDemandRatio !== b.projectedDemandRatio) return a.projectedDemandRatio - b.projectedDemandRatio;
-        if (a.primaryRemainingPct !== b.primaryRemainingPct) return b.primaryRemainingPct - a.primaryRemainingPct;
         if (a.secondaryRemainingPct !== b.secondaryRemainingPct) return b.secondaryRemainingPct - a.secondaryRemainingPct;
+        if (a.primaryRemainingPct !== b.primaryRemainingPct) return b.primaryRemainingPct - a.primaryRemainingPct;
         if (a.assignedCount !== b.assignedCount) return a.assignedCount - b.assignedCount;
         return a.label.localeCompare(b.label);
       });
@@ -7163,26 +7134,12 @@ async function syncOpenclawFromState(params, state) {
     };
   }
 
-  let gateway = { attempted: false };
-  const gatewayProbe = patchOps.length > 0 ? probeOpenclawGateway({ timeoutMs: 4000 }) : { ok: false, reason: "no_model_patch_ops" };
-  if (patchOps.length > 0) {
-    if (gatewayProbe.ok) {
-      gateway.attempted = true;
-      const patched = await applySessionsModelViaGatewayOps({ ops: patchOps, timeoutMs: 20000 });
-      gateway = {
-        attempted: true,
-        ok: patched.ok,
-        failures: patched.failures.slice(0, 10),
-        failuresCount: patched.failures.length,
-      };
-    } else {
-      gateway = { attempted: false, ok: false, reason: gatewayProbe.reason, stderr: gatewayProbe.stderr };
-    }
-  } else {
-    gateway = { attempted: false, ok: false, reason: "no_model_patch_ops" };
-  }
+  const gateway =
+    patchOps.length > 0
+      ? { attempted: false, ok: false, reason: "restart_applies_runtime" }
+      : { attempted: false, ok: false, reason: "no_model_patch_ops" };
 
-  // Always patch disk as a persistent fallback (and to make sure the on-disk store matches reality).
+  // Restart is the live apply mechanism; patch disk first so the fresh gateway reads the canonical session state.
   const perAgentDisk = [];
   let filesChanged = 0;
   let sessionsChanged = 0;
@@ -7222,7 +7179,7 @@ async function syncOpenclawFromState(params, state) {
         ? { desiredByAgentId: desiredModelRefByAgentId, ops: applied }
         : { skipped: true, reason: "no_assignments" },
     sessions: {
-      mode: patchOps.length > 0 && gatewayProbe.ok ? "gateway+disk" : "disk",
+      mode: "disk",
       gateway,
       filesChanged,
       sessionsChanged,
@@ -7378,10 +7335,30 @@ export async function rebalanceOpenclawPool(
 
   const target = getOpenclawTargetState(state);
   const agentsList = readOpenclawAgentsListFromConfigImpl();
+  const currentAssignments = getOpenclawAssignments(state);
+  const configuredAgentIds = new Set(
+    (Array.isArray(agentsList) ? agentsList : [])
+      .map((entry) => (typeof entry?.id === "string" ? normalizeAgentId(entry.id) : ""))
+      .filter(Boolean),
+  );
   const configuredAgents = discoverConfiguredOpenclawCodexAgents({
     agentsList,
     exclusions: getOpenclawExclusions(state),
   });
+  const codexManagedAgentIds = new Set(configuredAgents.map((agentId) => normalizeAgentId(agentId)));
+  const exclusions = getOpenclawExclusions(state);
+  const preservedAssignments = Object.fromEntries(
+    Object.entries(currentAssignments).filter(([agentIdRaw]) => {
+      const agentId = normalizeAgentId(agentIdRaw);
+      if (codexManagedAgentIds.has(agentId)) {
+        return false;
+      }
+      if (typeof exclusions?.[agentId] === "string" && exclusions[agentId].trim()) {
+        return true;
+      }
+      return configuredAgentIds.has(agentId);
+    }),
+  );
   const demandRefresh = refreshOpenclawAgentDemandLedger({
     state,
     homeDir,
@@ -7391,12 +7368,13 @@ export async function rebalanceOpenclawPool(
   });
   const plan = planWeightedOpenclawRebalance({
     configuredAgents,
-    currentAssignments: getOpenclawAssignments(state),
+    currentAssignments,
     eligibleLabels: poolStatus.eligibleLabels,
     usage: usageByLabel,
     agentDemand: demandRefresh.demandByAgent,
     now: Date.parse(observedAt),
   });
+  const nextAssignments = { ...preservedAssignments, ...plan.assignments };
 
   target.lastRebalancedAt = observedAt;
 
@@ -7429,7 +7407,7 @@ export async function rebalanceOpenclawPool(
     return { status: "blocked", receipt };
   }
 
-  target.assignments = plan.assignments;
+  target.assignments = nextAssignments;
   const synced = await syncOpenclawFromStateImpl(params, state);
   const warnings = Array.isArray(synced.warnings) ? synced.warnings : [];
   let status = "applied";
@@ -7450,7 +7428,7 @@ export async function rebalanceOpenclawPool(
         : typeof synced.sessions?.reason === "string"
           ? synced.sessions.reason
           : null,
-    assignments: sanitizeForStatus(plan.assignments),
+    assignments: sanitizeForStatus(nextAssignments),
     moved: plan.moved,
     unchanged: plan.unchanged,
     skipped: plan.skipped,
