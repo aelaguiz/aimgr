@@ -6242,6 +6242,9 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
     lines.push(parts.join(" "));
   }
 
+  lines.push("");
+  lines.push(renderCurrentCodexUsageText(view).trimEnd());
+
   return `${lines.join("\n")}\n`;
 }
 
@@ -7945,10 +7948,6 @@ export async function main(argv, deps = {}) {
     }
     if (opts.compact) {
       process.stdout.write(renderStatusCompactText(view));
-      return;
-    }
-    if (opts.accounts !== true && opts.assignments !== true) {
-      process.stdout.write(renderCurrentCodexUsageText(view));
       return;
     }
     process.stdout.write(
