@@ -11,6 +11,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "install:local": "./scripts/install-local-bin.sh",
     "lint": "node --check ./bin/aimgr.js && node --check ./src/cli.js",
     "test": "node --test"
   },

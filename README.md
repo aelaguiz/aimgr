@@ -63,6 +63,19 @@ cd /Users/agents/workspace/agents/work/aimgr/repo/aimgr
 npm install -g .
 ```
 
+For a login-shell-stable install that does not depend on the current NVM global bin path:
+
+```bash
+cd /Users/agents/workspace/agents/work/aimgr/repo/aimgr
+npm install
+npm run install:local
+
+which aim
+aim --help
+```
+
+This writes `aim` and `aimgr` wrappers into `~/.local/bin` (or `$XDG_BIN_HOME`), which is usually a better fit than `npm link` when Node is managed by `nvm`.
+
 ## Quickstart
 
 ### 1) Start with status
