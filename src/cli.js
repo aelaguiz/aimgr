@@ -6059,7 +6059,7 @@ function renderStatusCompactText(view) {
   return `load=${load}  spare=${spare}  5h_floor=${floor5}(${floor5Label})  7d_floor=${floor7}(${floor7Label})  eta=${eta}\n`;
 }
 
-function renderStatusText(view, { showAssignments = false, showAccounts = false } = {}) {
+function renderStatusText(view, { showAssignments = false, showAccounts = true } = {}) {
   const lines = [];
   lines.push(`aim SSOT: ${view.statePath}`);
 
@@ -7928,7 +7928,12 @@ export async function main(argv, deps = {}) {
       process.stdout.write(renderStatusCompactText(view));
       return;
     }
-    process.stdout.write(renderStatusText(view, { showAssignments: opts.assignments === true, showAccounts: opts.accounts === true }));
+    process.stdout.write(
+      renderStatusText(view, {
+        showAssignments: opts.assignments === true,
+        ...(opts.accounts === true ? { showAccounts: true } : {}),
+      }),
+    );
     return;
   }
 

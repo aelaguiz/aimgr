@@ -435,7 +435,7 @@ test("status warns when tokens are expired or rejected", async () => {
   }
 });
 
-test("status defaults to the pool panel and keeps reset countdowns behind --accounts", async () => {
+test("status defaults to the pool panel and keeps the accounts table with reset countdowns", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const nowMs = Date.parse("2026-03-17T20:15:21Z");
@@ -518,7 +518,10 @@ test("status defaults to the pool panel and keeps reset countdowns behind --acco
     assert.match(out, /POOL NOW/);
     assert.match(out, /WINDOWS/);
     assert.match(out, /PROJECTION @ CURRENT RATE/);
-    assert.doesNotMatch(out, /ACCOUNTS \(/);
+    assert.match(out, /ACCOUNTS \(2\)/);
+    assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
+    assert.match(out, /boss\s+ready\s+aim-profile\s+\S+\s+10%\s+1\.5h\s+20%\s+20\.8h\s+openai-codex/);
+    assert.match(out, /claude\s+ready\s+aim-profile\s+\S+\s+12%\s+1\.9h\s+34%\s+27\.7h\s+anthropic/);
     assert.doesNotMatch(out, /Usage detail/);
     assert.doesNotMatch(out, /usage=5h/);
 
@@ -2429,7 +2432,7 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.match(textOut, /PRESSURE/);
     assert.match(textOut, /PROJECTION @ CURRENT RATE/);
     assert.doesNotMatch(textOut, /OpenClaw assignments/);
-    assert.doesNotMatch(textOut, /ACCOUNTS \(/);
+    assert.match(textOut, /ACCOUNTS \(1\)/);
     assert.doesNotMatch(textOut, /agent_boss -> boss/);
     assert.match(textOut, /LAST REBALANCE/);
     assert.match(textOut, /status\s+applied_with_warnings/);
