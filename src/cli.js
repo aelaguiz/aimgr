@@ -4530,28 +4530,110 @@ function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
   return { labels, byLabel, eligibleLabels };
 }
 
-export function rankPoolCandidates({ labels, usage, currentLabel, assignedCounts, now }) {
+export function rankPoolCandidates({
+  labels,
+  usage,
+  currentLabel,
+  assignedCounts,
+  currentAssignments,
+  configuredAgents,
+  agentDemand,
+  lastApplyReceipt,
+  selectionDemandWeight,
+  now,
+}) {
   const normalizedLabels = [...new Set((Array.isArray(labels) ? labels : []).map((label) => normalizeLabel(label)))];
-  const counts = isObject(assignedCounts) ? assignedCounts : {};
   const current = typeof currentLabel === "string" ? normalizeLabel(currentLabel) : null;
+  const counts = isObject(assignedCounts) ? assignedCounts : {};
+  const demandByAgent = buildStatusDemandByAgent({ configuredAgents, agentDemand });
+  const { assignedDemandByLabel, assignedCountsByLabel } = buildAssignedDemandByLabel({
+    eligibleLabels: normalizedLabels,
+    configuredAgents,
+    currentAssignments,
+    demandByAgent,
+  });
+  const bucketWeights = deriveDemandBucketWeights(demandByAgent);
+  const effectiveSelectionDemandWeight = roundDemandWeight(
+    Math.max(
+      MIN_AGENT_DEMAND_WEIGHT,
+      normalizeDemandWeight(selectionDemandWeight, bucketWeights.mediumWeight),
+    ),
+  );
+  const totalDemandWeight = Object.values(demandByAgent).reduce(
+    (sum, entry) => sum + normalizeDemandWeight(entry?.demandWeight, 0),
+    0,
+  );
+  const supply = buildWeightedRebalanceSupply({ labels: normalizedLabels, usage });
+  const targetUnitsTotal = normalizedLabels.reduce(
+    (sum, label) => sum + normalizeDemandWeight(supply.byLabel[label]?.targetUnits, 0),
+    0,
+  );
+  const effectiveTotalDemandWeight = Math.max(effectiveSelectionDemandWeight, totalDemandWeight);
+  const targetDemandByLabel = Object.fromEntries(
+    normalizedLabels.map((label) => [
+      label,
+      targetUnitsTotal <= 0
+        ? 0
+        : (normalizeDemandWeight(supply.byLabel[label]?.targetUnits, 0) / targetUnitsTotal) * effectiveTotalDemandWeight,
+    ]),
+  );
+  for (const label of normalizedLabels) {
+    if (!isObject(supply.byLabel[label])) continue;
+    supply.byLabel[label].capacityBudgetWeight = roundDemandWeight(targetDemandByLabel[label]);
+  }
+  const receiptTargets = new Map();
+  for (const entry of Array.isArray(lastApplyReceipt?.perAccountLoad) ? lastApplyReceipt.perAccountLoad : []) {
+    if (!isObject(entry) || typeof entry.label !== "string") continue;
+    receiptTargets.set(
+      normalizeLabel(entry.label),
+      roundDemandWeight(
+        Math.max(
+          0,
+          normalizeDemandWeight(
+            entry.capacityBudgetWeight,
+            normalizeDemandWeight(entry.targetDemandWeight, normalizeDemandWeight(entry.carriedDemandWeight, 0)),
+          ),
+        ),
+      ),
+    );
+  }
+  const observedAt = Number.isFinite(Number(now)) ? Number(now) : Date.now();
   const candidates = normalizedLabels.map((label) => {
     const snapshot = usage?.[label] ?? null;
-    const { primaryUsedPct, secondaryUsedPct } = getCodexUsagePercents(snapshot);
-    return {
+    const capacity = buildLabelCapacityInfo(snapshot);
+    const targetDemandWeight = receiptTargets.has(label)
+      ? receiptTargets.get(label)
+      : roundDemandWeight(targetDemandByLabel[label]);
+    const candidate = buildWeightedRebalanceCandidate({
       label,
+      supply: {
+        ...supply.byLabel[label],
+        targetDemandWeight,
+        capacityBudgetWeight: targetDemandWeight,
+      },
+      assignedDemandByLabel,
+      assignedCounts: {
+        ...assignedCountsByLabel,
+        [label]: Number.isFinite(Number(assignedCountsByLabel[label]))
+          ? Number(assignedCountsByLabel[label])
+          : (Number.isFinite(Number(counts[label])) ? Number(counts[label]) : 0),
+      },
+      agentWeight: effectiveSelectionDemandWeight,
+    });
+    return {
+      ...candidate,
       accountId: null,
-      primaryUsedPct,
-      secondaryUsedPct,
-      assignedCount: Number.isFinite(Number(counts[label])) ? Number(counts[label]) : 0,
-      keptCurrent: false,
-      reasons: [],
-      observedAt: Number.isFinite(Number(now)) ? Number(now) : Date.now(),
+      primaryUsedPct: capacity.primaryUsedPct,
+      secondaryUsedPct: capacity.secondaryUsedPct,
+      observedAt,
     };
   });
 
   candidates.sort((a, b) => {
-    if (a.primaryUsedPct !== b.primaryUsedPct) return a.primaryUsedPct - b.primaryUsedPct;
-    if (a.secondaryUsedPct !== b.secondaryUsedPct) return a.secondaryUsedPct - b.secondaryUsedPct;
+    if (a.overflowWeight !== b.overflowWeight) return a.overflowWeight - b.overflowWeight;
+    if (a.projectedDemandRatio !== b.projectedDemandRatio) return a.projectedDemandRatio - b.projectedDemandRatio;
+    if (a.secondaryRemainingPct !== b.secondaryRemainingPct) return b.secondaryRemainingPct - a.secondaryRemainingPct;
+    if (a.primaryRemainingPct !== b.primaryRemainingPct) return b.primaryRemainingPct - a.primaryRemainingPct;
     if (a.assignedCount !== b.assignedCount) return a.assignedCount - b.assignedCount;
     return a.label.localeCompare(b.label);
   });
@@ -4562,11 +4644,14 @@ export function rankPoolCandidates({ labels, usage, currentLabel, assignedCounts
     if (
       best
       && currentCandidate
-      && currentCandidate.primaryUsedPct <= best.primaryUsedPct + 10
-      && currentCandidate.secondaryUsedPct <= best.secondaryUsedPct + 10
+      && shouldKeepCurrentWeightedAssignment({
+        currentCandidate,
+        bestCandidate: best,
+        agentWeight: effectiveSelectionDemandWeight,
+      })
     ) {
       currentCandidate.keptCurrent = true;
-      currentCandidate.reasons.push("within_keep_current_threshold");
+      currentCandidate.reasons.push("within_weighted_hysteresis");
       candidates.splice(candidates.indexOf(currentCandidate), 1);
       candidates.unshift(currentCandidate);
     }
@@ -5893,11 +5978,16 @@ async function buildStatusView({ statePath, state, homeDir }) {
   }
 
   const codexCli = readCodexCliTargetStatus({ state, homeDir });
+  const openclawTarget = getOpenclawTargetState(state);
   const nextBestCandidate = pickNextBestPoolLabel({
     rankedCandidates: rankPoolCandidates({
       labels: codexPool.eligibleLabels,
       usage: usageByProvider[OPENAI_CODEX_PROVIDER],
       currentLabel: codexCli.activeLabel,
+      currentAssignments: getOpenclawAssignments(state),
+      configuredAgents: configuredCodexAgents,
+      agentDemand: state.pool.openaiCodex.agentDemand,
+      lastApplyReceipt: openclawTarget.lastApplyReceipt ?? null,
       now: Date.now(),
     }),
   });
@@ -5905,7 +5995,7 @@ async function buildStatusView({ statePath, state, homeDir }) {
     history: state.pool.openaiCodex.history,
     liveUsage: usageByProvider[OPENAI_CODEX_PROVIDER],
     agentDemand: state.pool.openaiCodex.agentDemand,
-    lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
+    lastApplyReceipt: openclawTarget.lastApplyReceipt ?? null,
     now: Date.now(),
   });
   codexPool.capacityProjection = capacity;
@@ -7702,10 +7792,16 @@ async function activateCodexPoolSelection({ state, homeDir }) {
   }
 
   const currentTarget = readCodexCliTargetStatus({ state, homeDir });
+  const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
+  const currentAssignments = getOpenclawAssignments(state);
   const rankedCandidates = rankPoolCandidates({
     labels: poolStatus.eligibleLabels,
     usage: usageByLabel,
     currentLabel: currentTarget.activeLabel,
+    currentAssignments,
+    configuredAgents: configuredCodexAgents,
+    agentDemand: state.pool.openaiCodex.agentDemand,
+    lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
     now: Date.parse(observedAt),
   });
   const selection = pickNextBestPoolLabel({ rankedCandidates });

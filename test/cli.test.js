@@ -2953,6 +2953,112 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
   }
 });
 
+test("codex use prefers weekly pool headroom over the lowest short-window usage", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const qaJwt = makeFakeJwt({
+    email: "qa@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_qa",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro2Jwt = makeFakeJwt({
+    email: "pro2@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      pro2: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        qa: {
+          access: qaJwt,
+          refresh: "REFRESH_QA",
+          idToken: qaJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_qa",
+        },
+        pro2: {
+          access: pro2Jwt,
+          refresh: "REFRESH_PRO2",
+          idToken: pro2Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro2",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["qa", "pro2"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      const primaryUsedPercent = accountId === "acct_qa" ? 0 : 2;
+      const secondaryUsedPercent = accountId === "acct_qa" ? 92 : 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: primaryUsedPercent,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: secondaryUsedPercent,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 6 * 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = JSON.parse(await runCli(["codex", "use", "--home", home]));
+    assert.equal(result.ok, true);
+    assert.equal(result.activated.status, "activated");
+    assert.equal(result.activated.receipt.label, "pro2");
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, "pro2");
+    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "pro2");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("codex use skips expired labels and activates the next eligible pool account", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -3452,7 +3558,7 @@ test("partitionOpenclawPinsByConfiguredAgents separates stale pins from active p
   assert.deepEqual(partition.stalePins, [{ agentId: "agent_lessons", label: "lessons" }]);
 });
 
-test("rankPoolCandidates keeps current label when it stays within the keep-current threshold", () => {
+test("rankPoolCandidates keeps current label when it stays within the weighted hysteresis threshold", () => {
   const ranked = rankPoolCandidates({
     labels: ["boss", "qa"],
     currentLabel: "boss",
@@ -3463,17 +3569,36 @@ test("rankPoolCandidates keeps current label when it stays within the keep-curre
       },
       qa: {
         ok: true,
-        windows: [{ kind: "primary", usedPercent: 12 }, { kind: "secondary", usedPercent: 10 }],
+        windows: [{ kind: "primary", usedPercent: 17 }, { kind: "secondary", usedPercent: 11 }],
       },
     },
-    assignedCounts: { boss: 0, qa: 0 },
     now: Date.now(),
   });
 
   assert.equal(ranked[0].label, "boss");
   assert.equal(ranked[0].keptCurrent, true);
-  assert.deepEqual(ranked[0].reasons, ["within_keep_current_threshold"]);
+  assert.deepEqual(ranked[0].reasons, ["within_weighted_hysteresis"]);
   assert.equal(pickNextBestPoolLabel({ rankedCandidates: ranked }).label, "boss");
+});
+
+test("rankPoolCandidates favors weekly weighted headroom over the lowest 5h-used label", () => {
+  const ranked = rankPoolCandidates({
+    labels: ["qa", "pro2"],
+    usage: {
+      qa: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 92 }],
+      },
+      pro2: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 2 }, { kind: "secondary", usedPercent: 1 }],
+      },
+    },
+    now: Date.now(),
+  });
+
+  assert.equal(ranked[0].label, "pro2");
+  assert.equal(ranked[1].label, "qa");
 });
 
 test("refreshOpenclawAgentDemandLedger imports OpenClaw session counters and seeds cold-start demand", () => {
