@@ -435,7 +435,7 @@ test("status warns when tokens are expired or rejected", async () => {
   }
 });
 
-test("status defaults to the pool panel and keeps the accounts table with reset countdowns", async () => {
+test("status defaults to a single-line current codex usage readout and keeps detail flags available", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const nowMs = Date.parse("2026-03-17T20:15:21Z");
@@ -445,12 +445,11 @@ test("status defaults to the pool panel and keeps the accounts table with reset 
   const claudeWeekReset = "2026-03-19T00:00:00Z";
 
   writeJson(statePath, {
-    schemaVersion: "0.1",
+    schemaVersion: "0.2",
     accounts: {
-      boss: { provider: "openai-codex", openclawBrowserProfile: "agent-boss" },
-      claude: { provider: "anthropic", openclawBrowserProfile: "agent-claude" },
+      boss: { provider: "openai-codex", browser: {}, reauth: { mode: "aim-browser-profile" } },
+      claude: { provider: "anthropic", browser: {}, reauth: { mode: "aim-browser-profile" } },
     },
-    pins: { openclaw: {} },
     credentials: {
       "openai-codex": {
         boss: {
@@ -468,6 +467,15 @@ test("status defaults to the pool panel and keeps the accounts table with reset 
         },
       },
     },
+    imports: { authority: { codex: {} } },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_123",
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
   });
 
   const origDateNow = Date.now;
@@ -515,17 +523,16 @@ test("status defaults to the pool panel and keeps the accounts table with reset 
 
   try {
     const out = await runCli(["status", "--home", home]);
-    assert.match(out, /POOL NOW/);
-    assert.match(out, /WINDOWS/);
-    assert.match(out, /PROJECTION @ CURRENT RATE/);
-    assert.match(out, /ACCOUNTS \(2\)/);
-    assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
-    assert.match(out, /boss\s+ready\s+aim-profile\s+\S+\s+10%\s+1\.5h\s+20%\s+20\.8h\s+openai-codex/);
-    assert.match(out, /claude\s+ready\s+aim-profile\s+\S+\s+12%\s+1\.9h\s+34%\s+27\.7h\s+anthropic/);
+    assert.match(out, /^label=boss  5h_used=10%  5h_in=1\.5h  wk_used=20%  wk_in=20\.8h\n$/);
     assert.doesNotMatch(out, /Usage detail/);
     assert.doesNotMatch(out, /usage=5h/);
+    assert.doesNotMatch(out, /POOL NOW/);
+    assert.doesNotMatch(out, /ACCOUNTS \(/);
 
     const accountsOut = await runCli(["status", "--accounts", "--home", home]);
+    assert.match(accountsOut, /POOL NOW/);
+    assert.match(accountsOut, /WINDOWS/);
+    assert.match(accountsOut, /PROJECTION @ CURRENT RATE/);
     assert.match(accountsOut, /ACCOUNTS \(2\)/);
     assert.match(accountsOut, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
     assert.match(accountsOut, /boss\s+ready\s+aim-profile\s+\S+\s+10%\s+1\.5h\s+20%\s+20\.8h\s+openai-codex/);
@@ -2427,26 +2434,23 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.ok(parsed.projection.load_pct_7d >= parsed.projection.load_pct_72h);
 
     const textOut = await runCli(["status", "--home", home]);
-    assert.match(textOut, /POOL NOW/);
-    assert.match(textOut, /WINDOWS/);
-    assert.match(textOut, /PRESSURE/);
-    assert.match(textOut, /PROJECTION @ CURRENT RATE/);
+    assert.match(textOut, /^label=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n$/);
+    assert.doesNotMatch(textOut, /POOL NOW/);
     assert.doesNotMatch(textOut, /OpenClaw assignments/);
-    assert.match(textOut, /ACCOUNTS \(1\)/);
     assert.doesNotMatch(textOut, /agent_boss -> boss/);
-    assert.match(textOut, /LAST REBALANCE/);
-    assert.match(textOut, /status\s+applied_with_warnings/);
-    assert.match(textOut, /allocation_mode\s+demand_weighted/);
-    assert.match(textOut, /Spread: boss=3 agent\(s\)\/180w/);
 
     const compactOut = await runCli(["status", "--compact", "--home", home]);
     assert.match(compactOut, /^load=150(?:\.0)?%  spare=0w  5h_floor=\d+(?:\.\d+)?%\(boss\)  7d_floor=\d+(?:\.\d+)?%\(boss\)  eta=0(?:\.0)?h\n$/);
 
     const textOutWithAccounts = await runCli(["status", "--accounts", "--home", home]);
+    assert.match(textOutWithAccounts, /POOL NOW/);
     assert.match(textOutWithAccounts, /ACCOUNTS \(1\)/);
     assert.match(textOutWithAccounts, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
+    assert.match(textOutWithAccounts, /LAST REBALANCE/);
+    assert.match(textOutWithAccounts, /Spread: boss=3 agent\(s\)\/180w/);
 
     const textOutWithAssignments = await runCli(["status", "--assignments", "--home", home]);
+    assert.match(textOutWithAssignments, /POOL NOW/);
     assert.match(textOutWithAssignments, /OpenClaw assignments/);
     assert.match(textOutWithAssignments, /- agent_boss -> boss/);
   } finally {

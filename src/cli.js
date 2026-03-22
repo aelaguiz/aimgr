@@ -6059,6 +6059,25 @@ function renderStatusCompactText(view) {
   return `load=${load}  spare=${spare}  5h_floor=${floor5}(${floor5Label})  7d_floor=${floor7}(${floor7Label})  eta=${eta}\n`;
 }
 
+function resolveCurrentConfiguredCodexLabel(view) {
+  const activeLabel = typeof view.codexCli?.activeLabel === "string" ? normalizeLabel(view.codexCli.activeLabel) : "";
+  if (activeLabel) return activeLabel;
+  const inferredLabel = typeof view.codexCli?.inferredLabel === "string" ? normalizeLabel(view.codexCli.inferredLabel) : "";
+  return inferredLabel || "";
+}
+
+function renderCurrentCodexUsageText(view) {
+  const label = resolveCurrentConfiguredCodexLabel(view) || "none";
+  const account = Array.isArray(view.accounts) ? view.accounts.find((entry) => entry?.label === label) ?? null : null;
+  return (
+    `label=${label}` +
+    `  5h_used=${formatStatusAccountUsedCell(account?.usage, 0)}` +
+    `  5h_in=${formatStatusAccountResetCell(account?.usage, 0)}` +
+    `  wk_used=${formatStatusAccountUsedCell(account?.usage, 1)}` +
+    `  wk_in=${formatStatusAccountResetCell(account?.usage, 1)}\n`
+  );
+}
+
 function renderStatusText(view, { showAssignments = false, showAccounts = true } = {}) {
   const lines = [];
   lines.push(`aim SSOT: ${view.statePath}`);
@@ -7926,6 +7945,10 @@ export async function main(argv, deps = {}) {
     }
     if (opts.compact) {
       process.stdout.write(renderStatusCompactText(view));
+      return;
+    }
+    if (opts.accounts !== true && opts.assignments !== true) {
+      process.stdout.write(renderCurrentCodexUsageText(view));
       return;
     }
     process.stdout.write(
