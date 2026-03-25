@@ -27,6 +27,9 @@ const DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS = 7;
 const MIN_AGENT_DEMAND_WEIGHT = 1;
 const KEEP_CURRENT_DEMAND_RATIO_THRESHOLD = 0.15;
 const KEEP_CURRENT_OVERFLOW_WEIGHT_FACTOR = 0.25;
+const LOCAL_CLI_MIN_PRIMARY_REMAINING_PCT = 80;
+const DEFAULT_CODEX_WATCH_INTERVAL_SECONDS = 300;
+const DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT = 20;
 const STATUS_RESET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: STATUS_RESET_TIMEZONE,
   month: "short",
@@ -198,6 +201,9 @@ function parseArgs(argv) {
     compact: false,
     accounts: false,
     help: false,
+    once: false,
+    intervalSeconds: undefined,
+    rotateBelow5hRemainingPct: undefined,
     pool: undefined,
   };
   const positional = [];
@@ -270,6 +276,20 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--once") {
+      opts.once = true;
+      continue;
+    }
+    if (arg === "--interval-seconds") {
+      opts.intervalSeconds = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--rotate-below-5h-remaining-pct") {
+      opts.rotateBelow5hRemainingPct = argv[i + 1];
+      i += 1;
+      continue;
+    }
     if (arg === "--help" || arg === "-h") {
       opts.help = true;
       continue;
@@ -281,6 +301,45 @@ function parseArgs(argv) {
   }
 
   return { opts, positional };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function parseIntegerOption(rawValue, { name, minimum = 0, maximum = Number.POSITIVE_INFINITY } = {}) {
+  const raw = String(rawValue ?? "").trim();
+  if (!raw) {
+    throw new Error(`Missing value for ${name}.`);
+  }
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`Invalid ${name}: ${raw}. Expected an integer.`);
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`Invalid ${name}: ${raw}. Expected an integer between ${minimum} and ${maximum}.`);
+  }
+  return parsed;
+}
+
+function resolveCodexWatchIntervalSeconds(rawValue) {
+  if (rawValue === undefined) return DEFAULT_CODEX_WATCH_INTERVAL_SECONDS;
+  return parseIntegerOption(rawValue, {
+    name: "--interval-seconds",
+    minimum: 1,
+    maximum: 86400,
+  });
+}
+
+function resolveCodexWatchThresholdPct(rawValue) {
+  if (rawValue === undefined) return DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT;
+  return parseIntegerOption(rawValue, {
+    name: "--rotate-below-5h-remaining-pct",
+    minimum: 0,
+    maximum: 100,
+  });
 }
 
 function isInteractiveTerminal({ stdin = process.stdin, stdout = process.stdout } = {}) {
@@ -300,6 +359,8 @@ function printHelp() {
     "  aim sync openclaw     # explicit alias for apply",
     "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
     "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
+    "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
+    "  aim claude use        # activate the next-best pooled anthropic label for local Claude CLI",
     "  aim pi use            # activate the next-best pooled openai-codex label for local Pi CLI",
     "  aim browser show <label>",
     "  aim browser set <label> --mode aim-profile [--seed-from-openclaw <profileId>]",
@@ -311,8 +372,9 @@ function printHelp() {
     "  - SSOT file: ~/.aimgr/secrets.json (auto-backed-up on every write).",
     "  - V0 supports: openai-codex (ChatGPT/Codex OAuth) + anthropic (Claude Pro/Max OAuth) on macOS.",
     "  - Browser-managed OAuth supports explicit per-label bindings: aim-profile, chrome-profile, or agent-browser.",
-    "  - `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim pi use` are removed; use `aim rebalance openclaw`, `aim apply`, `aim codex use`, and `aim pi use`.",
+    "  - `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim claude use` / `aim pi use` are removed; use `aim rebalance openclaw`, `aim apply`, `aim codex use`, `aim claude use`, and `aim pi use`.",
     "  - Codex target management is file-backed only in v1; keyring/auto homes fail loud.",
+    `  - \`aim codex watch --once\` is the scheduler-safe one-shot; foreground watch loops default to ${DEFAULT_CODEX_WATCH_INTERVAL_SECONDS}s and rotate below ${DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT}% 5h remaining.`,
     "",
     "Developer options (rare):",
     "  --home <dir>    Run against an alternate HOME (dev/test; e.g. /tmp/aimgr-home).",
@@ -1036,6 +1098,9 @@ function createEmptyState() {
         history: [],
         agentDemand: {},
       },
+      anthropic: {
+        history: [],
+      },
     },
     targets: {
       openclaw: {
@@ -1043,6 +1108,7 @@ function createEmptyState() {
         exclusions: {},
       },
       codexCli: {},
+      claudeCli: {},
       piCli: {},
     },
   };
@@ -2649,6 +2715,8 @@ function ensureStateShape(state) {
   state.pool.openaiCodex = isObject(state.pool.openaiCodex) ? state.pool.openaiCodex : {};
   state.pool.openaiCodex.history = pruneOpenaiCodexHistory(state.pool.openaiCodex.history);
   state.pool.openaiCodex.agentDemand = pruneOpenaiCodexAgentDemand(state.pool.openaiCodex.agentDemand);
+  state.pool.anthropic = isObject(state.pool.anthropic) ? state.pool.anthropic : {};
+  state.pool.anthropic.history = pruneOpenaiCodexHistory(state.pool.anthropic.history);
   state.targets = isObject(state.targets) ? state.targets : {};
   state.targets.openclaw = isObject(state.targets.openclaw) ? state.targets.openclaw : {};
   state.targets.openclaw.assignments = isObject(state.targets.openclaw.assignments)
@@ -2658,6 +2726,7 @@ function ensureStateShape(state) {
     ? state.targets.openclaw.exclusions
     : {};
   state.targets.codexCli = isObject(state.targets.codexCli) ? state.targets.codexCli : {};
+  state.targets.claudeCli = isObject(state.targets.claudeCli) ? state.targets.claudeCli : {};
   state.targets.piCli = isObject(state.targets.piCli) ? state.targets.piCli : {};
 
   const legacyPins = isObject(state.pins?.openclaw) ? state.pins.openclaw : null;
@@ -2765,6 +2834,9 @@ function ensureStateShape(state) {
   if (Object.hasOwn(state.targets.codexCli, "lastReadback")) {
     delete state.targets.codexCli.lastReadback;
   }
+  if (Object.hasOwn(state.targets.claudeCli, "lastReadback")) {
+    delete state.targets.claudeCli.lastReadback;
+  }
   if (Object.hasOwn(state.targets.piCli, "lastReadback")) {
     delete state.targets.piCli.lastReadback;
   }
@@ -2845,6 +2917,11 @@ function getCodexTargetState(state) {
   return state.targets.codexCli;
 }
 
+function getClaudeTargetState(state) {
+  ensureStateShape(state);
+  return state.targets.claudeCli;
+}
+
 function getPiTargetState(state) {
   ensureStateShape(state);
   return state.targets.piCli;
@@ -2890,8 +2967,16 @@ function resolveManagedPiAgentDir({ homeDir }) {
   return path.join(homeDir, ".pi", "agent");
 }
 
+function resolveManagedClaudeDir({ homeDir }) {
+  return path.join(homeDir, ".claude");
+}
+
 function resolveCodexAuthFilePath(codexHome) {
   return path.join(codexHome, "auth.json");
+}
+
+function resolveClaudeAuthFilePath(claudeDir) {
+  return path.join(claudeDir, ".credentials.json");
 }
 
 function resolvePiAuthFilePath(agentDir) {
@@ -2900,6 +2985,15 @@ function resolvePiAuthFilePath(agentDir) {
 
 function resolveCodexConfigPath(codexHome) {
   return path.join(codexHome, "config.toml");
+}
+
+function resolveClaudeCommand({ homeDir, spawnImpl = spawnSync } = {}) {
+  if (spawnImpl !== spawnSync) {
+    return "claude";
+  }
+  return resolveExecutableOnPath("claude", {
+    extraSearchPaths: homeDir ? [path.join(homeDir, ".local", "bin")] : [],
+  });
 }
 
 function normalizeCodexStoreMode(value) {
@@ -3005,6 +3099,242 @@ function readPiAuthFile({ agentDir }) {
   }
 }
 
+function normalizeNonEmptyStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((entry) => String(entry ?? "").trim()).filter(Boolean))];
+}
+
+function buildClaudeProjectionFields(source) {
+  const subscriptionType = typeof source?.subscriptionType === "string" ? source.subscriptionType.trim() : "";
+  const rateLimitTier = typeof source?.rateLimitTier === "string" ? source.rateLimitTier.trim() : "";
+  const scopes = normalizeNonEmptyStringArray(source?.scopes);
+  return {
+    ...(subscriptionType ? { subscriptionType } : {}),
+    ...(rateLimitTier ? { rateLimitTier } : {}),
+    ...(scopes.length > 0 ? { scopes } : {}),
+  };
+}
+
+function hasClaudeProjectionFields(source) {
+  const fields = buildClaudeProjectionFields(source);
+  return (
+    typeof fields.subscriptionType === "string"
+    && fields.subscriptionType.length > 0
+    && typeof fields.rateLimitTier === "string"
+    && fields.rateLimitTier.length > 0
+    && Array.isArray(fields.scopes)
+    && fields.scopes.length > 0
+  );
+}
+
+function readClaudeAuthFile({ claudeDir }) {
+  const authPath = resolveClaudeAuthFilePath(claudeDir);
+  if (!fs.existsSync(authPath)) {
+    return { exists: false, authPath };
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    if (!isObject(parsed)) {
+      throw new Error("Claude .credentials.json is not a JSON object.");
+    }
+    const claudeAiOauth = isObject(parsed?.claudeAiOauth) ? parsed.claudeAiOauth : null;
+    const accessToken = typeof claudeAiOauth?.accessToken === "string" ? claudeAiOauth.accessToken.trim() : null;
+    const refreshToken = typeof claudeAiOauth?.refreshToken === "string" ? claudeAiOauth.refreshToken.trim() : null;
+    const expiresAtMs = parseTimestampLikeToMs(claudeAiOauth?.expiresAt);
+    const projectionFields = buildClaudeProjectionFields(claudeAiOauth);
+    return {
+      exists: true,
+      ok: true,
+      authPath,
+      claudeAiOauthPresent: Boolean(claudeAiOauth),
+      accessToken: accessToken || null,
+      refreshToken: refreshToken || null,
+      expiresAt: expiresAtMs,
+      ...(projectionFields.subscriptionType ? { subscriptionType: projectionFields.subscriptionType } : {}),
+      ...(projectionFields.rateLimitTier ? { rateLimitTier: projectionFields.rateLimitTier } : {}),
+      ...(projectionFields.scopes ? { scopes: projectionFields.scopes } : {}),
+      json: parsed,
+    };
+  } catch (err) {
+    return {
+      exists: true,
+      ok: false,
+      authPath,
+      error: String(err?.message ?? err),
+    };
+  }
+}
+
+function readClaudeAuthStatus({ homeDir, spawnImpl = spawnSync } = {}) {
+  const commandPath = resolveClaudeCommand({ homeDir, spawnImpl });
+  if (!commandPath) {
+    return {
+      available: false,
+      commandPath: null,
+    };
+  }
+
+  const result = spawnImpl(commandPath, ["auth", "status", "--json"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      HOME: homeDir,
+    },
+  });
+  if (result?.error) {
+    return {
+      available: true,
+      ok: false,
+      commandPath,
+      error: String(result.error?.message ?? result.error),
+    };
+  }
+  if (result?.status !== 0) {
+    return {
+      available: true,
+      ok: false,
+      commandPath,
+      status: result?.status ?? null,
+      error: String(result?.stderr ?? "").trim() || String(result?.stdout ?? "").trim() || "claude auth status failed.",
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(String(result?.stdout ?? ""));
+    return {
+      available: true,
+      ok: true,
+      commandPath,
+      loggedIn: parsed?.loggedIn === true,
+      authMethod: typeof parsed?.authMethod === "string" ? parsed.authMethod.trim() || null : null,
+      apiProvider: typeof parsed?.apiProvider === "string" ? parsed.apiProvider.trim() || null : null,
+      email: typeof parsed?.email === "string" ? parsed.email.trim() || null : null,
+      orgId: typeof parsed?.orgId === "string" ? parsed.orgId.trim() || null : null,
+      orgName: typeof parsed?.orgName === "string" ? parsed.orgName.trim() || null : null,
+      subscriptionType:
+        typeof parsed?.subscriptionType === "string" ? parsed.subscriptionType.trim() || null : null,
+    };
+  } catch (err) {
+    return {
+      available: true,
+      ok: false,
+      commandPath,
+      error: `Failed to parse claude auth status JSON: ${String(err?.message ?? err)}`,
+    };
+  }
+}
+
+function getAnthropicCredentialMatchLabel(state, { accessToken, refreshToken }) {
+  ensureStateShape(state);
+  const access = typeof accessToken === "string" ? accessToken.trim() : "";
+  const refresh = typeof refreshToken === "string" ? refreshToken.trim() : "";
+  const refreshMatches = [];
+  const accessMatches = [];
+
+  for (const [label, credential] of Object.entries(state.credentials[ANTHROPIC_PROVIDER])) {
+    if (!isObject(credential)) continue;
+    if (refresh && String(credential.refresh ?? "").trim() === refresh) {
+      refreshMatches.push(label);
+    }
+    if (access && String(credential.access ?? "").trim() === access) {
+      accessMatches.push(label);
+    }
+  }
+
+  if (refreshMatches.length === 1) return refreshMatches[0];
+  if (refreshMatches.length > 1) return null;
+  if (accessMatches.length === 1) return accessMatches[0];
+  return null;
+}
+
+function shouldBackfillAnthropicFromLocalClaudeAuth({ state, label, credential, existingCredential, localClaudeAuth }) {
+  const normalizedLabel = normalizeLabel(label);
+  if (!localClaudeAuth || localClaudeAuth.ok !== true || localClaudeAuth.claudeAiOauthPresent !== true) {
+    return false;
+  }
+  if (!hasClaudeProjectionFields(localClaudeAuth)) {
+    return false;
+  }
+
+  const localRefresh = String(localClaudeAuth.refreshToken ?? "").trim();
+  const localAccess = String(localClaudeAuth.accessToken ?? "").trim();
+  const currentRefresh = String(credential?.refresh ?? "").trim();
+  const currentAccess = String(credential?.access ?? "").trim();
+  const existingRefresh = String(existingCredential?.refresh ?? "").trim();
+  const existingAccess = String(existingCredential?.access ?? "").trim();
+  const matchedLocalLabel = getAnthropicCredentialMatchLabel(state, {
+    accessToken: localAccess,
+    refreshToken: localRefresh,
+  });
+  if (
+    (localRefresh && (localRefresh === currentRefresh || localRefresh === existingRefresh))
+    || (localAccess && (localAccess === currentAccess || localAccess === existingAccess))
+  ) {
+    return true;
+  }
+  if (matchedLocalLabel) {
+    return matchedLocalLabel === normalizedLabel;
+  }
+
+  const target = getClaudeTargetState(state);
+  if (typeof target.activeLabel === "string" && target.activeLabel.trim() && normalizeLabel(target.activeLabel) === normalizedLabel) {
+    return true;
+  }
+
+  const anthropicLabels = Object.entries(state.accounts)
+    .filter(([, account]) => isObject(account) && normalizeProviderId(account.provider) === ANTHROPIC_PROVIDER)
+    .map(([entryLabel]) => normalizeLabel(entryLabel));
+  return anthropicLabels.length === 1 && anthropicLabels[0] === normalizedLabel;
+}
+
+function hydrateAnthropicCredentialForClaudeLocal({ state, label, homeDir, credential }) {
+  const normalizedLabel = normalizeLabel(label);
+  const base = isObject(credential) ? credential : {};
+  const next = {
+    ...base,
+  };
+  const existing = getAnthropicCredential(state, normalizedLabel);
+  const existingProjection = buildClaudeProjectionFields(existing);
+  if (existingProjection.subscriptionType && !next.subscriptionType) {
+    next.subscriptionType = existingProjection.subscriptionType;
+  }
+  if (existingProjection.rateLimitTier && !next.rateLimitTier) {
+    next.rateLimitTier = existingProjection.rateLimitTier;
+  }
+  if (existingProjection.scopes?.length > 0 && (!Array.isArray(next.scopes) || next.scopes.length === 0)) {
+    next.scopes = existingProjection.scopes;
+  }
+
+  if (!hasClaudeProjectionFields(next)) {
+    const localClaudeAuth = readClaudeAuthFile({ claudeDir: resolveManagedClaudeDir({ homeDir }) });
+    if (shouldBackfillAnthropicFromLocalClaudeAuth({
+      state,
+      label: normalizedLabel,
+      credential: next,
+      existingCredential: existing,
+      localClaudeAuth,
+    })) {
+      const localProjection = buildClaudeProjectionFields(localClaudeAuth);
+      if (localProjection.subscriptionType && !next.subscriptionType) {
+        next.subscriptionType = localProjection.subscriptionType;
+      }
+      if (localProjection.rateLimitTier && !next.rateLimitTier) {
+        next.rateLimitTier = localProjection.rateLimitTier;
+      }
+      if (localProjection.scopes?.length > 0 && (!Array.isArray(next.scopes) || next.scopes.length === 0)) {
+        next.scopes = localProjection.scopes;
+      }
+    }
+  }
+
+  if (Array.isArray(next.scopes)) {
+    next.scopes = normalizeNonEmptyStringArray(next.scopes);
+  }
+  return next;
+}
+
 // Codex and Paperclip both inherit this managed file-backed auth target on the host.
 // If AIM cannot pick an eligible pool account, the old file and active-target metadata
 // must be cleared so the previous machine account cannot survive as a hidden fallback.
@@ -3047,6 +3377,20 @@ function clearManagedPiCliActivation({ state, homeDir }) {
   delete target.lastAppliedAt;
 }
 
+function clearManagedClaudeCliActivation({ state, homeDir }) {
+  ensureStateShape(state);
+  const claudeDir = resolveManagedClaudeDir({ homeDir });
+  const authPath = resolveClaudeAuthFilePath(claudeDir);
+  fs.rmSync(authPath, { force: true });
+
+  const target = getClaudeTargetState(state);
+  delete target.claudeDir;
+  delete target.authPath;
+  delete target.activeLabel;
+  delete target.expectedSubscriptionType;
+  delete target.lastAppliedAt;
+}
+
 function assertCodexCredentialShape({ label, credential, requireFresh }) {
   const cred = isObject(credential) ? credential : null;
   if (!cred) {
@@ -3067,6 +3411,38 @@ function assertCodexCredentialShape({ label, credential, requireFresh }) {
   }
   if (requireFresh && expiresMs <= Date.now()) {
     throw new Error(`Refusing expired openai-codex credentials for label=${label}. Sync or refresh the authority first.`);
+  }
+  return cred;
+}
+
+function assertAnthropicCredentialShape({ label, credential, requireFresh, requireClaudeProjection = false }) {
+  const cred = isObject(credential) ? credential : null;
+  if (!cred) {
+    throw new Error(`Missing anthropic credentials for label=${label}.`);
+  }
+  if (typeof cred.access !== "string" || !cred.access.trim()) {
+    throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.access is missing.`);
+  }
+  if (typeof cred.refresh !== "string" || !cred.refresh.trim()) {
+    throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.refresh is missing.`);
+  }
+  const expiresMs = parseExpiresAtToMs(cred.expiresAt);
+  if (!expiresMs) {
+    throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.expiresAt is missing/invalid.`);
+  }
+  if (requireFresh && expiresMs <= Date.now()) {
+    throw new Error(`Refusing expired anthropic credentials for label=${label}. Reauth that label with \`aim ${label}\` first.`);
+  }
+  if (requireClaudeProjection) {
+    if (typeof cred.subscriptionType !== "string" || !cred.subscriptionType.trim()) {
+      throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.subscriptionType is missing.`);
+    }
+    if (typeof cred.rateLimitTier !== "string" || !cred.rateLimitTier.trim()) {
+      throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.rateLimitTier is missing.`);
+    }
+    if (!Array.isArray(cred.scopes) || normalizeNonEmptyStringArray(cred.scopes).length === 0) {
+      throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.scopes is missing.`);
+    }
   }
   return cred;
 }
@@ -3119,6 +3495,23 @@ function buildPiAuthEntry({ credential }) {
     refresh: credential.refresh,
     expires: expiresMs,
     accountId: credential.accountId,
+  };
+}
+
+function buildClaudeAuthDotJson({ credential }) {
+  const expiresAt = parseExpiresAtToMs(credential?.expiresAt);
+  if (!expiresAt) {
+    throw new Error("Refusing to build Claude .credentials.json without a valid expiresAt timestamp.");
+  }
+  return {
+    claudeAiOauth: {
+      accessToken: credential.access,
+      refreshToken: credential.refresh,
+      expiresAt,
+      subscriptionType: credential.subscriptionType,
+      rateLimitTier: credential.rateLimitTier,
+      scopes: normalizeNonEmptyStringArray(credential.scopes),
+    },
   };
 }
 
@@ -3326,6 +3719,7 @@ function importCodexFromAuthority({ from, state, homeDir }) {
     if (removedLabelWasLiveTarget) {
       clearManagedCodexCliActivation({ state, homeDir });
       delete state.targets.codexCli.lastSelectionReceipt;
+      delete state.targets.codexCli.lastWatchReceipt;
     }
     if (removedLabelWasLivePiTarget) {
       clearManagedPiCliActivation({ state, homeDir });
@@ -3902,7 +4296,8 @@ async function refreshOrLoginAnthropic({
   promptImpl = promptRequiredLine,
   openUrlImpl = launchBrowserBindingForUrl,
 }) {
-  const existing = getAnthropicCredential(state, label);
+  const normalizedLabel = normalizeLabel(label);
+  const existing = getAnthropicCredential(state, normalizedLabel);
   const existingRefresh = existing && typeof existing.refresh === "string" ? existing.refresh : null;
   const binding = interactiveBinding ?? getInteractiveOAuthBindingForLabel(state, label);
   const bindingMode = normalizeInteractiveOAuthMode(binding?.mode);
@@ -3926,11 +4321,16 @@ async function refreshOrLoginAnthropic({
         throw new Error("refresh returned no expires");
       }
 
-      return {
-        access: updated.access,
-        refresh: updated.refresh,
-        expiresAt,
-      };
+      return hydrateAnthropicCredentialForClaudeLocal({
+        state,
+        label: normalizedLabel,
+        homeDir,
+        credential: {
+          access: updated.access,
+          refresh: updated.refresh,
+          expiresAt,
+        },
+      });
     } catch (err) {
       process.stdout.write(`Refresh failed for ${label}; falling back to OAuth login (${String(err?.message ?? err)}).\n`);
     }
@@ -3992,11 +4392,16 @@ async function refreshOrLoginAnthropic({
     throw new Error("OAuth succeeded but no expires was returned. Refusing to store ambiguous credentials.");
   }
 
-  return {
-    access: creds.access,
-    refresh: creds.refresh,
-    expiresAt,
-  };
+  return hydrateAnthropicCredentialForClaudeLocal({
+    state,
+    label: normalizedLabel,
+    homeDir,
+    credential: {
+      access: creds.access,
+      refresh: creds.refresh,
+      expiresAt,
+    },
+  });
 }
 
 function recordAccountMaintenanceAttempt(state, label) {
@@ -4597,6 +5002,16 @@ function getCodexPoolLabels(state) {
     .toSorted((a, b) => a.localeCompare(b));
 }
 
+function getAnthropicPoolLabels(state) {
+  ensureStateShape(state);
+  return Object.entries(state.accounts)
+    .filter(([, account]) => isObject(account))
+    .filter(([, account]) => normalizeProviderId(account.provider) === ANTHROPIC_PROVIDER)
+    .filter(([label]) => getAccountPoolState(state, label)?.enabled !== false)
+    .map(([label]) => normalizeLabel(label))
+    .toSorted((a, b) => a.localeCompare(b));
+}
+
 function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
   const labels = getCodexPoolLabels(state);
   const byLabel = {};
@@ -4609,6 +5024,41 @@ function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
       account,
       label,
       credentials: getCodexCredential(state, label),
+      browserFacts,
+      now,
+    });
+    const usage = usageByLabel[label] ?? null;
+    const usageOk = usage?.ok === true && Array.isArray(usage.windows) && usage.windows.length > 0;
+    const eligible = status.eligible && usageOk && !isUsageSnapshotExhausted(usage);
+    byLabel[label] = {
+      ...status,
+      label,
+      browserFacts,
+      usage,
+      eligible,
+      poolEnabled: getAccountPoolState(state, label)?.enabled !== false,
+      usageReason: usageOk ? null : "usage_unavailable",
+    };
+    if (eligible) {
+      eligibleLabels.push(label);
+    }
+  }
+
+  return { labels, byLabel, eligibleLabels };
+}
+
+function collectAnthropicPoolStatus({ state, homeDir, usageByLabel, now }) {
+  const labels = getAnthropicPoolLabels(state);
+  const byLabel = {};
+  const eligibleLabels = [];
+
+  for (const label of labels) {
+    const account = state.accounts[label];
+    const browserFacts = readBrowserFacts({ account, homeDir, label });
+    const status = derivePoolAccountStatus({
+      account,
+      label,
+      credentials: getAnthropicCredential(state, label),
       browserFacts,
       now,
     });
@@ -4765,6 +5215,40 @@ export function rankPoolCandidates({
 export function pickNextBestPoolLabel({ rankedCandidates }) {
   const candidates = Array.isArray(rankedCandidates) ? rankedCandidates : [];
   return candidates[0] ?? null;
+}
+
+export function pickNextBestLocalCliPoolLabel({
+  rankedCandidates,
+  minPrimaryRemainingPct = LOCAL_CLI_MIN_PRIMARY_REMAINING_PCT,
+}) {
+  const candidates = (Array.isArray(rankedCandidates) ? rankedCandidates : [])
+    .map((candidate) => ({
+      ...candidate,
+      keptCurrent: false,
+      reasons: [],
+    }));
+  if (candidates.length === 0) return null;
+  const primaryRemainingFloor = clampPercent(minPrimaryRemainingPct);
+  const gatedCandidates = candidates.filter((candidate) => candidate.primaryRemainingPct >= primaryRemainingFloor);
+  const selectionPool = gatedCandidates.length > 0 ? gatedCandidates : candidates;
+
+  selectionPool.sort((a, b) => {
+    if (a.secondaryUsedPct !== b.secondaryUsedPct) return a.secondaryUsedPct - b.secondaryUsedPct;
+    if (a.primaryUsedPct !== b.primaryUsedPct) return a.primaryUsedPct - b.primaryUsedPct;
+    if (a.secondaryRemainingPct !== b.secondaryRemainingPct) return b.secondaryRemainingPct - a.secondaryRemainingPct;
+    if (a.primaryRemainingPct !== b.primaryRemainingPct) return b.primaryRemainingPct - a.primaryRemainingPct;
+    if (a.assignedCount !== b.assignedCount) return a.assignedCount - b.assignedCount;
+    return a.label.localeCompare(b.label);
+  });
+
+  const best = selectionPool[0] ?? null;
+  if (!best) return null;
+  best.reasons.push(
+    gatedCandidates.length > 0
+      ? "lowest_weekly_used_over_5h_gate"
+      : "lowest_weekly_used_after_5h_gate_relaxed",
+  );
+  return best;
 }
 
 function buildLabelCapacityInfo(snapshot) {
@@ -5254,6 +5738,13 @@ function appendOpenaiCodexHistory(state, entries) {
   state.pool.openaiCodex.history = pruneOpenaiCodexHistory([...current, ...additions]);
 }
 
+function appendAnthropicHistory(state, entries) {
+  ensureStateShape(state);
+  const current = Array.isArray(state.pool.anthropic.history) ? state.pool.anthropic.history : [];
+  const additions = (Array.isArray(entries) ? entries : []).filter((entry) => isObject(entry));
+  state.pool.anthropic.history = pruneOpenaiCodexHistory([...current, ...additions]);
+}
+
 function buildExhaustionHistoryEntries({ state, usage, eligibleLabels, observedAt }) {
   const eligible = new Set(Array.isArray(eligibleLabels) ? eligibleLabels : []);
   const entries = [];
@@ -5266,6 +5757,24 @@ function buildExhaustionHistoryEntries({ state, usage, eligibleLabels, observedA
       kind: "exhaustion",
       label,
       ...(typeof cred?.accountId === "string" && cred.accountId.trim() ? { accountId: cred.accountId.trim() } : {}),
+      hadSpareEligibleCapacity: Array.from(eligible).some((candidate) => candidate !== label),
+      reason: snapshot?.ok === true ? "usage_window_95" : `provider_status_${snapshot?.status ?? "error"}`,
+    });
+  }
+
+  return entries;
+}
+
+function buildAnthropicExhaustionHistoryEntries({ usage, eligibleLabels, observedAt }) {
+  const eligible = new Set(Array.isArray(eligibleLabels) ? eligibleLabels : []);
+  const entries = [];
+
+  for (const [label, snapshot] of Object.entries(isObject(usage) ? usage : {})) {
+    if (!isUsageSnapshotExhausted(snapshot)) continue;
+    entries.push({
+      observedAt,
+      kind: "exhaustion",
+      label,
       hadSpareEligibleCapacity: Array.from(eligible).some((candidate) => candidate !== label),
       reason: snapshot?.ok === true ? "usage_window_95" : `provider_status_${snapshot?.status ?? "error"}`,
     });
@@ -5732,6 +6241,7 @@ function readCodexCliTargetStatus({ state, homeDir }) {
     inferredLabel: inferredLabel || null,
     readback,
     lastSelectionReceipt: isObject(target.lastSelectionReceipt) ? target.lastSelectionReceipt : null,
+    lastWatchReceipt: isObject(target.lastWatchReceipt) ? target.lastWatchReceipt : null,
     lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
   };
 }
@@ -5760,6 +6270,51 @@ function readPiCliTargetStatus({ state, homeDir }) {
     actualAccountId: actualAccountId || null,
     inferredLabel: inferredLabel || null,
     readback,
+    lastSelectionReceipt: isObject(target.lastSelectionReceipt) ? target.lastSelectionReceipt : null,
+    lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
+  };
+}
+
+function readClaudeCliTargetStatus({ state, homeDir }) {
+  ensureStateShape(state);
+  const target = getClaudeTargetState(state);
+  const claudeDir = resolveManagedClaudeDir({ homeDir });
+  const readback = readClaudeAuthFile({ claudeDir });
+  const activeLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
+  const expectedSubscriptionType =
+    typeof target.expectedSubscriptionType === "string" ? target.expectedSubscriptionType.trim() : "";
+  const inferredLabel =
+    readback.ok === true
+      ? getAnthropicCredentialMatchLabel(state, {
+          accessToken: readback.accessToken,
+          refreshToken: readback.refreshToken,
+        })
+      : null;
+  const authStatus =
+    activeLabel || readback.exists
+      ? readClaudeAuthStatus({ homeDir })
+      : {
+          available: false,
+          commandPath: resolveClaudeCommand({ homeDir }),
+        };
+  const actualSubscriptionType =
+    typeof authStatus?.subscriptionType === "string" && authStatus.subscriptionType.trim()
+      ? authStatus.subscriptionType.trim()
+      : typeof readback?.subscriptionType === "string" && readback.subscriptionType.trim()
+        ? readback.subscriptionType.trim()
+        : null;
+
+  return {
+    claudeDir,
+    authPath: resolveClaudeAuthFilePath(claudeDir),
+    activeLabel: activeLabel || null,
+    activeAccountPresent: activeLabel ? isObject(state.accounts[activeLabel]) : false,
+    activeCredentialPresent: activeLabel ? isObject(getAnthropicCredential(state, activeLabel)) : false,
+    expectedSubscriptionType: expectedSubscriptionType || null,
+    actualSubscriptionType,
+    inferredLabel: inferredLabel || null,
+    readback,
+    authStatus,
     lastSelectionReceipt: isObject(target.lastSelectionReceipt) ? target.lastSelectionReceipt : null,
     lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
   };
@@ -5934,6 +6489,93 @@ function buildWarningsFromPiTargetStatus(status) {
   return warnings;
 }
 
+function buildWarningsFromClaudeTargetStatus(status) {
+  const warnings = [];
+  if (!status) return warnings;
+
+  if (status.activeLabel && !status.activeAccountPresent) {
+    warnings.push({
+      kind: "claude_target_label_missing",
+      system: "claude-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.activeLabel && !status.activeCredentialPresent) {
+    warnings.push({
+      kind: "claude_target_credentials_missing",
+      system: "claude-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.activeLabel && !status.readback.exists) {
+    warnings.push({
+      kind: "claude_target_missing_auth_file",
+      system: "claude-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.readback.exists && status.readback.ok !== true) {
+    warnings.push({
+      kind: "claude_target_auth_unreadable",
+      system: "claude-cli",
+      status: status.readback.error,
+    });
+  }
+
+  if (status.activeLabel && status.readback.ok === true && !status.readback.claudeAiOauthPresent) {
+    warnings.push({
+      kind: "claude_target_missing_provider_entry",
+      system: "claude-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (
+    status.activeLabel
+    && status.expectedSubscriptionType
+    && status.actualSubscriptionType
+    && status.expectedSubscriptionType !== status.actualSubscriptionType
+  ) {
+    warnings.push({
+      kind: "claude_target_subscription_mismatch",
+      system: "claude-cli",
+      label: status.activeLabel,
+      status: status.actualSubscriptionType,
+    });
+  }
+
+  if (status.activeLabel && status.inferredLabel && status.inferredLabel !== status.activeLabel) {
+    warnings.push({
+      kind: "claude_target_label_mismatch",
+      system: "claude-cli",
+      label: status.activeLabel,
+      actualLabel: status.inferredLabel,
+    });
+  }
+
+  if (status.activeLabel && status.authStatus?.available === true && status.authStatus.ok !== true) {
+    warnings.push({
+      kind: "claude_target_status_unreadable",
+      system: "claude-cli",
+      label: status.activeLabel,
+      status: status.authStatus.error || status.authStatus.status || "unknown",
+    });
+  }
+
+  if (status.activeLabel && status.authStatus?.ok === true && status.authStatus.loggedIn !== true) {
+    warnings.push({
+      kind: "claude_target_not_logged_in",
+      system: "claude-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  return warnings;
+}
+
 function applyCodexCliFromState({ label, homeDir }, state) {
   ensureStateShape(state);
   if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
@@ -5986,6 +6628,73 @@ function applyCodexCliFromState({ label, homeDir }, state) {
     codexHome,
     authPath: readback.authPath,
     storeMode: store.storeMode,
+    wrote: writeResult.wrote,
+  };
+}
+
+function applyClaudeCliFromState({ label, homeDir }, state) {
+  ensureStateShape(state);
+  if (getAnthropicPoolLabels(state).length === 0) {
+    throw new Error(
+      "No Claude pool labels are available on this machine yet. " +
+        "Reauth a Claude label first with `aim <label>`.",
+    );
+  }
+
+  const normalizedLabel = normalizeLabel(label);
+  const account = state.accounts[normalizedLabel];
+  if (!isObject(account)) {
+    throw new Error(`Unknown Claude label: ${normalizedLabel}. Run \`aim status\` to inspect the local pool.`);
+  }
+  const provider = normalizeProviderId(account.provider);
+  if (provider !== ANTHROPIC_PROVIDER) {
+    throw new Error(`Refusing to activate non-Claude label=${normalizedLabel} provider=${provider || "unknown"}.`);
+  }
+
+  const hydrated = hydrateAnthropicCredentialForClaudeLocal({
+    state,
+    label: normalizedLabel,
+    homeDir,
+    credential: getAnthropicCredential(state, normalizedLabel),
+  });
+  state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = hydrated;
+  const credential = assertAnthropicCredentialShape({
+    label: normalizedLabel,
+    credential: hydrated,
+    requireFresh: true,
+    requireClaudeProjection: true,
+  });
+
+  const claudeDir = resolveManagedClaudeDir({ homeDir });
+  const authPayload = buildClaudeAuthDotJson({ credential });
+  const writeResult = writeJsonFileIfChanged(resolveClaudeAuthFilePath(claudeDir), authPayload, { mode: 0o600 });
+  const readback = readClaudeAuthFile({ claudeDir });
+  if (readback.ok !== true) {
+    throw new Error(`Failed to read back managed Claude auth file: ${readback.error || "unknown error"}`);
+  }
+  if (readback.claudeAiOauthPresent !== true) {
+    throw new Error("Claude readback missing claudeAiOauth after apply.");
+  }
+  const inferredLabel = getAnthropicCredentialMatchLabel(state, {
+    accessToken: readback.accessToken,
+    refreshToken: readback.refreshToken,
+  });
+  if (inferredLabel && inferredLabel !== normalizedLabel) {
+    throw new Error(`Claude readback mismatch after apply: expected label=${normalizedLabel}, got ${inferredLabel}.`);
+  }
+
+  const target = getClaudeTargetState(state);
+  target.claudeDir = claudeDir;
+  target.authPath = readback.authPath;
+  target.activeLabel = normalizedLabel;
+  target.expectedSubscriptionType = credential.subscriptionType;
+  target.lastAppliedAt = new Date().toISOString();
+
+  return {
+    label: normalizedLabel,
+    subscriptionType: credential.subscriptionType,
+    claudeDir,
+    authPath: readback.authPath,
     wrote: writeResult.wrote,
   };
 }
@@ -6259,9 +6968,10 @@ async function buildStatusView({ statePath, state, homeDir }) {
   }
 
   const codexCli = readCodexCliTargetStatus({ state, homeDir });
+  const claudeCli = readClaudeCliTargetStatus({ state, homeDir });
   const piCli = readPiCliTargetStatus({ state, homeDir });
   const openclawTarget = getOpenclawTargetState(state);
-  const nextBestCandidate = pickNextBestPoolLabel({
+  const nextBestCandidate = pickNextBestLocalCliPoolLabel({
     rankedCandidates: rankPoolCandidates({
       labels: codexPool.eligibleLabels,
       usage: usageByProvider[OPENAI_CODEX_PROVIDER],
@@ -6322,11 +7032,13 @@ async function buildStatusView({ statePath, state, homeDir }) {
     capacity: sanitizeForStatus(capacity),
     imports: { authority: { codex: sanitizeForStatus(getAuthorityCodexImport(state)) } },
     codexCli: sanitizeForStatus(codexCli),
+    claudeCli: sanitizeForStatus(claudeCli),
     piCli: sanitizeForStatus(piCli),
     warnings: [
       ...buildWarningsFromState(state),
       ...buildWarningsFromStatusAccounts(sortedAccounts),
       ...buildWarningsFromCodexTargetStatus(codexCli),
+      ...buildWarningsFromClaudeTargetStatus(claudeCli),
       ...buildWarningsFromPiTargetStatus(piCli),
     ],
   };
@@ -6585,6 +7297,25 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
         ["account_id", view.codexCli.actualAccountId || "--"],
         ["store", view.codexCli.storeMode || "unknown"],
         ["synced_age", view.codexCli.importedAt ? formatAgeSince(view.codexCli.importedAt.trim()) : "--"],
+        ["last_watch", view.codexCli.lastWatchReceipt?.status || "--"],
+        ["last_watch_at", view.codexCli.lastWatchReceipt?.observedAt || "--"],
+      ]),
+    );
+  }
+
+  if (view.claudeCli) {
+    lines.push("");
+    lines.push("CLAUDE");
+    lines.push(
+      ...formatStatusBlockRows([
+        ["active_label", view.claudeCli.activeLabel || "none"],
+        ["subscription", view.claudeCli.actualSubscriptionType || view.claudeCli.expectedSubscriptionType || "--"],
+        ["auth_status", view.claudeCli.authStatus?.available === true
+          ? (view.claudeCli.authStatus.ok === true
+            ? (view.claudeCli.authStatus.loggedIn === true ? "logged_in" : "logged_out")
+            : "error")
+          : "unavailable"],
+        ["auth_path", view.claudeCli.authPath || "--"],
       ]),
     );
   }
@@ -8016,14 +8747,72 @@ async function syncOpenclawFromState(params, state) {
   };
 }
 
-async function activateCodexPoolSelection({ state, homeDir }) {
+function getPrimaryRemainingPctFromUsageSnapshot(snapshot) {
+  if (!snapshot || snapshot.ok !== true) return null;
+  const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
+  if (windows.length === 0) return null;
+  return clampPercent(100 - Number(windows[0]?.usedPercent ?? 0));
+}
+
+function buildCodexWatchNonfatalWarnings(status) {
+  return buildWarningsFromCodexTargetStatus(status)
+    .filter((warning) => warning?.kind === "codex_import_missing");
+}
+
+function buildCodexWatchTargetBlockers(status) {
+  const blockers = [];
+  if (!status) return blockers;
+
+  if (status.storeError) {
+    blockers.push({ reason: "codex_target_config_invalid", status: status.storeError });
+  } else if (status.storeMode && status.storeMode !== CODEX_AUTH_STORE_MODE_FILE) {
+    blockers.push({ reason: "codex_target_store_mode_unsupported", status: status.storeMode });
+  }
+
+  if (status.activeLabel && !status.activeAccountPresent) {
+    blockers.push({ reason: "codex_target_label_missing", label: status.activeLabel });
+  }
+  if (status.activeLabel && !status.activeCredentialPresent) {
+    blockers.push({ reason: "codex_target_credentials_missing", label: status.activeLabel });
+  }
+  if (status.activeLabel && !status.readback.exists) {
+    blockers.push({ reason: "codex_target_missing_auth_file", label: status.activeLabel });
+  }
+  if (status.readback.exists && status.readback.ok !== true) {
+    blockers.push({ reason: "codex_target_auth_unreadable", status: status.readback.error || "unknown" });
+  }
+  if (status.activeLabel && status.expectedAccountId && status.actualAccountId && status.expectedAccountId !== status.actualAccountId) {
+    blockers.push({
+      reason: "codex_target_account_mismatch",
+      label: status.activeLabel,
+      accountId: status.actualAccountId,
+      expectedAccountId: status.expectedAccountId,
+    });
+  }
+  if (status.activeLabel && status.inferredLabel && status.inferredLabel !== status.activeLabel) {
+    blockers.push({
+      reason: "codex_target_label_mismatch",
+      label: status.activeLabel,
+      actualLabel: status.inferredLabel,
+    });
+  }
+
+  return blockers;
+}
+
+async function activateCodexPoolSelection({ state, homeDir, observedAt: observedAtOverride, usageByProvider: usageByProviderOverride }) {
   ensureStateShape(state);
   // Structural target validation comes first: if this machine's Codex home is not
   // AIM-manageable, fail loud before doing pool selection or usage probing.
   ensureFileBackedCodexHome({ codexHome: resolveManagedCodexHomeDir({ homeDir }) });
-  const observedAt = new Date().toISOString();
-  const usageByProvider = await probeUsageSnapshotsByProvider(state);
-  const usageByLabel = usageByProvider[OPENAI_CODEX_PROVIDER];
+  const observedAt =
+    typeof observedAtOverride === "string" && observedAtOverride.trim()
+      ? observedAtOverride.trim()
+      : new Date().toISOString();
+  const usageByProvider = isObject(usageByProviderOverride)
+    ? usageByProviderOverride
+    : await probeUsageSnapshotsByProvider(state);
+  const usageByLabel = isObject(usageByProvider?.[OPENAI_CODEX_PROVIDER]) ? usageByProvider[OPENAI_CODEX_PROVIDER] : {};
   const poolStatus = collectCodexPoolStatus({
     state,
     homeDir,
@@ -8088,7 +8877,7 @@ async function activateCodexPoolSelection({ state, homeDir }) {
     lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
     now: Date.parse(observedAt),
   });
-  const selection = pickNextBestPoolLabel({ rankedCandidates });
+  const selection = pickNextBestLocalCliPoolLabel({ rankedCandidates });
   if (!selection) {
     throw new Error("Failed to select a next-best Codex pool label.");
   }
@@ -8125,6 +8914,326 @@ async function activateCodexPoolSelection({ state, homeDir }) {
       status,
       label: selection.label,
       accountId: activated.accountId,
+      hadSpareEligibleCapacity: poolStatus.eligibleLabels.length > 1,
+      reason: selection.keptCurrent ? "kept_current" : "next_best",
+    },
+  ]);
+
+  return { status, receipt, wrote: Boolean(activated.wrote) };
+}
+
+async function watchCodexPoolSelectionOnce(
+  {
+    state,
+    homeDir,
+    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
+  },
+  {
+    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
+    activateCodexPoolSelectionImpl = activateCodexPoolSelection,
+  } = {},
+) {
+  ensureStateShape(state);
+  // Watch mode owns the threshold decision and receipt, but it must never invent
+  // a second selector or write auth directly. All Codex auth mutation still flows
+  // through activateCodexPoolSelection() -> applyCodexCliFromState().
+  ensureFileBackedCodexHome({ codexHome: resolveManagedCodexHomeDir({ homeDir }) });
+  const effectiveThresholdPct = resolveCodexWatchThresholdPct(thresholdPct);
+  const observedAt = new Date().toISOString();
+  const usageByProvider = await probeUsageSnapshotsByProviderImpl(state);
+  const usageByLabel = isObject(usageByProvider?.[OPENAI_CODEX_PROVIDER]) ? usageByProvider[OPENAI_CODEX_PROVIDER] : {};
+  const currentTarget = readCodexCliTargetStatus({ state, homeDir });
+  const target = getCodexTargetState(state);
+  const currentLabelBefore = currentTarget.activeLabel || null;
+  const warnings = buildCodexWatchNonfatalWarnings(currentTarget);
+
+  if (!currentLabelBefore) {
+    const poolLabels = getCodexPoolLabels(state);
+    if (poolLabels.length === 0) {
+      const receipt = {
+        action: "codex_watch",
+        status: "blocked",
+        observedAt,
+        thresholdPct: effectiveThresholdPct,
+        currentLabelBefore: null,
+        currentLabelAfter: currentTarget.inferredLabel || null,
+        primaryRemainingPctBefore: null,
+        triggeredSelection: false,
+        warnings,
+        blockers: [{ reason: "no_pool_account_available" }],
+      };
+      target.lastWatchReceipt = receipt;
+      return { status: "blocked", receipt, wrote: false };
+    }
+
+    const selection = await activateCodexPoolSelectionImpl({
+      state,
+      homeDir,
+      observedAt,
+      usageByProvider,
+    });
+    const postTarget = readCodexCliTargetStatus({ state, homeDir });
+    const receipt = {
+      action: "codex_watch",
+      status: selection.status,
+      observedAt,
+      thresholdPct: effectiveThresholdPct,
+      currentLabelBefore: null,
+      currentLabelAfter: postTarget.activeLabel || postTarget.inferredLabel || null,
+      primaryRemainingPctBefore: null,
+      triggeredSelection: true,
+      selectionReceipt: selection.receipt,
+      warnings: [...warnings, ...(Array.isArray(selection.receipt?.warnings) ? selection.receipt.warnings : [])],
+      blockers: Array.isArray(selection.receipt?.blockers) ? selection.receipt.blockers : [],
+    };
+    target.lastWatchReceipt = receipt;
+    return { status: selection.status, receipt, wrote: Boolean(selection.wrote) };
+  }
+
+  const targetBlockers = buildCodexWatchTargetBlockers(currentTarget);
+  if (targetBlockers.length > 0) {
+    const receipt = {
+      action: "codex_watch",
+      status: "blocked",
+      observedAt,
+      thresholdPct: effectiveThresholdPct,
+      currentLabelBefore,
+      currentLabelAfter: currentLabelBefore,
+      primaryRemainingPctBefore: null,
+      triggeredSelection: false,
+      warnings,
+      blockers: targetBlockers,
+    };
+    target.lastWatchReceipt = receipt;
+    return { status: "blocked", receipt, wrote: false };
+  }
+
+  const activeUsage = usageByLabel[currentLabelBefore] ?? null;
+  const primaryRemainingPctBefore = getPrimaryRemainingPctFromUsageSnapshot(activeUsage);
+  if (primaryRemainingPctBefore === null) {
+    const blockers = [
+      {
+        reason: "active_target_usage_unavailable",
+        label: currentLabelBefore,
+        ...(
+          (typeof activeUsage?.status === "string" && activeUsage.status.trim())
+          || Number.isFinite(Number(activeUsage?.status))
+            ? { status: activeUsage.status }
+          : {}),
+        ...(typeof activeUsage?.error === "string" && activeUsage.error.trim()
+          ? { detail: activeUsage.error.trim() }
+          : {}),
+      },
+    ];
+    const receipt = {
+      action: "codex_watch",
+      status: "blocked",
+      observedAt,
+      thresholdPct: effectiveThresholdPct,
+      currentLabelBefore,
+      currentLabelAfter: currentLabelBefore,
+      primaryRemainingPctBefore: null,
+      triggeredSelection: false,
+      warnings,
+      blockers,
+    };
+    target.lastWatchReceipt = receipt;
+    return { status: "blocked", receipt, wrote: false };
+  }
+
+  if (primaryRemainingPctBefore >= effectiveThresholdPct) {
+    const receipt = {
+      action: "codex_watch",
+      status: "noop",
+      observedAt,
+      thresholdPct: effectiveThresholdPct,
+      currentLabelBefore,
+      currentLabelAfter: currentLabelBefore,
+      primaryRemainingPctBefore,
+      triggeredSelection: false,
+      warnings,
+      blockers: [],
+    };
+    target.lastWatchReceipt = receipt;
+    return { status: "noop", receipt, wrote: false };
+  }
+
+  const selection = await activateCodexPoolSelectionImpl({
+    state,
+    homeDir,
+    observedAt,
+    usageByProvider,
+  });
+  const postTarget = readCodexCliTargetStatus({ state, homeDir });
+  const receipt = {
+    action: "codex_watch",
+    status: selection.status,
+    observedAt,
+    thresholdPct: effectiveThresholdPct,
+    currentLabelBefore,
+    currentLabelAfter: postTarget.activeLabel || postTarget.inferredLabel || null,
+    primaryRemainingPctBefore,
+    triggeredSelection: true,
+    selectionReceipt: selection.receipt,
+    warnings: [...warnings, ...(Array.isArray(selection.receipt?.warnings) ? selection.receipt.warnings : [])],
+    blockers: Array.isArray(selection.receipt?.blockers) ? selection.receipt.blockers : [],
+  };
+  target.lastWatchReceipt = receipt;
+  return { status: selection.status, receipt, wrote: Boolean(selection.wrote) };
+}
+
+async function watchCodexPoolSelectionLoop(
+  {
+    statePath,
+    homeDir,
+    intervalSeconds = DEFAULT_CODEX_WATCH_INTERVAL_SECONDS,
+    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
+    maxIterations = Number.POSITIVE_INFINITY,
+  },
+  {
+    emitResultImpl = null,
+    sleepImpl = sleep,
+    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
+    activateCodexPoolSelectionImpl = activateCodexPoolSelection,
+  } = {},
+) {
+  const effectiveIntervalSeconds = resolveCodexWatchIntervalSeconds(intervalSeconds);
+  const effectiveMaxIterations =
+    Number.isFinite(Number(maxIterations)) && Number(maxIterations) > 0
+      ? Math.floor(Number(maxIterations))
+      : Number.POSITIVE_INFINITY;
+  let lastResult = null;
+
+  for (let iteration = 0; iteration < effectiveMaxIterations; iteration += 1) {
+    const state = loadAimgrState(statePath);
+    lastResult = await watchCodexPoolSelectionOnce(
+      {
+        state,
+        homeDir,
+        thresholdPct,
+      },
+      {
+        probeUsageSnapshotsByProviderImpl,
+        activateCodexPoolSelectionImpl,
+      },
+    );
+    writeJsonFileWithBackup(statePath, state);
+    if (typeof emitResultImpl === "function") {
+      await emitResultImpl(lastResult, { iteration });
+    }
+    if (iteration + 1 >= effectiveMaxIterations) {
+      break;
+    }
+    await sleepImpl(effectiveIntervalSeconds * 1000);
+  }
+
+  return lastResult;
+}
+
+async function activateClaudePoolSelection({ state, homeDir }) {
+  ensureStateShape(state);
+  const observedAt = new Date().toISOString();
+  const usageByProvider = await probeUsageSnapshotsByProvider(state);
+  const usageByLabel = usageByProvider[ANTHROPIC_PROVIDER];
+  const poolStatus = collectAnthropicPoolStatus({
+    state,
+    homeDir,
+    usageByLabel,
+    now: Date.parse(observedAt),
+  });
+
+  appendAnthropicHistory(
+    state,
+    buildAnthropicExhaustionHistoryEntries({
+      usage: usageByLabel,
+      eligibleLabels: poolStatus.eligibleLabels,
+      observedAt,
+    }),
+  );
+
+  if (poolStatus.labels.length === 0) {
+    throw new Error(
+      "No Claude pool labels are available on this machine yet. " +
+        "Reauth a Claude label first with `aim <label>`.",
+    );
+  }
+
+  const target = getClaudeTargetState(state);
+  if (poolStatus.eligibleLabels.length === 0) {
+    const currentTarget = readClaudeCliTargetStatus({ state, homeDir });
+    clearManagedClaudeCliActivation({ state, homeDir });
+    const receipt = {
+      action: "claude_use",
+      status: "blocked",
+      observedAt,
+      previousLabel: currentTarget.activeLabel ?? currentTarget.inferredLabel ?? undefined,
+      warnings: [],
+      blockers: [{ reason: "no_eligible_pool_account" }],
+      reasons: [],
+      wroteAuthJson: false,
+    };
+    target.lastSelectionReceipt = receipt;
+    appendAnthropicHistory(state, [
+      {
+        observedAt,
+        kind: "selection",
+        status: "blocked",
+        reason: "no_eligible_pool_account",
+        hadSpareEligibleCapacity: false,
+      },
+    ]);
+    return { status: "blocked", receipt, wrote: false };
+  }
+
+  const currentTarget = readClaudeCliTargetStatus({ state, homeDir });
+  const rankedCandidates = rankPoolCandidates({
+    labels: poolStatus.eligibleLabels,
+    usage: usageByLabel,
+    currentLabel: currentTarget.activeLabel,
+    currentAssignments: {},
+    configuredAgents: [],
+    agentDemand: {},
+    lastApplyReceipt: null,
+    now: Date.parse(observedAt),
+  });
+  const selection = pickNextBestLocalCliPoolLabel({ rankedCandidates });
+  if (!selection) {
+    throw new Error("Failed to select a next-best Claude pool label.");
+  }
+
+  const activated = applyClaudeCliFromState({ label: selection.label, homeDir }, state);
+  const postStatus = readClaudeCliTargetStatus({ state, homeDir });
+  const warnings = buildWarningsFromClaudeTargetStatus(postStatus);
+  const status =
+    !activated.wrote
+    && currentTarget.activeLabel === selection.label
+    && currentTarget.expectedSubscriptionType === activated.subscriptionType
+      ? "noop"
+      : warnings.length > 0
+        ? "activated_with_warnings"
+        : "activated";
+
+  const receipt = {
+    action: "claude_use",
+    status,
+    observedAt,
+    previousLabel: currentTarget.activeLabel ?? undefined,
+    label: selection.label,
+    subscriptionType: activated.subscriptionType,
+    keptCurrent: Boolean(selection.keptCurrent),
+    reasons: Array.isArray(selection.reasons) ? selection.reasons : [],
+    authPath: activated.authPath,
+    wroteAuthJson: Boolean(activated.wrote),
+    warnings,
+    blockers: [],
+  };
+  target.lastSelectionReceipt = receipt;
+  appendAnthropicHistory(state, [
+    {
+      observedAt,
+      kind: "selection",
+      status,
+      label: selection.label,
       hadSpareEligibleCapacity: poolStatus.eligibleLabels.length > 1,
       reason: selection.keptCurrent ? "kept_current" : "next_best",
     },
@@ -8202,7 +9311,7 @@ async function activatePiPoolSelection({ state, homeDir }) {
     lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
     now: Date.parse(observedAt),
   });
-  const selection = pickNextBestPoolLabel({ rankedCandidates });
+  const selection = pickNextBestLocalCliPoolLabel({ rankedCandidates });
   if (!selection) {
     throw new Error("Failed to select a next-best Pi pool label.");
   }
@@ -8415,9 +9524,13 @@ export async function main(argv, deps = {}) {
     refreshOpenAICodexImpl = refreshOpenAICodexToken,
     loginAnthropicImpl = loginAnthropic,
     refreshAnthropicImpl = refreshAnthropicToken,
+    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
+    activateCodexPoolSelectionImpl = activateCodexPoolSelection,
+    sleepImpl = sleep,
+    watchLoopMaxIterations = Number.POSITIVE_INFINITY,
   } = deps;
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "pi", "browser"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "claude", "pi", "browser"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -8599,16 +9712,84 @@ export async function main(argv, deps = {}) {
   if (cmd === "codex") {
     const subcmd = String(positional[1] ?? "").trim().toLowerCase();
     if (!subcmd) {
-      throw new Error("Missing codex subcommand. Usage: aim codex use");
+      throw new Error("Missing codex subcommand. Usage: aim codex use | aim codex watch");
+    }
+    if (subcmd === "watch") {
+      if (String(positional[2] ?? "").trim()) {
+        throw new Error("`aim codex watch <label>` is not supported. Use `aim codex watch` and let AIM decide when to rotate.");
+      }
+      const thresholdPct = resolveCodexWatchThresholdPct(opts.rotateBelow5hRemainingPct);
+      if (opts.once) {
+        const state = loadAimgrState(statePath);
+        const watched = await watchCodexPoolSelectionOnce(
+          {
+            state,
+            homeDir,
+            thresholdPct,
+          },
+          {
+            probeUsageSnapshotsByProviderImpl,
+            activateCodexPoolSelectionImpl,
+          },
+        );
+        writeJsonFileWithBackup(statePath, state);
+        process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: watched.status !== "blocked", watched }), null, 2)}\n`);
+        if (watched.status === "blocked") {
+          process.exitCode = 1;
+        }
+        return;
+      }
+
+      await watchCodexPoolSelectionLoop(
+        {
+          statePath,
+          homeDir,
+          intervalSeconds: opts.intervalSeconds,
+          thresholdPct,
+          maxIterations: watchLoopMaxIterations,
+        },
+        {
+          sleepImpl,
+          probeUsageSnapshotsByProviderImpl,
+          activateCodexPoolSelectionImpl,
+          emitResultImpl: async (watched) => {
+            process.stdout.write(
+              `${JSON.stringify(sanitizeForStatus({ ok: watched.status !== "blocked", watched }), null, 2)}\n`,
+            );
+          },
+        },
+      );
+      return;
     }
     if (subcmd !== "use") {
-      throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: use).`);
+      throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: use, watch).`);
     }
     const state = loadAimgrState(statePath);
     if (String(positional[2] ?? "").trim()) {
       throw new Error("`aim codex use <label>` was removed. Use `aim codex use` for next-best selection or `aim <label>` if the account needs reauth.");
     }
     const activated = await activateCodexPoolSelection({ state, homeDir });
+    writeJsonFileWithBackup(statePath, state);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);
+    if (activated.status === "blocked") {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (cmd === "claude") {
+    const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+    if (!subcmd) {
+      throw new Error("Missing claude subcommand. Usage: aim claude use");
+    }
+    if (subcmd !== "use") {
+      throw new Error(`Unsupported claude subcommand: ${subcmd} (supported: use).`);
+    }
+    const state = loadAimgrState(statePath);
+    if (String(positional[2] ?? "").trim()) {
+      throw new Error("`aim claude use <label>` was removed. Use `aim claude use` for next-best selection or `aim <label>` if the account needs reauth.");
+    }
+    const activated = await activateClaudePoolSelection({ state, homeDir });
     writeJsonFileWithBackup(statePath, state);
     process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);
     if (activated.status === "blocked") {

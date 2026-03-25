@@ -12,6 +12,9 @@
   },
   "scripts": {
     "install:local": "./scripts/install-local-bin.sh",
+    "codex-watch:install": "bash ./scripts/install-codex-watch.sh",
+    "codex-watch:status": "bash ./scripts/install-codex-watch.sh --status",
+    "codex-watch:uninstall": "bash ./scripts/install-codex-watch.sh --uninstall",
     "lint": "node --check ./bin/aimgr.js && node --check ./src/cli.js",
     "test": "node --test"
   },

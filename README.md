@@ -4,7 +4,7 @@
 
 - keep labeled paid-account truth in AIM
 - keep browser ownership in AIM
-- compile that truth into downstream targets like OpenClaw, local Codex CLI, and local Pi CLI
+- compile that truth into downstream targets like OpenClaw, local Codex CLI, local Claude CLI, and local Pi CLI
 
 The operating model is intentionally simple:
 
@@ -14,7 +14,7 @@ The operating model is intentionally simple:
   - `chrome-profile` -> explicit raw Chrome `user-data-dir`
   - `agent-browser` -> explicit `profile` + `session`
   - `manual-callback` -> no local browser binding
-- OpenClaw assignments plus local Codex/Pi `auth.json` are derived outputs
+- OpenClaw assignments plus local Codex/Claude/Pi auth stores are derived outputs
 - operators think in labels like `boss`, `lessons`, and `qa`, not raw tokens or profile IDs
 
 ## North star
@@ -26,13 +26,15 @@ That means:
 - `aim <label>` is the primary human path
 - `aim rebalance openclaw` is the canonical OpenClaw assignment command
 - `aim codex use` is the canonical local Codex selection command
+- `aim codex watch` is the canonical local Codex guardrail for overnight rotation
+- `aim claude use` is the canonical local Claude selection command
 - `aim pi use` is the canonical local Pi selection command
-- `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim pi use` are removed
+- `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim claude use` / `aim pi use` are removed
 
 ## Non-negotiables
 
 - AIM is the only durable credential SSOT.
-- OpenClaw, Codex CLI, and Pi CLI are derived targets, not competing truth.
+- OpenClaw, Codex CLI, Claude CLI, and Pi CLI are derived targets, not competing truth.
 - Operator-facing account state collapses to `ready`, `reauth`, or `blocked`.
 - Labels are explicit; there is no steady-state `default` account semantics.
 - Codex target management is file-backed only in v1. `keyring` and `auto` fail loud.
@@ -99,6 +101,7 @@ Status answers the core operator questions:
 - what the local Pi target currently has selected
 - what the next-best eligible account would be
 - whether the pool needs more capacity
+- what the last Codex watch receipt decided
 
 ### 2) Maintain or reauth one label
 
@@ -151,7 +154,7 @@ When you pick `Use another Chrome profile` from the guided panel, AIM now lists 
 
 ### 2A) Inspect or repair the browser binding
 
-Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim codex use`, and `aim pi use`.
+Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim codex use`, `aim codex watch`, `aim claude use`, and `aim pi use`.
 
 When you need to inspect or repair the browser substrate explicitly, use the advanced/admin surface:
 
@@ -229,7 +232,66 @@ This command:
 
 The contract is "next Codex process", not hot-swapping an already-running long-lived process.
 
-### 4A) Activate local Pi CLI from the shared pool
+### 4A) Guard local Codex overnight
+
+Use this when you want AIM to keep checking the current local Codex target and rotate through the existing selector before the active label falls too low in the 5h window.
+
+Scheduler-safe one-shot:
+
+```bash
+aim codex watch --once --rotate-below-5h-remaining-pct 20
+```
+
+Foreground loop:
+
+```bash
+aim codex watch --interval-seconds 300 --rotate-below-5h-remaining-pct 20
+```
+
+Important behavior:
+
+- watch mode decides from the current active local Codex label's live 5h remaining percentage
+- when the active label drops below threshold, watch delegates to the same selection/apply path as `aim codex use`
+- watch records `targets.codexCli.lastWatchReceipt` in AIM state and surfaces it in `aim status`
+- `--once` is the only scheduler contract; `launchd`, `systemd`, and plain cron should all wake the same one-shot command
+- do not enable both a foreground loop and an OS scheduler on the same host
+- do not use OpenClaw cron for this; AIM owns local Codex auth truth
+
+Simplest install path:
+
+```bash
+cd /path/to/aimgr
+bash ./scripts/install-codex-watch.sh
+# or
+npm run codex-watch:install
+```
+
+That script works from a standalone `aimgr` clone or the nested Mac-host checkout, detects macOS vs Linux, installs the right system scheduler with `sudo` when needed, starts it, and prints the follow-up status/log command.
+
+Rerunning the installer is safe. It refreshes the same single scheduler definition instead of creating parallel watches, and on macOS it also cleans up old GUI/user launchd copies before bootstrapping the canonical system daemon.
+
+Installed scheduler artifacts:
+
+- macOS: `/Library/LaunchDaemons/com.funcountry.agents_host.aim_codex_watch.plist`
+- Ubuntu: `/etc/systemd/system/aim-codex-watch.service` and `/etc/systemd/system/aim-codex-watch.timer`
+
+Plain cron is acceptable only as a thin wake-up lane:
+
+```bash
+# Replace both absolute paths first:
+# - `/absolute/path/to/node` from `command -v node`
+# - `/absolute/path/to/aimgr` with your aimgr checkout root
+*/5 * * * * /absolute/path/to/node /absolute/path/to/aimgr/bin/aimgr.js codex watch --once --rotate-below-5h-remaining-pct 20
+```
+
+If you want to inspect or remove the installed scheduler later:
+
+```bash
+bash ./scripts/install-codex-watch.sh --status
+bash ./scripts/install-codex-watch.sh --uninstall
+```
+
+### 4B) Activate local Pi CLI from the shared pool
 
 Pi uses the same pooled OpenAI/Codex account selector as local Codex CLI, but writes Pi's canonical auth store instead of `~/.codex/auth.json`.
 
@@ -259,6 +321,33 @@ This command:
 
 The contract is "next Pi process", not mutating an already-running Pi session in place.
 
+### 4B) Activate local Claude CLI from the local Anthropic pool
+
+Claude uses AIM's Anthropic labels and writes Claude's canonical local auth store:
+
+- Claude dir: `~/.claude`
+- Claude auth path: `~/.claude/.credentials.json`
+
+```bash
+aim claude use
+```
+
+This command:
+
+- probes current Claude subscription usage
+- selects the next-best eligible pooled label with the same weekly-first local selector AIM uses for Codex/Pi
+- writes Claude's canonical `.credentials.json`
+- verifies readback and `claude auth status` when Claude is installed locally
+- records a selection receipt:
+  - `activated`
+  - `noop`
+  - `activated_with_warnings`
+  - `blocked`
+
+If AIM's stored Anthropic credential only has `access` / `refresh` / `expiresAt`, AIM first tries a bounded same-machine backfill from the current `~/.claude/.credentials.json` so you do not need to force a blanket reauth just to switch.
+
+The contract is "next Claude process", not mutating an already-running Claude session in place.
+
 ## Removed commands
 
 These commands are intentionally removed and now hard-error with migration guidance:
@@ -267,6 +356,7 @@ These commands are intentionally removed and now hard-error with migration guida
 aim pin <openclaw_agent_id> <label>
 aim autopin openclaw --pool ...
 aim codex use <label>
+aim claude use <label>
 aim pi use <label>
 ```
 
@@ -275,6 +365,7 @@ Use:
 - `aim <label>` for reauth
 - `aim rebalance openclaw` for OpenClaw assignment selection
 - `aim codex use` for local Codex selection
+- `aim claude use` for local Claude selection
 - `aim pi use` for local Pi selection
 
 ## Codex CLI requirements
@@ -427,6 +518,23 @@ Activates the next-best eligible pooled label for the local managed Codex home:
 aim codex use
 ```
 
+### `aim codex watch`
+
+Runs the Codex watch decision once for schedulers, or continuously in the foreground:
+
+```bash
+aim codex watch --once --rotate-below-5h-remaining-pct 20
+aim codex watch --interval-seconds 300 --rotate-below-5h-remaining-pct 20
+```
+
+### `aim claude use`
+
+Activates the next-best eligible pooled Anthropic label for the local managed Claude auth store:
+
+```bash
+aim claude use
+```
+
 ## State layout
 
 Default durable AIM state lives at:
@@ -477,6 +585,9 @@ Current shape:
   "pool": {
     "openaiCodex": {
       "history": []
+    },
+    "anthropic": {
+      "history": []
     }
   },
   "targets": {
@@ -493,6 +604,17 @@ Current shape:
       "activeLabel": "boss",
       "homeDir": "/Users/you/.codex",
       "expectedAccountId": "acct_123",
+      "lastSelectionReceipt": {
+        "status": "activated"
+      },
+      "lastWatchReceipt": {
+        "status": "noop"
+      }
+    },
+    "claudeCli": {
+      "activeLabel": "claudalyst",
+      "authPath": "/Users/you/.claude/.credentials.json",
+      "expectedSubscriptionType": "max",
       "lastSelectionReceipt": {
         "status": "activated"
       }
@@ -512,6 +634,7 @@ Derived target state lives in:
 
 - `targets.openclaw`
 - `targets.codexCli`
+- `targets.claudeCli`
 
 ## Troubleshooting
 
@@ -534,6 +657,43 @@ aim status
 ```
 
 Then reauth a label with `aim <label>` or add more pool capacity.
+
+### `aim codex watch --once` returns `blocked`
+
+Either the current active Codex target could not be trusted for a watch decision, or the selector had no eligible pooled account when rotation was triggered.
+
+Start with:
+
+```bash
+aim status
+```
+
+Then inspect `codexCli.lastWatchReceipt` and `codexCli.lastSelectionReceipt`:
+
+- if the blocker is about target mismatch or unreadable auth, repair the current Codex target first
+- if the blocker is `no_eligible_pool_account`, fix readiness or add capacity before rerunning the watcher
+
+### `aim claude use` returns `blocked`
+
+There is no eligible pooled Claude account right now.
+
+Fix readiness or capacity first:
+
+```bash
+aim status
+```
+
+Then reauth a Claude label with `aim <label>` or add more Anthropic pool capacity.
+
+### `aim claude use` fails with missing `subscriptionType`, `scopes`, or `rateLimitTier`
+
+AIM has a usable Anthropic OAuth token, but not the full Claude-local projection payload yet.
+
+Fastest fixes:
+
+- if this machine already has the right Claude login, retry `aim claude use` after confirming `~/.claude/.credentials.json` is intact
+- otherwise run `aim <label>` once so AIM can refresh/login and persist the richer Claude fields
+- reauth is a fallback, not the default path
 
 ### Codex home is rejected as `keyring` or `auto`
 
@@ -567,5 +727,5 @@ Current tests cover:
 - migration and import boundaries
 - AIM-owned login state and manual-callback behavior
 - OpenClaw auth/profile writes and rebalance helpers
-- Codex activation and file-backed store enforcement
+- Codex, Claude, and Pi local activation flows
 - model/session helper logic for OpenClaw

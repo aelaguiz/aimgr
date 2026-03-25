@@ -20,6 +20,7 @@ import {
   planWeightedOpenclawRebalance,
   partitionOpenclawPinsByConfiguredAgents,
   pickNextBestPoolLabel,
+  pickNextBestLocalCliPoolLabel,
   projectPoolCapacity,
   rankPoolCandidates,
   readOpenclawAgentTokenUsage,
@@ -191,6 +192,79 @@ if (args[0] === "gateway" && args[1] === "restart") {
   process.exit(0);
 }
 process.stderr.write("unexpected openclaw args: " + args.join(" "));
+process.exit(2);
+`,
+    { encoding: "utf8", mode: 0o755 },
+  );
+  return binDir;
+}
+
+function installFakeClaude({ rootDir }) {
+  const binDir = path.join(rootDir, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const scriptPath = path.join(binDir, "claude");
+  fs.writeFileSync(
+    scriptPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+
+if (args[0] === "auth" && args[1] === "status") {
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write("Usage: claude auth status [options]\\n\\nShow authentication status\\n\\nOptions:\\n  -h, --help  Display help for command\\n  --json      Output as JSON (default)\\n  --text      Output as human-readable text\\n");
+    process.exit(0);
+  }
+
+  const home = process.env.HOME || process.cwd();
+  const authPath = path.join(home, ".claude", ".credentials.json");
+  let payload = {
+    loggedIn: false,
+    authMethod: "none",
+    apiProvider: "none",
+    email: null,
+    orgId: null,
+    orgName: null,
+    subscriptionType: null,
+  };
+
+  if (fs.existsSync(authPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
+      const oauth = parsed && typeof parsed === "object" && parsed.claudeAiOauth && typeof parsed.claudeAiOauth === "object"
+        ? parsed.claudeAiOauth
+        : null;
+      const scopes = Array.isArray(oauth && oauth.scopes) ? oauth.scopes.filter((entry) => typeof entry === "string" && entry.trim()) : [];
+      const loggedIn =
+        oauth
+        && typeof oauth.accessToken === "string" && oauth.accessToken.trim()
+        && typeof oauth.refreshToken === "string" && oauth.refreshToken.trim()
+        && Number.isFinite(Number(oauth.expiresAt))
+        && typeof oauth.subscriptionType === "string" && oauth.subscriptionType.trim()
+        && typeof oauth.rateLimitTier === "string" && oauth.rateLimitTier.trim()
+        && scopes.length > 0;
+      if (loggedIn) {
+        payload = {
+          loggedIn: true,
+          authMethod: "claude.ai",
+          apiProvider: "firstParty",
+          email: null,
+          orgId: null,
+          orgName: null,
+          subscriptionType: oauth.subscriptionType.trim(),
+        };
+      }
+    } catch (err) {
+      process.stderr.write(String(err && err.message ? err.message : err));
+      process.exit(1);
+    }
+  }
+
+  process.stdout.write(JSON.stringify(payload, null, 2) + "\\n");
+  process.exit(0);
+}
+
+process.stderr.write("unexpected claude args: " + args.join(" "));
 process.exit(2);
 `,
     { encoding: "utf8", mode: 0o755 },
@@ -1611,6 +1685,7 @@ test("resolveAuthorityLocator accepts bare ssh targets for the default AIM state
 test("help text prefers agents@amirs-mac-studio as the authority example", async () => {
   const out = await runCli([]);
   assert.match(out, /aim sync codex --from <authority>/);
+  assert.match(out, /aim claude use\s+# activate the next-best pooled anthropic label for local Claude CLI/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
   assert.match(out, /Examples: agents@amirs-mac-studio/);
   assert.match(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
@@ -2352,6 +2427,18 @@ test("status --json surfaces receipt and projection branches", async () => {
           warnings: [{ kind: "readback_note" }],
           blockers: [],
         },
+        lastWatchReceipt: {
+          action: "codex_watch",
+          status: "noop",
+          observedAt: new Date().toISOString(),
+          thresholdPct: 20,
+          currentLabelBefore: "boss",
+          currentLabelAfter: "boss",
+          primaryRemainingPctBefore: 42,
+          triggeredSelection: false,
+          warnings: [],
+          blockers: [],
+        },
       },
     },
     pool: {
@@ -2420,6 +2507,8 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.equal(parsed.openclaw.lastApplyReceipt.perAccountLoad[0].carriedAgentCount, 3);
     assert.equal(parsed.openclaw.lastApplyReceipt.perAccountLoad[0].carriedDemandWeight, 180);
     assert.equal(parsed.codexCli.lastSelectionReceipt.status, "activated_with_warnings");
+    assert.equal(parsed.codexCli.lastWatchReceipt.status, "noop");
+    assert.equal(parsed.codexCli.lastWatchReceipt.currentLabelBefore, "boss");
     assert.equal(parsed.capacity.needMoreAccounts, true);
     assert.equal(parsed.capacity.riskLevel, "high");
     assert.deepEqual(parsed.capacity.basedOn.currentHighUtilizationLabels, ["boss"]);
@@ -2463,6 +2552,7 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.match(textOut, /ACCOUNTS \(1\)/);
     assert.match(textOut, /LAST REBALANCE/);
     assert.match(textOut, /Spread: boss=3 agent\(s\)\/180w/);
+    assert.match(textOut, /last_watch\s+noop/);
     assert.match(textOut, /\n\nlabel=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n$/);
 
     const compactOut = await runCli(["status", "--compact", "--home", home]);
@@ -2474,13 +2564,451 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.match(textOutWithAccounts, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
     assert.match(textOutWithAccounts, /LAST REBALANCE/);
     assert.match(textOutWithAccounts, /Spread: boss=3 agent\(s\)\/180w/);
+    assert.match(textOutWithAccounts, /last_watch\s+noop/);
     assert.match(textOutWithAccounts, /\n\nlabel=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n$/);
 
     const textOutWithAssignments = await runCli(["status", "--assignments", "--home", home]);
     assert.match(textOutWithAssignments, /POOL NOW/);
     assert.match(textOutWithAssignments, /OpenClaw assignments/);
     assert.match(textOutWithAssignments, /- agent_boss -> boss/);
+    assert.match(textOutWithAssignments, /last_watch\s+noop/);
     assert.match(textOutWithAssignments, /\n\nlabel=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n$/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("codex watch --once noops when the active label stays above the 5h remaining threshold", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(home, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: bossJwt,
+      access_token: bossJwt,
+      refresh_token: "REFRESH_BOSS",
+      account_id: "acct_boss",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_boss",
+        lastAppliedAt: new Date().toISOString(),
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 15,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: 40,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = JSON.parse(await runCli(["codex", "watch", "--once", "--home", home]));
+    assert.equal(result.ok, true);
+    assert.equal(result.watched.status, "noop");
+    assert.equal(result.watched.receipt.currentLabelBefore, "boss");
+    assert.equal(result.watched.receipt.currentLabelAfter, "boss");
+    assert.equal(result.watched.receipt.primaryRemainingPctBefore, 85);
+    assert.equal(result.watched.receipt.triggeredSelection, false);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, "boss");
+    assert.equal(updatedState.targets.codexCli.lastWatchReceipt.status, "noop");
+    assert.equal(updatedState.targets.codexCli.lastWatchReceipt.primaryRemainingPctBefore, 85);
+    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt, undefined);
+
+    const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+    assert.equal(status.codexCli.lastWatchReceipt.status, "noop");
+    assert.equal(status.codexCli.lastWatchReceipt.primaryRemainingPctBefore, 85);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("codex watch --once rotates through aim codex use when the active label drops below the 5h remaining threshold", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const pro1Jwt = makeFakeJwt({
+    email: "pro1@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro1",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro2Jwt = makeFakeJwt({
+    email: "pro2@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(home, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: pro1Jwt,
+      access_token: pro1Jwt,
+      refresh_token: "REFRESH_PRO1",
+      account_id: "acct_pro1",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      pro2: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        pro1: {
+          access: pro1Jwt,
+          refresh: "REFRESH_PRO1",
+          idToken: pro1Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro1",
+        },
+        pro2: {
+          access: pro2Jwt,
+          refresh: "REFRESH_PRO2",
+          idToken: pro2Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro2",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["pro1", "pro2"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "pro1",
+        expectedAccountId: "acct_pro1",
+        lastAppliedAt: new Date().toISOString(),
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: accountId === "acct_pro1" ? 85 : 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: accountId === "acct_pro1" ? 70 : 5,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = JSON.parse(await runCli(["codex", "watch", "--once", "--home", home]));
+    assert.equal(result.ok, true);
+    assert.equal(result.watched.status, "activated");
+    assert.equal(result.watched.receipt.currentLabelBefore, "pro1");
+    assert.equal(result.watched.receipt.currentLabelAfter, "pro2");
+    assert.equal(result.watched.receipt.primaryRemainingPctBefore, 15);
+    assert.equal(result.watched.receipt.triggeredSelection, true);
+    assert.equal(result.watched.receipt.selectionReceipt.label, "pro2");
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, "pro2");
+    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "pro2");
+    assert.equal(updatedState.targets.codexCli.lastWatchReceipt.status, "activated");
+    assert.equal(updatedState.targets.codexCli.lastWatchReceipt.currentLabelBefore, "pro1");
+    assert.equal(updatedState.targets.codexCli.lastWatchReceipt.currentLabelAfter, "pro2");
+
+    const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
+    assert.equal(auth.tokens.account_id, "acct_pro2");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("codex watch --once blocks when the active target usage cannot be read", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(home, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: bossJwt,
+      access_token: bossJwt,
+      refresh_token: "REFRESH_BOSS",
+      account_id: "acct_boss",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_boss",
+        lastAppliedAt: new Date().toISOString(),
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: false,
+        status: 401,
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = await runCliWithExitCode(["codex", "watch", "--once", "--home", home]);
+    assert.equal(result.exitCode, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.watched.status, "blocked");
+    assert.equal(parsed.watched.receipt.currentLabelBefore, "boss");
+    assert.equal(parsed.watched.receipt.triggeredSelection, false);
+    assert.equal(parsed.watched.receipt.blockers[0].reason, "active_target_usage_unavailable");
+    assert.equal(parsed.watched.receipt.blockers[0].status, 401);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, "boss");
+    assert.equal(updatedState.targets.codexCli.lastWatchReceipt.status, "blocked");
+    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt, undefined);
+    const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
+    assert.equal(auth.tokens.account_id, "acct_boss");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("codex watch loop reuses the one-shot path on every interval", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(home, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: bossJwt,
+      access_token: bossJwt,
+      refresh_token: "REFRESH_BOSS",
+      account_id: "acct_boss",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_boss",
+        lastAppliedAt: new Date().toISOString(),
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 10,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: 10,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const stdout = await runCli(
+      ["codex", "watch", "--interval-seconds", "1", "--home", home],
+      {
+        watchLoopMaxIterations: 2,
+        sleepImpl: async () => {},
+      },
+    );
+    assert.equal((stdout.match(/"action": "codex_watch"/g) ?? []).length, 2);
+    assert.equal((stdout.match(/"triggeredSelection": false/g) ?? []).length, 2);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.lastWatchReceipt.status, "noop");
+    assert.equal(updatedState.targets.codexCli.activeLabel, "boss");
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -3081,6 +3609,144 @@ test("codex use prefers weekly pool headroom over the lowest short-window usage"
   }
 });
 
+test("codex use moves off the current label when a lower weekly-used account clears the 5h gate", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const pro1Jwt = makeFakeJwt({
+    email: "pro1@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro1",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro2Jwt = makeFakeJwt({
+    email: "pro2@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro3Jwt = makeFakeJwt({
+    email: "pro3@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro3",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(home, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: pro1Jwt,
+      access_token: pro1Jwt,
+      refresh_token: "REFRESH_PRO1",
+      account_id: "acct_pro1",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      pro2: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      pro3: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        pro1: {
+          access: pro1Jwt,
+          refresh: "REFRESH_PRO1",
+          idToken: pro1Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro1",
+        },
+        pro2: {
+          access: pro2Jwt,
+          refresh: "REFRESH_PRO2",
+          idToken: pro2Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro2",
+        },
+        pro3: {
+          access: pro3Jwt,
+          refresh: "REFRESH_PRO3",
+          idToken: pro3Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro3",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["pro1", "pro2", "pro3"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "pro1",
+        expectedAccountId: "acct_pro1",
+        lastAppliedAt: new Date().toISOString(),
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      const primaryUsedPercent = accountId === "acct_pro1" ? 12 : accountId === "acct_pro2" ? 0 : 5;
+      const secondaryUsedPercent = accountId === "acct_pro1" ? 75 : accountId === "acct_pro2" ? 6 : 24;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: primaryUsedPercent,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: secondaryUsedPercent,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 6 * 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = JSON.parse(await runCli(["codex", "use", "--home", home]));
+    assert.equal(result.ok, true);
+    assert.equal(result.activated.status, "activated");
+    assert.equal(result.activated.receipt.label, "pro2");
+    assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, "pro2");
+    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "pro2");
+    assert.deepEqual(updatedState.targets.codexCli.lastSelectionReceipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("codex use skips expired labels and activates the next eligible pool account", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -3237,6 +3903,337 @@ test("codex use refuses non-file-backed Codex homes", async () => {
     () => runCli(["codex", "use", "--home", home]),
     /Managed Codex activation requires file-backed auth storage/,
   );
+});
+
+test("claude use fails loud when required Claude local projection fields are unavailable", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: {
+          access: "ACCESS_BOSS",
+          refresh: "REFRESH_BOSS",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/api/oauth/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 8, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+          seven_day: { utilization: 19, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
+      },
+      async () => {
+        await assert.rejects(
+          () => runCli(["claude", "use", "--home", home]),
+          /credentials\.anthropic\.boss\.subscriptionType is missing/,
+        );
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("claude use writes .credentials.json and status reports the active Claude target", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: {
+          access: "ACCESS_BOSS",
+          refresh: "REFRESH_BOSS",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          subscriptionType: "max",
+          rateLimitTier: "max_20x",
+          scopes: ["user:profile", "user:inference"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/api/oauth/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 12, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+          seven_day: { utilization: 34, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
+      },
+      async () => {
+        const out = JSON.parse(await runCli(["claude", "use", "--home", home]));
+        assert.equal(out.ok, true);
+        assert.equal(out.activated.status, "activated");
+        assert.equal(out.activated.receipt.label, "boss");
+        assert.equal(out.activated.receipt.subscriptionType, "max");
+
+        const auth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
+        assert.deepEqual(auth.claudeAiOauth, {
+          accessToken: "ACCESS_BOSS",
+          refreshToken: "REFRESH_BOSS",
+          expiresAt: auth.claudeAiOauth.expiresAt,
+          subscriptionType: "max",
+          rateLimitTier: "max_20x",
+          scopes: ["user:profile", "user:inference"],
+        });
+        assert.equal(typeof auth.claudeAiOauth.expiresAt, "number");
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.equal(updatedState.targets.claudeCli.activeLabel, "boss");
+        assert.equal(updatedState.targets.claudeCli.expectedSubscriptionType, "max");
+        assert.equal(updatedState.targets.claudeCli.lastSelectionReceipt.status, "activated");
+
+        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+        assert.equal(status.claudeCli.activeLabel, "boss");
+        assert.equal(status.claudeCli.actualSubscriptionType, "max");
+        assert.equal(status.claudeCli.readback.claudeAiOauthPresent, true);
+        assert.equal(status.claudeCli.authStatus.available, true);
+        assert.equal(status.claudeCli.authStatus.ok, true);
+        assert.equal(status.claudeCli.authStatus.loggedIn, true);
+        assert.ok(status.warnings.every((warning) => !String(warning.kind).startsWith("claude_target_")));
+
+        const textOut = await runCli(["status", "--home", home]);
+        assert.match(textOut, /\nCLAUDE\n/);
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("claude use backfills Claude-local projection fields from the existing local auth store", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  writeJson(path.join(home, ".claude", ".credentials.json"), {
+    claudeAiOauth: {
+      accessToken: "OLD_ACCESS",
+      refreshToken: "REFRESH_BOSS",
+      expiresAt: Date.now() + 3600_000,
+      subscriptionType: "max",
+      rateLimitTier: "max_20x",
+      scopes: ["user:profile", "user:inference"],
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: {
+          access: "ACCESS_BOSS",
+          refresh: "REFRESH_BOSS",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/api/oauth/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 11, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+          seven_day: { utilization: 21, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
+      },
+      async () => {
+        const out = JSON.parse(await runCli(["claude", "use", "--home", home]));
+        assert.equal(out.ok, true);
+        assert.equal(out.activated.status, "activated");
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.equal(updatedState.credentials.anthropic.boss.subscriptionType, "max");
+        assert.equal(updatedState.credentials.anthropic.boss.rateLimitTier, "max_20x");
+        assert.deepEqual(updatedState.credentials.anthropic.boss.scopes, ["user:profile", "user:inference"]);
+
+        const auth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
+        assert.equal(auth.claudeAiOauth.accessToken, "ACCESS_BOSS");
+        assert.equal(auth.claudeAiOauth.subscriptionType, "max");
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("claude use clears stale managed auth when no Claude pool account is eligible", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  writeJson(path.join(home, ".claude", ".credentials.json"), {
+    claudeAiOauth: {
+      accessToken: "ACCESS_BOSS",
+      refreshToken: "REFRESH_BOSS",
+      expiresAt: Date.now() + 3600_000,
+      subscriptionType: "max",
+      rateLimitTier: "max_20x",
+      scopes: ["user:profile", "user:inference"],
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: {
+          access: "ACCESS_BOSS",
+          refresh: "REFRESH_BOSS",
+          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
+          subscriptionType: "max",
+          rateLimitTier: "max_20x",
+          scopes: ["user:profile", "user:inference"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {
+        activeLabel: "boss",
+        expectedSubscriptionType: "max",
+        lastAppliedAt: new Date().toISOString(),
+      },
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/api/oauth/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 8, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+          seven_day: { utilization: 19, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
+      },
+      async () => {
+        const result = await runCliWithExitCode(["claude", "use", "--home", home]);
+        assert.equal(result.exitCode, 1);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.ok, false);
+        assert.equal(parsed.activated.status, "blocked");
+        assert.deepEqual(parsed.activated.receipt.blockers, [{ reason: "no_eligible_pool_account" }]);
+
+        assert.equal(fs.existsSync(path.join(home, ".claude", ".credentials.json")), false);
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.equal(updatedState.targets.claudeCli.activeLabel, undefined);
+        assert.equal(updatedState.targets.claudeCli.expectedSubscriptionType, undefined);
+        assert.equal(updatedState.targets.claudeCli.lastAppliedAt, undefined);
+        assert.equal(updatedState.targets.claudeCli.lastSelectionReceipt.status, "blocked");
+
+        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+        assert.equal(status.claudeCli.activeLabel, null);
+        assert.equal(status.claudeCli.readback.exists, false);
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });
 
 test("pi use writes auth.json, preserves non-openai providers, and status reports the active Pi target", async () => {
@@ -3707,6 +4704,13 @@ test("sync codex clears stale managed auth when the active imported label is rem
           label: "boss",
           observedAt: new Date().toISOString(),
         },
+        lastWatchReceipt: {
+          action: "codex_watch",
+          status: "noop",
+          observedAt: new Date().toISOString(),
+          currentLabelBefore: "boss",
+          currentLabelAfter: "boss",
+        },
       },
       piCli: {
         activeLabel: "boss",
@@ -3732,6 +4736,7 @@ test("sync codex clears stale managed auth when the active imported label is rem
   assert.equal(consumerState.targets.codexCli.expectedAccountId, undefined);
   assert.equal(consumerState.targets.codexCli.lastAppliedAt, undefined);
   assert.equal(consumerState.targets.codexCli.lastSelectionReceipt, undefined);
+  assert.equal(consumerState.targets.codexCli.lastWatchReceipt, undefined);
   assert.equal(consumerState.targets.piCli.activeLabel, undefined);
   assert.equal(consumerState.targets.piCli.expectedAccountId, undefined);
   assert.equal(consumerState.targets.piCli.lastAppliedAt, undefined);
@@ -4001,6 +5006,58 @@ test("rankPoolCandidates favors weekly weighted headroom over the lowest 5h-used
 
   assert.equal(ranked[0].label, "pro2");
   assert.equal(ranked[1].label, "qa");
+});
+
+test("pickNextBestLocalCliPoolLabel picks the lowest weekly-used label over the 5h-free gate", () => {
+  const ranked = rankPoolCandidates({
+    labels: ["pro1", "pro2", "pro3"],
+    currentLabel: "pro1",
+    usage: {
+      pro1: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 12 }, { kind: "secondary", usedPercent: 75 }],
+      },
+      pro2: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 6 }],
+      },
+      pro3: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 5 }, { kind: "secondary", usedPercent: 24 }],
+      },
+    },
+    now: Date.now(),
+  });
+
+  const picked = pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked });
+  assert.equal(picked.label, "pro2");
+  assert.equal(picked.keptCurrent, false);
+  assert.deepEqual(picked.reasons, ["lowest_weekly_used_over_5h_gate"]);
+});
+
+test("pickNextBestLocalCliPoolLabel relaxes the 5h gate when every account is hot", () => {
+  const ranked = rankPoolCandidates({
+    labels: ["boss", "cfo", "qa"],
+    usage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 30 }, { kind: "secondary", usedPercent: 92 }],
+      },
+      cfo: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 35 }, { kind: "secondary", usedPercent: 88 }],
+      },
+      qa: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 40 }, { kind: "secondary", usedPercent: 90 }],
+      },
+    },
+    now: Date.now(),
+  });
+
+  const picked = pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked });
+  assert.equal(picked.label, "cfo");
+  assert.deepEqual(picked.reasons, ["lowest_weekly_used_after_5h_gate_relaxed"]);
 });
 
 test("refreshOpenclawAgentDemandLedger imports OpenClaw session counters and seeds cold-start demand", () => {
