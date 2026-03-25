@@ -78,25 +78,49 @@ resolve_node_bin() {
     printf '%s\n' "${NODE_BIN}"
     return
   fi
+  local candidates=()
+  local candidate fallback=""
   if command -v node >/dev/null 2>&1; then
-    command -v node
-    return
+    candidates+=("$(command -v node)")
   fi
   if [[ -x "/opt/homebrew/bin/node" ]]; then
-    printf '%s\n' "/opt/homebrew/bin/node"
-    return
+    candidates+=("/opt/homebrew/bin/node")
   fi
   if [[ -x "/usr/local/bin/node" ]]; then
-    printf '%s\n' "/usr/local/bin/node"
-    return
+    candidates+=("/usr/local/bin/node")
   fi
-  local nvm_candidate
-  nvm_candidate="$(find "${TARGET_HOME}/.nvm/versions/node" -type f -path '*/bin/node' 2>/dev/null | sort | tail -n 1 || true)"
-  if [[ -n "${nvm_candidate}" ]]; then
-    printf '%s\n' "${nvm_candidate}"
+  while IFS= read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    candidates+=("${candidate}")
+  done < <(find "${TARGET_HOME}/.nvm/versions/node" -type f -path '*/bin/node' 2>/dev/null | LC_ALL=C sort -r || true)
+  for candidate in "${candidates[@]}"; do
+    [[ -x "${candidate}" ]] || continue
+    if node_bin_is_supported "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      return
+    fi
+    if [[ -z "${fallback}" ]]; then
+      fallback="${candidate}"
+    fi
+  done
+  if [[ -n "${fallback}" ]]; then
+    printf '%s\n' "${fallback}"
     return
   fi
   return 1
+}
+
+node_bin_major_version() {
+  local candidate="$1"
+  "${candidate}" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true
+}
+
+node_bin_is_supported() {
+  local candidate="$1"
+  local major
+  major="$(node_bin_major_version "${candidate}")"
+  [[ "${major}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${major}" -ge 20 ]]
 }
 
 render_mac_program_arguments() {
@@ -440,6 +464,10 @@ if [[ "${PRINT_ONLY}" == "1" || "${STATUS_ONLY}" == "0" && "${UNINSTALL_ONLY}" =
 fi
 if [[ ! -x "${NODE_BIN}" ]]; then
   echo "Missing Node binary: ${NODE_BIN}" >&2
+  exit 1
+fi
+if ! node_bin_is_supported "${NODE_BIN}"; then
+  echo "Unsupported Node binary: ${NODE_BIN} (AIM requires Node >=20; use --node-bin to override)." >&2
   exit 1
 fi
 

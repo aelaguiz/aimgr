@@ -270,6 +270,8 @@ That script works from a standalone `aimgr` clone or the nested Mac-host checkou
 
 Rerunning the installer is safe. It refreshes the same single scheduler definition instead of creating parallel watches, and on macOS it also cleans up old GUI/user launchd copies before bootstrapping the canonical system daemon.
 
+When multiple Node installs exist, the installer prefers a Node `>=20` binary automatically and fails loud if it cannot find one. Use `--node-bin /absolute/path/to/node` to override.
+
 Installed scheduler artifacts:
 
 - macOS: `/Library/LaunchDaemons/com.funcountry.agents_host.aim_codex_watch.plist`
