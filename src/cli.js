@@ -4,7 +4,6 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import { loginAnthropic, loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
-import yaml from "yaml";
 
 const SCHEMA_VERSION = "0.2";
 const OPENAI_CODEX_PROVIDER = "openai-codex";
@@ -23,10 +22,6 @@ const BROWSER_MODE_AIM_PROFILE = "aim-profile";
 const BROWSER_MODE_CHROME_PROFILE = "chrome-profile";
 const BROWSER_MODE_AGENT_BROWSER = "agent-browser";
 const DEFAULT_AGENTS_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
-const PRODUCT_GROWTH_AGENT_ID = "agent_product_growth";
-const PRODUCT_GROWTH_HERMES_TARGET_KEY = "productGrowthHermes";
-const PRODUCT_GROWTH_HERMES_MODEL = "gpt-5.4";
-const PRODUCT_GROWTH_HERMES_REASONING_EFFORT = "xhigh";
 const HERMES_AUTH_STORE_VERSION = 1;
 const STATUS_RESET_TIMEZONE = "America/Chicago";
 const DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS = 7;
@@ -203,6 +198,7 @@ function parseArgs(argv) {
     userDataDir: undefined,
     profile: undefined,
     session: undefined,
+    authFile: undefined,
     json: false,
     compact: false,
     accounts: false,
@@ -258,6 +254,11 @@ function parseArgs(argv) {
     }
     if (arg === "--session") {
       opts.session = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--auth-file") {
+      opts.authFile = argv[i + 1];
       i += 1;
       continue;
     }
@@ -364,7 +365,7 @@ function printHelp() {
     "  aim apply             # advanced: materialize stored OpenClaw assignments from ~/.aimgr/secrets.json",
     "  aim sync openclaw     # explicit alias for apply",
     "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
-    "  aim sync product-growth-hermes <label>  # materialize the Product Growth Hermes home from one Codex label",
+    "  aim auth write hermes <label> --auth-file <abs-path>  # write Hermes auth.json only",
     "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
     "  aim claude use        # activate the next-best pooled anthropic label for local Claude CLI",
@@ -394,6 +395,7 @@ function printHelp() {
     "  --profile-directory <name>        Optional specific Chrome profile inside `--user-data-dir`.",
     "  --profile <abs-path>              Required for `--mode agent-browser`.",
     "  --session <name>                  Required for `--mode agent-browser`.",
+    "  --auth-file <abs-path>            Required for `aim auth write hermes`; must point at Hermes auth.json.",
     "",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -431,28 +433,15 @@ function resolveOpenclawAuthStorePath(homeDir, agentId) {
   return path.join(homeDir, ".openclaw", "agents", agentId, "agent", "auth-profiles.json");
 }
 
-function resolveProductGrowthWorkspaceDir({ repoRoot } = {}) {
-  return path.join(resolveAgentsRepoRoot({ repoRoot }), "agents", PRODUCT_GROWTH_AGENT_ID);
-}
-
-function resolveProductGrowthHermesHomeDir({ homeDir }) {
-  return path.join(homeDir, ".hermes", "profiles", PRODUCT_GROWTH_AGENT_ID);
-}
-
-function resolveProductGrowthHermesAuthFilePath(hermesHome) {
-  return path.join(hermesHome, "auth.json");
-}
-
-function resolveProductGrowthHermesConfigPath(hermesHome) {
-  return path.join(hermesHome, "config.yaml");
-}
-
-function resolveProductGrowthHermesEnvPath(hermesHome) {
-  return path.join(hermesHome, ".env");
-}
-
-function resolveProductGrowthHermesWorkspaceContextPath({ repoRoot } = {}) {
-  return path.join(resolveProductGrowthWorkspaceDir({ repoRoot }), ".hermes.md");
+function resolveExplicitHermesAuthFilePath(value) {
+  const authPath = normalizeAbsolutePath(value);
+  if (!authPath) {
+    throw new Error("Missing Hermes auth target. Usage: aim auth write hermes <label> --auth-file <abs-path>.");
+  }
+  if (path.basename(authPath) !== "auth.json") {
+    throw new Error(`Refusing Hermes auth write to non-auth.json path: ${authPath}`);
+  }
+  return authPath;
 }
 
 function discoverOpenclawAgentIdsWithAuthStores(homeDir) {
@@ -1120,119 +1109,6 @@ function ensureDirectoryMode(dirPath, mode = 0o700) {
   }
 }
 
-function readYamlFile(filePath) {
-  if (!fs.existsSync(filePath)) {
-    return { exists: false, path: filePath };
-  }
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = yaml.parse(raw);
-    if (parsed !== null && !isObject(parsed)) {
-      throw new Error("YAML root must be a mapping/object.");
-    }
-    return {
-      exists: true,
-      ok: true,
-      path: filePath,
-      raw,
-      json: parsed ?? {},
-    };
-  } catch (err) {
-    return {
-      exists: true,
-      ok: false,
-      path: filePath,
-      error: String(err?.message ?? err),
-    };
-  }
-}
-
-function writeYamlFileIfChanged(filePath, data, { mode } = {}) {
-  return writeTextFileIfChanged(filePath, yaml.stringify(data ?? {}), { mode });
-}
-
-function parseEnvFile(raw) {
-  const values = {};
-  const lines = String(raw ?? "").split(/\r?\n/);
-  for (const lineRaw of lines) {
-    const line = String(lineRaw ?? "").trim();
-    if (!line || line.startsWith("#")) continue;
-    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (!match) continue;
-    const key = match[1];
-    let value = match[2];
-    if (
-      (value.startsWith('"') && value.endsWith('"'))
-      || (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    values[key] = value;
-  }
-  return values;
-}
-
-function readEnvFile(filePath) {
-  if (!fs.existsSync(filePath)) {
-    return { exists: false, path: filePath };
-  }
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    return {
-      exists: true,
-      ok: true,
-      path: filePath,
-      raw,
-      values: parseEnvFile(raw),
-    };
-  } catch (err) {
-    return {
-      exists: true,
-      ok: false,
-      path: filePath,
-      error: String(err?.message ?? err),
-    };
-  }
-}
-
-function upsertEnvAssignment(raw, key, value) {
-  const nextAssignment = `${key}=${value}`;
-  const lines = String(raw ?? "").split(/\r?\n/);
-  let found = false;
-  const nextLines = lines.map((lineRaw) => {
-    if (found) return lineRaw;
-    const match = String(lineRaw ?? "").match(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (!match) return lineRaw;
-    if (match[2] !== key) return lineRaw;
-    found = true;
-    return nextAssignment;
-  });
-  if (!found) {
-    if (nextLines.length > 0 && nextLines[nextLines.length - 1] !== "") {
-      nextLines.push("");
-    }
-    nextLines.push(nextAssignment);
-  }
-  const serialized = nextLines.join("\n");
-  return serialized.endsWith("\n") ? serialized : `${serialized}\n`;
-}
-
-function removeEnvAssignment(raw, key) {
-  const lines = String(raw ?? "").split(/\r?\n/);
-  const nextLines = lines.filter((lineRaw) => {
-    const match = String(lineRaw ?? "").match(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    return !(match && match[2] === key);
-  });
-  while (nextLines.length > 0 && nextLines[nextLines.length - 1] === "") {
-    nextLines.pop();
-  }
-  if (nextLines.length === 0) {
-    return "";
-  }
-  const serialized = nextLines.join("\n");
-  return serialized.endsWith("\n") ? serialized : `${serialized}\n`;
-}
-
 function createEmptyState() {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -1260,7 +1136,6 @@ function createEmptyState() {
         assignments: {},
         exclusions: {},
       },
-      [PRODUCT_GROWTH_HERMES_TARGET_KEY]: {},
       codexCli: {},
       claudeCli: {},
       piCli: {},
@@ -2879,12 +2754,18 @@ function ensureStateShape(state) {
   state.targets.openclaw.exclusions = isObject(state.targets.openclaw.exclusions)
     ? state.targets.openclaw.exclusions
     : {};
-  state.targets[PRODUCT_GROWTH_HERMES_TARGET_KEY] = isObject(state.targets[PRODUCT_GROWTH_HERMES_TARGET_KEY])
-    ? state.targets[PRODUCT_GROWTH_HERMES_TARGET_KEY]
-    : {};
   state.targets.codexCli = isObject(state.targets.codexCli) ? state.targets.codexCli : {};
   state.targets.claudeCli = isObject(state.targets.claudeCli) ? state.targets.claudeCli : {};
   state.targets.piCli = isObject(state.targets.piCli) ? state.targets.piCli : {};
+  if (Object.hasOwn(state.targets, "hermes")) {
+    delete state.targets.hermes;
+  }
+  if (Object.hasOwn(state.targets, "productGrowthHermes")) {
+    delete state.targets.productGrowthHermes;
+  }
+  if (Object.hasOwn(state.targets, "growthAnalystHermes")) {
+    delete state.targets.growthAnalystHermes;
+  }
 
   const legacyPins = isObject(state.pins?.openclaw) ? state.pins.openclaw : null;
   if (legacyPins) {
@@ -2997,9 +2878,6 @@ function ensureStateShape(state) {
   if (Object.hasOwn(state.targets.piCli, "lastReadback")) {
     delete state.targets.piCli.lastReadback;
   }
-  if (Object.hasOwn(state.targets[PRODUCT_GROWTH_HERMES_TARGET_KEY], "lastReadback")) {
-    delete state.targets[PRODUCT_GROWTH_HERMES_TARGET_KEY].lastReadback;
-  }
 }
 
 function getAuthorityCodexImport(state) {
@@ -3075,11 +2953,6 @@ function setInteractiveOAuthBindingForLabel(state, label, binding) {
 function getCodexTargetState(state) {
   ensureStateShape(state);
   return state.targets.codexCli;
-}
-
-function getProductGrowthHermesTargetState(state) {
-  ensureStateShape(state);
-  return state.targets[PRODUCT_GROWTH_HERMES_TARGET_KEY];
 }
 
 function getClaudeTargetState(state) {
@@ -3331,14 +3204,14 @@ function readClaudeAuthFile({ claudeDir }) {
   }
 }
 
-function readProductGrowthHermesAuthFile({ hermesHome }) {
-  const authPath = resolveProductGrowthHermesAuthFilePath(hermesHome);
-  if (!fs.existsSync(authPath)) {
-    return { exists: false, authPath };
+function readHermesAuthFile({ authPath }) {
+  const resolvedAuthPath = resolveExplicitHermesAuthFilePath(authPath);
+  if (!fs.existsSync(resolvedAuthPath)) {
+    return { exists: false, authPath: resolvedAuthPath };
   }
 
   try {
-    const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    const parsed = JSON.parse(fs.readFileSync(resolvedAuthPath, "utf8"));
     if (!isObject(parsed)) {
       throw new Error("Hermes auth.json is not a JSON object.");
     }
@@ -3351,7 +3224,7 @@ function readProductGrowthHermesAuthFile({ hermesHome }) {
     return {
       exists: true,
       ok: true,
-      authPath,
+      authPath: resolvedAuthPath,
       activeProvider: activeProvider || null,
       providerEntryPresent: Boolean(providerEntry),
       accessToken: accessToken || null,
@@ -3364,66 +3237,97 @@ function readProductGrowthHermesAuthFile({ hermesHome }) {
     return {
       exists: true,
       ok: false,
-      authPath,
+      authPath: resolvedAuthPath,
       error: String(err?.message ?? err),
     };
   }
 }
 
-function readProductGrowthHermesConfigFile({ hermesHome }) {
-  const configPath = resolveProductGrowthHermesConfigPath(hermesHome);
-  const loaded = readYamlFile(configPath);
-  if (loaded.exists !== true || loaded.ok !== true) {
-    return {
-      ...loaded,
-      configPath,
-    };
-  }
-  const parsed = loaded.json;
-  const model = isObject(parsed.model) ? parsed.model : {};
-  const agent = isObject(parsed.agent) ? parsed.agent : {};
-  const cwd =
-    typeof parsed.cwd === "string" && parsed.cwd.trim()
-      ? parsed.cwd.trim()
-      : isObject(parsed.terminal) && typeof parsed.terminal.cwd === "string" && parsed.terminal.cwd.trim()
-        ? parsed.terminal.cwd.trim()
-        : null;
-  return {
-    exists: true,
-    ok: true,
-    configPath,
-    provider: typeof model.provider === "string" ? model.provider.trim() || null : null,
-    defaultModel: typeof model.default === "string" ? model.default.trim() || null : null,
-    cwd,
-    reasoningEffort:
-      typeof agent.reasoning_effort === "string" ? agent.reasoning_effort.trim() || null : null,
-    json: parsed,
+function buildHermesAuthDotJson({ existing, credential, updatedAt }) {
+  const next = isObject(existing) ? structuredClone(existing) : {};
+  next.version = HERMES_AUTH_STORE_VERSION;
+  next.updated_at = updatedAt;
+  next.providers = isObject(next.providers) ? next.providers : {};
+  next.providers[OPENAI_CODEX_PROVIDER] = {
+    ...(isObject(next.providers[OPENAI_CODEX_PROVIDER]) ? next.providers[OPENAI_CODEX_PROVIDER] : {}),
+    tokens: {
+      access_token: credential.access,
+      refresh_token: credential.refresh,
+    },
+    last_refresh: updatedAt.replace("+00:00", "Z"),
+    auth_mode: "chatgpt",
   };
+  next.active_provider = OPENAI_CODEX_PROVIDER;
+  return next;
 }
 
-function readProductGrowthHermesEnvFile({ hermesHome }) {
-  const envPath = resolveProductGrowthHermesEnvPath(hermesHome);
-  const loaded = readEnvFile(envPath);
-  if (loaded.exists !== true || loaded.ok !== true) {
-    return {
-      ...loaded,
-      envPath,
-    };
+// AIM owns only Hermes auth material. The caller must provide the exact native
+// auth.json path; runtime config, cwd, env, service state, and home routing all
+// live outside AIM.
+function writeHermesAuthFromState({ label, authPath }, state) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const account = state.accounts[normalizedLabel];
+  if (!isObject(account)) {
+    throw new Error(`Unknown Hermes label: ${normalizedLabel}. Run \`aim status\` to inspect the pool.`);
   }
+  const provider = normalizeProviderId(account.provider);
+  if (provider !== OPENAI_CODEX_PROVIDER) {
+    throw new Error(`Refusing to activate non-Codex label=${normalizedLabel} provider=${provider || "unknown"} for Hermes.`);
+  }
+
+  const resolvedAuthPath = resolveExplicitHermesAuthFilePath(authPath);
+  const parentDir = path.dirname(resolvedAuthPath);
+  if (!fs.existsSync(parentDir)) {
+    throw new Error(`Hermes auth parent directory does not exist: ${parentDir}`);
+  }
+  if (!fs.statSync(parentDir).isDirectory()) {
+    throw new Error(`Hermes auth parent is not a directory: ${parentDir}`);
+  }
+
+  const credential = assertCodexCredentialShape({
+    label: normalizedLabel,
+    credential: getCodexCredential(state, normalizedLabel),
+    requireFresh: true,
+  });
+
+  const authRead = readHermesAuthFile({ authPath: resolvedAuthPath });
+  if (authRead.exists === true && authRead.ok !== true) {
+    throw new Error(`Failed to read current Hermes auth.json before write: ${authRead.error || "unknown error"}`);
+  }
+
+  const appliedAt = new Date().toISOString();
+  const authPayload = buildHermesAuthDotJson({
+    existing: authRead.ok === true ? authRead.json : {},
+    credential,
+    updatedAt: appliedAt,
+  });
+  const authWrite = writeJsonFileIfChanged(resolvedAuthPath, authPayload, { mode: 0o600 });
+  const readback = readHermesAuthFile({ authPath: resolvedAuthPath });
+  if (readback.ok !== true) {
+    throw new Error(`Failed to read back Hermes auth.json after write: ${readback.error || "unknown error"}`);
+  }
+  if (readback.activeProvider !== OPENAI_CODEX_PROVIDER) {
+    throw new Error(
+      `Hermes auth mismatch after write: expected active_provider=${OPENAI_CODEX_PROVIDER}, got ${readback.activeProvider || "none"}.`,
+    );
+  }
+  const inferredLabel = findCodexLabelByTokenPair(state, {
+    accessToken: readback.accessToken,
+    refreshToken: readback.refreshToken,
+  });
+  if (inferredLabel && inferredLabel !== normalizedLabel) {
+    throw new Error(`Hermes readback mismatch after write: expected label=${normalizedLabel}, got ${inferredLabel}.`);
+  }
+
   return {
-    exists: true,
-    ok: true,
-    envPath,
-    raw: loaded.raw,
-    values: loaded.values,
-    messagingCwd:
-      typeof loaded.values.MESSAGING_CWD === "string" && loaded.values.MESSAGING_CWD.trim()
-        ? loaded.values.MESSAGING_CWD.trim()
-        : null,
-    slackBotTokenPresent:
-      typeof loaded.values.SLACK_BOT_TOKEN === "string" && loaded.values.SLACK_BOT_TOKEN.trim().length > 0,
-    slackAppTokenPresent:
-      typeof loaded.values.SLACK_APP_TOKEN === "string" && loaded.values.SLACK_APP_TOKEN.trim().length > 0,
+    status: authWrite.wrote ? "applied" : "noop",
+    label: normalizedLabel,
+    authPath: resolvedAuthPath,
+    wrote: {
+      auth: authWrite.wrote,
+    },
+    inferredLabel: inferredLabel || normalizedLabel,
   };
 }
 
@@ -3650,39 +3554,6 @@ function clearManagedClaudeCliActivation({ state, homeDir }) {
   delete target.activeLabel;
   delete target.expectedSubscriptionType;
   delete target.lastAppliedAt;
-}
-
-// Hermes Product Growth keeps operator-owned Slack tokens in .env, but AIM owns the
-// Product Hermes runtime projection itself. Clearing managed activation must therefore
-// remove the AIM-owned auth/config/MESSAGING_CWD material without wiping unrelated env vars.
-function clearManagedProductGrowthHermesActivation({ state, homeDir }) {
-  ensureStateShape(state);
-  const hermesHome = resolveProductGrowthHermesHomeDir({ homeDir });
-  fs.rmSync(resolveProductGrowthHermesAuthFilePath(hermesHome), { force: true });
-  fs.rmSync(resolveProductGrowthHermesConfigPath(hermesHome), { force: true });
-
-  const envRead = readProductGrowthHermesEnvFile({ hermesHome });
-  if (envRead.exists === true) {
-    if (envRead.ok !== true) {
-      throw new Error(`Refusing to mutate unreadable Product Hermes .env: ${envRead.error || envRead.envPath}`);
-    }
-    const nextEnvText = removeEnvAssignment(envRead.raw ?? "", "MESSAGING_CWD");
-    if (nextEnvText) {
-      writeTextFileIfChanged(resolveProductGrowthHermesEnvPath(hermesHome), nextEnvText, { mode: 0o600 });
-    } else {
-      fs.rmSync(resolveProductGrowthHermesEnvPath(hermesHome), { force: true });
-    }
-  }
-
-  const target = getProductGrowthHermesTargetState(state);
-  delete target.hermesHome;
-  delete target.workspaceDir;
-  delete target.workspaceContextPath;
-  delete target.activeLabel;
-  delete target.expectedProvider;
-  delete target.expectedModel;
-  delete target.lastAppliedAt;
-  delete target.lastApplyReceipt;
 }
 
 function assertCodexCredentialShape({ label, credential, requireFresh }) {
@@ -4020,11 +3891,8 @@ function importCodexFromAuthority({ from, state, homeDir }) {
     if (incomingByLabel.has(label)) continue;
     const currentTarget = readCodexCliTargetStatus({ state, homeDir });
     const currentPiTarget = readPiCliTargetStatus({ state, homeDir });
-    const currentProductHermesTarget = readProductGrowthHermesTargetStatus({ state, homeDir });
     const removedLabelWasLiveTarget = currentTarget.activeLabel === label || currentTarget.inferredLabel === label;
     const removedLabelWasLivePiTarget = currentPiTarget.activeLabel === label || currentPiTarget.inferredLabel === label;
-    const removedLabelWasLiveProductHermesTarget =
-      currentProductHermesTarget.activeLabel === label || currentProductHermesTarget.inferredLabel === label;
     delete state.accounts[label];
     delete state.credentials[OPENAI_CODEX_PROVIDER][label];
     if (removedLabelWasLiveTarget) {
@@ -4035,9 +3903,6 @@ function importCodexFromAuthority({ from, state, homeDir }) {
     if (removedLabelWasLivePiTarget) {
       clearManagedPiCliActivation({ state, homeDir });
       delete state.targets.piCli.lastSelectionReceipt;
-    }
-    if (removedLabelWasLiveProductHermesTarget) {
-      clearManagedProductGrowthHermesActivation({ state, homeDir });
     }
     removedLabels.push(label);
   }
@@ -6634,48 +6499,6 @@ function readClaudeCliTargetStatus({ state, homeDir }) {
   };
 }
 
-function readProductGrowthHermesTargetStatus({ state, homeDir, repoRoot }) {
-  ensureStateShape(state);
-  const target = getProductGrowthHermesTargetState(state);
-  const hermesHome = resolveProductGrowthHermesHomeDir({ homeDir });
-  const workspaceDir = resolveProductGrowthWorkspaceDir({ repoRoot });
-  const workspaceContextPath = resolveProductGrowthHermesWorkspaceContextPath({ repoRoot });
-  const auth = readProductGrowthHermesAuthFile({ hermesHome });
-  const config = readProductGrowthHermesConfigFile({ hermesHome });
-  const env = readProductGrowthHermesEnvFile({ hermesHome });
-  const activeLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
-  const inferredLabel =
-    auth.ok === true
-      ? findCodexLabelByTokenPair(state, {
-          accessToken: auth.accessToken,
-          refreshToken: auth.refreshToken,
-        })
-      : null;
-
-  return {
-    hermesHome,
-    authPath: resolveProductGrowthHermesAuthFilePath(hermesHome),
-    configPath: resolveProductGrowthHermesConfigPath(hermesHome),
-    envPath: resolveProductGrowthHermesEnvPath(hermesHome),
-    workspaceDir,
-    workspaceContextPath,
-    workspaceContextPresent: fs.existsSync(workspaceContextPath),
-    activeLabel: activeLabel || null,
-    activeAccountPresent: activeLabel ? isObject(state.accounts[activeLabel]) : false,
-    activeCredentialPresent: activeLabel ? isObject(getCodexCredential(state, activeLabel)) : false,
-    expectedProvider:
-      typeof target.expectedProvider === "string" ? target.expectedProvider.trim() || null : null,
-    expectedModel:
-      typeof target.expectedModel === "string" ? target.expectedModel.trim() || null : null,
-    inferredLabel: inferredLabel || null,
-    auth,
-    config,
-    env,
-    lastApplyReceipt: isObject(target.lastApplyReceipt) ? target.lastApplyReceipt : null,
-    lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
-  };
-}
-
 function buildWarningsFromCodexTargetStatus(status) {
   const warnings = [];
   if (!status) return warnings;
@@ -6932,180 +6755,6 @@ function buildWarningsFromClaudeTargetStatus(status) {
   return warnings;
 }
 
-function buildWarningsFromProductGrowthHermesTargetStatus(status) {
-  const warnings = [];
-  if (!status) return warnings;
-
-  const managed =
-    Boolean(status.activeLabel)
-    || status.auth?.exists === true
-    || status.config?.exists === true
-    || Boolean(status.env?.messagingCwd)
-    || Boolean(status.expectedProvider)
-    || Boolean(status.expectedModel)
-    || Boolean(status.lastApplyReceipt)
-    || Boolean(status.lastAppliedAt);
-  if (!managed) return warnings;
-
-  if (status.activeLabel && !status.activeAccountPresent) {
-    warnings.push({
-      kind: "product_hermes_target_label_missing",
-      system: "product-hermes",
-      label: status.activeLabel,
-    });
-  }
-
-  if (status.activeLabel && !status.activeCredentialPresent) {
-    warnings.push({
-      kind: "product_hermes_target_credentials_missing",
-      system: "product-hermes",
-      label: status.activeLabel,
-    });
-  }
-
-  if (status.activeLabel && status.auth?.exists !== true) {
-    warnings.push({
-      kind: "product_hermes_target_missing_auth_file",
-      system: "product-hermes",
-      label: status.activeLabel,
-    });
-  }
-
-  if (status.auth?.exists === true && status.auth?.ok !== true) {
-    warnings.push({
-      kind: "product_hermes_target_auth_unreadable",
-      system: "product-hermes",
-      status: status.auth?.error,
-    });
-  }
-
-  if (
-    status.auth?.ok === true
-    && status.auth.activeProvider
-    && status.auth.activeProvider !== OPENAI_CODEX_PROVIDER
-  ) {
-    warnings.push({
-      kind: "product_hermes_target_provider_mismatch",
-      system: "product-hermes",
-      status: status.auth.activeProvider,
-    });
-  }
-
-  if (status.activeLabel && status.inferredLabel && status.inferredLabel !== status.activeLabel) {
-    warnings.push({
-      kind: "product_hermes_target_label_mismatch",
-      system: "product-hermes",
-      label: status.activeLabel,
-      actualLabel: status.inferredLabel,
-    });
-  }
-
-  if (managed && status.config?.exists !== true) {
-    warnings.push({
-      kind: "product_hermes_target_missing_config",
-      system: "product-hermes",
-    });
-  }
-
-  if (status.config?.exists === true && status.config?.ok !== true) {
-    warnings.push({
-      kind: "product_hermes_target_config_unreadable",
-      system: "product-hermes",
-      status: status.config?.error,
-    });
-  }
-
-  if (
-    status.config?.ok === true
-    && status.config.provider
-    && status.config.provider !== OPENAI_CODEX_PROVIDER
-  ) {
-    warnings.push({
-      kind: "product_hermes_target_config_provider_mismatch",
-      system: "product-hermes",
-      status: status.config.provider,
-    });
-  }
-
-  if (
-    status.config?.ok === true
-    && status.expectedModel
-    && status.config.defaultModel
-    && status.config.defaultModel !== status.expectedModel
-  ) {
-    warnings.push({
-      kind: "product_hermes_target_model_mismatch",
-      system: "product-hermes",
-      status: status.config.defaultModel,
-    });
-  }
-
-  if (
-    status.config?.ok === true
-    && status.config.cwd
-    && path.resolve(status.config.cwd) !== path.resolve(status.workspaceDir)
-  ) {
-    warnings.push({
-      kind: "product_hermes_target_terminal_cwd_mismatch",
-      system: "product-hermes",
-      status: status.config.cwd,
-    });
-  }
-
-  if (managed && status.env?.exists !== true) {
-    warnings.push({
-      kind: "product_hermes_target_missing_env",
-      system: "product-hermes",
-    });
-  }
-
-  if (status.env?.exists === true && status.env?.ok !== true) {
-    warnings.push({
-      kind: "product_hermes_target_env_unreadable",
-      system: "product-hermes",
-      status: status.env?.error,
-    });
-  }
-
-  if (
-    status.env?.ok === true
-    && (
-      !status.env.messagingCwd
-      || path.resolve(status.env.messagingCwd) !== path.resolve(status.workspaceDir)
-    )
-  ) {
-    warnings.push({
-      kind: "product_hermes_target_messaging_cwd_mismatch",
-      system: "product-hermes",
-      status: status.env.messagingCwd || "missing",
-    });
-  }
-
-  if (status.env?.ok === true && status.env.slackBotTokenPresent !== true) {
-    warnings.push({
-      kind: "product_hermes_target_slack_bot_token_missing",
-      system: "product-hermes",
-    });
-  }
-
-  if (status.env?.ok === true && status.env.slackAppTokenPresent !== true) {
-    warnings.push({
-      kind: "product_hermes_target_slack_app_token_missing",
-      system: "product-hermes",
-    });
-  }
-
-  if (status.workspaceContextPresent !== true) {
-    warnings.push({
-      kind: "product_hermes_workspace_context_missing",
-      system: "product-hermes",
-      status: status.workspaceContextPath,
-    });
-  }
-
-  return warnings;
-}
-
 function applyCodexCliFromState({ label, homeDir }, state) {
   ensureStateShape(state);
   if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
@@ -7290,183 +6939,6 @@ function applyPiCliFromState({ label, homeDir }, state) {
   };
 }
 
-function applyProductGrowthHermesTargetFromState({ label, homeDir, repoRoot }, state) {
-  ensureStateShape(state);
-  const normalizedLabel = normalizeLabel(label);
-  const account = state.accounts[normalizedLabel];
-  if (!isObject(account)) {
-    throw new Error(`Unknown Hermes Product Growth label: ${normalizedLabel}. Run \`aim status\` to inspect the pool.`);
-  }
-  const provider = normalizeProviderId(account.provider);
-  if (provider !== OPENAI_CODEX_PROVIDER) {
-    throw new Error(
-      `Refusing to activate non-Codex label=${normalizedLabel} provider=${provider || "unknown"} for Product Hermes.`,
-    );
-  }
-
-  const credential = assertCodexCredentialShape({
-    label: normalizedLabel,
-    credential: getCodexCredential(state, normalizedLabel),
-    requireFresh: true,
-  });
-
-  const hermesHome = resolveProductGrowthHermesHomeDir({ homeDir });
-  const workspaceDir = resolveProductGrowthWorkspaceDir({ repoRoot });
-  const workspaceContextPath = resolveProductGrowthHermesWorkspaceContextPath({ repoRoot });
-  if (!fs.existsSync(workspaceContextPath)) {
-    throw new Error(
-      `Missing Hermes workspace context: ${workspaceContextPath}. ` +
-        "Create the Product Growth `.hermes.md` before syncing the Hermes home.",
-    );
-  }
-
-  ensureDirectoryMode(hermesHome);
-  for (const subdir of ["cron", "sessions", "logs", "memories"]) {
-    ensureDirectoryMode(path.join(hermesHome, subdir));
-  }
-
-  const authRead = readProductGrowthHermesAuthFile({ hermesHome });
-  if (authRead.exists === true && authRead.ok !== true) {
-    throw new Error(`Failed to read current Hermes auth.json before apply: ${authRead.error || "unknown error"}`);
-  }
-  const authPayload = isObject(authRead.json) ? authRead.json : {};
-  authPayload.version = HERMES_AUTH_STORE_VERSION;
-  authPayload.updated_at = new Date().toISOString();
-  authPayload.providers = isObject(authPayload.providers) ? authPayload.providers : {};
-  authPayload.providers[OPENAI_CODEX_PROVIDER] = {
-    ...(isObject(authPayload.providers[OPENAI_CODEX_PROVIDER]) ? authPayload.providers[OPENAI_CODEX_PROVIDER] : {}),
-    tokens: {
-      access_token: credential.access,
-      refresh_token: credential.refresh,
-    },
-    last_refresh: new Date().toISOString().replace("+00:00", "Z"),
-    auth_mode: "chatgpt",
-  };
-  authPayload.active_provider = OPENAI_CODEX_PROVIDER;
-  const authWrite = writeJsonFileIfChanged(resolveProductGrowthHermesAuthFilePath(hermesHome), authPayload, {
-    mode: 0o600,
-  });
-
-  const configRead = readProductGrowthHermesConfigFile({ hermesHome });
-  if (configRead.exists === true && configRead.ok !== true) {
-    throw new Error(`Failed to read current Hermes config.yaml before apply: ${configRead.error || "unknown error"}`);
-  }
-  const nextConfig = isObject(configRead.json) ? configRead.json : {};
-  const nextModel = isObject(nextConfig.model) ? nextConfig.model : {};
-  nextModel.provider = OPENAI_CODEX_PROVIDER;
-  nextModel.default = PRODUCT_GROWTH_HERMES_MODEL;
-  nextConfig.model = nextModel;
-  const nextAgent = isObject(nextConfig.agent) ? nextConfig.agent : {};
-  nextAgent.reasoning_effort = PRODUCT_GROWTH_HERMES_REASONING_EFFORT;
-  nextConfig.agent = nextAgent;
-  nextConfig.cwd = workspaceDir;
-  const configWrite = writeYamlFileIfChanged(resolveProductGrowthHermesConfigPath(hermesHome), nextConfig, {
-    mode: 0o600,
-  });
-
-  const envRead = readProductGrowthHermesEnvFile({ hermesHome });
-  if (envRead.exists === true && envRead.ok !== true) {
-    throw new Error(`Failed to read current Hermes .env before apply: ${envRead.error || "unknown error"}`);
-  }
-  const nextEnvText = upsertEnvAssignment(envRead.raw ?? "", "MESSAGING_CWD", workspaceDir);
-  const envWrite = writeTextFileIfChanged(resolveProductGrowthHermesEnvPath(hermesHome), nextEnvText, {
-    mode: 0o600,
-  });
-
-  const readback = readProductGrowthHermesTargetStatus({ state, homeDir, repoRoot });
-  if (readback.auth?.ok !== true) {
-    throw new Error(
-      `Failed to read back Product Hermes auth.json after apply: ${readback.auth?.error || "unknown error"}`,
-    );
-  }
-  if (readback.auth.activeProvider !== OPENAI_CODEX_PROVIDER) {
-    throw new Error(
-      `Product Hermes readback mismatch after apply: expected active_provider=${OPENAI_CODEX_PROVIDER}, got ${readback.auth.activeProvider || "none"}.`,
-    );
-  }
-  if (readback.inferredLabel && readback.inferredLabel !== normalizedLabel) {
-    throw new Error(
-      `Product Hermes readback mismatch after apply: expected label=${normalizedLabel}, got ${readback.inferredLabel}.`,
-    );
-  }
-  if (readback.config?.ok !== true) {
-    throw new Error(
-      `Failed to read back Product Hermes config.yaml after apply: ${readback.config?.error || "unknown error"}`,
-    );
-  }
-  if (readback.config.provider !== OPENAI_CODEX_PROVIDER) {
-    throw new Error(
-      `Product Hermes config mismatch after apply: expected provider=${OPENAI_CODEX_PROVIDER}, got ${readback.config.provider || "none"}.`,
-    );
-  }
-  if (readback.config.defaultModel !== PRODUCT_GROWTH_HERMES_MODEL) {
-    throw new Error(
-      `Product Hermes config mismatch after apply: expected model=${PRODUCT_GROWTH_HERMES_MODEL}, got ${readback.config.defaultModel || "none"}.`,
-    );
-  }
-  if (path.resolve(readback.config.cwd || "") !== path.resolve(workspaceDir)) {
-    throw new Error(
-      `Product Hermes config mismatch after apply: expected cwd=${workspaceDir}, got ${readback.config.cwd || "none"}.`,
-    );
-  }
-  if (readback.env?.ok !== true) {
-    throw new Error(
-      `Failed to read back Product Hermes .env after apply: ${readback.env?.error || "unknown error"}`,
-    );
-  }
-  if (path.resolve(readback.env.messagingCwd || "") !== path.resolve(workspaceDir)) {
-    throw new Error(
-      `Product Hermes env mismatch after apply: expected MESSAGING_CWD=${workspaceDir}, got ${readback.env.messagingCwd || "none"}.`,
-    );
-  }
-
-  const appliedAt = new Date().toISOString();
-  const target = getProductGrowthHermesTargetState(state);
-  const warnings = buildWarningsFromProductGrowthHermesTargetStatus(readback);
-  const wrote = authWrite.wrote || configWrite.wrote || envWrite.wrote;
-  const status = warnings.length > 0 ? (wrote ? "applied_with_warnings" : "noop_with_warnings") : (wrote ? "applied" : "noop");
-  target.hermesHome = hermesHome;
-  target.workspaceDir = workspaceDir;
-  target.workspaceContextPath = workspaceContextPath;
-  target.activeLabel = normalizedLabel;
-  target.expectedProvider = OPENAI_CODEX_PROVIDER;
-  target.expectedModel = PRODUCT_GROWTH_HERMES_MODEL;
-  target.lastAppliedAt = appliedAt;
-  target.lastApplyReceipt = {
-    action: "sync_product_growth_hermes",
-    status,
-    observedAt: appliedAt,
-    label: normalizedLabel,
-    hermesHome,
-    workspaceDir,
-    authPath: readback.authPath,
-    configPath: readback.configPath,
-    envPath: readback.envPath,
-    wrote: {
-      auth: authWrite.wrote,
-      config: configWrite.wrote,
-      env: envWrite.wrote,
-    },
-    warnings,
-  };
-
-  return {
-    status,
-    label: normalizedLabel,
-    hermesHome,
-    workspaceDir,
-    authPath: readback.authPath,
-    configPath: readback.configPath,
-    envPath: readback.envPath,
-    wrote: {
-      auth: authWrite.wrote,
-      config: configWrite.wrote,
-      env: envWrite.wrote,
-    },
-    warnings,
-  };
-}
-
 function buildWarningsFromState(state) {
   const warnings = [];
 
@@ -7593,7 +7065,7 @@ function buildInteractiveLoginStatus({ state, label }) {
     : null;
 }
 
-async function buildStatusView({ statePath, state, homeDir, repoRoot }) {
+async function buildStatusView({ statePath, state, homeDir }) {
   ensureStateShape(state);
   const usageByProvider = await probeUsageSnapshotsByProvider(state);
   const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
@@ -7677,7 +7149,6 @@ async function buildStatusView({ statePath, state, homeDir, repoRoot }) {
   const codexCli = readCodexCliTargetStatus({ state, homeDir });
   const claudeCli = readClaudeCliTargetStatus({ state, homeDir });
   const piCli = readPiCliTargetStatus({ state, homeDir });
-  const productGrowthHermes = readProductGrowthHermesTargetStatus({ state, homeDir, repoRoot });
   const openclawTarget = getOpenclawTargetState(state);
   const nextBestCandidate = pickNextBestLocalCliPoolLabel({
     rankedCandidates: rankPoolCandidates({
@@ -7742,14 +7213,12 @@ async function buildStatusView({ statePath, state, homeDir, repoRoot }) {
     codexCli: sanitizeForStatus(codexCli),
     claudeCli: sanitizeForStatus(claudeCli),
     piCli: sanitizeForStatus(piCli),
-    productGrowthHermes: sanitizeForStatus(productGrowthHermes),
     warnings: [
       ...buildWarningsFromState(state),
       ...buildWarningsFromStatusAccounts(sortedAccounts),
       ...buildWarningsFromCodexTargetStatus(codexCli),
       ...buildWarningsFromClaudeTargetStatus(claudeCli),
       ...buildWarningsFromPiTargetStatus(piCli),
-      ...buildWarningsFromProductGrowthHermesTargetStatus(productGrowthHermes),
     ],
   };
 }
@@ -8087,26 +7556,6 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
             : "error")
           : "unavailable"],
         ["auth_path", view.claudeCli.authPath || "--"],
-      ]),
-    );
-  }
-
-  if (view.productGrowthHermes) {
-    lines.push("");
-    lines.push("PRODUCT HERMES");
-    lines.push(
-      ...formatStatusBlockRows([
-        ["active_label", view.productGrowthHermes.activeLabel || "none"],
-        ["inferred_label", view.productGrowthHermes.inferredLabel || "--"],
-        ["provider", view.productGrowthHermes.auth?.activeProvider || view.productGrowthHermes.config?.provider || "--"],
-        ["model", view.productGrowthHermes.config?.defaultModel || "--"],
-        ["hermes_home", view.productGrowthHermes.hermesHome || "--"],
-        ["terminal_cwd", view.productGrowthHermes.config?.cwd || "--"],
-        ["messaging_cwd", view.productGrowthHermes.env?.messagingCwd || "--"],
-        ["workspace_context", view.productGrowthHermes.workspaceContextPresent === true ? "present" : "missing"],
-        ["slack_bot_token", view.productGrowthHermes.env?.slackBotTokenPresent === true ? "present" : "missing"],
-        ["slack_app_token", view.productGrowthHermes.env?.slackAppTokenPresent === true ? "present" : "missing"],
-        ["last_apply", view.productGrowthHermes.lastApplyReceipt?.status || "--"],
       ]),
     );
   }
@@ -10321,7 +9770,7 @@ export async function main(argv, deps = {}) {
     watchLoopMaxIterations = Number.POSITIVE_INFINITY,
   } = deps;
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "claude", "pi", "browser"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "auth", "codex", "claude", "pi", "browser"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -10343,7 +9792,6 @@ export async function main(argv, deps = {}) {
       statePath,
       state,
       homeDir,
-      repoRoot: resolveAgentsRepoRoot({ repoRoot }),
     });
     if (opts.json) {
       process.stdout.write(`${JSON.stringify(sanitizeForStatus(view), null, 2)}\n`);
@@ -10485,11 +9933,33 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  if (cmd === "auth") {
+    const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+    if (!subcmd) {
+      throw new Error("Missing auth subcommand. Usage: aim auth write hermes <label> --auth-file <abs-path>");
+    }
+    if (subcmd !== "write") {
+      throw new Error(`Unsupported auth subcommand: ${subcmd} (supported: write).`);
+    }
+    const system = String(positional[2] ?? "").trim().toLowerCase();
+    if (!system) {
+      throw new Error("Missing auth target. Usage: aim auth write hermes <label> --auth-file <abs-path>");
+    }
+    if (system !== "hermes") {
+      throw new Error(`Unsupported auth target: ${system} (supported: hermes).`);
+    }
+    const label = normalizeLabel(positional[3]);
+    const state = loadAimgrState(statePath);
+    const written = writeHermesAuthFromState({ label, authPath: opts.authFile }, state);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, written }), null, 2)}\n`);
+    return;
+  }
+
   if (cmd === "sync") {
     const system = String(positional[1] ?? "").trim().toLowerCase();
     if (!system) {
       throw new Error(
-        "Missing sync target. Usage: aim sync openclaw | aim sync codex --from agents@amirs-mac-studio | aim sync product-growth-hermes <label>",
+        "Missing sync target. Usage: aim sync openclaw | aim sync codex --from agents@amirs-mac-studio",
       );
     }
     const state = loadAimgrState(statePath);
@@ -10499,23 +9969,21 @@ export async function main(argv, deps = {}) {
       return;
     }
     if (system === "codex") {
-      const imported = importCodexFromAuthority({ from: opts.from, state, homeDir });
+      const imported = importCodexFromAuthority({
+        from: opts.from,
+        state,
+        homeDir,
+      });
       writeJsonFileWithBackup(statePath, state);
       process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, imported }), null, 2)}\n`);
       return;
     }
-    if (system === "product-growth-hermes") {
-      const label = normalizeLabel(positional[2]);
-      const synced = applyProductGrowthHermesTargetFromState({
-        label,
-        homeDir,
-        repoRoot: resolveAgentsRepoRoot({ repoRoot }),
-      }, state);
-      writeJsonFileWithBackup(statePath, state);
-      process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, synced }), null, 2)}\n`);
-      return;
+    if (system === "hermes") {
+      throw new Error(
+        "`aim sync hermes` was removed. Use `aim auth write hermes <label> --auth-file <abs-path>` and manage Hermes runtime files outside AIM.",
+      );
     }
-    throw new Error(`Unsupported sync target: ${system} (supported: openclaw, codex, product-growth-hermes).`);
+    throw new Error(`Unsupported sync target: ${system} (supported: openclaw, codex).`);
   }
 
   if (cmd === "codex") {

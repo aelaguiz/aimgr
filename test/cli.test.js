@@ -2583,9 +2583,8 @@ test("status --json surfaces receipt and projection branches", async () => {
   }
 });
 
-test("sync product-growth-hermes materializes the Product Growth Hermes home from one label", async () => {
+test("auth write hermes writes auth.json only and leaves AIM state plus runtime files untouched", async () => {
   const home = mkTempHome();
-  const repoRoot = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeJwt = makeFakeJwt({
     email: "product@example.com",
@@ -2595,10 +2594,8 @@ test("sync product-growth-hermes materializes the Product Growth Hermes home fro
       chatgpt_plan_type: "pro",
     },
   });
-  const productWorkspace = path.join(repoRoot, "agents", "agent_product_growth");
   const hermesHome = path.join(home, ".hermes", "profiles", "agent_product_growth");
-  fs.mkdirSync(productWorkspace, { recursive: true });
-  fs.writeFileSync(path.join(productWorkspace, ".hermes.md"), "You are Product Growth on Hermes.\n", "utf8");
+  const hermesAuthPath = path.join(hermesHome, "auth.json");
   fs.mkdirSync(hermesHome, { recursive: true });
   fs.writeFileSync(
     path.join(hermesHome, ".env"),
@@ -2652,36 +2649,30 @@ test("sync product-growth-hermes materializes the Product Growth Hermes home fro
       piCli: {},
     },
   });
+  const beforeEnv = fs.readFileSync(path.join(hermesHome, ".env"), "utf8");
 
   const out = await runCli(
-    ["sync", "product-growth-hermes", "product", "--home", home],
-    { repoRoot },
+    ["auth", "write", "hermes", "product", "--auth-file", hermesAuthPath, "--home", home],
   );
   const parsed = JSON.parse(out);
   assert.equal(parsed.ok, true);
-  assert.equal(parsed.synced.label, "product");
-  assert.equal(parsed.synced.status, "applied");
+  assert.equal(parsed.written.label, "product");
+  assert.equal(parsed.written.status, "applied");
+  assert.equal(parsed.written.authPath, hermesAuthPath);
+  assert.equal(parsed.written.wrote.auth, true);
 
-  const authJson = JSON.parse(fs.readFileSync(path.join(hermesHome, "auth.json"), "utf8"));
+  const authJson = JSON.parse(fs.readFileSync(hermesAuthPath, "utf8"));
   assert.equal(authJson.active_provider, "openai-codex");
   assert.equal(authJson.providers["openai-codex"].tokens.access_token, fakeJwt);
   assert.equal(authJson.providers["openai-codex"].tokens.refresh_token, "refresh-product");
-
-  const configYaml = fs.readFileSync(path.join(hermesHome, "config.yaml"), "utf8");
-  assert.match(configYaml, /provider:\s*openai-codex/);
-  assert.match(configYaml, /default:\s*gpt-5\.4/);
-  assert.match(configYaml, /reasoning_effort:\s*xhigh/);
-  assert.match(configYaml, new RegExp(`cwd:\\s*${productWorkspace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-
-  const envText = fs.readFileSync(path.join(hermesHome, ".env"), "utf8");
-  assert.match(envText, /SLACK_BOT_TOKEN=xoxb-product/);
-  assert.match(envText, /SLACK_APP_TOKEN=xapp-product/);
-  assert.match(envText, new RegExp(`MESSAGING_CWD=${productWorkspace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-
+  assert.equal(fs.existsSync(path.join(hermesHome, "config.yaml")), false);
+  assert.equal(fs.readFileSync(path.join(hermesHome, ".env"), "utf8"), beforeEnv);
   const persistedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(persistedState.targets.productGrowthHermes.activeLabel, "product");
-  assert.equal(persistedState.targets.productGrowthHermes.expectedProvider, "openai-codex");
-  assert.equal(persistedState.targets.productGrowthHermes.expectedModel, "gpt-5.4");
+  assert.equal(persistedState.targets.hermes, undefined);
+  assert.equal(persistedState.targets.productGrowthHermes, undefined);
+  assert.deepEqual(persistedState.targets.codexCli, {});
+  assert.deepEqual(persistedState.targets.claudeCli, {});
+  assert.deepEqual(persistedState.targets.piCli, {});
 
   const origFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -2716,32 +2707,116 @@ test("sync product-growth-hermes materializes the Product Growth Hermes home fro
   };
 
   try {
-    const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home], { repoRoot }));
-    assert.equal(statusJson.productGrowthHermes.activeLabel, "product");
-    assert.equal(statusJson.productGrowthHermes.inferredLabel, "product");
-    assert.equal(statusJson.productGrowthHermes.auth.activeProvider, "openai-codex");
-    assert.equal(statusJson.productGrowthHermes.config.defaultModel, "gpt-5.4");
-    assert.equal(statusJson.productGrowthHermes.config.cwd, productWorkspace);
-    assert.equal(statusJson.productGrowthHermes.env.messagingCwd, productWorkspace);
-    assert.equal(statusJson.productGrowthHermes.workspaceContextPresent, true);
-    assert.equal(statusJson.warnings.some((warning) => String(warning?.kind ?? "").startsWith("product_hermes_")), false);
-
-    const statusText = await runCli(["status", "--home", home], { repoRoot });
-    assert.match(statusText, /PRODUCT HERMES/);
-    assert.match(statusText, /active_label\s+product/);
-    assert.match(statusText, /provider\s+openai-codex/);
-    assert.match(statusText, /model\s+gpt-5\.4/);
-    assert.match(statusText, /workspace_context\s+present/);
-    assert.match(statusText, /slack_bot_token\s+present/);
-    assert.match(statusText, /slack_app_token\s+present/);
+    const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home]));
+    assert.equal(Object.hasOwn(statusJson, "hermes"), false);
+    assert.equal(statusJson.warnings.some((warning) => String(warning?.kind ?? "").includes("hermes")), false);
   } finally {
     globalThis.fetch = origFetch;
   }
 });
 
-test("sync product-growth-hermes fails loud when the Hermes workspace context is missing", async () => {
+test("auth write hermes preserves unrelated provider entries while updating the Codex provider entry", async () => {
   const home = mkTempHome();
-  const repoRoot = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeJwt = makeFakeJwt({
+    email: "growth@example.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_growth",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const hermesHome = path.join(home, ".hermes", "profiles", "agent_growth_analyst");
+  const hermesAuthPath = path.join(hermesHome, "auth.json");
+  fs.mkdirSync(hermesHome, { recursive: true });
+  writeJson(hermesAuthPath, {
+    version: 1,
+    updated_at: "2026-03-29T00:00:00.000Z",
+    active_provider: "github-copilot",
+    providers: {
+      "github-copilot": {
+        tokens: {
+          access_token: "copilot-access",
+          refresh_token: "copilot-refresh",
+        },
+      },
+      "openai-codex": {
+        tokens: {
+          access_token: "stale-access",
+          refresh_token: "stale-refresh",
+        },
+        last_refresh: "2026-03-29T00:00:00.000Z",
+        auth_mode: "chatgpt",
+      },
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      growth: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        growth: {
+          access: fakeJwt,
+          refresh: "refresh-growth",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_growth",
+          idToken: fakeJwt,
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    pool: {
+      openaiCodex: {
+        history: [],
+        agentDemand: {},
+      },
+      anthropic: {
+        history: [],
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: {},
+        exclusions: {},
+      },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+  });
+
+  const out = await runCli(
+    ["auth", "write", "hermes", "growth", "--auth-file", hermesAuthPath, "--home", home],
+  );
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.written.label, "growth");
+  assert.equal(parsed.written.status, "applied");
+  assert.equal(parsed.written.wrote.auth, true);
+
+  const authJson = JSON.parse(fs.readFileSync(hermesAuthPath, "utf8"));
+  assert.equal(authJson.active_provider, "openai-codex");
+  assert.equal(authJson.providers["openai-codex"].tokens.access_token, fakeJwt);
+  assert.equal(authJson.providers["openai-codex"].tokens.refresh_token, "refresh-growth");
+  assert.equal(authJson.providers["github-copilot"].tokens.access_token, "copilot-access");
+  assert.equal(authJson.providers["github-copilot"].tokens.refresh_token, "copilot-refresh");
+});
+
+test("auth write hermes fails loud when the Hermes auth parent directory is missing", async () => {
+  const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeJwt = makeFakeJwt({
     email: "product@example.com",
@@ -2752,7 +2827,6 @@ test("sync product-growth-hermes fails loud when the Hermes workspace context is
     },
   });
 
-  fs.mkdirSync(path.join(repoRoot, "agents", "agent_product_growth"), { recursive: true });
   writeJson(statePath, {
     schemaVersion: "0.2",
     accounts: {
@@ -2801,8 +2875,60 @@ test("sync product-growth-hermes fails loud when the Hermes workspace context is
   });
 
   await assert.rejects(
-    () => runCli(["sync", "product-growth-hermes", "product", "--home", home], { repoRoot }),
-    /Missing Hermes workspace context/,
+    () => runCli(
+      [
+        "auth",
+        "write",
+        "hermes",
+        "product",
+        "--auth-file",
+        path.join(home, ".hermes", "profiles", "agent_product_growth", "auth.json"),
+        "--home",
+        home,
+      ],
+    ),
+    /Hermes auth parent directory does not exist/,
+  );
+});
+
+test("sync hermes fails loud with migration guidance to the auth-only Hermes command", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {},
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    pool: {
+      openaiCodex: {
+        history: [],
+        agentDemand: {},
+      },
+      anthropic: {
+        history: [],
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: {},
+        exclusions: {},
+      },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+  });
+
+  await assert.rejects(
+    () => runCli(["sync", "hermes", "product-growth", "product", "--home", home]),
+    /`aim sync hermes` was removed/,
   );
 });
 
@@ -4818,7 +4944,7 @@ test("pi use prefers weekly pool headroom over the lowest short-window usage", a
   }
 });
 
-test("sync codex clears stale managed auth when the active imported label is removed", async () => {
+test("sync codex clears stale managed local activations and drops legacy Hermes AIM state when the active imported label is removed", async () => {
   const authorityHome = mkTempHome();
   const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
   const consumerHome = mkTempHome();
@@ -5011,20 +5137,17 @@ test("sync codex clears stale managed auth when the active imported label is rem
   assert.equal(consumerState.targets.piCli.expectedAccountId, undefined);
   assert.equal(consumerState.targets.piCli.lastAppliedAt, undefined);
   assert.equal(consumerState.targets.piCli.lastSelectionReceipt, undefined);
-  assert.equal(consumerState.targets.productGrowthHermes.activeLabel, undefined);
-  assert.equal(consumerState.targets.productGrowthHermes.expectedProvider, undefined);
-  assert.equal(consumerState.targets.productGrowthHermes.expectedModel, undefined);
-  assert.equal(consumerState.targets.productGrowthHermes.lastAppliedAt, undefined);
-  assert.equal(consumerState.targets.productGrowthHermes.lastApplyReceipt, undefined);
+  assert.equal(consumerState.targets.productGrowthHermes, undefined);
+  assert.equal(consumerState.targets.hermes, undefined);
   assert.equal(fs.existsSync(path.join(consumerHome, ".codex", "auth.json")), false);
-  assert.equal(fs.existsSync(path.join(consumerHermesHome, "auth.json")), false);
-  assert.equal(fs.existsSync(path.join(consumerHermesHome, "config.yaml")), false);
+  assert.equal(fs.existsSync(path.join(consumerHermesHome, "auth.json")), true);
+  assert.equal(fs.existsSync(path.join(consumerHermesHome, "config.yaml")), true);
   const piAuth = JSON.parse(fs.readFileSync(path.join(consumerHome, ".pi", "agent", "auth.json"), "utf8"));
   assert.deepEqual(piAuth, {});
   const hermesEnv = fs.readFileSync(path.join(consumerHermesHome, ".env"), "utf8");
   assert.match(hermesEnv, /SLACK_BOT_TOKEN=xoxb-product/);
   assert.match(hermesEnv, /SLACK_APP_TOKEN=xapp-product/);
-  assert.doesNotMatch(hermesEnv, /MESSAGING_CWD=/);
+  assert.match(hermesEnv, /MESSAGING_CWD=\/tmp\/product-growth/);
 });
 
 test("discoverOpenclawBrowserProfiles reads user-data/Local State for friendly names", () => {
