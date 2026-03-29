@@ -22,6 +22,7 @@ const BROWSER_MODE_AIM_PROFILE = "aim-profile";
 const BROWSER_MODE_CHROME_PROFILE = "chrome-profile";
 const BROWSER_MODE_AGENT_BROWSER = "agent-browser";
 const DEFAULT_AGENTS_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
+const HERMES_AUTH_STORE_VERSION = 1;
 const STATUS_RESET_TIMEZONE = "America/Chicago";
 const DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS = 7;
 const MIN_AGENT_DEMAND_WEIGHT = 1;
@@ -197,6 +198,7 @@ function parseArgs(argv) {
     userDataDir: undefined,
     profile: undefined,
     session: undefined,
+    authFile: undefined,
     json: false,
     compact: false,
     accounts: false,
@@ -252,6 +254,11 @@ function parseArgs(argv) {
     }
     if (arg === "--session") {
       opts.session = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--auth-file") {
+      opts.authFile = argv[i + 1];
       i += 1;
       continue;
     }
@@ -358,6 +365,7 @@ function printHelp() {
     "  aim apply             # advanced: materialize stored OpenClaw assignments from ~/.aimgr/secrets.json",
     "  aim sync openclaw     # explicit alias for apply",
     "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
+    "  aim auth write hermes <label> --auth-file <abs-path>  # write Hermes auth.json only",
     "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
     "  aim claude use        # activate the next-best pooled anthropic label for local Claude CLI",
@@ -387,6 +395,7 @@ function printHelp() {
     "  --profile-directory <name>        Optional specific Chrome profile inside `--user-data-dir`.",
     "  --profile <abs-path>              Required for `--mode agent-browser`.",
     "  --session <name>                  Required for `--mode agent-browser`.",
+    "  --auth-file <abs-path>            Required for `aim auth write hermes`; must point at Hermes auth.json.",
     "",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -422,6 +431,17 @@ function resolveAimgrStateDir({ homeDir }) {
 
 function resolveOpenclawAuthStorePath(homeDir, agentId) {
   return path.join(homeDir, ".openclaw", "agents", agentId, "agent", "auth-profiles.json");
+}
+
+function resolveExplicitHermesAuthFilePath(value) {
+  const authPath = normalizeAbsolutePath(value);
+  if (!authPath) {
+    throw new Error("Missing Hermes auth target. Usage: aim auth write hermes <label> --auth-file <abs-path>.");
+  }
+  if (path.basename(authPath) !== "auth.json") {
+    throw new Error(`Refusing Hermes auth write to non-auth.json path: ${authPath}`);
+  }
+  return authPath;
 }
 
 function discoverOpenclawAgentIdsWithAuthStores(homeDir) {
@@ -1078,6 +1098,15 @@ function writeTextFileIfChanged(filePath, text, { mode } = {}) {
 
 function writeJsonFileIfChanged(filePath, data, { mode } = {}) {
   return writeTextFileIfChanged(filePath, `${JSON.stringify(data, null, 2)}\n`, { mode });
+}
+
+function ensureDirectoryMode(dirPath, mode = 0o700) {
+  fs.mkdirSync(dirPath, { recursive: true, mode });
+  try {
+    fs.chmodSync(dirPath, mode);
+  } catch {
+    // Best effort on non-POSIX filesystems.
+  }
 }
 
 function createEmptyState() {
@@ -2728,6 +2757,15 @@ function ensureStateShape(state) {
   state.targets.codexCli = isObject(state.targets.codexCli) ? state.targets.codexCli : {};
   state.targets.claudeCli = isObject(state.targets.claudeCli) ? state.targets.claudeCli : {};
   state.targets.piCli = isObject(state.targets.piCli) ? state.targets.piCli : {};
+  if (Object.hasOwn(state.targets, "hermes")) {
+    delete state.targets.hermes;
+  }
+  if (Object.hasOwn(state.targets, "productGrowthHermes")) {
+    delete state.targets.productGrowthHermes;
+  }
+  if (Object.hasOwn(state.targets, "growthAnalystHermes")) {
+    delete state.targets.growthAnalystHermes;
+  }
 
   const legacyPins = isObject(state.pins?.openclaw) ? state.pins.openclaw : null;
   if (legacyPins) {
@@ -3166,6 +3204,133 @@ function readClaudeAuthFile({ claudeDir }) {
   }
 }
 
+function readHermesAuthFile({ authPath }) {
+  const resolvedAuthPath = resolveExplicitHermesAuthFilePath(authPath);
+  if (!fs.existsSync(resolvedAuthPath)) {
+    return { exists: false, authPath: resolvedAuthPath };
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(resolvedAuthPath, "utf8"));
+    if (!isObject(parsed)) {
+      throw new Error("Hermes auth.json is not a JSON object.");
+    }
+    const providers = isObject(parsed.providers) ? parsed.providers : {};
+    const providerEntry = isObject(providers[OPENAI_CODEX_PROVIDER]) ? providers[OPENAI_CODEX_PROVIDER] : null;
+    const tokens = isObject(providerEntry?.tokens) ? providerEntry.tokens : null;
+    const accessToken = typeof tokens?.access_token === "string" ? tokens.access_token.trim() : null;
+    const refreshToken = typeof tokens?.refresh_token === "string" ? tokens.refresh_token.trim() : null;
+    const activeProvider = typeof parsed.active_provider === "string" ? parsed.active_provider.trim() : null;
+    return {
+      exists: true,
+      ok: true,
+      authPath: resolvedAuthPath,
+      activeProvider: activeProvider || null,
+      providerEntryPresent: Boolean(providerEntry),
+      accessToken: accessToken || null,
+      refreshToken: refreshToken || null,
+      lastRefresh: typeof providerEntry?.last_refresh === "string" ? providerEntry.last_refresh.trim() : null,
+      authMode: typeof providerEntry?.auth_mode === "string" ? providerEntry.auth_mode.trim() : null,
+      json: parsed,
+    };
+  } catch (err) {
+    return {
+      exists: true,
+      ok: false,
+      authPath: resolvedAuthPath,
+      error: String(err?.message ?? err),
+    };
+  }
+}
+
+function buildHermesAuthDotJson({ existing, credential, updatedAt }) {
+  const next = isObject(existing) ? structuredClone(existing) : {};
+  next.version = HERMES_AUTH_STORE_VERSION;
+  next.updated_at = updatedAt;
+  next.providers = isObject(next.providers) ? next.providers : {};
+  next.providers[OPENAI_CODEX_PROVIDER] = {
+    ...(isObject(next.providers[OPENAI_CODEX_PROVIDER]) ? next.providers[OPENAI_CODEX_PROVIDER] : {}),
+    tokens: {
+      access_token: credential.access,
+      refresh_token: credential.refresh,
+    },
+    last_refresh: updatedAt.replace("+00:00", "Z"),
+    auth_mode: "chatgpt",
+  };
+  next.active_provider = OPENAI_CODEX_PROVIDER;
+  return next;
+}
+
+// AIM owns only Hermes auth material. The caller must provide the exact native
+// auth.json path; runtime config, cwd, env, service state, and home routing all
+// live outside AIM.
+function writeHermesAuthFromState({ label, authPath }, state) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const account = state.accounts[normalizedLabel];
+  if (!isObject(account)) {
+    throw new Error(`Unknown Hermes label: ${normalizedLabel}. Run \`aim status\` to inspect the pool.`);
+  }
+  const provider = normalizeProviderId(account.provider);
+  if (provider !== OPENAI_CODEX_PROVIDER) {
+    throw new Error(`Refusing to activate non-Codex label=${normalizedLabel} provider=${provider || "unknown"} for Hermes.`);
+  }
+
+  const resolvedAuthPath = resolveExplicitHermesAuthFilePath(authPath);
+  const parentDir = path.dirname(resolvedAuthPath);
+  if (!fs.existsSync(parentDir)) {
+    throw new Error(`Hermes auth parent directory does not exist: ${parentDir}`);
+  }
+  if (!fs.statSync(parentDir).isDirectory()) {
+    throw new Error(`Hermes auth parent is not a directory: ${parentDir}`);
+  }
+
+  const credential = assertCodexCredentialShape({
+    label: normalizedLabel,
+    credential: getCodexCredential(state, normalizedLabel),
+    requireFresh: true,
+  });
+
+  const authRead = readHermesAuthFile({ authPath: resolvedAuthPath });
+  if (authRead.exists === true && authRead.ok !== true) {
+    throw new Error(`Failed to read current Hermes auth.json before write: ${authRead.error || "unknown error"}`);
+  }
+
+  const appliedAt = new Date().toISOString();
+  const authPayload = buildHermesAuthDotJson({
+    existing: authRead.ok === true ? authRead.json : {},
+    credential,
+    updatedAt: appliedAt,
+  });
+  const authWrite = writeJsonFileIfChanged(resolvedAuthPath, authPayload, { mode: 0o600 });
+  const readback = readHermesAuthFile({ authPath: resolvedAuthPath });
+  if (readback.ok !== true) {
+    throw new Error(`Failed to read back Hermes auth.json after write: ${readback.error || "unknown error"}`);
+  }
+  if (readback.activeProvider !== OPENAI_CODEX_PROVIDER) {
+    throw new Error(
+      `Hermes auth mismatch after write: expected active_provider=${OPENAI_CODEX_PROVIDER}, got ${readback.activeProvider || "none"}.`,
+    );
+  }
+  const inferredLabel = findCodexLabelByTokenPair(state, {
+    accessToken: readback.accessToken,
+    refreshToken: readback.refreshToken,
+  });
+  if (inferredLabel && inferredLabel !== normalizedLabel) {
+    throw new Error(`Hermes readback mismatch after write: expected label=${normalizedLabel}, got ${inferredLabel}.`);
+  }
+
+  return {
+    status: authWrite.wrote ? "applied" : "noop",
+    label: normalizedLabel,
+    authPath: resolvedAuthPath,
+    wrote: {
+      auth: authWrite.wrote,
+    },
+    inferredLabel: inferredLabel || normalizedLabel,
+  };
+}
+
 function readClaudeAuthStatus({ homeDir, spawnImpl = spawnSync } = {}) {
   const commandPath = resolveClaudeCommand({ homeDir, spawnImpl });
   if (!commandPath) {
@@ -3522,6 +3687,20 @@ function findCodexLabelByAccountId(state, accountId) {
   for (const [label, cred] of Object.entries(state.credentials[OPENAI_CODEX_PROVIDER])) {
     if (!isObject(cred)) continue;
     if (String(cred.accountId ?? "").trim() === targetAccountId) {
+      return label;
+    }
+  }
+  return null;
+}
+
+function findCodexLabelByTokenPair(state, { accessToken, refreshToken }) {
+  ensureStateShape(state);
+  const targetAccess = typeof accessToken === "string" ? accessToken.trim() : "";
+  const targetRefresh = typeof refreshToken === "string" ? refreshToken.trim() : "";
+  if (!targetAccess || !targetRefresh) return null;
+  for (const [label, cred] of Object.entries(state.credentials[OPENAI_CODEX_PROVIDER])) {
+    if (!isObject(cred)) continue;
+    if (String(cred.access ?? "").trim() === targetAccess && String(cred.refresh ?? "").trim() === targetRefresh) {
       return label;
     }
   }
@@ -9591,7 +9770,7 @@ export async function main(argv, deps = {}) {
     watchLoopMaxIterations = Number.POSITIVE_INFINITY,
   } = deps;
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "codex", "claude", "pi", "browser"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "auth", "codex", "claude", "pi", "browser"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -9609,7 +9788,11 @@ export async function main(argv, deps = {}) {
 
   if (cmd === "status") {
     const state = loadAimgrState(statePath);
-    const view = await buildStatusView({ statePath, state, homeDir });
+    const view = await buildStatusView({
+      statePath,
+      state,
+      homeDir,
+    });
     if (opts.json) {
       process.stdout.write(`${JSON.stringify(sanitizeForStatus(view), null, 2)}\n`);
       return;
@@ -9750,10 +9933,34 @@ export async function main(argv, deps = {}) {
     return;
   }
 
+  if (cmd === "auth") {
+    const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+    if (!subcmd) {
+      throw new Error("Missing auth subcommand. Usage: aim auth write hermes <label> --auth-file <abs-path>");
+    }
+    if (subcmd !== "write") {
+      throw new Error(`Unsupported auth subcommand: ${subcmd} (supported: write).`);
+    }
+    const system = String(positional[2] ?? "").trim().toLowerCase();
+    if (!system) {
+      throw new Error("Missing auth target. Usage: aim auth write hermes <label> --auth-file <abs-path>");
+    }
+    if (system !== "hermes") {
+      throw new Error(`Unsupported auth target: ${system} (supported: hermes).`);
+    }
+    const label = normalizeLabel(positional[3]);
+    const state = loadAimgrState(statePath);
+    const written = writeHermesAuthFromState({ label, authPath: opts.authFile }, state);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, written }), null, 2)}\n`);
+    return;
+  }
+
   if (cmd === "sync") {
     const system = String(positional[1] ?? "").trim().toLowerCase();
     if (!system) {
-      throw new Error("Missing sync target. Usage: aim sync openclaw | aim sync codex --from agents@amirs-mac-studio");
+      throw new Error(
+        "Missing sync target. Usage: aim sync openclaw | aim sync codex --from agents@amirs-mac-studio",
+      );
     }
     const state = loadAimgrState(statePath);
     if (system === "openclaw") {
@@ -9762,10 +9969,19 @@ export async function main(argv, deps = {}) {
       return;
     }
     if (system === "codex") {
-      const imported = importCodexFromAuthority({ from: opts.from, state, homeDir });
+      const imported = importCodexFromAuthority({
+        from: opts.from,
+        state,
+        homeDir,
+      });
       writeJsonFileWithBackup(statePath, state);
       process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, imported }), null, 2)}\n`);
       return;
+    }
+    if (system === "hermes") {
+      throw new Error(
+        "`aim sync hermes` was removed. Use `aim auth write hermes <label> --auth-file <abs-path>` and manage Hermes runtime files outside AIM.",
+      );
     }
     throw new Error(`Unsupported sync target: ${system} (supported: openclaw, codex).`);
   }

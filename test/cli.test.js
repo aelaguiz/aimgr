@@ -2583,6 +2583,355 @@ test("status --json surfaces receipt and projection branches", async () => {
   }
 });
 
+test("auth write hermes writes auth.json only and leaves AIM state plus runtime files untouched", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeJwt = makeFakeJwt({
+    email: "product@example.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_product",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const hermesHome = path.join(home, ".hermes", "profiles", "agent_product_growth");
+  const hermesAuthPath = path.join(hermesHome, "auth.json");
+  fs.mkdirSync(hermesHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(hermesHome, ".env"),
+    "SLACK_BOT_TOKEN=xoxb-product\nSLACK_APP_TOKEN=xapp-product\n",
+    "utf8",
+  );
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      product: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        product: {
+          access: fakeJwt,
+          refresh: "refresh-product",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_product",
+          idToken: fakeJwt,
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    pool: {
+      openaiCodex: {
+        history: [],
+        agentDemand: {},
+      },
+      anthropic: {
+        history: [],
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: {},
+        exclusions: {},
+      },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+  });
+  const beforeEnv = fs.readFileSync(path.join(hermesHome, ".env"), "utf8");
+
+  const out = await runCli(
+    ["auth", "write", "hermes", "product", "--auth-file", hermesAuthPath, "--home", home],
+  );
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.written.label, "product");
+  assert.equal(parsed.written.status, "applied");
+  assert.equal(parsed.written.authPath, hermesAuthPath);
+  assert.equal(parsed.written.wrote.auth, true);
+
+  const authJson = JSON.parse(fs.readFileSync(hermesAuthPath, "utf8"));
+  assert.equal(authJson.active_provider, "openai-codex");
+  assert.equal(authJson.providers["openai-codex"].tokens.access_token, fakeJwt);
+  assert.equal(authJson.providers["openai-codex"].tokens.refresh_token, "refresh-product");
+  assert.equal(fs.existsSync(path.join(hermesHome, "config.yaml")), false);
+  assert.equal(fs.readFileSync(path.join(hermesHome, ".env"), "utf8"), beforeEnv);
+  const persistedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(persistedState.targets.hermes, undefined);
+  assert.equal(persistedState.targets.productGrowthHermes, undefined);
+  assert.deepEqual(persistedState.targets.codexCli, {});
+  assert.deepEqual(persistedState.targets.claudeCli, {});
+  assert.deepEqual(persistedState.targets.piCli, {});
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    if (u.includes("api.anthropic.com/api/oauth/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 0, resets_at: "2026-03-30T00:00:00Z" },
+          seven_day: { utilization: 0, resets_at: "2026-04-01T00:00:00Z" },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home]));
+    assert.equal(Object.hasOwn(statusJson, "hermes"), false);
+    assert.equal(statusJson.warnings.some((warning) => String(warning?.kind ?? "").includes("hermes")), false);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("auth write hermes preserves unrelated provider entries while updating the Codex provider entry", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeJwt = makeFakeJwt({
+    email: "growth@example.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_growth",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const hermesHome = path.join(home, ".hermes", "profiles", "agent_growth_analyst");
+  const hermesAuthPath = path.join(hermesHome, "auth.json");
+  fs.mkdirSync(hermesHome, { recursive: true });
+  writeJson(hermesAuthPath, {
+    version: 1,
+    updated_at: "2026-03-29T00:00:00.000Z",
+    active_provider: "github-copilot",
+    providers: {
+      "github-copilot": {
+        tokens: {
+          access_token: "copilot-access",
+          refresh_token: "copilot-refresh",
+        },
+      },
+      "openai-codex": {
+        tokens: {
+          access_token: "stale-access",
+          refresh_token: "stale-refresh",
+        },
+        last_refresh: "2026-03-29T00:00:00.000Z",
+        auth_mode: "chatgpt",
+      },
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      growth: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        growth: {
+          access: fakeJwt,
+          refresh: "refresh-growth",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_growth",
+          idToken: fakeJwt,
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    pool: {
+      openaiCodex: {
+        history: [],
+        agentDemand: {},
+      },
+      anthropic: {
+        history: [],
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: {},
+        exclusions: {},
+      },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+  });
+
+  const out = await runCli(
+    ["auth", "write", "hermes", "growth", "--auth-file", hermesAuthPath, "--home", home],
+  );
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.written.label, "growth");
+  assert.equal(parsed.written.status, "applied");
+  assert.equal(parsed.written.wrote.auth, true);
+
+  const authJson = JSON.parse(fs.readFileSync(hermesAuthPath, "utf8"));
+  assert.equal(authJson.active_provider, "openai-codex");
+  assert.equal(authJson.providers["openai-codex"].tokens.access_token, fakeJwt);
+  assert.equal(authJson.providers["openai-codex"].tokens.refresh_token, "refresh-growth");
+  assert.equal(authJson.providers["github-copilot"].tokens.access_token, "copilot-access");
+  assert.equal(authJson.providers["github-copilot"].tokens.refresh_token, "copilot-refresh");
+});
+
+test("auth write hermes fails loud when the Hermes auth parent directory is missing", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeJwt = makeFakeJwt({
+    email: "product@example.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_product",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      product: {
+        provider: "openai-codex",
+        browser: {},
+        reauth: { mode: "manual-callback" },
+        pool: { enabled: true },
+      },
+    },
+    credentials: {
+      "openai-codex": {
+        product: {
+          access: fakeJwt,
+          refresh: "refresh-product",
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_product",
+          idToken: fakeJwt,
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    pool: {
+      openaiCodex: {
+        history: [],
+        agentDemand: {},
+      },
+      anthropic: {
+        history: [],
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: {},
+        exclusions: {},
+      },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+  });
+
+  await assert.rejects(
+    () => runCli(
+      [
+        "auth",
+        "write",
+        "hermes",
+        "product",
+        "--auth-file",
+        path.join(home, ".hermes", "profiles", "agent_product_growth", "auth.json"),
+        "--home",
+        home,
+      ],
+    ),
+    /Hermes auth parent directory does not exist/,
+  );
+});
+
+test("sync hermes fails loud with migration guidance to the auth-only Hermes command", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {},
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {},
+      },
+    },
+    pool: {
+      openaiCodex: {
+        history: [],
+        agentDemand: {},
+      },
+      anthropic: {
+        history: [],
+      },
+    },
+    targets: {
+      openclaw: {
+        assignments: {},
+        exclusions: {},
+      },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+  });
+
+  await assert.rejects(
+    () => runCli(["sync", "hermes", "product-growth", "product", "--home", home]),
+    /`aim sync hermes` was removed/,
+  );
+});
+
 test("codex watch --once noops when the active label stays above the 5h remaining threshold", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -4595,11 +4944,12 @@ test("pi use prefers weekly pool headroom over the lowest short-window usage", a
   }
 });
 
-test("sync codex clears stale managed auth when the active imported label is removed", async () => {
+test("sync codex clears stale managed local activations and drops legacy Hermes AIM state when the active imported label is removed", async () => {
   const authorityHome = mkTempHome();
   const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
   const consumerHome = mkTempHome();
   const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+  const consumerHermesHome = path.join(consumerHome, ".hermes", "profiles", "agent_product_growth");
   const qaJwt = makeFakeJwt({
     email: "qa@example.com",
     "https://api.openai.com/auth": {
@@ -4662,6 +5012,32 @@ test("sync codex clears stale managed auth when the active imported label is rem
       accountId: "acct_boss",
     },
   });
+  writeJson(path.join(consumerHermesHome, "auth.json"), {
+    version: "1",
+    updated_at: new Date().toISOString(),
+    active_provider: "openai-codex",
+    providers: {
+      "openai-codex": {
+        tokens: {
+          access_token: bossJwt,
+          refresh_token: "REFRESH_BOSS",
+        },
+        last_refresh: new Date().toISOString(),
+        auth_mode: "chatgpt",
+      },
+    },
+  });
+  fs.mkdirSync(consumerHermesHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(consumerHermesHome, "config.yaml"),
+    "model:\n  provider: openai-codex\n  default: gpt-5.4\nagent:\n  reasoning_effort: xhigh\ncwd: /tmp/product-growth\n",
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(consumerHermesHome, ".env"),
+    "SLACK_BOT_TOKEN=xoxb-product\nSLACK_APP_TOKEN=xapp-product\nMESSAGING_CWD=/tmp/product-growth\n",
+    "utf8",
+  );
 
   writeJson(consumerStatePath, {
     schemaVersion: "0.2",
@@ -4728,6 +5104,21 @@ test("sync codex clears stale managed auth when the active imported label is rem
           observedAt: new Date().toISOString(),
         },
       },
+      productGrowthHermes: {
+        hermesHome: consumerHermesHome,
+        workspaceDir: "/tmp/product-growth",
+        workspaceContextPath: "/tmp/product-growth/.hermes.md",
+        activeLabel: "boss",
+        expectedProvider: "openai-codex",
+        expectedModel: "gpt-5.4",
+        lastAppliedAt: new Date().toISOString(),
+        lastApplyReceipt: {
+          action: "sync_product_growth_hermes",
+          status: "applied",
+          observedAt: new Date().toISOString(),
+          label: "boss",
+        },
+      },
     },
     pool: { openaiCodex: { history: [] } },
   });
@@ -4746,9 +5137,17 @@ test("sync codex clears stale managed auth when the active imported label is rem
   assert.equal(consumerState.targets.piCli.expectedAccountId, undefined);
   assert.equal(consumerState.targets.piCli.lastAppliedAt, undefined);
   assert.equal(consumerState.targets.piCli.lastSelectionReceipt, undefined);
+  assert.equal(consumerState.targets.productGrowthHermes, undefined);
+  assert.equal(consumerState.targets.hermes, undefined);
   assert.equal(fs.existsSync(path.join(consumerHome, ".codex", "auth.json")), false);
+  assert.equal(fs.existsSync(path.join(consumerHermesHome, "auth.json")), true);
+  assert.equal(fs.existsSync(path.join(consumerHermesHome, "config.yaml")), true);
   const piAuth = JSON.parse(fs.readFileSync(path.join(consumerHome, ".pi", "agent", "auth.json"), "utf8"));
   assert.deepEqual(piAuth, {});
+  const hermesEnv = fs.readFileSync(path.join(consumerHermesHome, ".env"), "utf8");
+  assert.match(hermesEnv, /SLACK_BOT_TOKEN=xoxb-product/);
+  assert.match(hermesEnv, /SLACK_APP_TOKEN=xapp-product/);
+  assert.match(hermesEnv, /MESSAGING_CWD=\/tmp\/product-growth/);
 });
 
 test("discoverOpenclawBrowserProfiles reads user-data/Local State for friendly names", () => {
