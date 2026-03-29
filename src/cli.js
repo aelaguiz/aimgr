@@ -7076,26 +7076,85 @@ function formatStatusAccountExpiryCell(expiresIn) {
   return raw;
 }
 
-function formatStatusAccountUsedCell(usage, index) {
-  if (!usage || usage.ok !== true) return "--";
+function readStatusAccountUsedPercent(usage, index) {
+  if (!usage || usage.ok !== true) return null;
   const windows = Array.isArray(usage.windows) ? usage.windows : [];
-  const usedPercent = windows[index]?.usedPercent;
-  if (!Number.isFinite(Number(usedPercent))) return "--";
-  return `${Math.round(Number(usedPercent))}%`;
+  const usedPercent = Number(windows[index]?.usedPercent);
+  return Number.isFinite(usedPercent) ? usedPercent : null;
 }
 
-function formatStatusAccountResetCell(usage, index) {
-  if (!usage || usage.ok !== true) return "--";
-  const windows = Array.isArray(usage.windows) ? usage.windows : [];
-  const resetAt = windows[index]?.resetAt;
-  const ms = typeof resetAt === "number" ? resetAt : Number(resetAt);
-  if (!Number.isFinite(ms)) return "--";
-  const deltaHours = (ms - Date.now()) / 3600000;
+function formatStatusAccountUsedCell(usage, index) {
+  const usedPercent = readStatusAccountUsedPercent(usage, index);
+  if (!Number.isFinite(usedPercent)) return "--";
+  return `${Math.round(usedPercent)}%`;
+}
+
+function formatStatusDeltaMsCell(deltaMs) {
+  if (!Number.isFinite(deltaMs)) return "--";
+  const deltaHours = deltaMs / 3600000;
   if (deltaHours <= 0) return "0h";
   if (deltaHours >= 48) {
     return `${(deltaHours / 24).toFixed(1)}d`;
   }
   return `${deltaHours.toFixed(1)}h`;
+}
+
+function readStatusAccountResetDeltaMs(usage, index, now = Date.now()) {
+  if (!usage || usage.ok !== true) return null;
+  const windows = Array.isArray(usage.windows) ? usage.windows : [];
+  const resetAt = windows[index]?.resetAt;
+  const ms = typeof resetAt === "number" ? resetAt : Number(resetAt);
+  if (!Number.isFinite(ms)) return null;
+  return ms - now;
+}
+
+function readStatusAccountExpiryDeltaMs(credentials, now = Date.now()) {
+  const expiresAt = typeof credentials?.expiresAt === "string" ? credentials.expiresAt.trim() : "";
+  const ms = parseExpiresAtToMs(expiresAt);
+  if (!Number.isFinite(ms)) return null;
+  return ms - now;
+}
+
+function formatStatusAccountResetCell(usage, index) {
+  return formatStatusDeltaMsCell(readStatusAccountResetDeltaMs(usage, index));
+}
+
+function averageStatusNumbers(values) {
+  const normalizedValues = (Array.isArray(values) ? values : []).filter((value) => Number.isFinite(value));
+  if (normalizedValues.length === 0) return null;
+  return normalizedValues.reduce((sum, value) => sum + value, 0) / normalizedValues.length;
+}
+
+function buildStatusAverageAccountTableRow(accounts, now = Date.now()) {
+  const normalizedAccounts = Array.isArray(accounts) ? accounts : [];
+  const averageExpiryDeltaMs = averageStatusNumbers(
+    normalizedAccounts.map((account) => readStatusAccountExpiryDeltaMs(account?.credentials, now)),
+  );
+  const averageFiveHourUsedPct = averageStatusNumbers(
+    normalizedAccounts.map((account) => readStatusAccountUsedPercent(account?.usage, 0)),
+  );
+  const averageFiveHourResetDeltaMs = averageStatusNumbers(
+    normalizedAccounts.map((account) => readStatusAccountResetDeltaMs(account?.usage, 0, now)),
+  );
+  const averageWeekUsedPct = averageStatusNumbers(
+    normalizedAccounts.map((account) => readStatusAccountUsedPercent(account?.usage, 1)),
+  );
+  const averageWeekResetDeltaMs = averageStatusNumbers(
+    normalizedAccounts.map((account) => readStatusAccountResetDeltaMs(account?.usage, 1, now)),
+  );
+
+  return [
+    "average",
+    "--",
+    "--",
+    Number.isFinite(averageExpiryDeltaMs) ? formatDurationRough(averageExpiryDeltaMs) : "--",
+    Number.isFinite(averageFiveHourUsedPct) ? `${Math.round(averageFiveHourUsedPct)}%` : "--",
+    formatStatusDeltaMsCell(averageFiveHourResetDeltaMs),
+    Number.isFinite(averageWeekUsedPct) ? `${Math.round(averageWeekUsedPct)}%` : "--",
+    formatStatusDeltaMsCell(averageWeekResetDeltaMs),
+    "all",
+    "-",
+  ];
 }
 
 function buildStatusAccountFlags(account) {
@@ -7238,6 +7297,7 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
   if (showAccounts) {
     lines.push("");
     lines.push(`ACCOUNTS (${view.accounts.length})`);
+    const averageAccountRow = view.accounts.length > 0 ? buildStatusAverageAccountTableRow(view.accounts) : null;
     const accountRows = [
       ["label", "st", "login", "exp", "5h_used", "5h_in", "wk_used", "wk_in", "provider", "flags"],
       ...view.accounts.map((account) => [
@@ -7252,6 +7312,7 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
         account.provider || "unknown",
         buildStatusAccountFlags(account),
       ]),
+      ...(averageAccountRow ? [averageAccountRow] : []),
     ];
     lines.push(...formatStatusTable(accountRows));
   }

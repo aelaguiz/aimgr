@@ -622,6 +622,7 @@ test("status appends current codex usage and keeps the full detail output", asyn
     assert.doesNotMatch(out, /usage=5h/);
     assert.match(out, /POOL NOW/);
     assert.match(out, /ACCOUNTS \(2\)/);
+    assert.match(out, /average\s+--\s+--\s+\S+\s+11%\s+1\.7h\s+27%\s+24\.[23]h\s+all\s+-/);
     assert.match(out, /\n\nlabel=boss  5h_used=10%  5h_in=1\.5h  wk_used=20%  wk_in=20\.8h\n$/);
 
     const accountsOut = await runCli(["status", "--accounts", "--home", home]);
@@ -632,6 +633,7 @@ test("status appends current codex usage and keeps the full detail output", asyn
     assert.match(accountsOut, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
     assert.match(accountsOut, /boss\s+ready\s+aim-profile\s+\S+\s+10%\s+1\.5h\s+20%\s+20\.8h\s+openai-codex/);
     assert.match(accountsOut, /claude\s+ready\s+aim-profile\s+\S+\s+12%\s+1\.9h\s+34%\s+27\.7h\s+anthropic/);
+    assert.match(accountsOut, /average\s+--\s+--\s+\S+\s+11%\s+1\.7h\s+27%\s+24\.[23]h\s+all\s+-/);
     assert.match(accountsOut, /\n\nlabel=boss  5h_used=10%  5h_in=1\.5h  wk_used=20%  wk_in=20\.8h\n$/);
 
     const compactOut = await runCli(["status", "--compact", "--home", home]);
@@ -2550,6 +2552,7 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.doesNotMatch(textOut, /OpenClaw assignments/);
     assert.doesNotMatch(textOut, /agent_boss -> boss/);
     assert.match(textOut, /ACCOUNTS \(1\)/);
+    assert.match(textOut, /average\s+--\s+--\s+\S+\s+96%\s+1\.0h\s+--\s+--\s+all\s+-/);
     assert.match(textOut, /LAST REBALANCE/);
     assert.match(textOut, /Spread: boss=3 agent\(s\)\/180w/);
     assert.match(textOut, /last_watch\s+noop/);
@@ -2562,6 +2565,7 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.match(textOutWithAccounts, /POOL NOW/);
     assert.match(textOutWithAccounts, /ACCOUNTS \(1\)/);
     assert.match(textOutWithAccounts, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
+    assert.match(textOutWithAccounts, /average\s+--\s+--\s+\S+\s+96%\s+1\.0h\s+--\s+--\s+all\s+-/);
     assert.match(textOutWithAccounts, /LAST REBALANCE/);
     assert.match(textOutWithAccounts, /Spread: boss=3 agent\(s\)\/180w/);
     assert.match(textOutWithAccounts, /last_watch\s+noop/);
@@ -2571,6 +2575,7 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.match(textOutWithAssignments, /POOL NOW/);
     assert.match(textOutWithAssignments, /OpenClaw assignments/);
     assert.match(textOutWithAssignments, /- agent_boss -> boss/);
+    assert.match(textOutWithAssignments, /average\s+--\s+--\s+\S+\s+96%\s+1\.0h\s+--\s+--\s+all\s+-/);
     assert.match(textOutWithAssignments, /last_watch\s+noop/);
     assert.match(textOutWithAssignments, /\n\nlabel=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n$/);
   } finally {
