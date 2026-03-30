@@ -17,14 +17,17 @@ import {
   main,
   parseAnthropicAuthorizationPaste,
   planOpenclawRebalance,
+  planWeightedHermesRebalance,
   planWeightedOpenclawRebalance,
   partitionOpenclawPinsByConfiguredAgents,
   pickNextBestPoolLabel,
   pickNextBestLocalCliPoolLabel,
   projectPoolCapacity,
   rankPoolCandidates,
+  readHermesHomeTokenUsage,
   readOpenclawAgentTokenUsage,
   rebalanceOpenclawPool,
+  refreshHermesHomeDemandLedger,
   refreshOpenclawAgentDemandLedger,
   refreshOrLoginCodex,
   resetSessionEntryToDefaults,
@@ -103,6 +106,107 @@ function writeOpenclawAuthStore(home, agentId, data) {
 
 function writeOpenclawSessionsStore(home, agentId, data) {
   writeJson(path.join(home, ".openclaw", "agents", agentId, "sessions", "sessions.json"), data);
+}
+
+function resolveSqlite3ForTests() {
+  const candidates = [
+    process.env.SQLITE3_BIN,
+    path.join(process.env.HOME || "", "Library", "Android", "sdk", "platform-tools", "sqlite3"),
+    "/opt/homebrew/bin/sqlite3",
+    "/usr/local/bin/sqlite3",
+    "/usr/bin/sqlite3",
+    "sqlite3",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (candidate === "sqlite3") return candidate;
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return "sqlite3";
+}
+
+function sqlQuote(value) {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function writeHermesAuthFile(home, homeId, { accessToken, refreshToken, activeProvider = "openai-codex" }) {
+  const authPath = path.join(home, ".hermes", "profiles", homeId, "auth.json");
+  writeJson(authPath, {
+    version: 1,
+    updated_at: new Date().toISOString(),
+    active_provider: activeProvider,
+    providers: {
+      "openai-codex": {
+        tokens: {
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        },
+        last_refresh: new Date().toISOString(),
+        auth_mode: "chatgpt",
+      },
+    },
+  });
+  return authPath;
+}
+
+function writeHermesStateDb(home, homeId, sessions = []) {
+  const stateDbPath = path.join(home, ".hermes", "profiles", homeId, "state.db");
+  fs.mkdirSync(path.dirname(stateDbPath), { recursive: true });
+  const sqlite3 = resolveSqlite3ForTests();
+  const schema = `
+DROP TABLE IF EXISTS sessions;
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  user_id TEXT,
+  model TEXT,
+  model_config TEXT,
+  system_prompt TEXT,
+  parent_session_id TEXT,
+  started_at REAL NOT NULL,
+  ended_at REAL,
+  end_reason TEXT,
+  message_count INTEGER DEFAULT 0,
+  tool_call_count INTEGER DEFAULT 0,
+  input_tokens INTEGER DEFAULT 0,
+  output_tokens INTEGER DEFAULT 0,
+  cache_read_tokens INTEGER DEFAULT 0,
+  cache_write_tokens INTEGER DEFAULT 0,
+  reasoning_tokens INTEGER DEFAULT 0,
+  billing_provider TEXT,
+  billing_base_url TEXT,
+  billing_mode TEXT,
+  estimated_cost_usd REAL,
+  actual_cost_usd REAL,
+  cost_status TEXT,
+  cost_source TEXT,
+  pricing_version TEXT,
+  title TEXT
+);`;
+  const inserts = (Array.isArray(sessions) ? sessions : []).map((session, index) => {
+    const id = session.id ?? `session_${index + 1}`;
+    const source = session.source ?? "slack";
+    const startedAt = Number.isFinite(Number(session.startedAt)) ? Number(session.startedAt) : Date.now() / 1000;
+    const inputTokens = Number.isFinite(Number(session.inputTokens)) ? Number(session.inputTokens) : 0;
+    const outputTokens = Number.isFinite(Number(session.outputTokens)) ? Number(session.outputTokens) : 0;
+    const cacheReadTokens = Number.isFinite(Number(session.cacheReadTokens)) ? Number(session.cacheReadTokens) : 0;
+    const cacheWriteTokens = Number.isFinite(Number(session.cacheWriteTokens)) ? Number(session.cacheWriteTokens) : 0;
+    const reasoningTokens = Number.isFinite(Number(session.reasoningTokens)) ? Number(session.reasoningTokens) : 0;
+    return `INSERT INTO sessions (
+      id, source, started_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens
+    ) VALUES (
+      ${sqlQuote(id)}, ${sqlQuote(source)}, ${startedAt}, ${inputTokens}, ${outputTokens}, ${cacheReadTokens}, ${cacheWriteTokens}, ${reasoningTokens}
+    );`;
+  });
+  const result = spawnSync(sqlite3, [stateDbPath], {
+    input: [schema, ...inserts].join("\n"),
+    encoding: "utf8",
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`Failed to write Hermes state.db for tests: ${result.error?.message || result.stderr || result.status}`);
+  }
+  return stateDbPath;
 }
 
 async function withEnv(overrides, fn) {
@@ -2708,7 +2812,11 @@ test("auth write hermes writes auth.json only and leaves AIM state plus runtime 
 
   try {
     const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home]));
-    assert.equal(Object.hasOwn(statusJson, "hermes"), false);
+    assert.equal(statusJson.hermesFleet.homeCount, 1);
+    assert.equal(statusJson.hermesFleet.mappedHomeCount, 1);
+    assert.equal(statusJson.hermesFleet.warningHomeCount, 0);
+    assert.equal(statusJson.hermesFleet.homes[0].homeId, "agent_product_growth");
+    assert.equal(statusJson.hermesFleet.homes[0].currentLabel, "product");
     assert.equal(statusJson.warnings.some((warning) => String(warning?.kind ?? "").includes("hermes")), false);
   } finally {
     globalThis.fetch = origFetch;
@@ -2930,6 +3038,395 @@ test("sync hermes fails loud with migration guidance to the auth-only Hermes com
     () => runCli(["sync", "hermes", "product-growth", "product", "--home", home]),
     /`aim sync hermes` was removed/,
   );
+});
+
+test("rebalance hermes rewrites live home auth via the shared planner and settles to noop on repeat", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const pro1Jwt = makeFakeJwt({
+    email: "pro1@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro1",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro2Jwt = makeFakeJwt({
+    email: "pro2@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeHermesAuthFile(home, "agent_alpha", { accessToken: pro1Jwt, refreshToken: "REFRESH_PRO1" });
+  writeHermesAuthFile(home, "agent_beta", { accessToken: pro1Jwt, refreshToken: "REFRESH_PRO1" });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+      pro2: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+    },
+    credentials: {
+      "openai-codex": {
+        pro1: {
+          access: pro1Jwt,
+          refresh: "REFRESH_PRO1",
+          idToken: pro1Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro1",
+        },
+        pro2: {
+          access: pro2Jwt,
+          refresh: "REFRESH_PRO2",
+          idToken: pro2Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro2",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["pro1", "pro2"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: accountId === "acct_pro1" ? 10 : 15,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: accountId === "acct_pro1" ? 70 : 10,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const first = JSON.parse(await runCli(["rebalance", "hermes", "--home", home]));
+    assert.equal(first.ok, true);
+    assert.equal(first.rebalanced.status, "applied");
+    assert.equal(first.rebalanced.receipt.action, "rebalance_hermes");
+    assert.ok(first.rebalanced.receipt.moved.length >= 1);
+
+    const firstStatus = JSON.parse(await runCli(["status", "--json", "--home", home]));
+    assert.equal(firstStatus.hermesFleet.lastApplyReceipt.status, "applied");
+    assert.equal(firstStatus.hermesFleet.homeCount, 2);
+    assert.ok(firstStatus.hermesFleet.homes.some((entry) => entry.currentLabel === "pro2"));
+
+    const second = JSON.parse(await runCli(["rebalance", "hermes", "--home", home]));
+    assert.equal(second.ok, true);
+    assert.equal(second.rebalanced.status, "noop");
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "noop");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("hermes watch --once noops when every live home stays above the 5h remaining threshold", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeHermesAuthFile(home, "agent_boss", { accessToken: bossJwt, refreshToken: "REFRESH_BOSS" });
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
+    pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 15,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: 40,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = JSON.parse(await runCli(["hermes", "watch", "--once", "--home", home]));
+    assert.equal(result.ok, true);
+    assert.equal(result.watched.status, "noop");
+    assert.equal(result.watched.receipt.triggeredRebalance, false);
+    assert.equal(result.watched.receipt.homeCount, 1);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "noop");
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt, undefined);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("hermes watch --once routes through rebalance hermes when a live home drops below the threshold", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const pro1Jwt = makeFakeJwt({
+    email: "pro1@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro1",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro2Jwt = makeFakeJwt({
+    email: "pro2@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeHermesAuthFile(home, "agent_ops", { accessToken: pro1Jwt, refreshToken: "REFRESH_PRO1" });
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+      pro2: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+    },
+    credentials: {
+      "openai-codex": {
+        pro1: {
+          access: pro1Jwt,
+          refresh: "REFRESH_PRO1",
+          idToken: pro1Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro1",
+        },
+        pro2: {
+          access: pro2Jwt,
+          refresh: "REFRESH_PRO2",
+          idToken: pro2Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro2",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["pro1", "pro2"],
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
+    pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: accountId === "acct_pro1" ? 85 : 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: accountId === "acct_pro1" ? 70 : 5,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = JSON.parse(await runCli(["hermes", "watch", "--once", "--home", home]));
+    assert.equal(result.ok, true);
+    assert.equal(result.watched.status, "applied");
+    assert.equal(result.watched.receipt.triggeredRebalance, true);
+    assert.equal(result.watched.receipt.rebalanceReceipt.action, "rebalance_hermes");
+    assert.equal(result.watched.receipt.currentAssignmentsAfter.agent_ops, "pro2");
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "applied");
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "applied");
+
+    const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home]));
+    assert.equal(statusJson.hermesFleet.homes[0].currentLabel, "pro2");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("hermes watch --once fails loud when a discovered Hermes home is missing auth.json", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const hermesHome = path.join(home, ".hermes", "profiles", "agent_missing");
+  fs.mkdirSync(hermesHome, { recursive: true });
+  fs.writeFileSync(path.join(hermesHome, "config.yaml"), "model:\n  provider: openai-codex\n", "utf8");
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: makeFakeJwt({
+            email: "boss@example.com",
+            "https://api.openai.com/auth": {
+              chatgpt_account_id: "acct_boss",
+              chatgpt_plan_type: "pro",
+            },
+          }),
+          refresh: "REFRESH_BOSS",
+          idToken: "id",
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
+    pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = await runCliWithExitCode(["hermes", "watch", "--once", "--home", home]);
+    assert.equal(result.exitCode, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.watched.status, "blocked");
+    assert.equal(parsed.watched.receipt.blockers[0].reason, "hermes_home_missing_auth_file");
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "blocked");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });
 
 test("codex watch --once noops when the active label stays above the 5h remaining threshold", async () => {
@@ -5514,6 +6011,108 @@ test("refreshOpenclawAgentDemandLedger imports OpenClaw session counters and see
     outputTokens: 0,
     totalTokens: 0,
     demandWeight: 220,
+  });
+});
+
+test("readHermesHomeTokenUsage and refreshHermesHomeDemandLedger import Hermes state.db session counters", () => {
+  const home = mkTempHome();
+  const now = Date.parse("2026-03-21T12:00:00Z");
+  const recent = now / 1000 - 60;
+  const stale = now / 1000 - 10 * 24 * 60 * 60;
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {},
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
+    pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
+  };
+
+  writeHermesStateDb(home, "agent_heavy", [
+    { id: "s1", startedAt: recent, inputTokens: 120, outputTokens: 30, cacheReadTokens: 20, reasoningTokens: 10 },
+    { id: "s2", startedAt: recent, inputTokens: 60, outputTokens: 10 },
+    { id: "stale", startedAt: stale, inputTokens: 999, outputTokens: 999, cacheReadTokens: 999 },
+  ]);
+  writeHermesStateDb(home, "agent_cold", [
+    { id: "s1", startedAt: recent, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 },
+  ]);
+
+  const usage = readHermesHomeTokenUsage({ homeDir: home, homeId: "agent_heavy", now, lookbackDays: 7 });
+  assert.equal(usage.totalTokens, 250);
+  assert.equal(usage.inputTokens, 180);
+  assert.equal(usage.outputTokens, 40);
+  assert.equal(usage.cacheReadTokens, 20);
+  assert.equal(usage.reasoningTokens, 10);
+
+  const refreshed = refreshHermesHomeDemandLedger({
+    state,
+    homeDir: home,
+    homes: [{ homeId: "agent_heavy" }, { homeId: "agent_cold" }],
+    now,
+    lookbackDays: 7,
+  });
+
+  assert.equal(refreshed.allocationMode, "demand_weighted");
+  assert.deepEqual(state.pool.openaiCodex.hermesFleet.demandByHome.agent_heavy, {
+    updatedAt: new Date(now).toISOString(),
+    lookbackDays: 7,
+    source: "hermes-session-tokens",
+    inputTokens: 180,
+    outputTokens: 40,
+    cacheReadTokens: 20,
+    cacheWriteTokens: 0,
+    reasoningTokens: 10,
+    totalTokens: 250,
+    demandWeight: 250,
+  });
+  assert.deepEqual(state.pool.openaiCodex.hermesFleet.demandByHome.agent_cold, {
+    updatedAt: new Date(now).toISOString(),
+    lookbackDays: 7,
+    source: "cold-start-equal-share",
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    demandWeight: 250,
+  });
+});
+
+test("planWeightedHermesRebalance supports many-to-one cold-start spread without inventing a second allocator", () => {
+  const plan = planWeightedHermesRebalance({
+    configuredHomes: ["agent_a", "agent_b", "agent_c"],
+    currentAssignments: { agent_a: "boss" },
+    eligibleLabels: ["boss", "qa"],
+    usage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 10 }, { kind: "secondary", usedPercent: 10 }],
+      },
+      qa: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 40 }, { kind: "secondary", usedPercent: 40 }],
+      },
+    },
+    homeDemand: {},
+    now: Date.now(),
+  });
+
+  assert.equal(plan.status, "applied");
+  assert.equal(plan.allocationMode, "cold_start_equal_share");
+  assert.deepEqual(plan.assignments, {
+    agent_a: "boss",
+    agent_b: "qa",
+    agent_c: "boss",
+  });
+  assert.deepEqual(plan.unchanged[0], {
+    homeId: "agent_a",
+    label: "boss",
+    reason: "kept_current_hysteresis",
+    demandWeight: 1,
+    demandSource: "cold-start-equal-share",
+    targetDemandWeight: 1.8,
+    projectedDemandWeight: 1,
   });
 });
 

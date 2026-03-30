@@ -15,6 +15,9 @@
     "codex-watch:install": "bash ./scripts/install-codex-watch.sh",
     "codex-watch:status": "bash ./scripts/install-codex-watch.sh --status",
     "codex-watch:uninstall": "bash ./scripts/install-codex-watch.sh --uninstall",
+    "hermes-watch:install": "bash ./scripts/install-hermes-watch.sh",
+    "hermes-watch:status": "bash ./scripts/install-hermes-watch.sh --status",
+    "hermes-watch:uninstall": "bash ./scripts/install-hermes-watch.sh --uninstall",
     "lint": "node --check ./bin/aimgr.js && node --check ./src/cli.js",
     "test": "node --test"
   },
