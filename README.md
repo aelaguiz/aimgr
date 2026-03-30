@@ -154,7 +154,7 @@ When you pick `Use another Chrome profile` from the guided panel, AIM now lists 
 
 ### 2A) Inspect or repair the browser binding
 
-Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim codex use`, `aim codex watch`, `aim claude use`, and `aim pi use`.
+Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim rebalance hermes`, `aim codex use`, `aim codex watch`, `aim hermes watch`, `aim claude use`, and `aim pi use`.
 
 When you need to inspect or repair the browser substrate explicitly, use the advanced/admin surface:
 
@@ -202,6 +202,30 @@ aim sync openclaw
 # alias
 aim apply
 ```
+
+### 3A) Rebalance Hermes from the shared pool
+
+Use this when you want AIM to choose labels across the eligible Codex pool for the live Hermes homes that already exist on this machine:
+
+```bash
+aim rebalance hermes
+```
+
+This command:
+
+- discovers live Hermes homes under `~/.hermes/profiles/*`
+- reads each home's native `auth.json` and infers the current AIM label from auth readback
+- refreshes AIM's per-home demand ledger from Hermes `state.db` session tokens when available
+- reuses the same weighted many-to-one allocator that OpenClaw already uses
+- writes only the changed Hermes `auth.json` files
+- records an explicit fleet receipt under `pool.openaiCodex.hermesFleet.lastApplyReceipt`
+
+Non-negotiables:
+
+- AIM still owns Hermes auth only
+- Hermes `config.yaml`, `.env`, `SOUL.md`, and service lifecycle remain outside AIM
+- `aim rebalance hermes` fails loud on unreadable/missing live-home auth instead of inventing a fallback
+- if you need live runtime confirmation after a rebalance/watch write, use `HERMES_HOME=~/.hermes/profiles/<agent_id> hermes status --deep`
 
 ### 4) Activate local Codex CLI from the shared pool
 
@@ -529,6 +553,32 @@ aim codex watch --once --rotate-below-5h-remaining-pct 20
 aim codex watch --interval-seconds 300 --rotate-below-5h-remaining-pct 20
 ```
 
+### `aim rebalance hermes`
+
+Selects pooled Codex labels for the live Hermes homes on this machine and writes only their native `auth.json` files:
+
+```bash
+aim rebalance hermes
+```
+
+The Hermes rebalance path is intentionally not a new allocator:
+
+- it discovers live homes from `~/.hermes/profiles/*`
+- it refreshes Hermes demand from `state.db`
+- it reuses the same weighted planner that backs `aim rebalance openclaw`
+- it records receipts in `pool.openaiCodex.hermesFleet`
+
+### `aim hermes watch`
+
+Runs the Hermes watch decision once for schedulers, or continuously in the foreground:
+
+```bash
+aim hermes watch --once --rotate-below-5h-remaining-pct 20
+aim hermes watch --interval-seconds 300 --rotate-below-5h-remaining-pct 20
+```
+
+This is the scheduler-safe Hermes guardrail. It never writes auth directly; it only decides when to call `aim rebalance hermes`.
+
 ### `aim claude use`
 
 Activates the next-best eligible pooled Anthropic label for the local managed Claude auth store:
@@ -586,7 +636,17 @@ Current shape:
   },
   "pool": {
     "openaiCodex": {
-      "history": []
+      "history": [],
+      "agentDemand": {},
+      "hermesFleet": {
+        "demandByHome": {},
+        "lastApplyReceipt": {
+          "status": "applied"
+        },
+        "lastWatchReceipt": {
+          "status": "noop"
+        }
+      }
     },
     "anthropic": {
       "history": []
@@ -637,6 +697,7 @@ Derived target state lives in:
 - `targets.openclaw`
 - `targets.codexCli`
 - `targets.claudeCli`
+- `pool.openaiCodex.hermesFleet`
 
 ## Troubleshooting
 

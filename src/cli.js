@@ -31,6 +31,9 @@ const KEEP_CURRENT_OVERFLOW_WEIGHT_FACTOR = 0.25;
 const LOCAL_CLI_MIN_PRIMARY_REMAINING_PCT = 80;
 const DEFAULT_CODEX_WATCH_INTERVAL_SECONDS = 300;
 const DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT = 20;
+const HERMES_SESSION_DEMAND_SOURCE = "hermes-session-tokens";
+const OPENCLAW_SESSION_DEMAND_SOURCE = "openclaw-session-tokens";
+const COLD_START_EQUAL_SHARE_DEMAND_SOURCE = "cold-start-equal-share";
 const STATUS_RESET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: STATUS_RESET_TIMEZONE,
   month: "short",
@@ -97,6 +100,20 @@ function resolveExecutableOnPath(commandName, { extraSearchPaths = [] } = {}) {
   return null;
 }
 
+function resolveSqlite3Command({ homeDir, spawnImpl = spawnSync } = {}) {
+  if (spawnImpl !== spawnSync) {
+    return "sqlite3";
+  }
+  const effectiveHomeDir = String(homeDir ?? process.env.HOME ?? "").trim();
+  const extraSearchPaths = [
+    effectiveHomeDir ? path.join(effectiveHomeDir, "Library", "Android", "sdk", "platform-tools") : "",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+  ].filter(Boolean);
+  return resolveExecutableOnPath("sqlite3", { extraSearchPaths }) || "sqlite3";
+}
+
 function resolveAgentBrowserCommand({ spawnImpl = spawnSync } = {}) {
   if (spawnImpl !== spawnSync) {
     return "agent-browser";
@@ -161,6 +178,7 @@ function normalizeLabel(input) {
     "rebalance",
     "apply",
     "sync",
+    "hermes",
     "codex",
     "browser",
     "use",
@@ -186,6 +204,17 @@ function normalizeAgentId(input) {
     throw new Error(`Invalid OpenClaw agent id: ${agentId}`);
   }
   return agentId;
+}
+
+function normalizeHermesHomeId(input) {
+  const homeId = String(input ?? "").trim();
+  if (!homeId) {
+    throw new Error("Missing Hermes home id.");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(homeId)) {
+    throw new Error(`Invalid Hermes home id: ${homeId}`);
+  }
+  return homeId;
 }
 
 function parseArgs(argv) {
@@ -362,12 +391,14 @@ function printHelp() {
     "  aim <label>            # primary human path: guided label panel on a TTY; one-shot login in non-interactive use",
     "  aim login <label>      # one-shot maintenance / automation / admin lane",
     "  aim rebalance openclaw # choose pooled Codex assignments for configured OpenClaw agents",
+    "  aim rebalance hermes   # choose pooled Codex assignments for live Hermes homes",
     "  aim apply             # advanced: materialize stored OpenClaw assignments from ~/.aimgr/secrets.json",
     "  aim sync openclaw     # explicit alias for apply",
     "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
     "  aim auth write hermes <label> --auth-file <abs-path>  # write Hermes auth.json only",
     "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
+    "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
     "  aim claude use        # activate the next-best pooled anthropic label for local Claude CLI",
     "  aim pi use            # activate the next-best pooled openai-codex label for local Pi CLI",
     "  aim browser show <label>",
@@ -383,6 +414,7 @@ function printHelp() {
     "  - `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim claude use` / `aim pi use` are removed; use `aim rebalance openclaw`, `aim apply`, `aim codex use`, `aim claude use`, and `aim pi use`.",
     "  - Codex target management is file-backed only in v1; keyring/auto homes fail loud.",
     `  - \`aim codex watch --once\` is the scheduler-safe one-shot; foreground watch loops default to ${DEFAULT_CODEX_WATCH_INTERVAL_SECONDS}s and rotate below ${DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT}% 5h remaining.`,
+    `  - \`aim hermes watch --once\` is the Hermes scheduler-safe one-shot and always delegates writes through \`aim rebalance hermes\`.`,
     "",
     "Developer options (rare):",
     "  --home <dir>    Run against an alternate HOME (dev/test; e.g. /tmp/aimgr-home).",
@@ -427,6 +459,18 @@ function resolveAimgrStatePath(params) {
 
 function resolveAimgrStateDir({ homeDir }) {
   return path.join(homeDir, ".aimgr");
+}
+
+function resolveHermesProfilesRoot(homeDir) {
+  return path.join(homeDir, ".hermes", "profiles");
+}
+
+function resolveHermesHomePath(homeDir, homeId) {
+  return path.join(resolveHermesProfilesRoot(homeDir), homeId);
+}
+
+function resolveHermesStateDbPath(homeDir, homeId) {
+  return path.join(resolveHermesHomePath(homeDir, homeId), "state.db");
 }
 
 function resolveOpenclawAuthStorePath(homeDir, agentId) {
@@ -1324,6 +1368,51 @@ function pruneOpenaiCodexAgentDemand(agentDemand) {
       };
     } catch {
       // Ignore malformed demand-ledger entries; the next rebalance refresh will restore them if needed.
+    }
+  }
+  return next;
+}
+
+function pruneHermesFleetDemand(homeDemand) {
+  const entries = isObject(homeDemand) ? homeDemand : {};
+  const next = {};
+  for (const [homeIdRaw, entry] of Object.entries(entries)) {
+    try {
+      const homeId = normalizeHermesHomeId(homeIdRaw);
+      const current = isObject(entry) ? entry : {};
+      const updatedAtMs = parseTimestampLikeToMs(current.updatedAt);
+      const lookbackDays = Math.max(1, Math.round(normalizeDemandWeight(current.lookbackDays, DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS)));
+      const source =
+        current.source === HERMES_SESSION_DEMAND_SOURCE || current.source === COLD_START_EQUAL_SHARE_DEMAND_SOURCE
+          ? current.source
+          : COLD_START_EQUAL_SHARE_DEMAND_SOURCE;
+      const inputTokens = roundDemandWeight(current.inputTokens);
+      const outputTokens = roundDemandWeight(current.outputTokens);
+      const cacheReadTokens = roundDemandWeight(current.cacheReadTokens);
+      const cacheWriteTokens = roundDemandWeight(current.cacheWriteTokens);
+      const reasoningTokens = roundDemandWeight(current.reasoningTokens);
+      next[homeId] = {
+        updatedAt: updatedAtMs !== null ? new Date(updatedAtMs).toISOString() : new Date(0).toISOString(),
+        lookbackDays,
+        source,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        reasoningTokens,
+        totalTokens: roundDemandWeight(
+          Math.max(
+            0,
+            normalizeDemandWeight(
+              current.totalTokens,
+              inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens + reasoningTokens,
+            ),
+          ),
+        ),
+        demandWeight: roundDemandWeight(Math.max(MIN_AGENT_DEMAND_WEIGHT, normalizeDemandWeight(current.demandWeight, MIN_AGENT_DEMAND_WEIGHT))),
+      };
+    } catch {
+      // Ignore malformed Hermes demand entries; the next refresh will repopulate them from live homes.
     }
   }
   return next;
@@ -2744,6 +2833,8 @@ function ensureStateShape(state) {
   state.pool.openaiCodex = isObject(state.pool.openaiCodex) ? state.pool.openaiCodex : {};
   state.pool.openaiCodex.history = pruneOpenaiCodexHistory(state.pool.openaiCodex.history);
   state.pool.openaiCodex.agentDemand = pruneOpenaiCodexAgentDemand(state.pool.openaiCodex.agentDemand);
+  state.pool.openaiCodex.hermesFleet = isObject(state.pool.openaiCodex.hermesFleet) ? state.pool.openaiCodex.hermesFleet : {};
+  state.pool.openaiCodex.hermesFleet.demandByHome = pruneHermesFleetDemand(state.pool.openaiCodex.hermesFleet.demandByHome);
   state.pool.anthropic = isObject(state.pool.anthropic) ? state.pool.anthropic : {};
   state.pool.anthropic.history = pruneOpenaiCodexHistory(state.pool.anthropic.history);
   state.targets = isObject(state.targets) ? state.targets : {};
@@ -2893,6 +2984,15 @@ function getOpenclawTargetState(state) {
 function getOpenclawAgentDemandState(state) {
   ensureStateShape(state);
   return state.pool.openaiCodex.agentDemand;
+}
+
+function getHermesFleetState(state) {
+  ensureStateShape(state);
+  return state.pool.openaiCodex.hermesFleet;
+}
+
+function getHermesFleetDemandState(state) {
+  return getHermesFleetState(state).demandByHome;
 }
 
 function getOpenclawAssignments(state) {
@@ -5524,6 +5624,361 @@ export function readOpenclawAgentTokenUsage({
   };
 }
 
+function discoverHermesHomes({ homeDir }) {
+  const profilesRoot = resolveHermesProfilesRoot(homeDir);
+  if (!fs.existsSync(profilesRoot)) {
+    return [];
+  }
+  const homes = [];
+  for (const entry of fs.readdirSync(profilesRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const homeId = normalizeHermesHomeId(entry.name);
+      const homePath = resolveHermesHomePath(homeDir, homeId);
+      const markers = [
+        path.join(homePath, "auth.json"),
+        path.join(homePath, "config.yaml"),
+        path.join(homePath, ".env"),
+        path.join(homePath, "state.db"),
+        path.join(homePath, "gateway_state.json"),
+      ];
+      if (!markers.some((markerPath) => fs.existsSync(markerPath))) {
+        continue;
+      }
+      homes.push({
+        homeId,
+        homePath,
+        authPath: path.join(homePath, "auth.json"),
+        stateDbPath: path.join(homePath, "state.db"),
+      });
+    } catch {
+      // Ignore malformed home ids; Hermes home dirs are authoritative and the next fix should happen there.
+    }
+  }
+  return homes.toSorted((a, b) => a.homeId.localeCompare(b.homeId));
+}
+
+function readHermesHomeStatus({ state, homeDir, homeId }) {
+  ensureStateShape(state);
+  const normalizedHomeId = normalizeHermesHomeId(homeId);
+  const authPath = path.join(resolveHermesHomePath(homeDir, normalizedHomeId), "auth.json");
+  const readback = readHermesAuthFile({ authPath });
+  const currentLabel =
+    readback.ok === true
+      ? findCodexLabelByTokenPair(state, {
+          accessToken: readback.accessToken,
+          refreshToken: readback.refreshToken,
+        })
+      : null;
+  const demandEntry = isObject(getHermesFleetDemandState(state)[normalizedHomeId])
+    ? getHermesFleetDemandState(state)[normalizedHomeId]
+    : null;
+  return {
+    homeId: normalizedHomeId,
+    homeDir: resolveHermesHomePath(homeDir, normalizedHomeId),
+    authPath,
+    stateDbPath: resolveHermesStateDbPath(homeDir, normalizedHomeId),
+    currentLabel: currentLabel || null,
+    activeAccountPresent: currentLabel ? isObject(state.accounts[currentLabel]) : false,
+    activeCredentialPresent: currentLabel ? isObject(getCodexCredential(state, currentLabel)) : false,
+    demand: demandEntry,
+    readback,
+  };
+}
+
+function buildWarningsFromHermesHomeStatus(status) {
+  const warnings = [];
+  if (!status) return warnings;
+
+  if (!status.readback.exists) {
+    warnings.push({
+      kind: "hermes_home_missing_auth_file",
+      system: "hermes",
+      homeId: status.homeId,
+    });
+  }
+
+  if (status.readback.exists && status.readback.ok !== true) {
+    warnings.push({
+      kind: "hermes_home_auth_unreadable",
+      system: "hermes",
+      homeId: status.homeId,
+      status: status.readback.error,
+    });
+    return warnings;
+  }
+
+  if (status.readback.ok === true && status.readback.activeProvider && status.readback.activeProvider !== OPENAI_CODEX_PROVIDER) {
+    warnings.push({
+      kind: "hermes_home_active_provider_unsupported",
+      system: "hermes",
+      homeId: status.homeId,
+      provider: status.readback.activeProvider,
+    });
+  }
+
+  if (status.readback.ok === true && !status.readback.providerEntryPresent) {
+    warnings.push({
+      kind: "hermes_home_missing_provider_entry",
+      system: "hermes",
+      homeId: status.homeId,
+    });
+  }
+
+  if (status.readback.ok === true && status.readback.providerEntryPresent && !status.currentLabel) {
+    warnings.push({
+      kind: "hermes_home_label_unmapped",
+      system: "hermes",
+      homeId: status.homeId,
+    });
+  }
+
+  if (status.currentLabel && !status.activeAccountPresent) {
+    warnings.push({
+      kind: "hermes_home_label_missing",
+      system: "hermes",
+      homeId: status.homeId,
+      label: status.currentLabel,
+    });
+  }
+
+  if (status.currentLabel && !status.activeCredentialPresent) {
+    warnings.push({
+      kind: "hermes_home_credentials_missing",
+      system: "hermes",
+      homeId: status.homeId,
+      label: status.currentLabel,
+    });
+  }
+
+  return warnings;
+}
+
+function buildHermesHomeBlockers(status) {
+  return buildWarningsFromHermesHomeStatus(status).map((warning) => {
+    const blocker = {
+      reason: warning.kind,
+      homeId: warning.homeId,
+    };
+    if (typeof warning.label === "string" && warning.label.trim()) {
+      blocker.label = warning.label.trim();
+    }
+    if (typeof warning.provider === "string" && warning.provider.trim()) {
+      blocker.provider = warning.provider.trim();
+    }
+    if (typeof warning.status === "string" && warning.status.trim()) {
+      blocker.status = warning.status.trim();
+    }
+    return blocker;
+  });
+}
+
+function buildHermesDemandUnreadableBlocker(error) {
+  const blocker = {
+    reason: "hermes_home_demand_unreadable",
+  };
+  if (typeof error?.homeId === "string" && error.homeId.trim()) {
+    blocker.homeId = error.homeId.trim();
+  }
+  if (typeof error?.stateDbPath === "string" && error.stateDbPath.trim()) {
+    blocker.stateDbPath = error.stateDbPath.trim();
+  }
+  const detail = String(error?.message ?? error ?? "").trim();
+  if (detail) {
+    blocker.detail = detail;
+  }
+  return blocker;
+}
+
+function runSqlite3Query({ dbPath, sql, homeDir, spawnImpl = spawnSync }) {
+  const sqlite3Command = resolveSqlite3Command({ homeDir, spawnImpl });
+  const result = spawnImpl(sqlite3Command, ["-separator", "\t", dbPath, sql], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result?.error) {
+    throw new Error(`Failed to run sqlite3 for ${dbPath}: ${String(result.error?.message ?? result.error)}`);
+  }
+  if (result?.status !== 0) {
+    const stderr = String(result?.stderr ?? "").trim();
+    throw new Error(`Failed to query sqlite3 for ${dbPath}: ${stderr || `exit ${result?.status ?? "unknown"}`}`);
+  }
+  return String(result?.stdout ?? "").trim();
+}
+
+export function readHermesHomeTokenUsage({
+  homeDir,
+  homeId,
+  now = Date.now(),
+  lookbackDays = DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS,
+  spawnImpl = spawnSync,
+}) {
+  const normalizedHomeId = normalizeHermesHomeId(homeId);
+  const stateDbPath = resolveHermesStateDbPath(homeDir, normalizedHomeId);
+  if (!fs.existsSync(stateDbPath)) {
+    return {
+      homeId: normalizedHomeId,
+      stateDbPath,
+      exists: false,
+      sessionsTotal: 0,
+      sessionsConsidered: 0,
+      sessionsWithTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 0,
+      latestSessionAt: null,
+    };
+  }
+
+  const snapshotNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const normalizedLookbackDays = Math.max(1, Math.round(normalizeDemandWeight(lookbackDays, DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS)));
+  const cutoffSeconds = snapshotNow / 1000 - normalizedLookbackDays * 24 * 60 * 60;
+  const sql = `
+SELECT
+  COUNT(*) AS sessions_total,
+  SUM(CASE WHEN started_at >= ${cutoffSeconds} THEN 1 ELSE 0 END) AS sessions_considered,
+  SUM(
+    CASE
+      WHEN started_at >= ${cutoffSeconds}
+        AND (
+          COALESCE(input_tokens, 0)
+          + COALESCE(output_tokens, 0)
+          + COALESCE(cache_read_tokens, 0)
+          + COALESCE(cache_write_tokens, 0)
+          + COALESCE(reasoning_tokens, 0)
+        ) > 0
+      THEN 1
+      ELSE 0
+    END
+  ) AS sessions_with_tokens,
+  COALESCE(SUM(CASE WHEN started_at >= ${cutoffSeconds} THEN COALESCE(input_tokens, 0) ELSE 0 END), 0) AS input_tokens,
+  COALESCE(SUM(CASE WHEN started_at >= ${cutoffSeconds} THEN COALESCE(output_tokens, 0) ELSE 0 END), 0) AS output_tokens,
+  COALESCE(SUM(CASE WHEN started_at >= ${cutoffSeconds} THEN COALESCE(cache_read_tokens, 0) ELSE 0 END), 0) AS cache_read_tokens,
+  COALESCE(SUM(CASE WHEN started_at >= ${cutoffSeconds} THEN COALESCE(cache_write_tokens, 0) ELSE 0 END), 0) AS cache_write_tokens,
+  COALESCE(SUM(CASE WHEN started_at >= ${cutoffSeconds} THEN COALESCE(reasoning_tokens, 0) ELSE 0 END), 0) AS reasoning_tokens,
+  MAX(CASE WHEN started_at >= ${cutoffSeconds} THEN started_at ELSE NULL END) AS latest_session_at
+FROM sessions;`;
+  let stdout;
+  try {
+    stdout = runSqlite3Query({ dbPath: stateDbPath, sql, homeDir, spawnImpl });
+  } catch (error) {
+    const wrapped = new Error(
+      `Failed to read Hermes session demand for ${normalizedHomeId}: ${String(error?.message ?? error ?? "unknown error")}`,
+    );
+    wrapped.code = "HERMES_HOME_DEMAND_UNREADABLE";
+    wrapped.homeId = normalizedHomeId;
+    wrapped.stateDbPath = stateDbPath;
+    throw wrapped;
+  }
+  const fields = stdout.split("\t");
+  const [
+    sessionsTotalRaw = "0",
+    sessionsConsideredRaw = "0",
+    sessionsWithTokensRaw = "0",
+    inputTokensRaw = "0",
+    outputTokensRaw = "0",
+    cacheReadTokensRaw = "0",
+    cacheWriteTokensRaw = "0",
+    reasoningTokensRaw = "0",
+    latestSessionAtRaw = "",
+  ] = fields;
+  const inputTokens = roundDemandWeight(inputTokensRaw);
+  const outputTokens = roundDemandWeight(outputTokensRaw);
+  const cacheReadTokens = roundDemandWeight(cacheReadTokensRaw);
+  const cacheWriteTokens = roundDemandWeight(cacheWriteTokensRaw);
+  const reasoningTokens = roundDemandWeight(reasoningTokensRaw);
+  const latestSessionAtSeconds = Number(latestSessionAtRaw);
+  return {
+    homeId: normalizedHomeId,
+    stateDbPath,
+    exists: true,
+    sessionsTotal: Math.max(0, Math.round(normalizeDemandWeight(sessionsTotalRaw, 0))),
+    sessionsConsidered: Math.max(0, Math.round(normalizeDemandWeight(sessionsConsideredRaw, 0))),
+    sessionsWithTokens: Math.max(0, Math.round(normalizeDemandWeight(sessionsWithTokensRaw, 0))),
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    reasoningTokens,
+    totalTokens: roundDemandWeight(inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens + reasoningTokens),
+    latestSessionAt: Number.isFinite(latestSessionAtSeconds) && latestSessionAtSeconds > 0
+      ? new Date(latestSessionAtSeconds * 1000).toISOString()
+      : null,
+  };
+}
+
+export function refreshHermesHomeDemandLedger({
+  state,
+  homeDir,
+  homes,
+  now = Date.now(),
+  lookbackDays = DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS,
+  spawnImpl = spawnSync,
+}) {
+  // AIM owns the durable Hermes demand ledger; live Hermes state.db files are read-only inputs.
+  // Keep demand normalization here so Hermes rebalance/watch/status do not drift.
+  ensureStateShape(state);
+  const snapshotNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const normalizedLookbackDays = Math.max(1, Math.round(normalizeDemandWeight(lookbackDays, DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS)));
+  const homeIds = [...new Set((Array.isArray(homes) ? homes : []).map((home) => normalizeHermesHomeId(typeof home === "string" ? home : home?.homeId)))].toSorted((a, b) =>
+    a.localeCompare(b),
+  );
+  const ledger = getHermesFleetDemandState(state);
+  const usageByHome = new Map();
+  const observedWeights = [];
+
+  for (const homeId of homeIds) {
+    const usage = readHermesHomeTokenUsage({
+      homeDir,
+      homeId,
+      now: snapshotNow,
+      lookbackDays: normalizedLookbackDays,
+      spawnImpl,
+    });
+    usageByHome.set(homeId, usage);
+    if (usage.totalTokens > 0) {
+      observedWeights.push(usage.totalTokens);
+    }
+  }
+
+  const fallbackDemandWeight = Math.max(
+    MIN_AGENT_DEMAND_WEIGHT,
+    observedWeights.length > 0
+      ? observedWeights.reduce((sum, weight) => sum + weight, 0) / observedWeights.length
+      : MIN_AGENT_DEMAND_WEIGHT,
+  );
+  const allocationMode = observedWeights.length > 0 ? "demand_weighted" : "cold_start_equal_share";
+  const updatedAt = new Date(snapshotNow).toISOString();
+
+  for (const homeId of homeIds) {
+    const usage = usageByHome.get(homeId);
+    const source = usage && usage.totalTokens > 0 ? HERMES_SESSION_DEMAND_SOURCE : COLD_START_EQUAL_SHARE_DEMAND_SOURCE;
+    ledger[homeId] = {
+      updatedAt,
+      lookbackDays: normalizedLookbackDays,
+      source,
+      inputTokens: roundDemandWeight(usage?.inputTokens ?? 0),
+      outputTokens: roundDemandWeight(usage?.outputTokens ?? 0),
+      cacheReadTokens: roundDemandWeight(usage?.cacheReadTokens ?? 0),
+      cacheWriteTokens: roundDemandWeight(usage?.cacheWriteTokens ?? 0),
+      reasoningTokens: roundDemandWeight(usage?.reasoningTokens ?? 0),
+      totalTokens: roundDemandWeight(usage?.totalTokens ?? 0),
+      demandWeight: roundDemandWeight(source === HERMES_SESSION_DEMAND_SOURCE ? usage.totalTokens : fallbackDemandWeight),
+    };
+  }
+
+  return {
+    allocationMode,
+    lookbackDays: normalizedLookbackDays,
+    observedHomeCount: observedWeights.length,
+    coldStartHomeCount: homeIds.length - observedWeights.length,
+    demandByHome: Object.fromEntries(homeIds.map((homeId) => [homeId, ledger[homeId]])),
+  };
+}
+
 export function refreshOpenclawAgentDemandLedger({
   state,
   homeDir,
@@ -5695,10 +6150,38 @@ function buildWeightedPerAccountLoad({ labels, assignments, assignedDemandByLabe
     .toSorted((a, b) => a.label.localeCompare(b.label));
 }
 
-export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignments, eligibleLabels, usage, agentDemand, now }) {
+function renameWeightedPlanEntries(entries, keyName) {
+  return (Array.isArray(entries) ? entries : []).map((entry) => {
+    const { subjectId, ...rest } = isObject(entry) ? entry : {};
+    return {
+      [keyName]: typeof subjectId === "string" ? subjectId : null,
+      ...rest,
+    };
+  });
+}
+
+function mapWeightedPlanSubjectKeys(plan, keyName) {
+  return {
+    ...plan,
+    moved: renameWeightedPlanEntries(plan?.moved, keyName),
+    unchanged: renameWeightedPlanEntries(plan?.unchanged, keyName),
+    skipped: renameWeightedPlanEntries(plan?.skipped, keyName),
+  };
+}
+
+function planWeightedPoolAssignments({
+  configuredSubjects,
+  currentAssignments,
+  eligibleLabels,
+  usage,
+  demandLedger,
+  now,
+  normalizeSubjectId,
+  observedDemandSource,
+}) {
   // This is intentionally not the same primitive as Codex "next best label".
   // Rebalance is many-to-one demand allocation across remaining account headroom, with low-churn hysteresis.
-  const agentIds = [...new Set((Array.isArray(configuredAgents) ? configuredAgents : []).map((agentId) => normalizeAgentId(agentId)))].toSorted((a, b) =>
+  const subjectIds = [...new Set((Array.isArray(configuredSubjects) ? configuredSubjects : []).map((subjectId) => normalizeSubjectId(subjectId)))].toSorted((a, b) =>
     a.localeCompare(b),
   );
   const existingAssignments = isObject(currentAssignments) ? currentAssignments : {};
@@ -5710,14 +6193,14 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
   const blockers = [];
   const assignedCounts = Object.fromEntries(labels.map((label) => [label, 0]));
   const assignedDemandByLabel = Object.fromEntries(labels.map((label) => [label, 0]));
-  const demandLedger = isObject(agentDemand) ? agentDemand : {};
-  const allocationMode = Object.values(demandLedger).some((entry) => entry?.source === "openclaw-session-tokens")
+  const ledger = isObject(demandLedger) ? demandLedger : {};
+  const allocationMode = Object.values(ledger).some((entry) => entry?.source === observedDemandSource)
     ? "demand_weighted"
     : "cold_start_equal_share";
 
   if (labels.length === 0) {
-    for (const agentId of agentIds) {
-      skipped.push({ agentId, reason: "no_eligible_pool_account" });
+    for (const subjectId of subjectIds) {
+      skipped.push({ subjectId, reason: "no_eligible_pool_account" });
     }
     blockers.push({ reason: "no_eligible_pool_account" });
     return {
@@ -5732,32 +6215,32 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
     };
   }
 
-  const demandByAgent = Object.fromEntries(
-    agentIds.map((agentId) => {
-      const entry = isObject(demandLedger[agentId]) ? demandLedger[agentId] : {};
+  const demandBySubject = Object.fromEntries(
+    subjectIds.map((subjectId) => {
+      const entry = isObject(ledger[subjectId]) ? ledger[subjectId] : {};
       return [
-        agentId,
+        subjectId,
         {
           source:
-            entry.source === "openclaw-session-tokens" || entry.source === "cold-start-equal-share"
+            entry.source === observedDemandSource || entry.source === COLD_START_EQUAL_SHARE_DEMAND_SOURCE
               ? entry.source
-              : "cold-start-equal-share",
+              : COLD_START_EQUAL_SHARE_DEMAND_SOURCE,
           demandWeight: roundDemandWeight(Math.max(MIN_AGENT_DEMAND_WEIGHT, normalizeDemandWeight(entry.demandWeight, MIN_AGENT_DEMAND_WEIGHT))),
         },
       ];
     }),
   );
-  const totalDemandWeight = agentIds.reduce((sum, agentId) => sum + demandByAgent[agentId].demandWeight, 0);
+  const totalDemandWeight = subjectIds.reduce((sum, subjectId) => sum + demandBySubject[subjectId].demandWeight, 0);
   const supply = buildWeightedRebalanceSupply({
     labels,
     usage,
   });
   const targetUnitsTotal = labels.reduce((sum, label) => sum + normalizeDemandWeight(supply.byLabel[label]?.targetUnits, 0), 0);
   if (targetUnitsTotal <= 0) {
-    for (const agentId of agentIds) {
-      const demand = demandByAgent[agentId];
+    for (const subjectId of subjectIds) {
+      const demand = demandBySubject[subjectId];
       skipped.push({
-        agentId,
+        subjectId,
         reason: "projected_demand_exceeds_eligible_supply",
         demandWeight: demand.demandWeight,
         demandSource: demand.source,
@@ -5788,9 +6271,9 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
     if (!isObject(supply.byLabel[label])) continue;
     supply.byLabel[label].capacityBudgetWeight = roundDemandWeight(targetDemandByLabel[label]);
   }
-  const agentIdsByDemand = [...agentIds].sort((a, b) => {
-    const aDemand = demandByAgent[a].demandWeight;
-    const bDemand = demandByAgent[b].demandWeight;
+  const subjectIdsByDemand = [...subjectIds].sort((a, b) => {
+    const aDemand = demandBySubject[a].demandWeight;
+    const bDemand = demandBySubject[b].demandWeight;
     if (aDemand !== bDemand) return bDemand - aDemand;
     const aCurrent = typeof existingAssignments[a] === "string" && labels.includes(normalizeLabel(existingAssignments[a])) ? 1 : 0;
     const bCurrent = typeof existingAssignments[b] === "string" && labels.includes(normalizeLabel(existingAssignments[b])) ? 1 : 0;
@@ -5798,11 +6281,11 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
     return a.localeCompare(b);
   });
 
-  for (const agentId of agentIdsByDemand) {
-    const currentLabelRaw = typeof existingAssignments[agentId] === "string" ? existingAssignments[agentId] : null;
+  for (const subjectId of subjectIdsByDemand) {
+    const currentLabelRaw = typeof existingAssignments[subjectId] === "string" ? existingAssignments[subjectId] : null;
     const normalizedCurrentLabel = currentLabelRaw ? normalizeLabel(currentLabelRaw) : null;
     const currentLabel = normalizedCurrentLabel && labels.includes(normalizedCurrentLabel) ? normalizedCurrentLabel : null;
-    const demand = demandByAgent[agentId];
+    const demand = demandBySubject[subjectId];
     const candidates = labels
       .map((label) =>
         buildWeightedRebalanceCandidate({
@@ -5835,7 +6318,7 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
 
     if (!selection) {
       skipped.push({
-        agentId,
+        subjectId,
         reason: "projected_demand_exceeds_eligible_supply",
         demandWeight: demand.demandWeight,
         demandSource: demand.source,
@@ -5843,7 +6326,7 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
       continue;
     }
 
-    nextAssignments[agentId] = selection.label;
+    nextAssignments[subjectId] = selection.label;
     assignedCounts[selection.label] = (assignedCounts[selection.label] ?? 0) + 1;
     assignedDemandByLabel[selection.label] = roundDemandWeight(
       normalizeDemandWeight(assignedDemandByLabel[selection.label], 0) + demand.demandWeight,
@@ -5851,7 +6334,7 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
 
     if (currentLabel === selection.label) {
       unchanged.push({
-        agentId,
+        subjectId,
         label: selection.label,
         reason: selection.keptCurrent ? "kept_current_hysteresis" : "weighted_best_fit",
         demandWeight: demand.demandWeight,
@@ -5861,7 +6344,7 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
       });
     } else {
       moved.push({
-        agentId,
+        subjectId,
         from: normalizedCurrentLabel ?? null,
         to: selection.label,
         reason: selection.keptCurrent ? "kept_current_hysteresis" : "weighted_best_fit",
@@ -5874,15 +6357,15 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
   }
 
   let status = "applied";
-  if (agentIds.length === 0) {
+  if (subjectIds.length === 0) {
     status = "noop";
-  } else if (skipped.length > 0 && skipped.length === agentIds.length) {
+  } else if (skipped.length > 0 && skipped.length === subjectIds.length) {
     const blockedReason = skipped.every((entry) => entry.reason === "projected_demand_exceeds_eligible_supply")
       ? "projected_demand_exceeds_eligible_supply"
       : "no_eligible_pool_account";
     blockers.push({ reason: blockedReason });
     status = "blocked";
-  } else if (agentIds.length > 0 && moved.length === 0 && skipped.length === 0) {
+  } else if (subjectIds.length > 0 && moved.length === 0 && skipped.length === 0) {
     status = "noop";
   } else if (skipped.length > 0) {
     status = "applied_with_warnings";
@@ -5904,6 +6387,38 @@ export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignm
       supplyByLabel: supply.byLabel,
     }),
   };
+}
+
+export function planWeightedOpenclawRebalance({ configuredAgents, currentAssignments, eligibleLabels, usage, agentDemand, now }) {
+  return mapWeightedPlanSubjectKeys(
+    planWeightedPoolAssignments({
+      configuredSubjects: configuredAgents,
+      currentAssignments,
+      eligibleLabels,
+      usage,
+      demandLedger: agentDemand,
+      now,
+      normalizeSubjectId: normalizeAgentId,
+      observedDemandSource: OPENCLAW_SESSION_DEMAND_SOURCE,
+    }),
+    "agentId",
+  );
+}
+
+export function planWeightedHermesRebalance({ configuredHomes, currentAssignments, eligibleLabels, usage, homeDemand, now }) {
+  return mapWeightedPlanSubjectKeys(
+    planWeightedPoolAssignments({
+      configuredSubjects: configuredHomes,
+      currentAssignments,
+      eligibleLabels,
+      usage,
+      demandLedger: homeDemand,
+      now,
+      normalizeSubjectId: normalizeHermesHomeId,
+      observedDemandSource: HERMES_SESSION_DEMAND_SOURCE,
+    }),
+    "homeId",
+  );
 }
 
 export function planOpenclawRebalance(params) {
@@ -6454,6 +6969,44 @@ function readPiCliTargetStatus({ state, homeDir }) {
   };
 }
 
+function buildHermesFleetSpread(homes) {
+  const spread = new Map();
+  for (const home of Array.isArray(homes) ? homes : []) {
+    const label = typeof home?.currentLabel === "string" ? normalizeLabel(home.currentLabel) : "";
+    if (!label) continue;
+    const current = spread.get(label) ?? { label, carriedHomeCount: 0, carriedDemandWeight: 0 };
+    current.carriedHomeCount += 1;
+    current.carriedDemandWeight = roundDemandWeight(
+      current.carriedDemandWeight + normalizeDemandWeight(home?.demand?.demandWeight, 0),
+    );
+    spread.set(label, current);
+  }
+  return Array.from(spread.values()).toSorted((a, b) => a.label.localeCompare(b.label));
+}
+
+function readHermesFleetStatus({ state, homeDir }) {
+  ensureStateShape(state);
+  const fleet = getHermesFleetState(state);
+  const homes = discoverHermesHomes({ homeDir }).map((home) => {
+    const status = readHermesHomeStatus({ state, homeDir, homeId: home.homeId });
+    return {
+      ...status,
+      warnings: buildWarningsFromHermesHomeStatus(status),
+    };
+  });
+  return {
+    profilesRoot: resolveHermesProfilesRoot(homeDir),
+    homeCount: homes.length,
+    mappedHomeCount: homes.filter((home) => typeof home.currentLabel === "string" && home.currentLabel.trim()).length,
+    warningHomeCount: homes.filter((home) => Array.isArray(home.warnings) && home.warnings.length > 0).length,
+    spread: buildHermesFleetSpread(homes),
+    homes,
+    lastApplyReceipt: isObject(fleet.lastApplyReceipt) ? fleet.lastApplyReceipt : null,
+    lastWatchReceipt: isObject(fleet.lastWatchReceipt) ? fleet.lastWatchReceipt : null,
+    lastRebalancedAt: typeof fleet.lastRebalancedAt === "string" ? fleet.lastRebalancedAt.trim() || null : null,
+  };
+}
+
 function readClaudeCliTargetStatus({ state, homeDir }) {
   ensureStateShape(state);
   const target = getClaudeTargetState(state);
@@ -6497,6 +7050,14 @@ function readClaudeCliTargetStatus({ state, homeDir }) {
     lastSelectionReceipt: isObject(target.lastSelectionReceipt) ? target.lastSelectionReceipt : null,
     lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
   };
+}
+
+function buildWarningsFromHermesFleetStatus(status) {
+  const warnings = [];
+  for (const home of Array.isArray(status?.homes) ? status.homes : []) {
+    warnings.push(...buildWarningsFromHermesHomeStatus(home));
+  }
+  return warnings;
 }
 
 function buildWarningsFromCodexTargetStatus(status) {
@@ -7149,6 +7710,7 @@ async function buildStatusView({ statePath, state, homeDir }) {
   const codexCli = readCodexCliTargetStatus({ state, homeDir });
   const claudeCli = readClaudeCliTargetStatus({ state, homeDir });
   const piCli = readPiCliTargetStatus({ state, homeDir });
+  const hermesFleet = readHermesFleetStatus({ state, homeDir });
   const openclawTarget = getOpenclawTargetState(state);
   const nextBestCandidate = pickNextBestLocalCliPoolLabel({
     rankedCandidates: rankPoolCandidates({
@@ -7213,12 +7775,14 @@ async function buildStatusView({ statePath, state, homeDir }) {
     codexCli: sanitizeForStatus(codexCli),
     claudeCli: sanitizeForStatus(claudeCli),
     piCli: sanitizeForStatus(piCli),
+    hermesFleet: sanitizeForStatus(hermesFleet),
     warnings: [
       ...buildWarningsFromState(state),
       ...buildWarningsFromStatusAccounts(sortedAccounts),
       ...buildWarningsFromCodexTargetStatus(codexCli),
       ...buildWarningsFromClaudeTargetStatus(claudeCli),
       ...buildWarningsFromPiTargetStatus(piCli),
+      ...buildWarningsFromHermesFleetStatus(hermesFleet),
     ],
   };
 }
@@ -7380,7 +7944,18 @@ function renderStatusCompactText(view) {
   const eta = formatMetricValue(view.projection?.overflow_eta_h, { decimals: 1, suffix: "h" });
   const floor5Label = typeof view.windows?.floor_5h_label === "string" && view.windows.floor_5h_label.trim() ? view.windows.floor_5h_label.trim() : "none";
   const floor7Label = typeof view.windows?.floor_7d_label === "string" && view.windows.floor_7d_label.trim() ? view.windows.floor_7d_label.trim() : "none";
-  return `load=${load}  spare=${spare}  5h_floor=${floor5}(${floor5Label})  7d_floor=${floor7}(${floor7Label})  eta=${eta}\n`;
+  const hermesHomeCount = Math.max(0, Math.round(Number(view.hermesFleet?.homeCount ?? 0)));
+  const hermesMappedHomeCount = Math.max(0, Math.round(Number(view.hermesFleet?.mappedHomeCount ?? 0)));
+  const hermesWarningHomeCount = Math.max(0, Math.round(Number(view.hermesFleet?.warningHomeCount ?? 0)));
+  const showHermesCompact =
+    hermesHomeCount > 0
+    || hermesMappedHomeCount > 0
+    || typeof view.hermesFleet?.lastApplyReceipt?.status === "string"
+    || typeof view.hermesFleet?.lastWatchReceipt?.status === "string";
+  const hermesCompact = showHermesCompact
+    ? `  hermes=${hermesMappedHomeCount}/${hermesHomeCount}  h_warn=${hermesWarningHomeCount}  h_apply=${view.hermesFleet?.lastApplyReceipt?.status || "--"}  h_watch=${view.hermesFleet?.lastWatchReceipt?.status || "--"}`
+    : "";
+  return `load=${load}  spare=${spare}  5h_floor=${floor5}(${floor5Label})  7d_floor=${floor7}(${floor7Label})  eta=${eta}${hermesCompact}\n`;
 }
 
 function resolveCurrentConfiguredCodexLabel(view) {
@@ -7506,6 +8081,15 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
     }
   }
 
+  const hermesHomes = Array.isArray(view.hermesFleet?.homes) ? view.hermesFleet.homes : [];
+  if (showAssignments && hermesHomes.length > 0) {
+    lines.push("");
+    lines.push("Hermes homes");
+    for (const home of hermesHomes.toSorted((a, b) => String(a?.homeId ?? "").localeCompare(String(b?.homeId ?? "")))) {
+      lines.push(`- ${home.homeId} -> ${home.currentLabel || "unmapped"}`);
+    }
+  }
+
   if (view.openclaw?.lastApplyReceipt?.status) {
     lines.push("");
     lines.push("LAST REBALANCE");
@@ -7541,6 +8125,26 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
         ["last_watch_at", view.codexCli.lastWatchReceipt?.observedAt || "--"],
       ]),
     );
+  }
+
+  if (view.hermesFleet) {
+    lines.push("");
+    lines.push("HERMES");
+    lines.push(
+      ...formatStatusBlockRows([
+        ["homes", formatMetricValue(view.hermesFleet.homeCount ?? 0, { integer: true })],
+        ["mapped_homes", `${view.hermesFleet.mappedHomeCount ?? 0}/${view.hermesFleet.homeCount ?? 0}`],
+        ["warning_homes", formatMetricValue(view.hermesFleet.warningHomeCount ?? 0, { integer: true })],
+        ["last_apply", view.hermesFleet.lastApplyReceipt?.status || "--"],
+        ["last_watch", view.hermesFleet.lastWatchReceipt?.status || "--"],
+      ]),
+    );
+    const hermesSpread = Array.isArray(view.hermesFleet.spread) ? view.hermesFleet.spread : [];
+    if (hermesSpread.length > 0) {
+      lines.push(
+        `Spread: ${hermesSpread.map((entry) => `${entry.label}=${entry.carriedHomeCount} home(s)/${entry.carriedDemandWeight}w`).join(", ")}`,
+      );
+    }
   }
 
   if (view.claudeCli) {
@@ -9749,6 +10353,405 @@ export async function rebalanceOpenclawPool(
   return { status, receipt, synced };
 }
 
+function buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped = false } = {}) {
+  const entries = [];
+  for (const home of Array.isArray(homeStatuses) ? homeStatuses : []) {
+    const homeId = typeof home?.homeId === "string" ? normalizeHermesHomeId(home.homeId) : null;
+    if (!homeId) continue;
+    if (typeof home?.currentLabel === "string" && home.currentLabel.trim()) {
+      entries.push([homeId, normalizeLabel(home.currentLabel)]);
+      continue;
+    }
+    if (includeUnmapped) {
+      entries.push([homeId, null]);
+    }
+  }
+  return Object.fromEntries(entries);
+}
+
+export async function rebalanceHermesPool(
+  params,
+  state,
+  {
+    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
+    discoverHermesHomesImpl = discoverHermesHomes,
+    readHermesHomeStatusImpl = readHermesHomeStatus,
+    refreshHermesHomeDemandLedgerImpl = refreshHermesHomeDemandLedger,
+    writeHermesAuthFromStateImpl = writeHermesAuthFromState,
+  } = {},
+) {
+  ensureStateShape(state);
+  const homeDir = resolveHomeDir(params.home);
+  const observedAt =
+    typeof params?.observedAt === "string" && params.observedAt.trim()
+      ? params.observedAt.trim()
+      : new Date().toISOString();
+  const usageByProvider = isObject(params?.usageByProvider)
+    ? params.usageByProvider
+    : await probeUsageSnapshotsByProviderImpl(state);
+  const usageByLabel = usageByProvider[OPENAI_CODEX_PROVIDER];
+  const poolStatus = collectCodexPoolStatus({
+    state,
+    homeDir,
+    usageByLabel,
+    now: Date.parse(observedAt),
+  });
+
+  appendOpenaiCodexHistory(
+    state,
+    buildExhaustionHistoryEntries({
+      state,
+      usage: usageByLabel,
+      eligibleLabels: poolStatus.eligibleLabels,
+      observedAt,
+    }),
+  );
+
+  const fleet = getHermesFleetState(state);
+  const homes = discoverHermesHomesImpl({ homeDir });
+  const homeStatuses = homes.map((home) => readHermesHomeStatusImpl({ state, homeDir, homeId: home.homeId }));
+  const homeWarnings = homeStatuses.flatMap((home) => buildWarningsFromHermesHomeStatus(home));
+  const homeBlockers = homeStatuses.flatMap((home) => buildHermesHomeBlockers(home));
+  fleet.lastRebalancedAt = observedAt;
+
+  if (homeBlockers.length > 0) {
+    const receipt = {
+      action: "rebalance_hermes",
+      status: "blocked",
+      observedAt,
+      allocationMode: null,
+      assignments: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      moved: [],
+      unchanged: [],
+      skipped: [],
+      perAccountLoad: [],
+      warnings: homeWarnings,
+      blockers: homeBlockers,
+    };
+    fleet.lastApplyReceipt = receipt;
+    return { status: "blocked", receipt };
+  }
+
+  let demandRefresh;
+  try {
+    demandRefresh = refreshHermesHomeDemandLedgerImpl({
+      state,
+      homeDir,
+      homes,
+      now: Date.parse(observedAt),
+      lookbackDays: DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS,
+    });
+  } catch (error) {
+    const receipt = {
+      action: "rebalance_hermes",
+      status: "blocked",
+      observedAt,
+      allocationMode: null,
+      assignments: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      moved: [],
+      unchanged: [],
+      skipped: [],
+      perAccountLoad: [],
+      warnings: homeWarnings,
+      blockers: [buildHermesDemandUnreadableBlocker(error)],
+    };
+    fleet.lastApplyReceipt = receipt;
+    return { status: "blocked", receipt };
+  }
+  const plan = planWeightedHermesRebalance({
+    configuredHomes: homeStatuses.map((home) => home.homeId),
+    currentAssignments: buildHermesAssignmentsByHome(homeStatuses),
+    eligibleLabels: poolStatus.eligibleLabels,
+    usage: usageByLabel,
+    homeDemand: demandRefresh.demandByHome,
+    now: Date.parse(observedAt),
+  });
+
+  if (plan.status === "blocked") {
+    const receipt = {
+      action: "rebalance_hermes",
+      status: "blocked",
+      observedAt,
+      allocationMode: plan.allocationMode,
+      assignments: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      moved: [],
+      unchanged: [],
+      skipped: plan.skipped,
+      perAccountLoad: plan.perAccountLoad,
+      warnings: homeWarnings,
+      blockers: plan.blockers,
+    };
+    fleet.lastApplyReceipt = receipt;
+    return { status: "blocked", receipt };
+  }
+
+  const writes = [];
+  for (const moved of [...plan.moved].toSorted((a, b) => a.homeId.localeCompare(b.homeId))) {
+    const homeStatus = homeStatuses.find((home) => home.homeId === moved.homeId);
+    if (!homeStatus) {
+      throw new Error(`Missing Hermes home for planned rebalance move: ${moved.homeId}`);
+    }
+    writes.push(
+      writeHermesAuthFromStateImpl(
+        { label: moved.to, authPath: homeStatus.authPath },
+        state,
+      ),
+    );
+  }
+
+  const postStatuses = homes.map((home) => readHermesHomeStatusImpl({ state, homeDir, homeId: home.homeId }));
+  const postWarnings = postStatuses.flatMap((home) => buildWarningsFromHermesHomeStatus(home));
+  let status = "applied";
+  if (plan.status === "noop") {
+    status = postWarnings.length > 0 ? "applied_with_warnings" : "noop";
+  } else if (plan.status === "applied_with_warnings" || postWarnings.length > 0) {
+    status = "applied_with_warnings";
+  }
+
+  const receipt = {
+    action: "rebalance_hermes",
+    status,
+    observedAt,
+    allocationMode: plan.allocationMode,
+    assignments: sanitizeForStatus(buildHermesAssignmentsByHome(postStatuses, { includeUnmapped: true })),
+    moved: plan.moved,
+    unchanged: plan.unchanged,
+    skipped: plan.skipped,
+    perAccountLoad: plan.perAccountLoad,
+    warnings: postWarnings,
+    blockers: [],
+    writes,
+  };
+  fleet.lastApplyReceipt = receipt;
+  return { status, receipt, writes };
+}
+
+async function watchHermesPoolSelectionOnce(
+  {
+    state,
+    homeDir,
+    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
+  },
+  {
+    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
+    rebalanceHermesPoolImpl = rebalanceHermesPool,
+  } = {},
+) {
+  ensureStateShape(state);
+  const effectiveThresholdPct = resolveCodexWatchThresholdPct(thresholdPct);
+  const observedAt = new Date().toISOString();
+  const usageByProvider = await probeUsageSnapshotsByProviderImpl(state);
+  const usageByLabel = isObject(usageByProvider?.[OPENAI_CODEX_PROVIDER]) ? usageByProvider[OPENAI_CODEX_PROVIDER] : {};
+  const poolStatus = collectCodexPoolStatus({
+    state,
+    homeDir,
+    usageByLabel,
+    now: Date.parse(observedAt),
+  });
+  const eligibleLabels = new Set(poolStatus.eligibleLabels);
+  const fleet = getHermesFleetState(state);
+  const homeStatuses = discoverHermesHomes({ homeDir }).map((home) => readHermesHomeStatus({ state, homeDir, homeId: home.homeId }));
+  const warnings = homeStatuses.flatMap((home) => buildWarningsFromHermesHomeStatus(home));
+  const homeBlockers = homeStatuses.flatMap((home) => buildHermesHomeBlockers(home));
+
+  if (homeStatuses.length === 0) {
+    const receipt = {
+      action: "hermes_watch",
+      status: "noop",
+      observedAt,
+      thresholdPct: effectiveThresholdPct,
+      homeCount: 0,
+      currentAssignmentsBefore: {},
+      currentAssignmentsAfter: {},
+      lowestPrimaryRemainingPctBefore: null,
+      triggeredRebalance: false,
+      belowThresholdHomeIds: [],
+      ineligibleHomeIds: [],
+      warnings: [],
+      blockers: [],
+    };
+    fleet.lastWatchReceipt = receipt;
+    return { status: "noop", receipt, wrote: false };
+  }
+
+  if (homeBlockers.length > 0) {
+    const receipt = {
+      action: "hermes_watch",
+      status: "blocked",
+      observedAt,
+      thresholdPct: effectiveThresholdPct,
+      homeCount: homeStatuses.length,
+      currentAssignmentsBefore: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      lowestPrimaryRemainingPctBefore: null,
+      triggeredRebalance: false,
+      belowThresholdHomeIds: [],
+      ineligibleHomeIds: [],
+      warnings,
+      blockers: homeBlockers,
+    };
+    fleet.lastWatchReceipt = receipt;
+    return { status: "blocked", receipt, wrote: false };
+  }
+
+  const currentAssignmentsBefore = buildHermesAssignmentsByHome(homeStatuses);
+  const belowThresholdHomeIds = [];
+  const ineligibleHomeIds = [];
+  const usageBlockers = [];
+  let lowestPrimaryRemainingPctBefore = null;
+
+  for (const home of homeStatuses) {
+    const currentLabel = home.currentLabel;
+    if (currentLabel && !eligibleLabels.has(currentLabel)) {
+      ineligibleHomeIds.push(home.homeId);
+    }
+    const activeUsage = currentLabel ? usageByLabel[currentLabel] ?? null : null;
+    const primaryRemainingPctBefore = getPrimaryRemainingPctFromUsageSnapshot(activeUsage);
+    if (primaryRemainingPctBefore === null) {
+      usageBlockers.push({
+        reason: "hermes_home_usage_unavailable",
+        homeId: home.homeId,
+        label: currentLabel,
+        ...(
+          (typeof activeUsage?.status === "string" && activeUsage.status.trim())
+          || Number.isFinite(Number(activeUsage?.status))
+            ? { status: activeUsage.status }
+          : {}),
+        ...(typeof activeUsage?.error === "string" && activeUsage.error.trim()
+          ? { detail: activeUsage.error.trim() }
+          : {}),
+      });
+      continue;
+    }
+    lowestPrimaryRemainingPctBefore =
+      lowestPrimaryRemainingPctBefore === null
+        ? primaryRemainingPctBefore
+        : Math.min(lowestPrimaryRemainingPctBefore, primaryRemainingPctBefore);
+    if (primaryRemainingPctBefore < effectiveThresholdPct) {
+      belowThresholdHomeIds.push(home.homeId);
+    }
+  }
+
+  if (usageBlockers.length > 0) {
+    const receipt = {
+      action: "hermes_watch",
+      status: "blocked",
+      observedAt,
+      thresholdPct: effectiveThresholdPct,
+      homeCount: homeStatuses.length,
+      currentAssignmentsBefore: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      lowestPrimaryRemainingPctBefore,
+      triggeredRebalance: false,
+      belowThresholdHomeIds,
+      ineligibleHomeIds,
+      warnings,
+      blockers: usageBlockers,
+    };
+    fleet.lastWatchReceipt = receipt;
+    return { status: "blocked", receipt, wrote: false };
+  }
+
+  if (belowThresholdHomeIds.length === 0 && ineligibleHomeIds.length === 0) {
+    const receipt = {
+      action: "hermes_watch",
+      status: "noop",
+      observedAt,
+      thresholdPct: effectiveThresholdPct,
+      homeCount: homeStatuses.length,
+      currentAssignmentsBefore: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      lowestPrimaryRemainingPctBefore,
+      triggeredRebalance: false,
+      belowThresholdHomeIds: [],
+      ineligibleHomeIds: [],
+      warnings,
+      blockers: [],
+    };
+    fleet.lastWatchReceipt = receipt;
+    return { status: "noop", receipt, wrote: false };
+  }
+
+  const rebalanced = await rebalanceHermesPoolImpl(
+    {
+      home: homeDir,
+      observedAt,
+      usageByProvider,
+    },
+    state,
+  );
+  const postStatuses = discoverHermesHomes({ homeDir }).map((home) => readHermesHomeStatus({ state, homeDir, homeId: home.homeId }));
+  const receipt = {
+    action: "hermes_watch",
+    status: rebalanced.status,
+    observedAt,
+    thresholdPct: effectiveThresholdPct,
+    homeCount: homeStatuses.length,
+    currentAssignmentsBefore: sanitizeForStatus(currentAssignmentsBefore),
+    currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(postStatuses, { includeUnmapped: true })),
+    lowestPrimaryRemainingPctBefore,
+    triggeredRebalance: true,
+    belowThresholdHomeIds,
+    ineligibleHomeIds,
+    rebalanceReceipt: rebalanced.receipt,
+    warnings: [
+      ...warnings,
+      ...(Array.isArray(rebalanced.receipt?.warnings) ? rebalanced.receipt.warnings : []),
+    ],
+    blockers: Array.isArray(rebalanced.receipt?.blockers) ? rebalanced.receipt.blockers : [],
+  };
+  fleet.lastWatchReceipt = receipt;
+  return { status: rebalanced.status, receipt, wrote: Array.isArray(rebalanced.writes) && rebalanced.writes.some((entry) => entry?.wrote?.auth === true) };
+}
+
+async function watchHermesPoolSelectionLoop(
+  {
+    statePath,
+    homeDir,
+    intervalSeconds = DEFAULT_CODEX_WATCH_INTERVAL_SECONDS,
+    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
+    maxIterations = Number.POSITIVE_INFINITY,
+  },
+  {
+    emitResultImpl = null,
+    sleepImpl = sleep,
+    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
+    rebalanceHermesPoolImpl = rebalanceHermesPool,
+  } = {},
+) {
+  const effectiveIntervalSeconds = resolveCodexWatchIntervalSeconds(intervalSeconds);
+  const effectiveMaxIterations =
+    Number.isFinite(Number(maxIterations)) && Number(maxIterations) > 0
+      ? Math.floor(Number(maxIterations))
+      : Number.POSITIVE_INFINITY;
+  let lastResult = null;
+
+  for (let iteration = 0; iteration < effectiveMaxIterations; iteration += 1) {
+    const state = loadAimgrState(statePath);
+    lastResult = await watchHermesPoolSelectionOnce(
+      {
+        state,
+        homeDir,
+        thresholdPct,
+      },
+      {
+        probeUsageSnapshotsByProviderImpl,
+        rebalanceHermesPoolImpl,
+      },
+    );
+    writeJsonFileWithBackup(statePath, state);
+    if (typeof emitResultImpl === "function") {
+      await emitResultImpl(lastResult, { iteration });
+    }
+    if (iteration + 1 >= effectiveMaxIterations) {
+      break;
+    }
+    await sleepImpl(effectiveIntervalSeconds * 1000);
+  }
+
+  return lastResult;
+}
+
 export async function main(argv, deps = {}) {
   const {
     stdin = process.stdin,
@@ -9766,11 +10769,12 @@ export async function main(argv, deps = {}) {
     refreshAnthropicImpl = refreshAnthropicToken,
     probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
     activateCodexPoolSelectionImpl = activateCodexPoolSelection,
+    rebalanceHermesPoolImpl = rebalanceHermesPool,
     sleepImpl = sleep,
     watchLoopMaxIterations = Number.POSITIVE_INFINITY,
   } = deps;
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "auth", "codex", "claude", "pi", "browser"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "auth", "codex", "hermes", "claude", "pi", "browser"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -9911,19 +10915,29 @@ export async function main(argv, deps = {}) {
   if (cmd === "rebalance") {
     const system = String(positional[1] ?? "").trim().toLowerCase();
     if (!system) {
-      throw new Error("Missing rebalance target. Usage: aim rebalance openclaw");
+      throw new Error("Missing rebalance target. Usage: aim rebalance openclaw | aim rebalance hermes");
     }
-    if (system !== "openclaw") {
-      throw new Error(`Unsupported rebalance target: ${system} (supported: openclaw).`);
+    if (system === "openclaw") {
+      const state = loadAimgrState(statePath);
+      const rebalanced = await rebalanceOpenclawPool(opts, state);
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: rebalanced.status !== "blocked", rebalanced }), null, 2)}\n`);
+      if (rebalanced.status === "blocked") {
+        process.exitCode = 1;
+      }
+      return;
     }
-    const state = loadAimgrState(statePath);
-    const rebalanced = await rebalanceOpenclawPool(opts, state);
-    writeJsonFileWithBackup(statePath, state);
-    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: rebalanced.status !== "blocked", rebalanced }), null, 2)}\n`);
-    if (rebalanced.status === "blocked") {
-      process.exitCode = 1;
+    if (system === "hermes") {
+      const state = loadAimgrState(statePath);
+      const rebalanced = await rebalanceHermesPoolImpl(opts, state);
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: rebalanced.status !== "blocked", rebalanced }), null, 2)}\n`);
+      if (rebalanced.status === "blocked") {
+        process.exitCode = 1;
+      }
+      return;
     }
-    return;
+    throw new Error(`Unsupported rebalance target: ${system} (supported: openclaw, hermes).`);
   }
 
   if (cmd === "apply") {
@@ -10051,6 +11065,61 @@ export async function main(argv, deps = {}) {
     if (activated.status === "blocked") {
       process.exitCode = 1;
     }
+    return;
+  }
+
+  if (cmd === "hermes") {
+    const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+    if (!subcmd) {
+      throw new Error("Missing hermes subcommand. Usage: aim hermes watch");
+    }
+    if (subcmd !== "watch") {
+      throw new Error(`Unsupported hermes subcommand: ${subcmd} (supported: watch).`);
+    }
+    if (String(positional[2] ?? "").trim()) {
+      throw new Error("`aim hermes watch <label>` is not supported. Use `aim hermes watch` and let AIM decide when to rebalance.");
+    }
+    const thresholdPct = resolveCodexWatchThresholdPct(opts.rotateBelow5hRemainingPct);
+    if (opts.once) {
+      const state = loadAimgrState(statePath);
+      const watched = await watchHermesPoolSelectionOnce(
+        {
+          state,
+          homeDir,
+          thresholdPct,
+        },
+        {
+          probeUsageSnapshotsByProviderImpl,
+          rebalanceHermesPoolImpl,
+        },
+      );
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: watched.status !== "blocked", watched }), null, 2)}\n`);
+      if (watched.status === "blocked") {
+        process.exitCode = 1;
+      }
+      return;
+    }
+
+    await watchHermesPoolSelectionLoop(
+      {
+        statePath,
+        homeDir,
+        intervalSeconds: opts.intervalSeconds,
+        thresholdPct,
+        maxIterations: watchLoopMaxIterations,
+      },
+      {
+        sleepImpl,
+        probeUsageSnapshotsByProviderImpl,
+        rebalanceHermesPoolImpl,
+        emitResultImpl: async (watched) => {
+          process.stdout.write(
+            `${JSON.stringify(sanitizeForStatus({ ok: watched.status !== "blocked", watched }), null, 2)}\n`,
+          );
+        },
+      },
+    );
     return;
   }
 
