@@ -225,6 +225,7 @@ Non-negotiables:
 - AIM still owns Hermes auth only
 - Hermes `config.yaml`, `.env`, `SOUL.md`, and service lifecycle remain outside AIM
 - `aim rebalance hermes` fails loud on unreadable/missing live-home auth instead of inventing a fallback
+- if you need live runtime confirmation after a rebalance/watch write, use `HERMES_HOME=~/.hermes/profiles/<agent_id> hermes status --deep`
 
 ### 4) Activate local Codex CLI from the shared pool
 
@@ -635,7 +636,17 @@ Current shape:
   },
   "pool": {
     "openaiCodex": {
-      "history": []
+      "history": [],
+      "agentDemand": {},
+      "hermesFleet": {
+        "demandByHome": {},
+        "lastApplyReceipt": {
+          "status": "applied"
+        },
+        "lastWatchReceipt": {
+          "status": "noop"
+        }
+      }
     },
     "anthropic": {
       "history": []
@@ -686,6 +697,7 @@ Derived target state lives in:
 - `targets.openclaw`
 - `targets.codexCli`
 - `targets.claudeCli`
+- `pool.openaiCodex.hermesFleet`
 
 ## Troubleshooting
 

@@ -3147,12 +3147,104 @@ test("rebalance hermes rewrites live home auth via the shared planner and settle
     assert.equal(firstStatus.hermesFleet.homeCount, 2);
     assert.ok(firstStatus.hermesFleet.homes.some((entry) => entry.currentLabel === "pro2"));
 
+    const firstCompactStatus = await runCli(["status", "--compact", "--home", home]);
+    assert.match(firstCompactStatus, /hermes=2\/2  h_warn=0  h_apply=applied  h_watch=--\n$/);
+
     const second = JSON.parse(await runCli(["rebalance", "hermes", "--home", home]));
     assert.equal(second.ok, true);
     assert.equal(second.rebalanced.status, "noop");
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "noop");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("rebalance hermes blocks with a truthful receipt when Hermes session demand cannot be read", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeHermesAuthFile(home, "agent_boss", { accessToken: bossJwt, refreshToken: "REFRESH_BOSS" });
+  fs.writeFileSync(path.join(home, ".hermes", "profiles", "agent_boss", "state.db"), "not a sqlite database", "utf8");
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
+    pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 10,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: 10,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = await runCliWithExitCode(["rebalance", "hermes", "--home", home]);
+    assert.equal(result.exitCode, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.rebalanced.status, "blocked");
+    assert.equal(parsed.rebalanced.receipt.blockers[0].reason, "hermes_home_demand_unreadable");
+    assert.equal(parsed.rebalanced.receipt.blockers[0].homeId, "agent_boss");
+    assert.match(parsed.rebalanced.receipt.blockers[0].detail, /Failed to read Hermes session demand/);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "blocked");
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.blockers[0].reason, "hermes_home_demand_unreadable");
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -3349,6 +3441,115 @@ test("hermes watch --once routes through rebalance hermes when a live home drops
   }
 });
 
+test("hermes watch --once routes through rebalance hermes when a current label loses pool eligibility above the threshold", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const pro1Jwt = makeFakeJwt({
+    email: "pro1@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro1",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro2Jwt = makeFakeJwt({
+    email: "pro2@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeHermesAuthFile(home, "agent_ops", { accessToken: pro1Jwt, refreshToken: "REFRESH_PRO1" });
+  writeHermesStateDb(home, "agent_ops", [
+    { id: "s1", startedAt: Date.now() / 1000 - 60, inputTokens: 100, outputTokens: 10 },
+  ]);
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+      pro2: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+    },
+    credentials: {
+      "openai-codex": {
+        pro1: {
+          access: pro1Jwt,
+          refresh: "REFRESH_PRO1",
+          idToken: pro1Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro1",
+        },
+        pro2: {
+          access: pro2Jwt,
+          refresh: "REFRESH_PRO2",
+          idToken: pro2Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro2",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["pro1", "pro2"],
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
+    pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: accountId === "acct_pro1" ? 10 : 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: accountId === "acct_pro1" ? 97 : 5,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = JSON.parse(await runCli(["hermes", "watch", "--once", "--home", home]));
+    assert.equal(result.ok, true);
+    assert.equal(result.watched.status, "applied");
+    assert.equal(result.watched.receipt.triggeredRebalance, true);
+    assert.deepEqual(result.watched.receipt.belowThresholdHomeIds, []);
+    assert.deepEqual(result.watched.receipt.ineligibleHomeIds, ["agent_ops"]);
+    assert.equal(result.watched.receipt.currentAssignmentsAfter.agent_ops, "pro2");
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "applied");
+    assert.deepEqual(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.ineligibleHomeIds, ["agent_ops"]);
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "applied");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("hermes watch --once fails loud when a discovered Hermes home is missing auth.json", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -3424,6 +3625,94 @@ test("hermes watch --once fails loud when a discovered Hermes home is missing au
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "blocked");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("hermes watch loop reuses the one-shot path on every interval", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeHermesAuthFile(home, "agent_boss", { accessToken: bossJwt, refreshToken: "REFRESH_BOSS" });
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
+    pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 10,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: 10,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const stdout = await runCli(
+      ["hermes", "watch", "--interval-seconds", "1", "--home", home],
+      {
+        watchLoopMaxIterations: 2,
+        sleepImpl: async () => {},
+      },
+    );
+    assert.equal((stdout.match(/"action": "hermes_watch"/g) ?? []).length, 2);
+    assert.equal((stdout.match(/"triggeredRebalance": false/g) ?? []).length, 2);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "noop");
+    assert.equal(updatedState.pool.openaiCodex.hermesFleet.homes, undefined);
   } finally {
     globalThis.fetch = origFetch;
   }

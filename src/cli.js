@@ -5773,6 +5773,23 @@ function buildHermesHomeBlockers(status) {
   });
 }
 
+function buildHermesDemandUnreadableBlocker(error) {
+  const blocker = {
+    reason: "hermes_home_demand_unreadable",
+  };
+  if (typeof error?.homeId === "string" && error.homeId.trim()) {
+    blocker.homeId = error.homeId.trim();
+  }
+  if (typeof error?.stateDbPath === "string" && error.stateDbPath.trim()) {
+    blocker.stateDbPath = error.stateDbPath.trim();
+  }
+  const detail = String(error?.message ?? error ?? "").trim();
+  if (detail) {
+    blocker.detail = detail;
+  }
+  return blocker;
+}
+
 function runSqlite3Query({ dbPath, sql, homeDir, spawnImpl = spawnSync }) {
   const sqlite3Command = resolveSqlite3Command({ homeDir, spawnImpl });
   const result = spawnImpl(sqlite3Command, ["-separator", "\t", dbPath, sql], {
@@ -5844,7 +5861,18 @@ SELECT
   COALESCE(SUM(CASE WHEN started_at >= ${cutoffSeconds} THEN COALESCE(reasoning_tokens, 0) ELSE 0 END), 0) AS reasoning_tokens,
   MAX(CASE WHEN started_at >= ${cutoffSeconds} THEN started_at ELSE NULL END) AS latest_session_at
 FROM sessions;`;
-  const stdout = runSqlite3Query({ dbPath: stateDbPath, sql, homeDir, spawnImpl });
+  let stdout;
+  try {
+    stdout = runSqlite3Query({ dbPath: stateDbPath, sql, homeDir, spawnImpl });
+  } catch (error) {
+    const wrapped = new Error(
+      `Failed to read Hermes session demand for ${normalizedHomeId}: ${String(error?.message ?? error ?? "unknown error")}`,
+    );
+    wrapped.code = "HERMES_HOME_DEMAND_UNREADABLE";
+    wrapped.homeId = normalizedHomeId;
+    wrapped.stateDbPath = stateDbPath;
+    throw wrapped;
+  }
   const fields = stdout.split("\t");
   const [
     sessionsTotalRaw = "0",
@@ -7916,7 +7944,18 @@ function renderStatusCompactText(view) {
   const eta = formatMetricValue(view.projection?.overflow_eta_h, { decimals: 1, suffix: "h" });
   const floor5Label = typeof view.windows?.floor_5h_label === "string" && view.windows.floor_5h_label.trim() ? view.windows.floor_5h_label.trim() : "none";
   const floor7Label = typeof view.windows?.floor_7d_label === "string" && view.windows.floor_7d_label.trim() ? view.windows.floor_7d_label.trim() : "none";
-  return `load=${load}  spare=${spare}  5h_floor=${floor5}(${floor5Label})  7d_floor=${floor7}(${floor7Label})  eta=${eta}\n`;
+  const hermesHomeCount = Math.max(0, Math.round(Number(view.hermesFleet?.homeCount ?? 0)));
+  const hermesMappedHomeCount = Math.max(0, Math.round(Number(view.hermesFleet?.mappedHomeCount ?? 0)));
+  const hermesWarningHomeCount = Math.max(0, Math.round(Number(view.hermesFleet?.warningHomeCount ?? 0)));
+  const showHermesCompact =
+    hermesHomeCount > 0
+    || hermesMappedHomeCount > 0
+    || typeof view.hermesFleet?.lastApplyReceipt?.status === "string"
+    || typeof view.hermesFleet?.lastWatchReceipt?.status === "string";
+  const hermesCompact = showHermesCompact
+    ? `  hermes=${hermesMappedHomeCount}/${hermesHomeCount}  h_warn=${hermesWarningHomeCount}  h_apply=${view.hermesFleet?.lastApplyReceipt?.status || "--"}  h_watch=${view.hermesFleet?.lastWatchReceipt?.status || "--"}`
+    : "";
+  return `load=${load}  spare=${spare}  5h_floor=${floor5}(${floor5Label})  7d_floor=${floor7}(${floor7Label})  eta=${eta}${hermesCompact}\n`;
 }
 
 function resolveCurrentConfiguredCodexLabel(view) {
@@ -10393,13 +10432,32 @@ export async function rebalanceHermesPool(
     return { status: "blocked", receipt };
   }
 
-  const demandRefresh = refreshHermesHomeDemandLedgerImpl({
-    state,
-    homeDir,
-    homes,
-    now: Date.parse(observedAt),
-    lookbackDays: DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS,
-  });
+  let demandRefresh;
+  try {
+    demandRefresh = refreshHermesHomeDemandLedgerImpl({
+      state,
+      homeDir,
+      homes,
+      now: Date.parse(observedAt),
+      lookbackDays: DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS,
+    });
+  } catch (error) {
+    const receipt = {
+      action: "rebalance_hermes",
+      status: "blocked",
+      observedAt,
+      allocationMode: null,
+      assignments: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
+      moved: [],
+      unchanged: [],
+      skipped: [],
+      perAccountLoad: [],
+      warnings: homeWarnings,
+      blockers: [buildHermesDemandUnreadableBlocker(error)],
+    };
+    fleet.lastApplyReceipt = receipt;
+    return { status: "blocked", receipt };
+  }
   const plan = planWeightedHermesRebalance({
     configuredHomes: homeStatuses.map((home) => home.homeId),
     currentAssignments: buildHermesAssignmentsByHome(homeStatuses),
@@ -10484,6 +10542,13 @@ async function watchHermesPoolSelectionOnce(
   const observedAt = new Date().toISOString();
   const usageByProvider = await probeUsageSnapshotsByProviderImpl(state);
   const usageByLabel = isObject(usageByProvider?.[OPENAI_CODEX_PROVIDER]) ? usageByProvider[OPENAI_CODEX_PROVIDER] : {};
+  const poolStatus = collectCodexPoolStatus({
+    state,
+    homeDir,
+    usageByLabel,
+    now: Date.parse(observedAt),
+  });
+  const eligibleLabels = new Set(poolStatus.eligibleLabels);
   const fleet = getHermesFleetState(state);
   const homeStatuses = discoverHermesHomes({ homeDir }).map((home) => readHermesHomeStatus({ state, homeDir, homeId: home.homeId }));
   const warnings = homeStatuses.flatMap((home) => buildWarningsFromHermesHomeStatus(home));
@@ -10501,6 +10566,7 @@ async function watchHermesPoolSelectionOnce(
       lowestPrimaryRemainingPctBefore: null,
       triggeredRebalance: false,
       belowThresholdHomeIds: [],
+      ineligibleHomeIds: [],
       warnings: [],
       blockers: [],
     };
@@ -10520,6 +10586,7 @@ async function watchHermesPoolSelectionOnce(
       lowestPrimaryRemainingPctBefore: null,
       triggeredRebalance: false,
       belowThresholdHomeIds: [],
+      ineligibleHomeIds: [],
       warnings,
       blockers: homeBlockers,
     };
@@ -10529,11 +10596,15 @@ async function watchHermesPoolSelectionOnce(
 
   const currentAssignmentsBefore = buildHermesAssignmentsByHome(homeStatuses);
   const belowThresholdHomeIds = [];
+  const ineligibleHomeIds = [];
   const usageBlockers = [];
   let lowestPrimaryRemainingPctBefore = null;
 
   for (const home of homeStatuses) {
     const currentLabel = home.currentLabel;
+    if (currentLabel && !eligibleLabels.has(currentLabel)) {
+      ineligibleHomeIds.push(home.homeId);
+    }
     const activeUsage = currentLabel ? usageByLabel[currentLabel] ?? null : null;
     const primaryRemainingPctBefore = getPrimaryRemainingPctFromUsageSnapshot(activeUsage);
     if (primaryRemainingPctBefore === null) {
@@ -10573,6 +10644,7 @@ async function watchHermesPoolSelectionOnce(
       lowestPrimaryRemainingPctBefore,
       triggeredRebalance: false,
       belowThresholdHomeIds,
+      ineligibleHomeIds,
       warnings,
       blockers: usageBlockers,
     };
@@ -10580,7 +10652,7 @@ async function watchHermesPoolSelectionOnce(
     return { status: "blocked", receipt, wrote: false };
   }
 
-  if (belowThresholdHomeIds.length === 0) {
+  if (belowThresholdHomeIds.length === 0 && ineligibleHomeIds.length === 0) {
     const receipt = {
       action: "hermes_watch",
       status: "noop",
@@ -10592,6 +10664,7 @@ async function watchHermesPoolSelectionOnce(
       lowestPrimaryRemainingPctBefore,
       triggeredRebalance: false,
       belowThresholdHomeIds: [],
+      ineligibleHomeIds: [],
       warnings,
       blockers: [],
     };
@@ -10619,6 +10692,7 @@ async function watchHermesPoolSelectionOnce(
     lowestPrimaryRemainingPctBefore,
     triggeredRebalance: true,
     belowThresholdHomeIds,
+    ineligibleHomeIds,
     rebalanceReceipt: rebalanced.receipt,
     warnings: [
       ...warnings,
