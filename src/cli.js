@@ -23,6 +23,7 @@ const BROWSER_MODE_CHROME_PROFILE = "chrome-profile";
 const BROWSER_MODE_AGENT_BROWSER = "agent-browser";
 const DEFAULT_AGENTS_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
 const HERMES_AUTH_STORE_VERSION = 1;
+const HERMES_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const STATUS_RESET_TIMEZONE = "America/Chicago";
 const DEFAULT_AGENT_DEMAND_LOOKBACK_DAYS = 7;
 const MIN_AGENT_DEMAND_WEIGHT = 1;
@@ -3071,6 +3072,55 @@ function isLikelyJwt(value) {
   return parts.length === 3 && parts.every((part) => part.length > 0);
 }
 
+function decodeJwtPayload(token) {
+  const raw = String(token ?? "").trim();
+  if (!isLikelyJwt(raw)) return null;
+  const [, payloadSegment] = raw.split(".");
+  try {
+    const normalized = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    const parsed = JSON.parse(decoded);
+    return isObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractOpenAICodexAccountIdFromClaims(claims) {
+  if (!isObject(claims)) return null;
+  const authClaims = isObject(claims["https://api.openai.com/auth"]) ? claims["https://api.openai.com/auth"] : null;
+  const candidates = [
+    authClaims?.chatgpt_account_id,
+    claims["https://api.openai.com/auth.chatgpt_account_id"],
+    claims.chatgpt_account_id,
+    claims.account_id,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
+function extractOpenAICodexAccountIdFromToken(token) {
+  return extractOpenAICodexAccountIdFromClaims(decodeJwtPayload(token));
+}
+
+function extractJwtIdentityLabel(token, fallback = "device_code") {
+  const claims = decodeJwtPayload(token);
+  if (isObject(claims)) {
+    for (const key of ["email", "preferred_username", "upn"]) {
+      const value = claims[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+  return fallback;
+}
+
 function getImportedCodexLabels(state) {
   const imported = getAuthorityCodexImport(state);
   const labels = Array.isArray(imported.labels) ? imported.labels : [];
@@ -3320,6 +3370,18 @@ function readHermesAuthFile({ authPath }) {
     const tokens = isObject(providerEntry?.tokens) ? providerEntry.tokens : null;
     const accessToken = typeof tokens?.access_token === "string" ? tokens.access_token.trim() : null;
     const refreshToken = typeof tokens?.refresh_token === "string" ? tokens.refresh_token.trim() : null;
+    const credentialPool = isObject(parsed.credential_pool) ? parsed.credential_pool : {};
+    const rawProviderPoolEntries = Array.isArray(credentialPool[OPENAI_CODEX_PROVIDER])
+      ? credentialPool[OPENAI_CODEX_PROVIDER].filter((entry) => isObject(entry))
+      : [];
+    const deviceCodePoolEntry =
+      rawProviderPoolEntries.find((entry) => {
+        const source = typeof entry?.source === "string" ? entry.source.trim().toLowerCase().replace(/-/g, "_") : "";
+        return source === "device_code";
+      })
+      ?? (rawProviderPoolEntries.length === 1 ? rawProviderPoolEntries[0] : null);
+    const poolAccessToken = typeof deviceCodePoolEntry?.access_token === "string" ? deviceCodePoolEntry.access_token.trim() : null;
+    const poolRefreshToken = typeof deviceCodePoolEntry?.refresh_token === "string" ? deviceCodePoolEntry.refresh_token.trim() : null;
     const activeProvider = typeof parsed.active_provider === "string" ? parsed.active_provider.trim() : null;
     return {
       exists: true,
@@ -3329,6 +3391,12 @@ function readHermesAuthFile({ authPath }) {
       providerEntryPresent: Boolean(providerEntry),
       accessToken: accessToken || null,
       refreshToken: refreshToken || null,
+      accountId: extractOpenAICodexAccountIdFromToken(accessToken) || null,
+      providerPoolEntryCount: rawProviderPoolEntries.length,
+      deviceCodePoolEntryPresent: Boolean(deviceCodePoolEntry),
+      poolAccessToken: poolAccessToken || null,
+      poolRefreshToken: poolRefreshToken || null,
+      poolAccountId: extractOpenAICodexAccountIdFromToken(poolAccessToken) || null,
       lastRefresh: typeof providerEntry?.last_refresh === "string" ? providerEntry.last_refresh.trim() : null,
       authMode: typeof providerEntry?.auth_mode === "string" ? providerEntry.auth_mode.trim() : null,
       json: parsed,
@@ -3343,13 +3411,48 @@ function readHermesAuthFile({ authPath }) {
   }
 }
 
+function generateHermesPoolEntryId(updatedAt) {
+  const timestamp = Date.parse(String(updatedAt ?? "").trim());
+  const basis = Number.isFinite(timestamp) ? timestamp : Date.now();
+  return Math.abs(basis).toString(16).slice(-6).padStart(6, "0");
+}
+
+function buildHermesCodexPoolEntry({ existing, credential, updatedAt }) {
+  const existingEntries =
+    Array.isArray(existing?.credential_pool?.[OPENAI_CODEX_PROVIDER]) ? existing.credential_pool[OPENAI_CODEX_PROVIDER] : [];
+  const existingDeviceCodeEntry =
+    existingEntries.find((entry) => {
+      const source = typeof entry?.source === "string" ? entry.source.trim().toLowerCase().replace(/-/g, "_") : "";
+      return source === "device_code";
+    })
+    ?? (existingEntries.length === 1 ? existingEntries[0] : null);
+  const id =
+    typeof existingDeviceCodeEntry?.id === "string" && existingDeviceCodeEntry.id.trim()
+      ? existingDeviceCodeEntry.id.trim()
+      : generateHermesPoolEntryId(updatedAt);
+  return {
+    id,
+    label: extractJwtIdentityLabel(credential.access, "device_code"),
+    auth_type: "oauth",
+    priority: 0,
+    source: "device_code",
+    access_token: credential.access,
+    refresh_token: credential.refresh,
+    last_status: null,
+    last_status_at: null,
+    last_error_code: null,
+    base_url: HERMES_CODEX_BASE_URL,
+    last_refresh: updatedAt.replace("+00:00", "Z"),
+    request_count: 0,
+  };
+}
+
 function buildHermesAuthDotJson({ existing, credential, updatedAt }) {
   const next = isObject(existing) ? structuredClone(existing) : {};
   next.version = HERMES_AUTH_STORE_VERSION;
   next.updated_at = updatedAt;
   next.providers = isObject(next.providers) ? next.providers : {};
   next.providers[OPENAI_CODEX_PROVIDER] = {
-    ...(isObject(next.providers[OPENAI_CODEX_PROVIDER]) ? next.providers[OPENAI_CODEX_PROVIDER] : {}),
     tokens: {
       access_token: credential.access,
       refresh_token: credential.refresh,
@@ -3357,6 +3460,14 @@ function buildHermesAuthDotJson({ existing, credential, updatedAt }) {
     last_refresh: updatedAt.replace("+00:00", "Z"),
     auth_mode: "chatgpt",
   };
+  next.credential_pool = isObject(next.credential_pool) ? next.credential_pool : {};
+  next.credential_pool[OPENAI_CODEX_PROVIDER] = [
+    buildHermesCodexPoolEntry({
+      existing,
+      credential,
+      updatedAt,
+    }),
+  ];
   next.active_provider = OPENAI_CODEX_PROVIDER;
   return next;
 }
@@ -3418,6 +3529,13 @@ function writeHermesAuthFromState({ label, authPath }, state) {
   });
   if (inferredLabel && inferredLabel !== normalizedLabel) {
     throw new Error(`Hermes readback mismatch after write: expected label=${normalizedLabel}, got ${inferredLabel}.`);
+  }
+  if (
+    readback.providerPoolEntryCount !== 1
+    || readback.deviceCodePoolEntryPresent !== true
+    || !doesHermesPoolMatchCodexCredential(readback, credential)
+  ) {
+    throw new Error(`Hermes auth pool mismatch after write: expected a single coherent ${OPENAI_CODEX_PROVIDER} device_code entry.`);
   }
 
   return {
@@ -3805,6 +3923,27 @@ function findCodexLabelByTokenPair(state, { accessToken, refreshToken }) {
     }
   }
   return null;
+}
+
+function doesHermesReadbackMatchCodexCredential(readback, credential) {
+  if (!readback || !credential) return false;
+  return (
+    String(readback.accessToken ?? "").trim() === String(credential.access ?? "").trim()
+    && String(readback.refreshToken ?? "").trim() === String(credential.refresh ?? "").trim()
+  );
+}
+
+function doesHermesPoolMatchCodexCredential(readback, credential) {
+  if (!readback || !credential) return false;
+  if (Math.max(0, Math.round(Number(readback.providerPoolEntryCount ?? 0))) === 0) {
+    return true;
+  }
+  return (
+    readback.deviceCodePoolEntryPresent === true
+    && Math.max(0, Math.round(Number(readback.providerPoolEntryCount ?? 0))) === 1
+    && String(readback.poolAccessToken ?? "").trim() === String(credential.access ?? "").trim()
+    && String(readback.poolRefreshToken ?? "").trim() === String(credential.refresh ?? "").trim()
+  );
 }
 
 function shellQuoteSingle(value) {
@@ -5663,13 +5802,27 @@ function readHermesHomeStatus({ state, homeDir, homeId }) {
   const normalizedHomeId = normalizeHermesHomeId(homeId);
   const authPath = path.join(resolveHermesHomePath(homeDir, normalizedHomeId), "auth.json");
   const readback = readHermesAuthFile({ authPath });
-  const currentLabel =
+  const tokenPairLabel =
     readback.ok === true
       ? findCodexLabelByTokenPair(state, {
           accessToken: readback.accessToken,
           refreshToken: readback.refreshToken,
         })
       : null;
+  const accountIdLabel =
+    readback.ok === true && !tokenPairLabel && readback.accountId
+      ? findCodexLabelByAccountId(state, readback.accountId)
+      : null;
+  const currentLabel = tokenPairLabel || accountIdLabel || null;
+  const activeCredential = currentLabel ? getCodexCredential(state, currentLabel) : null;
+  const authDrifted =
+    Boolean(currentLabel)
+    && isObject(activeCredential)
+    && !doesHermesReadbackMatchCodexCredential(readback, activeCredential);
+  const needsSync =
+    Boolean(currentLabel)
+    && isObject(activeCredential)
+    && (authDrifted || !doesHermesPoolMatchCodexCredential(readback, activeCredential));
   const demandEntry = isObject(getHermesFleetDemandState(state)[normalizedHomeId])
     ? getHermesFleetDemandState(state)[normalizedHomeId]
     : null;
@@ -5679,6 +5832,9 @@ function readHermesHomeStatus({ state, homeDir, homeId }) {
     authPath,
     stateDbPath: resolveHermesStateDbPath(homeDir, normalizedHomeId),
     currentLabel: currentLabel || null,
+    matchMode: tokenPairLabel ? "token_pair" : accountIdLabel ? "account_id" : "none",
+    authDrifted,
+    needsSync,
     activeAccountPresent: currentLabel ? isObject(state.accounts[currentLabel]) : false,
     activeCredentialPresent: currentLabel ? isObject(getCodexCredential(state, currentLabel)) : false,
     demand: demandEntry,
@@ -5751,11 +5907,39 @@ function buildWarningsFromHermesHomeStatus(status) {
     });
   }
 
+  if (status.currentLabel && status.activeCredentialPresent && status.authDrifted) {
+    warnings.push({
+      kind: "hermes_home_auth_drifted",
+      system: "hermes",
+      homeId: status.homeId,
+      label: status.currentLabel,
+      matchMode: status.matchMode,
+    });
+  } else if (status.currentLabel && status.activeCredentialPresent && status.needsSync) {
+    warnings.push({
+      kind: "hermes_home_auth_needs_sync",
+      system: "hermes",
+      homeId: status.homeId,
+      label: status.currentLabel,
+      matchMode: status.matchMode,
+    });
+  }
+
   return warnings;
 }
 
 function buildHermesHomeBlockers(status) {
-  return buildWarningsFromHermesHomeStatus(status).map((warning) => {
+  const hardBlockingWarningKinds = new Set([
+    "hermes_home_missing_auth_file",
+    "hermes_home_auth_unreadable",
+    "hermes_home_active_provider_unsupported",
+    "hermes_home_missing_provider_entry",
+    "hermes_home_label_missing",
+    "hermes_home_credentials_missing",
+  ]);
+  return buildWarningsFromHermesHomeStatus(status)
+    .filter((warning) => hardBlockingWarningKinds.has(warning.kind))
+    .map((warning) => {
     const blocker = {
       reason: warning.kind,
       homeId: warning.homeId,
@@ -5770,7 +5954,7 @@ function buildHermesHomeBlockers(status) {
       blocker.status = warning.status.trim();
     }
     return blocker;
-  });
+    });
 }
 
 function buildHermesDemandUnreadableBlocker(error) {
@@ -8787,6 +8971,13 @@ async function performLabelMaintenance({
     promptLineImpl,
   });
   const attemptedAt = recordAccountMaintenanceAttempt(state, normalizedLabel);
+  let hermesSync = {
+    status: "noop",
+    checkedHomeCount: 0,
+    matchedHomeCount: 0,
+    syncedHomeIds: [],
+    writes: [],
+  };
 
   try {
     if (provider === OPENAI_CODEX_PROVIDER) {
@@ -8831,6 +9022,13 @@ async function performLabelMaintenance({
     }
 
     recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
+    if (provider === OPENAI_CODEX_PROVIDER) {
+      hermesSync = syncHermesHomesForLabel({
+        state,
+        label: normalizedLabel,
+        homeDir,
+      });
+    }
     state.schemaVersion = SCHEMA_VERSION;
     return {
       ok: true,
@@ -8840,6 +9038,7 @@ async function performLabelMaintenance({
         status: "ready",
         observedAt: attemptedAt,
       },
+      hermesSync,
     };
   } catch (err) {
     const message = String(err?.message ?? err);
@@ -10369,6 +10568,42 @@ function buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped = false } 
   return Object.fromEntries(entries);
 }
 
+function syncHermesHomesForLabel(
+  {
+    state,
+    label,
+    homeDir,
+  },
+  {
+    discoverHermesHomesImpl = discoverHermesHomes,
+    readHermesHomeStatusImpl = readHermesHomeStatus,
+    writeHermesAuthFromStateImpl = writeHermesAuthFromState,
+  } = {},
+) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const homes = discoverHermesHomesImpl({ homeDir });
+  const statuses = homes.map((home) => readHermesHomeStatusImpl({ state, homeDir, homeId: home.homeId }));
+  const matchingHomes = statuses.filter((home) => home.currentLabel === normalizedLabel);
+  const homesNeedingSync = matchingHomes.filter((home) => home.needsSync);
+  const writes = [];
+  for (const home of homesNeedingSync.toSorted((a, b) => a.homeId.localeCompare(b.homeId))) {
+    writes.push(
+      writeHermesAuthFromStateImpl(
+        { label: normalizedLabel, authPath: home.authPath },
+        state,
+      ),
+    );
+  }
+  return {
+    status: homesNeedingSync.length > 0 ? "applied" : "noop",
+    checkedHomeCount: homes.length,
+    matchedHomeCount: matchingHomes.length,
+    syncedHomeIds: homesNeedingSync.map((home) => home.homeId).toSorted((a, b) => a.localeCompare(b)),
+    writes,
+  };
+}
+
 export async function rebalanceHermesPool(
   params,
   state,
@@ -10486,6 +10721,7 @@ export async function rebalanceHermesPool(
   }
 
   const writes = [];
+  const resynced = [];
   for (const moved of [...plan.moved].toSorted((a, b) => a.homeId.localeCompare(b.homeId))) {
     const homeStatus = homeStatuses.find((home) => home.homeId === moved.homeId);
     if (!homeStatus) {
@@ -10498,11 +10734,28 @@ export async function rebalanceHermesPool(
       ),
     );
   }
+  for (const homeStatus of homeStatuses.toSorted((a, b) => a.homeId.localeCompare(b.homeId))) {
+    if (!homeStatus.currentLabel || !homeStatus.needsSync) continue;
+    if (plan.moved.some((entry) => entry.homeId === homeStatus.homeId)) continue;
+    writes.push(
+      writeHermesAuthFromStateImpl(
+        { label: homeStatus.currentLabel, authPath: homeStatus.authPath },
+        state,
+      ),
+    );
+    resynced.push({
+      homeId: homeStatus.homeId,
+      label: homeStatus.currentLabel,
+      matchMode: homeStatus.matchMode,
+    });
+  }
 
   const postStatuses = homes.map((home) => readHermesHomeStatusImpl({ state, homeDir, homeId: home.homeId }));
   const postWarnings = postStatuses.flatMap((home) => buildWarningsFromHermesHomeStatus(home));
+  const resyncedHomeIds = new Set(resynced.map((entry) => entry.homeId));
+  const wroteAuth = writes.some((entry) => entry?.wrote?.auth === true);
   let status = "applied";
-  if (plan.status === "noop") {
+  if (plan.status === "noop" && !wroteAuth) {
     status = postWarnings.length > 0 ? "applied_with_warnings" : "noop";
   } else if (plan.status === "applied_with_warnings" || postWarnings.length > 0) {
     status = "applied_with_warnings";
@@ -10515,7 +10768,8 @@ export async function rebalanceHermesPool(
     allocationMode: plan.allocationMode,
     assignments: sanitizeForStatus(buildHermesAssignmentsByHome(postStatuses, { includeUnmapped: true })),
     moved: plan.moved,
-    unchanged: plan.unchanged,
+    resynced,
+    unchanged: plan.unchanged.filter((entry) => !resyncedHomeIds.has(entry.homeId)),
     skipped: plan.skipped,
     perAccountLoad: plan.perAccountLoad,
     warnings: postWarnings,
@@ -10553,6 +10807,7 @@ async function watchHermesPoolSelectionOnce(
   const homeStatuses = discoverHermesHomes({ homeDir }).map((home) => readHermesHomeStatus({ state, homeDir, homeId: home.homeId }));
   const warnings = homeStatuses.flatMap((home) => buildWarningsFromHermesHomeStatus(home));
   const homeBlockers = homeStatuses.flatMap((home) => buildHermesHomeBlockers(home));
+  const needsSyncHomeIds = homeStatuses.filter((home) => home.needsSync || !home.currentLabel).map((home) => home.homeId);
 
   if (homeStatuses.length === 0) {
     const receipt = {
@@ -10565,6 +10820,7 @@ async function watchHermesPoolSelectionOnce(
       currentAssignmentsAfter: {},
       lowestPrimaryRemainingPctBefore: null,
       triggeredRebalance: false,
+      needsSyncHomeIds: [],
       belowThresholdHomeIds: [],
       ineligibleHomeIds: [],
       warnings: [],
@@ -10585,6 +10841,7 @@ async function watchHermesPoolSelectionOnce(
       currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
       lowestPrimaryRemainingPctBefore: null,
       triggeredRebalance: false,
+      needsSyncHomeIds: sanitizeForStatus(needsSyncHomeIds),
       belowThresholdHomeIds: [],
       ineligibleHomeIds: [],
       warnings,
@@ -10602,10 +10859,13 @@ async function watchHermesPoolSelectionOnce(
 
   for (const home of homeStatuses) {
     const currentLabel = home.currentLabel;
+    if (!currentLabel) {
+      continue;
+    }
     if (currentLabel && !eligibleLabels.has(currentLabel)) {
       ineligibleHomeIds.push(home.homeId);
     }
-    const activeUsage = currentLabel ? usageByLabel[currentLabel] ?? null : null;
+    const activeUsage = usageByLabel[currentLabel] ?? null;
     const primaryRemainingPctBefore = getPrimaryRemainingPctFromUsageSnapshot(activeUsage);
     if (primaryRemainingPctBefore === null) {
       usageBlockers.push({
@@ -10643,6 +10903,7 @@ async function watchHermesPoolSelectionOnce(
       currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
       lowestPrimaryRemainingPctBefore,
       triggeredRebalance: false,
+      needsSyncHomeIds: sanitizeForStatus(needsSyncHomeIds),
       belowThresholdHomeIds,
       ineligibleHomeIds,
       warnings,
@@ -10652,7 +10913,7 @@ async function watchHermesPoolSelectionOnce(
     return { status: "blocked", receipt, wrote: false };
   }
 
-  if (belowThresholdHomeIds.length === 0 && ineligibleHomeIds.length === 0) {
+  if (belowThresholdHomeIds.length === 0 && ineligibleHomeIds.length === 0 && needsSyncHomeIds.length === 0) {
     const receipt = {
       action: "hermes_watch",
       status: "noop",
@@ -10663,6 +10924,7 @@ async function watchHermesPoolSelectionOnce(
       currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
       lowestPrimaryRemainingPctBefore,
       triggeredRebalance: false,
+      needsSyncHomeIds: [],
       belowThresholdHomeIds: [],
       ineligibleHomeIds: [],
       warnings,
@@ -10691,6 +10953,7 @@ async function watchHermesPoolSelectionOnce(
     currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(postStatuses, { includeUnmapped: true })),
     lowestPrimaryRemainingPctBefore,
     triggeredRebalance: true,
+    needsSyncHomeIds: sanitizeForStatus(needsSyncHomeIds),
     belowThresholdHomeIds,
     ineligibleHomeIds,
     rebalanceReceipt: rebalanced.receipt,
