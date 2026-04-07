@@ -420,9 +420,13 @@ $AIM_MANAGED_CODEX_HOME/
   * The authoritative AIM instance continues to own browser login, refresh-capable OAuth state, label assignment, and existing OpenClaw sync behavior. Nothing about the Mac Studio is hardcoded except that it is the current authority in the motivating workflow.
 * Flow B - explicit authority -> consumer import:
   * `aim sync codex --from <authority>` works both as first-time bootstrap and later refresh: it loads local AIM state if present, creates it if missing, fetches authoritative AIM state, validates schema/provider/label/accountId/expiry, imports portable `openai-codex` account metadata plus credentials into the local AIM replica, strips host-local fields such as `openclawBrowserProfile`, records provenance in `imports.authority`, and does not activate any label or mutate OpenClaw as a side effect. For the current operator path, the human-facing authority form should be `agents@amirs-mac-studio`; lower-level `ssh://...` and file-path locators remain parser support, not the preferred daily UX.
-* Flow C - local Codex activation:
+  * If the import would overwrite or remove a locally refreshed imported label, AIM must fail before mutating state and point the operator at either `aim promote codex --to <authority> <label>...` or `aim sync codex --from <authority> --discard-dirty`.
+* Flow C - consumer-side refresh and explicit publish:
+  * `aim <label>` / `aim login <label>` stays local-only on the consumer machine. If the label is an imported `openai-codex` label and the credential changes locally, AIM marks that label dirty under `imports.authority.codex.labelsByName` and surfaces it in status as pending promote.
+  * `aim promote codex --to <authority> <label>...` is the only supported reverse path: it validates that each requested label was imported from that exact authority, sends only portable Codex credential truth, and asks the authority AIM instance to merge only those labels with compare-and-swap protection against authority drift.
+* Flow D - local Codex activation:
   * `aim codex use <label>` validates that a local imported replica exists, validates the selected label, resolves one verified file-backed Codex home, compiles an `AuthDotJson` payload from AIM credentials, writes `auth.json` with semantic-diff behavior, reads back what Codex will see, and records machine-local target metadata in `targets.codexCli`.
-* Flow D - status / drift / fail-loud checks:
+* Flow E - status / drift / fail-loud checks:
   * `aim status` reports imported-source provenance, active local Codex label, effective target home/store mode, and drift or expiry warnings when local Codex state no longer matches AIM intent. The contract is "next Codex process or explicit reload", not in-place mutation of already-running runtimes.
 
 ## 5.3 Object model + abstractions (future)
@@ -437,6 +441,7 @@ $AIM_MANAGED_CODEX_HOME/
   * One authoritative AIM instance is the only writer for shared account inventory and refresh-capable provider credentials.
   * Consumer machines reuse the same `accounts` and `credentials` maps for imported labels, but imported records carry provenance under `imports.authority`; there is no second credential map and no peer authority.
   * Imported local state may persist credentials for offline rotation, but that persistence is replica/cache state derived from the authority, not an independent management surface.
+  * Consumer machines may explicitly publish refreshed imported Codex credentials back to the authority, but only through the label-scoped `aim promote codex` compare-and-swap path; this does not turn the consumer into a peer authority.
   * Host-local fields such as `openclawBrowserProfile`, OpenClaw pins, and other machine bindings do not belong in portable shared truth; they live under `targets.openclaw` or other machine-local target metadata and do not cross the authority-to-consumer import boundary.
   * `targets.openclaw` owns OpenClaw-specific machine metadata such as agent pins, browser-profile bindings, and apply metadata.
   * `targets.codexCli` stores only machine-local target metadata such as `homeDir`, `storeMode`, `activeLabel`, `expectedAccountId`, `lastAppliedAt`, and last readback result; it does not duplicate tokens.

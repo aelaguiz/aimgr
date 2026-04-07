@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import { loginAnthropic, loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
@@ -179,9 +180,11 @@ function normalizeLabel(input) {
     "rebalance",
     "apply",
     "sync",
+    "promote",
     "hermes",
     "codex",
     "browser",
+    "internal",
     "use",
     "show",
     "set",
@@ -223,12 +226,14 @@ function parseArgs(argv) {
     home: undefined,
     state: undefined,
     from: undefined,
+    to: undefined,
     mode: undefined,
     seedFromOpenclaw: undefined,
     userDataDir: undefined,
     profile: undefined,
     session: undefined,
     authFile: undefined,
+    discardDirty: false,
     json: false,
     compact: false,
     accounts: false,
@@ -254,6 +259,11 @@ function parseArgs(argv) {
     }
     if (arg === "--from") {
       opts.from = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--to") {
+      opts.to = argv[i + 1];
       i += 1;
       continue;
     }
@@ -290,6 +300,10 @@ function parseArgs(argv) {
     if (arg === "--auth-file") {
       opts.authFile = argv[i + 1];
       i += 1;
+      continue;
+    }
+    if (arg === "--discard-dirty") {
+      opts.discardDirty = true;
       continue;
     }
     if (arg === "--json") {
@@ -346,6 +360,14 @@ function sleep(ms) {
   });
 }
 
+async function readTextFromStream(stream) {
+  let text = "";
+  for await (const chunk of stream) {
+    text += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+  }
+  return text;
+}
+
 function parseIntegerOption(rawValue, { name, minimum = 0, maximum = Number.POSITIVE_INFINITY } = {}) {
   const raw = String(rawValue ?? "").trim();
   if (!raw) {
@@ -396,6 +418,7 @@ function printHelp() {
     "  aim apply             # advanced: materialize stored OpenClaw assignments from ~/.aimgr/secrets.json",
     "  aim sync openclaw     # explicit alias for apply",
     "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
+    "  aim promote codex --to <authority> <label> [<label>...]  # publish refreshed imported openai-codex labels back to the authority",
     "  aim auth write hermes <label> --auth-file <abs-path>  # write Hermes auth.json only",
     "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
@@ -422,6 +445,8 @@ function printHelp() {
     "  --state <path>  Override SSOT file path (default: <home>/.aimgr/secrets.json).",
     "  --from <src>    Authority source for `aim sync codex`.",
     "                  Examples: agents@amirs-mac-studio  |  ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json",
+    "  --to <dst>      Authority destination for `aim promote codex`.",
+    "                  Examples: agents@amirs-mac-studio  |  ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json",
     "  --mode <id>     Browser binding mode for `aim browser set`.",
     "  --seed-from-openclaw <profileId>  Optional one-time OpenClaw seed source for `--mode aim-profile`.",
     "  --user-data-dir <abs-path>        Required for `--mode chrome-profile`.",
@@ -429,6 +454,7 @@ function printHelp() {
     "  --profile <abs-path>              Required for `--mode agent-browser`.",
     "  --session <name>                  Required for `--mode agent-browser`.",
     "  --auth-file <abs-path>            Required for `aim auth write hermes`; must point at Hermes auth.json.",
+    "  --discard-dirty                   Allow `aim sync codex` to overwrite locally refreshed imported labels that were not promoted.",
     "",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -450,10 +476,25 @@ function resolveAgentsRepoRoot({ repoRoot } = {}) {
   return DEFAULT_AGENTS_REPO_ROOT;
 }
 
+function expandHomeShorthandPath(rawPath, { homeDir }) {
+  const raw = String(rawPath ?? "").trim();
+  if (!raw) return raw;
+  if (raw === "~" || raw === "$HOME") {
+    return homeDir;
+  }
+  if (raw.startsWith("~/")) {
+    return path.join(homeDir, raw.slice(2));
+  }
+  if (raw.startsWith("$HOME/")) {
+    return path.join(homeDir, raw.slice("$HOME/".length));
+  }
+  return raw;
+}
+
 function resolveAimgrStatePath(params) {
   const homeDir = resolveHomeDir(params.home);
   if (params.state) {
-    return path.resolve(params.state);
+    return path.resolve(expandHomeShorthandPath(params.state, { homeDir }));
   }
   return path.join(homeDir, ".aimgr", "secrets.json");
 }
@@ -1164,7 +1205,10 @@ function createEmptyState() {
     },
     imports: {
       authority: {
-        codex: {},
+        codex: {
+          labels: [],
+          labelsByName: {},
+        },
       },
     },
     pool: {
@@ -1262,6 +1306,95 @@ function normalizeLegacyStateV0(raw) {
   }
 
   return migrated;
+}
+
+function getCodexCredentialFromStateUnsafe(state, label) {
+  const byLabel = isObject(state?.credentials?.[OPENAI_CODEX_PROVIDER]) ? state.credentials[OPENAI_CODEX_PROVIDER] : {};
+  return isObject(byLabel?.[label]) ? byLabel[label] : null;
+}
+
+export function buildCodexCredentialFingerprint(credential) {
+  const cred = assertCodexCredentialShape({
+    label: "<fingerprint>",
+    credential,
+    requireFresh: false,
+  });
+  const normalized = {
+    access: String(cred.access).trim(),
+    refresh: String(cred.refresh).trim(),
+    expiresAt: String(cred.expiresAt).trim(),
+    accountId: String(cred.accountId).trim(),
+    ...(typeof cred.idToken === "string" && cred.idToken.trim() ? { idToken: cred.idToken.trim() } : {}),
+  };
+  return `sha256:${createHash("sha256").update(JSON.stringify(normalized)).digest("hex")}`;
+}
+
+function tryBuildCodexCredentialFingerprint(credential) {
+  try {
+    return buildCodexCredentialFingerprint(credential);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeAuthorityCodexImportMetadata(state) {
+  const importMeta = isObject(state.imports?.authority?.codex) ? state.imports.authority.codex : {};
+  const labelSet = new Set();
+  const rawLabels = Array.isArray(importMeta.labels) ? importMeta.labels : [];
+  const rawLabelsByName = isObject(importMeta.labelsByName) ? importMeta.labelsByName : {};
+  for (const labelRaw of [...rawLabels, ...Object.keys(rawLabelsByName)]) {
+    try {
+      labelSet.add(normalizeLabel(labelRaw));
+    } catch {
+      // Ignore malformed imported labels in state normalization; import paths validate strictly.
+    }
+  }
+
+  const importedAtFallback =
+    typeof importMeta.importedAt === "string" && importMeta.importedAt.trim() ? importMeta.importedAt.trim() : null;
+  const nextLabels = [...labelSet].toSorted((a, b) => a.localeCompare(b));
+  const nextLabelsByName = {};
+
+  for (const label of nextLabels) {
+    const existing = isObject(rawLabelsByName[label]) ? rawLabelsByName[label] : {};
+    const credential = getCodexCredentialFromStateUnsafe(state, label);
+    const currentFingerprint = tryBuildCodexCredentialFingerprint(credential);
+    const currentAccountId =
+      typeof credential?.accountId === "string" && credential.accountId.trim() ? credential.accountId.trim() : null;
+    const importedAt =
+      typeof existing.importedAt === "string" && existing.importedAt.trim()
+        ? existing.importedAt.trim()
+        : importedAtFallback;
+    const baseAccountId =
+      typeof existing.baseAccountId === "string" && existing.baseAccountId.trim()
+        ? existing.baseAccountId.trim()
+        : currentAccountId;
+    const baseCredentialFingerprint =
+      typeof existing.baseCredentialFingerprint === "string" && existing.baseCredentialFingerprint.trim()
+        ? existing.baseCredentialFingerprint.trim()
+        : currentFingerprint;
+    const dirtyObservedAt =
+      typeof existing.dirtyObservedAt === "string" && existing.dirtyObservedAt.trim()
+        ? existing.dirtyObservedAt.trim()
+        : null;
+    const lastPromotedAt =
+      typeof existing.lastPromotedAt === "string" && existing.lastPromotedAt.trim()
+        ? existing.lastPromotedAt.trim()
+        : null;
+
+    nextLabelsByName[label] = {
+      ...(importedAt ? { importedAt } : {}),
+      ...(baseAccountId ? { baseAccountId } : {}),
+      ...(baseCredentialFingerprint ? { baseCredentialFingerprint } : {}),
+      dirtyLocal: existing.dirtyLocal === true,
+      ...(dirtyObservedAt ? { dirtyObservedAt } : {}),
+      ...(lastPromotedAt ? { lastPromotedAt } : {}),
+    };
+  }
+
+  importMeta.labels = nextLabels;
+  importMeta.labelsByName = nextLabelsByName;
+  state.imports.authority.codex = importMeta;
 }
 
 function loadAimgrState(statePath) {
@@ -1447,6 +1580,7 @@ function sanitizeForStatus(value) {
     if (exactSecretKeys.has(k)) return true;
     if (k.includes("token")) return true;
     if (k.includes("secret")) return true;
+    if (k.includes("fingerprint")) return true;
     if (k.includes("password")) return true;
     if (k.includes("cookie")) return true;
     if (k === "key" || k.endsWith("_key") || k.endsWith("key")) return true;
@@ -2970,11 +3104,118 @@ function ensureStateShape(state) {
   if (Object.hasOwn(state.targets.piCli, "lastReadback")) {
     delete state.targets.piCli.lastReadback;
   }
+
+  normalizeAuthorityCodexImportMetadata(state);
 }
 
 function getAuthorityCodexImport(state) {
   ensureStateShape(state);
   return state.imports.authority.codex;
+}
+
+function getAuthorityCodexImportLabelMeta(state, label) {
+  const normalizedLabel = normalizeLabel(label);
+  const labelsByName = getAuthorityCodexImport(state).labelsByName;
+  return isObject(labelsByName?.[normalizedLabel]) ? labelsByName[normalizedLabel] : null;
+}
+
+function isImportedCodexLabel(state, label) {
+  const normalizedLabel = normalizeLabel(label);
+  return getImportedCodexLabels(state).includes(normalizedLabel);
+}
+
+function getAuthorityCodexImportLabelStatus(state, label) {
+  const normalizedLabel = normalizeLabel(label);
+  if (!isImportedCodexLabel(state, normalizedLabel)) {
+    return {
+      imported: false,
+      dirty: false,
+      meta: null,
+      currentFingerprint: null,
+      baseFingerprint: null,
+      currentAccountId: null,
+      baseAccountId: null,
+    };
+  }
+
+  const meta = getAuthorityCodexImportLabelMeta(state, normalizedLabel);
+  const credential = getCodexCredential(state, normalizedLabel);
+  const currentFingerprint = tryBuildCodexCredentialFingerprint(credential);
+  const currentAccountId =
+    typeof credential?.accountId === "string" && credential.accountId.trim() ? credential.accountId.trim() : null;
+  const baseFingerprint =
+    typeof meta?.baseCredentialFingerprint === "string" && meta.baseCredentialFingerprint.trim()
+      ? meta.baseCredentialFingerprint.trim()
+      : null;
+  const baseAccountId =
+    typeof meta?.baseAccountId === "string" && meta.baseAccountId.trim() ? meta.baseAccountId.trim() : null;
+  const dirty =
+    meta?.dirtyLocal === true
+    || Boolean(currentFingerprint && baseFingerprint && currentFingerprint !== baseFingerprint)
+    || Boolean(currentAccountId && baseAccountId && currentAccountId !== baseAccountId);
+
+  return {
+    imported: true,
+    dirty,
+    meta,
+    currentFingerprint,
+    baseFingerprint,
+    currentAccountId,
+    baseAccountId,
+  };
+}
+
+function markImportedCodexLabelDirtyState(state, label, { observedAt } = {}) {
+  const normalizedLabel = normalizeLabel(label);
+  ensureStateShape(state);
+  if (!isImportedCodexLabel(state, normalizedLabel)) {
+    return { imported: false, dirty: false };
+  }
+
+  const status = getAuthorityCodexImportLabelStatus(state, normalizedLabel);
+  const meta = getAuthorityCodexImportLabelMeta(state, normalizedLabel);
+  if (!meta) {
+    return { imported: true, dirty: status.dirty };
+  }
+  if (status.dirty) {
+    meta.dirtyLocal = true;
+    if (!(typeof meta.dirtyObservedAt === "string" && meta.dirtyObservedAt.trim())) {
+      meta.dirtyObservedAt = String(observedAt ?? new Date().toISOString());
+    }
+  } else {
+    meta.dirtyLocal = false;
+    if (Object.hasOwn(meta, "dirtyObservedAt")) {
+      delete meta.dirtyObservedAt;
+    }
+  }
+  return { imported: true, dirty: meta.dirtyLocal === true };
+}
+
+function markImportedCodexLabelPromoted(state, label, { promotedAt } = {}) {
+  const normalizedLabel = normalizeLabel(label);
+  ensureStateShape(state);
+  if (!isImportedCodexLabel(state, normalizedLabel)) {
+    return { imported: false };
+  }
+  const credential = getCodexCredential(state, normalizedLabel);
+  const meta = getAuthorityCodexImportLabelMeta(state, normalizedLabel);
+  if (!meta || !credential) {
+    return { imported: true };
+  }
+  const fingerprint = tryBuildCodexCredentialFingerprint(credential);
+  const accountId = typeof credential.accountId === "string" && credential.accountId.trim() ? credential.accountId.trim() : null;
+  if (fingerprint) {
+    meta.baseCredentialFingerprint = fingerprint;
+  }
+  if (accountId) {
+    meta.baseAccountId = accountId;
+  }
+  meta.dirtyLocal = false;
+  if (Object.hasOwn(meta, "dirtyObservedAt")) {
+    delete meta.dirtyObservedAt;
+  }
+  meta.lastPromotedAt = String(promotedAt ?? new Date().toISOString());
+  return { imported: true };
 }
 
 function getOpenclawTargetState(state) {
@@ -3975,6 +4216,24 @@ function buildRemoteCatCommand(remotePath) {
   return `cat -- ${shellQuoteSingle(remotePath)}`;
 }
 
+function buildRemoteStateArg(remotePath) {
+  if (!remotePath || remotePath === DEFAULT_AUTHORITY_STATE_REMOTE_PATH) {
+    return "";
+  }
+  if (remotePath === "$HOME") {
+    return '--state "$HOME"';
+  }
+  if (remotePath.startsWith("$HOME/")) {
+    return `--state "$HOME/${escapeDoubleQuotedShellFragment(remotePath.slice("$HOME/".length))}"`;
+  }
+  return `--state ${shellQuoteSingle(remotePath)}`;
+}
+
+function buildRemoteAimInternalApplyCommand({ remotePath }) {
+  const stateArg = buildRemoteStateArg(remotePath);
+  return ["aim", "internal", "apply-codex-promotion", stateArg].filter(Boolean).join(" ");
+}
+
 export function resolveAuthorityLocator(locator) {
   const raw = String(locator ?? "").trim();
   if (!raw) {
@@ -4028,6 +4287,22 @@ export function resolveAuthorityLocator(locator) {
   };
 }
 
+function buildAuthorityLocatorKey(locator) {
+  const resolved = typeof locator === "string" ? resolveAuthorityLocator(locator) : locator;
+  if (resolved.kind === "ssh") {
+    return `ssh:${resolved.target}:${resolved.port || ""}:${resolved.remotePath}`;
+  }
+  return `file:${resolved.path}`;
+}
+
+function authorityLocatorsMatch(a, b) {
+  try {
+    return buildAuthorityLocatorKey(a) === buildAuthorityLocatorKey(b);
+  } catch {
+    return String(a ?? "").trim() === String(b ?? "").trim();
+  }
+}
+
 function loadAuthorityState(locator) {
   const source = resolveAuthorityLocator(locator);
   if (source.kind === "file") {
@@ -4079,7 +4354,332 @@ function buildPortableCodexCredential({ label, credential }) {
   return next;
 }
 
-function importCodexFromAuthority({ from, state, homeDir }) {
+function normalizeRequestedCodexLabels(labels, { context }) {
+  const normalized = [];
+  const seen = new Set();
+  for (const labelRaw of Array.isArray(labels) ? labels : []) {
+    const label = normalizeLabel(labelRaw);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    normalized.push(label);
+  }
+  if (normalized.length === 0) {
+    throw new Error(`Missing label list for ${context}.`);
+  }
+  return normalized;
+}
+
+function buildDirtyImportedCodexLabels(state) {
+  return getImportedCodexLabels(state)
+    .filter((label) => getAuthorityCodexImportLabelStatus(state, label).dirty)
+    .toSorted((a, b) => a.localeCompare(b));
+}
+
+function buildAuthorityCodexImportStatus(state) {
+  const importMeta = getAuthorityCodexImport(state);
+  const labels = getImportedCodexLabels(state);
+  const labelsByName = {};
+  const dirtyLabels = [];
+  for (const label of labels) {
+    const status = getAuthorityCodexImportLabelStatus(state, label);
+    const meta = status.meta ?? {};
+    labelsByName[label] = {
+      ...(typeof meta.importedAt === "string" && meta.importedAt.trim() ? { importedAt: meta.importedAt.trim() } : {}),
+      ...(typeof meta.baseAccountId === "string" && meta.baseAccountId.trim() ? { baseAccountId: meta.baseAccountId.trim() } : {}),
+      dirtyLocal: status.dirty,
+      ...(typeof meta.dirtyObservedAt === "string" && meta.dirtyObservedAt.trim() ? { dirtyObservedAt: meta.dirtyObservedAt.trim() } : {}),
+      ...(typeof meta.lastPromotedAt === "string" && meta.lastPromotedAt.trim() ? { lastPromotedAt: meta.lastPromotedAt.trim() } : {}),
+    };
+    if (status.dirty) {
+      dirtyLabels.push(label);
+    }
+  }
+  return {
+    ...(typeof importMeta.source === "string" && importMeta.source.trim() ? { source: importMeta.source.trim() } : {}),
+    ...(typeof importMeta.importedAt === "string" && importMeta.importedAt.trim() ? { importedAt: importMeta.importedAt.trim() } : {}),
+    labels,
+    labelsByName,
+    dirtyLabels,
+  };
+}
+
+function formatDirtyImportedCodexSyncError({ authoritySource, labels }) {
+  const joined = normalizeRequestedCodexLabels(labels, { context: "dirty imported labels" }).join(", ");
+  return [
+    `Authority import would discard locally refreshed imported labels: ${joined}.`,
+    `Publish them first with \`aim promote codex --to ${authoritySource || "<authority>"} ${joined}\`,`,
+    "or rerun the import with `--discard-dirty` if you want to overwrite the local changes.",
+  ].join(" ");
+}
+
+function buildDirtyImportedCodexSyncConflicts({ state, incomingByLabel }) {
+  const conflicts = [];
+  for (const label of getImportedCodexLabels(state)) {
+    const status = getAuthorityCodexImportLabelStatus(state, label);
+    if (!status.dirty) continue;
+    const incoming = incomingByLabel.get(label);
+    if (!incoming) {
+      conflicts.push({ label, reason: "removed_from_authority" });
+      continue;
+    }
+    const incomingFingerprint = tryBuildCodexCredentialFingerprint(incoming.credential);
+    if (status.currentFingerprint && incomingFingerprint && status.currentFingerprint === incomingFingerprint) {
+      continue;
+    }
+    conflicts.push({ label, reason: "authority_would_overwrite_local_update" });
+  }
+  return conflicts;
+}
+
+function buildCodexPromotionPayload({ state, to, labels }) {
+  ensureStateShape(state);
+  const authorityImport = getAuthorityCodexImport(state);
+  const requestedLabels = normalizeRequestedCodexLabels(labels, { context: "aim promote codex" });
+  const targetDisplay = typeof to === "string" ? resolveAuthorityLocator(to).display : to.display;
+  if (!(typeof authorityImport.source === "string" && authorityImport.source.trim())) {
+    throw new Error("No authority source is recorded for the local imported Codex replica. Run `aim sync codex --from <authority>` first.");
+  }
+  if (!authorityLocatorsMatch(authorityImport.source, to)) {
+    throw new Error(
+      `Refusing to promote imported labels to a different authority. ` +
+        `Imported source=${authorityImport.source}; requested target=${targetDisplay}.`,
+    );
+  }
+
+  const payloadLabels = {};
+  for (const label of requestedLabels) {
+    if (!isImportedCodexLabel(state, label)) {
+      throw new Error(`Refusing to promote non-imported label=${label}. Pull it from the authority first.`);
+    }
+    const account = getAccountRecord(state, label);
+    if (!isObject(account) || normalizeProviderId(account.provider) !== OPENAI_CODEX_PROVIDER) {
+      throw new Error(`Refusing to promote non-Codex label=${label}.`);
+    }
+
+    const status = getAuthorityCodexImportLabelStatus(state, label);
+    const credential = assertCodexCredentialShape({
+      label,
+      credential: getCodexCredential(state, label),
+      requireFresh: true,
+    });
+    if (status.baseAccountId && status.currentAccountId && status.baseAccountId !== status.currentAccountId) {
+      throw new Error(
+        `Refusing to promote label=${label}: local accountId=${status.currentAccountId} ` +
+          `does not match imported authority accountId=${status.baseAccountId}.`,
+      );
+    }
+    if (!(typeof status.baseFingerprint === "string" && status.baseFingerprint.trim())) {
+      throw new Error(`Missing authority base fingerprint for imported label=${label}. Re-run \`aim sync codex --from ${authorityImport.source}\`.`);
+    }
+
+    payloadLabels[label] = {
+      provider: OPENAI_CODEX_PROVIDER,
+      accountId: credential.accountId,
+      credential: buildPortableCodexCredential({ label, credential }),
+      base: {
+        accountId: status.baseAccountId ?? credential.accountId,
+        credentialFingerprint: status.baseFingerprint,
+      },
+    };
+  }
+
+  return {
+    kind: "aimgr.codexPromotion.v1",
+    sentAt: new Date().toISOString(),
+    sourceAuthority: authorityImport.source.trim(),
+    labels: payloadLabels,
+  };
+}
+
+function applyCodexPromotionPayloadToState({ state, payload, authorityDisplay, observedAt = new Date().toISOString() }) {
+  ensureStateShape(state);
+  if (!isObject(payload) || payload.kind !== "aimgr.codexPromotion.v1") {
+    throw new Error("Invalid codex promotion payload.");
+  }
+  const labelEntries = Object.entries(isObject(payload.labels) ? payload.labels : {});
+  if (labelEntries.length === 0) {
+    throw new Error("Codex promotion payload is empty.");
+  }
+
+  const validations = [];
+  let requiresWrite = false;
+  for (const [labelRaw, entry] of labelEntries) {
+    const label = normalizeLabel(labelRaw);
+    if (!isObject(entry)) {
+      throw new Error(`Invalid codex promotion entry for label=${label}.`);
+    }
+    if (normalizeProviderId(entry.provider) !== OPENAI_CODEX_PROVIDER) {
+      throw new Error(`Refusing codex promotion for label=${label}: provider must be ${OPENAI_CODEX_PROVIDER}.`);
+    }
+
+    const account = getAccountRecord(state, label);
+    if (!isObject(account)) {
+      throw new Error(`Refusing codex promotion for unknown authority label=${label}.`);
+    }
+    if (normalizeProviderId(account.provider) !== OPENAI_CODEX_PROVIDER) {
+      throw new Error(`Refusing codex promotion for label=${label}: authority provider is not ${OPENAI_CODEX_PROVIDER}.`);
+    }
+
+    const authorityCredential = assertCodexCredentialShape({
+      label,
+      credential: getCodexCredential(state, label),
+      requireFresh: false,
+    });
+    const incomingCredential = assertCodexCredentialShape({
+      label,
+      credential: entry.credential,
+      requireFresh: true,
+    });
+    const authorityFingerprint = buildCodexCredentialFingerprint(authorityCredential);
+    const incomingFingerprint = buildCodexCredentialFingerprint(incomingCredential);
+    const baseFingerprint =
+      typeof entry.base?.credentialFingerprint === "string" ? entry.base.credentialFingerprint.trim() : "";
+    const baseAccountId = typeof entry.base?.accountId === "string" ? entry.base.accountId.trim() : "";
+
+    if (!baseFingerprint) {
+      throw new Error(`Refusing codex promotion for label=${label}: missing base fingerprint.`);
+    }
+    if (authorityFingerprint !== baseFingerprint) {
+      throw new Error(
+        `Refusing codex promotion for label=${label}: authority credentials changed since the consumer imported them.`,
+      );
+    }
+    if (baseAccountId && authorityCredential.accountId.trim() !== baseAccountId) {
+      throw new Error(
+        `Refusing codex promotion for label=${label}: authority accountId=${authorityCredential.accountId} ` +
+          `does not match expected imported accountId=${baseAccountId}.`,
+      );
+    }
+    if (authorityCredential.accountId.trim() !== incomingCredential.accountId.trim()) {
+      throw new Error(
+        `Refusing codex promotion for label=${label}: local accountId=${incomingCredential.accountId} ` +
+          `does not match authority accountId=${authorityCredential.accountId}.`,
+      );
+    }
+
+    const blockedReason =
+      typeof account.reauth?.blockedReason === "string" && account.reauth.blockedReason.trim()
+        ? account.reauth.blockedReason.trim()
+        : "";
+    const needsCredentialWrite = authorityFingerprint !== incomingFingerprint;
+    const needsCleanup = Boolean(blockedReason);
+    if (needsCredentialWrite || needsCleanup) {
+      requiresWrite = true;
+    }
+    validations.push({
+      label,
+      incomingCredential,
+      needsCredentialWrite,
+      needsCleanup,
+    });
+  }
+
+  if (!requiresWrite) {
+    return {
+      status: "noop",
+      observedAt,
+      target: authorityDisplay,
+      labels: validations.map((entry) => entry.label).toSorted((a, b) => a.localeCompare(b)),
+    };
+  }
+
+  for (const validation of validations) {
+    state.credentials[OPENAI_CODEX_PROVIDER][validation.label] = validation.incomingCredential;
+    const reauth = getAccountReauthState(state, validation.label, { create: true });
+    reauth.lastAttemptAt = observedAt;
+    reauth.lastVerifiedAt = observedAt;
+    if (Object.hasOwn(reauth, "blockedReason")) {
+      delete reauth.blockedReason;
+    }
+  }
+
+  return {
+    status: "applied",
+    observedAt,
+    target: authorityDisplay,
+    labels: validations.map((entry) => entry.label).toSorted((a, b) => a.localeCompare(b)),
+  };
+}
+
+function applyCodexPromotionToFileAuthority({ source, payload }) {
+  if (!fs.existsSync(source.path)) {
+    throw new Error(`Authority AIM state file not found: ${source.path}`);
+  }
+  const state = loadAimgrState(source.path);
+  const receipt = applyCodexPromotionPayloadToState({
+    state,
+    payload,
+    authorityDisplay: source.display,
+  });
+  if (receipt.status === "applied") {
+    writeJsonFileWithBackup(source.path, state);
+  }
+  return receipt;
+}
+
+function invokeCodexPromotionOnRemoteAuthority({ source, payload, spawnImpl = spawnSync }) {
+  const args = [];
+  if (source.port) {
+    args.push("-p", source.port);
+  }
+  args.push(source.target, buildRemoteAimInternalApplyCommand({ remotePath: source.remotePath }));
+  const result = spawnImpl("ssh", args, {
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+    input: `${JSON.stringify(payload)}\n`,
+  });
+  if (result?.error) {
+    throw new Error(`Failed to promote codex credentials via ssh (${source.display}): ${String(result.error?.message ?? result.error)}`);
+  }
+  if (result?.status !== 0) {
+    throw new Error(
+      `ssh codex promotion failed for ${source.display} (exit ${result.status}). ` +
+        `${String(result.stderr ?? "").trim() || String(result.stdout ?? "").trim()}`,
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(String(result.stdout ?? ""));
+  } catch (err) {
+    throw new Error(`Failed to parse codex promotion receipt from ${source.display}: ${String(err?.message ?? err)}`);
+  }
+  const receipt = isObject(parsed?.applied) ? parsed.applied : parsed;
+  if (!isObject(receipt) || typeof receipt.status !== "string") {
+    throw new Error(`Remote codex promotion receipt from ${source.display} is missing status.`);
+  }
+  return receipt;
+}
+
+export function promoteCodexToAuthority({ to, labels, state }, { spawnImpl = spawnSync } = {}) {
+  ensureStateShape(state);
+  if (!String(to ?? "").trim()) {
+    throw new Error("Missing authority locator. Use: aim promote codex --to agents@amirs-mac-studio <label> [<label>...]");
+  }
+  const source = resolveAuthorityLocator(to);
+  const payload = buildCodexPromotionPayload({ state, to: source, labels });
+  const receipt =
+    source.kind === "file"
+      ? applyCodexPromotionToFileAuthority({ source, payload })
+      : invokeCodexPromotionOnRemoteAuthority({ source, payload, spawnImpl });
+
+  const promotedAt = typeof receipt.observedAt === "string" && receipt.observedAt.trim()
+    ? receipt.observedAt.trim()
+    : new Date().toISOString();
+  for (const label of normalizeRequestedCodexLabels(labels, { context: "aim promote codex" })) {
+    markImportedCodexLabelPromoted(state, label, { promotedAt });
+  }
+
+  return {
+    action: "promote_codex",
+    status: receipt.status,
+    observedAt: promotedAt,
+    target: source.display,
+    labels: normalizeRequestedCodexLabels(labels, { context: "aim promote codex" }),
+  };
+}
+
+function importCodexFromAuthority({ from, state, homeDir, discardDirty = false }) {
   ensureStateShape(state);
   const { source, state: authorityState } = loadAuthorityState(from);
   ensureStateShape(authorityState);
@@ -4102,6 +4702,16 @@ function importCodexFromAuthority({ from, state, homeDir }) {
 
   if (incomingLabels.length === 0) {
     throw new Error(`Authority ${source.display} has no importable ${OPENAI_CODEX_PROVIDER} labels.`);
+  }
+
+  const dirtyConflicts = buildDirtyImportedCodexSyncConflicts({ state, incomingByLabel });
+  if (dirtyConflicts.length > 0 && discardDirty !== true) {
+    throw new Error(
+      formatDirtyImportedCodexSyncError({
+        authoritySource: source.display,
+        labels: dirtyConflicts.map((entry) => entry.label),
+      }),
+    );
   }
 
   const previousImported = new Set(getImportedCodexLabels(state));
@@ -4143,9 +4753,14 @@ function importCodexFromAuthority({ from, state, homeDir }) {
       clearManagedPiCliActivation({ state, homeDir });
       delete state.targets.piCli.lastSelectionReceipt;
     }
+    if (isObject(state.imports.authority.codex.labelsByName)) {
+      delete state.imports.authority.codex.labelsByName[label];
+    }
     removedLabels.push(label);
   }
 
+  const importedAt = new Date().toISOString();
+  const existingImportMeta = getAuthorityCodexImport(state);
   for (const [label, incoming] of incomingByLabel.entries()) {
     const existingLocal = isObject(state.accounts[label]) ? state.accounts[label] : {};
     const incomingExpect = isObject(incoming.account.expect) ? structuredClone(incoming.account.expect) : null;
@@ -4171,14 +4786,21 @@ function importCodexFromAuthority({ from, state, homeDir }) {
     }
     state.credentials[OPENAI_CODEX_PROVIDER][label] = incoming.credential;
     assertNoCodexAccountIdCollisions(state, label, incoming.credential.accountId);
+    const previousMeta = isObject(existingImportMeta.labelsByName?.[label]) ? existingImportMeta.labelsByName[label] : {};
+    existingImportMeta.labelsByName[label] = {
+      importedAt,
+      baseAccountId: incoming.credential.accountId,
+      baseCredentialFingerprint: buildCodexCredentialFingerprint(incoming.credential),
+      dirtyLocal: false,
+      ...(typeof previousMeta.lastPromotedAt === "string" && previousMeta.lastPromotedAt.trim()
+        ? { lastPromotedAt: previousMeta.lastPromotedAt.trim() }
+        : {}),
+    };
   }
-
-  const importedAt = new Date().toISOString();
-  state.imports.authority.codex = {
-    source: source.display,
-    importedAt,
-    labels: incomingLabels.toSorted((a, b) => a.localeCompare(b)),
-  };
+  existingImportMeta.source = source.display;
+  existingImportMeta.importedAt = importedAt;
+  existingImportMeta.labels = incomingLabels.toSorted((a, b) => a.localeCompare(b));
+  state.imports.authority.codex = existingImportMeta;
 
   return {
     source: source.display,
@@ -7720,6 +8342,10 @@ function buildWarningsFromState(state) {
     }
   }
 
+  for (const label of buildDirtyImportedCodexLabels(state)) {
+    warnings.push({ kind: "local_update_not_promoted", provider: OPENAI_CODEX_PROVIDER, label });
+  }
+
   // Stored assignments pointing to missing labels/creds
   const assignments = getOpenclawAssignments(state);
   for (const [agentId, label] of Object.entries(assignments)) {
@@ -7812,6 +8438,7 @@ function buildInteractiveLoginStatus({ state, label }) {
 
 async function buildStatusView({ statePath, state, homeDir }) {
   ensureStateShape(state);
+  const authorityCodexImportStatus = buildAuthorityCodexImportStatus(state);
   const usageByProvider = await probeUsageSnapshotsByProvider(state);
   const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
   const codexPool = collectCodexPoolStatus({
@@ -7839,6 +8466,8 @@ async function buildStatusView({ statePath, state, homeDir }) {
     const expiresAt = cred && typeof cred.expiresAt === "string" ? cred.expiresAt : null;
     const accountId = cred && typeof cred.accountId === "string" ? cred.accountId : null;
     const usage = usageByProvider[provider]?.[label] ?? { provider, ok: false, status: cred ? "unknown" : "n/a" };
+    const authorityImportStatus =
+      provider === OPENAI_CODEX_PROVIDER ? getAuthorityCodexImportLabelStatus(state, label) : null;
     const operator =
       provider === OPENAI_CODEX_PROVIDER
         ? (codexPool.byLabel[label]
@@ -7888,6 +8517,13 @@ async function buildStatusView({ statePath, state, homeDir }) {
         ...(expiresAt ? { expiresIn: formatExpiresIn(expiresAt) } : {}),
       },
       usage,
+      ...(authorityImportStatus?.imported
+        ? {
+            authorityImport: {
+              dirtyLocal: authorityImportStatus.dirty,
+            },
+          }
+        : {}),
     });
   }
 
@@ -7955,7 +8591,7 @@ async function buildStatusView({ statePath, state, homeDir }) {
     pressure: sanitizeForStatus(poolInstrument.pressure),
     projection: sanitizeForStatus(poolInstrument.projection),
     capacity: sanitizeForStatus(capacity),
-    imports: { authority: { codex: sanitizeForStatus(getAuthorityCodexImport(state)) } },
+    imports: { authority: { codex: sanitizeForStatus(authorityCodexImportStatus) } },
     codexCli: sanitizeForStatus(codexCli),
     claudeCli: sanitizeForStatus(claudeCli),
     piCli: sanitizeForStatus(piCli),
@@ -8087,6 +8723,9 @@ function buildStatusAverageAccountTableRow(accounts, now = Date.now()) {
 function buildStatusAccountFlags(account) {
   const flags = [];
   const detailReason = String(account?.operator?.detailReason ?? "").trim();
+  if (account?.authorityImport?.dirtyLocal === true) {
+    flags.push("dirty_authority");
+  }
   if (detailReason === "missing_browser" || detailReason === "binding_missing_for_future_reauth") {
     flags.push("missing_browser");
   } else if (detailReason && detailReason !== "manual_mode") {
@@ -8169,11 +8808,15 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
     typeof view.imports?.authority?.codex?.source === "string" ? view.imports.authority.codex.source.trim() : "";
   const authorityImportedAt =
     typeof view.imports?.authority?.codex?.importedAt === "string" ? view.imports.authority.codex.importedAt.trim() : "";
+  const dirtyImportedLabels = Array.isArray(view.imports?.authority?.codex?.dirtyLabels) ? view.imports.authority.codex.dirtyLabels : [];
   const importedLabels = Array.isArray(view.codexCli?.importedLabels) ? view.codexCli.importedLabels : [];
   if (authoritySource || importedLabels.length > 0) {
     lines.push(`Authority import: source=${authoritySource || "none"} labels=${importedLabels.length}`);
     if (authorityImportedAt) {
       lines.push(`Authority import age: ${formatAgeSince(authorityImportedAt)}`);
+    }
+    if (dirtyImportedLabels.length > 0) {
+      lines.push(`Authority dirty: ${dirtyImportedLabels.length} label(s) pending promote`);
     }
   }
   lines.push("");
@@ -8978,6 +9621,10 @@ async function performLabelMaintenance({
     syncedHomeIds: [],
     writes: [],
   };
+  let authorityPromotion = {
+    imported: false,
+    dirty: false,
+  };
 
   try {
     if (provider === OPENAI_CODEX_PROVIDER) {
@@ -9023,6 +9670,9 @@ async function performLabelMaintenance({
 
     recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
     if (provider === OPENAI_CODEX_PROVIDER) {
+      authorityPromotion = markImportedCodexLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
+    }
+    if (provider === OPENAI_CODEX_PROVIDER) {
       hermesSync = syncHermesHomesForLabel({
         state,
         label: normalizedLabel,
@@ -9038,6 +9688,19 @@ async function performLabelMaintenance({
         status: "ready",
         observedAt: attemptedAt,
       },
+      ...(authorityPromotion.imported
+        ? {
+            authorityPromotion: {
+              dirty: authorityPromotion.dirty,
+              ...(authorityPromotion.dirty
+                ? {
+                    status: "pending_publish",
+                    target: typeof getAuthorityCodexImport(state).source === "string" ? getAuthorityCodexImport(state).source : null,
+                  }
+                : { status: "clean" }),
+            },
+          }
+        : {}),
       hermesSync,
     };
   } catch (err) {
@@ -11037,7 +11700,7 @@ export async function main(argv, deps = {}) {
     watchLoopMaxIterations = Number.POSITIVE_INFINITY,
   } = deps;
   const { opts, positional } = parseArgs(argv);
-  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "auth", "codex", "hermes", "claude", "pi", "browser"]);
+  const knownCmds = new Set(["status", "login", "pin", "autopin", "rebalance", "apply", "sync", "promote", "auth", "codex", "hermes", "claude", "pi", "browser", "internal"]);
   let cmd = positional[0];
   let shorthandLabel = null;
 
@@ -11163,6 +11826,37 @@ export async function main(argv, deps = {}) {
     throw new Error(`Unsupported browser subcommand: ${subcmd} (supported: show, set).`);
   }
 
+  if (cmd === "internal") {
+    const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+    if (!subcmd) {
+      throw new Error("Missing internal subcommand.");
+    }
+    if (subcmd !== "apply-codex-promotion") {
+      throw new Error(`Unsupported internal subcommand: ${subcmd}.`);
+    }
+    const rawPayload = await readTextFromStream(stdin);
+    if (!String(rawPayload ?? "").trim()) {
+      throw new Error("Missing codex promotion payload on stdin.");
+    }
+    let payload;
+    try {
+      payload = JSON.parse(rawPayload);
+    } catch (err) {
+      throw new Error(`Invalid codex promotion payload JSON: ${String(err?.message ?? err)}`);
+    }
+    const state = loadAimgrState(statePath);
+    const applied = applyCodexPromotionPayloadToState({
+      state,
+      payload,
+      authorityDisplay: statePath,
+    });
+    if (applied.status === "applied") {
+      writeJsonFileWithBackup(statePath, state);
+    }
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, applied }), null, 2)}\n`);
+    return;
+  }
+
   if (cmd === "pin") {
     throw new Error("`aim pin` was removed. Use `aim rebalance openclaw` for selection and `aim apply` only to materialize stored assignments.");
   }
@@ -11250,6 +11944,7 @@ export async function main(argv, deps = {}) {
         from: opts.from,
         state,
         homeDir,
+        discardDirty: opts.discardDirty === true,
       });
       writeJsonFileWithBackup(statePath, state);
       process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, imported }), null, 2)}\n`);
@@ -11261,6 +11956,26 @@ export async function main(argv, deps = {}) {
       );
     }
     throw new Error(`Unsupported sync target: ${system} (supported: openclaw, codex).`);
+  }
+
+  if (cmd === "promote") {
+    const system = String(positional[1] ?? "").trim().toLowerCase();
+    if (!system) {
+      throw new Error("Missing promote target. Usage: aim promote codex --to <authority> <label> [<label>...]");
+    }
+    if (system !== "codex") {
+      throw new Error(`Unsupported promote target: ${system} (supported: codex).`);
+    }
+    const labels = positional.slice(2);
+    const state = loadAimgrState(statePath);
+    const promoted = promoteCodexToAuthority({
+      to: opts.to,
+      labels,
+      state,
+    });
+    writeJsonFileWithBackup(statePath, state);
+    process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, promoted }), null, 2)}\n`);
+    return;
   }
 
   if (cmd === "codex") {

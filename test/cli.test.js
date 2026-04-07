@@ -4,8 +4,10 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 
 import {
+  buildCodexCredentialFingerprint,
   buildOpenclawModelSyncOps,
   discoverSuggestedBrowserBindings,
   derivePoolAccountStatus,
@@ -31,6 +33,7 @@ import {
   refreshOpenclawAgentDemandLedger,
   refreshOrLoginCodex,
   resetSessionEntryToDefaults,
+  promoteCodexToAuthority,
   resolveAuthorityLocator,
   setBrowserBinding,
   showBrowserBinding,
@@ -2418,6 +2421,8 @@ test("sync codex bootstraps consumer state and strips authority-local OpenClaw m
   const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
   assert.equal(consumerState.imports.authority.codex.source, path.resolve(authorityStatePath));
   assert.deepEqual(consumerState.imports.authority.codex.labels, ["boss"]);
+  assert.equal(consumerState.imports.authority.codex.labelsByName.boss.dirtyLocal, false);
+  assert.equal(consumerState.imports.authority.codex.labelsByName.boss.baseAccountId, "acct_123");
   assert.equal(consumerState.accounts.boss.provider, "openai-codex");
   assert.equal(consumerState.accounts.boss.browser?.seededFrom, undefined);
   assert.equal(consumerState.accounts.boss.reauth?.mode, "manual-callback");
@@ -2428,6 +2433,702 @@ test("sync codex bootstraps consumer state and strips authority-local OpenClaw m
   assert.equal(consumerState.targets.interactiveOAuth, undefined);
   assert.equal(consumerState.targets.codexCli.activeLabel, undefined);
   assert.equal(fs.existsSync(path.join(consumerHome, ".openclaw", "agents", "main", "agent", "auth-profiles.json")), false);
+});
+
+test("login marks imported codex labels dirty after a local refresh", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const oldJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_123",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const newJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_123",
+      chatgpt_plan_type: "pro",
+    },
+    refreshed: true,
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: oldJwt,
+          refresh: "OLD_REFRESH",
+          idToken: oldJwt,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          accountId: "acct_123",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@studio",
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const out = JSON.parse(await runCli(["login", "boss", "--home", home], {
+    refreshOpenAICodexImpl: async () => ({
+      access: newJwt,
+      refresh: "NEW_REFRESH",
+      expires: Date.now() + 7200_000,
+      accountId: "acct_123",
+    }),
+  }));
+
+  assert.equal(out.authorityPromotion.status, "pending_publish");
+  assert.equal(out.authorityPromotion.target, "agents@studio");
+
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.imports.authority.codex.labelsByName.boss.dirtyLocal, true);
+  assert.equal(updatedState.imports.authority.codex.labelsByName.boss.baseAccountId, "acct_123");
+  assert.ok(typeof updatedState.imports.authority.codex.labelsByName.boss.dirtyObservedAt === "string");
+});
+
+test("promote codex updates only the selected authority labels and clears local dirty state", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  const bossAuthorityJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+  });
+  const bossLocalJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+    refreshed: true,
+  });
+  const qaJwt = makeFakeJwt({
+    email: "qa@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_456", chatgpt_plan_type: "pro" },
+  });
+
+  const bossAuthorityCredential = {
+    access: bossAuthorityJwt,
+    refresh: "AUTHORITY_REFRESH",
+    idToken: bossAuthorityJwt,
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const bossLocalCredential = {
+    access: bossLocalJwt,
+    refresh: "LOCAL_REFRESH",
+    idToken: bossLocalJwt,
+    expiresAt: new Date(Date.now() + 7200_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const qaCredential = {
+    access: qaJwt,
+    refresh: "QA_REFRESH",
+    idToken: qaJwt,
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    accountId: "acct_456",
+  };
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: bossAuthorityCredential,
+        qa: qaCredential,
+      },
+      anthropic: {},
+    },
+    imports: { authority: { codex: { labels: [], labelsByName: {} } } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: bossLocalCredential,
+        qa: qaCredential,
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: path.resolve(authorityStatePath),
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss", "qa"],
+          labelsByName: {
+            boss: {
+              importedAt: new Date(0).toISOString(),
+              baseAccountId: "acct_123",
+              baseCredentialFingerprint: buildCodexCredentialFingerprint(bossAuthorityCredential),
+              dirtyLocal: true,
+              dirtyObservedAt: new Date(1000).toISOString(),
+            },
+            qa: {
+              importedAt: new Date(0).toISOString(),
+              baseAccountId: "acct_456",
+              baseCredentialFingerprint: buildCodexCredentialFingerprint(qaCredential),
+              dirtyLocal: false,
+            },
+          },
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const out = JSON.parse(await runCli(["promote", "codex", "--to", authorityStatePath, "boss", "--home", consumerHome]));
+  assert.equal(out.promoted.status, "applied");
+  assert.deepEqual(out.promoted.labels, ["boss"]);
+
+  const authorityState = JSON.parse(fs.readFileSync(authorityStatePath, "utf8"));
+  assert.equal(authorityState.credentials["openai-codex"].boss.refresh, "LOCAL_REFRESH");
+  assert.equal(authorityState.credentials["openai-codex"].qa.refresh, "QA_REFRESH");
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.imports.authority.codex.labelsByName.boss.dirtyLocal, false);
+  assert.equal(
+    consumerState.imports.authority.codex.labelsByName.boss.baseCredentialFingerprint,
+    buildCodexCredentialFingerprint(bossLocalCredential),
+  );
+  assert.ok(typeof consumerState.imports.authority.codex.labelsByName.boss.lastPromotedAt === "string");
+});
+
+test("promote codex fails loudly when the authority credential changed since import", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  const importedJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+  });
+  const authorityNowJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+    authorityChanged: true,
+  });
+  const consumerJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+    refreshed: true,
+  });
+
+  const importedCredential = {
+    access: importedJwt,
+    refresh: "IMPORTED_REFRESH",
+    idToken: importedJwt,
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const authorityCredential = {
+    access: authorityNowJwt,
+    refresh: "AUTHORITY_REFRESH",
+    idToken: authorityNowJwt,
+    expiresAt: new Date(Date.now() + 7200_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const consumerCredential = {
+    access: consumerJwt,
+    refresh: "LOCAL_REFRESH",
+    idToken: consumerJwt,
+    expiresAt: new Date(Date.now() + 10800_000).toISOString(),
+    accountId: "acct_123",
+  };
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: authorityCredential,
+      },
+      anthropic: {},
+    },
+    imports: { authority: { codex: { labels: [], labelsByName: {} } } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: consumerCredential,
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: path.resolve(authorityStatePath),
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
+          labelsByName: {
+            boss: {
+              importedAt: new Date(0).toISOString(),
+              baseAccountId: "acct_123",
+              baseCredentialFingerprint: buildCodexCredentialFingerprint(importedCredential),
+              dirtyLocal: true,
+              dirtyObservedAt: new Date(1000).toISOString(),
+            },
+          },
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  await assert.rejects(
+    () => runCli(["promote", "codex", "--to", authorityStatePath, "boss", "--home", consumerHome]),
+    /authority credentials changed since the consumer imported them/,
+  );
+
+  const authorityState = JSON.parse(fs.readFileSync(authorityStatePath, "utf8"));
+  assert.equal(authorityState.credentials["openai-codex"].boss.refresh, "AUTHORITY_REFRESH");
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.imports.authority.codex.labelsByName.boss.dirtyLocal, true);
+});
+
+test("sync codex blocks when it would overwrite a locally refreshed imported label", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  const authorityJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+  });
+  const localJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+    refreshed: true,
+  });
+  const authorityCredential = {
+    access: authorityJwt,
+    refresh: "AUTHORITY_REFRESH",
+    idToken: authorityJwt,
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const localCredential = {
+    access: localJwt,
+    refresh: "LOCAL_REFRESH",
+    idToken: localJwt,
+    expiresAt: new Date(Date.now() + 7200_000).toISOString(),
+    accountId: "acct_123",
+  };
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": { boss: authorityCredential },
+      anthropic: {},
+    },
+    imports: { authority: { codex: { labels: [], labelsByName: {} } } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": { boss: localCredential },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: path.resolve(authorityStatePath),
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
+          labelsByName: {
+            boss: {
+              importedAt: new Date(0).toISOString(),
+              baseAccountId: "acct_123",
+              baseCredentialFingerprint: buildCodexCredentialFingerprint(authorityCredential),
+              dirtyLocal: true,
+              dirtyObservedAt: new Date(1000).toISOString(),
+            },
+          },
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  await assert.rejects(
+    () => runCli(["sync", "codex", "--from", authorityStatePath, "--home", consumerHome]),
+    /Authority import would discard locally refreshed imported labels: boss/,
+  );
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.credentials["openai-codex"].boss.refresh, "LOCAL_REFRESH");
+  assert.equal(consumerState.imports.authority.codex.labelsByName.boss.dirtyLocal, true);
+});
+
+test("sync codex --discard-dirty overwrites local dirty imports and clears their dirty state", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  const authorityJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+  });
+  const localJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+    refreshed: true,
+  });
+  const authorityCredential = {
+    access: authorityJwt,
+    refresh: "AUTHORITY_REFRESH",
+    idToken: authorityJwt,
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const localCredential = {
+    access: localJwt,
+    refresh: "LOCAL_REFRESH",
+    idToken: localJwt,
+    expiresAt: new Date(Date.now() + 7200_000).toISOString(),
+    accountId: "acct_123",
+  };
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": { boss: authorityCredential },
+      anthropic: {},
+    },
+    imports: { authority: { codex: { labels: [], labelsByName: {} } } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": { boss: localCredential },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: path.resolve(authorityStatePath),
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
+          labelsByName: {
+            boss: {
+              importedAt: new Date(0).toISOString(),
+              baseAccountId: "acct_123",
+              baseCredentialFingerprint: buildCodexCredentialFingerprint(authorityCredential),
+              dirtyLocal: true,
+              dirtyObservedAt: new Date(1000).toISOString(),
+            },
+          },
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  await runCli(["sync", "codex", "--from", authorityStatePath, "--discard-dirty", "--home", consumerHome]);
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.credentials["openai-codex"].boss.refresh, "AUTHORITY_REFRESH");
+  assert.equal(consumerState.imports.authority.codex.labelsByName.boss.dirtyLocal, false);
+  assert.equal(
+    consumerState.imports.authority.codex.labelsByName.boss.baseCredentialFingerprint,
+    buildCodexCredentialFingerprint(authorityCredential),
+  );
+});
+
+test("sync codex clears dirty state when the authority already matches the refreshed local credential", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  const importedJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+  });
+  const refreshedJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+    refreshed: true,
+  });
+  const importedCredential = {
+    access: importedJwt,
+    refresh: "IMPORTED_REFRESH",
+    idToken: importedJwt,
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const refreshedCredential = {
+    access: refreshedJwt,
+    refresh: "REFRESHED_REFRESH",
+    idToken: refreshedJwt,
+    expiresAt: new Date(Date.now() + 7200_000).toISOString(),
+    accountId: "acct_123",
+  };
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": { boss: refreshedCredential },
+      anthropic: {},
+    },
+    imports: { authority: { codex: { labels: [], labelsByName: {} } } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": { boss: refreshedCredential },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: path.resolve(authorityStatePath),
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
+          labelsByName: {
+            boss: {
+              importedAt: new Date(0).toISOString(),
+              baseAccountId: "acct_123",
+              baseCredentialFingerprint: buildCodexCredentialFingerprint(importedCredential),
+              dirtyLocal: true,
+              dirtyObservedAt: new Date(1000).toISOString(),
+            },
+          },
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  await runCli(["sync", "codex", "--from", authorityStatePath, "--home", consumerHome]);
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.credentials["openai-codex"].boss.refresh, "REFRESHED_REFRESH");
+  assert.equal(consumerState.imports.authority.codex.labelsByName.boss.dirtyLocal, false);
+});
+
+test("internal apply-codex-promotion reads the payload from stdin and updates the authority state", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const authorityJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+  });
+  const refreshedJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+    refreshed: true,
+  });
+  const authorityCredential = {
+    access: authorityJwt,
+    refresh: "AUTHORITY_REFRESH",
+    idToken: authorityJwt,
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const refreshedCredential = {
+    access: refreshedJwt,
+    refresh: "REFRESHED_REFRESH",
+    idToken: refreshedJwt,
+    expiresAt: new Date(Date.now() + 7200_000).toISOString(),
+    accountId: "acct_123",
+  };
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback", blockedReason: "stale" } },
+    },
+    credentials: {
+      "openai-codex": { boss: authorityCredential },
+      anthropic: {},
+    },
+    imports: { authority: { codex: { labels: [], labelsByName: {} } } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const payload = {
+    kind: "aimgr.codexPromotion.v1",
+    sentAt: new Date().toISOString(),
+    sourceAuthority: "agents@studio",
+    labels: {
+      boss: {
+        provider: "openai-codex",
+        accountId: "acct_123",
+        credential: refreshedCredential,
+        base: {
+          accountId: "acct_123",
+          credentialFingerprint: buildCodexCredentialFingerprint(authorityCredential),
+        },
+      },
+    },
+  };
+
+  await runCli(["internal", "apply-codex-promotion", "--home", home], {
+    stdin: Readable.from([JSON.stringify(payload)]),
+  });
+
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.credentials["openai-codex"].boss.refresh, "REFRESHED_REFRESH");
+  assert.equal(updatedState.accounts.boss.reauth.blockedReason, undefined);
+});
+
+test("promoteCodexToAuthority uses the SSH receiver and sends the payload on stdin", () => {
+  const authorityCredential = {
+    access: makeFakeJwt({
+      email: "boss@example.com",
+      "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+    }),
+    refresh: "AUTHORITY_REFRESH",
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const localCredential = {
+    access: makeFakeJwt({
+      email: "boss@example.com",
+      "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
+      refreshed: true,
+    }),
+    refresh: "LOCAL_REFRESH",
+    expiresAt: new Date(Date.now() + 7200_000).toISOString(),
+    accountId: "acct_123",
+  };
+
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: localCredential,
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@studio",
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
+          labelsByName: {
+            boss: {
+              importedAt: new Date(0).toISOString(),
+              baseAccountId: "acct_123",
+              baseCredentialFingerprint: buildCodexCredentialFingerprint(authorityCredential),
+              dirtyLocal: true,
+              dirtyObservedAt: new Date(1000).toISOString(),
+            },
+          },
+        },
+      },
+    },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  };
+
+  const calls = [];
+  const promoted = promoteCodexToAuthority(
+    {
+      to: "agents@studio",
+      labels: ["boss"],
+      state,
+    },
+    {
+      spawnImpl: (cmd, args, options) => {
+        calls.push({ cmd, args, options });
+        return {
+          status: 0,
+          stdout: JSON.stringify({ ok: true, applied: { status: "applied", observedAt: new Date().toISOString() } }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  assert.equal(promoted.status, "applied");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, "ssh");
+  assert.equal(calls[0].args[0], "agents@studio");
+  assert.match(calls[0].args[1], /aim internal apply-codex-promotion/);
+  const payload = JSON.parse(calls[0].options.input);
+  assert.equal(payload.kind, "aimgr.codexPromotion.v1");
+  assert.deepEqual(Object.keys(payload.labels), ["boss"]);
+  assert.equal(state.imports.authority.codex.labelsByName.boss.dirtyLocal, false);
 });
 
 test("status text shows manual-callback and browser-managed login modes", async () => {

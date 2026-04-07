@@ -256,6 +256,14 @@ This command:
 
 The contract is "next Codex process", not hot-swapping an already-running long-lived process.
 
+If you locally reauth one of those imported Codex labels and want to publish that refresh back to the authority, use:
+
+```bash
+aim promote codex --to agents@amirs-mac-studio <label> [<label>...]
+```
+
+Later imports will not silently clobber unpublished local refreshes. `aim sync codex --from ...` now fails loud on those dirty imported labels unless you explicitly add `--discard-dirty`.
+
 ### 4A) Guard local Codex overnight
 
 Use this when you want AIM to keep checking the current local Codex target and rotate through the existing selector before the active label falls too low in the 5h window.
@@ -476,7 +484,7 @@ Human-readable or JSON summary of:
 - warnings
 - OpenClaw assignments and last rebalance receipt
 - weighted spread details (`allocationMode`, `perAccountLoad`)
-- Codex authority source, active label, and last selection receipt
+- Codex authority source, active label, last selection receipt, and dirty imported labels pending promote
 - next-best candidate and capacity projection
 
 ```bash
@@ -498,6 +506,7 @@ Rules:
 - `aim <label>` opens the guided label panel on a TTY
 - non-TTY `aim <label>` behaves like explicit `aim login <label>`
 - `aim login <label>` keeps the one-shot JSON-style maintenance contract for scripts/tests/admin use
+- if an imported Codex label changes locally, AIM marks it pending promote instead of pretending the authority already knows
 
 ### `aim rebalance openclaw`
 
@@ -535,6 +544,28 @@ Supported locator forms:
 - `agents@amirs-mac-studio`
 - `ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json`
 - `/absolute/path/to/secrets.json`
+
+Safety rules:
+
+- if the import would overwrite or remove a locally refreshed imported label, AIM refuses the sync and tells you which labels are dirty
+- publish those local updates first with `aim promote codex --to <authority> <label>...`
+- or rerun the pull with `--discard-dirty` if you intentionally want the authority copy to win
+
+### `aim promote codex --to <authority> <label> [<label>...]`
+
+Publishes locally refreshed imported Codex credentials back to the same authority they originally came from:
+
+```bash
+aim promote codex --to agents@amirs-mac-studio boss
+aim promote codex --to agents@amirs-mac-studio boss lessons
+```
+
+Promotion is intentionally narrow:
+
+- it only works for imported `openai-codex` labels from the exact same authority source
+- it updates only the requested labels on the authority
+- it uses compare-and-swap protection, so the push fails if the authority copy changed since your last import
+- it does not create labels, delete labels, or push machine-local target state back upstream
 
 ### `aim codex use`
 
@@ -630,7 +661,14 @@ Current shape:
       "codex": {
         "source": "agents@amirs-mac-studio",
         "importedAt": "2026-03-21T03:21:00.000Z",
-        "labels": ["boss", "lessons"]
+        "labels": ["boss", "lessons"],
+        "labelsByName": {
+          "boss": {
+            "importedAt": "2026-03-21T03:21:00.000Z",
+            "baseAccountId": "acct_123",
+            "dirtyLocal": false
+          }
+        }
       }
     }
   },
@@ -692,6 +730,8 @@ Durable truth lives in:
 - `imports.authority.codex`
 - minimal pool history
 
+For imported Codex labels, `imports.authority.codex.labelsByName` tracks the imported baseline per label. `aim status --json` also derives `imports.authority.codex.dirtyLabels` so operators can see which local refreshes still need promotion back to the authority.
+
 Derived target state lives in:
 
 - `targets.openclaw`
@@ -720,6 +760,36 @@ aim status
 ```
 
 Then reauth a label with `aim <label>` or add more pool capacity.
+
+### `aim sync codex --from ...` says it would discard locally refreshed imported labels
+
+Your local AIM replica has a newer refresh for one or more imported labels that has not been published back to the authority yet.
+
+Promote those labels:
+
+```bash
+aim promote codex --to agents@amirs-mac-studio <label> [<label>...]
+```
+
+Or, if you intentionally want to throw away the local refresh and trust the authority copy instead:
+
+```bash
+aim sync codex --from agents@amirs-mac-studio --discard-dirty
+```
+
+`aim status` also surfaces this state as authority-dirty labels pending promote.
+
+### `aim promote codex` says the authority changed since import
+
+Someone refreshed that label on the authority after your last import, or your local base snapshot is stale.
+
+Start by pulling again:
+
+```bash
+aim sync codex --from agents@amirs-mac-studio
+```
+
+Then decide whether to keep the authority copy or re-run local reauth and promote again from the refreshed base.
 
 ### `aim codex watch --once` returns `blocked`
 
