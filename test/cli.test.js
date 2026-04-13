@@ -23,6 +23,7 @@ import {
   planWeightedOpenclawRebalance,
   partitionOpenclawPinsByConfiguredAgents,
   pickNextBestPoolLabel,
+  pickNextCodexUseRoundRobinLabel,
   pickNextBestLocalCliPoolLabel,
   projectPoolCapacity,
   rankPoolCandidates,
@@ -4910,7 +4911,7 @@ test("codex watch --once noops when the active label stays above the 5h remainin
   }
 });
 
-test("codex watch --once rotates through aim codex use when the active label drops below the 5h remaining threshold", async () => {
+test("codex watch --once keeps weighted selection when the active label drops below the 5h remaining threshold", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const pro1Jwt = makeFakeJwt({
@@ -4924,6 +4925,13 @@ test("codex watch --once rotates through aim codex use when the active label dro
     email: "pro2@example.com",
     "https://api.openai.com/auth": {
       chatgpt_account_id: "acct_pro2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro3Jwt = makeFakeJwt({
+    email: "pro3@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro3",
       chatgpt_plan_type: "pro",
     },
   });
@@ -4944,6 +4952,7 @@ test("codex watch --once rotates through aim codex use when the active label dro
     accounts: {
       pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
       pro2: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      pro3: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
     },
     credentials: {
       "openai-codex": {
@@ -4961,6 +4970,13 @@ test("codex watch --once rotates through aim codex use when the active label dro
           expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
           accountId: "acct_pro2",
         },
+        pro3: {
+          access: pro3Jwt,
+          refresh: "REFRESH_PRO3",
+          idToken: pro3Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro3",
+        },
       },
       anthropic: {},
     },
@@ -4969,7 +4985,7 @@ test("codex watch --once rotates through aim codex use when the active label dro
         codex: {
           source: "agents@localhost",
           importedAt: new Date().toISOString(),
-          labels: ["pro1", "pro2"],
+          labels: ["pro1", "pro2", "pro3"],
         },
       },
     },
@@ -4999,12 +5015,12 @@ test("codex watch --once rotates through aim codex use when the active label dro
           plan_type: "pro",
           rate_limit: {
             primary_window: {
-              used_percent: accountId === "acct_pro1" ? 85 : 5,
+              used_percent: accountId === "acct_pro1" ? 85 : accountId === "acct_pro2" ? 5 : 4,
               limit_window_seconds: 10800,
               reset_at: Math.floor(Date.now() / 1000) + 3600,
             },
             secondary_window: {
-              used_percent: accountId === "acct_pro1" ? 70 : 5,
+              used_percent: accountId === "acct_pro1" ? 70 : accountId === "acct_pro2" ? 30 : 2,
               limit_window_seconds: 7 * 24 * 3600,
               reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
             },
@@ -5020,20 +5036,21 @@ test("codex watch --once rotates through aim codex use when the active label dro
     assert.equal(result.ok, true);
     assert.equal(result.watched.status, "activated");
     assert.equal(result.watched.receipt.currentLabelBefore, "pro1");
-    assert.equal(result.watched.receipt.currentLabelAfter, "pro2");
+    assert.equal(result.watched.receipt.currentLabelAfter, "pro3");
     assert.equal(result.watched.receipt.primaryRemainingPctBefore, 15);
     assert.equal(result.watched.receipt.triggeredSelection, true);
-    assert.equal(result.watched.receipt.selectionReceipt.label, "pro2");
+    assert.equal(result.watched.receipt.selectionReceipt.label, "pro3");
+    assert.deepEqual(result.watched.receipt.selectionReceipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    assert.equal(updatedState.targets.codexCli.activeLabel, "pro2");
-    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "pro2");
+    assert.equal(updatedState.targets.codexCli.activeLabel, "pro3");
+    assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "pro3");
     assert.equal(updatedState.targets.codexCli.lastWatchReceipt.status, "activated");
     assert.equal(updatedState.targets.codexCli.lastWatchReceipt.currentLabelBefore, "pro1");
-    assert.equal(updatedState.targets.codexCli.lastWatchReceipt.currentLabelAfter, "pro2");
+    assert.equal(updatedState.targets.codexCli.lastWatchReceipt.currentLabelAfter, "pro3");
 
     const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
-    assert.equal(auth.tokens.account_id, "acct_pro2");
+    assert.equal(auth.tokens.account_id, "acct_pro3");
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -5711,22 +5728,23 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     const result = JSON.parse(await runCli(["codex", "use", "--home", home]));
     assert.equal(result.ok, true);
     assert.equal(result.activated.status, "activated");
-    assert.equal(result.activated.receipt.label, "lessons");
+    assert.equal(result.activated.receipt.label, "coder2");
+    assert.deepEqual(result.activated.receipt.reasons, ["round_robin_bootstrap_first_eligible"]);
 
     const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
-    assert.equal(auth.tokens.account_id, "acct_lessons");
+    assert.equal(auth.tokens.account_id, "acct_coder2");
 
     const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
-    const lessons = status.accounts.find((account) => account.label === "lessons");
-    assert.equal(lessons.operator.status, "ready");
-    assert.equal(lessons.operator.detailReason, "missing_browser");
-    assert.equal(status.codexCli.activeLabel, "lessons");
+    const coder2 = status.accounts.find((account) => account.label === "coder2");
+    assert.equal(coder2.operator.status, "ready");
+    assert.equal(coder2.operator.detailReason, "missing_browser");
+    assert.equal(status.codexCli.activeLabel, "coder2");
   } finally {
     globalThis.fetch = origFetch;
   }
 });
 
-test("codex use prefers weekly pool headroom over the lowest short-window usage", async () => {
+test("codex use bootstraps to the first eligible label in pool order", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const qaJwt = makeFakeJwt({
@@ -5823,16 +5841,326 @@ test("codex use prefers weekly pool headroom over the lowest short-window usage"
     assert.equal(result.ok, true);
     assert.equal(result.activated.status, "activated");
     assert.equal(result.activated.receipt.label, "pro2");
+    assert.deepEqual(result.activated.receipt.reasons, ["round_robin_bootstrap_first_eligible"]);
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(updatedState.targets.codexCli.activeLabel, "pro2");
     assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "pro2");
+    assert.deepEqual(updatedState.targets.codexCli.lastSelectionReceipt.reasons, ["round_robin_bootstrap_first_eligible"]);
   } finally {
     globalThis.fetch = origFetch;
   }
 });
 
-test("codex use moves off the current label when a lower weekly-used account clears the 5h gate", async () => {
+test("back-to-back codex use runs rotate across eligible labels", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const qaJwt = makeFakeJwt({
+    email: "qa@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_qa",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+        qa: {
+          access: qaJwt,
+          refresh: "REFRESH_QA",
+          idToken: qaJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_qa",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss", "qa"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const first = JSON.parse(await runCli(["codex", "use", "--home", home]));
+    const second = JSON.parse(await runCli(["codex", "use", "--home", home]));
+
+    assert.equal(first.activated.receipt.label, "boss");
+    assert.deepEqual(first.activated.receipt.reasons, ["round_robin_bootstrap_first_eligible"]);
+    assert.equal(second.activated.receipt.label, "qa");
+    assert.deepEqual(second.activated.receipt.reasons, ["round_robin_next_eligible"]);
+
+    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(updatedState.targets.codexCli.activeLabel, "qa");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("codex use uses the inferred active label as the round-robin cursor", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const qaJwt = makeFakeJwt({
+    email: "qa@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_qa",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(path.join(home, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: bossJwt,
+      access_token: bossJwt,
+      refresh_token: "REFRESH_BOSS",
+      account_id: "acct_boss",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+        qa: {
+          access: qaJwt,
+          refresh: "REFRESH_QA",
+          idToken: qaJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_qa",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss", "qa"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const result = JSON.parse(await runCli(["codex", "use", "--home", home]));
+    assert.equal(result.activated.receipt.previousLabel, "boss");
+    assert.equal(result.activated.receipt.label, "qa");
+    assert.deepEqual(result.activated.receipt.reasons, ["round_robin_next_eligible"]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("repeated codex use runs wrap evenly through three eligible labels", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const pro1Jwt = makeFakeJwt({
+    email: "pro1@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro1",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro2Jwt = makeFakeJwt({
+    email: "pro2@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro2",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  const pro3Jwt = makeFakeJwt({
+    email: "pro3@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_pro3",
+      chatgpt_plan_type: "pro",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      pro2: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+      pro3: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        pro1: {
+          access: pro1Jwt,
+          refresh: "REFRESH_PRO1",
+          idToken: pro1Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro1",
+        },
+        pro2: {
+          access: pro2Jwt,
+          refresh: "REFRESH_PRO2",
+          idToken: pro2Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro2",
+        },
+        pro3: {
+          access: pro3Jwt,
+          refresh: "REFRESH_PRO3",
+          idToken: pro3Jwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_pro3",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["pro1", "pro2", "pro3"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+    },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/backend-api/wham/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          plan_type: "pro",
+          rate_limit: {
+            primary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10800,
+              reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+          },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    const labels = [];
+    for (let i = 0; i < 4; i += 1) {
+      const result = JSON.parse(await runCli(["codex", "use", "--home", home]));
+      labels.push(result.activated.receipt.label);
+    }
+
+    assert.deepEqual(labels, ["pro1", "pro2", "pro3", "pro1"]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("codex use rotates to the next eligible label in pool order", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const pro1Jwt = makeFakeJwt({
@@ -5959,12 +6287,12 @@ test("codex use moves off the current label when a lower weekly-used account cle
     assert.equal(result.ok, true);
     assert.equal(result.activated.status, "activated");
     assert.equal(result.activated.receipt.label, "pro2");
-    assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
+    assert.deepEqual(result.activated.receipt.reasons, ["round_robin_next_eligible"]);
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(updatedState.targets.codexCli.activeLabel, "pro2");
     assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "pro2");
-    assert.deepEqual(updatedState.targets.codexCli.lastSelectionReceipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
+    assert.deepEqual(updatedState.targets.codexCli.lastSelectionReceipt.reasons, ["round_robin_next_eligible"]);
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -6024,7 +6352,11 @@ test("codex use skips expired labels and activates the next eligible pool accoun
     },
     targets: {
       openclaw: { assignments: {}, exclusions: {} },
-      codexCli: {},
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_boss",
+        lastAppliedAt: new Date().toISOString(),
+      },
     },
     pool: { openaiCodex: { history: [] } },
   });
@@ -6052,9 +6384,10 @@ test("codex use skips expired labels and activates the next eligible pool accoun
   };
 
   try {
-    await runCli(["codex", "use", "--home", home]);
+    const result = JSON.parse(await runCli(["codex", "use", "--home", home]));
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.deepEqual(result.activated.receipt.reasons, ["round_robin_single_eligible"]);
     assert.equal(updatedState.targets.codexCli.activeLabel, "qa");
     assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "qa");
     assert.deepEqual(updatedState.pool.openaiCodex.history.at(-1), {
@@ -7331,6 +7664,48 @@ test("pickNextBestLocalCliPoolLabel relaxes the 5h gate when every account is ho
   const picked = pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked });
   assert.equal(picked.label, "cfo");
   assert.deepEqual(picked.reasons, ["lowest_weekly_used_after_5h_gate_relaxed"]);
+});
+
+test("pickNextCodexUseRoundRobinLabel rotates to the next eligible label in pool order", () => {
+  const picked = pickNextCodexUseRoundRobinLabel({
+    poolLabels: ["pro1", "pro2", "pro3"],
+    eligibleLabels: ["pro1", "pro2", "pro3"],
+    currentLabel: "pro1",
+  });
+
+  assert.deepEqual(picked, {
+    label: "pro2",
+    keptCurrent: false,
+    reasons: ["round_robin_next_eligible"],
+  });
+});
+
+test("pickNextCodexUseRoundRobinLabel bootstraps to the first eligible label when the current label is unavailable", () => {
+  const picked = pickNextCodexUseRoundRobinLabel({
+    poolLabels: ["boss", "qa", "zzz"],
+    eligibleLabels: ["qa", "zzz"],
+    currentLabel: "boss",
+  });
+
+  assert.deepEqual(picked, {
+    label: "qa",
+    keptCurrent: false,
+    reasons: ["round_robin_bootstrap_first_eligible"],
+  });
+});
+
+test("pickNextCodexUseRoundRobinLabel keeps the only eligible label", () => {
+  const picked = pickNextCodexUseRoundRobinLabel({
+    poolLabels: ["boss", "qa"],
+    eligibleLabels: ["qa"],
+    currentLabel: "qa",
+  });
+
+  assert.deepEqual(picked, {
+    label: "qa",
+    keptCurrent: true,
+    reasons: ["round_robin_single_eligible"],
+  });
 });
 
 test("refreshOpenclawAgentDemandLedger imports OpenClaw session counters and seeds cold-start demand", () => {

@@ -6291,6 +6291,63 @@ export function pickNextBestLocalCliPoolLabel({
   return best;
 }
 
+export function pickNextCodexUseRoundRobinLabel({
+  poolLabels,
+  eligibleLabels,
+  currentLabel,
+}) {
+  const orderedPoolLabels = [...new Set((Array.isArray(poolLabels) ? poolLabels : []).map((label) => normalizeLabel(label)))];
+  const eligibleSet = new Set((Array.isArray(eligibleLabels) ? eligibleLabels : []).map((label) => normalizeLabel(label)));
+  const orderedEligibleLabels = orderedPoolLabels.filter((label) => eligibleSet.has(label));
+  if (orderedEligibleLabels.length === 0) return null;
+
+  const current = typeof currentLabel === "string" ? normalizeLabel(currentLabel) : null;
+  const currentIsEligible = Boolean(current) && eligibleSet.has(current);
+
+  if (orderedEligibleLabels.length === 1) {
+    const [label] = orderedEligibleLabels;
+    return {
+      label,
+      keptCurrent: currentIsEligible && label === current,
+      reasons: ["round_robin_single_eligible"],
+    };
+  }
+
+  if (!currentIsEligible) {
+    return {
+      label: orderedEligibleLabels[0],
+      keptCurrent: false,
+      reasons: ["round_robin_bootstrap_first_eligible"],
+    };
+  }
+
+  const currentIndex = orderedPoolLabels.indexOf(current);
+  if (currentIndex === -1) {
+    return {
+      label: orderedEligibleLabels[0],
+      keptCurrent: false,
+      reasons: ["round_robin_bootstrap_first_eligible"],
+    };
+  }
+
+  for (let offset = 1; offset <= orderedPoolLabels.length; offset += 1) {
+    const candidate = orderedPoolLabels[(currentIndex + offset) % orderedPoolLabels.length];
+    if (candidate !== current && eligibleSet.has(candidate)) {
+      return {
+        label: candidate,
+        keptCurrent: false,
+        reasons: ["round_robin_next_eligible"],
+      };
+    }
+  }
+
+  return {
+    label: orderedEligibleLabels[0],
+    keptCurrent: false,
+    reasons: ["round_robin_bootstrap_first_eligible"],
+  };
+}
+
 function buildLabelCapacityInfo(snapshot) {
   const { primaryUsedPct, secondaryUsedPct } = getCodexUsagePercents(snapshot);
   const windows = Array.isArray(snapshot?.windows) ? snapshot.windows : [];
@@ -10506,7 +10563,13 @@ function buildCodexWatchTargetBlockers(status) {
   return blockers;
 }
 
-async function activateCodexPoolSelection({ state, homeDir, observedAt: observedAtOverride, usageByProvider: usageByProviderOverride }) {
+async function activateCodexPoolSelection({
+  state,
+  homeDir,
+  observedAt: observedAtOverride,
+  usageByProvider: usageByProviderOverride,
+  selectionMode = "round_robin",
+}) {
   ensureStateShape(state);
   // Structural target validation comes first: if this machine's Codex home is not
   // AIM-manageable, fail loud before doing pool selection or usage probing.
@@ -10571,28 +10634,40 @@ async function activateCodexPoolSelection({ state, homeDir, observedAt: observed
   }
 
   const currentTarget = readCodexCliTargetStatus({ state, homeDir });
-  const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
-  const currentAssignments = getOpenclawAssignments(state);
-  const rankedCandidates = rankPoolCandidates({
-    labels: poolStatus.eligibleLabels,
-    usage: usageByLabel,
-    currentLabel: currentTarget.activeLabel,
-    currentAssignments,
-    configuredAgents: configuredCodexAgents,
-    agentDemand: state.pool.openaiCodex.agentDemand,
-    lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
-    now: Date.parse(observedAt),
-  });
-  const selection = pickNextBestLocalCliPoolLabel({ rankedCandidates });
+  const currentLabel = currentTarget.activeLabel ?? currentTarget.inferredLabel ?? null;
+  let selection;
+  if (selectionMode === "round_robin") {
+    selection = pickNextCodexUseRoundRobinLabel({
+      poolLabels: poolStatus.labels,
+      eligibleLabels: poolStatus.eligibleLabels,
+      currentLabel,
+    });
+  } else if (selectionMode === "weighted_usage") {
+    const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
+    const currentAssignments = getOpenclawAssignments(state);
+    const rankedCandidates = rankPoolCandidates({
+      labels: poolStatus.eligibleLabels,
+      usage: usageByLabel,
+      currentLabel,
+      currentAssignments,
+      configuredAgents: configuredCodexAgents,
+      agentDemand: state.pool.openaiCodex.agentDemand,
+      lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
+      now: Date.parse(observedAt),
+    });
+    selection = pickNextBestLocalCliPoolLabel({ rankedCandidates });
+  } else {
+    throw new Error(`Unsupported Codex selection mode: ${selectionMode}`);
+  }
   if (!selection) {
-    throw new Error("Failed to select a next-best Codex pool label.");
+    throw new Error("Failed to select a Codex pool label.");
   }
 
   const activated = applyCodexCliFromState({ label: selection.label, homeDir }, state);
   const postStatus = readCodexCliTargetStatus({ state, homeDir });
   const warnings = buildWarningsFromCodexTargetStatus(postStatus);
   const status =
-    !activated.wrote && currentTarget.activeLabel === selection.label && currentTarget.expectedAccountId === activated.accountId
+    !activated.wrote && currentLabel === selection.label && currentTarget.expectedAccountId === activated.accountId
       ? "noop"
       : warnings.length > 0
         ? "activated_with_warnings"
@@ -10602,7 +10677,7 @@ async function activateCodexPoolSelection({ state, homeDir, observedAt: observed
     action: "codex_use",
     status,
     observedAt,
-    previousLabel: currentTarget.activeLabel ?? undefined,
+    previousLabel: currentLabel ?? undefined,
     label: selection.label,
     accountId: activated.accountId,
     keptCurrent: Boolean(selection.keptCurrent),
@@ -10641,8 +10716,8 @@ async function watchCodexPoolSelectionOnce(
 ) {
   ensureStateShape(state);
   // Watch mode owns the threshold decision and receipt, but it must never invent
-  // a second selector or write auth directly. All Codex auth mutation still flows
-  // through activateCodexPoolSelection() -> applyCodexCliFromState().
+  // a second auth writer. Weighted selection and auth mutation still flow through
+  // activateCodexPoolSelection() -> applyCodexCliFromState().
   ensureFileBackedCodexHome({ codexHome: resolveManagedCodexHomeDir({ homeDir }) });
   const effectiveThresholdPct = resolveCodexWatchThresholdPct(thresholdPct);
   const observedAt = new Date().toISOString();
@@ -10677,6 +10752,7 @@ async function watchCodexPoolSelectionOnce(
       homeDir,
       observedAt,
       usageByProvider,
+      selectionMode: "weighted_usage",
     });
     const postTarget = readCodexCliTargetStatus({ state, homeDir });
     const receipt = {
@@ -10769,6 +10845,7 @@ async function watchCodexPoolSelectionOnce(
     homeDir,
     observedAt,
     usageByProvider,
+    selectionMode: "weighted_usage",
   });
   const postTarget = readCodexCliTargetStatus({ state, homeDir });
   const receipt = {
