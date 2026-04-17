@@ -7,6 +7,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 
 import {
+  buildAnthropicCredentialFingerprint,
   buildCodexCredentialFingerprint,
   buildOpenclawModelSyncOps,
   discoverSuggestedBrowserBindings,
@@ -334,6 +335,7 @@ if (args[0] === "auth" && args[1] === "status") {
 
   const home = process.env.HOME || process.cwd();
   const authPath = path.join(home, ".claude", ".credentials.json");
+  const appStatePath = path.join(home, ".claude.json");
   let payload = {
     loggedIn: false,
     authMethod: "none",
@@ -344,9 +346,28 @@ if (args[0] === "auth" && args[1] === "status") {
     subscriptionType: null,
   };
 
-  if (fs.existsSync(authPath)) {
+  if (typeof process.env.CLAUDE_CODE_OAUTH_TOKEN === "string" && process.env.CLAUDE_CODE_OAUTH_TOKEN.trim()) {
+    payload = {
+      loggedIn: true,
+      authMethod: "oauth_token",
+      apiProvider: "firstParty",
+      email: null,
+      orgId: null,
+      orgName: null,
+      subscriptionType: null,
+    };
+  } else if (fs.existsSync(authPath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
+      if (process.env.CLAUDE_AUTH_STATUS_MUTATES === "1" && parsed && typeof parsed === "object" && parsed.claudeAiOauth) {
+        parsed.claudeAiOauth = {
+          ...parsed.claudeAiOauth,
+          subscriptionType: null,
+          rateLimitTier: null,
+          expiresAt: Date.now() + 3600_000,
+        };
+        fs.writeFileSync(authPath, JSON.stringify(parsed, null, 2) + "\\n");
+      }
       const oauth = parsed && typeof parsed === "object" && parsed.claudeAiOauth && typeof parsed.claudeAiOauth === "object"
         ? parsed.claudeAiOauth
         : null;
@@ -360,13 +381,21 @@ if (args[0] === "auth" && args[1] === "status") {
         && typeof oauth.rateLimitTier === "string" && oauth.rateLimitTier.trim()
         && scopes.length > 0;
       if (loggedIn) {
+        let oauthAccount = null;
+        if (fs.existsSync(appStatePath)) {
+          const appState = JSON.parse(fs.readFileSync(appStatePath, "utf8"));
+          oauthAccount =
+            appState && typeof appState === "object" && appState.oauthAccount && typeof appState.oauthAccount === "object"
+              ? appState.oauthAccount
+              : null;
+        }
         payload = {
           loggedIn: true,
           authMethod: "claude.ai",
           apiProvider: "firstParty",
-          email: null,
-          orgId: null,
-          orgName: null,
+          email: oauthAccount && typeof oauthAccount.emailAddress === "string" ? oauthAccount.emailAddress.trim() : null,
+          orgId: oauthAccount && typeof oauthAccount.organizationUuid === "string" ? oauthAccount.organizationUuid.trim() : null,
+          orgName: oauthAccount && typeof oauthAccount.organizationName === "string" ? oauthAccount.organizationName.trim() : null,
           subscriptionType: oauth.subscriptionType.trim(),
         };
       }
@@ -386,6 +415,83 @@ process.exit(2);
     { encoding: "utf8", mode: 0o755 },
   );
   return binDir;
+}
+
+function writeClaudeNativeBundle(
+  home,
+  {
+    accessToken = "ACCESS_BOSS",
+    refreshToken = "REFRESH_BOSS",
+    expiresAtMs = Date.now() + 3600_000,
+    subscriptionType = "max",
+    rateLimitTier = "max_20x",
+    scopes = ["user:profile", "user:inference", "user:sessions:claude_code"],
+    oauthAccount = {},
+    appState = {},
+  } = {},
+) {
+  writeJson(path.join(home, ".claude", ".credentials.json"), {
+    claudeAiOauth: {
+      accessToken,
+      refreshToken,
+      expiresAt: expiresAtMs,
+      subscriptionType,
+      rateLimitTier,
+      scopes,
+    },
+  });
+  writeJson(path.join(home, ".claude.json"), {
+    ...appState,
+    oauthAccount: {
+      accountUuid: "acct_boss",
+      displayName: "Boss",
+      emailAddress: "boss@example.com",
+      organizationName: "Boss Org",
+      organizationUuid: "org_boss",
+      ...oauthAccount,
+    },
+  });
+}
+
+function buildAnthropicClaudeCredential({
+  access = "ACCESS_BOSS",
+  refresh = "REFRESH_BOSS",
+  expiresAtMs = Date.now() + 3600_000,
+  subscriptionType = "max",
+  rateLimitTier = "max_20x",
+  scopes = ["user:profile", "user:inference", "user:sessions:claude_code"],
+  emailAddress = "boss@example.com",
+  organizationName = "Boss Org",
+  organizationUuid = "org_boss",
+} = {}) {
+  return {
+    access,
+    refresh,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    subscriptionType,
+    rateLimitTier,
+    scopes,
+    emailAddress,
+    organizationName,
+    organizationUuid,
+    nativeClaudeBundle: {
+      claudeAiOauth: {
+        accessToken: access,
+        refreshToken: refresh,
+        expiresAt: expiresAtMs,
+        subscriptionType,
+        rateLimitTier,
+        scopes,
+      },
+      oauthAccount: {
+        accountUuid: "acct_boss",
+        displayName: "Boss",
+        emailAddress,
+        organizationName,
+        organizationUuid,
+      },
+    },
+  };
 }
 
 function readFakeOpenclawRestarts(rootDir) {
@@ -594,11 +700,11 @@ test("status warns when tokens are expired or rejected", async () => {
         },
       },
       anthropic: {
-        claude: {
+        claude: buildAnthropicClaudeCredential({
           access: "ANTHROPIC_ACCESS",
           refresh: "ANTHROPIC_REFRESH",
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-        },
+          expiresAtMs: Date.now() + 3600_000,
+        }),
       },
     },
   });
@@ -671,11 +777,11 @@ test("status appends current codex usage and keeps the full detail output", asyn
         },
       },
       anthropic: {
-        claude: {
+        claude: buildAnthropicClaudeCredential({
           access: "ANTHROPIC_ACCESS",
           refresh: "ANTHROPIC_REFRESH",
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-        },
+          expiresAtMs: Date.now() + 3600_000,
+        }),
       },
     },
     imports: { authority: { codex: {} } },
@@ -748,7 +854,7 @@ test("status appends current codex usage and keeps the full detail output", asyn
     assert.match(accountsOut, /ACCOUNTS \(2\)/);
     assert.match(accountsOut, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
     assert.match(accountsOut, /boss\s+ready\s+aim-profile\s+\S+\s+10%\s+1\.5h\s+20%\s+20\.8h\s+openai-codex/);
-    assert.match(accountsOut, /claude\s+ready\s+aim-profile\s+\S+\s+12%\s+1\.9h\s+34%\s+27\.7h\s+anthropic/);
+    assert.match(accountsOut, /claude\s+ready\s+native-claude\s+\S+\s+12%\s+1\.9h\s+34%\s+27\.7h\s+anthropic/);
     assert.match(accountsOut, /average\s+--\s+--\s+\S+\s+11%\s+1\.7h\s+27%\s+24\.[23]h\s+all\s+-/);
     assert.match(accountsOut, /\n\nlabel=boss  5h_used=10%  5h_in=1\.5h  wk_used=20%  wk_in=20\.8h\n$/);
 
@@ -1821,7 +1927,7 @@ test("resolveAuthorityLocator accepts bare ssh targets for the default AIM state
 test("help text prefers agents@amirs-mac-studio as the authority example", async () => {
   const out = await runCli([]);
   assert.match(out, /aim sync codex --from <authority>/);
-  assert.match(out, /aim claude use\s+# activate the next-best pooled anthropic label for local Claude CLI/);
+  assert.match(out, /aim claude use \[label\]\s+# activate the next-best pooled Claude label, or explicitly switch a chosen label/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
   assert.match(out, /Examples: agents@amirs-mac-studio/);
   assert.match(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
@@ -3145,7 +3251,7 @@ test("status text shows manual-callback and browser-managed login modes", async 
     schemaVersion: "0.2",
     accounts: {
       manual_label: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
-      claude: { provider: "anthropic", reauth: { mode: "aim-browser-profile" } },
+      claude: { provider: "anthropic", reauth: { mode: "native-claude" } },
     },
     credentials: {
       "openai-codex": {},
@@ -3169,7 +3275,7 @@ test("status text shows manual-callback and browser-managed login modes", async 
   const out = await runCli(["status", "--accounts", "--home", home]);
   assert.match(out, /ACCOUNTS \(2\)/);
   assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
-  assert.match(out, /claude\s+reauth\s+aim-profile\s+--\s+--\s+--\s+--\s+--\s+anthropic\s+missing_credentials/);
+  assert.match(out, /claude\s+reauth\s+native-claude\s+--\s+--\s+--\s+--\s+--\s+anthropic\s+missing_credentials/);
   assert.match(out, /manual_label\s+reauth\s+manual-callback\s+--\s+--\s+--\s+--\s+--\s+openai-codex\s+missing_credentials/);
 });
 
@@ -6461,7 +6567,173 @@ test("codex use refuses non-file-backed Codex homes", async () => {
   );
 });
 
-test("claude use infers Claude local projection fields from usage when the managed auth store has only fresh tokens", async () => {
+test("anthropic label maintenance captures the current native Claude login without OAuth flow", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+
+  writeClaudeNativeBundle(home, {
+    accessToken: "ACCESS_BOSS",
+    refreshToken: "REFRESH_BOSS",
+    subscriptionType: "claude_max",
+    rateLimitTier: "oauth_claude_max",
+    oauthAccount: {
+      emailAddress: "boss@example.com",
+      organizationName: "Boss Org",
+      organizationUuid: "org_boss",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const out = JSON.parse(await runCli(["boss", "--home", home]));
+
+  assert.equal(out.ok, true);
+  assert.equal(out.maintenance.status, "ready");
+
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.credentials.anthropic.boss.access, "ACCESS_BOSS");
+  assert.equal(updatedState.credentials.anthropic.boss.refresh, "REFRESH_BOSS");
+  assert.equal(updatedState.credentials.anthropic.boss.subscriptionType, "claude_max");
+  assert.equal(updatedState.credentials.anthropic.boss.rateLimitTier, "oauth_claude_max");
+  assert.equal(updatedState.credentials.anthropic.boss.emailAddress, "boss@example.com");
+  assert.equal(updatedState.credentials.anthropic.boss.organizationName, "Boss Org");
+  assert.equal(updatedState.credentials.anthropic.boss.organizationUuid, "org_boss");
+  assert.equal(updatedState.credentials.anthropic.boss.nativeClaudeBundle.claudeAiOauth.accessToken, "ACCESS_BOSS");
+  assert.equal(updatedState.credentials.anthropic.boss.nativeClaudeBundle.oauthAccount.emailAddress, "boss@example.com");
+  assert.equal(updatedState.accounts.boss.reauth.mode, "native-claude");
+});
+
+test("aim claude capture-native fails when the live Claude login is missing oauthAccount", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeJson(path.join(home, ".claude", ".credentials.json"), {
+    claudeAiOauth: {
+      accessToken: "ACCESS_BOSS",
+      refreshToken: "REFRESH_BOSS",
+      expiresAt: Date.now() + 3600_000,
+      subscriptionType: "max",
+      rateLimitTier: "max_20x",
+      scopes: ["user:profile", "user:inference"],
+    },
+  });
+  writeJson(path.join(home, ".claude.json"), {
+    theme: "dark",
+  });
+
+  await assert.rejects(
+    () => runCli(["claude", "capture-native", "boss", "--home", home]),
+    /missing\soauthAccount/i,
+  );
+
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.credentials.anthropic.boss, undefined);
+});
+
+test("aim claude capture-native initializes first-time Claude account maintenance state", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+
+  writeClaudeNativeBundle(home, {
+    accessToken: "ACCESS_FIRST",
+    refreshToken: "REFRESH_FIRST",
+    oauthAccount: {
+      emailAddress: "first@example.com",
+      organizationName: "First Org",
+      organizationUuid: "org_first",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {},
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const out = JSON.parse(await runCli(["claude", "capture-native", "first", "--home", home]));
+  assert.equal(out.ok, true);
+  assert.equal(out.captured.label, "first");
+  assert.equal(out.captured.emailAddress, "first@example.com");
+
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.accounts.first.provider, "anthropic");
+  assert.equal(updatedState.accounts.first.reauth.mode, "native-claude");
+  assert.equal(typeof updatedState.accounts.first.reauth.lastAttemptAt, "string");
+  assert.equal(updatedState.accounts.first.reauth.lastVerifiedAt, updatedState.accounts.first.reauth.lastAttemptAt);
+  assert.equal(updatedState.credentials.anthropic.first.access, "ACCESS_FIRST");
+  assert.equal(updatedState.credentials.anthropic.first.refresh, "REFRESH_FIRST");
+  assert.equal(updatedState.credentials.anthropic.first.emailAddress, "first@example.com");
+  assert.equal(updatedState.credentials.anthropic.first.organizationName, "First Org");
+  assert.equal(updatedState.credentials.anthropic.first.organizationUuid, "org_first");
+});
+
+test("derivePoolAccountStatus requires a complete native Claude bundle for anthropic readiness", () => {
+  const now = Date.now();
+  const status = derivePoolAccountStatus({
+    account: {
+      provider: "anthropic",
+      reauth: { mode: "native-claude" },
+    },
+    label: "boss",
+    credentials: {
+      access: "ACCESS_BOSS",
+      refresh: "REFRESH_BOSS",
+      expiresAt: new Date(now + 3600_000).toISOString(),
+    },
+    browserFacts: { exists: true, bindingPresent: true },
+    now,
+  });
+
+  assert.equal(status.operatorStatus, "reauth");
+  assert.equal(status.detailReason, "missing_native_claude_bundle");
+  assert.equal(status.eligible, false);
+});
+
+test("aim claude use <label> activates the requested Claude label without probing usage", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
@@ -6469,16 +6741,12 @@ test("claude use infers Claude local projection fields from usage when the manag
   writeJson(statePath, {
     schemaVersion: "0.2",
     accounts: {
-      boss: { provider: "anthropic", reauth: { mode: "manual-callback" } },
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
     },
     credentials: {
       "openai-codex": {},
       anthropic: {
-        boss: {
-          access: "ACCESS_BOSS",
-          refresh: "REFRESH_BOSS",
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-        },
+        boss: buildAnthropicClaudeCredential(),
       },
     },
     targets: {
@@ -6491,20 +6759,136 @@ test("claude use infers Claude local projection fields from usage when the manag
   });
 
   const origFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
-    const u = String(url ?? "");
-    if (u.includes("/api/oauth/usage")) {
+  globalThis.fetch = async () => {
+    throw new Error("explicit Claude activation should not probe usage");
+  };
+
+  try {
+    await withEnv(
+      {
+        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
+      },
+      async () => {
+        const out = JSON.parse(await runCli(["claude", "use", "boss", "--home", home]));
+        assert.equal(out.ok, true);
+        assert.equal(out.activated.status, "activated");
+        assert.equal(out.activated.receipt.label, "boss");
+        assert.equal(out.activated.receipt.explicit, true);
+        assert.equal(out.activated.receipt.subscriptionType, "max");
+        assert.equal(out.activated.receipt.credentialsPath, path.join(home, ".claude", ".credentials.json"));
+        assert.equal(out.activated.receipt.appStatePath, path.join(home, ".claude.json"));
+
+        const auth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
+        assert.deepEqual(auth.claudeAiOauth, {
+          accessToken: "ACCESS_BOSS",
+          refreshToken: "REFRESH_BOSS",
+          expiresAt: auth.claudeAiOauth.expiresAt,
+          subscriptionType: "max",
+          rateLimitTier: "max_20x",
+          scopes: ["user:profile", "user:inference", "user:sessions:claude_code"],
+        });
+        assert.equal(typeof auth.claudeAiOauth.expiresAt, "number");
+
+        const appState = JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8"));
+        assert.equal(appState.oauthAccount.emailAddress, "boss@example.com");
+        assert.equal(appState.oauthAccount.organizationName, "Boss Org");
+        assert.equal(appState.oauthAccount.organizationUuid, "org_boss");
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.equal(updatedState.targets.claudeCli.activeLabel, "boss");
+        assert.equal(updatedState.targets.claudeCli.credentialsPath, path.join(home, ".claude", ".credentials.json"));
+        assert.equal(updatedState.targets.claudeCli.appStatePath, path.join(home, ".claude.json"));
+        assert.equal(updatedState.targets.claudeCli.lastSelectionReceipt.status, "activated");
+
+        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+        assert.equal(status.claudeCli.activeLabel, "boss");
+        assert.equal(status.claudeCli.actualSubscriptionType, "max");
+        assert.equal(status.claudeCli.actualEmailAddress, "boss@example.com");
+        assert.equal(status.claudeCli.actualOrganizationName, "Boss Org");
+        assert.equal(status.claudeCli.readback.credentials.claudeAiOauthPresent, true);
+        assert.equal(status.claudeCli.readback.appState.oauthAccountPresent, true);
+        assert.equal(status.claudeCli.authStatus.available, true);
+        assert.equal(status.claudeCli.authStatus.ok, true);
+        assert.equal(status.claudeCli.authStatus.loggedIn, true);
+        assert.ok(status.warnings.every((warning) => !String(warning.kind).startsWith("claude_target_")));
+
+        const textOut = await runCli(["status", "--home", home]);
+        assert.match(textOut, /\nCLAUDE\n/);
+        assert.match(textOut, /credentials_path/);
+        assert.match(textOut, /app_state_path/);
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("aim claude use keeps the next-best pooled Claude selection behavior", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+      qa: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: buildAnthropicClaudeCredential({
+          access: "ACCESS_BOSS",
+          refresh: "REFRESH_BOSS",
+          emailAddress: "boss@example.com",
+          organizationName: "Boss Org",
+          organizationUuid: "org_boss",
+        }),
+        qa: buildAnthropicClaudeCredential({
+          access: "ACCESS_QA",
+          refresh: "REFRESH_QA",
+          emailAddress: "qa@example.com",
+          organizationName: "QA Org",
+          organizationUuid: "org_qa",
+        }),
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    const accessToken = String(options?.headers?.Authorization ?? options?.headers?.authorization ?? "").replace(/^Bearer\s+/i, "");
+    if (!String(url ?? "").includes("/api/oauth/usage")) {
+      throw new Error(`Unexpected fetch url in test: ${String(url ?? "")}`);
+    }
+    if (accessToken === "ACCESS_BOSS") {
       return {
         ok: true,
         status: 200,
         json: async () => ({
-          five_hour: { utilization: 8, resets_at: new Date(Date.now() + 3600_000).toISOString() },
-          seven_day: { utilization: 19, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
-          seven_day_opus: { utilization: 31, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
+          five_hour: { utilization: 72, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+          seven_day: { utilization: 61, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
         }),
       };
     }
-    throw new Error(`Unexpected fetch url in test: ${u}`);
+    if (accessToken === "ACCESS_QA") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 11, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+          seven_day: { utilization: 21, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
+        }),
+      };
+    }
+    throw new Error(`Unexpected access token in usage probe: ${accessToken}`);
   };
 
   try {
@@ -6515,27 +6899,7 @@ test("claude use infers Claude local projection fields from usage when the manag
       async () => {
         const out = JSON.parse(await runCli(["claude", "use", "--home", home]));
         assert.equal(out.ok, true);
-        assert.equal(out.activated.status, "activated");
-        assert.equal(out.activated.receipt.subscriptionType, "claude_max");
-
-        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-        assert.equal(updatedState.credentials.anthropic.boss.subscriptionType, "claude_max");
-        assert.equal(updatedState.credentials.anthropic.boss.rateLimitTier, "oauth_claude_max_inferred");
-        assert.deepEqual(updatedState.credentials.anthropic.boss.scopes, ["org:create_api_key", "user:profile", "user:inference"]);
-
-        const auth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
-        assert.equal(auth.claudeAiOauth.accessToken, "ACCESS_BOSS");
-        assert.equal(auth.claudeAiOauth.refreshToken, "REFRESH_BOSS");
-        assert.equal(auth.claudeAiOauth.subscriptionType, "claude_max");
-        assert.equal(auth.claudeAiOauth.rateLimitTier, "oauth_claude_max_inferred");
-        assert.deepEqual(auth.claudeAiOauth.scopes, ["org:create_api_key", "user:profile", "user:inference"]);
-        assert.equal(typeof auth.claudeAiOauth.expiresAt, "number");
-
-        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
-        assert.equal(status.claudeCli.activeLabel, "boss");
-        assert.equal(status.claudeCli.actualSubscriptionType, "claude_max");
-        assert.equal(status.claudeCli.authStatus.ok, true);
-        assert.equal(status.claudeCli.authStatus.loggedIn, true);
+        assert.equal(out.activated.receipt.label, "qa");
       },
     );
   } finally {
@@ -6543,26 +6907,147 @@ test("claude use infers Claude local projection fields from usage when the manag
   }
 });
 
-test("claude use writes .credentials.json and status reports the active Claude target", async () => {
-  const home = mkTempHome();
-  const statePath = path.join(home, ".aimgr", "secrets.json");
-  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+test("aim claude export-live and import-native round-trip a native Claude bundle between homes", async () => {
+  const sourceHome = mkTempHome();
+  const targetHome = mkTempHome();
+  const bundlePath = path.join(sourceHome, "claude-native-bundle.json");
+  const targetStatePath = path.join(targetHome, ".aimgr", "secrets.json");
 
-  writeJson(statePath, {
+  writeClaudeNativeBundle(sourceHome, {
+    accessToken: "ACCESS_EXPORT",
+    refreshToken: "REFRESH_EXPORT",
+    oauthAccount: {
+      emailAddress: "export@example.com",
+      organizationName: "Export Org",
+      organizationUuid: "org_export",
+    },
+  });
+
+  writeJson(targetStatePath, {
     schemaVersion: "0.2",
     accounts: {
-      boss: { provider: "anthropic", reauth: { mode: "manual-callback" } },
+      imported: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const exported = JSON.parse(await runCli(["claude", "export-live", "--home", sourceHome, "--out", bundlePath]));
+  assert.equal(exported.ok, true);
+  assert.equal(exported.exported.filePath, bundlePath);
+
+  const imported = JSON.parse(
+    await runCli(["claude", "import-native", "imported", "--home", targetHome, "--in", bundlePath]),
+  );
+  assert.equal(imported.ok, true);
+  assert.equal(imported.imported.label, "imported");
+
+  const targetState = JSON.parse(fs.readFileSync(targetStatePath, "utf8"));
+  assert.equal(targetState.credentials.anthropic.imported.access, "ACCESS_EXPORT");
+  assert.equal(targetState.credentials.anthropic.imported.refresh, "REFRESH_EXPORT");
+  assert.equal(targetState.credentials.anthropic.imported.emailAddress, "export@example.com");
+  assert.equal(targetState.credentials.anthropic.imported.organizationUuid, "org_export");
+});
+
+test("sync claude bootstraps consumer state and preserves authority labels without complete native bundles", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+      claudalyst: { provider: "anthropic", reauth: { mode: "native-claude" } },
     },
     credentials: {
       "openai-codex": {},
       anthropic: {
-        boss: {
-          access: "ACCESS_BOSS",
-          refresh: "REFRESH_BOSS",
+        boss: buildAnthropicClaudeCredential(),
+        claudalyst: {
+          access: "ACCESS_CLAUDALYST",
+          refresh: "REFRESH_CLAUDALYST",
           expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-          subscriptionType: "max",
-          rateLimitTier: "max_20x",
-          scopes: ["user:profile", "user:inference"],
+        },
+      },
+    },
+    imports: { authority: { codex: {}, anthropic: {} } },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {},
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    imports: { authority: { codex: {}, anthropic: {} } },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  await runCli(["sync", "claude", "--from", authorityStatePath, "--home", consumerHome]);
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.imports.authority.anthropic.source, path.resolve(authorityStatePath));
+  assert.deepEqual(consumerState.imports.authority.anthropic.labels, ["boss", "claudalyst"]);
+  assert.equal(consumerState.accounts.boss.reauth.mode, "native-claude");
+  assert.equal(consumerState.accounts.boss.browser, null);
+  assert.equal(consumerState.accounts.claudalyst.reauth.mode, "native-claude");
+  assert.equal(consumerState.accounts.claudalyst.browser, null);
+  assert.equal(consumerState.credentials.anthropic.claudalyst.access, "ACCESS_CLAUDALYST");
+  assert.equal(consumerState.credentials.anthropic.claudalyst.refresh, "REFRESH_CLAUDALYST");
+  assert.equal(consumerState.imports.authority.anthropic.labelsByName.boss.dirtyLocal, false);
+  assert.equal(consumerState.imports.authority.anthropic.labelsByName.claudalyst.dirtyLocal, false);
+});
+
+test("aim claude capture-native marks imported Claude labels dirty after a local native capture", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: buildAnthropicClaudeCredential({
+          access: "ACCESS_OLD",
+          refresh: "REFRESH_OLD",
+        }),
+      },
+    },
+    imports: {
+      authority: {
+        codex: {},
+        anthropic: {
+          source: "agents@studio",
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
         },
       },
     },
@@ -6574,6 +7059,417 @@ test("claude use writes .credentials.json and status reports the active Claude t
     },
     pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
   });
+
+  writeClaudeNativeBundle(home, {
+    accessToken: "ACCESS_NEW",
+    refreshToken: "REFRESH_NEW",
+  });
+
+  const out = JSON.parse(await runCli(["claude", "capture-native", "boss", "--home", home]));
+  assert.equal(out.ok, true);
+  assert.equal(out.captured.label, "boss");
+
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.credentials.anthropic.boss.access, "ACCESS_NEW");
+  assert.equal(updatedState.credentials.anthropic.boss.refresh, "REFRESH_NEW");
+  assert.equal(updatedState.imports.authority.anthropic.labelsByName.boss.dirtyLocal, true);
+  assert.ok(typeof updatedState.imports.authority.anthropic.labelsByName.boss.dirtyObservedAt === "string");
+});
+
+test("promote claude updates only the selected authority labels and clears local dirty state", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  const bossAuthorityCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_AUTHORITY_BOSS",
+    refresh: "REFRESH_AUTHORITY_BOSS",
+  });
+  const bossLocalCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_LOCAL_BOSS",
+    refresh: "REFRESH_LOCAL_BOSS",
+  });
+  const qaCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_QA",
+    refresh: "REFRESH_QA",
+    emailAddress: "qa@example.com",
+    organizationName: "QA Org",
+    organizationUuid: "org_qa",
+  });
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+      qa: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: bossAuthorityCredential,
+        qa: qaCredential,
+      },
+    },
+    imports: { authority: { codex: {}, anthropic: { labels: [], labelsByName: {} } } },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+      qa: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: bossLocalCredential,
+        qa: qaCredential,
+      },
+    },
+    imports: {
+      authority: {
+        codex: {},
+        anthropic: {
+          source: path.resolve(authorityStatePath),
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss", "qa"],
+          labelsByName: {
+            boss: {
+              importedAt: new Date(0).toISOString(),
+              baseCredentialFingerprint: buildAnthropicCredentialFingerprint(bossAuthorityCredential),
+              baseIdentity: {
+                accountUuid: "acct_boss",
+                emailAddress: "boss@example.com",
+                organizationUuid: "org_boss",
+              },
+              dirtyLocal: true,
+              dirtyObservedAt: new Date(1000).toISOString(),
+            },
+            qa: {
+              importedAt: new Date(0).toISOString(),
+              baseCredentialFingerprint: buildAnthropicCredentialFingerprint(qaCredential),
+              baseIdentity: {
+                accountUuid: "acct_boss",
+                emailAddress: "qa@example.com",
+                organizationUuid: "org_qa",
+              },
+              dirtyLocal: false,
+            },
+          },
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const out = JSON.parse(await runCli(["promote", "claude", "--to", authorityStatePath, "boss", "--home", consumerHome]));
+  assert.equal(out.promoted.status, "applied");
+  assert.deepEqual(out.promoted.labels, ["boss"]);
+
+  const authorityState = JSON.parse(fs.readFileSync(authorityStatePath, "utf8"));
+  assert.equal(authorityState.credentials.anthropic.boss.refresh, "REFRESH_LOCAL_BOSS");
+  assert.equal(authorityState.credentials.anthropic.qa.refresh, "REFRESH_QA");
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.imports.authority.anthropic.labelsByName.boss.dirtyLocal, false);
+  assert.equal(
+    consumerState.imports.authority.anthropic.labelsByName.boss.baseCredentialFingerprint,
+    buildAnthropicCredentialFingerprint(bossLocalCredential),
+  );
+  assert.ok(typeof consumerState.imports.authority.anthropic.labelsByName.boss.lastPromotedAt === "string");
+});
+
+test("promote claude fails loudly when the authority credential changed since import", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  const importedCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_IMPORTED",
+    refresh: "REFRESH_IMPORTED",
+  });
+  const authorityCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_AUTHORITY_NOW",
+    refresh: "REFRESH_AUTHORITY_NOW",
+  });
+  const consumerCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_LOCAL",
+    refresh: "REFRESH_LOCAL",
+  });
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: authorityCredential,
+      },
+    },
+    imports: { authority: { codex: {}, anthropic: { labels: [], labelsByName: {} } } },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: consumerCredential,
+      },
+    },
+    imports: {
+      authority: {
+        codex: {},
+        anthropic: {
+          source: path.resolve(authorityStatePath),
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
+          labelsByName: {
+            boss: {
+              importedAt: new Date(0).toISOString(),
+              baseCredentialFingerprint: buildAnthropicCredentialFingerprint(importedCredential),
+              dirtyLocal: true,
+              dirtyObservedAt: new Date(1000).toISOString(),
+            },
+          },
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  await assert.rejects(
+    () => runCli(["promote", "claude", "--to", authorityStatePath, "boss", "--home", consumerHome]),
+    /authority credentials changed since the consumer imported them/,
+  );
+
+  const authorityState = JSON.parse(fs.readFileSync(authorityStatePath, "utf8"));
+  assert.equal(authorityState.credentials.anthropic.boss.refresh, "REFRESH_AUTHORITY_NOW");
+
+  const consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.imports.authority.anthropic.labelsByName.boss.dirtyLocal, true);
+});
+
+test("sync claude blocks dirty imported labels until discard-dirty is explicit", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  const authorityCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_AUTHORITY",
+    refresh: "REFRESH_AUTHORITY",
+  });
+  const localCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_LOCAL",
+    refresh: "REFRESH_LOCAL",
+  });
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: { boss: authorityCredential },
+    },
+    imports: { authority: { codex: {}, anthropic: { labels: [], labelsByName: {} } } },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: { boss: localCredential },
+    },
+    imports: {
+      authority: {
+        codex: {},
+        anthropic: {
+          source: path.resolve(authorityStatePath),
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss"],
+          labelsByName: {
+            boss: {
+              importedAt: new Date(0).toISOString(),
+              baseCredentialFingerprint: buildAnthropicCredentialFingerprint(authorityCredential),
+              dirtyLocal: true,
+              dirtyObservedAt: new Date(1000).toISOString(),
+            },
+          },
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  await assert.rejects(
+    () => runCli(["sync", "claude", "--from", authorityStatePath, "--home", consumerHome]),
+    /Authority import would discard locally refreshed imported Claude labels: boss/,
+  );
+
+  let consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.credentials.anthropic.boss.refresh, "REFRESH_LOCAL");
+  assert.equal(consumerState.imports.authority.anthropic.labelsByName.boss.dirtyLocal, true);
+
+  await runCli(["sync", "claude", "--from", authorityStatePath, "--discard-dirty", "--home", consumerHome]);
+
+  consumerState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(consumerState.credentials.anthropic.boss.refresh, "REFRESH_AUTHORITY");
+  assert.equal(consumerState.imports.authority.anthropic.labelsByName.boss.dirtyLocal, false);
+  assert.equal(
+    consumerState.imports.authority.anthropic.labelsByName.boss.baseCredentialFingerprint,
+    buildAnthropicCredentialFingerprint(authorityCredential),
+  );
+});
+
+test("sync claude clears stale target metadata without deleting live Claude files when the removed label no longer owns them", async () => {
+  const authorityHome = mkTempHome();
+  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
+  const consumerHome = mkTempHome();
+  const consumerStatePath = path.join(consumerHome, ".aimgr", "secrets.json");
+
+  const bossCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_BOSS",
+    refresh: "REFRESH_BOSS",
+  });
+  const qaCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_QA",
+    refresh: "REFRESH_QA",
+    emailAddress: "qa@example.com",
+    organizationName: "QA Org",
+    organizationUuid: "org_qa",
+  });
+
+  writeJson(authorityStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      qa: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        qa: qaCredential,
+      },
+    },
+    imports: { authority: { codex: {}, anthropic: { labels: [], labelsByName: {} } } },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeJson(consumerStatePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+      qa: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: bossCredential,
+        qa: qaCredential,
+      },
+    },
+    imports: {
+      authority: {
+        codex: {},
+        anthropic: {
+          source: path.resolve(authorityStatePath),
+          importedAt: new Date(0).toISOString(),
+          labels: ["boss", "qa"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {
+        activeLabel: "boss",
+        credentialsPath: path.join(consumerHome, ".claude", ".credentials.json"),
+        appStatePath: path.join(consumerHome, ".claude.json"),
+        lastAppliedAt: new Date(0).toISOString(),
+        lastSelectionReceipt: { status: "activated", label: "boss" },
+      },
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeClaudeNativeBundle(consumerHome, {
+    accessToken: "ACCESS_QA",
+    refreshToken: "REFRESH_QA",
+    oauthAccount: {
+      accountUuid: "acct_boss",
+      emailAddress: "qa@example.com",
+      organizationName: "QA Org",
+      organizationUuid: "org_qa",
+    },
+  });
+
+  await runCli(["sync", "claude", "--from", authorityStatePath, "--home", consumerHome]);
+
+  const updatedState = JSON.parse(fs.readFileSync(consumerStatePath, "utf8"));
+  assert.equal(updatedState.accounts.boss, undefined);
+  assert.equal(updatedState.credentials.anthropic.boss, undefined);
+  assert.equal(updatedState.targets.claudeCli.activeLabel, undefined);
+  assert.equal(updatedState.targets.claudeCli.lastSelectionReceipt, undefined);
+  assert.equal(fs.existsSync(path.join(consumerHome, ".claude", ".credentials.json")), true);
+  assert.equal(fs.existsSync(path.join(consumerHome, ".claude.json")), true);
 
   const origFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -6592,80 +7488,174 @@ test("claude use writes .credentials.json and status reports the active Claude t
   };
 
   try {
-    await withEnv(
-      {
-        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
-      },
-      async () => {
-        const out = JSON.parse(await runCli(["claude", "use", "--home", home]));
-        assert.equal(out.ok, true);
-        assert.equal(out.activated.status, "activated");
-        assert.equal(out.activated.receipt.label, "boss");
-        assert.equal(out.activated.receipt.subscriptionType, "max");
-
-        const auth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
-        assert.deepEqual(auth.claudeAiOauth, {
-          accessToken: "ACCESS_BOSS",
-          refreshToken: "REFRESH_BOSS",
-          expiresAt: auth.claudeAiOauth.expiresAt,
-          subscriptionType: "max",
-          rateLimitTier: "max_20x",
-          scopes: ["user:profile", "user:inference"],
-        });
-        assert.equal(typeof auth.claudeAiOauth.expiresAt, "number");
-
-        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-        assert.equal(updatedState.targets.claudeCli.activeLabel, "boss");
-        assert.equal(updatedState.targets.claudeCli.expectedSubscriptionType, "max");
-        assert.equal(updatedState.targets.claudeCli.lastSelectionReceipt.status, "activated");
-
-        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
-        assert.equal(status.claudeCli.activeLabel, "boss");
-        assert.equal(status.claudeCli.actualSubscriptionType, "max");
-        assert.equal(status.claudeCli.readback.claudeAiOauthPresent, true);
-        assert.equal(status.claudeCli.authStatus.available, true);
-        assert.equal(status.claudeCli.authStatus.ok, true);
-        assert.equal(status.claudeCli.authStatus.loggedIn, true);
-        assert.ok(status.warnings.every((warning) => !String(warning.kind).startsWith("claude_target_")));
-
-        const textOut = await runCli(["status", "--home", home]);
-        assert.match(textOut, /\nCLAUDE\n/);
-      },
-    );
+    const status = JSON.parse(await runCli(["status", "--json", "--home", consumerHome]));
+    assert.equal(status.claudeCli.activeLabel, null);
+    assert.equal(status.claudeCli.inferredLabel, "qa");
   } finally {
     globalThis.fetch = origFetch;
   }
 });
 
-test("claude use backfills Claude-local projection fields from the existing local auth store", async () => {
+test("aim claude capture-native refuses duplicate stored Claude identities and email mismatches", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
-  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
 
-  writeJson(path.join(home, ".claude", ".credentials.json"), {
-    claudeAiOauth: {
-      accessToken: "OLD_ACCESS",
-      refreshToken: "REFRESH_BOSS",
-      expiresAt: Date.now() + 3600_000,
-      subscriptionType: "max",
-      rateLimitTier: "max_20x",
-      scopes: ["user:profile", "user:inference"],
+  writeClaudeNativeBundle(home, {
+    accessToken: "ACCESS_BOSS",
+    refreshToken: "REFRESH_BOSS",
+    oauthAccount: {
+      emailAddress: "boss@example.com",
+      organizationName: "Boss Org",
+      organizationUuid: "org_boss",
     },
   });
 
   writeJson(statePath, {
     schemaVersion: "0.2",
     accounts: {
-      boss: { provider: "anthropic", reauth: { mode: "manual-callback" } },
+      boss: {
+        provider: "anthropic",
+        reauth: { mode: "native-claude" },
+      },
+      other: {
+        provider: "anthropic",
+        reauth: { mode: "native-claude" },
+        expect: { email: "other@example.com" },
+      },
+      duplicate: {
+        provider: "anthropic",
+        reauth: { mode: "native-claude" },
+      },
     },
     credentials: {
       "openai-codex": {},
       anthropic: {
-        boss: {
-          access: "ACCESS_BOSS",
-          refresh: "REFRESH_BOSS",
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-        },
+        boss: buildAnthropicClaudeCredential(),
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  await assert.rejects(
+    () => runCli(["claude", "capture-native", "duplicate", "--home", home]),
+    /already stored on label=boss/i,
+  );
+  await assert.rejects(
+    () => runCli(["claude", "capture-native", "other", "--home", home]),
+    /expects other@example.com/i,
+  );
+});
+
+test("interactive Anthropic label panel offers native Claude actions and no manual callback setup", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {},
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const out = await runCli(["boss", "--home", home], {
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    promptLineImpl: async () => "0",
+  });
+
+  assert.match(out, /Capture current native Claude login/);
+  assert.match(out, /Import native Claude bundle/);
+  assert.match(out, /Export current live native bundle/);
+  assert.doesNotMatch(out, /Manual callback login/);
+  assert.doesNotMatch(out, /Change browser setup/);
+  assert.doesNotMatch(out, /Browser:/);
+  assert.match(out, /Native bundle: missing/);
+});
+
+test("anthropic refresh updates token fields without losing native Claude identity metadata", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: buildAnthropicClaudeCredential(),
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const out = JSON.parse(await runCli(["boss", "--home", home], {
+    refreshAnthropicImpl: async (refreshToken) => {
+      assert.equal(refreshToken, "REFRESH_BOSS");
+      return {
+        access: "ACCESS_REFRESHED",
+        refresh: "REFRESH_REFRESHED",
+        expires: Date.now() + 7200_000,
+      };
+    },
+  }));
+
+  assert.equal(out.ok, true);
+  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.credentials.anthropic.boss.access, "ACCESS_REFRESHED");
+  assert.equal(updatedState.credentials.anthropic.boss.refresh, "REFRESH_REFRESHED");
+  assert.equal(updatedState.credentials.anthropic.boss.nativeClaudeBundle.claudeAiOauth.accessToken, "ACCESS_REFRESHED");
+  assert.equal(updatedState.credentials.anthropic.boss.nativeClaudeBundle.oauthAccount.accountUuid, "acct_boss");
+  assert.equal(updatedState.credentials.anthropic.boss.nativeClaudeBundle.oauthAccount.emailAddress, "boss@example.com");
+});
+
+test("claude use preserves unrelated .claude.json keys while projecting native auth", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  writeJson(path.join(home, ".claude.json"), {
+    theme: "dark",
+    telemetry: false,
+    oauthAccount: {
+      emailAddress: "stale@example.com",
+      organizationName: "Stale Org",
+      organizationUuid: "org_stale",
+    },
+  });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: buildAnthropicClaudeCredential(),
       },
     },
     targets: {
@@ -6699,18 +7689,12 @@ test("claude use backfills Claude-local projection fields from the existing loca
         PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
       },
       async () => {
-        const out = JSON.parse(await runCli(["claude", "use", "--home", home]));
-        assert.equal(out.ok, true);
-        assert.equal(out.activated.status, "activated");
-
-        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-        assert.equal(updatedState.credentials.anthropic.boss.subscriptionType, "max");
-        assert.equal(updatedState.credentials.anthropic.boss.rateLimitTier, "max_20x");
-        assert.deepEqual(updatedState.credentials.anthropic.boss.scopes, ["user:profile", "user:inference"]);
-
-        const auth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
-        assert.equal(auth.claudeAiOauth.accessToken, "ACCESS_BOSS");
-        assert.equal(auth.claudeAiOauth.subscriptionType, "max");
+        await runCli(["claude", "use", "--home", home]);
+        const appState = JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8"));
+        assert.equal(appState.theme, "dark");
+        assert.equal(appState.telemetry, false);
+        assert.equal(appState.oauthAccount.emailAddress, "boss@example.com");
+        assert.equal(appState.oauthAccount.organizationName, "Boss Org");
       },
     );
   } finally {
@@ -6723,33 +7707,23 @@ test("claude use clears stale managed auth when no Claude pool account is eligib
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
 
-  writeJson(path.join(home, ".claude", ".credentials.json"), {
-    claudeAiOauth: {
-      accessToken: "ACCESS_BOSS",
-      refreshToken: "REFRESH_BOSS",
-      expiresAt: Date.now() + 3600_000,
-      subscriptionType: "max",
-      rateLimitTier: "max_20x",
-      scopes: ["user:profile", "user:inference"],
+  writeClaudeNativeBundle(home, {
+    appState: {
+      theme: "dark",
     },
   });
 
   writeJson(statePath, {
     schemaVersion: "0.2",
     accounts: {
-      boss: { provider: "anthropic", reauth: { mode: "manual-callback" } },
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
     },
     credentials: {
       "openai-codex": {},
       anthropic: {
-        boss: {
-          access: "ACCESS_BOSS",
-          refresh: "REFRESH_BOSS",
-          expiresAt: new Date(Date.now() - 3600_000).toISOString(),
-          subscriptionType: "max",
-          rateLimitTier: "max_20x",
-          scopes: ["user:profile", "user:inference"],
-        },
+        boss: buildAnthropicClaudeCredential({
+          expiresAtMs: Date.now() - 3600_000,
+        }),
       },
     },
     targets: {
@@ -6757,7 +7731,8 @@ test("claude use clears stale managed auth when no Claude pool account is eligib
       codexCli: {},
       claudeCli: {
         activeLabel: "boss",
-        expectedSubscriptionType: "max",
+        credentialsPath: path.join(home, ".claude", ".credentials.json"),
+        appStatePath: path.join(home, ".claude.json"),
         lastAppliedAt: new Date().toISOString(),
       },
       piCli: {},
@@ -6792,19 +7767,162 @@ test("claude use clears stale managed auth when no Claude pool account is eligib
         const parsed = JSON.parse(result.stdout);
         assert.equal(parsed.ok, false);
         assert.equal(parsed.activated.status, "blocked");
-        assert.deepEqual(parsed.activated.receipt.blockers, [{ reason: "no_eligible_pool_account" }]);
+        assert.deepEqual(parsed.activated.receipt.blockers, [{ label: "boss", reason: "missing_credentials" }]);
 
         assert.equal(fs.existsSync(path.join(home, ".claude", ".credentials.json")), false);
+        const appState = JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8"));
+        assert.equal(appState.theme, "dark");
+        assert.equal(appState.oauthAccount, undefined);
 
         const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
         assert.equal(updatedState.targets.claudeCli.activeLabel, undefined);
-        assert.equal(updatedState.targets.claudeCli.expectedSubscriptionType, undefined);
+        assert.equal(updatedState.targets.claudeCli.credentialsPath, undefined);
+        assert.equal(updatedState.targets.claudeCli.appStatePath, undefined);
         assert.equal(updatedState.targets.claudeCli.lastAppliedAt, undefined);
         assert.equal(updatedState.targets.claudeCli.lastSelectionReceipt.status, "blocked");
 
         const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
         assert.equal(status.claudeCli.activeLabel, null);
-        assert.equal(status.claudeCli.readback.exists, false);
+        assert.equal(status.claudeCli.readback.credentials.exists, false);
+        assert.equal(status.claudeCli.readback.appState.oauthAccountPresent, false);
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("claude status warns when an oauth-token env override shadows projected native auth", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: buildAnthropicClaudeCredential(),
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/api/oauth/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 12, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+          seven_day: { utilization: 34, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
+      },
+      async () => {
+        await runCli(["claude", "use", "--home", home]);
+      },
+    );
+
+    await withEnv(
+      {
+        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
+        CLAUDE_CODE_OAUTH_TOKEN: "SHADOW_TOKEN",
+      },
+      async () => {
+        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+        assert.equal(status.claudeCli.authStatus.authMethod, "oauth_token");
+        assert.ok(status.warnings.some((warning) => warning.kind === "claude_target_env_override"));
+      },
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("status --json does not shell out to a mutating claude auth status command", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: buildAnthropicClaudeCredential(),
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url ?? "");
+    if (u.includes("/api/oauth/usage")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 12, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+          seven_day: { utilization: 34, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
+        }),
+      };
+    }
+    throw new Error(`Unexpected fetch url in test: ${u}`);
+  };
+
+  try {
+    await withEnv(
+      {
+        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
+      },
+      async () => {
+        await runCli(["claude", "use", "--home", home]);
+      },
+    );
+
+    await withEnv(
+      {
+        PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
+        CLAUDE_AUTH_STATUS_MUTATES: "1",
+      },
+      async () => {
+        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+        assert.equal(status.claudeCli.authStatus.authMethod, "claude.ai");
+        assert.equal(status.claudeCli.authStatus.subscriptionType, "max");
+
+        const auth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
+        assert.equal(auth.claudeAiOauth.subscriptionType, "max");
+        assert.equal(auth.claudeAiOauth.rateLimitTier, "max_20x");
       },
     );
   } finally {

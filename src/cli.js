@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
-import { loginAnthropic, loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
+import { loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
 
 const SCHEMA_VERSION = "0.2";
 const OPENAI_CODEX_PROVIDER = "openai-codex";
@@ -22,11 +22,13 @@ const CODEX_AUTH_STORE_MODE_AUTO = "auto";
 const DEFAULT_AUTHORITY_STATE_REMOTE_PATH = "$HOME/.aimgr/secrets.json";
 const REAUTH_MODE_BROWSER_MANAGED = "browser-managed";
 const REAUTH_MODE_MANUAL_CALLBACK = "manual-callback";
+const REAUTH_MODE_NATIVE_CLAUDE = "native-claude";
 const LEGACY_INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE = "aim-browser-profile";
 const LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE = "openclaw-browser-profile";
 const BROWSER_MODE_AIM_PROFILE = "aim-profile";
 const BROWSER_MODE_CHROME_PROFILE = "chrome-profile";
 const BROWSER_MODE_AGENT_BROWSER = "agent-browser";
+const CLAUDE_NATIVE_BUNDLE_EXPORT_VERSION = 1;
 const DEFAULT_AGENTS_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
 const HERMES_AUTH_STORE_VERSION = 1;
 const HERMES_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
@@ -238,6 +240,9 @@ function parseArgs(argv) {
     profile: undefined,
     session: undefined,
     authFile: undefined,
+    inFile: undefined,
+    outFile: undefined,
+    sourceHome: undefined,
     discardDirty: false,
     json: false,
     compact: false,
@@ -304,6 +309,21 @@ function parseArgs(argv) {
     }
     if (arg === "--auth-file") {
       opts.authFile = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--in") {
+      opts.inFile = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--out") {
+      opts.outFile = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--source-home") {
+      opts.sourceHome = argv[i + 1];
       i += 1;
       continue;
     }
@@ -424,11 +444,16 @@ function printHelp() {
     "  aim sync openclaw     # explicit alias for apply",
     "  aim sync codex --from <authority>  # import/refresh openai-codex labels from an authority AIM state",
     "  aim promote codex --to <authority> <label> [<label>...]  # publish refreshed imported openai-codex labels back to the authority",
+    "  aim sync claude --from <authority>  # import/refresh Claude labels from an authority AIM state",
+    "  aim promote claude --to <authority> <label> [<label>...]  # publish refreshed imported Claude labels back to the authority",
     "  aim auth write hermes <label> --auth-file <abs-path>  # write Hermes auth.json only",
     "  aim codex use         # activate the next-best pooled openai-codex label for local Codex CLI",
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
     "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
-    "  aim claude use        # activate the next-best pooled anthropic label for local Claude CLI",
+    "  aim claude use [label]  # activate the next-best pooled Claude label, or explicitly switch a chosen label",
+    "  aim claude capture-native <label> [--source-home <dir>]",
+    "  aim claude export-live --out <file> [--source-home <dir>]",
+    "  aim claude import-native <label> --in <file>",
     "  aim pi use            # activate the next-best pooled openai-codex label for local Pi CLI",
     "  aim browser show <label>",
     "  aim browser set <label> --mode aim-profile [--seed-from-openclaw <profileId>]",
@@ -440,7 +465,7 @@ function printHelp() {
     "  - SSOT file: ~/.aimgr/secrets.json (auto-backed-up on every write).",
     "  - V0 supports: openai-codex (ChatGPT/Codex OAuth) + anthropic (Claude Pro/Max OAuth) on macOS.",
     "  - Browser-managed OAuth supports explicit per-label bindings: aim-profile, chrome-profile, or agent-browser.",
-    "  - `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim claude use` / `aim pi use` are removed; use `aim rebalance openclaw`, `aim apply`, `aim codex use`, `aim claude use`, and `aim pi use`.",
+    "  - `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim pi use` are removed; use `aim rebalance openclaw`, `aim apply`, `aim codex use`, `aim claude use [label]`, and `aim pi use`.",
     "  - Codex target management is file-backed only in v1; keyring/auto homes fail loud.",
     `  - \`aim codex watch --once\` is the scheduler-safe one-shot; foreground watch loops default to ${DEFAULT_CODEX_WATCH_INTERVAL_SECONDS}s and rotate below ${DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT}% 5h remaining.`,
     `  - \`aim hermes watch --once\` is the Hermes scheduler-safe one-shot and always delegates writes through \`aim rebalance hermes\`.`,
@@ -448,9 +473,9 @@ function printHelp() {
     "Developer options (rare):",
     "  --home <dir>    Run against an alternate HOME (dev/test; e.g. /tmp/aimgr-home).",
     "  --state <path>  Override SSOT file path (default: <home>/.aimgr/secrets.json).",
-    "  --from <src>    Authority source for `aim sync codex`.",
+    "  --from <src>    Authority source for `aim sync codex` / `aim sync claude`.",
     "                  Examples: agents@amirs-mac-studio  |  ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json",
-    "  --to <dst>      Authority destination for `aim promote codex`.",
+    "  --to <dst>      Authority destination for `aim promote codex` / `aim promote claude`.",
     "                  Examples: agents@amirs-mac-studio  |  ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json",
     "  --mode <id>     Browser binding mode for `aim browser set`.",
     "  --seed-from-openclaw <profileId>  Optional one-time OpenClaw seed source for `--mode aim-profile`.",
@@ -459,7 +484,10 @@ function printHelp() {
     "  --profile <abs-path>              Required for `--mode agent-browser`.",
     "  --session <name>                  Required for `--mode agent-browser`.",
     "  --auth-file <abs-path>            Required for `aim auth write hermes`; must point at Hermes auth.json.",
-    "  --discard-dirty                   Allow `aim sync codex` to overwrite locally refreshed imported labels that were not promoted.",
+    "  --in <file>                       Required for `aim claude import-native`.",
+    "  --out <file>                      Required for `aim claude export-live`.",
+    "  --source-home <dir>               Optional source HOME for native Claude capture/export on the same host.",
+    "  --discard-dirty                   Allow `aim sync codex` / `aim sync claude` to overwrite locally refreshed imported labels that were not promoted.",
     "",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -494,6 +522,19 @@ function expandHomeShorthandPath(rawPath, { homeDir }) {
     return path.join(homeDir, raw.slice("$HOME/".length));
   }
   return raw;
+}
+
+function resolveCliPath(rawPath, { homeDir, optionName }) {
+  const raw = String(rawPath ?? "").trim();
+  if (!raw) {
+    throw new Error(`Missing value for ${optionName}.`);
+  }
+  return path.resolve(expandHomeShorthandPath(raw, { homeDir }));
+}
+
+function resolveOptionalSourceHome(rawPath, { homeDir }) {
+  if (rawPath === undefined) return homeDir;
+  return resolveCliPath(rawPath, { homeDir, optionName: "--source-home" });
 }
 
 function resolveAimgrStatePath(params) {
@@ -1214,6 +1255,10 @@ function createEmptyState() {
           labels: [],
           labelsByName: {},
         },
+        anthropic: {
+          labels: [],
+          labelsByName: {},
+        },
       },
     },
     pool: {
@@ -1318,6 +1363,11 @@ function getCodexCredentialFromStateUnsafe(state, label) {
   return isObject(byLabel?.[label]) ? byLabel[label] : null;
 }
 
+function getAnthropicCredentialFromStateUnsafe(state, label) {
+  const byLabel = isObject(state?.credentials?.[ANTHROPIC_PROVIDER]) ? state.credentials[ANTHROPIC_PROVIDER] : {};
+  return isObject(byLabel?.[label]) ? byLabel[label] : null;
+}
+
 export function buildCodexCredentialFingerprint(credential) {
   const cred = assertCodexCredentialShape({
     label: "<fingerprint>",
@@ -1337,6 +1387,52 @@ export function buildCodexCredentialFingerprint(credential) {
 function tryBuildCodexCredentialFingerprint(credential) {
   try {
     return buildCodexCredentialFingerprint(credential);
+  } catch {
+    return null;
+  }
+}
+
+export function buildAnthropicCredentialFingerprint(credential) {
+  const cred = assertAnthropicCredentialShape({
+    label: "<fingerprint>",
+    credential,
+    requireFresh: false,
+    requireClaudeNativeBundle: false,
+  });
+  const normalized = {
+    access: String(cred.access).trim(),
+    refresh: String(cred.refresh).trim(),
+    expiresAt: String(cred.expiresAt).trim(),
+    ...(typeof cred.subscriptionType === "string" && cred.subscriptionType.trim()
+      ? { subscriptionType: cred.subscriptionType.trim() }
+      : {}),
+    ...(typeof cred.rateLimitTier === "string" && cred.rateLimitTier.trim()
+      ? { rateLimitTier: cred.rateLimitTier.trim() }
+      : {}),
+    ...(Array.isArray(cred.scopes) && normalizeNonEmptyStringArray(cred.scopes).length > 0
+      ? { scopes: normalizeNonEmptyStringArray(cred.scopes) }
+      : {}),
+    ...(typeof cred.emailAddress === "string" && cred.emailAddress.trim()
+      ? { emailAddress: cred.emailAddress.trim().toLowerCase() }
+      : {}),
+    ...(typeof cred.organizationName === "string" && cred.organizationName.trim()
+      ? { organizationName: cred.organizationName.trim() }
+      : {}),
+    ...(typeof cred.organizationUuid === "string" && cred.organizationUuid.trim()
+      ? { organizationUuid: cred.organizationUuid.trim() }
+      : {}),
+    ...(isObject(cred.nativeClaudeBundle)
+      ? {
+          nativeClaudeBundle: buildClaudeNativeBundle(cred.nativeClaudeBundle) ?? cloneJsonObject(cred.nativeClaudeBundle),
+        }
+      : {}),
+  };
+  return `sha256:${createHash("sha256").update(JSON.stringify(normalized)).digest("hex")}`;
+}
+
+function tryBuildAnthropicCredentialFingerprint(credential) {
+  try {
+    return buildAnthropicCredentialFingerprint(credential);
   } catch {
     return null;
   }
@@ -1400,6 +1496,135 @@ function normalizeAuthorityCodexImportMetadata(state) {
   importMeta.labels = nextLabels;
   importMeta.labelsByName = nextLabelsByName;
   state.imports.authority.codex = importMeta;
+}
+
+function buildAnthropicAuthorityIdentityFromCredential(credential) {
+  const cred = isObject(credential) ? credential : null;
+  if (!cred) return null;
+  const bundle = getClaudeNativeBundle(cred);
+  const summary = buildClaudeCredentialSummaryFromBundle(bundle);
+  const oauthAccount = isObject(bundle?.oauthAccount) ? bundle.oauthAccount : null;
+  const accountUuid =
+    typeof oauthAccount?.accountUuid === "string" && oauthAccount.accountUuid.trim()
+      ? oauthAccount.accountUuid.trim()
+      : null;
+  const emailAddress =
+    typeof cred.emailAddress === "string" && cred.emailAddress.trim()
+      ? cred.emailAddress.trim().toLowerCase()
+      : summary?.emailAddress || null;
+  const organizationUuid =
+    typeof cred.organizationUuid === "string" && cred.organizationUuid.trim()
+      ? cred.organizationUuid.trim()
+      : summary?.organizationUuid || null;
+  if (!accountUuid && !(emailAddress && organizationUuid)) {
+    return null;
+  }
+  return {
+    ...(accountUuid ? { accountUuid } : {}),
+    ...(emailAddress ? { emailAddress } : {}),
+    ...(organizationUuid ? { organizationUuid } : {}),
+  };
+}
+
+function normalizeAnthropicAuthorityIdentityRecord(value) {
+  if (!isObject(value)) return null;
+  const accountUuid =
+    typeof value.accountUuid === "string" && value.accountUuid.trim() ? value.accountUuid.trim() : null;
+  const emailAddress =
+    typeof value.emailAddress === "string" && value.emailAddress.trim()
+      ? value.emailAddress.trim().toLowerCase()
+      : null;
+  const organizationUuid =
+    typeof value.organizationUuid === "string" && value.organizationUuid.trim()
+      ? value.organizationUuid.trim()
+      : null;
+  if (!accountUuid && !(emailAddress && organizationUuid)) {
+    return null;
+  }
+  return {
+    ...(accountUuid ? { accountUuid } : {}),
+    ...(emailAddress ? { emailAddress } : {}),
+    ...(organizationUuid ? { organizationUuid } : {}),
+  };
+}
+
+function doAnthropicAuthorityIdentitiesMatch(left, right) {
+  const leftIdentity = normalizeAnthropicAuthorityIdentityRecord(left);
+  const rightIdentity = normalizeAnthropicAuthorityIdentityRecord(right);
+  if (!leftIdentity || !rightIdentity) {
+    return false;
+  }
+  if (leftIdentity.accountUuid && rightIdentity.accountUuid) {
+    return leftIdentity.accountUuid === rightIdentity.accountUuid;
+  }
+  if (
+    leftIdentity.emailAddress
+    && rightIdentity.emailAddress
+    && leftIdentity.organizationUuid
+    && rightIdentity.organizationUuid
+  ) {
+    return (
+      leftIdentity.emailAddress === rightIdentity.emailAddress
+      && leftIdentity.organizationUuid === rightIdentity.organizationUuid
+    );
+  }
+  return false;
+}
+
+function normalizeAuthorityAnthropicImportMetadata(state) {
+  const importMeta = isObject(state.imports?.authority?.anthropic) ? state.imports.authority.anthropic : {};
+  const labelSet = new Set();
+  const rawLabels = Array.isArray(importMeta.labels) ? importMeta.labels : [];
+  const rawLabelsByName = isObject(importMeta.labelsByName) ? importMeta.labelsByName : {};
+  for (const labelRaw of [...rawLabels, ...Object.keys(rawLabelsByName)]) {
+    try {
+      labelSet.add(normalizeLabel(labelRaw));
+    } catch {
+      // Ignore malformed imported labels in state normalization; import paths validate strictly.
+    }
+  }
+
+  const importedAtFallback =
+    typeof importMeta.importedAt === "string" && importMeta.importedAt.trim() ? importMeta.importedAt.trim() : null;
+  const nextLabels = [...labelSet].toSorted((a, b) => a.localeCompare(b));
+  const nextLabelsByName = {};
+
+  for (const label of nextLabels) {
+    const existing = isObject(rawLabelsByName[label]) ? rawLabelsByName[label] : {};
+    const credential = getAnthropicCredentialFromStateUnsafe(state, label);
+    const currentFingerprint = tryBuildAnthropicCredentialFingerprint(credential);
+    const currentIdentity = buildAnthropicAuthorityIdentityFromCredential(credential);
+    const importedAt =
+      typeof existing.importedAt === "string" && existing.importedAt.trim()
+        ? existing.importedAt.trim()
+        : importedAtFallback;
+    const baseCredentialFingerprint =
+      typeof existing.baseCredentialFingerprint === "string" && existing.baseCredentialFingerprint.trim()
+        ? existing.baseCredentialFingerprint.trim()
+        : currentFingerprint;
+    const baseIdentity = normalizeAnthropicAuthorityIdentityRecord(existing.baseIdentity) ?? currentIdentity;
+    const dirtyObservedAt =
+      typeof existing.dirtyObservedAt === "string" && existing.dirtyObservedAt.trim()
+        ? existing.dirtyObservedAt.trim()
+        : null;
+    const lastPromotedAt =
+      typeof existing.lastPromotedAt === "string" && existing.lastPromotedAt.trim()
+        ? existing.lastPromotedAt.trim()
+        : null;
+
+    nextLabelsByName[label] = {
+      ...(importedAt ? { importedAt } : {}),
+      ...(baseCredentialFingerprint ? { baseCredentialFingerprint } : {}),
+      ...(baseIdentity ? { baseIdentity } : {}),
+      dirtyLocal: existing.dirtyLocal === true,
+      ...(dirtyObservedAt ? { dirtyObservedAt } : {}),
+      ...(lastPromotedAt ? { lastPromotedAt } : {}),
+    };
+  }
+
+  importMeta.labels = nextLabels;
+  importMeta.labelsByName = nextLabelsByName;
+  state.imports.authority.anthropic = importMeta;
 }
 
 function loadAimgrState(statePath) {
@@ -2287,18 +2512,27 @@ function getAccountBrowserState(state, label, { create = false } = {}) {
 function getAccountReauthState(state, label, { create = false } = {}) {
   const account = getAccountRecord(state, label, { create });
   if (!account) return null;
+  if (create && !isObject(account.reauth)) {
+    account.reauth = {};
+  }
   return account.reauth;
 }
 
 function getAccountPoolState(state, label, { create = false } = {}) {
   const account = getAccountRecord(state, label, { create });
   if (!account) return null;
+  if (create && !isObject(account.pool)) {
+    account.pool = {};
+  }
   return account.pool;
 }
 
 function normalizeInteractiveOAuthMode(value) {
   const raw = String(value ?? "").trim().toLowerCase();
   if (!raw) return null;
+  if (raw === REAUTH_MODE_NATIVE_CLAUDE) {
+    return REAUTH_MODE_NATIVE_CLAUDE;
+  }
   if (raw === REAUTH_MODE_BROWSER_MANAGED) {
     return REAUTH_MODE_BROWSER_MANAGED;
   }
@@ -2396,8 +2630,9 @@ function ensureAccountShape(account, { providerHint } = {}) {
     && rawBrowser.agentBrowserSession.trim()
       ? rawBrowser.agentBrowserSession.trim()
       : null;
+  const reauthMode = normalizeInteractiveOAuthMode(account?.reauth?.mode);
   account.browser =
-    normalizeInteractiveOAuthMode(account?.reauth?.mode) === REAUTH_MODE_MANUAL_CALLBACK
+    reauthMode === REAUTH_MODE_MANUAL_CALLBACK || reauthMode === REAUTH_MODE_NATIVE_CLAUDE
       ? null
       : normalizedMode || seededFromOpenclawProfileId || seededAt || verifiedAt || conflictReason
         ? {
@@ -2414,9 +2649,9 @@ function ensureAccountShape(account, { providerHint } = {}) {
         : null;
 
   const reauth = isObject(account.reauth) ? account.reauth : {};
-  const reauthMode = normalizeInteractiveOAuthMode(reauth.mode);
+  const normalizedReauthMode = normalizeInteractiveOAuthMode(reauth.mode);
   account.reauth = {
-    ...(reauthMode ? { mode: reauthMode } : {}),
+    ...(normalizedReauthMode ? { mode: normalizedReauthMode } : {}),
     ...(typeof reauth.lastAttemptAt === "string" && reauth.lastAttemptAt.trim()
       ? { lastAttemptAt: reauth.lastAttemptAt.trim() }
       : {}),
@@ -2514,6 +2749,13 @@ export function setBrowserBinding({
   const normalizedLabel = normalizeLabel(label);
   const account = getAccountRecord(state, normalizedLabel, { create: true });
   ensureAccountShape(account, { providerHint: account.provider });
+  const provider = normalizeProviderId(account.provider);
+  if (provider === ANTHROPIC_PROVIDER) {
+    throw new Error(
+      `Claude labels do not use browser bindings anymore. Use \`aim claude capture-native ${normalizedLabel}\`, ` +
+        `\`aim claude import-native ${normalizedLabel} --in <file>\`, or \`aim ${normalizedLabel}\`.`,
+    );
+  }
 
   const normalizedMode = String(mode ?? "").trim() === REAUTH_MODE_MANUAL_CALLBACK
     ? REAUTH_MODE_MANUAL_CALLBACK
@@ -2969,6 +3211,7 @@ function ensureStateShape(state) {
   state.imports = isObject(state.imports) ? state.imports : {};
   state.imports.authority = isObject(state.imports.authority) ? state.imports.authority : {};
   state.imports.authority.codex = isObject(state.imports.authority.codex) ? state.imports.authority.codex : {};
+  state.imports.authority.anthropic = isObject(state.imports.authority.anthropic) ? state.imports.authority.anthropic : {};
   state.pool = isObject(state.pool) ? state.pool : {};
   state.pool.openaiCodex = isObject(state.pool.openaiCodex) ? state.pool.openaiCodex : {};
   state.pool.openaiCodex.history = pruneOpenaiCodexHistory(state.pool.openaiCodex.history);
@@ -3079,6 +3322,13 @@ function ensureStateShape(state) {
       account.reauth.mode = existingReauthMode;
     }
     ensureAccountShape(account, { providerHint: account.provider });
+    if (normalizeProviderId(account.provider) === ANTHROPIC_PROVIDER) {
+      account.reauth = {
+        ...account.reauth,
+        mode: REAUTH_MODE_NATIVE_CLAUDE,
+      };
+      account.browser = null;
+    }
 
     if (Object.hasOwn(account, "openclawBrowserProfile")) {
       delete account.openclawBrowserProfile;
@@ -3111,6 +3361,7 @@ function ensureStateShape(state) {
   }
 
   normalizeAuthorityCodexImportMetadata(state);
+  normalizeAuthorityAnthropicImportMetadata(state);
 }
 
 function getAuthorityCodexImport(state) {
@@ -3223,6 +3474,132 @@ function markImportedCodexLabelPromoted(state, label, { promotedAt } = {}) {
   return { imported: true };
 }
 
+function getAuthorityAnthropicImport(state) {
+  ensureStateShape(state);
+  return state.imports.authority.anthropic;
+}
+
+function getAuthorityAnthropicImportLabelMeta(state, label) {
+  const normalizedLabel = normalizeLabel(label);
+  const labelsByName = getAuthorityAnthropicImport(state).labelsByName;
+  return isObject(labelsByName?.[normalizedLabel]) ? labelsByName[normalizedLabel] : null;
+}
+
+function getImportedAnthropicLabels(state) {
+  const imported = getAuthorityAnthropicImport(state);
+  const labels = Array.isArray(imported.labels) ? imported.labels : [];
+  const normalized = [];
+  for (const label of labels) {
+    try {
+      normalized.push(normalizeLabel(label));
+    } catch {
+      // Ignore malformed imported labels in status surfaces; import paths validate strictly.
+    }
+  }
+  return [...new Set(normalized)].toSorted((a, b) => a.localeCompare(b));
+}
+
+function isImportedAnthropicLabel(state, label) {
+  const normalizedLabel = normalizeLabel(label);
+  return getImportedAnthropicLabels(state).includes(normalizedLabel);
+}
+
+function getAuthorityAnthropicImportLabelStatus(state, label) {
+  const normalizedLabel = normalizeLabel(label);
+  if (!isImportedAnthropicLabel(state, normalizedLabel)) {
+    return {
+      imported: false,
+      dirty: false,
+      meta: null,
+      currentFingerprint: null,
+      baseFingerprint: null,
+      currentIdentity: null,
+      baseIdentity: null,
+    };
+  }
+
+  const meta = getAuthorityAnthropicImportLabelMeta(state, normalizedLabel);
+  const credential = getAnthropicCredential(state, normalizedLabel);
+  const currentFingerprint = tryBuildAnthropicCredentialFingerprint(credential);
+  const currentIdentity = buildAnthropicAuthorityIdentityFromCredential(credential);
+  const baseFingerprint =
+    typeof meta?.baseCredentialFingerprint === "string" && meta.baseCredentialFingerprint.trim()
+      ? meta.baseCredentialFingerprint.trim()
+      : null;
+  const baseIdentity = normalizeAnthropicAuthorityIdentityRecord(meta?.baseIdentity);
+  const dirty =
+    meta?.dirtyLocal === true
+    || currentFingerprint !== baseFingerprint
+    || Boolean(currentIdentity && baseIdentity && !doAnthropicAuthorityIdentitiesMatch(currentIdentity, baseIdentity));
+
+  return {
+    imported: true,
+    dirty,
+    meta,
+    currentFingerprint,
+    baseFingerprint,
+    currentIdentity,
+    baseIdentity,
+  };
+}
+
+function markImportedAnthropicLabelDirtyState(state, label, { observedAt } = {}) {
+  const normalizedLabel = normalizeLabel(label);
+  ensureStateShape(state);
+  if (!isImportedAnthropicLabel(state, normalizedLabel)) {
+    return { imported: false, dirty: false };
+  }
+
+  const status = getAuthorityAnthropicImportLabelStatus(state, normalizedLabel);
+  const meta = getAuthorityAnthropicImportLabelMeta(state, normalizedLabel);
+  if (!meta) {
+    return { imported: true, dirty: status.dirty };
+  }
+  if (status.dirty) {
+    meta.dirtyLocal = true;
+    if (!(typeof meta.dirtyObservedAt === "string" && meta.dirtyObservedAt.trim())) {
+      meta.dirtyObservedAt = String(observedAt ?? new Date().toISOString());
+    }
+  } else {
+    meta.dirtyLocal = false;
+    if (Object.hasOwn(meta, "dirtyObservedAt")) {
+      delete meta.dirtyObservedAt;
+    }
+  }
+  return { imported: true, dirty: meta.dirtyLocal === true };
+}
+
+function markImportedAnthropicLabelPromoted(state, label, { promotedAt } = {}) {
+  const normalizedLabel = normalizeLabel(label);
+  ensureStateShape(state);
+  if (!isImportedAnthropicLabel(state, normalizedLabel)) {
+    return { imported: false };
+  }
+  const credential = getAnthropicCredential(state, normalizedLabel);
+  const meta = getAuthorityAnthropicImportLabelMeta(state, normalizedLabel);
+  if (!meta) {
+    return { imported: true };
+  }
+  const fingerprint = tryBuildAnthropicCredentialFingerprint(credential);
+  const identity = buildAnthropicAuthorityIdentityFromCredential(credential);
+  if (fingerprint) {
+    meta.baseCredentialFingerprint = fingerprint;
+  } else if (Object.hasOwn(meta, "baseCredentialFingerprint")) {
+    delete meta.baseCredentialFingerprint;
+  }
+  if (identity) {
+    meta.baseIdentity = identity;
+  } else if (Object.hasOwn(meta, "baseIdentity")) {
+    delete meta.baseIdentity;
+  }
+  meta.dirtyLocal = false;
+  if (Object.hasOwn(meta, "dirtyObservedAt")) {
+    delete meta.dirtyObservedAt;
+  }
+  meta.lastPromotedAt = String(promotedAt ?? new Date().toISOString());
+  return { imported: true };
+}
+
 function getOpenclawTargetState(state) {
   ensureStateShape(state);
   return state.targets.openclaw;
@@ -3292,7 +3669,7 @@ function setInteractiveOAuthBindingForLabel(state, label, binding) {
   }
   const reauth = getAccountReauthState(state, normalizedLabel, { create: true });
   reauth.mode = mode;
-  if (mode === REAUTH_MODE_MANUAL_CALLBACK) {
+  if (mode === REAUTH_MODE_MANUAL_CALLBACK || mode === REAUTH_MODE_NATIVE_CLAUDE) {
     state.accounts[normalizedLabel].browser = null;
   }
 }
@@ -3403,6 +3780,10 @@ function resolveManagedPiAgentDir({ homeDir }) {
 
 function resolveManagedClaudeDir({ homeDir }) {
   return path.join(homeDir, ".claude");
+}
+
+function resolveClaudeAppStatePath({ homeDir }) {
+  return path.join(homeDir, ".claude.json");
 }
 
 function resolveCodexAuthFilePath(codexHome) {
@@ -3538,44 +3919,90 @@ function normalizeNonEmptyStringArray(value) {
   return [...new Set(value.map((entry) => String(entry ?? "").trim()).filter(Boolean))];
 }
 
-function buildClaudeProjectionFields(source) {
-  const subscriptionType = typeof source?.subscriptionType === "string" ? source.subscriptionType.trim() : "";
-  const rateLimitTier = typeof source?.rateLimitTier === "string" ? source.rateLimitTier.trim() : "";
-  const scopes = normalizeNonEmptyStringArray(source?.scopes);
-  return {
-    ...(subscriptionType ? { subscriptionType } : {}),
-    ...(rateLimitTier ? { rateLimitTier } : {}),
-    ...(scopes.length > 0 ? { scopes } : {}),
-  };
+function cloneJsonObject(value) {
+  return isObject(value) ? structuredClone(value) : null;
 }
 
-function hasClaudeProjectionFields(source) {
-  const fields = buildClaudeProjectionFields(source);
-  return (
-    typeof fields.subscriptionType === "string"
-    && fields.subscriptionType.length > 0
-    && typeof fields.rateLimitTier === "string"
-    && fields.rateLimitTier.length > 0
-    && Array.isArray(fields.scopes)
-    && fields.scopes.length > 0
-  );
-}
-
-function buildClaudeProjectionFieldsFromUsage(usageSnapshot) {
-  const windows = Array.isArray(usageSnapshot?.windows) ? usageSnapshot.windows : [];
-  if (windows.length === 0) {
-    return {};
+function getClaudeNativeBundle(source) {
+  if (isObject(source?.nativeClaudeBundle)) {
+    return source.nativeClaudeBundle;
   }
+  if (isObject(source?.claudeAiOauth) && isObject(source?.oauthAccount)) {
+    return source;
+  }
+  return null;
+}
 
-  const hasOpusWindow = windows.some(
-    (window) => typeof window?.label === "string" && window.label.trim().toLowerCase() === "opus",
-  );
+function buildClaudeNativeBundle(source) {
+  const oauth = cloneJsonObject(source?.claudeAiOauth);
+  const account = cloneJsonObject(source?.oauthAccount);
+  if (!oauth || !account) return null;
+  const expiresAt = parseTimestampLikeToMs(oauth.expiresAt);
+  if (expiresAt) {
+    oauth.expiresAt = expiresAt;
+  }
+  if (Array.isArray(oauth.scopes)) {
+    oauth.scopes = normalizeNonEmptyStringArray(oauth.scopes);
+  }
+  return {
+    claudeAiOauth: oauth,
+    oauthAccount: account,
+  };
+}
+
+function buildClaudeCredentialSummaryFromBundle(source) {
+  const bundle = getClaudeNativeBundle(source);
+  if (!bundle) return null;
+  const claudeAiOauth = isObject(bundle.claudeAiOauth) ? bundle.claudeAiOauth : null;
+  const oauthAccount = isObject(bundle.oauthAccount) ? bundle.oauthAccount : null;
+  if (!claudeAiOauth || !oauthAccount) return null;
+
+  const access = typeof claudeAiOauth.accessToken === "string" ? claudeAiOauth.accessToken.trim() : "";
+  const refresh = typeof claudeAiOauth.refreshToken === "string" ? claudeAiOauth.refreshToken.trim() : "";
+  const expiresAt = toIsoFromExpiresMs(parseTimestampLikeToMs(claudeAiOauth.expiresAt));
+  const subscriptionType =
+    typeof claudeAiOauth.subscriptionType === "string" ? claudeAiOauth.subscriptionType.trim() : "";
+  const rateLimitTier =
+    typeof claudeAiOauth.rateLimitTier === "string" ? claudeAiOauth.rateLimitTier.trim() : "";
+  const scopes = normalizeNonEmptyStringArray(claudeAiOauth.scopes);
+  const emailAddress =
+    typeof oauthAccount.emailAddress === "string" ? oauthAccount.emailAddress.trim().toLowerCase() : "";
+  const organizationName =
+    typeof oauthAccount.organizationName === "string" ? oauthAccount.organizationName.trim() : "";
+  const organizationUuid =
+    typeof oauthAccount.organizationUuid === "string" ? oauthAccount.organizationUuid.trim() : "";
 
   return {
-    subscriptionType: hasOpusWindow ? INFERRED_ANTHROPIC_SUBSCRIPTION_MAX : INFERRED_ANTHROPIC_SUBSCRIPTION_PRO,
-    rateLimitTier: hasOpusWindow ? INFERRED_ANTHROPIC_RATE_LIMIT_TIER_MAX : INFERRED_ANTHROPIC_RATE_LIMIT_TIER_PRO,
-    scopes: [...DEFAULT_ANTHROPIC_OAUTH_SCOPES],
+    access,
+    refresh,
+    expiresAt: expiresAt || null,
+    subscriptionType,
+    rateLimitTier,
+    scopes,
+    emailAddress,
+    organizationName,
+    organizationUuid,
   };
+}
+
+function hasCompleteClaudeNativeBundle(source) {
+  const bundle = getClaudeNativeBundle(source);
+  const summary = buildClaudeCredentialSummaryFromBundle(bundle);
+  return Boolean(
+    bundle
+    && isObject(bundle.claudeAiOauth)
+    && isObject(bundle.oauthAccount)
+    && summary
+    && summary.access
+    && summary.refresh
+    && summary.expiresAt
+    && summary.subscriptionType
+    && summary.rateLimitTier
+    && summary.scopes.length > 0
+    && summary.emailAddress
+    && summary.organizationName
+    && summary.organizationUuid
+  );
 }
 
 function readClaudeAuthFile({ claudeDir }) {
@@ -3593,7 +4020,11 @@ function readClaudeAuthFile({ claudeDir }) {
     const accessToken = typeof claudeAiOauth?.accessToken === "string" ? claudeAiOauth.accessToken.trim() : null;
     const refreshToken = typeof claudeAiOauth?.refreshToken === "string" ? claudeAiOauth.refreshToken.trim() : null;
     const expiresAtMs = parseTimestampLikeToMs(claudeAiOauth?.expiresAt);
-    const projectionFields = buildClaudeProjectionFields(claudeAiOauth);
+    const subscriptionType =
+      typeof claudeAiOauth?.subscriptionType === "string" ? claudeAiOauth.subscriptionType.trim() : "";
+    const rateLimitTier =
+      typeof claudeAiOauth?.rateLimitTier === "string" ? claudeAiOauth.rateLimitTier.trim() : "";
+    const scopes = normalizeNonEmptyStringArray(claudeAiOauth?.scopes);
     return {
       exists: true,
       ok: true,
@@ -3602,9 +4033,10 @@ function readClaudeAuthFile({ claudeDir }) {
       accessToken: accessToken || null,
       refreshToken: refreshToken || null,
       expiresAt: expiresAtMs,
-      ...(projectionFields.subscriptionType ? { subscriptionType: projectionFields.subscriptionType } : {}),
-      ...(projectionFields.rateLimitTier ? { rateLimitTier: projectionFields.rateLimitTier } : {}),
-      ...(projectionFields.scopes ? { scopes: projectionFields.scopes } : {}),
+      subscriptionType: subscriptionType || null,
+      rateLimitTier: rateLimitTier || null,
+      scopes,
+      claudeAiOauth: cloneJsonObject(claudeAiOauth),
       json: parsed,
     };
   } catch (err) {
@@ -3615,6 +4047,440 @@ function readClaudeAuthFile({ claudeDir }) {
       error: String(err?.message ?? err),
     };
   }
+}
+
+function readClaudeAppStateFile({ homeDir }) {
+  const appStatePath = resolveClaudeAppStatePath({ homeDir });
+  if (!fs.existsSync(appStatePath)) {
+    return { exists: false, appStatePath };
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(appStatePath, "utf8"));
+    if (!isObject(parsed)) {
+      throw new Error("Claude .claude.json is not a JSON object.");
+    }
+    const oauthAccount = isObject(parsed?.oauthAccount) ? parsed.oauthAccount : null;
+    const emailAddress =
+      typeof oauthAccount?.emailAddress === "string" ? oauthAccount.emailAddress.trim().toLowerCase() : null;
+    const organizationName =
+      typeof oauthAccount?.organizationName === "string" ? oauthAccount.organizationName.trim() : null;
+    const organizationUuid =
+      typeof oauthAccount?.organizationUuid === "string" ? oauthAccount.organizationUuid.trim() : null;
+    return {
+      exists: true,
+      ok: true,
+      appStatePath,
+      oauthAccountPresent: Boolean(oauthAccount),
+      emailAddress: emailAddress || null,
+      organizationName: organizationName || null,
+      organizationUuid: organizationUuid || null,
+      oauthAccount: cloneJsonObject(oauthAccount),
+      json: parsed,
+    };
+  } catch (err) {
+    return {
+      exists: true,
+      ok: false,
+      appStatePath,
+      error: String(err?.message ?? err),
+    };
+  }
+}
+
+function readClaudeNativeBundle({ homeDir }) {
+  const claudeDir = resolveManagedClaudeDir({ homeDir });
+  const credentials = readClaudeAuthFile({ claudeDir });
+  const appState = readClaudeAppStateFile({ homeDir });
+  const nativeClaudeBundle =
+    credentials.ok === true
+    && credentials.claudeAiOauthPresent === true
+    && appState.ok === true
+    && appState.oauthAccountPresent === true
+      ? buildClaudeNativeBundle({
+          claudeAiOauth: credentials.claudeAiOauth,
+          oauthAccount: appState.oauthAccount,
+        })
+      : null;
+  const summary = buildClaudeCredentialSummaryFromBundle(nativeClaudeBundle);
+  return {
+    exists: credentials.exists || appState.exists,
+    ok: (credentials.exists ? credentials.ok === true : true) && (appState.exists ? appState.ok === true : true),
+    credentialsPath: credentials.authPath ?? resolveClaudeAuthFilePath(claudeDir),
+    appStatePath: appState.appStatePath ?? resolveClaudeAppStatePath({ homeDir }),
+    credentials,
+    appState,
+    nativeClaudeBundle,
+    summary,
+  };
+}
+
+function deriveAnthropicCredentialFromClaudeBundle({ existingCredential, nativeClaudeBundle }) {
+  const bundle = buildClaudeNativeBundle(nativeClaudeBundle);
+  const summary = buildClaudeCredentialSummaryFromBundle(bundle);
+  if (!bundle || !hasCompleteClaudeNativeBundle(bundle) || !summary) {
+    throw new Error("Refusing to store an incomplete native Claude bundle.");
+  }
+  const next = {
+    ...(isObject(existingCredential) ? existingCredential : {}),
+    nativeClaudeBundle: bundle,
+    access: summary.access,
+    refresh: summary.refresh,
+    expiresAt: summary.expiresAt,
+    subscriptionType: summary.subscriptionType,
+    rateLimitTier: summary.rateLimitTier,
+    scopes: summary.scopes,
+    emailAddress: summary.emailAddress,
+    organizationName: summary.organizationName,
+    organizationUuid: summary.organizationUuid,
+  };
+  return next;
+}
+
+function updateClaudeBundleTokenFields({ nativeClaudeBundle, access, refresh, expiresAt }) {
+  const bundle = buildClaudeNativeBundle(nativeClaudeBundle);
+  if (!bundle) {
+    throw new Error("Cannot refresh Claude bundle tokens without an existing native Claude bundle.");
+  }
+  const expiresAtMs = parseExpiresAtToMs(expiresAt);
+  if (!expiresAtMs) {
+    throw new Error("Cannot refresh Claude bundle tokens without a valid expiresAt.");
+  }
+  bundle.claudeAiOauth.accessToken = access;
+  bundle.claudeAiOauth.refreshToken = refresh;
+  bundle.claudeAiOauth.expiresAt = expiresAtMs;
+  return bundle;
+}
+
+function captureClaudeNativeBundleFromHome({
+  homeDir,
+  label,
+  expectedAccessToken = null,
+  expectedRefreshToken = null,
+}) {
+  const readback = readClaudeNativeBundle({ homeDir });
+  const normalizedLabel = normalizeLabel(label);
+  if (readback.credentials.exists !== true) {
+    throw new Error(
+      `Native Claude bundle capture failed for label=${normalizedLabel}: ${readback.credentialsPath} is missing. ` +
+        `Log this account into Claude on this machine, then rerun \`aim ${normalizedLabel}\`.`,
+    );
+  }
+  if (readback.credentials.ok !== true) {
+    throw new Error(
+      `Native Claude bundle capture failed for label=${normalizedLabel}: could not read ${readback.credentialsPath} ` +
+        `(${readback.credentials.error || "unknown error"}).`,
+    );
+  }
+  if (readback.credentials.claudeAiOauthPresent !== true) {
+    throw new Error(
+      `Native Claude bundle capture failed for label=${normalizedLabel}: ${readback.credentialsPath} is missing claudeAiOauth.`,
+    );
+  }
+  if (readback.appState.exists !== true) {
+    throw new Error(
+      `Native Claude bundle capture failed for label=${normalizedLabel}: ${readback.appStatePath} is missing. ` +
+        `Log this account into Claude on this machine, then rerun \`aim ${normalizedLabel}\`.`,
+    );
+  }
+  if (readback.appState.ok !== true) {
+    throw new Error(
+      `Native Claude bundle capture failed for label=${normalizedLabel}: could not read ${readback.appStatePath} ` +
+        `(${readback.appState.error || "unknown error"}).`,
+    );
+  }
+  if (readback.appState.oauthAccountPresent !== true) {
+    throw new Error(
+      `Native Claude bundle capture failed for label=${normalizedLabel}: ${readback.appStatePath} is missing oauthAccount. ` +
+        `Log this account into Claude on this machine, then rerun \`aim ${normalizedLabel}\`.`,
+    );
+  }
+  if (!hasCompleteClaudeNativeBundle(readback.nativeClaudeBundle) || !readback.summary) {
+    throw new Error(
+      `Native Claude bundle capture failed for label=${normalizedLabel}: the local Claude auth files are incomplete for native switching.`,
+    );
+  }
+  const expectedAccess = typeof expectedAccessToken === "string" ? expectedAccessToken.trim() : "";
+  const expectedRefresh = typeof expectedRefreshToken === "string" ? expectedRefreshToken.trim() : "";
+  if (
+    (expectedAccess && readback.summary.access !== expectedAccess)
+    || (expectedRefresh && readback.summary.refresh !== expectedRefresh)
+  ) {
+    throw new Error(
+      `Native Claude bundle capture failed for label=${normalizedLabel}: the current Claude auth files do not match the freshly authed AIM tokens. ` +
+        `Log this account into Claude on this machine, then rerun \`aim ${normalizedLabel}\`.`,
+    );
+  }
+  return {
+    nativeClaudeBundle: readback.nativeClaudeBundle,
+    summary: readback.summary,
+    readback,
+  };
+}
+
+function getClaudeNativeBundleIdentity(source) {
+  const bundle = getClaudeNativeBundle(source);
+  const summary = buildClaudeCredentialSummaryFromBundle(bundle);
+  const oauthAccount = isObject(bundle?.oauthAccount) ? bundle.oauthAccount : null;
+  const accountUuid =
+    typeof oauthAccount?.accountUuid === "string" && oauthAccount.accountUuid.trim()
+      ? oauthAccount.accountUuid.trim()
+      : null;
+  return {
+    accountUuid,
+    emailAddress: summary?.emailAddress || null,
+    organizationUuid: summary?.organizationUuid || null,
+    refreshToken: summary?.refresh || null,
+  };
+}
+
+function doClaudeNativeBundleIdentitiesMatch(left, right) {
+  const leftIdentity = getClaudeNativeBundleIdentity(left);
+  const rightIdentity = getClaudeNativeBundleIdentity(right);
+  if (leftIdentity.accountUuid && rightIdentity.accountUuid) {
+    return leftIdentity.accountUuid === rightIdentity.accountUuid;
+  }
+  if (
+    leftIdentity.emailAddress
+    && rightIdentity.emailAddress
+    && leftIdentity.organizationUuid
+    && rightIdentity.organizationUuid
+  ) {
+    return (
+      leftIdentity.emailAddress === rightIdentity.emailAddress
+      && leftIdentity.organizationUuid === rightIdentity.organizationUuid
+    );
+  }
+  if (leftIdentity.refreshToken && rightIdentity.refreshToken) {
+    return leftIdentity.refreshToken === rightIdentity.refreshToken;
+  }
+  return false;
+}
+
+function findAnthropicLabelByNativeClaudeBundle(state, { nativeClaudeBundle, excludeLabel } = {}) {
+  ensureStateShape(state);
+  const excluded = excludeLabel ? normalizeLabel(excludeLabel) : null;
+  for (const [label, credential] of Object.entries(state.credentials[ANTHROPIC_PROVIDER])) {
+    if (excluded && normalizeLabel(label) === excluded) continue;
+    if (!hasCompleteClaudeNativeBundle(credential)) continue;
+    if (doClaudeNativeBundleIdentitiesMatch(credential, nativeClaudeBundle)) {
+      return normalizeLabel(label);
+    }
+  }
+  return null;
+}
+
+function ensureAnthropicLabelConfigured(state, label) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const account = getAccountRecord(state, normalizedLabel, { create: true });
+  const provider = normalizeProviderId(account?.provider);
+  if (provider && provider !== ANTHROPIC_PROVIDER) {
+    throw new Error(
+      `Refusing to store native Claude auth on non-Anthropic label=${normalizedLabel} provider=${provider}.`,
+    );
+  }
+  account.provider = ANTHROPIC_PROVIDER;
+  ensureAccountShape(account, { providerHint: ANTHROPIC_PROVIDER });
+  account.reauth = {
+    ...account.reauth,
+    mode: REAUTH_MODE_NATIVE_CLAUDE,
+  };
+  account.browser = null;
+  return account;
+}
+
+function validateAnthropicNativeBundleForLabel({ state, label, nativeClaudeBundle }) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const bundle = buildClaudeNativeBundle(nativeClaudeBundle);
+  const summary = buildClaudeCredentialSummaryFromBundle(bundle);
+  if (!bundle || !hasCompleteClaudeNativeBundle(bundle) || !summary) {
+    throw new Error(
+      `Refusing to store an incomplete native Claude bundle for label=${normalizedLabel}.`,
+    );
+  }
+
+  const account = ensureAnthropicLabelConfigured(state, normalizedLabel);
+  const expectedEmail =
+    typeof account.expect?.email === "string" ? account.expect.email.trim().toLowerCase() : "";
+  if (expectedEmail && summary.emailAddress !== expectedEmail) {
+    throw new Error(
+      `Native Claude login for label=${normalizedLabel} is ${summary.emailAddress}, but AIM expects ${expectedEmail}.`,
+    );
+  }
+
+  const duplicateLabel = findAnthropicLabelByNativeClaudeBundle(state, {
+    nativeClaudeBundle: bundle,
+    excludeLabel: normalizedLabel,
+  });
+  if (duplicateLabel) {
+    throw new Error(
+      `That native Claude login is already stored on label=${duplicateLabel}. Refusing duplicate Anthropic bundle capture/import.`,
+    );
+  }
+
+  return {
+    bundle,
+    summary,
+  };
+}
+
+function persistAnthropicNativeBundleForLabel({ state, label, nativeClaudeBundle }) {
+  const normalizedLabel = normalizeLabel(label);
+  const { bundle, summary } = validateAnthropicNativeBundleForLabel({
+    state,
+    label: normalizedLabel,
+    nativeClaudeBundle,
+  });
+  const existingCredential = getAnthropicCredential(state, normalizedLabel);
+  const credential = deriveAnthropicCredentialFromClaudeBundle({
+    existingCredential,
+    nativeClaudeBundle: bundle,
+  });
+  state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = credential;
+  return {
+    label: normalizedLabel,
+    credential,
+    summary,
+  };
+}
+
+function buildClaudeNativeBundleExportPayload({ nativeClaudeBundle, labelHint = null, sourceHome = null }) {
+  const bundle = buildClaudeNativeBundle(nativeClaudeBundle);
+  const summary = buildClaudeCredentialSummaryFromBundle(bundle);
+  if (!bundle || !hasCompleteClaudeNativeBundle(bundle) || !summary) {
+    throw new Error("Refusing to export an incomplete native Claude bundle.");
+  }
+  return {
+    version: CLAUDE_NATIVE_BUNDLE_EXPORT_VERSION,
+    provider: ANTHROPIC_PROVIDER,
+    exportedAt: new Date().toISOString(),
+    ...(sourceHome ? { sourceHome: path.resolve(sourceHome) } : {}),
+    ...(labelHint ? { labelHint: normalizeLabel(labelHint) } : {}),
+    nativeClaudeBundle: bundle,
+  };
+}
+
+function readClaudeNativeBundleExportFile({ filePath }) {
+  const resolvedPath = path.resolve(filePath);
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(`Native Claude bundle file does not exist: ${resolvedPath}`);
+  }
+  const parsed = readJsonFile(resolvedPath);
+  if (!isObject(parsed)) {
+    throw new Error(`Native Claude bundle file is not a JSON object: ${resolvedPath}`);
+  }
+  if (parsed.version !== CLAUDE_NATIVE_BUNDLE_EXPORT_VERSION) {
+    throw new Error(
+      `Unsupported native Claude bundle file version in ${resolvedPath}: ${String(parsed.version ?? "(missing)")}.`,
+    );
+  }
+  if (normalizeProviderId(parsed.provider) !== ANTHROPIC_PROVIDER) {
+    throw new Error(
+      `Unsupported provider in native Claude bundle file ${resolvedPath}: ${String(parsed.provider ?? "(missing)")}.`,
+    );
+  }
+  const nativeClaudeBundle = buildClaudeNativeBundle(parsed.nativeClaudeBundle);
+  const summary = buildClaudeCredentialSummaryFromBundle(nativeClaudeBundle);
+  if (!nativeClaudeBundle || !hasCompleteClaudeNativeBundle(nativeClaudeBundle) || !summary) {
+    throw new Error(`Native Claude bundle file is incomplete: ${resolvedPath}`);
+  }
+  const payload = {
+    version: CLAUDE_NATIVE_BUNDLE_EXPORT_VERSION,
+    provider: ANTHROPIC_PROVIDER,
+    exportedAt:
+      typeof parsed.exportedAt === "string" && parsed.exportedAt.trim() ? parsed.exportedAt.trim() : new Date().toISOString(),
+    ...(typeof parsed.sourceHome === "string" && parsed.sourceHome.trim()
+      ? { sourceHome: path.resolve(parsed.sourceHome.trim()) }
+      : {}),
+    ...(typeof parsed.labelHint === "string" && parsed.labelHint.trim()
+      ? { labelHint: normalizeLabel(parsed.labelHint) }
+      : {}),
+    nativeClaudeBundle,
+  };
+  return {
+    filePath: resolvedPath,
+    payload,
+    summary,
+  };
+}
+
+function writeClaudeNativeBundleExportFile({ filePath, nativeClaudeBundle, labelHint = null, sourceHome = null }) {
+  const resolvedPath = path.resolve(filePath);
+  const payload = buildClaudeNativeBundleExportPayload({
+    nativeClaudeBundle,
+    labelHint,
+    sourceHome,
+  });
+  const writeResult = writeJsonFileIfChanged(resolvedPath, payload, { mode: 0o600 });
+  return {
+    filePath: resolvedPath,
+    wrote: writeResult.wrote,
+    payload,
+    summary: buildClaudeCredentialSummaryFromBundle(payload.nativeClaudeBundle),
+  };
+}
+
+function captureAnthropicNativeBundleForLabel({ state, label, sourceHome }) {
+  const normalizedLabel = normalizeLabel(label);
+  const source = resolveHomeDir(sourceHome);
+  const captured = captureClaudeNativeBundleFromHome({
+    homeDir: source,
+    label: normalizedLabel,
+  });
+  const persisted = persistAnthropicNativeBundleForLabel({
+    state,
+    label: normalizedLabel,
+    nativeClaudeBundle: captured.nativeClaudeBundle,
+  });
+  return {
+    label: normalizedLabel,
+    sourceHome: source,
+    readback: captured.readback,
+    summary: persisted.summary,
+    credential: persisted.credential,
+  };
+}
+
+function importAnthropicNativeBundleForLabel({ state, label, filePath }) {
+  const normalizedLabel = normalizeLabel(label);
+  const imported = readClaudeNativeBundleExportFile({ filePath });
+  const persisted = persistAnthropicNativeBundleForLabel({
+    state,
+    label: normalizedLabel,
+    nativeClaudeBundle: imported.payload.nativeClaudeBundle,
+  });
+  return {
+    label: normalizedLabel,
+    filePath: imported.filePath,
+    summary: persisted.summary,
+    credential: persisted.credential,
+    exportedAt: imported.payload.exportedAt,
+    labelHint: imported.payload.labelHint ?? null,
+    sourceHome: imported.payload.sourceHome ?? null,
+  };
+}
+
+function exportLiveClaudeNativeBundle({ filePath, sourceHome, labelHint = null }) {
+  const source = resolveHomeDir(sourceHome);
+  const readback = readClaudeNativeBundle({ homeDir: source });
+  if (!hasCompleteClaudeNativeBundle(readback.nativeClaudeBundle) || !readback.summary) {
+    throw new Error(
+      `No complete native Claude login is available under ${source}. Run native Claude login there first.`,
+    );
+  }
+  const exported = writeClaudeNativeBundleExportFile({
+    filePath,
+    nativeClaudeBundle: readback.nativeClaudeBundle,
+    labelHint,
+    sourceHome: source,
+  });
+  return {
+    sourceHome: source,
+    readback,
+    ...exported,
+  };
 }
 
 function readHermesAuthFile({ authPath }) {
@@ -3812,6 +4678,16 @@ function writeHermesAuthFromState({ label, authPath }, state) {
   };
 }
 
+function inferClaudeAuthMethodFromOverrideEnv(envNames) {
+  const names = Array.isArray(envNames) ? envNames : [];
+  if (names.includes("CLAUDE_CODE_OAUTH_TOKEN")) return "oauth_token";
+  if (names.includes("ANTHROPIC_AUTH_TOKEN") || names.includes("ANTHROPIC_API_KEY")) return "api_key";
+  if (names.includes("CLAUDE_CODE_USE_BEDROCK")) return "bedrock";
+  if (names.includes("CLAUDE_CODE_USE_VERTEX")) return "vertex";
+  if (names.includes("CLAUDE_CODE_USE_FOUNDRY")) return "foundry";
+  return "env_override";
+}
+
 function readClaudeAuthStatus({ homeDir, spawnImpl = spawnSync } = {}) {
   const commandPath = resolveClaudeCommand({ homeDir, spawnImpl });
   if (!commandPath) {
@@ -3821,55 +4697,87 @@ function readClaudeAuthStatus({ homeDir, spawnImpl = spawnSync } = {}) {
     };
   }
 
-  const result = spawnImpl(commandPath, ["auth", "status", "--json"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      HOME: homeDir,
-    },
-  });
-  if (result?.error) {
+  const overrideEnv = readClaudeAuthOverrideEnv();
+  if (overrideEnv.length > 0) {
     return {
       available: true,
-      ok: false,
       commandPath,
-      error: String(result.error?.message ?? result.error),
-    };
-  }
-  if (result?.status !== 0) {
-    return {
-      available: true,
-      ok: false,
-      commandPath,
-      status: result?.status ?? null,
-      error: String(result?.stderr ?? "").trim() || String(result?.stdout ?? "").trim() || "claude auth status failed.",
+      ok: true,
+      loggedIn: true,
+      authMethod: inferClaudeAuthMethodFromOverrideEnv(overrideEnv),
+      apiProvider: "override",
+      email: null,
+      orgId: null,
+      orgName: null,
+      subscriptionType: null,
     };
   }
 
-  try {
-    const parsed = JSON.parse(String(result?.stdout ?? ""));
-    return {
-      available: true,
-      ok: true,
-      commandPath,
-      loggedIn: parsed?.loggedIn === true,
-      authMethod: typeof parsed?.authMethod === "string" ? parsed.authMethod.trim() || null : null,
-      apiProvider: typeof parsed?.apiProvider === "string" ? parsed.apiProvider.trim() || null : null,
-      email: typeof parsed?.email === "string" ? parsed.email.trim() || null : null,
-      orgId: typeof parsed?.orgId === "string" ? parsed.orgId.trim() || null : null,
-      orgName: typeof parsed?.orgName === "string" ? parsed.orgName.trim() || null : null,
-      subscriptionType:
-        typeof parsed?.subscriptionType === "string" ? parsed.subscriptionType.trim() || null : null,
-    };
-  } catch (err) {
+  // Do not shell out to `claude auth status --json` here. On current Claude
+  // builds that command is not reliably read-only and can rewrite
+  // `~/.claude/.credentials.json` with a sparse payload, which then breaks
+  // native-bundle capture. AIM must treat Claude auth status as a file/env
+  // readback problem, not an external CLI status problem.
+  const readback = readClaudeNativeBundle({ homeDir });
+  if (readback.ok !== true) {
     return {
       available: true,
       ok: false,
       commandPath,
-      error: `Failed to parse claude auth status JSON: ${String(err?.message ?? err)}`,
+      error:
+        readback.credentials?.ok === false
+          ? String(readback.credentials.error || `Could not read ${readback.credentialsPath}.`)
+          : readback.appState?.ok === false
+            ? String(readback.appState.error || `Could not read ${readback.appStatePath}.`)
+            : "Claude auth files are unreadable.",
     };
   }
+
+  const hasTokens =
+    readback.credentials?.claudeAiOauthPresent === true
+    && typeof readback.credentials?.accessToken === "string"
+    && readback.credentials.accessToken.trim()
+    && typeof readback.credentials?.refreshToken === "string"
+    && readback.credentials.refreshToken.trim()
+    && Number.isFinite(Number(readback.credentials?.expiresAt));
+  const hasIdentity = readback.appState?.oauthAccountPresent === true;
+  const loggedIn = Boolean(hasTokens && hasIdentity);
+
+  return {
+    available: true,
+    ok: true,
+    commandPath,
+    loggedIn,
+    authMethod: loggedIn ? "claude.ai" : "none",
+    apiProvider: loggedIn ? "firstParty" : "none",
+    email:
+      typeof readback.appState?.emailAddress === "string" && readback.appState.emailAddress.trim()
+        ? readback.appState.emailAddress.trim().toLowerCase()
+        : null,
+    orgId:
+      typeof readback.appState?.organizationUuid === "string" && readback.appState.organizationUuid.trim()
+        ? readback.appState.organizationUuid.trim()
+        : null,
+    orgName:
+      typeof readback.appState?.organizationName === "string" && readback.appState.organizationName.trim()
+        ? readback.appState.organizationName.trim()
+        : null,
+    subscriptionType:
+      typeof readback.credentials?.subscriptionType === "string" && readback.credentials.subscriptionType.trim()
+        ? readback.credentials.subscriptionType.trim()
+        : null,
+  };
+}
+
+function readClaudeAuthOverrideEnv() {
+  return [
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+  ].filter((name) => String(process.env[name] ?? "").trim());
 }
 
 function getAnthropicCredentialMatchLabel(state, { accessToken, refreshToken }) {
@@ -3881,10 +4789,13 @@ function getAnthropicCredentialMatchLabel(state, { accessToken, refreshToken }) 
 
   for (const [label, credential] of Object.entries(state.credentials[ANTHROPIC_PROVIDER])) {
     if (!isObject(credential)) continue;
-    if (refresh && String(credential.refresh ?? "").trim() === refresh) {
+    const summary = buildClaudeCredentialSummaryFromBundle(credential);
+    const credentialRefresh = summary?.refresh || String(credential.refresh ?? "").trim();
+    const credentialAccess = summary?.access || String(credential.access ?? "").trim();
+    if (refresh && credentialRefresh === refresh) {
       refreshMatches.push(label);
     }
-    if (access && String(credential.access ?? "").trim() === access) {
+    if (access && credentialAccess === access) {
       accessMatches.push(label);
     }
   }
@@ -3893,105 +4804,6 @@ function getAnthropicCredentialMatchLabel(state, { accessToken, refreshToken }) 
   if (refreshMatches.length > 1) return null;
   if (accessMatches.length === 1) return accessMatches[0];
   return null;
-}
-
-function shouldBackfillAnthropicFromLocalClaudeAuth({ state, label, credential, existingCredential, localClaudeAuth }) {
-  const normalizedLabel = normalizeLabel(label);
-  if (!localClaudeAuth || localClaudeAuth.ok !== true || localClaudeAuth.claudeAiOauthPresent !== true) {
-    return false;
-  }
-  if (!hasClaudeProjectionFields(localClaudeAuth)) {
-    return false;
-  }
-
-  const localRefresh = String(localClaudeAuth.refreshToken ?? "").trim();
-  const localAccess = String(localClaudeAuth.accessToken ?? "").trim();
-  const currentRefresh = String(credential?.refresh ?? "").trim();
-  const currentAccess = String(credential?.access ?? "").trim();
-  const existingRefresh = String(existingCredential?.refresh ?? "").trim();
-  const existingAccess = String(existingCredential?.access ?? "").trim();
-  const matchedLocalLabel = getAnthropicCredentialMatchLabel(state, {
-    accessToken: localAccess,
-    refreshToken: localRefresh,
-  });
-  if (
-    (localRefresh && (localRefresh === currentRefresh || localRefresh === existingRefresh))
-    || (localAccess && (localAccess === currentAccess || localAccess === existingAccess))
-  ) {
-    return true;
-  }
-  if (matchedLocalLabel) {
-    return matchedLocalLabel === normalizedLabel;
-  }
-
-  const target = getClaudeTargetState(state);
-  if (typeof target.activeLabel === "string" && target.activeLabel.trim() && normalizeLabel(target.activeLabel) === normalizedLabel) {
-    return true;
-  }
-
-  const anthropicLabels = Object.entries(state.accounts)
-    .filter(([, account]) => isObject(account) && normalizeProviderId(account.provider) === ANTHROPIC_PROVIDER)
-    .map(([entryLabel]) => normalizeLabel(entryLabel));
-  return anthropicLabels.length === 1 && anthropicLabels[0] === normalizedLabel;
-}
-
-function hydrateAnthropicCredentialForClaudeLocal({ state, label, homeDir, credential, usageSnapshot = null }) {
-  const normalizedLabel = normalizeLabel(label);
-  const base = isObject(credential) ? credential : {};
-  const next = {
-    ...base,
-  };
-  const existing = getAnthropicCredential(state, normalizedLabel);
-  const existingProjection = buildClaudeProjectionFields(existing);
-  if (existingProjection.subscriptionType && !next.subscriptionType) {
-    next.subscriptionType = existingProjection.subscriptionType;
-  }
-  if (existingProjection.rateLimitTier && !next.rateLimitTier) {
-    next.rateLimitTier = existingProjection.rateLimitTier;
-  }
-  if (existingProjection.scopes?.length > 0 && (!Array.isArray(next.scopes) || next.scopes.length === 0)) {
-    next.scopes = existingProjection.scopes;
-  }
-
-  if (!hasClaudeProjectionFields(next)) {
-    const localClaudeAuth = readClaudeAuthFile({ claudeDir: resolveManagedClaudeDir({ homeDir }) });
-    if (shouldBackfillAnthropicFromLocalClaudeAuth({
-      state,
-      label: normalizedLabel,
-      credential: next,
-      existingCredential: existing,
-      localClaudeAuth,
-    })) {
-      const localProjection = buildClaudeProjectionFields(localClaudeAuth);
-      if (localProjection.subscriptionType && !next.subscriptionType) {
-        next.subscriptionType = localProjection.subscriptionType;
-      }
-      if (localProjection.rateLimitTier && !next.rateLimitTier) {
-        next.rateLimitTier = localProjection.rateLimitTier;
-      }
-      if (localProjection.scopes?.length > 0 && (!Array.isArray(next.scopes) || next.scopes.length === 0)) {
-        next.scopes = localProjection.scopes;
-      }
-    }
-  }
-
-  if (!hasClaudeProjectionFields(next)) {
-    const inferredProjection = buildClaudeProjectionFieldsFromUsage(usageSnapshot);
-    if (inferredProjection.subscriptionType && !next.subscriptionType) {
-      next.subscriptionType = inferredProjection.subscriptionType;
-    }
-    if (inferredProjection.rateLimitTier && !next.rateLimitTier) {
-      next.rateLimitTier = inferredProjection.rateLimitTier;
-    }
-    if (inferredProjection.scopes?.length > 0 && (!Array.isArray(next.scopes) || next.scopes.length === 0)) {
-      next.scopes = inferredProjection.scopes;
-    }
-  }
-
-  if (Array.isArray(next.scopes)) {
-    next.scopes = normalizeNonEmptyStringArray(next.scopes);
-  }
-  return next;
 }
 
 // Codex and Paperclip both inherit this managed file-backed auth target on the host.
@@ -4036,18 +4848,43 @@ function clearManagedPiCliActivation({ state, homeDir }) {
   delete target.lastAppliedAt;
 }
 
-function clearManagedClaudeCliActivation({ state, homeDir }) {
-  ensureStateShape(state);
+function clearManagedClaudeCliAuthFiles({ homeDir }) {
   const claudeDir = resolveManagedClaudeDir({ homeDir });
   const authPath = resolveClaudeAuthFilePath(claudeDir);
   fs.rmSync(authPath, { force: true });
+  const appStatePath = resolveClaudeAppStatePath({ homeDir });
+  if (fs.existsSync(appStatePath)) {
+    const current = readClaudeAppStateFile({ homeDir });
+    if (current.ok !== true) {
+      throw new Error(`Refusing to mutate unreadable Claude app state file: ${current.error || appStatePath}`);
+    }
+    if (isObject(current.json) && Object.hasOwn(current.json, "oauthAccount")) {
+      const next = { ...current.json };
+      delete next.oauthAccount;
+      if (Object.keys(next).length === 0) {
+        fs.rmSync(appStatePath, { force: true });
+      } else {
+        writeJsonFileIfChanged(appStatePath, next, { mode: 0o600 });
+      }
+    }
+  }
+}
 
+function clearManagedClaudeCliTargetState(state) {
+  ensureStateShape(state);
   const target = getClaudeTargetState(state);
   delete target.claudeDir;
   delete target.authPath;
+  delete target.credentialsPath;
+  delete target.appStatePath;
   delete target.activeLabel;
   delete target.expectedSubscriptionType;
   delete target.lastAppliedAt;
+}
+
+function clearManagedClaudeCliActivation({ state, homeDir }) {
+  clearManagedClaudeCliAuthFiles({ homeDir });
+  clearManagedClaudeCliTargetState(state);
 }
 
 function assertCodexCredentialShape({ label, credential, requireFresh }) {
@@ -4074,7 +4911,7 @@ function assertCodexCredentialShape({ label, credential, requireFresh }) {
   return cred;
 }
 
-function assertAnthropicCredentialShape({ label, credential, requireFresh, requireClaudeProjection = false }) {
+function assertAnthropicCredentialShape({ label, credential, requireFresh, requireClaudeNativeBundle = false }) {
   const cred = isObject(credential) ? credential : null;
   if (!cred) {
     throw new Error(`Missing anthropic credentials for label=${label}.`);
@@ -4092,16 +4929,12 @@ function assertAnthropicCredentialShape({ label, credential, requireFresh, requi
   if (requireFresh && expiresMs <= Date.now()) {
     throw new Error(`Refusing expired anthropic credentials for label=${label}. Reauth that label with \`aim ${label}\` first.`);
   }
-  if (requireClaudeProjection) {
-    if (typeof cred.subscriptionType !== "string" || !cred.subscriptionType.trim()) {
-      throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.subscriptionType is missing.`);
-    }
-    if (typeof cred.rateLimitTier !== "string" || !cred.rateLimitTier.trim()) {
-      throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.rateLimitTier is missing.`);
-    }
-    if (!Array.isArray(cred.scopes) || normalizeNonEmptyStringArray(cred.scopes).length === 0) {
-      throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.scopes is missing.`);
-    }
+  if (requireClaudeNativeBundle && !hasCompleteClaudeNativeBundle(cred)) {
+    throw new Error(
+      `credentials.${ANTHROPIC_PROVIDER}.${label}.nativeClaudeBundle is missing or incomplete. ` +
+        `Capture/import a native Claude login with \`aim claude capture-native ${label}\` or ` +
+        `\`aim claude import-native ${label} --in <file>\`.`,
+    );
   }
   return cred;
 }
@@ -4158,20 +4991,39 @@ function buildPiAuthEntry({ credential }) {
 }
 
 function buildClaudeAuthDotJson({ credential }) {
-  const expiresAt = parseExpiresAtToMs(credential?.expiresAt);
+  const bundle = getClaudeNativeBundle(credential);
+  const oauth = cloneJsonObject(bundle?.claudeAiOauth);
+  if (!oauth) {
+    throw new Error("Refusing to build Claude .credentials.json without a native Claude bundle.");
+  }
+  const expiresAt = parseTimestampLikeToMs(oauth.expiresAt);
   if (!expiresAt) {
     throw new Error("Refusing to build Claude .credentials.json without a valid expiresAt timestamp.");
   }
+  oauth.expiresAt = expiresAt;
+  oauth.scopes = normalizeNonEmptyStringArray(oauth.scopes);
   return {
-    claudeAiOauth: {
-      accessToken: credential.access,
-      refreshToken: credential.refresh,
-      expiresAt,
-      subscriptionType: credential.subscriptionType,
-      rateLimitTier: credential.rateLimitTier,
-      scopes: normalizeNonEmptyStringArray(credential.scopes),
-    },
+    claudeAiOauth: oauth,
   };
+}
+
+// `.claude.json` is a mixed Claude app-state file. AIM owns only the
+// `oauthAccount` key there and must preserve unrelated settings exactly.
+function writeClaudeAppStateOauthAccount({ homeDir, credential }) {
+  const bundle = getClaudeNativeBundle(credential);
+  const oauthAccount = cloneJsonObject(bundle?.oauthAccount);
+  if (!oauthAccount) {
+    throw new Error("Refusing to write Claude app state without a native Claude oauthAccount bundle.");
+  }
+  const current = readClaudeAppStateFile({ homeDir });
+  if (current.exists === true && current.ok !== true) {
+    throw new Error(`Refusing to mutate unreadable Claude app state file: ${current.error || current.appStatePath}`);
+  }
+  const next = {
+    ...(current.ok === true && isObject(current.json) ? current.json : {}),
+    oauthAccount,
+  };
+  return writeJsonFileIfChanged(resolveClaudeAppStatePath({ homeDir }), next, { mode: 0o600 });
 }
 
 function findCodexLabelByAccountId(state, accountId) {
@@ -4264,9 +5116,9 @@ function buildRemoteStateArg(remotePath) {
   return `--state ${shellQuoteSingle(remotePath)}`;
 }
 
-function buildRemoteAimInternalApplyCommand({ remotePath }) {
+function buildRemoteAimInternalApplyCommand({ remotePath, subcmd = "apply-codex-promotion" }) {
   const stateArg = buildRemoteStateArg(remotePath);
-  return ["aim", "internal", "apply-codex-promotion", stateArg].filter(Boolean).join(" ");
+  return ["aim", "internal", subcmd, stateArg].filter(Boolean).join(" ");
 }
 
 export function resolveAuthorityLocator(locator) {
@@ -4389,7 +5241,66 @@ function buildPortableCodexCredential({ label, credential }) {
   return next;
 }
 
+function clonePortableAnthropicCredential(credential) {
+  const cred = isObject(credential) ? structuredClone(credential) : null;
+  if (!cred) {
+    return null;
+  }
+  const bundle = buildClaudeNativeBundle(cred.nativeClaudeBundle);
+  if (bundle) {
+    cred.nativeClaudeBundle = bundle;
+  }
+  const expiresAt = toIsoFromExpiresMs(parseTimestampLikeToMs(cred.expiresAt));
+  if (expiresAt) {
+    cred.expiresAt = expiresAt;
+  }
+  if (Array.isArray(cred.scopes)) {
+    cred.scopes = normalizeNonEmptyStringArray(cred.scopes);
+  }
+  if (typeof cred.emailAddress === "string" && cred.emailAddress.trim()) {
+    cred.emailAddress = cred.emailAddress.trim().toLowerCase();
+  }
+  if (typeof cred.organizationName === "string" && cred.organizationName.trim()) {
+    cred.organizationName = cred.organizationName.trim();
+  }
+  if (typeof cred.organizationUuid === "string" && cred.organizationUuid.trim()) {
+    cred.organizationUuid = cred.organizationUuid.trim();
+  }
+  if (typeof cred.subscriptionType === "string" && cred.subscriptionType.trim()) {
+    cred.subscriptionType = cred.subscriptionType.trim();
+  }
+  if (typeof cred.rateLimitTier === "string" && cred.rateLimitTier.trim()) {
+    cred.rateLimitTier = cred.rateLimitTier.trim();
+  }
+  return cred;
+}
+
+function buildPortableAnthropicCredential({ label, credential }) {
+  const cred = assertAnthropicCredentialShape({
+    label,
+    credential,
+    requireFresh: false,
+    requireClaudeNativeBundle: true,
+  });
+  return clonePortableAnthropicCredential(cred);
+}
+
 function normalizeRequestedCodexLabels(labels, { context }) {
+  const normalized = [];
+  const seen = new Set();
+  for (const labelRaw of Array.isArray(labels) ? labels : []) {
+    const label = normalizeLabel(labelRaw);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    normalized.push(label);
+  }
+  if (normalized.length === 0) {
+    throw new Error(`Missing label list for ${context}.`);
+  }
+  return normalized;
+}
+
+function normalizeRequestedAnthropicLabels(labels, { context }) {
   const normalized = [];
   const seen = new Set();
   for (const labelRaw of Array.isArray(labels) ? labels : []) {
@@ -4407,6 +5318,12 @@ function normalizeRequestedCodexLabels(labels, { context }) {
 function buildDirtyImportedCodexLabels(state) {
   return getImportedCodexLabels(state)
     .filter((label) => getAuthorityCodexImportLabelStatus(state, label).dirty)
+    .toSorted((a, b) => a.localeCompare(b));
+}
+
+function buildDirtyImportedAnthropicLabels(state) {
+  return getImportedAnthropicLabels(state)
+    .filter((label) => getAuthorityAnthropicImportLabelStatus(state, label).dirty)
     .toSorted((a, b) => a.localeCompare(b));
 }
 
@@ -4438,11 +5355,53 @@ function buildAuthorityCodexImportStatus(state) {
   };
 }
 
+function buildAuthorityAnthropicImportStatus(state) {
+  const importMeta = getAuthorityAnthropicImport(state);
+  const labels = getImportedAnthropicLabels(state);
+  const labelsByName = {};
+  const dirtyLabels = [];
+  for (const label of labels) {
+    const status = getAuthorityAnthropicImportLabelStatus(state, label);
+    const meta = status.meta ?? {};
+    labelsByName[label] = {
+      ...(typeof meta.importedAt === "string" && meta.importedAt.trim() ? { importedAt: meta.importedAt.trim() } : {}),
+      ...(typeof meta.baseCredentialFingerprint === "string" && meta.baseCredentialFingerprint.trim()
+        ? { baseCredentialFingerprint: meta.baseCredentialFingerprint.trim() }
+        : {}),
+      ...(normalizeAnthropicAuthorityIdentityRecord(meta.baseIdentity)
+        ? { baseIdentity: normalizeAnthropicAuthorityIdentityRecord(meta.baseIdentity) }
+        : {}),
+      dirtyLocal: status.dirty,
+      ...(typeof meta.dirtyObservedAt === "string" && meta.dirtyObservedAt.trim() ? { dirtyObservedAt: meta.dirtyObservedAt.trim() } : {}),
+      ...(typeof meta.lastPromotedAt === "string" && meta.lastPromotedAt.trim() ? { lastPromotedAt: meta.lastPromotedAt.trim() } : {}),
+    };
+    if (status.dirty) {
+      dirtyLabels.push(label);
+    }
+  }
+  return {
+    ...(typeof importMeta.source === "string" && importMeta.source.trim() ? { source: importMeta.source.trim() } : {}),
+    ...(typeof importMeta.importedAt === "string" && importMeta.importedAt.trim() ? { importedAt: importMeta.importedAt.trim() } : {}),
+    labels,
+    labelsByName,
+    dirtyLabels,
+  };
+}
+
 function formatDirtyImportedCodexSyncError({ authoritySource, labels }) {
   const joined = normalizeRequestedCodexLabels(labels, { context: "dirty imported labels" }).join(", ");
   return [
     `Authority import would discard locally refreshed imported labels: ${joined}.`,
     `Publish them first with \`aim promote codex --to ${authoritySource || "<authority>"} ${joined}\`,`,
+    "or rerun the import with `--discard-dirty` if you want to overwrite the local changes.",
+  ].join(" ");
+}
+
+function formatDirtyImportedAnthropicSyncError({ authoritySource, labels }) {
+  const joined = normalizeRequestedAnthropicLabels(labels, { context: "dirty imported labels" }).join(", ");
+  return [
+    `Authority import would discard locally refreshed imported Claude labels: ${joined}.`,
+    `Publish them first with \`aim promote claude --to ${authoritySource || "<authority>"} ${joined}\`,`,
     "or rerun the import with `--discard-dirty` if you want to overwrite the local changes.",
   ].join(" ");
 }
@@ -4459,6 +5418,25 @@ function buildDirtyImportedCodexSyncConflicts({ state, incomingByLabel }) {
     }
     const incomingFingerprint = tryBuildCodexCredentialFingerprint(incoming.credential);
     if (status.currentFingerprint && incomingFingerprint && status.currentFingerprint === incomingFingerprint) {
+      continue;
+    }
+    conflicts.push({ label, reason: "authority_would_overwrite_local_update" });
+  }
+  return conflicts;
+}
+
+function buildDirtyImportedAnthropicSyncConflicts({ state, incomingByLabel }) {
+  const conflicts = [];
+  for (const label of getImportedAnthropicLabels(state)) {
+    const status = getAuthorityAnthropicImportLabelStatus(state, label);
+    if (!status.dirty) continue;
+    const incoming = incomingByLabel.get(label);
+    if (!incoming) {
+      conflicts.push({ label, reason: "removed_from_authority" });
+      continue;
+    }
+    const incomingFingerprint = tryBuildAnthropicCredentialFingerprint(incoming.credential);
+    if (status.currentFingerprint === incomingFingerprint) {
       continue;
     }
     conflicts.push({ label, reason: "authority_would_overwrite_local_update" });
@@ -4714,6 +5692,252 @@ export function promoteCodexToAuthority({ to, labels, state }, { spawnImpl = spa
   };
 }
 
+function buildClaudePromotionPayload({ state, to, labels }) {
+  ensureStateShape(state);
+  const authorityImport = getAuthorityAnthropicImport(state);
+  const requestedLabels = normalizeRequestedAnthropicLabels(labels, { context: "aim promote claude" });
+  const targetDisplay = typeof to === "string" ? resolveAuthorityLocator(to).display : to.display;
+  if (!(typeof authorityImport.source === "string" && authorityImport.source.trim())) {
+    throw new Error("No authority source is recorded for the local imported Claude replica. Run `aim sync claude --from <authority>` first.");
+  }
+  if (!authorityLocatorsMatch(authorityImport.source, to)) {
+    throw new Error(
+      `Refusing to promote imported Claude labels to a different authority. ` +
+        `Imported source=${authorityImport.source}; requested target=${targetDisplay}.`,
+    );
+  }
+
+  const payloadLabels = {};
+  for (const label of requestedLabels) {
+    if (!isImportedAnthropicLabel(state, label)) {
+      throw new Error(`Refusing to promote non-imported Claude label=${label}. Pull it from the authority first.`);
+    }
+    const account = getAccountRecord(state, label);
+    if (!isObject(account) || normalizeProviderId(account.provider) !== ANTHROPIC_PROVIDER) {
+      throw new Error(`Refusing to promote non-Claude label=${label}.`);
+    }
+
+    const status = getAuthorityAnthropicImportLabelStatus(state, label);
+    const credential = assertAnthropicCredentialShape({
+      label,
+      credential: getAnthropicCredential(state, label),
+      requireFresh: true,
+      requireClaudeNativeBundle: true,
+    });
+    if (status.baseIdentity && status.currentIdentity && !doAnthropicAuthorityIdentitiesMatch(status.currentIdentity, status.baseIdentity)) {
+      throw new Error(
+        `Refusing to promote label=${label}: local Claude identity does not match the imported authority identity.`,
+      );
+    }
+
+    payloadLabels[label] = {
+      provider: ANTHROPIC_PROVIDER,
+      credential: buildPortableAnthropicCredential({ label, credential }),
+      base: {
+        credentialFingerprint: status.baseFingerprint ?? null,
+        identity: status.baseIdentity ?? null,
+      },
+    };
+  }
+
+  return {
+    kind: "aimgr.claudePromotion.v1",
+    sentAt: new Date().toISOString(),
+    sourceAuthority: authorityImport.source.trim(),
+    labels: payloadLabels,
+  };
+}
+
+function applyClaudePromotionPayloadToState({ state, payload, authorityDisplay, observedAt = new Date().toISOString() }) {
+  ensureStateShape(state);
+  if (!isObject(payload) || payload.kind !== "aimgr.claudePromotion.v1") {
+    throw new Error("Invalid Claude promotion payload.");
+  }
+  const labelEntries = Object.entries(isObject(payload.labels) ? payload.labels : {});
+  if (labelEntries.length === 0) {
+    throw new Error("Claude promotion payload is empty.");
+  }
+
+  const validations = [];
+  let requiresWrite = false;
+  for (const [labelRaw, entry] of labelEntries) {
+    const label = normalizeLabel(labelRaw);
+    if (!isObject(entry)) {
+      throw new Error(`Invalid Claude promotion entry for label=${label}.`);
+    }
+    if (normalizeProviderId(entry.provider) !== ANTHROPIC_PROVIDER) {
+      throw new Error(`Refusing Claude promotion for label=${label}: provider must be ${ANTHROPIC_PROVIDER}.`);
+    }
+
+    const account = getAccountRecord(state, label);
+    if (!isObject(account)) {
+      throw new Error(`Refusing Claude promotion for unknown authority label=${label}.`);
+    }
+    if (normalizeProviderId(account.provider) !== ANTHROPIC_PROVIDER) {
+      throw new Error(`Refusing Claude promotion for label=${label}: authority provider is not ${ANTHROPIC_PROVIDER}.`);
+    }
+
+    const authorityCredential = getAnthropicCredential(state, label);
+    const incomingCredential = assertAnthropicCredentialShape({
+      label,
+      credential: entry.credential,
+      requireFresh: true,
+      requireClaudeNativeBundle: true,
+    });
+    const authorityFingerprint = tryBuildAnthropicCredentialFingerprint(authorityCredential);
+    const incomingFingerprint = buildAnthropicCredentialFingerprint(incomingCredential);
+    const baseFingerprint =
+      typeof entry.base?.credentialFingerprint === "string" && entry.base.credentialFingerprint.trim()
+        ? entry.base.credentialFingerprint.trim()
+        : null;
+    const baseIdentity = normalizeAnthropicAuthorityIdentityRecord(entry.base?.identity);
+    const authorityIdentity = buildAnthropicAuthorityIdentityFromCredential(authorityCredential);
+    const incomingIdentity = buildAnthropicAuthorityIdentityFromCredential(incomingCredential);
+
+    if (authorityFingerprint !== baseFingerprint) {
+      throw new Error(
+        `Refusing Claude promotion for label=${label}: authority credentials changed since the consumer imported them.`,
+      );
+    }
+    if (baseIdentity && incomingIdentity && !doAnthropicAuthorityIdentitiesMatch(incomingIdentity, baseIdentity)) {
+      throw new Error(
+        `Refusing Claude promotion for label=${label}: local Claude identity does not match the imported authority identity.`,
+      );
+    }
+    if (baseIdentity && authorityIdentity && !doAnthropicAuthorityIdentitiesMatch(authorityIdentity, baseIdentity)) {
+      throw new Error(
+        `Refusing Claude promotion for label=${label}: authority Claude identity no longer matches the imported authority identity.`,
+      );
+    }
+
+    const blockedReason =
+      typeof account.reauth?.blockedReason === "string" && account.reauth.blockedReason.trim()
+        ? account.reauth.blockedReason.trim()
+        : "";
+    const needsCredentialWrite = authorityFingerprint !== incomingFingerprint;
+    const needsCleanup = Boolean(blockedReason);
+    if (needsCredentialWrite || needsCleanup) {
+      requiresWrite = true;
+    }
+    validations.push({
+      label,
+      incomingCredential,
+    });
+  }
+
+  if (!requiresWrite) {
+    return {
+      status: "noop",
+      observedAt,
+      target: authorityDisplay,
+      labels: validations.map((entry) => entry.label).toSorted((a, b) => a.localeCompare(b)),
+    };
+  }
+
+  for (const validation of validations) {
+    const account = getAccountRecord(state, validation.label, { create: true });
+    account.provider = ANTHROPIC_PROVIDER;
+    ensureAccountShape(account, { providerHint: ANTHROPIC_PROVIDER });
+    account.browser = null;
+    state.credentials[ANTHROPIC_PROVIDER][validation.label] = clonePortableAnthropicCredential(validation.incomingCredential);
+    const reauth = getAccountReauthState(state, validation.label, { create: true });
+    reauth.mode = REAUTH_MODE_NATIVE_CLAUDE;
+    reauth.lastAttemptAt = observedAt;
+    reauth.lastVerifiedAt = observedAt;
+    if (Object.hasOwn(reauth, "blockedReason")) {
+      delete reauth.blockedReason;
+    }
+  }
+
+  return {
+    status: "applied",
+    observedAt,
+    target: authorityDisplay,
+    labels: validations.map((entry) => entry.label).toSorted((a, b) => a.localeCompare(b)),
+  };
+}
+
+function applyClaudePromotionToFileAuthority({ source, payload }) {
+  if (!fs.existsSync(source.path)) {
+    throw new Error(`Authority AIM state file not found: ${source.path}`);
+  }
+  const state = loadAimgrState(source.path);
+  const receipt = applyClaudePromotionPayloadToState({
+    state,
+    payload,
+    authorityDisplay: source.display,
+  });
+  if (receipt.status === "applied") {
+    writeJsonFileWithBackup(source.path, state);
+  }
+  return receipt;
+}
+
+function invokeClaudePromotionOnRemoteAuthority({ source, payload, spawnImpl = spawnSync }) {
+  const args = [];
+  if (source.port) {
+    args.push("-p", source.port);
+  }
+  args.push(source.target, buildRemoteAimInternalApplyCommand({
+    remotePath: source.remotePath,
+    subcmd: "apply-claude-promotion",
+  }));
+  const result = spawnImpl("ssh", args, {
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+    input: `${JSON.stringify(payload)}\n`,
+  });
+  if (result?.error) {
+    throw new Error(`Failed to promote Claude credentials via ssh (${source.display}): ${String(result.error?.message ?? result.error)}`);
+  }
+  if (result?.status !== 0) {
+    throw new Error(
+      `ssh Claude promotion failed for ${source.display} (exit ${result.status}). ` +
+        `${String(result.stderr ?? "").trim() || String(result.stdout ?? "").trim()}`,
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(String(result.stdout ?? ""));
+  } catch (err) {
+    throw new Error(`Failed to parse Claude promotion receipt from ${source.display}: ${String(err?.message ?? err)}`);
+  }
+  const receipt = isObject(parsed?.applied) ? parsed.applied : parsed;
+  if (!isObject(receipt) || typeof receipt.status !== "string") {
+    throw new Error(`Remote Claude promotion receipt from ${source.display} is missing status.`);
+  }
+  return receipt;
+}
+
+export function promoteClaudeToAuthority({ to, labels, state }, { spawnImpl = spawnSync } = {}) {
+  ensureStateShape(state);
+  if (!String(to ?? "").trim()) {
+    throw new Error("Missing authority locator. Use: aim promote claude --to agents@amirs-mac-studio <label> [<label>...]");
+  }
+  const source = resolveAuthorityLocator(to);
+  const payload = buildClaudePromotionPayload({ state, to: source, labels });
+  const receipt =
+    source.kind === "file"
+      ? applyClaudePromotionToFileAuthority({ source, payload })
+      : invokeClaudePromotionOnRemoteAuthority({ source, payload, spawnImpl });
+
+  const promotedAt = typeof receipt.observedAt === "string" && receipt.observedAt.trim()
+    ? receipt.observedAt.trim()
+    : new Date().toISOString();
+  for (const label of normalizeRequestedAnthropicLabels(labels, { context: "aim promote claude" })) {
+    markImportedAnthropicLabelPromoted(state, label, { promotedAt });
+  }
+
+  return {
+    action: "promote_claude",
+    status: receipt.status,
+    observedAt: promotedAt,
+    target: source.display,
+    labels: normalizeRequestedAnthropicLabels(labels, { context: "aim promote claude" }),
+  };
+}
+
 function importCodexFromAuthority({ from, state, homeDir, discardDirty = false }) {
   ensureStateShape(state);
   const { source, state: authorityState } = loadAuthorityState(from);
@@ -4836,6 +6060,139 @@ function importCodexFromAuthority({ from, state, homeDir, discardDirty = false }
   existingImportMeta.importedAt = importedAt;
   existingImportMeta.labels = incomingLabels.toSorted((a, b) => a.localeCompare(b));
   state.imports.authority.codex = existingImportMeta;
+
+  return {
+    source: source.display,
+    importedAt,
+    importedLabels: incomingLabels.toSorted((a, b) => a.localeCompare(b)),
+    removedLabels: removedLabels.toSorted((a, b) => a.localeCompare(b)),
+  };
+}
+
+function importAnthropicFromAuthority({ from, state, homeDir, discardDirty = false }) {
+  ensureStateShape(state);
+  if (!String(from ?? "").trim()) {
+    throw new Error("Missing authority locator. Use: aim sync claude --from agents@amirs-mac-studio");
+  }
+  const { source, state: authorityState } = loadAuthorityState(from);
+  ensureStateShape(authorityState);
+
+  const incomingLabels = [];
+  const incomingByLabel = new Map();
+  for (const [label, account] of Object.entries(authorityState.accounts)) {
+    if (!isObject(account)) continue;
+    if (normalizeProviderId(account.provider) !== ANTHROPIC_PROVIDER) continue;
+    const credential = getAnthropicCredential(authorityState, label);
+    incomingLabels.push(label);
+    incomingByLabel.set(label, {
+      account: structuredClone(account),
+      credential: clonePortableAnthropicCredential(credential),
+    });
+  }
+
+  if (incomingLabels.length === 0) {
+    throw new Error(`Authority ${source.display} has no importable ${ANTHROPIC_PROVIDER} labels.`);
+  }
+
+  const dirtyConflicts = buildDirtyImportedAnthropicSyncConflicts({ state, incomingByLabel });
+  if (dirtyConflicts.length > 0 && discardDirty !== true) {
+    throw new Error(
+      formatDirtyImportedAnthropicSyncError({
+        authoritySource: source.display,
+        labels: dirtyConflicts.map((entry) => entry.label),
+      }),
+    );
+  }
+
+  const previousImported = new Set(getImportedAnthropicLabels(state));
+  for (const [label, incoming] of incomingByLabel.entries()) {
+    const existingAccount = state.accounts[label];
+    const existingCred = getAnthropicCredential(state, label);
+    if (!previousImported.has(label)) {
+      if (isObject(existingAccount) && normalizeProviderId(existingAccount.provider) !== ANTHROPIC_PROVIDER) {
+        throw new Error(`Refusing to overwrite non-Claude label=${label} during authority import.`);
+      }
+      if (isObject(existingCred) && !incoming.credential) {
+        throw new Error(
+          `Refusing to overwrite local Claude label=${label} with an authority label that has no stored credentials.`,
+        );
+      }
+      const existingIdentity = buildAnthropicAuthorityIdentityFromCredential(existingCred);
+      const incomingIdentity = buildAnthropicAuthorityIdentityFromCredential(incoming.credential);
+      if (
+        existingIdentity
+        && incomingIdentity
+        && !doAnthropicAuthorityIdentitiesMatch(existingIdentity, incomingIdentity)
+      ) {
+        throw new Error(
+          `Refusing to overwrite local Claude label=${label} with a different authority Claude identity.`,
+        );
+      }
+    }
+  }
+
+  const removedLabels = [];
+  for (const label of previousImported) {
+    if (incomingByLabel.has(label)) continue;
+    const currentTarget = readClaudeCliTargetStatus({ state, homeDir });
+    const removedLabelWasConfiguredTarget = currentTarget.activeLabel === label;
+    const removedLabelStillOwnsLiveFiles = currentTarget.inferredLabel === label;
+    delete state.accounts[label];
+    delete state.credentials[ANTHROPIC_PROVIDER][label];
+    if (removedLabelStillOwnsLiveFiles) {
+      clearManagedClaudeCliAuthFiles({ homeDir });
+    }
+    if (removedLabelWasConfiguredTarget || removedLabelStillOwnsLiveFiles) {
+      clearManagedClaudeCliTargetState(state);
+      delete state.targets.claudeCli.lastSelectionReceipt;
+    }
+    if (isObject(state.imports.authority.anthropic.labelsByName)) {
+      delete state.imports.authority.anthropic.labelsByName[label];
+    }
+    removedLabels.push(label);
+  }
+
+  const importedAt = new Date().toISOString();
+  const existingImportMeta = getAuthorityAnthropicImport(state);
+  for (const [label, incoming] of incomingByLabel.entries()) {
+    const existingLocal = isObject(state.accounts[label]) ? state.accounts[label] : {};
+    const incomingExpect = isObject(incoming.account.expect) ? structuredClone(incoming.account.expect) : null;
+    const incomingPool = isObject(incoming.account.pool) ? structuredClone(incoming.account.pool) : null;
+    const previousMeta = isObject(existingImportMeta.labelsByName?.[label]) ? existingImportMeta.labelsByName[label] : {};
+    state.accounts[label] = {
+      ...(incomingExpect ? { expect: incomingExpect } : isObject(existingLocal.expect) ? { expect: structuredClone(existingLocal.expect) } : {}),
+      ...(incomingPool ? { pool: incomingPool } : isObject(existingLocal.pool) ? { pool: structuredClone(existingLocal.pool) } : {}),
+      provider: ANTHROPIC_PROVIDER,
+      reauth: {
+        ...(isObject(existingLocal.reauth) ? structuredClone(existingLocal.reauth) : {}),
+        mode: REAUTH_MODE_NATIVE_CLAUDE,
+      },
+      browser: null,
+    };
+    ensureAccountShape(state.accounts[label], { providerHint: ANTHROPIC_PROVIDER });
+    if (incoming.credential) {
+      state.credentials[ANTHROPIC_PROVIDER][label] = incoming.credential;
+    } else {
+      delete state.credentials[ANTHROPIC_PROVIDER][label];
+    }
+    existingImportMeta.labelsByName[label] = {
+      importedAt,
+      dirtyLocal: false,
+      ...(tryBuildAnthropicCredentialFingerprint(incoming.credential)
+        ? { baseCredentialFingerprint: tryBuildAnthropicCredentialFingerprint(incoming.credential) }
+        : {}),
+      ...(buildAnthropicAuthorityIdentityFromCredential(incoming.credential)
+        ? { baseIdentity: buildAnthropicAuthorityIdentityFromCredential(incoming.credential) }
+        : {}),
+      ...(typeof previousMeta.lastPromotedAt === "string" && previousMeta.lastPromotedAt.trim()
+        ? { lastPromotedAt: previousMeta.lastPromotedAt.trim() }
+        : {}),
+    };
+  }
+  existingImportMeta.source = source.display;
+  existingImportMeta.importedAt = importedAt;
+  existingImportMeta.labels = incomingLabels.toSorted((a, b) => a.localeCompare(b));
+  state.imports.authority.anthropic = existingImportMeta;
 
   return {
     source: source.display,
@@ -5110,6 +6467,12 @@ async function ensureInteractiveLoginBindingForProvider({
   provider,
   promptLineImpl = promptLine,
 }) {
+  if (normalizeProviderId(provider) === ANTHROPIC_PROVIDER) {
+    throw new Error(
+      `Claude labels now use native Claude bundle capture/import only. ` +
+        `Use \`aim claude capture-native ${normalizeLabel(label)}\`, \`aim claude import-native ${normalizeLabel(label)} --in <file>\`, or \`aim ${normalizeLabel(label)}\`.`,
+    );
+  }
   const normalizedLabel = normalizeLabel(label);
   ensureStateShape(state);
   const account = getAccountRecord(state, normalizedLabel, { create: true });
@@ -5361,126 +6724,80 @@ export async function refreshOrLoginCodex({
   };
 }
 
-async function refreshOrLoginAnthropic({
+async function refreshAnthropicNativeBundleCredential({
+  state,
+  label,
+  refreshImpl = refreshAnthropicToken,
+}) {
+  const normalizedLabel = normalizeLabel(label);
+  const existing = assertAnthropicCredentialShape({
+    label: normalizedLabel,
+    credential: getAnthropicCredential(state, normalizedLabel),
+    requireFresh: false,
+    requireClaudeNativeBundle: true,
+  });
+  try {
+    const updated = await refreshImpl(existing.refresh);
+    const expiresAt = toIsoFromExpiresMs(updated.expires);
+    if (!expiresAt) {
+      throw new Error("refresh returned no expires");
+    }
+    return deriveAnthropicCredentialFromClaudeBundle({
+      existingCredential: {
+        ...existing,
+        access: updated.access,
+        refresh: updated.refresh,
+        expiresAt,
+      },
+      nativeClaudeBundle: updateClaudeBundleTokenFields({
+        nativeClaudeBundle: getClaudeNativeBundle(existing),
+        access: updated.access,
+        refresh: updated.refresh,
+        expiresAt,
+      }),
+    });
+  } catch (err) {
+    throw new Error(
+      `Native Claude refresh failed for ${normalizedLabel}. ` +
+        `Reauthenticate in native Claude and then rerun \`aim claude capture-native ${normalizedLabel}\` ` +
+        `or import a bundle file. (${String(err?.message ?? err)})`,
+    );
+  }
+}
+
+async function maintainAnthropicNativeLabel({
   state,
   label,
   homeDir,
-  interactiveBinding,
-  loginImpl = loginAnthropic,
   refreshImpl = refreshAnthropicToken,
-  promptImpl = promptRequiredLine,
-  openUrlImpl = launchBrowserBindingForUrl,
 }) {
   const normalizedLabel = normalizeLabel(label);
   const existing = getAnthropicCredential(state, normalizedLabel);
-  const existingRefresh = existing && typeof existing.refresh === "string" ? existing.refresh : null;
-  const binding = interactiveBinding ?? getInteractiveOAuthBindingForLabel(state, label);
-  const bindingMode = normalizeInteractiveOAuthMode(binding?.mode);
-  const browserBinding =
-    bindingMode === REAUTH_MODE_BROWSER_MANAGED
-      ? (() => {
-          const resolved = resolveBrowserBinding({ account: getAccountRecord(state, label), homeDir, label });
-          if (resolved?.mode === BROWSER_MODE_AIM_PROFILE) {
-            return { ...resolved, userDataDir: resolveAimBrowserUserDataDir({ homeDir, label }) };
-          }
-          return assertMappedBrowserBindingExists({ label, binding: resolved });
-        })()
-      : null;
-
-  // Try refresh first (fast + no browser).
-  if (existingRefresh) {
-    try {
-      const updated = await refreshImpl(existingRefresh);
-      const expiresAt = toIsoFromExpiresMs(updated.expires);
-      if (!expiresAt) {
-        throw new Error("refresh returned no expires");
-      }
-
-      return hydrateAnthropicCredentialForClaudeLocal({
-        state,
-        label: normalizedLabel,
-        homeDir,
-        credential: {
-          access: updated.access,
-          refresh: updated.refresh,
-          expiresAt,
-        },
-      });
-    } catch (err) {
-      process.stdout.write(`Refresh failed for ${label}; falling back to OAuth login (${String(err?.message ?? err)}).\n`);
-    }
+  if (hasCompleteClaudeNativeBundle(existing)) {
+    return await refreshAnthropicNativeBundleCredential({
+      state,
+      label: normalizedLabel,
+      refreshImpl,
+    });
   }
-
-  const manualCallbackPrompt = async () =>
-    await promptImpl(
-      'Paste the callback URL from your browser (looks like "https://console.anthropic.com/oauth/code/callback?code=...&state=..."):',
-    );
-
-  const creds = await loginImpl(
-    (url) => {
-      process.stdout.write(`OAuth URL:\n${url}\n\n`);
-      if (bindingMode === REAUTH_MODE_MANUAL_CALLBACK) {
-        process.stdout.write(
-          [
-            "Open this URL in the browser on your laptop and complete login there.",
-            "When the browser lands on the Anthropic callback page, copy the full callback URL and paste it here.",
-            "",
-          ].join("\n"),
-        );
-        return;
-      }
-
-      if (!browserBinding) {
-        throw new Error(`Missing browser binding for label=${label}.`);
-      }
-
-      const opened = openUrlImpl({ binding: browserBinding, url, homeDir });
-      if (opened.ok) {
-        return;
-      }
-      if (opened.reason === "missing_browser_path") {
-        throw new Error(
-          `Configured browser binding for label=${label} is missing on disk: ${opened.path}. ` +
-            `Repair it with \`${getRepairBindingCommand(label)}\`.`,
-        );
-      }
-
-      process.stdout.write(
-        [
-          `Failed to auto-open configured browser binding (${formatBrowserLaunchFailure(opened)}).`,
-          "Open the URL manually in the exact configured browser identity and paste the callback URL here:",
-          ...(browserBinding.mode === BROWSER_MODE_AGENT_BROWSER
-            ? [
-                `  agent-browser profile: ${browserBinding.agentBrowserProfile}`,
-                `  agent-browser session: ${browserBinding.agentBrowserSession}`,
-              ]
-            : [`  user-data dir: ${browserBinding.userDataDir}`]),
-          "",
-        ].join("\n") + "\n",
-      );
-    },
-    async () => parseAnthropicAuthorizationPaste(await manualCallbackPrompt()),
-  );
-
-  const expiresAt = toIsoFromExpiresMs(creds.expires);
-  if (!expiresAt) {
-    throw new Error("OAuth succeeded but no expires was returned. Refusing to store ambiguous credentials.");
-  }
-
-  return hydrateAnthropicCredentialForClaudeLocal({
+  const captured = captureAnthropicNativeBundleForLabel({
     state,
     label: normalizedLabel,
-    homeDir,
-    credential: {
-      access: creds.access,
-      refresh: creds.refresh,
-      expiresAt,
-    },
+    sourceHome: homeDir,
   });
+  return captured.credential;
 }
 
-function recordAccountMaintenanceAttempt(state, label) {
+function recordAccountMaintenanceAttempt(state, label, { providerHint = null } = {}) {
   const observedAt = new Date().toISOString();
+  const account = getAccountRecord(state, label, { create: true });
+  const normalizedProvider = normalizeProviderId(providerHint);
+  if (account && normalizedProvider && !normalizeProviderId(account.provider)) {
+    account.provider = normalizedProvider;
+  }
+  if (account) {
+    ensureAccountShape(account, { providerHint: account.provider ?? normalizedProvider ?? undefined });
+  }
   const reauth = getAccountReauthState(state, label, { create: true });
   reauth.lastAttemptAt = observedAt;
   return observedAt;
@@ -5911,6 +7228,13 @@ export function derivePoolAccountStatus({ account, label, credentials, browserFa
     typeof browserFacts?.userName === "string" ? browserFacts.userName.trim().toLowerCase() : "";
   const credential = isObject(credentials) ? credentials : null;
   const expiresMs = parseExpiresAtToMs(credential?.expiresAt);
+  const storedEmail =
+    provider === ANTHROPIC_PROVIDER
+      ? (
+        buildClaudeCredentialSummaryFromBundle(credential)?.emailAddress
+        || (typeof credential?.emailAddress === "string" ? credential.emailAddress.trim().toLowerCase() : "")
+      )
+      : "";
   const hasFreshCredentials =
     credential
     && typeof credential.access === "string"
@@ -5920,6 +7244,57 @@ export function derivePoolAccountStatus({ account, label, credentials, browserFa
     && expiresMs !== null
     && expiresMs > snapshotNow
     && (provider !== OPENAI_CODEX_PROVIDER || typeof credential.accountId === "string" && credential.accountId.trim());
+  const hasCompleteClaudeBundle =
+    provider !== ANTHROPIC_PROVIDER || hasCompleteClaudeNativeBundle(credential);
+
+  if (provider === ANTHROPIC_PROVIDER) {
+    if (blockedReason) {
+      return {
+        operatorStatus: "blocked",
+        eligible: false,
+        actionRequired: "fix_blocker",
+        reason: blockedReason,
+      };
+    }
+    if (expectedEmail && storedEmail && expectedEmail !== storedEmail) {
+      return {
+        operatorStatus: "blocked",
+        detailReason: "conflict",
+        eligible: false,
+        actionRequired: "fix_blocker",
+        reason: `Stored Claude identity ${storedEmail} does not match expected ${expectedEmail}.`,
+      };
+    }
+    if (!hasFreshCredentials) {
+      return {
+        operatorStatus: "reauth",
+        detailReason: "missing_credentials",
+        eligible: false,
+        actionRequired: "run_aim_label",
+        reason:
+          expiresMs !== null && expiresMs <= snapshotNow
+            ? "Credentials are expired."
+            : "No currently usable credentials are stored for this label.",
+      };
+    }
+    if (!hasCompleteClaudeBundle) {
+      return {
+        operatorStatus: "reauth",
+        detailReason: "missing_native_claude_bundle",
+        eligible: false,
+        actionRequired: "run_aim_claude_capture_native",
+        reason:
+          "Stored Anthropic tokens are still fresh, but this label does not have a complete native Claude login bundle yet.",
+      };
+    }
+    return {
+      operatorStatus: "ready",
+      detailReason: "native_claude",
+      eligible: true,
+      actionRequired: null,
+      reason: "Ready for native Claude switching.",
+    };
+  }
 
   if (conflictReason) {
     return {
@@ -6104,7 +7479,8 @@ function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
     });
     const usage = usageByLabel[label] ?? null;
     const usageOk = usage?.ok === true && Array.isArray(usage.windows) && usage.windows.length > 0;
-    const eligible = status.eligible && usageOk && !isUsageSnapshotExhausted(usage);
+    const usageExhausted = usageOk && isUsageSnapshotExhausted(usage);
+    const eligible = status.eligible && usageOk && !usageExhausted;
     byLabel[label] = {
       ...status,
       label,
@@ -6112,7 +7488,7 @@ function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
       usage,
       eligible,
       poolEnabled: getAccountPoolState(state, label)?.enabled !== false,
-      usageReason: usageOk ? null : "usage_unavailable",
+      usageReason: !usageOk ? "usage_unavailable" : usageExhausted ? "usage_exhausted" : null,
     };
     if (eligible) {
       eligibleLabels.push(label);
@@ -6139,7 +7515,8 @@ function collectAnthropicPoolStatus({ state, homeDir, usageByLabel, now }) {
     });
     const usage = usageByLabel[label] ?? null;
     const usageOk = usage?.ok === true && Array.isArray(usage.windows) && usage.windows.length > 0;
-    const eligible = status.eligible && usageOk && !isUsageSnapshotExhausted(usage);
+    const usageExhausted = usageOk && isUsageSnapshotExhausted(usage);
+    const eligible = status.eligible && usageOk && !usageExhausted;
     byLabel[label] = {
       ...status,
       label,
@@ -6147,7 +7524,7 @@ function collectAnthropicPoolStatus({ state, homeDir, usageByLabel, now }) {
       usage,
       eligible,
       poolEnabled: getAccountPoolState(state, label)?.enabled !== false,
-      usageReason: usageOk ? null : "usage_unavailable",
+      usageReason: !usageOk ? "usage_unavailable" : usageExhausted ? "usage_exhausted" : null,
     };
     if (eligible) {
       eligibleLabels.push(label);
@@ -7907,17 +9284,18 @@ function readHermesFleetStatus({ state, homeDir }) {
 
 function readClaudeCliTargetStatus({ state, homeDir }) {
   ensureStateShape(state);
+  const importMeta = getAuthorityAnthropicImport(state);
   const target = getClaudeTargetState(state);
   const claudeDir = resolveManagedClaudeDir({ homeDir });
-  const readback = readClaudeAuthFile({ claudeDir });
+  const readback = readClaudeNativeBundle({ homeDir });
   const activeLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
-  const expectedSubscriptionType =
-    typeof target.expectedSubscriptionType === "string" ? target.expectedSubscriptionType.trim() : "";
+  const activeCredential = activeLabel ? getAnthropicCredential(state, activeLabel) : null;
+  const expected = buildClaudeCredentialSummaryFromBundle(activeCredential);
   const inferredLabel =
-    readback.ok === true
+    readback.summary
       ? getAnthropicCredentialMatchLabel(state, {
-          accessToken: readback.accessToken,
-          refreshToken: readback.refreshToken,
+          accessToken: readback.summary.access,
+          refreshToken: readback.summary.refresh,
         })
       : null;
   const authStatus =
@@ -7930,21 +9308,50 @@ function readClaudeCliTargetStatus({ state, homeDir }) {
   const actualSubscriptionType =
     typeof authStatus?.subscriptionType === "string" && authStatus.subscriptionType.trim()
       ? authStatus.subscriptionType.trim()
-      : typeof readback?.subscriptionType === "string" && readback.subscriptionType.trim()
-        ? readback.subscriptionType.trim()
+      : readback.summary?.subscriptionType
+        ? readback.summary.subscriptionType
+        : null;
+  const actualEmailAddress =
+    typeof authStatus?.email === "string" && authStatus.email.trim()
+      ? authStatus.email.trim().toLowerCase()
+      : readback.summary?.emailAddress
+        ? readback.summary.emailAddress
+        : null;
+  const actualOrganizationName =
+    typeof authStatus?.orgName === "string" && authStatus.orgName.trim()
+      ? authStatus.orgName.trim()
+      : readback.summary?.organizationName
+        ? readback.summary.organizationName
+        : null;
+  const actualOrganizationUuid =
+    typeof authStatus?.orgId === "string" && authStatus.orgId.trim()
+      ? authStatus.orgId.trim()
+      : readback.summary?.organizationUuid
+        ? readback.summary.organizationUuid
         : null;
 
   return {
+    source: typeof importMeta.source === "string" ? importMeta.source.trim() || null : null,
+    importedAt: typeof importMeta.importedAt === "string" ? importMeta.importedAt.trim() || null : null,
+    importedLabels: getImportedAnthropicLabels(state),
     claudeDir,
-    authPath: resolveClaudeAuthFilePath(claudeDir),
+    credentialsPath: readback.credentialsPath,
+    appStatePath: readback.appStatePath,
     activeLabel: activeLabel || null,
     activeAccountPresent: activeLabel ? isObject(state.accounts[activeLabel]) : false,
-    activeCredentialPresent: activeLabel ? isObject(getAnthropicCredential(state, activeLabel)) : false,
-    expectedSubscriptionType: expectedSubscriptionType || null,
+    activeCredentialPresent: activeLabel ? isObject(activeCredential) : false,
+    expectedSubscriptionType: expected?.subscriptionType || null,
+    expectedEmailAddress: expected?.emailAddress || null,
+    expectedOrganizationName: expected?.organizationName || null,
+    expectedOrganizationUuid: expected?.organizationUuid || null,
     actualSubscriptionType,
+    actualEmailAddress,
+    actualOrganizationName,
+    actualOrganizationUuid,
     inferredLabel: inferredLabel || null,
     readback,
     authStatus,
+    authOverrideEnv: readClaudeAuthOverrideEnv(),
     lastSelectionReceipt: isObject(target.lastSelectionReceipt) ? target.lastSelectionReceipt : null,
     lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
   };
@@ -8147,7 +9554,7 @@ function buildWarningsFromClaudeTargetStatus(status) {
     });
   }
 
-  if (status.activeLabel && !status.readback.exists) {
+  if (status.activeLabel && status.readback?.credentials?.exists !== true) {
     warnings.push({
       kind: "claude_target_missing_auth_file",
       system: "claude-cli",
@@ -8155,17 +9562,41 @@ function buildWarningsFromClaudeTargetStatus(status) {
     });
   }
 
-  if (status.readback.exists && status.readback.ok !== true) {
+  if (status.readback?.credentials?.exists === true && status.readback.credentials.ok !== true) {
     warnings.push({
       kind: "claude_target_auth_unreadable",
       system: "claude-cli",
-      status: status.readback.error,
+      status: status.readback.credentials.error,
     });
   }
 
-  if (status.activeLabel && status.readback.ok === true && !status.readback.claudeAiOauthPresent) {
+  if (status.activeLabel && status.readback?.credentials?.ok === true && !status.readback.credentials.claudeAiOauthPresent) {
     warnings.push({
       kind: "claude_target_missing_provider_entry",
+      system: "claude-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.activeLabel && status.readback?.appState?.exists !== true) {
+    warnings.push({
+      kind: "claude_target_missing_app_state",
+      system: "claude-cli",
+      label: status.activeLabel,
+    });
+  }
+
+  if (status.readback?.appState?.exists === true && status.readback.appState.ok !== true) {
+    warnings.push({
+      kind: "claude_target_app_state_unreadable",
+      system: "claude-cli",
+      status: status.readback.appState.error,
+    });
+  }
+
+  if (status.activeLabel && status.readback?.appState?.ok === true && !status.readback.appState.oauthAccountPresent) {
+    warnings.push({
+      kind: "claude_target_missing_oauth_account",
       system: "claude-cli",
       label: status.activeLabel,
     });
@@ -8182,6 +9613,34 @@ function buildWarningsFromClaudeTargetStatus(status) {
       system: "claude-cli",
       label: status.activeLabel,
       status: status.actualSubscriptionType,
+    });
+  }
+
+  if (
+    status.activeLabel
+    && status.expectedEmailAddress
+    && status.actualEmailAddress
+    && status.expectedEmailAddress !== status.actualEmailAddress
+  ) {
+    warnings.push({
+      kind: "claude_target_email_mismatch",
+      system: "claude-cli",
+      label: status.activeLabel,
+      status: status.actualEmailAddress,
+    });
+  }
+
+  if (
+    status.activeLabel
+    && status.expectedOrganizationName
+    && status.actualOrganizationName
+    && status.expectedOrganizationName !== status.actualOrganizationName
+  ) {
+    warnings.push({
+      kind: "claude_target_organization_mismatch",
+      system: "claude-cli",
+      label: status.activeLabel,
+      status: status.actualOrganizationName,
     });
   }
 
@@ -8208,6 +9667,27 @@ function buildWarningsFromClaudeTargetStatus(status) {
       kind: "claude_target_not_logged_in",
       system: "claude-cli",
       label: status.activeLabel,
+    });
+  }
+
+  if (
+    status.activeLabel
+    && status.authStatus?.ok === true
+    && typeof status.authStatus.authMethod === "string"
+    && status.authStatus.authMethod
+    && status.authStatus.authMethod !== "claude.ai"
+  ) {
+    warnings.push({
+      kind:
+        Array.isArray(status.authOverrideEnv) && status.authOverrideEnv.length > 0
+          ? "claude_target_env_override"
+          : "claude_target_auth_method_mismatch",
+      system: "claude-cli",
+      label: status.activeLabel,
+      authMethod: status.authStatus.authMethod,
+      ...(Array.isArray(status.authOverrideEnv) && status.authOverrideEnv.length > 0
+        ? { env: status.authOverrideEnv }
+        : {}),
     });
   }
 
@@ -8270,7 +9750,7 @@ function applyCodexCliFromState({ label, homeDir }, state) {
   };
 }
 
-function applyClaudeCliFromState({ label, homeDir, usageSnapshot = null }, state) {
+function applyClaudeCliFromState({ label, homeDir }, state) {
   ensureStateShape(state);
   if (getAnthropicPoolLabels(state).length === 0) {
     throw new Error(
@@ -8289,34 +9769,27 @@ function applyClaudeCliFromState({ label, homeDir, usageSnapshot = null }, state
     throw new Error(`Refusing to activate non-Claude label=${normalizedLabel} provider=${provider || "unknown"}.`);
   }
 
-  const hydrated = hydrateAnthropicCredentialForClaudeLocal({
-    state,
-    label: normalizedLabel,
-    homeDir,
-    credential: getAnthropicCredential(state, normalizedLabel),
-    usageSnapshot,
-  });
-  state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = hydrated;
   const credential = assertAnthropicCredentialShape({
     label: normalizedLabel,
-    credential: hydrated,
+    credential: getAnthropicCredential(state, normalizedLabel),
     requireFresh: true,
-    requireClaudeProjection: true,
+    requireClaudeNativeBundle: true,
   });
 
   const claudeDir = resolveManagedClaudeDir({ homeDir });
   const authPayload = buildClaudeAuthDotJson({ credential });
-  const writeResult = writeJsonFileIfChanged(resolveClaudeAuthFilePath(claudeDir), authPayload, { mode: 0o600 });
-  const readback = readClaudeAuthFile({ claudeDir });
+  const credentialsWrite = writeJsonFileIfChanged(resolveClaudeAuthFilePath(claudeDir), authPayload, { mode: 0o600 });
+  const appStateWrite = writeClaudeAppStateOauthAccount({ homeDir, credential });
+  const readback = readClaudeNativeBundle({ homeDir });
   if (readback.ok !== true) {
-    throw new Error(`Failed to read back managed Claude auth file: ${readback.error || "unknown error"}`);
+    throw new Error("Failed to read back managed Claude auth bundle after apply.");
   }
-  if (readback.claudeAiOauthPresent !== true) {
-    throw new Error("Claude readback missing claudeAiOauth after apply.");
+  if (!hasCompleteClaudeNativeBundle(readback.nativeClaudeBundle) || !readback.summary) {
+    throw new Error("Claude readback is missing native auth bundle fields after apply.");
   }
   const inferredLabel = getAnthropicCredentialMatchLabel(state, {
-    accessToken: readback.accessToken,
-    refreshToken: readback.refreshToken,
+    accessToken: readback.summary.access,
+    refreshToken: readback.summary.refresh,
   });
   if (inferredLabel && inferredLabel !== normalizedLabel) {
     throw new Error(`Claude readback mismatch after apply: expected label=${normalizedLabel}, got ${inferredLabel}.`);
@@ -8324,17 +9797,23 @@ function applyClaudeCliFromState({ label, homeDir, usageSnapshot = null }, state
 
   const target = getClaudeTargetState(state);
   target.claudeDir = claudeDir;
-  target.authPath = readback.authPath;
+  delete target.authPath;
+  delete target.expectedSubscriptionType;
+  target.credentialsPath = readback.credentialsPath;
+  target.appStatePath = readback.appStatePath;
   target.activeLabel = normalizedLabel;
-  target.expectedSubscriptionType = credential.subscriptionType;
   target.lastAppliedAt = new Date().toISOString();
 
   return {
     label: normalizedLabel,
     subscriptionType: credential.subscriptionType,
     claudeDir,
-    authPath: readback.authPath,
-    wrote: writeResult.wrote,
+    credentialsPath: readback.credentialsPath,
+    appStatePath: readback.appStatePath,
+    wrote: {
+      credentials: credentialsWrite.wrote,
+      appState: appStateWrite.wrote,
+    },
   };
 }
 
@@ -8438,6 +9917,9 @@ function buildWarningsFromState(state) {
   for (const label of buildDirtyImportedCodexLabels(state)) {
     warnings.push({ kind: "local_update_not_promoted", provider: OPENAI_CODEX_PROVIDER, label });
   }
+  for (const label of buildDirtyImportedAnthropicLabels(state)) {
+    warnings.push({ kind: "local_update_not_promoted", provider: ANTHROPIC_PROVIDER, label });
+  }
 
   // Stored assignments pointing to missing labels/creds
   const assignments = getOpenclawAssignments(state);
@@ -8532,6 +10014,7 @@ function buildInteractiveLoginStatus({ state, label }) {
 async function buildStatusView({ statePath, state, homeDir }) {
   ensureStateShape(state);
   const authorityCodexImportStatus = buildAuthorityCodexImportStatus(state);
+  const authorityAnthropicImportStatus = buildAuthorityAnthropicImportStatus(state);
   const usageByProvider = await probeUsageSnapshotsByProvider(state);
   const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
   const codexPool = collectCodexPoolStatus({
@@ -8560,7 +10043,11 @@ async function buildStatusView({ statePath, state, homeDir }) {
     const accountId = cred && typeof cred.accountId === "string" ? cred.accountId : null;
     const usage = usageByProvider[provider]?.[label] ?? { provider, ok: false, status: cred ? "unknown" : "n/a" };
     const authorityImportStatus =
-      provider === OPENAI_CODEX_PROVIDER ? getAuthorityCodexImportLabelStatus(state, label) : null;
+      provider === OPENAI_CODEX_PROVIDER
+        ? getAuthorityCodexImportLabelStatus(state, label)
+        : provider === ANTHROPIC_PROVIDER
+          ? getAuthorityAnthropicImportLabelStatus(state, label)
+          : null;
     const operator =
       provider === OPENAI_CODEX_PROVIDER
         ? (codexPool.byLabel[label]
@@ -8684,7 +10171,12 @@ async function buildStatusView({ statePath, state, homeDir }) {
     pressure: sanitizeForStatus(poolInstrument.pressure),
     projection: sanitizeForStatus(poolInstrument.projection),
     capacity: sanitizeForStatus(capacity),
-    imports: { authority: { codex: sanitizeForStatus(authorityCodexImportStatus) } },
+    imports: {
+      authority: {
+        codex: sanitizeForStatus(authorityCodexImportStatus),
+        anthropic: sanitizeForStatus(authorityAnthropicImportStatus),
+      },
+    },
     codexCli: sanitizeForStatus(codexCli),
     claudeCli: sanitizeForStatus(claudeCli),
     piCli: sanitizeForStatus(piCli),
@@ -8702,6 +10194,9 @@ async function buildStatusView({ statePath, state, homeDir }) {
 
 function formatInteractiveLoginSummary(login) {
   const mode = normalizeInteractiveOAuthMode(login?.mode);
+  if (mode === REAUTH_MODE_NATIVE_CLAUDE) {
+    return REAUTH_MODE_NATIVE_CLAUDE;
+  }
   if (mode === REAUTH_MODE_MANUAL_CALLBACK) {
     return "manual-callback";
   }
@@ -8821,7 +10316,7 @@ function buildStatusAccountFlags(account) {
   }
   if (detailReason === "missing_browser" || detailReason === "binding_missing_for_future_reauth") {
     flags.push("missing_browser");
-  } else if (detailReason && detailReason !== "manual_mode") {
+  } else if (detailReason && detailReason !== "manual_mode" && detailReason !== "native_claude") {
     flags.push(detailReason);
   }
 
@@ -8897,19 +10392,37 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
   const lines = [];
   lines.push(`aim SSOT: ${view.statePath}`);
 
-  const authoritySource =
+  const codexAuthoritySource =
     typeof view.imports?.authority?.codex?.source === "string" ? view.imports.authority.codex.source.trim() : "";
-  const authorityImportedAt =
+  const codexAuthorityImportedAt =
     typeof view.imports?.authority?.codex?.importedAt === "string" ? view.imports.authority.codex.importedAt.trim() : "";
-  const dirtyImportedLabels = Array.isArray(view.imports?.authority?.codex?.dirtyLabels) ? view.imports.authority.codex.dirtyLabels : [];
-  const importedLabels = Array.isArray(view.codexCli?.importedLabels) ? view.codexCli.importedLabels : [];
-  if (authoritySource || importedLabels.length > 0) {
-    lines.push(`Authority import: source=${authoritySource || "none"} labels=${importedLabels.length}`);
-    if (authorityImportedAt) {
-      lines.push(`Authority import age: ${formatAgeSince(authorityImportedAt)}`);
+  const codexDirtyImportedLabels = Array.isArray(view.imports?.authority?.codex?.dirtyLabels) ? view.imports.authority.codex.dirtyLabels : [];
+  const codexImportedLabels = Array.isArray(view.codexCli?.importedLabels) ? view.codexCli.importedLabels : [];
+  if (codexAuthoritySource || codexImportedLabels.length > 0) {
+    lines.push(`Authority import (Codex): source=${codexAuthoritySource || "none"} labels=${codexImportedLabels.length}`);
+    if (codexAuthorityImportedAt) {
+      lines.push(`Authority import age (Codex): ${formatAgeSince(codexAuthorityImportedAt)}`);
     }
-    if (dirtyImportedLabels.length > 0) {
-      lines.push(`Authority dirty: ${dirtyImportedLabels.length} label(s) pending promote`);
+    if (codexDirtyImportedLabels.length > 0) {
+      lines.push(`Authority dirty (Codex): ${codexDirtyImportedLabels.length} label(s) pending promote`);
+    }
+  }
+  const claudeAuthoritySource =
+    typeof view.imports?.authority?.anthropic?.source === "string" ? view.imports.authority.anthropic.source.trim() : "";
+  const claudeAuthorityImportedAt =
+    typeof view.imports?.authority?.anthropic?.importedAt === "string"
+      ? view.imports.authority.anthropic.importedAt.trim()
+      : "";
+  const claudeDirtyImportedLabels =
+    Array.isArray(view.imports?.authority?.anthropic?.dirtyLabels) ? view.imports.authority.anthropic.dirtyLabels : [];
+  const claudeImportedLabels = Array.isArray(view.claudeCli?.importedLabels) ? view.claudeCli.importedLabels : [];
+  if (claudeAuthoritySource || claudeImportedLabels.length > 0) {
+    lines.push(`Authority import (Claude): source=${claudeAuthoritySource || "none"} labels=${claudeImportedLabels.length}`);
+    if (claudeAuthorityImportedAt) {
+      lines.push(`Authority import age (Claude): ${formatAgeSince(claudeAuthorityImportedAt)}`);
+    }
+    if (claudeDirtyImportedLabels.length > 0) {
+      lines.push(`Authority dirty (Claude): ${claudeDirtyImportedLabels.length} label(s) pending promote`);
     }
   }
   lines.push("");
@@ -9074,12 +10587,15 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
       ...formatStatusBlockRows([
         ["active_label", view.claudeCli.activeLabel || "none"],
         ["subscription", view.claudeCli.actualSubscriptionType || view.claudeCli.expectedSubscriptionType || "--"],
+        ["auth_method", view.claudeCli.authStatus?.authMethod || "--"],
         ["auth_status", view.claudeCli.authStatus?.available === true
           ? (view.claudeCli.authStatus.ok === true
             ? (view.claudeCli.authStatus.loggedIn === true ? "logged_in" : "logged_out")
             : "error")
           : "unavailable"],
-        ["auth_path", view.claudeCli.authPath || "--"],
+        ["synced_age", view.claudeCli.importedAt ? formatAgeSince(view.claudeCli.importedAt.trim()) : "--"],
+        ["credentials_path", view.claudeCli.credentialsPath || "--"],
+        ["app_state_path", view.claudeCli.appStatePath || "--"],
       ]),
     );
   }
@@ -9119,7 +10635,7 @@ function renderStatusText(view, { showAssignments = false, showAccounts = true }
 
 function resolveProviderPanelLabel(provider) {
   if (provider === OPENAI_CODEX_PROVIDER) return "ChatGPT login";
-  if (provider === ANTHROPIC_PROVIDER) return "Claude login";
+  if (provider === ANTHROPIC_PROVIDER) return "Stored tokens";
   return "Login";
 }
 
@@ -9268,12 +10784,18 @@ function buildLabelControlPanelState({ state, label, homeDir }) {
     browserFacts,
     now: Date.now(),
   });
-  const reauthMode = normalizeInteractiveOAuthMode(account?.reauth?.mode);
+  const reauthMode =
+    provider === ANTHROPIC_PROVIDER
+      ? REAUTH_MODE_NATIVE_CLAUDE
+      : normalizeInteractiveOAuthMode(account?.reauth?.mode);
   const binding = resolveBrowserBinding({ account, homeDir, label: normalizedLabel });
   const credentialHealth = resolveCredentialHealth(credential);
+  const nativeBundleComplete = provider === ANTHROPIC_PROVIDER ? hasCompleteClaudeNativeBundle(credential) : null;
   const needsSetup =
-    !reauthMode
-    || (reauthMode === REAUTH_MODE_BROWSER_MANAGED && !binding && credentialHealth !== "valid");
+    provider === ANTHROPIC_PROVIDER
+      ? false
+      : !reauthMode
+        || (reauthMode === REAUTH_MODE_BROWSER_MANAGED && !binding && credentialHealth !== "valid");
 
   let panelKind = "ready";
   if (needsSetup) {
@@ -9285,7 +10807,14 @@ function buildLabelControlPanelState({ state, label, homeDir }) {
   }
 
   let reason = null;
-  if (panelKind === "setup") {
+  if (provider === ANTHROPIC_PROVIDER) {
+    reason =
+      typeof operator?.reason === "string" && operator.reason.trim()
+        ? operator.reason.trim()
+        : nativeBundleComplete
+          ? "Ready for native Claude switching."
+          : "No complete native Claude bundle is stored for this label yet.";
+  } else if (panelKind === "setup") {
     reason = !reauthMode
       ? "No login mode is configured yet."
       : operator?.reason ?? "Finish browser/login setup for this label.";
@@ -9304,6 +10833,7 @@ function buildLabelControlPanelState({ state, label, homeDir }) {
     operator,
     panelKind,
     reason,
+    nativeBundleComplete,
     browserSummary: summarizeBrowserBindingForPanel({ binding, reauthMode }),
   };
 }
@@ -9317,11 +10847,92 @@ function renderLabelControlPanel(panelState) {
     lines.push(`Why: ${panelState.reason}`);
   }
   lines.push(`${panelState.providerLabel}: ${panelState.credentialHealth}`);
-  lines.push(`Browser: ${panelState.browserSummary}`);
+  if (panelState.provider === ANTHROPIC_PROVIDER) {
+    lines.push(`Native bundle: ${panelState.nativeBundleComplete ? "complete" : "missing"}`);
+  } else {
+    lines.push(`Browser: ${panelState.browserSummary}`);
+  }
   process.stdout.write(`${lines.join("\n")}\n\n`);
 }
 
+function buildAnthropicLabelPanelActions(panelState) {
+  const actions = [];
+  if (panelState.nativeBundleComplete) {
+    actions.push({
+      key: "1",
+      action: "use_native_claude_label",
+      label: "Use this label in Claude",
+      details: ["Will write this label's native Claude bundle into the managed Claude CLI files now."],
+    });
+    actions.push({
+      key: "2",
+      action: "refresh_native_claude_bundle",
+      label: "Refresh native bundle",
+      details: ["Will refresh stored Claude tokens and keep the same native Claude identity metadata."],
+    });
+    actions.push({
+      key: "3",
+      action: "capture_native_claude",
+      label: "Capture current native Claude login",
+      details: ["Will read the live Claude login files from this host and store them on this label."],
+    });
+    actions.push({
+      key: "4",
+      action: "import_native_claude_bundle",
+      label: "Import native Claude bundle",
+      details: ["Will ask for a portable Claude bundle JSON file path and store it on this label."],
+    });
+    actions.push({
+      key: "5",
+      action: "export_live_native_claude_bundle",
+      label: "Export current live native bundle",
+      details: ["Will ask where to write a portable Claude bundle JSON from the live Claude login on this host."],
+    });
+    actions.push({
+      key: "6",
+      action: "show_details",
+      label: "Show details",
+      details: [`Will print the raw provider, credential, and native Claude state for ${panelState.label}.`],
+    });
+  } else {
+    actions.push({
+      key: "1",
+      action: "capture_native_claude",
+      label: "Capture current native Claude login",
+      details: ["Will read the live Claude login files from this host and store them on this label."],
+    });
+    actions.push({
+      key: "2",
+      action: "import_native_claude_bundle",
+      label: "Import native Claude bundle",
+      details: ["Will ask for a portable Claude bundle JSON file path and store it on this label."],
+    });
+    actions.push({
+      key: "3",
+      action: "export_live_native_claude_bundle",
+      label: "Export current live native bundle",
+      details: ["Will ask where to write a portable Claude bundle JSON from the live Claude login on this host."],
+    });
+    actions.push({
+      key: "4",
+      action: "show_details",
+      label: "Show details",
+      details: [`Will print the raw provider, credential, and native Claude state for ${panelState.label}.`],
+    });
+  }
+  actions.push({
+    key: "0",
+    action: "done",
+    label: "Done",
+    details: ["Makes no changes."],
+  });
+  return actions;
+}
+
 function buildLabelPanelActions(panelState, { homeDir, suggestions, discoveryWarning } = {}) {
+  if (panelState.provider === ANTHROPIC_PROVIDER) {
+    return buildAnthropicLabelPanelActions(panelState);
+  }
   if (panelState.panelKind === "setup") {
     return buildBrowserSetupMenuOptions({
       label: panelState.label,
@@ -9404,7 +11015,23 @@ function buildLabelPanelActions(panelState, { homeDir, suggestions, discoveryWar
 }
 
 function showLabelAdvancedDetails({ state, label, homeDir }) {
-  const details = showBrowserBinding({ state, label, homeDir });
+  const normalizedLabel = normalizeLabel(label);
+  const account = getAccountRecord(state, normalizedLabel);
+  const provider = normalizeProviderId(account?.provider);
+  const credential =
+    provider === OPENAI_CODEX_PROVIDER
+      ? getCodexCredential(state, normalizedLabel)
+      : provider === ANTHROPIC_PROVIDER
+        ? getAnthropicCredential(state, normalizedLabel)
+        : null;
+  const details = {
+    label: normalizedLabel,
+    provider: provider || null,
+    account,
+    credential,
+    browser: showBrowserBinding({ state, label: normalizedLabel, homeDir }),
+    liveClaude: provider === ANTHROPIC_PROVIDER ? readClaudeNativeBundle({ homeDir }) : null,
+  };
   process.stdout.write(`${JSON.stringify(sanitizeForStatus(details), null, 2)}\n\n`);
 }
 
@@ -9697,7 +11324,6 @@ async function performLabelMaintenance({
   openUrlImpl = launchBrowserBindingForUrl,
   loginOpenAICodexImpl = loginOpenAICodex,
   refreshOpenAICodexImpl = refreshOpenAICodexToken,
-  loginAnthropicImpl = loginAnthropic,
   refreshAnthropicImpl = refreshAnthropicToken,
 }) {
   const normalizedLabel = normalizeLabel(label);
@@ -9706,7 +11332,7 @@ async function performLabelMaintenance({
     label: normalizedLabel,
     promptLineImpl,
   });
-  const attemptedAt = recordAccountMaintenanceAttempt(state, normalizedLabel);
+  const attemptedAt = recordAccountMaintenanceAttempt(state, normalizedLabel, { providerHint: provider });
   let hermesSync = {
     status: "noop",
     checkedHomeCount: 0,
@@ -9739,22 +11365,12 @@ async function performLabelMaintenance({
       });
       state.credentials[OPENAI_CODEX_PROVIDER][normalizedLabel] = cred;
     } else if (provider === ANTHROPIC_PROVIDER) {
-      const interactiveBinding = await ensureInteractiveLoginBindingForProvider({
+      ensureAnthropicLabelConfigured(state, normalizedLabel);
+      const cred = await maintainAnthropicNativeLabel({
         state,
         label: normalizedLabel,
         homeDir,
-        provider: ANTHROPIC_PROVIDER,
-        promptLineImpl,
-      });
-      const cred = await refreshOrLoginAnthropic({
-        state,
-        label: normalizedLabel,
-        homeDir,
-        interactiveBinding,
-        loginImpl: loginAnthropicImpl,
         refreshImpl: refreshAnthropicImpl,
-        promptImpl,
-        openUrlImpl,
       });
       state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = cred;
     } else {
@@ -9764,6 +11380,8 @@ async function performLabelMaintenance({
     recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
     if (provider === OPENAI_CODEX_PROVIDER) {
       authorityPromotion = markImportedCodexLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
+    } else if (provider === ANTHROPIC_PROVIDER) {
+      authorityPromotion = markImportedAnthropicLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
     }
     if (provider === OPENAI_CODEX_PROVIDER) {
       hermesSync = syncHermesHomesForLabel({
@@ -9788,7 +11406,10 @@ async function performLabelMaintenance({
               ...(authorityPromotion.dirty
                 ? {
                     status: "pending_publish",
-                    target: typeof getAuthorityCodexImport(state).source === "string" ? getAuthorityCodexImport(state).source : null,
+                    target:
+                      provider === OPENAI_CODEX_PROVIDER
+                        ? (typeof getAuthorityCodexImport(state).source === "string" ? getAuthorityCodexImport(state).source : null)
+                        : (typeof getAuthorityAnthropicImport(state).source === "string" ? getAuthorityAnthropicImport(state).source : null),
                   }
                 : { status: "clean" }),
             },
@@ -9825,7 +11446,6 @@ async function runLabelPanelAction({
   readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
   loginOpenAICodexImpl = loginOpenAICodex,
   refreshOpenAICodexImpl = refreshOpenAICodexToken,
-  loginAnthropicImpl = loginAnthropic,
   refreshAnthropicImpl = refreshAnthropicToken,
 }) {
   const normalizedLabel = normalizeLabel(label);
@@ -9835,6 +11455,137 @@ async function runLabelPanelAction({
 
   if (action === "show_details") {
     showLabelAdvancedDetails({ state, label: normalizedLabel, homeDir });
+    return { done: false };
+  }
+
+  if (
+    action === "capture_native_claude"
+    || action === "import_native_claude_bundle"
+    || action === "export_live_native_claude_bundle"
+    || action === "refresh_native_claude_bundle"
+    || action === "use_native_claude_label"
+  ) {
+    if (action === "use_native_claude_label") {
+      const activated = activateClaudeLabelSelection({ state, homeDir, label: normalizedLabel });
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n\n`);
+      return { done: false };
+    }
+
+    const attemptedAt = recordAccountMaintenanceAttempt(state, normalizedLabel, { providerHint: ANTHROPIC_PROVIDER });
+    try {
+      if (action === "capture_native_claude") {
+        const captured = captureAnthropicNativeBundleForLabel({
+          state,
+          label: normalizedLabel,
+          sourceHome: homeDir,
+        });
+        recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
+        markImportedAnthropicLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
+        writeJsonFileWithBackup(statePath, state);
+        process.stdout.write(
+          `${JSON.stringify(
+            sanitizeForStatus({
+              ok: true,
+              captured: {
+                label: normalizedLabel,
+                sourceHome: captured.sourceHome,
+                emailAddress: captured.summary.emailAddress,
+                organizationName: captured.summary.organizationName,
+                organizationUuid: captured.summary.organizationUuid,
+              },
+            }),
+            null,
+            2,
+          )}\n\n`,
+        );
+        return { done: false };
+      }
+
+      if (action === "import_native_claude_bundle") {
+        const bundlePath = resolveCliPath(
+          await promptLineImpl(`Bundle JSON path for "${normalizedLabel}":`),
+          { homeDir, optionName: "bundle path" },
+        );
+        const imported = importAnthropicNativeBundleForLabel({
+          state,
+          label: normalizedLabel,
+          filePath: bundlePath,
+        });
+        recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
+        markImportedAnthropicLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
+        writeJsonFileWithBackup(statePath, state);
+        process.stdout.write(
+          `${JSON.stringify(
+            sanitizeForStatus({
+              ok: true,
+              imported: {
+                label: normalizedLabel,
+                filePath: imported.filePath,
+                sourceHome: imported.sourceHome,
+                emailAddress: imported.summary.emailAddress,
+                organizationName: imported.summary.organizationName,
+                organizationUuid: imported.summary.organizationUuid,
+              },
+            }),
+            null,
+            2,
+          )}\n\n`,
+        );
+        return { done: false };
+      }
+
+      if (action === "export_live_native_claude_bundle") {
+        const outPath = resolveCliPath(
+          await promptLineImpl(`Write native Claude bundle for "${normalizedLabel}" to:`, {
+            defaultValue: path.join(homeDir, `${normalizedLabel}.claude-native-bundle.json`),
+          }),
+          { homeDir, optionName: "bundle output path" },
+        );
+        const exported = exportLiveClaudeNativeBundle({
+          filePath: outPath,
+          sourceHome: homeDir,
+          labelHint: normalizedLabel,
+        });
+        process.stdout.write(
+          `${JSON.stringify(
+            sanitizeForStatus({
+              ok: true,
+              exported: {
+                filePath: exported.filePath,
+                sourceHome: exported.sourceHome,
+                emailAddress: exported.summary.emailAddress,
+                organizationName: exported.summary.organizationName,
+                organizationUuid: exported.summary.organizationUuid,
+                wrote: exported.wrote,
+              },
+            }),
+            null,
+            2,
+          )}\n\n`,
+        );
+        return { done: false };
+      }
+
+      const refreshed = await refreshAnthropicNativeBundleCredential({
+        state,
+        label: normalizedLabel,
+        refreshImpl: refreshAnthropicImpl,
+      });
+      state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = refreshed;
+      recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
+      markImportedAnthropicLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(`${normalizedLabel} is ready.\n\n`);
+    } catch (err) {
+      const message = String(err?.message ?? err);
+      recordAccountMaintenanceFailure(state, normalizedLabel, {
+        observedAt: attemptedAt,
+        ...(message.match(/conflict|does not match|unsupported|already stored/i) ? { blockedReason: message } : {}),
+      });
+      writeJsonFileWithBackup(statePath, state);
+      reportPanelActionError(err);
+    }
     return { done: false };
   }
 
@@ -9931,7 +11682,6 @@ async function runLabelPanelAction({
             openUrlImpl,
             loginOpenAICodexImpl,
             refreshOpenAICodexImpl,
-            loginAnthropicImpl,
             refreshAnthropicImpl,
           });
           writeJsonFileWithBackup(statePath, state);
@@ -9959,7 +11709,6 @@ async function runLabelPanelAction({
         openUrlImpl,
         loginOpenAICodexImpl,
         refreshOpenAICodexImpl,
-        loginAnthropicImpl,
         refreshAnthropicImpl,
       });
       writeJsonFileWithBackup(statePath, state);
@@ -9987,7 +11736,6 @@ export async function runLabelControlPanel({
   readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
   loginOpenAICodexImpl = loginOpenAICodex,
   refreshOpenAICodexImpl = refreshOpenAICodexToken,
-  loginAnthropicImpl = loginAnthropic,
   refreshAnthropicImpl = refreshAnthropicToken,
 }) {
   const normalizedLabel = normalizeLabel(label);
@@ -10040,7 +11788,6 @@ export async function runLabelControlPanel({
       readOpenclawAgentsListFromConfigImpl,
       loginOpenAICodexImpl,
       refreshOpenAICodexImpl,
-      loginAnthropicImpl,
       refreshAnthropicImpl,
     });
     if (result?.done) {
@@ -10981,15 +12728,26 @@ async function activateClaudePoolSelection({ state, homeDir }) {
   if (poolStatus.eligibleLabels.length === 0) {
     const currentTarget = readClaudeCliTargetStatus({ state, homeDir });
     clearManagedClaudeCliActivation({ state, homeDir });
+    const blockerDetails = poolStatus.labels
+      .map((label) => {
+        const entry = poolStatus.byLabel[label];
+        if (!entry || entry.eligible === true) return null;
+        return {
+          label,
+          reason: entry.usageReason || entry.detailReason || entry.reason || "not_eligible",
+        };
+      })
+      .filter(Boolean);
     const receipt = {
       action: "claude_use",
       status: "blocked",
       observedAt,
       previousLabel: currentTarget.activeLabel ?? currentTarget.inferredLabel ?? undefined,
       warnings: [],
-      blockers: [{ reason: "no_eligible_pool_account" }],
+      blockers: blockerDetails.length > 0 ? blockerDetails : [{ reason: "no_eligible_pool_account" }],
       reasons: [],
-      wroteAuthJson: false,
+      wroteCredentialsJson: false,
+      wroteAppStateJson: false,
     };
     target.lastSelectionReceipt = receipt;
     appendAnthropicHistory(state, [
@@ -11023,14 +12781,13 @@ async function activateClaudePoolSelection({ state, homeDir }) {
   const activated = applyClaudeCliFromState({
     label: selection.label,
     homeDir,
-    usageSnapshot: usageByLabel?.[selection.label] ?? null,
   }, state);
   const postStatus = readClaudeCliTargetStatus({ state, homeDir });
   const warnings = buildWarningsFromClaudeTargetStatus(postStatus);
+  const wroteAny = Boolean(activated.wrote?.credentials || activated.wrote?.appState);
   const status =
-    !activated.wrote
+    !wroteAny
     && currentTarget.activeLabel === selection.label
-    && currentTarget.expectedSubscriptionType === activated.subscriptionType
       ? "noop"
       : warnings.length > 0
         ? "activated_with_warnings"
@@ -11045,8 +12802,10 @@ async function activateClaudePoolSelection({ state, homeDir }) {
     subscriptionType: activated.subscriptionType,
     keptCurrent: Boolean(selection.keptCurrent),
     reasons: Array.isArray(selection.reasons) ? selection.reasons : [],
-    authPath: activated.authPath,
-    wroteAuthJson: Boolean(activated.wrote),
+    credentialsPath: activated.credentialsPath,
+    appStatePath: activated.appStatePath,
+    wroteCredentialsJson: Boolean(activated.wrote?.credentials),
+    wroteAppStateJson: Boolean(activated.wrote?.appState),
     warnings,
     blockers: [],
   };
@@ -11062,7 +12821,106 @@ async function activateClaudePoolSelection({ state, homeDir }) {
     },
   ]);
 
-  return { status, receipt, wrote: Boolean(activated.wrote) };
+  return { status, receipt, wrote: wroteAny };
+}
+
+function classifyClaudeActivationError(err) {
+  const message = String(err?.message ?? err);
+  if (/nativeclaudebundle.*missing|missing or incomplete native Claude bundle|missing_native_claude_bundle/i.test(message)) {
+    return "missing_native_claude_bundle";
+  }
+  if (/expired anthropic credentials|credentials are expired/i.test(message)) {
+    return "expired_credentials";
+  }
+  if (/Missing anthropic credentials/i.test(message)) {
+    return "missing_credentials";
+  }
+  return "activation_failed";
+}
+
+function activateClaudeLabelSelection({ state, homeDir, label }) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const observedAt = new Date().toISOString();
+  const target = getClaudeTargetState(state);
+  const currentTarget = readClaudeCliTargetStatus({ state, homeDir });
+
+  try {
+    const activated = applyClaudeCliFromState({
+      label: normalizedLabel,
+      homeDir,
+    }, state);
+    const postStatus = readClaudeCliTargetStatus({ state, homeDir });
+    const warnings = buildWarningsFromClaudeTargetStatus(postStatus);
+    const wroteAny = Boolean(activated.wrote?.credentials || activated.wrote?.appState);
+    const status =
+      !wroteAny && currentTarget.activeLabel === normalizedLabel
+        ? "noop"
+        : warnings.length > 0
+          ? "activated_with_warnings"
+          : "activated";
+    const receipt = {
+      action: "claude_use",
+      status,
+      observedAt,
+      previousLabel: currentTarget.activeLabel ?? undefined,
+      label: normalizedLabel,
+      explicit: true,
+      subscriptionType: activated.subscriptionType,
+      reasons: ["explicit_label"],
+      credentialsPath: activated.credentialsPath,
+      appStatePath: activated.appStatePath,
+      wroteCredentialsJson: Boolean(activated.wrote?.credentials),
+      wroteAppStateJson: Boolean(activated.wrote?.appState),
+      warnings,
+      blockers: [],
+    };
+    target.lastSelectionReceipt = receipt;
+    appendAnthropicHistory(state, [
+      {
+        observedAt,
+        kind: "selection",
+        status,
+        label: normalizedLabel,
+        hadSpareEligibleCapacity: false,
+        reason: "explicit_label",
+      },
+    ]);
+    return { status, receipt, wrote: wroteAny };
+  } catch (err) {
+    const message = String(err?.message ?? err);
+    const receipt = {
+      action: "claude_use",
+      status: "blocked",
+      observedAt,
+      previousLabel: currentTarget.activeLabel ?? currentTarget.inferredLabel ?? undefined,
+      label: normalizedLabel,
+      explicit: true,
+      reasons: ["explicit_label"],
+      warnings: [],
+      blockers: [
+        {
+          label: normalizedLabel,
+          reason: classifyClaudeActivationError(err),
+          detail: message,
+        },
+      ],
+      wroteCredentialsJson: false,
+      wroteAppStateJson: false,
+    };
+    target.lastSelectionReceipt = receipt;
+    appendAnthropicHistory(state, [
+      {
+        observedAt,
+        kind: "selection",
+        status: "blocked",
+        label: normalizedLabel,
+        hadSpareEligibleCapacity: false,
+        reason: classifyClaudeActivationError(err),
+      },
+    ]);
+    return { status: "blocked", receipt, wrote: false };
+  }
 }
 
 async function activatePiPoolSelection({ state, homeDir }) {
@@ -11808,7 +13666,6 @@ export async function main(argv, deps = {}) {
     runLabelControlPanelImpl = runLabelControlPanel,
     loginOpenAICodexImpl = loginOpenAICodex,
     refreshOpenAICodexImpl = refreshOpenAICodexToken,
-    loginAnthropicImpl = loginAnthropic,
     refreshAnthropicImpl = refreshAnthropicToken,
     probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
     activateCodexPoolSelectionImpl = activateCodexPoolSelection,
@@ -11875,7 +13732,6 @@ export async function main(argv, deps = {}) {
         readOpenclawAgentsListFromConfigImpl,
         loginOpenAICodexImpl,
         refreshOpenAICodexImpl,
-        loginAnthropicImpl,
         refreshAnthropicImpl,
       });
       return;
@@ -11891,7 +13747,6 @@ export async function main(argv, deps = {}) {
         openUrlImpl,
         loginOpenAICodexImpl,
         refreshOpenAICodexImpl,
-        loginAnthropicImpl,
         refreshAnthropicImpl,
       });
       writeJsonFileWithBackup(statePath, state);
@@ -11948,25 +13803,32 @@ export async function main(argv, deps = {}) {
     if (!subcmd) {
       throw new Error("Missing internal subcommand.");
     }
-    if (subcmd !== "apply-codex-promotion") {
+    if (subcmd !== "apply-codex-promotion" && subcmd !== "apply-claude-promotion") {
       throw new Error(`Unsupported internal subcommand: ${subcmd}.`);
     }
     const rawPayload = await readTextFromStream(stdin);
     if (!String(rawPayload ?? "").trim()) {
-      throw new Error("Missing codex promotion payload on stdin.");
+      throw new Error(`Missing ${subcmd === "apply-codex-promotion" ? "codex" : "Claude"} promotion payload on stdin.`);
     }
     let payload;
     try {
       payload = JSON.parse(rawPayload);
     } catch (err) {
-      throw new Error(`Invalid codex promotion payload JSON: ${String(err?.message ?? err)}`);
+      throw new Error(`Invalid ${subcmd === "apply-codex-promotion" ? "codex" : "Claude"} promotion payload JSON: ${String(err?.message ?? err)}`);
     }
     const state = loadAimgrState(statePath);
-    const applied = applyCodexPromotionPayloadToState({
-      state,
-      payload,
-      authorityDisplay: statePath,
-    });
+    const applied =
+      subcmd === "apply-codex-promotion"
+        ? applyCodexPromotionPayloadToState({
+            state,
+            payload,
+            authorityDisplay: statePath,
+          })
+        : applyClaudePromotionPayloadToState({
+            state,
+            payload,
+            authorityDisplay: statePath,
+          });
     if (applied.status === "applied") {
       writeJsonFileWithBackup(statePath, state);
     }
@@ -12047,7 +13909,7 @@ export async function main(argv, deps = {}) {
     const system = String(positional[1] ?? "").trim().toLowerCase();
     if (!system) {
       throw new Error(
-        "Missing sync target. Usage: aim sync openclaw | aim sync codex --from agents@amirs-mac-studio",
+        "Missing sync target. Usage: aim sync openclaw | aim sync codex --from agents@amirs-mac-studio | aim sync claude --from agents@amirs-mac-studio",
       );
     }
     const state = loadAimgrState(statePath);
@@ -12067,29 +13929,48 @@ export async function main(argv, deps = {}) {
       process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, imported }), null, 2)}\n`);
       return;
     }
+    if (system === "claude") {
+      const imported = importAnthropicFromAuthority({
+        from: opts.from,
+        state,
+        homeDir,
+        discardDirty: opts.discardDirty === true,
+      });
+      writeJsonFileWithBackup(statePath, state);
+      process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, imported }), null, 2)}\n`);
+      return;
+    }
     if (system === "hermes") {
       throw new Error(
         "`aim sync hermes` was removed. Use `aim auth write hermes <label> --auth-file <abs-path>` and manage Hermes runtime files outside AIM.",
       );
     }
-    throw new Error(`Unsupported sync target: ${system} (supported: openclaw, codex).`);
+    throw new Error(`Unsupported sync target: ${system} (supported: openclaw, codex, claude).`);
   }
 
   if (cmd === "promote") {
     const system = String(positional[1] ?? "").trim().toLowerCase();
     if (!system) {
-      throw new Error("Missing promote target. Usage: aim promote codex --to <authority> <label> [<label>...]");
-    }
-    if (system !== "codex") {
-      throw new Error(`Unsupported promote target: ${system} (supported: codex).`);
+      throw new Error("Missing promote target. Usage: aim promote codex --to <authority> <label> [<label>...] | aim promote claude --to <authority> <label> [<label>...]");
     }
     const labels = positional.slice(2);
     const state = loadAimgrState(statePath);
-    const promoted = promoteCodexToAuthority({
-      to: opts.to,
-      labels,
-      state,
-    });
+    const promoted =
+      system === "codex"
+        ? promoteCodexToAuthority({
+            to: opts.to,
+            labels,
+            state,
+          })
+        : system === "claude"
+          ? promoteClaudeToAuthority({
+              to: opts.to,
+              labels,
+              state,
+            })
+          : (() => {
+              throw new Error(`Unsupported promote target: ${system} (supported: codex, claude).`);
+            })();
     writeJsonFileWithBackup(statePath, state);
     process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, promoted }), null, 2)}\n`);
     return;
@@ -12221,16 +14102,127 @@ export async function main(argv, deps = {}) {
   if (cmd === "claude") {
     const subcmd = String(positional[1] ?? "").trim().toLowerCase();
     if (!subcmd) {
-      throw new Error("Missing claude subcommand. Usage: aim claude use");
+      throw new Error(
+        "Missing claude subcommand. Usage: aim claude use [label] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
+      );
+    }
+    if (subcmd === "capture-native") {
+      const label = normalizeLabel(positional[2]);
+      const sourceHome = resolveOptionalSourceHome(opts.sourceHome, { homeDir });
+      const state = loadAimgrState(statePath);
+      const attemptedAt = recordAccountMaintenanceAttempt(state, label, { providerHint: ANTHROPIC_PROVIDER });
+      try {
+        const captured = captureAnthropicNativeBundleForLabel({
+          state,
+          label,
+          sourceHome,
+        });
+        recordAccountMaintenanceSuccess(state, label, { homeDir, observedAt: attemptedAt });
+        markImportedAnthropicLabelDirtyState(state, label, { observedAt: attemptedAt });
+        writeJsonFileWithBackup(statePath, state);
+        process.stdout.write(
+          `${JSON.stringify(
+            sanitizeForStatus({
+              ok: true,
+              captured: {
+                label,
+                sourceHome: captured.sourceHome,
+                emailAddress: captured.summary.emailAddress,
+                organizationName: captured.summary.organizationName,
+                organizationUuid: captured.summary.organizationUuid,
+              },
+            }),
+            null,
+            2,
+          )}\n`,
+        );
+        return;
+      } catch (err) {
+        const message = String(err?.message ?? err);
+        recordAccountMaintenanceFailure(state, label, {
+          observedAt: attemptedAt,
+          ...(message.match(/conflict|does not match|unsupported|already stored/i) ? { blockedReason: message } : {}),
+        });
+        writeJsonFileWithBackup(statePath, state);
+        throw err;
+      }
+    }
+    if (subcmd === "export-live") {
+      const outFile = resolveCliPath(opts.outFile, { homeDir, optionName: "--out" });
+      const sourceHome = resolveOptionalSourceHome(opts.sourceHome, { homeDir });
+      const exported = exportLiveClaudeNativeBundle({
+        filePath: outFile,
+        sourceHome,
+      });
+      process.stdout.write(
+        `${JSON.stringify(
+          sanitizeForStatus({
+            ok: true,
+            exported: {
+              filePath: exported.filePath,
+              sourceHome: exported.sourceHome,
+              emailAddress: exported.summary.emailAddress,
+              organizationName: exported.summary.organizationName,
+              organizationUuid: exported.summary.organizationUuid,
+              wrote: exported.wrote,
+            },
+          }),
+          null,
+          2,
+        )}\n`,
+      );
+      return;
+    }
+    if (subcmd === "import-native") {
+      const label = normalizeLabel(positional[2]);
+      const inFile = resolveCliPath(opts.inFile, { homeDir, optionName: "--in" });
+      const state = loadAimgrState(statePath);
+      const attemptedAt = recordAccountMaintenanceAttempt(state, label, { providerHint: ANTHROPIC_PROVIDER });
+      try {
+        const imported = importAnthropicNativeBundleForLabel({
+          state,
+          label,
+          filePath: inFile,
+        });
+        recordAccountMaintenanceSuccess(state, label, { homeDir, observedAt: attemptedAt });
+        markImportedAnthropicLabelDirtyState(state, label, { observedAt: attemptedAt });
+        writeJsonFileWithBackup(statePath, state);
+        process.stdout.write(
+          `${JSON.stringify(
+            sanitizeForStatus({
+              ok: true,
+              imported: {
+                label,
+                filePath: imported.filePath,
+                sourceHome: imported.sourceHome,
+                emailAddress: imported.summary.emailAddress,
+                organizationName: imported.summary.organizationName,
+                organizationUuid: imported.summary.organizationUuid,
+              },
+            }),
+            null,
+            2,
+          )}\n`,
+        );
+        return;
+      } catch (err) {
+        const message = String(err?.message ?? err);
+        recordAccountMaintenanceFailure(state, label, {
+          observedAt: attemptedAt,
+          ...(message.match(/conflict|does not match|unsupported|already stored/i) ? { blockedReason: message } : {}),
+        });
+        writeJsonFileWithBackup(statePath, state);
+        throw err;
+      }
     }
     if (subcmd !== "use") {
-      throw new Error(`Unsupported claude subcommand: ${subcmd} (supported: use).`);
+      throw new Error(`Unsupported claude subcommand: ${subcmd} (supported: use, capture-native, export-live, import-native).`);
     }
     const state = loadAimgrState(statePath);
-    if (String(positional[2] ?? "").trim()) {
-      throw new Error("`aim claude use <label>` was removed. Use `aim claude use` for next-best selection or `aim <label>` if the account needs reauth.");
-    }
-    const activated = await activateClaudePoolSelection({ state, homeDir });
+    const explicitLabel = String(positional[2] ?? "").trim() ? normalizeLabel(positional[2]) : null;
+    const activated = explicitLabel
+      ? activateClaudeLabelSelection({ state, homeDir, label: explicitLabel })
+      : await activateClaudePoolSelection({ state, homeDir });
     writeJsonFileWithBackup(statePath, state);
     process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);
     if (activated.status === "blocked") {
