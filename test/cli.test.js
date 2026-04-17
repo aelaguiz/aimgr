@@ -6461,7 +6461,7 @@ test("codex use refuses non-file-backed Codex homes", async () => {
   );
 });
 
-test("claude use fails loud when required Claude local projection fields are unavailable", async () => {
+test("claude use infers Claude local projection fields from usage when the managed auth store has only fresh tokens", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
@@ -6500,6 +6500,7 @@ test("claude use fails loud when required Claude local projection fields are una
         json: async () => ({
           five_hour: { utilization: 8, resets_at: new Date(Date.now() + 3600_000).toISOString() },
           seven_day: { utilization: 19, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
+          seven_day_opus: { utilization: 31, resets_at: new Date(Date.now() + 24 * 3600_000).toISOString() },
         }),
       };
     }
@@ -6512,10 +6513,29 @@ test("claude use fails loud when required Claude local projection fields are una
         PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}`,
       },
       async () => {
-        await assert.rejects(
-          () => runCli(["claude", "use", "--home", home]),
-          /credentials\.anthropic\.boss\.subscriptionType is missing/,
-        );
+        const out = JSON.parse(await runCli(["claude", "use", "--home", home]));
+        assert.equal(out.ok, true);
+        assert.equal(out.activated.status, "activated");
+        assert.equal(out.activated.receipt.subscriptionType, "claude_max");
+
+        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        assert.equal(updatedState.credentials.anthropic.boss.subscriptionType, "claude_max");
+        assert.equal(updatedState.credentials.anthropic.boss.rateLimitTier, "oauth_claude_max_inferred");
+        assert.deepEqual(updatedState.credentials.anthropic.boss.scopes, ["org:create_api_key", "user:profile", "user:inference"]);
+
+        const auth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
+        assert.equal(auth.claudeAiOauth.accessToken, "ACCESS_BOSS");
+        assert.equal(auth.claudeAiOauth.refreshToken, "REFRESH_BOSS");
+        assert.equal(auth.claudeAiOauth.subscriptionType, "claude_max");
+        assert.equal(auth.claudeAiOauth.rateLimitTier, "oauth_claude_max_inferred");
+        assert.deepEqual(auth.claudeAiOauth.scopes, ["org:create_api_key", "user:profile", "user:inference"]);
+        assert.equal(typeof auth.claudeAiOauth.expiresAt, "number");
+
+        const status = JSON.parse(await runCli(["status", "--json", "--home", home]));
+        assert.equal(status.claudeCli.activeLabel, "boss");
+        assert.equal(status.claudeCli.actualSubscriptionType, "claude_max");
+        assert.equal(status.claudeCli.authStatus.ok, true);
+        assert.equal(status.claudeCli.authStatus.loggedIn, true);
       },
     );
   } finally {

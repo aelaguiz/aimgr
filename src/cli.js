@@ -11,6 +11,11 @@ const OPENAI_CODEX_PROVIDER = "openai-codex";
 const ANTHROPIC_PROVIDER = "anthropic";
 const OPENCLAW_ENFORCED_CODEX_MODEL = "openai-codex/gpt-5.4";
 const OPENCLAW_ENFORCED_ANTHROPIC_MODEL = "anthropic/claude-opus-4-6";
+const DEFAULT_ANTHROPIC_OAUTH_SCOPES = ["org:create_api_key", "user:profile", "user:inference"];
+const INFERRED_ANTHROPIC_SUBSCRIPTION_MAX = "claude_max";
+const INFERRED_ANTHROPIC_SUBSCRIPTION_PRO = "claude_pro";
+const INFERRED_ANTHROPIC_RATE_LIMIT_TIER_MAX = "oauth_claude_max_inferred";
+const INFERRED_ANTHROPIC_RATE_LIMIT_TIER_PRO = "oauth_claude_pro_inferred";
 const CODEX_AUTH_STORE_MODE_FILE = "file";
 const CODEX_AUTH_STORE_MODE_KEYRING = "keyring";
 const CODEX_AUTH_STORE_MODE_AUTO = "auto";
@@ -3556,6 +3561,23 @@ function hasClaudeProjectionFields(source) {
   );
 }
 
+function buildClaudeProjectionFieldsFromUsage(usageSnapshot) {
+  const windows = Array.isArray(usageSnapshot?.windows) ? usageSnapshot.windows : [];
+  if (windows.length === 0) {
+    return {};
+  }
+
+  const hasOpusWindow = windows.some(
+    (window) => typeof window?.label === "string" && window.label.trim().toLowerCase() === "opus",
+  );
+
+  return {
+    subscriptionType: hasOpusWindow ? INFERRED_ANTHROPIC_SUBSCRIPTION_MAX : INFERRED_ANTHROPIC_SUBSCRIPTION_PRO,
+    rateLimitTier: hasOpusWindow ? INFERRED_ANTHROPIC_RATE_LIMIT_TIER_MAX : INFERRED_ANTHROPIC_RATE_LIMIT_TIER_PRO,
+    scopes: [...DEFAULT_ANTHROPIC_OAUTH_SCOPES],
+  };
+}
+
 function readClaudeAuthFile({ claudeDir }) {
   const authPath = resolveClaudeAuthFilePath(claudeDir);
   if (!fs.existsSync(authPath)) {
@@ -3913,7 +3935,7 @@ function shouldBackfillAnthropicFromLocalClaudeAuth({ state, label, credential, 
   return anthropicLabels.length === 1 && anthropicLabels[0] === normalizedLabel;
 }
 
-function hydrateAnthropicCredentialForClaudeLocal({ state, label, homeDir, credential }) {
+function hydrateAnthropicCredentialForClaudeLocal({ state, label, homeDir, credential, usageSnapshot = null }) {
   const normalizedLabel = normalizeLabel(label);
   const base = isObject(credential) ? credential : {};
   const next = {
@@ -3950,6 +3972,19 @@ function hydrateAnthropicCredentialForClaudeLocal({ state, label, homeDir, crede
       if (localProjection.scopes?.length > 0 && (!Array.isArray(next.scopes) || next.scopes.length === 0)) {
         next.scopes = localProjection.scopes;
       }
+    }
+  }
+
+  if (!hasClaudeProjectionFields(next)) {
+    const inferredProjection = buildClaudeProjectionFieldsFromUsage(usageSnapshot);
+    if (inferredProjection.subscriptionType && !next.subscriptionType) {
+      next.subscriptionType = inferredProjection.subscriptionType;
+    }
+    if (inferredProjection.rateLimitTier && !next.rateLimitTier) {
+      next.rateLimitTier = inferredProjection.rateLimitTier;
+    }
+    if (inferredProjection.scopes?.length > 0 && (!Array.isArray(next.scopes) || next.scopes.length === 0)) {
+      next.scopes = inferredProjection.scopes;
     }
   }
 
@@ -8235,7 +8270,7 @@ function applyCodexCliFromState({ label, homeDir }, state) {
   };
 }
 
-function applyClaudeCliFromState({ label, homeDir }, state) {
+function applyClaudeCliFromState({ label, homeDir, usageSnapshot = null }, state) {
   ensureStateShape(state);
   if (getAnthropicPoolLabels(state).length === 0) {
     throw new Error(
@@ -8259,6 +8294,7 @@ function applyClaudeCliFromState({ label, homeDir }, state) {
     label: normalizedLabel,
     homeDir,
     credential: getAnthropicCredential(state, normalizedLabel),
+    usageSnapshot,
   });
   state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = hydrated;
   const credential = assertAnthropicCredentialShape({
@@ -10984,7 +11020,11 @@ async function activateClaudePoolSelection({ state, homeDir }) {
     throw new Error("Failed to select a next-best Claude pool label.");
   }
 
-  const activated = applyClaudeCliFromState({ label: selection.label, homeDir }, state);
+  const activated = applyClaudeCliFromState({
+    label: selection.label,
+    homeDir,
+    usageSnapshot: usageByLabel?.[selection.label] ?? null,
+  }, state);
   const postStatus = readClaudeCliTargetStatus({ state, homeDir });
   const warnings = buildWarningsFromClaudeTargetStatus(postStatus);
   const status =
