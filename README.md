@@ -27,9 +27,9 @@ That means:
 - `aim rebalance openclaw` is the canonical OpenClaw assignment command
 - `aim codex use` is the canonical local Codex selection command
 - `aim codex watch` is the canonical local Codex guardrail for overnight rotation
-- `aim claude use` is the canonical local Claude selection command
+- `aim claude use [label]` is the canonical local Claude selection command
 - `aim pi use` is the canonical local Pi selection command
-- `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim claude use` / `aim pi use` are removed
+- `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim pi use` are removed
 
 ## Non-negotiables
 
@@ -148,13 +148,14 @@ Important behavior:
 - `chrome-profile` uses the exact `--user-data-dir` you configured and, when present, the exact Chrome `profile-directory`.
 - `agent-browser` uses the exact `--profile` and `--session` you configured.
 - Manual-callback labels print the OAuth URL and prompt for the final callback URL.
+- Claude labels do not use browser bindings or manual-callback anymore; they capture/import native Claude bundles instead.
 - Reauth does **not** rebalance OpenClaw or mutate downstream assignments.
 
 When you pick `Use another Chrome profile` from the guided panel, AIM now lists the discovered raw Chrome-style browser homes on this Mac, including OpenClaw browser homes and host Chrome profiles. It tells you the exact `user-data-dir` + `profile-directory` each choice would save, and lets you confirm before writing the binding.
 
 ### 2A) Inspect or repair the browser binding
 
-Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim rebalance hermes`, `aim codex use`, `aim codex watch`, `aim hermes watch`, `aim claude use`, and `aim pi use`.
+Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim rebalance hermes`, `aim codex use`, `aim codex watch`, `aim hermes watch`, `aim claude use [label]`, and `aim pi use`.
 
 When you need to inspect or repair the browser substrate explicitly, use the advanced/admin surface:
 
@@ -171,6 +172,18 @@ Non-negotiables:
 - AIM never guesses from a workspace-local `agent-browser.json`.
 - AIM never uses the implicit `default` `agent-browser` session.
 - There is no supported "generic Chrome somehow" mode.
+
+Claude-native surfaces live outside the browser-binding lane:
+
+```bash
+aim claude capture-native <label> [--source-home <dir>]
+aim claude export-live --out <file> [--source-home <dir>]
+aim claude import-native <label> --in <file>
+```
+
+- `capture-native` reads the live native Claude login from a same-host home and stores it on a label.
+- `export-live` writes a portable bundle file from the live native Claude login on this host.
+- `import-native` loads that bundle file into a label on another AIM home.
 
 ### 3) Rebalance OpenClaw from the shared pool
 
@@ -360,25 +373,52 @@ The contract is "next Pi process", not mutating an already-running Pi session in
 Claude uses AIM's Anthropic labels and writes Claude's canonical local auth store:
 
 - Claude dir: `~/.claude`
-- Claude auth path: `~/.claude/.credentials.json`
+- Claude credentials path: `~/.claude/.credentials.json`
+- Claude app-state path: `~/.claude.json` (`oauthAccount` only; AIM preserves unrelated keys)
 
 ```bash
 aim claude use
+aim claude use claudalyst
+aim claude capture-native claudalyst
+aim claude export-live --out ~/claude-bundles/claudalyst.json
+aim claude import-native claudalyst --in ~/claude-bundles/claudalyst.json
 ```
 
-This command:
+`aim claude use` without a label:
 
 - probes current Claude subscription usage
 - selects the next-best eligible pooled label with the same weekly-first local selector AIM uses for Codex/Pi
 - writes Claude's canonical `.credentials.json`
-- verifies readback and `claude auth status` when Claude is installed locally
+- patches only `oauthAccount` inside `~/.claude.json`
+- verifies readback from Claude's local auth files and does not call `claude auth status`, because some Claude builds mutate auth files during status reads
 - records a selection receipt:
   - `activated`
   - `noop`
   - `activated_with_warnings`
   - `blocked`
 
-If AIM's stored Anthropic credential only has `access` / `refresh` / `expiresAt`, AIM first tries a bounded same-machine backfill from the current `~/.claude/.credentials.json` so you do not need to force a blanket reauth just to switch.
+`aim claude use <label>`:
+
+- bypasses usage ranking and directly activates the requested label
+- writes Claude's canonical `.credentials.json`
+- patches only `oauthAccount` inside `~/.claude.json`
+- verifies readback from Claude's local auth files and does not call `claude auth status`, because some Claude builds mutate auth files during status reads
+- records a selection receipt:
+  - `activated`
+  - `noop`
+  - `activated_with_warnings`
+  - `blocked`
+
+Claude-native switching is bundle-first:
+
+- every Claude-switchable label must have a complete stored native Claude bundle:
+  - `~/.claude/.credentials.json`
+  - `~/.claude.json` `oauthAccount`
+- `aim <label>` refreshes an existing stored bundle when possible, or captures the current live native Claude login from this host
+- `aim claude capture-native <label>` captures the current live native Claude login from this host without going through OAuth in AIM
+- `aim claude export-live --out <file>` and `aim claude import-native <label> --in <file>` are the cross-host transport path
+- `aim claude use [label]` only switches labels that already have that complete stored bundle
+- AIM does not treat env-token auth or `.credentials.json`-only projection as native Claude parity
 
 The contract is "next Claude process", not mutating an already-running Claude session in place.
 
@@ -390,7 +430,6 @@ These commands are intentionally removed and now hard-error with migration guida
 aim pin <openclaw_agent_id> <label>
 aim autopin openclaw --pool ...
 aim codex use <label>
-aim claude use <label>
 aim pi use <label>
 ```
 
@@ -399,7 +438,7 @@ Use:
 - `aim <label>` for reauth
 - `aim rebalance openclaw` for OpenClaw assignment selection
 - `aim codex use` for local Codex selection
-- `aim claude use` for local Claude selection
+- `aim claude use [label]` for local Claude selection
 - `aim pi use` for local Pi selection
 
 ## Codex CLI requirements
@@ -567,6 +606,43 @@ Promotion is intentionally narrow:
 - it uses compare-and-swap protection, so the push fails if the authority copy changed since your last import
 - it does not create labels, delete labels, or push machine-local target state back upstream
 
+### `aim sync claude --from <authority>`
+
+Imports or refreshes the portable Claude label set from an authority source:
+
+```bash
+aim sync claude --from agents@amirs-mac-studio
+```
+
+Supported locator forms are the same as `sync codex`:
+
+- `agents@amirs-mac-studio`
+- `ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json`
+- `/absolute/path/to/secrets.json`
+
+Safety rules:
+
+- if the import would overwrite or remove a locally refreshed imported Claude label, AIM refuses the sync and tells you which labels are dirty
+- publish those local updates first with `aim promote claude --to <authority> <label>...`
+- or rerun the pull with `--discard-dirty` if you intentionally want the authority copy to win
+- authority Claude labels without a complete native bundle still import as labels, so the consumer keeps the label topology and can capture or import the native bundle later
+
+### `aim promote claude --to <authority> <label> [<label>...]`
+
+Publishes locally refreshed imported Claude credentials back to the same authority they originally came from:
+
+```bash
+aim promote claude --to agents@amirs-mac-studio claudalyst
+aim promote claude --to agents@amirs-mac-studio claudalyst amir_claude_personal
+```
+
+Promotion is intentionally narrow:
+
+- it only works for imported `anthropic` labels from the exact same authority source
+- it updates only the requested labels on the authority
+- it uses compare-and-swap protection, so the push fails if the authority copy changed since your last import
+- it does not create labels, delete labels, or push machine-local target state back upstream
+
 ### `aim codex use`
 
 Activates the next-best eligible pooled label for the local managed Codex home:
@@ -612,10 +688,14 @@ This is the scheduler-safe Hermes guardrail. It never writes auth directly; it o
 
 ### `aim claude use`
 
-Activates the next-best eligible pooled Anthropic label for the local managed Claude auth store:
+Activates Claude from AIM's stored native Claude bundles:
 
 ```bash
 aim claude use
+aim claude use <label>
+aim claude capture-native <label>
+aim claude export-live --out <file>
+aim claude import-native <label> --in <file>
 ```
 
 ## State layout
@@ -713,8 +793,8 @@ Current shape:
     },
     "claudeCli": {
       "activeLabel": "claudalyst",
-      "authPath": "/Users/you/.claude/.credentials.json",
-      "expectedSubscriptionType": "max",
+      "credentialsPath": "/Users/you/.claude/.credentials.json",
+      "appStatePath": "/Users/you/.claude.json",
       "lastSelectionReceipt": {
         "status": "activated"
       }
@@ -791,6 +871,36 @@ aim sync codex --from agents@amirs-mac-studio
 
 Then decide whether to keep the authority copy or re-run local reauth and promote again from the refreshed base.
 
+### `aim sync claude --from ...` says it would discard locally refreshed imported Claude labels
+
+Your local AIM replica has a newer native Claude capture, import, or refresh for one or more imported labels that has not been published back to the authority yet.
+
+Promote those labels:
+
+```bash
+aim promote claude --to agents@amirs-mac-studio <label> [<label>...]
+```
+
+Or, if you intentionally want to throw away the local native Claude refresh and trust the authority copy instead:
+
+```bash
+aim sync claude --from agents@amirs-mac-studio --discard-dirty
+```
+
+`aim status` also surfaces this state as authority-dirty labels pending promote.
+
+### `aim promote claude` says the authority changed since import
+
+Someone refreshed that Claude label on the authority after your last import, or your local base snapshot is stale.
+
+Start by pulling again:
+
+```bash
+aim sync claude --from agents@amirs-mac-studio
+```
+
+Then decide whether to keep the authority copy or re-capture the local native Claude login and promote again from the refreshed base.
+
 ### `aim codex watch --once` returns `blocked`
 
 Either the current active Codex target could not be trusted for a watch decision, or the selector had no eligible pooled account when rotation was triggered.
@@ -818,15 +928,18 @@ aim status
 
 Then reauth a Claude label with `aim <label>` or add more Anthropic pool capacity.
 
-### `aim claude use` fails with missing `subscriptionType`, `scopes`, or `rateLimitTier`
+### `aim claude use` fails because the Claude label has no complete native bundle
 
-AIM has a usable Anthropic OAuth token, but not the full Claude-local projection payload yet.
+AIM has tokens for the label, but it does not yet have the full native Claude login bundle it needs to switch cleanly.
 
 Fastest fixes:
 
-- if this machine already has the right Claude login, retry `aim claude use` after confirming `~/.claude/.credentials.json` is intact
-- otherwise run `aim <label>` once so AIM can refresh/login and persist the richer Claude fields
-- reauth is a fallback, not the default path
+- log that account into native Claude on this machine so both of these exist for the right identity:
+  - `~/.claude/.credentials.json`
+  - `~/.claude.json` `oauthAccount`
+- run `aim claude capture-native <label>` on the same host, or rerun `aim <label>` so AIM captures that live native login
+- if the login happened on another host, run `aim claude export-live --out <file>` there and `aim claude import-native <label> --in <file>` here
+- rerun `aim claude use`
 
 ### Codex home is rejected as `keyring` or `auto`
 
@@ -858,7 +971,7 @@ Current tests cover:
 
 - secret redaction in `aim status --json`
 - migration and import boundaries
-- AIM-owned login state and manual-callback behavior
+- AIM-owned login state, browser binding, and native-Claude bundle behavior
 - OpenClaw auth/profile writes and rebalance helpers
 - Codex, Claude, and Pi local activation flows
 - model/session helper logic for OpenClaw
