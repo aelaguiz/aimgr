@@ -6733,6 +6733,28 @@ test("derivePoolAccountStatus requires a complete native Claude bundle for anthr
   assert.equal(status.eligible, false);
 });
 
+test("derivePoolAccountStatus ignores a stale duplicate native Claude blocker when the stored bundle is still usable", () => {
+  const now = Date.now();
+  const status = derivePoolAccountStatus({
+    account: {
+      provider: "anthropic",
+      reauth: {
+        mode: "native-claude",
+        blockedReason:
+          "That native Claude login is already stored on label=claudalyst. Refusing duplicate Anthropic bundle capture/import.",
+      },
+    },
+    label: "boss",
+    credentials: buildAnthropicClaudeCredential(),
+    browserFacts: { exists: true, bindingPresent: true },
+    now,
+  });
+
+  assert.equal(status.operatorStatus, "ready");
+  assert.equal(status.detailReason, "native_claude");
+  assert.equal(status.eligible, true);
+});
+
 test("aim claude use <label> activates the requested Claude label without probing usage", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -7546,10 +7568,16 @@ test("aim claude capture-native refuses duplicate stored Claude identities and e
     () => runCli(["claude", "capture-native", "duplicate", "--home", home]),
     /already stored on label=boss/i,
   );
+  let updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(updatedState.accounts.duplicate.reauth.blockedReason, undefined);
+  assert.equal(typeof updatedState.accounts.duplicate.reauth.lastAttemptAt, "string");
+
   await assert.rejects(
     () => runCli(["claude", "capture-native", "other", "--home", home]),
     /expects other@example.com/i,
   );
+  updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.match(updatedState.accounts.other.reauth.blockedReason, /expects other@example.com/i);
 });
 
 test("interactive Anthropic label panel offers native Claude actions and no manual callback setup", async () => {
@@ -9560,4 +9588,221 @@ test("scanOpenclawSessionsStoreForKeysNeedingModelReset finds mismatched keys", 
   });
 
   assert.deepEqual(keys.toSorted(), ["k1", "k3", "k4"]);
+});
+
+test("aim claude use captures rotated tokens for the prior label before switching", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  const alphaExpiresMs = Date.now() + 60 * 60_000;
+  const betaExpiresMs = Date.now() + 2 * 60 * 60_000;
+  const rotatedExpiresMs = Date.now() + 3 * 60 * 60_000;
+
+  const alphaCred = buildAnthropicClaudeCredential({
+    access: "ACCESS_A",
+    refresh: "REFRESH_A",
+    expiresAtMs: alphaExpiresMs,
+    emailAddress: "alpha@example.com",
+    organizationName: "Alpha Org",
+    organizationUuid: "org_alpha",
+  });
+  alphaCred.nativeClaudeBundle.oauthAccount.accountUuid = "acct_alpha";
+
+  const betaCred = buildAnthropicClaudeCredential({
+    access: "ACCESS_B",
+    refresh: "REFRESH_B",
+    expiresAtMs: betaExpiresMs,
+    emailAddress: "beta@example.com",
+    organizationName: "Beta Org",
+    organizationUuid: "org_beta",
+  });
+  betaCred.nativeClaudeBundle.oauthAccount.accountUuid = "acct_beta";
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      alpha: { provider: "anthropic", reauth: { mode: "native-claude" } },
+      beta: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: { alpha: alphaCred, beta: betaCred },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: { activeLabel: "alpha" },
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeClaudeNativeBundle(home, {
+    accessToken: "ACCESS_A_ROTATED",
+    refreshToken: "REFRESH_A_ROTATED",
+    expiresAtMs: rotatedExpiresMs,
+    oauthAccount: {
+      accountUuid: "acct_alpha",
+      emailAddress: "alpha@example.com",
+      organizationName: "Alpha Org",
+      organizationUuid: "org_alpha",
+    },
+  });
+
+  await withEnv(
+    { PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}` },
+    async () => {
+      const out = JSON.parse(await runCli(["claude", "use", "beta", "--home", home]));
+      assert.equal(out.ok, true);
+      assert.equal(out.activated.receipt.label, "beta");
+
+      const sync = out.activated.receipt.preSwitchSync;
+      assert.ok(sync, "receipt.preSwitchSync should be present");
+      assert.equal(sync.synced, true);
+      assert.equal(sync.label, "alpha");
+      assert.deepEqual(sync.rotatedFields.toSorted(), ["accessToken", "expiresAt", "refreshToken"]);
+
+      const liveAuth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
+      assert.equal(liveAuth.claudeAiOauth.accessToken, "ACCESS_B");
+      assert.equal(liveAuth.claudeAiOauth.refreshToken, "REFRESH_B");
+
+      const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      const storedAlpha = updatedState.credentials.anthropic.alpha;
+      assert.equal(storedAlpha.access, "ACCESS_A_ROTATED");
+      assert.equal(storedAlpha.refresh, "REFRESH_A_ROTATED");
+      assert.equal(storedAlpha.nativeClaudeBundle.claudeAiOauth.accessToken, "ACCESS_A_ROTATED");
+      assert.equal(storedAlpha.nativeClaudeBundle.claudeAiOauth.refreshToken, "REFRESH_A_ROTATED");
+      assert.equal(storedAlpha.nativeClaudeBundle.claudeAiOauth.expiresAt, rotatedExpiresMs);
+      assert.equal(storedAlpha.nativeClaudeBundle.oauthAccount.accountUuid, "acct_alpha");
+      assert.equal(storedAlpha.nativeClaudeBundle.oauthAccount.emailAddress, "alpha@example.com");
+
+      assert.equal(updatedState.credentials.anthropic.beta.refresh, "REFRESH_B");
+      assert.equal(updatedState.targets.claudeCli.activeLabel, "beta");
+    },
+  );
+});
+
+test("aim claude use skips rotation capture when the live Claude bundle matches no stored label", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  const alphaCred = buildAnthropicClaudeCredential({
+    access: "ACCESS_A",
+    refresh: "REFRESH_A",
+    emailAddress: "alpha@example.com",
+    organizationName: "Alpha Org",
+    organizationUuid: "org_alpha",
+  });
+  alphaCred.nativeClaudeBundle.oauthAccount.accountUuid = "acct_alpha";
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      alpha: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: { alpha: alphaCred },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeClaudeNativeBundle(home, {
+    accessToken: "ACCESS_FOREIGN",
+    refreshToken: "REFRESH_FOREIGN",
+    oauthAccount: {
+      accountUuid: "acct_unknown",
+      emailAddress: "stranger@example.com",
+      organizationName: "Foreign Org",
+      organizationUuid: "org_foreign",
+    },
+  });
+
+  await withEnv(
+    { PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}` },
+    async () => {
+      const out = JSON.parse(await runCli(["claude", "use", "alpha", "--home", home]));
+      assert.equal(out.ok, true);
+      assert.equal(out.activated.receipt.label, "alpha");
+
+      const sync = out.activated.receipt.preSwitchSync;
+      assert.ok(sync);
+      assert.equal(sync.synced, false);
+      assert.equal(sync.reason, "no_label_for_identity");
+
+      const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(updatedState.credentials.anthropic.alpha.access, "ACCESS_A");
+      assert.equal(updatedState.credentials.anthropic.alpha.refresh, "REFRESH_A");
+    },
+  );
+});
+
+test("aim claude use is a rotation no-op when live tokens already match the stored bundle", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  const expiresMs = Date.now() + 60 * 60_000;
+
+  const alphaCred = buildAnthropicClaudeCredential({
+    access: "ACCESS_A",
+    refresh: "REFRESH_A",
+    expiresAtMs: expiresMs,
+    emailAddress: "alpha@example.com",
+    organizationName: "Alpha Org",
+    organizationUuid: "org_alpha",
+  });
+  alphaCred.nativeClaudeBundle.oauthAccount.accountUuid = "acct_alpha";
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      alpha: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: { alpha: alphaCred },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: { activeLabel: "alpha" },
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeClaudeNativeBundle(home, {
+    accessToken: "ACCESS_A",
+    refreshToken: "REFRESH_A",
+    expiresAtMs: expiresMs,
+    oauthAccount: {
+      accountUuid: "acct_alpha",
+      emailAddress: "alpha@example.com",
+      organizationName: "Alpha Org",
+      organizationUuid: "org_alpha",
+    },
+  });
+
+  await withEnv(
+    { PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}` },
+    async () => {
+      const out = JSON.parse(await runCli(["claude", "use", "alpha", "--home", home]));
+      assert.equal(out.ok, true);
+
+      const sync = out.activated.receipt.preSwitchSync;
+      assert.ok(sync);
+      assert.equal(sync.synced, false);
+      assert.equal(sync.reason, "tokens_unchanged");
+      assert.equal(sync.label, "alpha");
+    },
+  );
 });

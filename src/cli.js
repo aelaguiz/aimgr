@@ -4270,6 +4270,62 @@ function findAnthropicLabelByNativeClaudeBundle(state, { nativeClaudeBundle, exc
   return null;
 }
 
+// Anthropic rotates refresh tokens on every successful refresh. Claude CLI
+// performs its own refreshes and writes the rotated tokens into the live
+// files in place; if we overwrite those files before capturing the rotation,
+// the stored bundle's refresh token becomes permanently invalid at Anthropic.
+// Call this before overwriting live Claude auth so the previous label's
+// stored bundle picks up any rotated tokens first.
+function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
+  ensureStateShape(state);
+  const live = readClaudeNativeBundle({ homeDir });
+  if (!live.exists || live.ok !== true || !hasCompleteClaudeNativeBundle(live.nativeClaudeBundle) || !live.summary) {
+    return { synced: false, reason: "no_live_bundle" };
+  }
+  const target = state.targets?.claudeCli;
+  const activeLabel = isObject(target) && typeof target.activeLabel === "string" ? normalizeLabel(target.activeLabel) : null;
+  let matchedLabel = null;
+  if (activeLabel) {
+    const activeCredential = getAnthropicCredential(state, activeLabel);
+    if (
+      activeCredential
+      && hasCompleteClaudeNativeBundle(activeCredential)
+      && doClaudeNativeBundleIdentitiesMatch(activeCredential, live.nativeClaudeBundle)
+    ) {
+      matchedLabel = activeLabel;
+    }
+  }
+  if (!matchedLabel) {
+    matchedLabel = findAnthropicLabelByNativeClaudeBundle(state, { nativeClaudeBundle: live.nativeClaudeBundle });
+  }
+  if (!matchedLabel) {
+    return { synced: false, reason: "no_label_for_identity" };
+  }
+  const stored = getAnthropicCredential(state, matchedLabel);
+  const storedBundle = getClaudeNativeBundle(stored);
+  const storedOauth = isObject(storedBundle?.claudeAiOauth) ? storedBundle.claudeAiOauth : {};
+  const liveOauth = live.nativeClaudeBundle.claudeAiOauth;
+  const rotatedFields = [];
+  if (storedOauth.accessToken !== liveOauth.accessToken) rotatedFields.push("accessToken");
+  if (storedOauth.refreshToken !== liveOauth.refreshToken) rotatedFields.push("refreshToken");
+  if (storedOauth.expiresAt !== liveOauth.expiresAt) rotatedFields.push("expiresAt");
+  if (rotatedFields.length === 0) {
+    return { synced: false, reason: "tokens_unchanged", label: matchedLabel };
+  }
+  const refreshedBundle = updateClaudeBundleTokenFields({
+    nativeClaudeBundle: storedBundle,
+    access: liveOauth.accessToken,
+    refresh: liveOauth.refreshToken,
+    expiresAt: toIsoFromExpiresMs(liveOauth.expiresAt),
+  });
+  const nextCredential = deriveAnthropicCredentialFromClaudeBundle({
+    existingCredential: stored,
+    nativeClaudeBundle: refreshedBundle,
+  });
+  state.credentials[ANTHROPIC_PROVIDER][matchedLabel] = nextCredential;
+  return { synced: true, label: matchedLabel, rotatedFields };
+}
+
 function ensureAnthropicLabelConfigured(state, label) {
   ensureStateShape(state);
   const normalizedLabel = normalizeLabel(label);
@@ -4288,6 +4344,43 @@ function ensureAnthropicLabelConfigured(state, label) {
   };
   account.browser = null;
   return account;
+}
+
+function isAnthropicDuplicateNativeBundleErrorMessage(message) {
+  const normalizedMessage = typeof message === "string" ? message.trim() : "";
+  return Boolean(
+    normalizedMessage
+    && /already stored on label=/i.test(normalizedMessage)
+    && /duplicate Anthropic bundle capture\/import/i.test(normalizedMessage),
+  );
+}
+
+function resolveAnthropicMaintenanceBlockedReason(message) {
+  const normalizedMessage = typeof message === "string" ? message.trim() : "";
+  if (!normalizedMessage) return null;
+  if (isAnthropicDuplicateNativeBundleErrorMessage(normalizedMessage)) {
+    return null;
+  }
+  return /conflict|does not match|expects|unsupported|already stored/i.test(normalizedMessage)
+    ? normalizedMessage
+    : null;
+}
+
+function resolveAnthropicBlockedReasonForStatus({
+  blockedReason,
+  hasFreshCredentials,
+  hasCompleteClaudeBundle,
+}) {
+  const normalizedBlockedReason = typeof blockedReason === "string" ? blockedReason.trim() : "";
+  if (!normalizedBlockedReason) return "";
+  if (
+    isAnthropicDuplicateNativeBundleErrorMessage(normalizedBlockedReason)
+    && hasFreshCredentials
+    && hasCompleteClaudeBundle
+  ) {
+    return "";
+  }
+  return normalizedBlockedReason;
 }
 
 function validateAnthropicNativeBundleForLabel({ state, label, nativeClaudeBundle }) {
@@ -6826,6 +6919,9 @@ function recordAccountMaintenanceFailure(state, label, { observedAt, blockedReas
   const failedAt = String(observedAt ?? new Date().toISOString());
   const reauth = getAccountReauthState(state, label, { create: true });
   reauth.lastAttemptAt = failedAt;
+  if (isAnthropicDuplicateNativeBundleErrorMessage(reauth.blockedReason)) {
+    delete reauth.blockedReason;
+  }
   if (typeof blockedReason === "string" && blockedReason.trim()) {
     reauth.blockedReason = blockedReason.trim();
   }
@@ -7246,14 +7342,22 @@ export function derivePoolAccountStatus({ account, label, credentials, browserFa
     && (provider !== OPENAI_CODEX_PROVIDER || typeof credential.accountId === "string" && credential.accountId.trim());
   const hasCompleteClaudeBundle =
     provider !== ANTHROPIC_PROVIDER || hasCompleteClaudeNativeBundle(credential);
+  const effectiveAnthropicBlockedReason =
+    provider === ANTHROPIC_PROVIDER
+      ? resolveAnthropicBlockedReasonForStatus({
+          blockedReason,
+          hasFreshCredentials,
+          hasCompleteClaudeBundle,
+        })
+      : blockedReason;
 
   if (provider === ANTHROPIC_PROVIDER) {
-    if (blockedReason) {
+    if (effectiveAnthropicBlockedReason) {
       return {
         operatorStatus: "blocked",
         eligible: false,
         actionRequired: "fix_blocker",
-        reason: blockedReason,
+        reason: effectiveAnthropicBlockedReason,
       };
     }
     if (expectedEmail && storedEmail && expectedEmail !== storedEmail) {
@@ -9769,6 +9873,8 @@ function applyClaudeCliFromState({ label, homeDir }, state) {
     throw new Error(`Refusing to activate non-Claude label=${normalizedLabel} provider=${provider || "unknown"}.`);
   }
 
+  const preSwitchSync = syncLiveClaudeRotationBackToLabel({ state, homeDir });
+
   const credential = assertAnthropicCredentialShape({
     label: normalizedLabel,
     credential: getAnthropicCredential(state, normalizedLabel),
@@ -9814,6 +9920,7 @@ function applyClaudeCliFromState({ label, homeDir }, state) {
       credentials: credentialsWrite.wrote,
       appState: appStateWrite.wrote,
     },
+    preSwitchSync,
   };
 }
 
@@ -11419,9 +11526,15 @@ async function performLabelMaintenance({
     };
   } catch (err) {
     const message = String(err?.message ?? err);
+    const anthropicBlockedReason =
+      provider === ANTHROPIC_PROVIDER ? resolveAnthropicMaintenanceBlockedReason(message) : null;
     recordAccountMaintenanceFailure(state, normalizedLabel, {
       observedAt: attemptedAt,
-      ...(message.match(/conflict|does not match|unsupported/i) ? { blockedReason: message } : {}),
+      ...(anthropicBlockedReason
+        ? { blockedReason: anthropicBlockedReason }
+        : message.match(/conflict|does not match|unsupported/i)
+          ? { blockedReason: message }
+          : {}),
     });
     state.schemaVersion = SCHEMA_VERSION;
     throw err;
@@ -11581,7 +11694,9 @@ async function runLabelPanelAction({
       const message = String(err?.message ?? err);
       recordAccountMaintenanceFailure(state, normalizedLabel, {
         observedAt: attemptedAt,
-        ...(message.match(/conflict|does not match|unsupported|already stored/i) ? { blockedReason: message } : {}),
+        ...(resolveAnthropicMaintenanceBlockedReason(message)
+          ? { blockedReason: resolveAnthropicMaintenanceBlockedReason(message) }
+          : {}),
       });
       writeJsonFileWithBackup(statePath, state);
       reportPanelActionError(err);
@@ -12874,6 +12989,7 @@ function activateClaudeLabelSelection({ state, homeDir, label }) {
       wroteAppStateJson: Boolean(activated.wrote?.appState),
       warnings,
       blockers: [],
+      preSwitchSync: activated.preSwitchSync,
     };
     target.lastSelectionReceipt = receipt;
     appendAnthropicHistory(state, [
@@ -14141,7 +14257,9 @@ export async function main(argv, deps = {}) {
         const message = String(err?.message ?? err);
         recordAccountMaintenanceFailure(state, label, {
           observedAt: attemptedAt,
-          ...(message.match(/conflict|does not match|unsupported|already stored/i) ? { blockedReason: message } : {}),
+          ...(resolveAnthropicMaintenanceBlockedReason(message)
+            ? { blockedReason: resolveAnthropicMaintenanceBlockedReason(message) }
+            : {}),
         });
         writeJsonFileWithBackup(statePath, state);
         throw err;
@@ -14209,7 +14327,9 @@ export async function main(argv, deps = {}) {
         const message = String(err?.message ?? err);
         recordAccountMaintenanceFailure(state, label, {
           observedAt: attemptedAt,
-          ...(message.match(/conflict|does not match|unsupported|already stored/i) ? { blockedReason: message } : {}),
+          ...(resolveAnthropicMaintenanceBlockedReason(message)
+            ? { blockedReason: resolveAnthropicMaintenanceBlockedReason(message) }
+            : {}),
         });
         writeJsonFileWithBackup(statePath, state);
         throw err;
