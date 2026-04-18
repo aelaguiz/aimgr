@@ -6845,6 +6845,59 @@ test("aim claude use <label> activates the requested Claude label without probin
   }
 });
 
+test("aim claude use restores hasCompletedOnboarding + hasAvailableSubscription after /logout", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const fakeClaudeBin = installFakeClaude({ rootDir: path.join(home, "fake-claude") });
+
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: {
+      "openai-codex": {},
+      anthropic: {
+        boss: buildAnthropicClaudeCredential(),
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {},
+      claudeCli: {},
+      piCli: {},
+    },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  writeJson(path.join(home, ".claude.json"), {
+    hasCompletedOnboarding: false,
+    hasAvailableSubscription: false,
+    numStartups: 5,
+    unrelatedField: "preserve-me",
+  });
+
+  await withEnv(
+    { PATH: `${fakeClaudeBin}${path.delimiter}${process.env.PATH}` },
+    async () => {
+      const out = JSON.parse(await runCli(["claude", "use", "boss", "--home", home]));
+      assert.equal(out.ok, true);
+      assert.equal(out.activated.receipt.label, "boss");
+
+      const appState = JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8"));
+      assert.equal(appState.hasCompletedOnboarding, true);
+      assert.equal(appState.hasAvailableSubscription, true);
+      assert.equal(appState.oauthAccount.emailAddress, "boss@example.com");
+      assert.equal(appState.numStartups, 5);
+      assert.equal(appState.unrelatedField, "preserve-me");
+
+      const auth = JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
+      assert.equal(auth.claudeAiOauth.accessToken, "ACCESS_BOSS");
+      assert.equal(auth.claudeAiOauth.refreshToken, "REFRESH_BOSS");
+    },
+  );
+});
+
 test("aim claude use keeps the next-best pooled Claude selection behavior", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");

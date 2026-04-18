@@ -5134,6 +5134,8 @@ function writeClaudeAppStateOauthAccount({ homeDir, credential }) {
   const next = {
     ...(current.ok === true && isObject(current.json) ? current.json : {}),
     oauthAccount,
+    hasCompletedOnboarding: true,
+    hasAvailableSubscription: true,
   };
   return writeJsonFileIfChanged(resolveClaudeAppStatePath({ homeDir }), next, { mode: 0o600 });
 }
