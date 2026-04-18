@@ -4312,6 +4312,25 @@ function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
   if (rotatedFields.length === 0) {
     return { synced: false, reason: "tokens_unchanged", label: matchedLabel };
   }
+  const importMeta = getAuthorityAnthropicImportLabelMeta(state, matchedLabel);
+  if (importMeta && importMeta.dirtyLocal !== true && typeof importMeta.importedAt === "string") {
+    const importedAtMs = Date.parse(importMeta.importedAt);
+    let liveMtimeMs = null;
+    if (live.credentialsPath) {
+      try {
+        liveMtimeMs = fs.statSync(live.credentialsPath).mtimeMs;
+      } catch {
+        liveMtimeMs = null;
+      }
+    }
+    if (
+      Number.isFinite(importedAtMs)
+      && liveMtimeMs !== null
+      && liveMtimeMs <= importedAtMs + 5_000
+    ) {
+      return { synced: false, reason: "authority_import_newer", label: matchedLabel };
+    }
+  }
   const refreshedBundle = updateClaudeBundleTokenFields({
     nativeClaudeBundle: storedBundle,
     access: liveOauth.accessToken,
@@ -14053,7 +14072,20 @@ export async function main(argv, deps = {}) {
         discardDirty: opts.discardDirty === true,
       });
       writeJsonFileWithBackup(statePath, state);
-      process.stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, imported }), null, 2)}\n`);
+      const activeLabel = state.targets?.claudeCli?.activeLabel;
+      const liveApply = { liveApplied: null, liveApplyError: null };
+      if (typeof activeLabel === "string" && imported.importedLabels.includes(activeLabel)) {
+        try {
+          const activation = activateClaudeLabelSelection({ state, homeDir, label: activeLabel });
+          writeJsonFileWithBackup(statePath, state);
+          liveApply.liveApplied = { label: activeLabel, status: activation.status };
+        } catch (err) {
+          liveApply.liveApplyError = String(err?.message ?? err);
+        }
+      }
+      process.stdout.write(
+        `${JSON.stringify(sanitizeForStatus({ ok: true, imported, ...liveApply }), null, 2)}\n`,
+      );
       return;
     }
     if (system === "hermes") {
