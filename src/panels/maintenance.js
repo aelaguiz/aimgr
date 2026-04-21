@@ -1,0 +1,140 @@
+import { loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
+import { launchBrowserBindingForUrl } from "../browser/launch.js";
+import { promptLine, promptRequiredLine } from "../io/prompts.js";
+import { writeStdout } from "../io/streams.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, SCHEMA_VERSION } from "../core/constants.js";
+import { normalizeLabel } from "../core/normalize.js";
+import { maintainAnthropicNativeLabel, recordAccountMaintenanceAttempt, recordAccountMaintenanceFailure, recordAccountMaintenanceSuccess } from "../credentials/anthropic-maintenance.js";
+import { ensureAnthropicLabelConfigured, resolveAnthropicMaintenanceBlockedReason } from "../credentials/claude-native.js";
+import { ensureOpenAICodexInteractiveLoginBinding, refreshOrLoginCodex } from "../credentials/codex-login.js";
+import { ensureProviderConfiguredForLabel } from "../credentials/oauth.js";
+import { syncHermesHomesForLabel } from "../pool/hermes-rebalance.js";
+import { getAuthorityAnthropicImport, markImportedAnthropicLabelDirtyState } from "../state/authority-anthropic.js";
+import { getAuthorityCodexImport, markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
+
+export async function performLabelMaintenance({
+  state,
+  label,
+  homeDir,
+  promptLineImpl = promptLine,
+  promptImpl = promptRequiredLine,
+  openUrlImpl = launchBrowserBindingForUrl,
+  loginOpenAICodexImpl = loginOpenAICodex,
+  refreshOpenAICodexImpl = refreshOpenAICodexToken,
+  refreshAnthropicImpl = refreshAnthropicToken,
+  writeImpl = writeStdout,
+}) {
+  const normalizedLabel = normalizeLabel(label);
+  const provider = await ensureProviderConfiguredForLabel({
+    state,
+    label: normalizedLabel,
+    promptLineImpl,
+    writeImpl,
+  });
+  const attemptedAt = recordAccountMaintenanceAttempt(state, normalizedLabel, { providerHint: provider });
+  let hermesSync = {
+    status: "noop",
+    checkedHomeCount: 0,
+    matchedHomeCount: 0,
+    syncedHomeIds: [],
+    writes: [],
+  };
+  let authorityPromotion = {
+    imported: false,
+    dirty: false,
+  };
+
+  try {
+    if (provider === OPENAI_CODEX_PROVIDER) {
+      const interactiveBinding = await ensureOpenAICodexInteractiveLoginBinding({
+        state,
+        label: normalizedLabel,
+        homeDir,
+        promptLineImpl,
+        writeImpl,
+      });
+      const cred = await refreshOrLoginCodex({
+        state,
+        label: normalizedLabel,
+        homeDir,
+        interactiveBinding,
+        loginImpl: loginOpenAICodexImpl,
+        refreshImpl: refreshOpenAICodexImpl,
+        promptImpl,
+        openUrlImpl,
+        writeImpl,
+      });
+      state.credentials[OPENAI_CODEX_PROVIDER][normalizedLabel] = cred;
+    } else if (provider === ANTHROPIC_PROVIDER) {
+      ensureAnthropicLabelConfigured(state, normalizedLabel);
+      const cred = await maintainAnthropicNativeLabel({
+        state,
+        label: normalizedLabel,
+        homeDir,
+        refreshImpl: refreshAnthropicImpl,
+      });
+      state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = cred;
+    } else {
+      throw new Error(`Provider not supported: ${provider}`);
+    }
+
+    recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
+    if (provider === OPENAI_CODEX_PROVIDER) {
+      authorityPromotion = markImportedCodexLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
+    } else if (provider === ANTHROPIC_PROVIDER) {
+      authorityPromotion = markImportedAnthropicLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
+    }
+    if (provider === OPENAI_CODEX_PROVIDER) {
+      hermesSync = syncHermesHomesForLabel({
+        state,
+        label: normalizedLabel,
+        homeDir,
+      });
+    }
+    state.schemaVersion = SCHEMA_VERSION;
+    return {
+      ok: true,
+      label: normalizedLabel,
+      provider,
+      maintenance: {
+        status: "ready",
+        observedAt: attemptedAt,
+      },
+      ...(authorityPromotion.imported
+        ? {
+            authorityPromotion: {
+              dirty: authorityPromotion.dirty,
+              ...(authorityPromotion.dirty
+                ? {
+                    status: "pending_publish",
+                    target:
+                      provider === OPENAI_CODEX_PROVIDER
+                        ? (typeof getAuthorityCodexImport(state).source === "string" ? getAuthorityCodexImport(state).source : null)
+                        : (typeof getAuthorityAnthropicImport(state).source === "string" ? getAuthorityAnthropicImport(state).source : null),
+                  }
+                : { status: "clean" }),
+            },
+          }
+        : {}),
+      hermesSync,
+    };
+  } catch (err) {
+    const message = String(err?.message ?? err);
+    const anthropicBlockedReason =
+      provider === ANTHROPIC_PROVIDER ? resolveAnthropicMaintenanceBlockedReason(message) : null;
+    recordAccountMaintenanceFailure(state, normalizedLabel, {
+      observedAt: attemptedAt,
+      ...(anthropicBlockedReason
+        ? { blockedReason: anthropicBlockedReason }
+        : message.match(/conflict|does not match|unsupported/i)
+          ? { blockedReason: message }
+          : {}),
+    });
+    state.schemaVersion = SCHEMA_VERSION;
+    throw err;
+  }
+}
+
+export function reportPanelActionError(err, { writeImpl = writeStdout } = {}) {
+  writeImpl(`${String(err?.message ?? err)}\n\n`);
+}

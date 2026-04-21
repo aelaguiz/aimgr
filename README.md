@@ -710,6 +710,16 @@ The Hermes rebalance path is intentionally not a new allocator:
 - it reuses the same weighted planner that backs `aim rebalance openclaw`
 - it records receipts in `pool.openaiCodex.hermesFleet`
 
+### `aim auth write hermes <label> --auth-file <abs-path>`
+
+Writes one explicit Hermes `auth.json` from the selected AIM label:
+
+```bash
+aim auth write hermes boss --auth-file /absolute/path/to/auth.json
+```
+
+This is the direct, advanced write path used when a specific Hermes home needs repair. It only accepts a target basename of `auth.json`, preserves unrelated provider entries already present in that file, verifies the resulting Codex pool entry by readback, and does not mutate AIM state.
+
 ### `aim hermes watch`
 
 Runs the Hermes watch decision once for schedulers, or continuously in the foreground:
@@ -1058,8 +1068,14 @@ Status output is redacted. The durable state file itself is not.
 ## Development
 
 ```bash
+npm run lint
 npm test
+npm run test:coverage
 ```
+
+The CLI entrypoint is `src/cli.js`; it stays as a thin facade over `src/cli/main.js`.
+Domain behavior lives in purpose-built modules under `src/`, and tests are split by owner under `test/`.
+Coverage uses Node's native test runner and scopes the report to repo `bin/` and `src/` files so temporary fake binaries created by tests do not pollute the signal.
 
 Current tests cover:
 

@@ -18,8 +18,9 @@
     "hermes-watch:install": "bash ./scripts/install-hermes-watch.sh",
     "hermes-watch:status": "bash ./scripts/install-hermes-watch.sh --status",
     "hermes-watch:uninstall": "bash ./scripts/install-hermes-watch.sh --uninstall",
-    "lint": "node --check ./bin/aimgr.js && node --check ./src/cli.js",
-    "test": "node --test"
+    "lint": "find ./bin ./src ./test -type f -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "test": "find ./test -type f -name '*.test.js' -print0 | xargs -0 node --test",
+    "test:coverage": "find ./test -type f -name '*.test.js' -print0 | xargs -0 node --test --experimental-test-coverage --test-coverage-include='src/**/*.js' --test-coverage-include='bin/**/*.js'"
   },
   "dependencies": {
     "@mariozechner/pi-ai": "0.55.1",
