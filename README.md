@@ -25,11 +25,11 @@ That means:
 
 - `aim <label>` is the primary human path
 - `aim rebalance openclaw` is the canonical OpenClaw assignment command
-- `aim codex use` is the canonical local Codex selection command
+- `aim codex use [label]` is the canonical local Codex selection command
 - `aim codex watch` is the canonical local Codex guardrail for overnight rotation
 - `aim claude use [label]` is the canonical local Claude selection command
 - `aim pi use` is the canonical local Pi selection command
-- `aim pin`, `aim autopin openclaw`, and label-first `aim codex use` / `aim pi use` are removed
+- `aim pin`, `aim autopin openclaw`, and label-first `aim pi use` are removed
 
 ## Non-negotiables
 
@@ -275,17 +275,24 @@ First sync the portable pool if needed:
 aim sync codex --from agents@amirs-mac-studio
 ```
 
-Then activate the next-best eligible label:
+Then activate the next eligible label by round-robin:
 
 ```bash
 aim codex use
+```
+
+Or explicitly activate one label:
+
+```bash
+aim codex use pro6
 ```
 
 This command:
 
 - validates the local Codex home is file-backed
 - probes current pool usage
-- selects the next-best eligible pooled label
+- selects the next eligible pooled label when no label is given
+- directly activates the requested label when a label is given
 - writes managed `auth.json`
 - verifies readback
 - records a selection receipt:
@@ -383,7 +390,7 @@ aim pi use
 This command:
 
 - probes current pooled usage
-- selects the next-best eligible pooled label with the same weighted ranking and hysteresis rules as `aim codex use`
+- selects the next-best eligible pooled label with the same weighted ranking and hysteresis rules as plain `aim codex use`
 - writes Pi's canonical `auth.json`
 - preserves unrelated non-OpenAI Pi providers already present in that file
 - verifies readback
@@ -458,7 +465,6 @@ These commands are intentionally removed and now hard-error with migration guida
 ```bash
 aim pin <openclaw_agent_id> <label>
 aim autopin openclaw --pool ...
-aim codex use <label>
 aim pi use <label>
 ```
 
@@ -466,7 +472,7 @@ Use:
 
 - `aim <label>` for reauth
 - `aim rebalance openclaw` for OpenClaw assignment selection
-- `aim codex use` for local Codex selection
+- `aim codex use [label]` for local Codex selection
 - `aim claude use [label]` for local Claude selection
 - `aim pi use` for local Pi selection
 
@@ -678,13 +684,20 @@ Promotion is intentionally narrow:
 - it uses compare-and-swap protection, so the push fails if the authority copy changed since your last import
 - it does not create labels, delete labels, or push machine-local target state back upstream
 
-### `aim codex use`
+### `aim codex use [label]`
 
-Activates the next-best eligible pooled label for the local managed Codex home:
+Activates Codex for the local managed Codex home:
 
 ```bash
 aim codex use
+aim codex use <label>
 ```
+
+Operator model:
+
+- `aim codex use` keeps the current round-robin pool rotation.
+- `aim codex use <label>` bypasses rotation and directly activates the requested Codex label.
+- activation affects the next Codex process; it is not a live hot-swap for an already-running Codex session
 
 ### `aim codex watch`
 

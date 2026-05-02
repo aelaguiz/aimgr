@@ -14,11 +14,7 @@ test("removed top-level commands fail loud with replacement guidance", async () 
   );
 });
 
-test("removed label-first Codex and Pi activation forms fail before activation", async () => {
-  await assert.rejects(
-    () => runCli(["codex", "use", "boss", "--home", mkTempHome()]),
-    /`aim codex use <label>` was removed.*aim codex use/s,
-  );
+test("removed label-first Pi activation form fails before activation", async () => {
   await assert.rejects(
     () => runCli(["pi", "use", "boss", "--home", mkTempHome()]),
     /`aim pi use <label>` was removed.*aim pi use/s,

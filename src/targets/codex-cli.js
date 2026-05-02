@@ -245,6 +245,106 @@ export function buildCodexWatchTargetBlockers(status) {
   return blockers;
 }
 
+export function classifyCodexActivationError(err) {
+  const message = String(err?.message ?? err);
+  if (/Unknown imported label/i.test(message)) {
+    return "unknown_label";
+  }
+  if (/Refusing to activate non-Codex label/i.test(message)) {
+    return "wrong_provider";
+  }
+  if (/Refusing expired openai-codex credentials/i.test(message)) {
+    return "expired_credentials";
+  }
+  if (/Missing openai-codex credentials|credentials\.openai-codex\.[^.]+\.(access|refresh|accountId) is missing/i.test(message)) {
+    return "missing_credentials";
+  }
+  if (/cli_auth_credentials_store|Managed Codex activation requires file-backed auth storage/i.test(message)) {
+    return "unmanaged_codex_home";
+  }
+  return "activation_failed";
+}
+
+export function activateCodexLabelSelection({ state, homeDir, env = {}, label }) {
+  ensureStateShape(state);
+  const normalizedLabel = normalizeLabel(label);
+  const observedAt = new Date().toISOString();
+  const target = getCodexTargetState(state);
+  const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
+  const currentLabel = currentTarget.activeLabel ?? currentTarget.inferredLabel ?? null;
+
+  try {
+    const activated = applyCodexCliFromState({ label: normalizedLabel, homeDir, env }, state);
+    const postStatus = readCodexCliTargetStatus({ state, homeDir, env });
+    const warnings = buildWarningsFromCodexTargetStatus(postStatus);
+    const status =
+      !activated.wrote && currentLabel === normalizedLabel && currentTarget.expectedAccountId === activated.accountId
+        ? "noop"
+        : warnings.length > 0
+          ? "activated_with_warnings"
+          : "activated";
+    const receipt = {
+      action: "codex_use",
+      status,
+      observedAt,
+      previousLabel: currentLabel ?? undefined,
+      label: normalizedLabel,
+      accountId: activated.accountId,
+      explicit: true,
+      reasons: ["explicit_label"],
+      authPath: activated.authPath,
+      wroteAuthJson: Boolean(activated.wrote),
+      warnings,
+      blockers: [],
+    };
+    target.lastSelectionReceipt = receipt;
+    appendOpenaiCodexHistory(state, [
+      {
+        observedAt,
+        kind: "selection",
+        status,
+        label: normalizedLabel,
+        accountId: activated.accountId,
+        hadSpareEligibleCapacity: false,
+        reason: "explicit_label",
+      },
+    ]);
+    return { status, receipt, wrote: Boolean(activated.wrote) };
+  } catch (err) {
+    const message = String(err?.message ?? err);
+    const receipt = {
+      action: "codex_use",
+      status: "blocked",
+      observedAt,
+      previousLabel: currentLabel ?? undefined,
+      label: normalizedLabel,
+      explicit: true,
+      reasons: ["explicit_label"],
+      warnings: [],
+      blockers: [
+        {
+          label: normalizedLabel,
+          reason: classifyCodexActivationError(err),
+          detail: message,
+        },
+      ],
+      wroteAuthJson: false,
+    };
+    target.lastSelectionReceipt = receipt;
+    appendOpenaiCodexHistory(state, [
+      {
+        observedAt,
+        kind: "selection",
+        status: "blocked",
+        label: normalizedLabel,
+        hadSpareEligibleCapacity: false,
+        reason: classifyCodexActivationError(err),
+      },
+    ]);
+    return { status: "blocked", receipt, wrote: false };
+  }
+}
+
 export async function activateCodexPoolSelection({
   state,
   homeDir,

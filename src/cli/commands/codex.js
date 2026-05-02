@@ -3,7 +3,8 @@ import { writeJsonFileWithBackup } from "../../io/json-store.js";
 import { watchCodexPoolSelectionLoop, watchCodexPoolSelectionOnce } from "../../pool/watch.js";
 import { loadAimgrState } from "../../state/schema.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
-import { activateCodexPoolSelection } from "../../targets/codex-cli.js";
+import { normalizeLabel } from "../../core/normalize.js";
+import { activateCodexLabelSelection, activateCodexPoolSelection } from "../../targets/codex-cli.js";
 
 export async function handleCodex(context) {
   const { opts, positional, statePath, homeDir, env, stdout, setExitCode, probeUsageSnapshotsByProviderImpl, activateCodexPoolSelectionImpl, sleepImpl, watchLoopMaxIterations } = context;
@@ -64,10 +65,10 @@ export async function handleCodex(context) {
     throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: use, watch).`);
   }
   const state = loadAimgrState(statePath);
-  if (String(positional[2] ?? "").trim()) {
-    throw new Error("`aim codex use <label>` was removed. Use `aim codex use` for next-best selection or `aim <label>` if the account needs reauth.");
-  }
-  const activated = await activateCodexPoolSelectionImpl({ state, homeDir, env, probeUsageSnapshotsByProviderImpl });
+  const explicitLabel = String(positional[2] ?? "").trim() ? normalizeLabel(positional[2]) : null;
+  const activated = explicitLabel
+    ? activateCodexLabelSelection({ state, homeDir, env, label: explicitLabel })
+    : await activateCodexPoolSelectionImpl({ state, homeDir, env, probeUsageSnapshotsByProviderImpl });
   writeJsonFileWithBackup(statePath, state);
   stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);
   if (activated.status === "blocked") {
