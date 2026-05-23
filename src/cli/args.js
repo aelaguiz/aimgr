@@ -14,19 +14,34 @@ export function parseArgs(argv) {
     outFile: undefined,
     sourceHome: undefined,
     discardDirty: false,
+    manualCallbackStdio: false,
     json: false,
     compact: false,
     accounts: false,
     help: false,
     once: false,
+    tend: false,
+    noAttach: false,
     intervalSeconds: undefined,
     rotateBelow5hRemainingPct: undefined,
     pool: undefined,
+    tmuxSession: undefined,
+    codexBin: undefined,
+    codexProfile: undefined,
+    maxRestarts: undefined,
+    pollSeconds: undefined,
+    promptTimeoutSeconds: undefined,
+    workdir: undefined,
+    afterDoubleDash: [],
   };
   const positional = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "--") {
+      opts.afterDoubleDash = argv.slice(i + 1);
+      break;
+    }
     if (arg === "--home") {
       opts.home = argv[i + 1];
       i += 1;
@@ -101,6 +116,10 @@ export function parseArgs(argv) {
       opts.discardDirty = true;
       continue;
     }
+    if (arg === "--manual-callback-stdio") {
+      opts.manualCallbackStdio = true;
+      continue;
+    }
     if (arg === "--json") {
       opts.json = true;
       continue;
@@ -126,6 +145,14 @@ export function parseArgs(argv) {
       opts.once = true;
       continue;
     }
+    if (arg === "--tend") {
+      opts.tend = true;
+      continue;
+    }
+    if (arg === "--no-attach") {
+      opts.noAttach = true;
+      continue;
+    }
     if (arg === "--interval-seconds") {
       opts.intervalSeconds = argv[i + 1];
       i += 1;
@@ -133,6 +160,41 @@ export function parseArgs(argv) {
     }
     if (arg === "--rotate-below-5h-remaining-pct") {
       opts.rotateBelow5hRemainingPct = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--tmux-session") {
+      opts.tmuxSession = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--codex-bin") {
+      opts.codexBin = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "-p" || arg === "--codex-profile") {
+      opts.codexProfile = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--max-restarts") {
+      opts.maxRestarts = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--poll-seconds") {
+      opts.pollSeconds = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--prompt-timeout-seconds") {
+      opts.promptTimeoutSeconds = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--workdir") {
+      opts.workdir = argv[i + 1];
       i += 1;
       continue;
     }

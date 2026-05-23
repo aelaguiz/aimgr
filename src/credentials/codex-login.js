@@ -132,6 +132,7 @@ export async function refreshOrLoginCodex({
   refreshImpl = refreshOpenAICodexToken,
   promptImpl = promptRequiredLine,
   openUrlImpl = launchBrowserBindingForUrl,
+  manualCallbackAutomation = null,
   writeImpl = () => {},
   }) {
   const existing = getCodexCredential(state, label);
@@ -180,17 +181,26 @@ export async function refreshOrLoginCodex({
     }
   }
 
-  const manualCallbackPrompt = async () =>
-    await promptImpl(
+  let manualCallbackInputPromise = null;
+  const manualCallbackPrompt = async () => {
+    if (manualCallbackAutomation?.readCallbackUrl) {
+      manualCallbackInputPromise ??= manualCallbackAutomation.readCallbackUrl();
+      return await manualCallbackInputPromise;
+    }
+    return await promptImpl(
       'Paste the full callback URL from your browser address bar (looks like "http://localhost:1455/auth/callback?code=...&state=..."):',
     );
+  };
 
   // Full OAuth login.
   const creds = await loginImpl({
     onAuth: ({ url }) => {
-      writeImpl(`OAuth URL:\n${url}\n\n`);
-
       if (bindingMode === REAUTH_MODE_MANUAL_CALLBACK) {
+        if (manualCallbackAutomation?.emitAuthUrl) {
+          manualCallbackAutomation.emitAuthUrl({ url, label, provider: OPENAI_CODEX_PROVIDER });
+          return;
+        }
+        writeImpl(`OAuth URL:\n${url}\n\n`);
         writeImpl(
           [
             "Open this URL in the browser on your laptop and complete login there.",
@@ -200,6 +210,8 @@ export async function refreshOrLoginCodex({
         );
         return;
       }
+
+      writeImpl(`OAuth URL:\n${url}\n\n`);
 
       if (!browserBinding) {
         throw new Error(`Missing browser binding for label=${label}.`);

@@ -61,6 +61,7 @@ export async function main(argv, deps = createDefaultDeps()) {
     probeUsageSnapshotsByProviderImpl = (state) =>
       defaultDeps.probeUsageSnapshotsByProviderImpl(state, { fetchJsonWithTimeoutImpl, env }),
     activateCodexPoolSelectionImpl = defaultDeps.activateCodexPoolSelectionImpl,
+    runCodexTenderImpl = defaultDeps.runCodexTenderImpl,
     rebalanceHermesPoolImpl = defaultDeps.rebalanceHermesPoolImpl,
     sleepImpl = defaultDeps.sleepImpl,
     watchLoopMaxIterations = defaultDeps.watchLoopMaxIterations,
@@ -106,6 +107,7 @@ export async function main(argv, deps = createDefaultDeps()) {
     refreshAnthropicImpl,
     probeUsageSnapshotsByProviderImpl,
     activateCodexPoolSelectionImpl,
+    runCodexTenderImpl,
     rebalanceHermesPoolImpl,
     sleepImpl,
     watchLoopMaxIterations,

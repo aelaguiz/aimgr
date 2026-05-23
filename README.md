@@ -27,6 +27,7 @@ That means:
 - `aim rebalance openclaw` is the canonical OpenClaw assignment command
 - `aim codex use [label]` is the canonical local Codex selection command
 - `aim codex watch` is the canonical local Codex guardrail for overnight rotation
+- `aim codex run --tend` is the tmux-backed local Codex TUI tender for `/goal` sessions
 - `aim claude use [label]` is the canonical local Claude selection command
 - `aim pi use` is the canonical local Pi selection command
 - `aim pin`, `aim autopin openclaw`, and label-first `aim pi use` are removed
@@ -48,6 +49,7 @@ That means:
 - Node.js `>= 20`
 - Google Chrome installed
 - `openclaw` on `PATH` if you are using the OpenClaw workflow
+- `tmux` on `PATH` if you are using `aim codex run --tend`
 - a file-backed Codex home if AIM will manage your real `~/.codex`
 
 ### Global install from this checkout
@@ -156,6 +158,7 @@ Use explicit `aim login <label>` only when you want the one-shot maintenance/adm
 ```bash
 aim login boss
 aim login claudalyst
+aim login pro1 --manual-callback-stdio
 ```
 
 The maintenance flow:
@@ -173,6 +176,7 @@ Important behavior:
 - `chrome-profile` uses the exact `--user-data-dir` you configured and, when present, the exact Chrome `profile-directory`.
 - `agent-browser` uses the exact `--profile` and `--session` you configured.
 - Manual-callback labels print the OAuth URL and prompt for the final callback URL.
+- `aim login <label> --manual-callback-stdio` is the scriptable manual-callback form: stdout is JSONL, AIM emits an `auth_url` event when OAuth is needed, and the caller writes the final callback URL to stdin.
 - Claude labels do not use browser bindings or manual-callback anymore; they capture/import native Claude bundles instead.
 - For Claude labels, non-TTY `aim <label>` and `aim login <label>` do the one-shot maintenance path: refresh the stored native bundle if it is already complete, otherwise capture the current live native Claude login from this host.
 - Claude label maintenance updates `~/.aimgr/secrets.json` only. It does not sync Hermes homes, browser bindings, OpenClaw assignments, or Claude sessions that are already running.
@@ -180,9 +184,29 @@ Important behavior:
 
 When you pick `Use another Chrome profile` from the guided panel, AIM now lists the discovered raw Chrome-style browser homes on this Mac, including OpenClaw browser homes and host Chrome profiles. It tells you the exact `user-data-dir` + `profile-directory` each choice would save, and lets you confirm before writing the binding.
 
+Scriptable manual callback example:
+
+```bash
+aim login pro1 --manual-callback-stdio
+```
+
+When refresh is enough, AIM emits one JSON line with `type: "result"`. When OAuth is needed, AIM first emits:
+
+```json
+{"type":"auth_url","label":"pro1","provider":"openai-codex","url":"https://auth.openai.com/oauth/authorize?..."}
+```
+
+Keep the process running, open that URL from your script, then write one newline-terminated callback value to stdin:
+
+```json
+{"type":"callback_url","url":"http://localhost:1455/auth/callback?code=...&state=..."}
+```
+
+The stdin value can also be the raw callback URL, `code#state`, or `code=...&state=...`.
+
 ### 2A) Inspect or repair the browser binding
 
-Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim rebalance hermes`, `aim codex use`, `aim codex watch`, `aim hermes watch`, `aim claude use [label]`, and `aim pi use`.
+Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim rebalance hermes`, `aim codex use`, `aim codex watch`, `aim codex run --tend`, `aim hermes watch`, `aim claude use [label]`, and `aim pi use`.
 
 When you need to inspect or repair the browser substrate explicitly, use the advanced/admin surface:
 
@@ -575,6 +599,7 @@ Primary human path plus explicit admin lane:
 ```bash
 aim boss
 aim login boss
+aim login pro1 --manual-callback-stdio
 aim claudalyst
 aim login claudalyst
 ```
@@ -584,6 +609,7 @@ Rules:
 - `aim <label>` opens the guided label panel on a TTY
 - non-TTY `aim <label>` behaves like explicit `aim login <label>`
 - `aim login <label>` keeps the one-shot JSON-style maintenance contract for scripts/tests/admin use
+- `aim login <label> --manual-callback-stdio` is the machine-readable OpenAI Codex manual-callback lane: JSONL events on stdout, callback URL on stdin
 - for Claude labels, TTY `aim <label>` exposes native-bundle actions (`use`, `refresh`, `capture`, `import`, `export`, `details`) instead of browser/setup actions
 - for Claude labels, `aim login <label>` refreshes the stored native bundle when it is complete, otherwise it captures the current live Claude login from this host
 - if an imported Codex label changes locally, AIM marks it pending promote instead of pretending the authority already knows
@@ -707,6 +733,26 @@ Runs the Codex watch decision once for schedulers, or continuously in the foregr
 aim codex watch --once --rotate-below-5h-remaining-pct 20
 aim codex watch --interval-seconds 300 --rotate-below-5h-remaining-pct 20
 ```
+
+### `aim codex run --tend`
+
+Runs the normal Codex TUI in a tmux session and tends a stopped `/goal` session
+across account rotation:
+
+```bash
+aim codex run --tend
+aim codex run --tend -p yolo
+aim codex run --tend -p yolo --no-attach --tmux-session overnight-codex -- --model gpt-5.5
+```
+
+Operator model:
+
+- the Codex TUI is still the interface; AIMGR starts it in tmux and can attach the current terminal
+- `-p yolo`, `--profile yolo`, and `--codex-profile yolo` select the Codex config profile and AIMGR preserves it when resuming after rotation
+- AIMGR discovers the exact materialized Codex thread id through installed Codex app-server state
+- when the persisted goal reaches `usageLimited`, AIMGR exits the old TUI, rotates through the existing Codex pool selector, and starts `codex resume <thread-id>`
+- AIMGR confirms Codex's built-in `Resume paused goal?` prompt by sending Enter to the tmux pane
+- AIMGR does not use `codex resume <thread-id> "/goal resume"` because installed Codex treats that as a normal user message, not a slash command
 
 ### `aim rebalance hermes`
 
