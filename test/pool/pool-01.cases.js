@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { projectPoolCapacity } from "../../src/pool/capacity.js";
+import { isUsageSnapshotHardRateLimited } from "../../src/pool/account-status.js";
 import { pickNextBestLocalCliPoolLabel, pickNextBestPoolLabel, rankPoolCandidates } from "../../src/pool/ranking.js";
+import { fetchCodexUsageSnapshot } from "../../src/pool/usage.js";
 
 test("rankPoolCandidates keeps current label when it stays within the weighted hysteresis threshold", () => {
   const ranked = rankPoolCandidates({
@@ -117,6 +119,88 @@ test("pickNextBestLocalCliPoolLabel refuses all-unusable candidates instead of r
   // The 5h gate relaxation is for hot-but-usable accounts. If every ranked
   // candidate is unavailable or exhausted, callers must block instead of activating one.
   assert.equal(pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked }), null);
+});
+
+test("pickNextBestLocalCliPoolLabel can force selection away from the current label", () => {
+  const ranked = rankPoolCandidates({
+    labels: ["boss", "qa"],
+    currentLabel: "boss",
+    usage: {
+      boss: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 10 }, { kind: "secondary", usedPercent: 10 }],
+      },
+      qa: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 12 }, { kind: "secondary", usedPercent: 12 }],
+      },
+    },
+    now: Date.now(),
+  });
+
+  assert.equal(pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked }).label, "boss");
+  assert.equal(pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked, avoidLabel: "boss" }).label, "qa");
+  assert.equal(pickNextBestLocalCliPoolLabel({ rankedCandidates: [ranked[0]], avoidLabel: "boss" }), null);
+});
+
+test("fetchCodexUsageSnapshot preserves hard WHAM rate-limit fields", async () => {
+  const snapshot = await fetchCodexUsageSnapshot({
+    accessToken: "token",
+    accountId: "acct_1",
+    timeoutMs: 1000,
+    fetchJsonWithTimeoutImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        allowed: false,
+        limit_reached: true,
+        rate_limit_reached_type: "primary",
+        rate_limit: {
+          primary_window: {
+            used_percent: 100,
+            limit_window_seconds: 10800,
+          },
+          secondary_window: {
+            used_percent: 42,
+            limit_window_seconds: 604800,
+          },
+        },
+      }),
+    }),
+  });
+
+  assert.equal(snapshot.ok, true);
+  assert.equal(snapshot.allowed, false);
+  assert.equal(snapshot.limitReached, true);
+  assert.equal(snapshot.rateLimitReachedType, "primary");
+  assert.equal(isUsageSnapshotHardRateLimited(snapshot), true);
+});
+
+test("fetchCodexUsageSnapshot preserves hard rate-limit fields from non-OK responses", async () => {
+  const snapshot = await fetchCodexUsageSnapshot({
+    accessToken: "token",
+    accountId: "acct_1",
+    timeoutMs: 1000,
+    fetchJsonWithTimeoutImpl: async () => ({
+      ok: false,
+      status: 429,
+      json: async () => ({
+        message: "Rate limit reached for gpt-5.",
+        rate_limit: {
+          allowed: false,
+          limit_reached: true,
+          rate_limit_reached_type: "secondary",
+        },
+      }),
+    }),
+  });
+
+  assert.equal(snapshot.ok, false);
+  assert.equal(snapshot.status, 429);
+  assert.equal(snapshot.error, "Rate limit reached for gpt-5.");
+  assert.equal(snapshot.allowed, false);
+  assert.equal(snapshot.limitReached, true);
+  assert.equal(snapshot.rateLimitReachedType, "secondary");
+  assert.equal(isUsageSnapshotHardRateLimited(snapshot), true);
 });
 
 test("projectPoolCapacity flags high risk from blocked receipts and no-spare exhaustion", () => {

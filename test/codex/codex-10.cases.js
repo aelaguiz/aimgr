@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { buildCodexCredentialFingerprint } from "../../src/credentials/codex.js";
-import { preserveLiveCodexAuthForActiveLabel } from "../../src/targets/codex-cli.js";
+import { activateCodexPoolSelection, preserveLiveCodexAuthForActiveLabel } from "../../src/targets/codex-cli.js";
 import { runCodexTender } from "../../src/targets/codex-tender.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
@@ -578,6 +578,439 @@ test("runCodexTender exits without rotation when no stopped goal exists", async 
   assert.equal(tmux.sentExit, 0);
   assert.equal(tmux.sentEnter, 0);
   assert.equal(tmux.newSessions.length, 1);
+});
+
+test("runCodexTender rotates and resumes non-goal sessions when the pane shows a rate limit", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  let initialPaneCaptures = 0;
+  let rotationArgs = null;
+  tmux.capturePane = () => {
+    if (tmux.phase === "resume") return "";
+    initialPaneCaptures += 1;
+    return initialPaneCaptures === 1 ? "" : "Rate limit reached for gpt-5. Please try again later.";
+  };
+  tmux.hasSession = function hasSession() {
+    if (this.phase === "resume" && this.newSessions.length >= 2) return false;
+    return this.alive;
+  };
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      cwd: "/tmp/project",
+      codexBin: "/tmp/codex",
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+      maxRestarts: 1,
+      startedAtMs: 1_779_500_000_000,
+    },
+    {
+      tmux,
+      appServerClient: {
+        listThreads: async () => [
+          {
+            id: "thread-1",
+            cwd: "/tmp/project",
+            createdAt: 1779500000,
+            updatedAt: 1779500001,
+          },
+        ],
+        getThreadGoal: async () => null,
+      },
+      sleepImpl: async () => {},
+      activateCodexPoolSelectionImpl: async (args) => {
+        rotationArgs = args;
+        return {
+          status: "activated",
+          receipt: { label: "pro2", blockers: [], warnings: [] },
+          wrote: true,
+        };
+      },
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.threadId, "thread-1");
+  assert.equal(result.restarts, 1);
+  assert.equal(rotationArgs.avoidCurrentLabel, true);
+  assert.equal(tmux.sentExit, 1);
+  assert.equal(tmux.sentEnter, 0);
+  assert.deepEqual(
+    tmux.newSessions.map((session) => session.command),
+    [
+      "/tmp/codex --no-alt-screen",
+      "/tmp/codex --no-alt-screen resume thread-1",
+    ],
+  );
+  assert.ok(result.events.some((event) => event.type === "recovery_triggered" && event.source === "pane"));
+});
+
+test("runCodexTender rotates non-goal sessions when the active usage snapshot is hard limited", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeMinimalState(home);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.targets.codexCli.activeLabel = "boss";
+  writeJson(statePath, state);
+  const tmux = createFakeTmux();
+  tmux.capturePane = () => "";
+  tmux.hasSession = function hasSession() {
+    if (this.phase === "resume" && this.newSessions.length >= 2) return false;
+    return this.alive;
+  };
+  let rotations = 0;
+
+  const result = await runCodexTender(
+    {
+      statePath,
+      homeDir: home,
+      cwd: "/tmp/project",
+      codexBin: "/tmp/codex",
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+      maxRestarts: 1,
+      startedAtMs: 1_779_500_000_000,
+    },
+    {
+      tmux,
+      appServerClient: {
+        listThreads: async () => [
+          {
+            id: "thread-1",
+            cwd: "/tmp/project",
+            createdAt: 1779500000,
+            updatedAt: 1779500001,
+          },
+        ],
+        getThreadGoal: async () => null,
+      },
+      sleepImpl: async () => {},
+      probeUsageSnapshotsByProviderImpl: async () => ({
+        "openai-codex": {
+          boss: {
+            ok: true,
+            allowed: false,
+            limitReached: true,
+            rateLimitReachedType: "primary",
+            windows: [{ kind: "primary", usedPercent: 100 }, { kind: "secondary", usedPercent: 40 }],
+          },
+        },
+      }),
+      activateCodexPoolSelectionImpl: async () => {
+        rotations += 1;
+        return {
+          status: "activated",
+          receipt: { label: "pro2", blockers: [], warnings: [] },
+          wrote: true,
+        };
+      },
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.restarts, 1);
+  assert.equal(rotations, 1);
+  assert.ok(result.events.some((event) => event.type === "recovery_triggered" && event.source === "usage"));
+});
+
+test("runCodexTender resumes an explicit non-goal Codex session without waiting for a goal prompt", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  let hasSessionCalls = 0;
+  tmux.capturePane = () => "";
+  tmux.hasSession = () => {
+    hasSessionCalls += 1;
+    return hasSessionCalls === 1;
+  };
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      codexBin: "/tmp/codex",
+      resumeSessionId: SESSION_ID,
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+    },
+    {
+      tmux,
+      appServerClient: {
+        listThreads: async () => {
+          throw new Error("explicit resume should not discover recent threads");
+        },
+        getThreadGoal: async () => null,
+      },
+      sleepImpl: async () => {},
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.threadId, SESSION_ID);
+  assert.equal(result.restarts, 0);
+  assert.equal(tmux.sentEnter, 0);
+  assert.equal(tmux.newSessions.length, 1);
+  assert.ok(result.events.some((event) => event.type === "resume_prompt_not_present"));
+});
+
+test("runCodexTender does not rotate on rate-limit text that was already present at session start", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  let hasSessionCalls = 0;
+  let rotations = 0;
+  tmux.capturePane = () => "Rate limit reached for gpt-5. Please try again later.";
+  tmux.hasSession = () => {
+    hasSessionCalls += 1;
+    return hasSessionCalls === 1;
+  };
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      cwd: "/tmp/project",
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+      maxRestarts: 1,
+      startedAtMs: 1_779_500_000_000,
+    },
+    {
+      tmux,
+      appServerClient: {
+        listThreads: async () => [
+          {
+            id: "thread-1",
+            cwd: "/tmp/project",
+            createdAt: 1779500000,
+            updatedAt: 1779500001,
+          },
+        ],
+        getThreadGoal: async () => null,
+      },
+      sleepImpl: async () => {},
+      activateCodexPoolSelectionImpl: async () => {
+        rotations += 1;
+        return { status: "activated" };
+      },
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.restarts, 0);
+  assert.equal(rotations, 0);
+  assert.equal(tmux.sentExit, 0);
+});
+
+test("runCodexTender waits for a thread id before recovering from a non-goal rate limit", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  let initialPaneCaptures = 0;
+  let listReads = 0;
+  let rotations = 0;
+  tmux.capturePane = () => {
+    if (tmux.phase === "resume") return "";
+    initialPaneCaptures += 1;
+    return initialPaneCaptures === 1 ? "" : "Too many requests. Please try again later.";
+  };
+  tmux.hasSession = function hasSession() {
+    if (this.phase === "resume" && this.newSessions.length >= 2) return false;
+    return this.alive;
+  };
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      cwd: "/tmp/project",
+      codexBin: "/tmp/codex",
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+      maxRestarts: 1,
+      maxPollIterations: 4,
+      startedAtMs: 1_779_500_000_000,
+    },
+    {
+      tmux,
+      appServerClient: {
+        listThreads: async () => {
+          listReads += 1;
+          if (listReads === 1) return [];
+          return [
+            {
+              id: "thread-1",
+              cwd: "/tmp/project",
+              createdAt: 1779500000,
+              updatedAt: 1779500001,
+            },
+          ];
+        },
+        getThreadGoal: async () => null,
+      },
+      sleepImpl: async () => {},
+      activateCodexPoolSelectionImpl: async () => {
+        rotations += 1;
+        return {
+          status: "activated",
+          receipt: { label: "pro2", blockers: [], warnings: [] },
+          wrote: true,
+        };
+      },
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.threadId, "thread-1");
+  assert.equal(result.restarts, 1);
+  assert.equal(rotations, 1);
+  assert.ok(result.events.some((event) => event.type === "rate_limit_recovery_waiting_for_thread"));
+});
+
+test("runCodexTender leaves the current non-goal session alive when no alternate account exists", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  let initialPaneCaptures = 0;
+  tmux.capturePane = () => {
+    initialPaneCaptures += 1;
+    return initialPaneCaptures === 1 ? "" : "exceeded retry limit, last status: 429";
+  };
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      cwd: "/tmp/project",
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+      maxRestarts: 1,
+      startedAtMs: 1_779_500_000_000,
+    },
+    {
+      tmux,
+      appServerClient: {
+        listThreads: async () => [
+          {
+            id: "thread-1",
+            cwd: "/tmp/project",
+            createdAt: 1779500000,
+            updatedAt: 1779500001,
+          },
+        ],
+        getThreadGoal: async () => null,
+      },
+      sleepImpl: async () => {},
+      activateCodexPoolSelectionImpl: async () => ({
+        status: "blocked",
+        receipt: {
+          blockers: [{ reason: "no_alternate_pool_account" }],
+          warnings: [],
+        },
+        wrote: false,
+      }),
+    },
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "no_alternate_pool_account");
+  assert.equal(result.restarts, 0);
+  assert.equal(tmux.sentExit, 0);
+  assert.equal(tmux.alive, true);
+  assert.equal(tmux.newSessions.length, 1);
+});
+
+test("activateCodexPoolSelection can require an alternate without clearing the current auth", async () => {
+  const home = mkTempHome();
+  const bossJwt = makeFakeJwt({
+    email: "boss@example.com",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_boss",
+      chatgpt_plan_type: "pro",
+    },
+  });
+  writeJson(path.join(home, ".codex", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: bossJwt,
+      access_token: bossJwt,
+      refresh_token: "REFRESH_BOSS",
+      account_id: "acct_boss",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+  const state = {
+    schemaVersion: "0.2",
+    accounts: {
+      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        boss: {
+          access: bossJwt,
+          refresh: "REFRESH_BOSS",
+          idToken: bossJwt,
+          expiresAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString(),
+          accountId: "acct_boss",
+        },
+      },
+      anthropic: {},
+    },
+    imports: {
+      authority: {
+        codex: {
+          source: "agents@localhost",
+          importedAt: new Date().toISOString(),
+          labels: ["boss"],
+        },
+      },
+    },
+    targets: {
+      openclaw: { assignments: {}, exclusions: {} },
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_boss",
+      },
+    },
+    pool: { openaiCodex: { history: [] } },
+  };
+
+  const result = await activateCodexPoolSelection({
+    state,
+    homeDir: home,
+    observedAt: "2026-05-23T00:00:00.000Z",
+    usageByProvider: {
+      "openai-codex": {
+        boss: {
+          ok: true,
+          windows: [{ kind: "primary", usedPercent: 10 }, { kind: "secondary", usedPercent: 10 }],
+        },
+      },
+    },
+    selectionMode: "weighted_usage",
+    avoidCurrentLabel: true,
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.receipt.blockers[0].reason, "no_alternate_pool_account");
+  assert.equal(state.targets.codexCli.activeLabel, "boss");
+  const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
+  assert.equal(auth.tokens.account_id, "acct_boss");
 });
 
 test("preserveLiveCodexAuthForActiveLabel stores refreshed live auth before rotation", () => {

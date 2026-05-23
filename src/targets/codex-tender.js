@@ -1,16 +1,28 @@
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
+import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { resolveCodexWatchThresholdPct } from "../core/watch-options.js";
 import { writeJsonFileWithBackup } from "../io/json-store.js";
 import { resolveManagedCodexHomeDir } from "../io/paths.js";
 import { sleep } from "../io/streams.js";
+import { isUsageSnapshotHardRateLimited } from "../pool/account-status.js";
+import { getCodexUsagePercents, probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { watchCodexPoolSelectionOnce } from "../pool/watch.js";
 import { loadAimgrState } from "../state/schema.js";
-import { activateCodexPoolSelection, preserveLiveCodexAuthForActiveLabel } from "./codex-cli.js";
+import { activateCodexPoolSelection, preserveLiveCodexAuthForActiveLabel, readCodexCliTargetStatus } from "./codex-cli.js";
 import { getCodexThreadGoal, listCodexThreads } from "./codex-app-server.js";
 
 const STOPPED_FOR_ROTATION_STATUSES = new Set(["usageLimited"]);
 const CODEX_SESSION_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const RATE_LIMIT_USAGE_CHECK_MS = 15_000;
+const PANE_RATE_LIMIT_PATTERNS = [
+  /Usage limit reached/i,
+  /You've hit your usage limit/i,
+  /Rate limit reached/i,
+  /Too many requests/i,
+  /exceeded retry limit, last status:\s*429/i,
+  /rate_limit_exceeded/i,
+];
 
 function parsePositiveInteger(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -282,12 +294,12 @@ async function confirmResumePrompt({
       return false;
     }
     const pane = tmux.capturePane(sessionName);
-    if (/Resume paused goal\?/i.test(pane) && /Resume goal/i.test(pane)) {
+    if (hasResumeGoalPrompt(pane)) {
       tmux.sendEnter(sessionName);
       events.push({ type: "resume_prompt_confirmed" });
       return true;
     }
-    if (/Goal active|Pursuing goal|Goal achieved/i.test(pane)) {
+    if (hasActiveGoalPane(pane)) {
       events.push({ type: "resume_prompt_already_active" });
       return true;
     }
@@ -297,6 +309,145 @@ async function confirmResumePrompt({
   return false;
 }
 
+function hasResumeGoalPrompt(pane) {
+  return /Resume paused goal\?/i.test(String(pane ?? "")) && /Resume goal/i.test(String(pane ?? ""));
+}
+
+function hasActiveGoalPane(pane) {
+  return /Goal active|Pursuing goal|Goal achieved/i.test(String(pane ?? ""));
+}
+
+function maybeConfirmResumePrompt({ tmux, sessionName, events }) {
+  if (!tmux.hasSession(sessionName)) {
+    events.push({ type: "resume_prompt_skipped", reason: "session_ended" });
+    return false;
+  }
+  const pane = tmux.capturePane(sessionName);
+  if (hasResumeGoalPrompt(pane)) {
+    tmux.sendEnter(sessionName);
+    events.push({ type: "resume_prompt_confirmed" });
+    return true;
+  }
+  if (hasActiveGoalPane(pane)) {
+    events.push({ type: "resume_prompt_already_active" });
+    return true;
+  }
+  events.push({ type: "resume_prompt_not_present" });
+  return false;
+}
+
+function findPaneRateLimitMatches(pane) {
+  return String(pane ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && PANE_RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(line)));
+}
+
+function capturePaneRateLimitMatchCount({ tmux, sessionName, events }) {
+  try {
+    return findPaneRateLimitMatches(tmux.capturePane(sessionName)).length;
+  } catch (err) {
+    events.push({
+      type: "pane_rate_limit_scan_failed",
+      error: String(err?.message ?? err),
+    });
+    return 0;
+  }
+}
+
+function detectNewPaneRateLimit({ tmux, sessionName, seenMatchCount, events }) {
+  let matches;
+  try {
+    matches = findPaneRateLimitMatches(tmux.capturePane(sessionName));
+  } catch (err) {
+    events.push({
+      type: "pane_rate_limit_scan_failed",
+      error: String(err?.message ?? err),
+    });
+    return { seenMatchCount, trigger: null };
+  }
+  const nextSeenMatchCount = Math.max(seenMatchCount, matches.length);
+  if (matches.length <= seenMatchCount) {
+    return { seenMatchCount: nextSeenMatchCount, trigger: null };
+  }
+  const match = matches[matches.length - 1] ?? "";
+  return {
+    seenMatchCount: nextSeenMatchCount,
+    trigger: {
+      source: "pane",
+      reason: "non_goal_rate_limit",
+      confirmGoalPrompt: false,
+      match: match.slice(0, 240),
+    },
+  };
+}
+
+function buildUsageRateLimitSummary(snapshot) {
+  const { primaryUsedPct, secondaryUsedPct } = getCodexUsagePercents(snapshot);
+  return {
+    ok: snapshot?.ok === true,
+    status: snapshot?.status ?? undefined,
+    allowed: snapshot?.allowed,
+    limitReached: snapshot?.limitReached,
+    rateLimitReachedType: snapshot?.rateLimitReachedType,
+    primaryUsedPct,
+    secondaryUsedPct,
+  };
+}
+
+async function detectActiveCodexUsageRateLimit({
+  statePath,
+  homeDir,
+  env,
+  probeUsageSnapshotsByProviderImpl,
+  events,
+}) {
+  let state;
+  let activeLabel;
+  try {
+    state = loadAimgrState(statePath);
+    const targetStatus = readCodexCliTargetStatus({ state, homeDir, env });
+    activeLabel = targetStatus.activeLabel ?? targetStatus.inferredLabel ?? null;
+  } catch (err) {
+    events.push({
+      type: "usage_rate_limit_scan_failed",
+      error: String(err?.message ?? err),
+    });
+    return null;
+  }
+
+  if (!activeLabel) {
+    events.push({ type: "usage_rate_limit_scan_skipped", reason: "active_label_missing" });
+    return null;
+  }
+
+  try {
+    const usageByProvider = await probeUsageSnapshotsByProviderImpl(state, { env });
+    const snapshot = usageByProvider?.[OPENAI_CODEX_PROVIDER]?.[activeLabel] ?? null;
+    if (!isUsageSnapshotHardRateLimited(snapshot)) {
+      return null;
+    }
+    return {
+      source: "usage",
+      reason: "non_goal_rate_limit",
+      confirmGoalPrompt: false,
+      label: activeLabel,
+      snapshot: buildUsageRateLimitSummary(snapshot),
+    };
+  } catch (err) {
+    events.push({
+      type: "usage_rate_limit_scan_failed",
+      label: activeLabel,
+      error: String(err?.message ?? err),
+    });
+    return null;
+  }
+}
+
+function getRotationBlockedReason(rotation) {
+  return rotation?.activated?.receipt?.blockers?.[0]?.reason || "rotation_blocked";
+}
+
 async function rotateCodexAccount({
   statePath,
   homeDir,
@@ -304,6 +455,7 @@ async function rotateCodexAccount({
   observedAt,
   probeUsageSnapshotsByProviderImpl,
   activateCodexPoolSelectionImpl,
+  avoidCurrentLabel = false,
 }) {
   const state = loadAimgrState(statePath);
   const preserved = preserveLiveCodexAuthForActiveLabel({ state, homeDir, env, observedAt });
@@ -314,6 +466,7 @@ async function rotateCodexAccount({
     observedAt,
     probeUsageSnapshotsByProviderImpl,
     selectionMode: "weighted_usage",
+    avoidCurrentLabel,
   });
   writeJsonFileWithBackup(statePath, state);
   return { activated, preserved };
@@ -347,7 +500,7 @@ export async function runCodexTender(
       getThreadGoal: getCodexThreadGoal,
     },
     sleepImpl = sleep,
-    probeUsageSnapshotsByProviderImpl,
+    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
     activateCodexPoolSelectionImpl = activateCodexPoolSelection,
   } = {},
 ) {
@@ -364,6 +517,9 @@ export async function runCodexTender(
   let threadId = normalizedCodexArgs.resumeSessionId;
   let preflightResult = null;
   let restarts = 0;
+  let paneRateLimitMatchCount = 0;
+  let pendingRateLimitRecovery = null;
+  let nextUsageRateLimitCheckAtMs = 0;
 
   if (preflight) {
     const state = loadAimgrState(statePath);
@@ -418,28 +574,10 @@ export async function runCodexTender(
     }),
   });
   events.push({ type: "session_started", mode: startMode, sessionName, threadId });
+  paneRateLimitMatchCount = capturePaneRateLimitMatchCount({ tmux, sessionName, events });
   const attachProcess = attach ? tmux.attach(sessionName) : null;
   if (threadId) {
-    const promptConfirmed = await confirmResumePrompt({
-      tmux,
-      sessionName,
-      sleepImpl,
-      pollMs: Math.min(effectivePollMs, 1_000),
-      timeoutMs: promptTimeoutMs,
-      events,
-    });
-    if (!promptConfirmed) {
-      return {
-        status: "blocked",
-        reason: "resume_prompt_unconfirmed",
-        sessionName,
-        threadId,
-        restarts,
-        preflight: preflightResult,
-        rotations,
-        events,
-      };
-    }
+    maybeConfirmResumePrompt({ tmux, sessionName, events });
   }
 
   for (let pollIteration = 0; pollIteration < effectiveMaxPollIterations; pollIteration += 1) {
@@ -461,9 +599,55 @@ export async function runCodexTender(
 
     const goal = await readGoal({ appServerClient, codexBin, codexHome, env, threadId, events });
     const goalStatus = goal?.status ?? null;
-    const shouldRotate = STOPPED_FOR_ROTATION_STATUSES.has(goalStatus);
+    let recoveryTrigger = STOPPED_FOR_ROTATION_STATUSES.has(goalStatus)
+      ? {
+          source: "goal",
+          reason: "goal_usage_limited",
+          goalStatus,
+          confirmGoalPrompt: true,
+        }
+      : null;
 
-    if (!sessionAlive && !shouldRotate) {
+    if (!recoveryTrigger && pendingRateLimitRecovery && threadId) {
+      recoveryTrigger = pendingRateLimitRecovery;
+      pendingRateLimitRecovery = null;
+    }
+
+    if (!recoveryTrigger && sessionAlive) {
+      const paneDetection = detectNewPaneRateLimit({
+        tmux,
+        sessionName,
+        seenMatchCount: paneRateLimitMatchCount,
+        events,
+      });
+      paneRateLimitMatchCount = paneDetection.seenMatchCount;
+      recoveryTrigger = paneDetection.trigger;
+    }
+
+    if (!recoveryTrigger && Date.now() >= nextUsageRateLimitCheckAtMs) {
+      const observedMs = Date.now();
+      nextUsageRateLimitCheckAtMs = observedMs + RATE_LIMIT_USAGE_CHECK_MS;
+      recoveryTrigger = await detectActiveCodexUsageRateLimit({
+        statePath,
+        homeDir,
+        env,
+        probeUsageSnapshotsByProviderImpl,
+        events,
+      });
+    }
+
+    if (recoveryTrigger && !threadId) {
+      pendingRateLimitRecovery = recoveryTrigger;
+      events.push({
+        type: "rate_limit_recovery_waiting_for_thread",
+        source: recoveryTrigger.source,
+        reason: recoveryTrigger.reason,
+      });
+      await sleepImpl(effectivePollMs);
+      continue;
+    }
+
+    if (!sessionAlive && !recoveryTrigger) {
       events.push({ type: "session_ended", goalStatus });
       return {
         status: threadId ? "ended" : "ended_without_thread",
@@ -476,9 +660,23 @@ export async function runCodexTender(
       };
     }
 
-    if (shouldRotate) {
+    if (recoveryTrigger) {
+      events.push({
+        type: "recovery_triggered",
+        source: recoveryTrigger.source,
+        reason: recoveryTrigger.reason,
+        goalStatus: recoveryTrigger.goalStatus ?? goalStatus,
+        label: recoveryTrigger.label,
+        match: recoveryTrigger.match,
+        snapshot: recoveryTrigger.snapshot,
+      });
+
       if (restarts >= effectiveMaxRestarts) {
-        events.push({ type: "max_restarts_reached", goalStatus });
+        events.push({
+          type: "max_restarts_reached",
+          source: recoveryTrigger.source,
+          goalStatus: recoveryTrigger.goalStatus ?? goalStatus,
+        });
         return {
           status: "max_restarts_reached",
           sessionName,
@@ -490,9 +688,42 @@ export async function runCodexTender(
         };
       }
 
-      if (sessionAlive) {
+      const rotation = await rotateCodexAccount({
+        statePath,
+        homeDir,
+        env,
+        observedAt: new Date().toISOString(),
+        probeUsageSnapshotsByProviderImpl,
+        activateCodexPoolSelectionImpl,
+        avoidCurrentLabel: true,
+      });
+      rotations.push(rotation);
+      events.push({
+        type: "rotation",
+        status: rotation.activated.status,
+        preserveStatus: rotation.preserved.status,
+        source: recoveryTrigger.source,
+      });
+      if (rotation.activated.status === "blocked") {
+        return {
+          status: "blocked",
+          reason: getRotationBlockedReason(rotation),
+          sessionName,
+          threadId,
+          restarts,
+          preflight: preflightResult,
+          rotations,
+          events,
+        };
+      }
+
+      if (tmux.hasSession(sessionName)) {
         tmux.sendExit(sessionName);
-        events.push({ type: "session_exit_requested", goalStatus });
+        events.push({
+          type: "session_exit_requested",
+          source: recoveryTrigger.source,
+          goalStatus: recoveryTrigger.goalStatus ?? goalStatus,
+        });
         const exited = await waitForSessionGone({
           tmux,
           sessionName,
@@ -502,35 +733,12 @@ export async function runCodexTender(
         });
         if (!exited && typeof tmux.killSession === "function") {
           tmux.killSession(sessionName);
-          events.push({ type: "session_killed_after_exit_timeout", goalStatus });
+          events.push({
+            type: "session_killed_after_exit_timeout",
+            source: recoveryTrigger.source,
+            goalStatus: recoveryTrigger.goalStatus ?? goalStatus,
+          });
         }
-      }
-
-      const rotation = await rotateCodexAccount({
-        statePath,
-        homeDir,
-        env,
-        observedAt: new Date().toISOString(),
-        probeUsageSnapshotsByProviderImpl,
-        activateCodexPoolSelectionImpl,
-      });
-      rotations.push(rotation);
-      events.push({
-        type: "rotation",
-        status: rotation.activated.status,
-        preserveStatus: rotation.preserved.status,
-      });
-      if (rotation.activated.status === "blocked") {
-        return {
-          status: "blocked",
-          reason: "rotation_blocked",
-          sessionName,
-          threadId,
-          restarts,
-          preflight: preflightResult,
-          rotations,
-          events,
-        };
       }
 
       restarts += 1;
@@ -546,28 +754,33 @@ export async function runCodexTender(
         }),
       });
       events.push({ type: "session_started", mode: "resume", sessionName, threadId });
+      paneRateLimitMatchCount = capturePaneRateLimitMatchCount({ tmux, sessionName, events });
       if (attach && attachProcess?.exitCode !== null) {
         tmux.attach(sessionName);
       }
-      const promptConfirmed = await confirmResumePrompt({
-        tmux,
-        sessionName,
-        sleepImpl,
-        pollMs: Math.min(effectivePollMs, 1_000),
-        timeoutMs: promptTimeoutMs,
-        events,
-      });
-      if (!promptConfirmed) {
-        return {
-          status: "blocked",
-          reason: "resume_prompt_unconfirmed",
+      if (recoveryTrigger.confirmGoalPrompt) {
+        const promptConfirmed = await confirmResumePrompt({
+          tmux,
           sessionName,
-          threadId,
-          restarts,
-          preflight: preflightResult,
-          rotations,
+          sleepImpl,
+          pollMs: Math.min(effectivePollMs, 1_000),
+          timeoutMs: promptTimeoutMs,
           events,
-        };
+        });
+        if (!promptConfirmed) {
+          return {
+            status: "blocked",
+            reason: "resume_prompt_unconfirmed",
+            sessionName,
+            threadId,
+            restarts,
+            preflight: preflightResult,
+            rotations,
+            events,
+          };
+        }
+      } else {
+        maybeConfirmResumePrompt({ tmux, sessionName, events });
       }
       await sleepImpl(Math.min(effectivePollMs, 1_000));
       continue;

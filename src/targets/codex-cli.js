@@ -461,6 +461,7 @@ export async function activateCodexPoolSelection({
   usageByProvider: usageByProviderOverride,
   probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
   selectionMode = "round_robin",
+  avoidCurrentLabel = false,
 }) {
   ensureStateShape(state);
   // Structural target validation comes first: if this machine's Codex home is not
@@ -480,6 +481,12 @@ export async function activateCodexPoolSelection({
     usageByLabel,
     observedAt,
   });
+  const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
+  const currentLabel = currentTarget.activeLabel ?? currentTarget.inferredLabel ?? null;
+  const selectionEligibleLabels =
+    avoidCurrentLabel && currentLabel
+      ? poolStatus.eligibleLabels.filter((label) => label !== currentLabel)
+      : poolStatus.eligibleLabels;
 
   if (poolStatus.labels.length === 0) {
     throw new Error(
@@ -489,8 +496,23 @@ export async function activateCodexPoolSelection({
   }
 
   const target = getCodexTargetState(state);
+  if (avoidCurrentLabel && selectionEligibleLabels.length === 0) {
+    const receipt = {
+      action: "codex_use",
+      status: "blocked",
+      observedAt,
+      previousLabel: currentLabel ?? undefined,
+      warnings: [],
+      blockers: [{ reason: "no_alternate_pool_account" }],
+      reasons: ["avoid_current_label"],
+      wroteAuthJson: false,
+    };
+    target.lastSelectionReceipt = receipt;
+    recordOpenaiCodexBlockedSelectionHistory(state, { observedAt, reason: "no_alternate_pool_account" });
+    return { status: "blocked", receipt, wrote: false };
+  }
+
   if (poolStatus.eligibleLabels.length === 0) {
-    const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
     clearManagedCodexCliActivation({ state, homeDir, env });
     const receipt = {
       action: "codex_use",
@@ -507,20 +529,18 @@ export async function activateCodexPoolSelection({
     return { status: "blocked", receipt, wrote: false };
   }
 
-  const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
-  const currentLabel = currentTarget.activeLabel ?? currentTarget.inferredLabel ?? null;
   let selection;
   if (selectionMode === "round_robin") {
     selection = pickNextCodexUseRoundRobinLabel({
       poolLabels: poolStatus.labels,
-      eligibleLabels: poolStatus.eligibleLabels,
+      eligibleLabels: selectionEligibleLabels,
       currentLabel,
     });
   } else if (selectionMode === "weighted_usage") {
     const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
     const currentAssignments = getOpenclawAssignments(state);
     const rankedCandidates = rankPoolCandidates({
-      labels: poolStatus.eligibleLabels,
+      labels: selectionEligibleLabels,
       usage: usageByLabel,
       currentLabel,
       currentAssignments,
@@ -529,7 +549,10 @@ export async function activateCodexPoolSelection({
       lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
       now: Date.parse(observedAt),
     });
-    selection = pickNextBestLocalCliPoolLabel({ rankedCandidates });
+    selection = pickNextBestLocalCliPoolLabel({
+      rankedCandidates,
+      avoidLabel: avoidCurrentLabel ? currentLabel : null,
+    });
   } else {
     throw new Error(`Unsupported Codex selection mode: ${selectionMode}`);
   }

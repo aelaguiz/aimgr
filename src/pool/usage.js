@@ -24,15 +24,30 @@ export async function fetchCodexUsageSnapshot({
   );
 
   if (!res.ok) {
+    let error;
+    let rateLimitMetadata = {};
+    try {
+      const data = await res.json();
+      rateLimitMetadata = extractCodexRateLimitMetadata(data);
+      const rawError = data?.error?.message ?? data?.message ?? data?.detail;
+      if (typeof rawError === "string" && rawError.trim()) {
+        error = rawError.trim();
+      }
+    } catch {
+      // ignore parse errors
+    }
     return {
       provider: OPENAI_CODEX_PROVIDER,
       ok: false,
       status: res.status,
       tokenExpired: res.status === 401 || res.status === 403,
+      ...(error ? { error } : {}),
+      ...rateLimitMetadata,
     };
   }
 
   const data = await res.json();
+  const rateLimitMetadata = extractCodexRateLimitMetadata(data);
   const windows = [];
 
   const primary = data?.rate_limit?.primary_window;
@@ -68,7 +83,43 @@ export async function fetchCodexUsageSnapshot({
     ok: true,
     windows,
     plan,
+    ...rateLimitMetadata,
   };
+}
+
+export function extractCodexRateLimitMetadata(data) {
+  const metadata = {};
+  const rateLimit = isObject(data?.rate_limit) ? data.rate_limit : {};
+  const allowed =
+    typeof data?.allowed === "boolean"
+      ? data.allowed
+      : typeof rateLimit.allowed === "boolean"
+        ? rateLimit.allowed
+        : undefined;
+  const limitReached =
+    typeof data?.limit_reached === "boolean"
+      ? data.limit_reached
+      : typeof rateLimit.limit_reached === "boolean"
+        ? rateLimit.limit_reached
+        : undefined;
+  const rateLimitReachedTypeRaw =
+    typeof data?.rate_limit_reached_type === "string"
+      ? data.rate_limit_reached_type
+      : typeof rateLimit.rate_limit_reached_type === "string"
+        ? rateLimit.rate_limit_reached_type
+        : "";
+  const rateLimitReachedType = rateLimitReachedTypeRaw.trim();
+
+  if (allowed !== undefined) {
+    metadata.allowed = allowed;
+  }
+  if (limitReached !== undefined) {
+    metadata.limitReached = limitReached;
+  }
+  if (rateLimitReachedType) {
+    metadata.rateLimitReachedType = rateLimitReachedType;
+  }
+  return metadata;
 }
 
 export function buildClaudeUsageWindows(data) {

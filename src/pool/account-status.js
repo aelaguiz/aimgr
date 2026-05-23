@@ -239,9 +239,19 @@ export function derivePoolAccountStatus({ account, label, credentials, browserFa
 
 export function isUsageSnapshotExhausted(snapshot) {
   if (!snapshot) return false;
-  if (snapshot.ok !== true) {
-    return snapshot.status === 429 || snapshot.status === 409 || /rate limit|exhaust/i.test(String(snapshot.error ?? ""));
-  }
+  if (isUsageSnapshotHardRateLimited(snapshot)) return true;
+  if (snapshot.ok !== true) return false;
   const { primaryUsedPct, secondaryUsedPct } = getCodexUsagePercents(snapshot);
   return primaryUsedPct >= 95 || secondaryUsedPct >= 95;
+}
+
+export function isUsageSnapshotHardRateLimited(snapshot) {
+  if (!snapshot) return false;
+  if (snapshot.ok !== true) {
+    return snapshot.status === 429 || snapshot.status === 409 || /rate limit|usage limit|too many requests|exhaust/i.test(String(snapshot.error ?? ""));
+  }
+  if (snapshot.allowed === false || snapshot.limitReached === true) return true;
+  if (typeof snapshot.rateLimitReachedType === "string" && snapshot.rateLimitReachedType.trim()) return true;
+  const { primaryUsedPct, secondaryUsedPct } = getCodexUsagePercents(snapshot);
+  return primaryUsedPct >= 100 || secondaryUsedPct >= 100;
 }

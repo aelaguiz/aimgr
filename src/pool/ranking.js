@@ -241,8 +241,14 @@ export function pickNextBestPoolLabel({ rankedCandidates }) {
 export function pickNextBestLocalCliPoolLabel({
   rankedCandidates,
   minPrimaryRemainingPct = LOCAL_CLI_MIN_PRIMARY_REMAINING_PCT,
+  avoidLabel,
 }) {
+  const avoided = typeof avoidLabel === "string" && avoidLabel.trim() ? normalizeLabel(avoidLabel) : null;
   const candidates = (Array.isArray(rankedCandidates) ? rankedCandidates : [])
+    .filter((candidate) => {
+      if (!avoided || typeof candidate?.label !== "string") return true;
+      return normalizeLabel(candidate.label) !== avoided;
+    })
     .map((candidate) => ({
       ...candidate,
       keptCurrent: false,
