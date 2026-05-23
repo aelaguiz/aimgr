@@ -27,6 +27,7 @@ export async function handleCodex(context) {
         cwd: opts.workdir,
         codexBin: opts.codexBin,
         codexProfile: opts.codexProfile ?? opts.profile,
+        resumeSessionId: opts.resumeSessionId,
         codexArgs: opts.afterDoubleDash,
         sessionName: opts.tmuxSession,
         attach: !opts.noAttach,

@@ -8,6 +8,9 @@ import { runCodexTender } from "../../src/targets/codex-tender.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 
+const SESSION_ID = "019e5487-026d-7f52-8fbd-1d123045f1c6";
+const OTHER_SESSION_ID = "019e5487-026d-7f52-8fbd-1d123045f1c7";
+
 function writeMinimalState(home) {
   writeJson(path.join(home, ".aimgr", "secrets.json"), {
     schemaVersion: "0.2",
@@ -133,6 +136,27 @@ for (const flag of ["--profile", "--codex-profile"]) {
   });
 }
 
+for (const flag of ["--resume", "--session-id"]) {
+  test(`codex run --tend accepts ${flag} for existing Codex session tending`, async () => {
+    let captured = null;
+    await runCli(["codex", "run", "--tend", "--no-attach", "-p", "yolo", flag, SESSION_ID], {
+      runCodexTenderImpl: async (params) => {
+        captured = params;
+        return {
+          status: "ended",
+          sessionName: params.sessionName,
+          threadId: SESSION_ID,
+          restarts: 0,
+          events: [],
+        };
+      },
+    });
+
+    assert.equal(captured.codexProfile, "yolo");
+    assert.equal(captured.resumeSessionId, SESSION_ID);
+  });
+}
+
 test("codex run --tend reports blocked tender with exit code 1", async () => {
   const result = await runCliWithExitCode(["codex", "run", "--tend", "--no-attach"], {
     runCodexTenderImpl: async () => ({
@@ -147,6 +171,162 @@ test("codex run --tend reports blocked tender with exit code 1", async () => {
   assert.equal(parsed.ok, false);
   assert.equal(parsed.tended.status, "blocked");
   assert.equal(parsed.tended.reason, "rotation_blocked");
+});
+
+test("runCodexTender tends an explicit resumed Codex session without thread discovery", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  let rotations = 0;
+  let goalReads = 0;
+  const appServerClient = {
+    listThreads: async () => {
+      throw new Error("explicit resume should not discover recent threads");
+    },
+    getThreadGoal: async ({ threadId }) => {
+      assert.equal(threadId, SESSION_ID);
+      goalReads += 1;
+      if (goalReads === 1) {
+        return { threadId: SESSION_ID, status: "usageLimited" };
+      }
+      tmux.completeAfterNextGoalRead = true;
+      return { threadId: SESSION_ID, status: "complete" };
+    },
+  };
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      cwd: "/tmp/project",
+      codexBin: "/tmp/codex",
+      codexProfile: "yolo",
+      resumeSessionId: SESSION_ID,
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+      maxRestarts: 1,
+    },
+    {
+      tmux,
+      appServerClient,
+      sleepImpl: async () => {},
+      activateCodexPoolSelectionImpl: async () => {
+        rotations += 1;
+        return {
+          status: "activated",
+          receipt: { label: "pro2", blockers: [], warnings: [] },
+          wrote: true,
+        };
+      },
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.threadId, SESSION_ID);
+  assert.equal(result.restarts, 1);
+  assert.equal(rotations, 1);
+  assert.equal(tmux.sentEnter, 2);
+  assert.deepEqual(
+    tmux.newSessions.map((session) => session.command),
+    [
+      `/tmp/codex --no-alt-screen -p yolo resume ${SESSION_ID}`,
+      `/tmp/codex --no-alt-screen -p yolo resume ${SESSION_ID}`,
+    ],
+  );
+  assert.ok(result.events.some((event) => event.type === "thread_provided" && event.threadId === SESSION_ID));
+});
+
+test("runCodexTender accepts exact Codex resume passthrough for existing sessions", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  tmux.completeAfterNextGoalRead = true;
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      codexBin: "/tmp/codex",
+      codexArgs: ["resume", SESSION_ID],
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+    },
+    {
+      tmux,
+      appServerClient: {
+        listThreads: async () => {
+          throw new Error("resume passthrough should not discover recent threads");
+        },
+        getThreadGoal: async ({ threadId }) => {
+          assert.equal(threadId, SESSION_ID);
+          return { threadId: SESSION_ID, status: "complete" };
+        },
+      },
+      sleepImpl: async () => {},
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.threadId, SESSION_ID);
+  assert.equal(tmux.sentEnter, 1);
+  assert.equal(tmux.newSessions[0].command, `/tmp/codex --no-alt-screen resume ${SESSION_ID}`);
+});
+
+test("runCodexTender rejects unsafe resumed-session inputs before starting tmux", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+
+  const cases = [
+    {
+      input: { resumeSessionId: "--last" },
+      expected: /Codex session id from AIMGR options must be a UUID/,
+    },
+    {
+      input: { codexArgs: ["resume", "--last"] },
+      expected: /Codex session id from Codex resume passthrough must be a UUID/,
+    },
+    {
+      input: { codexArgs: ["resume", "my-thread"] },
+      expected: /Codex session id from Codex resume passthrough must be a UUID/,
+    },
+    {
+      input: { resumeSessionId: SESSION_ID, codexArgs: ["resume", OTHER_SESSION_ID] },
+      expected: /Conflicting Codex session ids/,
+    },
+    {
+      input: { codexArgs: ["resume", SESSION_ID, "continue"] },
+      expected: /only supports `resume <SESSION_ID>`/,
+    },
+    {
+      input: { resumeSessionId: SESSION_ID, codexArgs: ["--model", "gpt-5.5"] },
+      expected: /pass-through args are not supported with tended resume sessions/,
+    },
+  ];
+
+  for (const { input, expected } of cases) {
+    const tmux = createFakeTmux();
+    await assert.rejects(
+      runCodexTender(
+        {
+          statePath: path.join(home, ".aimgr", "secrets.json"),
+          homeDir: home,
+          sessionName: "aimgr-test",
+          attach: false,
+          preflight: false,
+          ...input,
+        },
+        {
+          tmux,
+        },
+      ),
+      expected,
+    );
+    assert.equal(tmux.newSessions.length, 0);
+  }
 });
 
 test("runCodexTender rotates usage-limited goals and confirms the built-in resume prompt", async () => {

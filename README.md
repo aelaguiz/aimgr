@@ -742,6 +742,8 @@ across account rotation:
 ```bash
 aim codex run --tend
 aim codex run --tend -p yolo
+aim codex run --tend -p yolo --resume 019e5487-026d-7f52-8fbd-1d123045f1c6
+aim codex run --tend -p yolo -- resume 019e5487-026d-7f52-8fbd-1d123045f1c6
 aim codex run --tend -p yolo --no-attach --tmux-session overnight-codex -- --model gpt-5.5
 ```
 
@@ -749,7 +751,10 @@ Operator model:
 
 - the Codex TUI is still the interface; AIMGR starts it in tmux and can attach the current terminal
 - `-p yolo`, `--profile yolo`, and `--codex-profile yolo` select the Codex config profile and AIMGR preserves it when resuming after rotation
-- AIMGR discovers the exact materialized Codex thread id through installed Codex app-server state
+- `--resume <session-id>` and `--session-id <session-id>` port an existing Codex session into tending; use the UUID from `To continue this session, run codex resume <uuid>`
+- AIMGR also accepts exact Codex passthrough resume form: `aim codex run --tend -- resume <session-id>`
+- Codex calls the CLI argument `SESSION_ID`; AIMGR stores and polls it internally as `threadId` because Codex app-server goal APIs use `threadId`
+- for new sessions, AIMGR discovers the exact materialized Codex thread id through installed Codex app-server state
 - when the persisted goal reaches `usageLimited`, AIMGR exits the old TUI, rotates through the existing Codex pool selector, and starts `codex resume <thread-id>`
 - AIMGR confirms Codex's built-in `Resume paused goal?` prompt by sending Enter to the tmux pane
 - AIMGR does not use `codex resume <thread-id> "/goal resume"` because installed Codex treats that as a normal user message, not a slash command

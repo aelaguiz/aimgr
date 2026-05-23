@@ -28,6 +28,7 @@ export function parseArgs(argv) {
     tmuxSession: undefined,
     codexBin: undefined,
     codexProfile: undefined,
+    resumeSessionId: undefined,
     maxRestarts: undefined,
     pollSeconds: undefined,
     promptTimeoutSeconds: undefined,
@@ -175,6 +176,14 @@ export function parseArgs(argv) {
     }
     if (arg === "-p" || arg === "--codex-profile") {
       opts.codexProfile = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--resume" || arg === "--session-id") {
+      if (i + 1 >= argv.length) {
+        throw new Error(`${arg} requires a Codex session UUID.`);
+      }
+      opts.resumeSessionId = argv[i + 1];
       i += 1;
       continue;
     }

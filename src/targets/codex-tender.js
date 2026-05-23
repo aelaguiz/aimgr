@@ -10,6 +10,7 @@ import { activateCodexPoolSelection, preserveLiveCodexAuthForActiveLabel } from 
 import { getCodexThreadGoal, listCodexThreads } from "./codex-app-server.js";
 
 const STOPPED_FOR_ROTATION_STATUSES = new Set(["usageLimited"]);
+const CODEX_SESSION_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 function parsePositiveInteger(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -90,6 +91,54 @@ function extractCodexProfile({ codexProfile, codexArgs }) {
   }
 
   return { codexArgs: cleanedArgs, codexProfile: effectiveProfile };
+}
+
+function normalizeCodexSessionId(value, source) {
+  const sessionId = String(value ?? "").trim();
+  if (!sessionId) {
+    throw new Error(`Codex session id from ${source} requires a UUID copied from "codex resume <SESSION_ID>".`);
+  }
+  if (!CODEX_SESSION_ID_PATTERN.test(sessionId)) {
+    throw new Error(
+      `Codex session id from ${source} must be a UUID copied from "codex resume <SESSION_ID>"; got ${sessionId}.`,
+    );
+  }
+  return sessionId;
+}
+
+function normalizeCodexInvocation({ codexProfile, codexArgs, resumeSessionId }) {
+  const normalized = extractCodexProfile({ codexProfile, codexArgs });
+  let effectiveResumeSessionId =
+    resumeSessionId === undefined || resumeSessionId === null || resumeSessionId === ""
+      ? null
+      : normalizeCodexSessionId(resumeSessionId, "AIMGR options");
+
+  if (normalized.codexArgs[0] === "resume") {
+    if (normalized.codexArgs.length < 2) {
+      throw new Error('Codex resume passthrough requires a UUID: aim codex run --tend -- resume <SESSION_ID>.');
+    }
+    const passThroughSessionId = normalizeCodexSessionId(normalized.codexArgs[1], "Codex resume passthrough");
+    if (effectiveResumeSessionId && effectiveResumeSessionId !== passThroughSessionId) {
+      throw new Error(
+        `Conflicting Codex session ids: ${effectiveResumeSessionId} from AIMGR options and ${passThroughSessionId} from Codex resume passthrough.`,
+      );
+    }
+    if (normalized.codexArgs.length > 2) {
+      throw new Error(
+        "Codex resume passthrough only supports `resume <SESSION_ID>` for tended sessions; pass AIMGR options before `--`.",
+      );
+    }
+    effectiveResumeSessionId = passThroughSessionId;
+    normalized.codexArgs = [];
+  }
+
+  if (effectiveResumeSessionId && normalized.codexArgs.length > 0) {
+    throw new Error(
+      "Codex pass-through args are not supported with tended resume sessions; pass AIMGR options such as `-p yolo` before `--`.",
+    );
+  }
+
+  return { ...normalized, resumeSessionId: effectiveResumeSessionId };
 }
 
 function buildCodexCommand({ codexBin, mode, threadId, codexArgs, codexProfile }) {
@@ -278,6 +327,7 @@ export async function runCodexTender(
     cwd = process.cwd(),
     codexBin = "codex",
     codexProfile,
+    resumeSessionId,
     codexArgs = [],
     sessionName = buildCodexTenderSessionName(),
     attach = true,
@@ -306,12 +356,12 @@ export async function runCodexTender(
   const exitTimeoutMs = parsePositiveNumber(exitTimeoutSeconds, 15) * 1000;
   const effectiveMaxRestarts = parsePositiveInteger(maxRestarts, Number.POSITIVE_INFINITY);
   const effectiveMaxPollIterations = parsePositiveInteger(maxPollIterations, Number.POSITIVE_INFINITY);
-  const normalizedCodexArgs = extractCodexProfile({ codexProfile, codexArgs });
+  const normalizedCodexArgs = normalizeCodexInvocation({ codexProfile, codexArgs, resumeSessionId });
   const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
   const events = [];
   const rotations = [];
   const startedAtSeconds = Math.floor(Number(startedAtMs) / 1000);
-  let threadId = null;
+  let threadId = normalizedCodexArgs.resumeSessionId;
   let preflightResult = null;
   let restarts = 0;
 
@@ -352,18 +402,45 @@ export async function runCodexTender(
     }
   }
 
+  if (threadId) {
+    events.push({ type: "thread_provided", threadId });
+  }
+  const startMode = threadId ? "resume" : "start";
   tmux.newSession({
     sessionName,
     cwd,
     command: buildCodexCommand({
       codexBin,
-      mode: "start",
+      mode: startMode,
+      threadId,
       codexProfile: normalizedCodexArgs.codexProfile,
       codexArgs: normalizedCodexArgs.codexArgs,
     }),
   });
-  events.push({ type: "session_started", mode: "start", sessionName });
+  events.push({ type: "session_started", mode: startMode, sessionName, threadId });
   const attachProcess = attach ? tmux.attach(sessionName) : null;
+  if (threadId) {
+    const promptConfirmed = await confirmResumePrompt({
+      tmux,
+      sessionName,
+      sleepImpl,
+      pollMs: Math.min(effectivePollMs, 1_000),
+      timeoutMs: promptTimeoutMs,
+      events,
+    });
+    if (!promptConfirmed) {
+      return {
+        status: "blocked",
+        reason: "resume_prompt_unconfirmed",
+        sessionName,
+        threadId,
+        restarts,
+        preflight: preflightResult,
+        rotations,
+        events,
+      };
+    }
+  }
 
   for (let pollIteration = 0; pollIteration < effectiveMaxPollIterations; pollIteration += 1) {
     const sessionAlive = tmux.hasSession(sessionName);

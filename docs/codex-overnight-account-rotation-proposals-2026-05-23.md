@@ -23,7 +23,7 @@ Implementation status:
 - New operator command:
 
   ```bash
-  aim codex run --tend [-p <profile>] [-- <codex args...>]
+  aim codex run --tend [-p <profile>] [--resume <session-id>] [-- <codex args...>]
   ```
 
 - Core implementation files:
@@ -51,18 +51,38 @@ aim codex run --tend --workdir /path/to/repo
 aim codex run --tend -p yolo
 aim codex run --tend --profile yolo
 aim codex run --tend --codex-profile yolo
+aim codex run --tend -p yolo --resume 019e5487-026d-7f52-8fbd-1d123045f1c6
+aim codex run --tend -p yolo --session-id 019e5487-026d-7f52-8fbd-1d123045f1c6
+aim codex run --tend -p yolo -- resume 019e5487-026d-7f52-8fbd-1d123045f1c6
 aim codex run --tend -- --model gpt-5.5 --search
 aim codex run --tend -- --model gpt-5.5 -p yolo --search
 ```
 
 The implemented v1 is tmux-backed. AIMGR starts the normal Codex TUI in tmux,
-discovers the exact materialized thread id through installed Codex app-server
-state, polls the persisted thread goal, rotates only when the goal is
-`usageLimited`, restarts with plain `codex resume <thread-id>`, and confirms
-Codex's built-in resume-goal prompt by sending Enter to the tmux pane.
+uses a provided Codex session UUID or discovers the exact materialized thread id
+through installed Codex app-server state, polls the persisted thread goal,
+rotates only when the goal is `usageLimited`, restarts with plain
+`codex resume <thread-id>`, and confirms Codex's built-in resume-goal prompt by
+sending Enter to the tmux pane.
 Codex profile selection via `-p yolo`, `--profile yolo`, `--codex-profile yolo`,
 or pass-through `-- -p yolo` is preserved on supervised resume.
 It requires `tmux` on `PATH`.
+
+Codex help calls the public CLI argument `SESSION_ID`. Internally, AIMGR stores
+the same UUID as `threadId` because Codex app-server goal methods accept
+`threadId`. This document uses `session id` when talking about the operator CLI
+and `thread id` when talking about app-server state.
+
+Implemented resumed-session behavior:
+
+- `--resume <uuid>` and `--session-id <uuid>` start the first tmux process as
+  `codex --no-alt-screen [-p profile] resume <uuid>`.
+- `aim codex run --tend -- resume <uuid>` is accepted as exact Codex
+  passthrough resume form.
+- `--last`, thread names, missing ids, conflicting ids, and resume prompts after
+  the id are rejected before tmux starts.
+- With a provided UUID, AIMGR skips recent-thread discovery and polls that UUID
+  directly through app-server goal state.
 
 The implementation deliberately does not use:
 
@@ -1370,8 +1390,8 @@ node --test test/codex/use-watch.test.js
 Observed:
 
 ```text
-tests 39
-pass 39
+tests 44
+pass 44
 fail 0
 ```
 
@@ -1383,11 +1403,21 @@ Ground truth from this check:
 - Existing AIMGR tests cover pool ordering, skipped expired labels, non-file
   backed Codex home refusal, and stale managed auth cleanup.
 - New AIMGR tests cover `aim codex run --tend` CLI wiring.
+- New AIMGR tests cover `--resume <session-id>` and
+  `--session-id <session-id>` CLI wiring.
 - New AIMGR tests cover `-p yolo`, `--profile yolo`, `--codex-profile yolo`,
   and pass-through `-- -p yolo` Codex profile handling.
 - New AIMGR tests cover rejecting conflicting Codex profile inputs before
   starting `tmux`.
 - New AIMGR tests cover blocked tender exit-code behavior.
+- New AIMGR tests cover starting the first tmux session as
+  `codex resume <session-id>` when the operator provides an existing Codex
+  session UUID.
+- New AIMGR tests cover exact Codex passthrough resume form:
+  `aim codex run --tend -- resume <session-id>`.
+- New AIMGR tests cover rejecting `--last`, thread names, conflicting session
+  ids, extra resume prompts, and pass-through args that would be silently
+  ignored during a tended resume.
 - New AIMGR tests cover usage-limited goal detection, account rotation, plain
   `codex resume <thread-id>`, and Enter confirmation of the built-in
   resume-goal prompt.
@@ -1437,8 +1467,8 @@ npm test
 Observed:
 
 ```text
-tests 197
-pass 197
+tests 202
+pass 202
 fail 0
 ```
 
@@ -1448,7 +1478,7 @@ Ground truth from this check:
 - JavaScript syntax checks pass across `bin`, `src`, and `test`.
 - The full AIMGR test suite passes after adding the tmux tender, app-server
   client, credential-preservation path, CLI parser changes, help text, README
-  docs, Codex profile preservation, and tests.
+  docs, Codex profile preservation, existing-session resume support, and tests.
 
 ### Production soak not run
 
@@ -1470,6 +1500,8 @@ Verified: real thread listing and goal reads work through installed app-server.
 Verified: no daemon was running during checks.
 Verified: codex resume <thread-id> "/goal resume" is not a real slash-command resume.
 Verified: plain codex resume <thread-id> + Enter on the built-in prompt resumes a real goal.
+Verified: AIMGR can now port an existing Codex session UUID into tending with
+`--resume`, `--session-id`, or exact `-- resume <uuid>` passthrough.
 Verified: AIMGR Codex use/watch/tender tests pass.
 Verified: full AIMGR lint and test suite pass.
 Not run: a multi-hour production soak under real rate-limit pressure.
