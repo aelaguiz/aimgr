@@ -650,6 +650,74 @@ test("runCodexTender rotates and resumes non-goal sessions when the pane shows a
   assert.ok(result.events.some((event) => event.type === "recovery_triggered" && event.source === "pane"));
 });
 
+test("runCodexTender reattaches after recovery when the old tmux attach exits late", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  const attachHandles = [];
+  let initialPaneCaptures = 0;
+  tmux.capturePane = () => {
+    if (tmux.phase === "resume") return "";
+    initialPaneCaptures += 1;
+    return initialPaneCaptures === 1 ? "" : "Too many requests. Please try again later.";
+  };
+  tmux.hasSession = function hasSession() {
+    if (this.phase === "resume" && this.newSessions.length >= 2) return false;
+    return this.alive;
+  };
+  tmux.attach = (sessionName) => {
+    const handle = { exitCode: null, signalCode: null, sessionName };
+    attachHandles.push(handle);
+    return handle;
+  };
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      cwd: "/tmp/project",
+      codexBin: "/tmp/codex",
+      sessionName: "aimgr-test",
+      attach: true,
+      preflight: false,
+      pollSeconds: 0,
+      maxRestarts: 1,
+      startedAtMs: 1_779_500_000_000,
+    },
+    {
+      tmux,
+      appServerClient: {
+        listThreads: async () => [
+          {
+            id: "thread-1",
+            cwd: "/tmp/project",
+            createdAt: 1779500000,
+            updatedAt: 1779500001,
+          },
+        ],
+        getThreadGoal: async () => null,
+      },
+      sleepImpl: async () => {
+        if (attachHandles[0] && attachHandles[0].exitCode === null) {
+          attachHandles[0].exitCode = 0;
+        }
+      },
+      activateCodexPoolSelectionImpl: async () => ({
+        status: "activated",
+        receipt: { label: "pro2", blockers: [], warnings: [] },
+        wrote: true,
+      }),
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.restarts, 1);
+  assert.equal(attachHandles.length, 2);
+  assert.equal(attachHandles[0].sessionName, "aimgr-test");
+  assert.equal(attachHandles[1].sessionName, "aimgr-test");
+  assert.equal(result.events.filter((event) => event.type === "session_attached").length, 2);
+});
+
 test("runCodexTender rotates non-goal sessions when the active usage snapshot is hard limited", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");

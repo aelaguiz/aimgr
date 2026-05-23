@@ -229,6 +229,33 @@ async function waitForSessionGone({ tmux, sessionName, sleepImpl, pollMs, maxWai
   return !tmux.hasSession(sessionName);
 }
 
+function isAttachProcessDone(attachProcess) {
+  return (
+    !attachProcess
+    || attachProcess.exitCode !== null
+    || attachProcess.signalCode !== null
+  );
+}
+
+async function waitForAttachProcessDone({
+  attachProcess,
+  sleepImpl,
+  pollMs,
+  maxWaitMs,
+  events,
+}) {
+  if (!attachProcess) return true;
+  const deadline = Date.now() + maxWaitMs;
+  while (!isAttachProcessDone(attachProcess) && Date.now() < deadline) {
+    await sleepImpl(pollMs);
+  }
+  const done = isAttachProcessDone(attachProcess);
+  if (!done) {
+    events.push({ type: "attach_process_still_active_after_session_exit" });
+  }
+  return done;
+}
+
 function threadTimestampMatches(thread, { cwd, startedAtSeconds }) {
   if (thread?.cwd && path.resolve(thread.cwd) !== path.resolve(cwd)) {
     return false;
@@ -575,7 +602,11 @@ export async function runCodexTender(
   });
   events.push({ type: "session_started", mode: startMode, sessionName, threadId });
   paneRateLimitMatchCount = capturePaneRateLimitMatchCount({ tmux, sessionName, events });
-  const attachProcess = attach ? tmux.attach(sessionName) : null;
+  let attachProcess = null;
+  if (attach) {
+    attachProcess = tmux.attach(sessionName);
+    events.push({ type: "session_attached", sessionName });
+  }
   if (threadId) {
     maybeConfirmResumePrompt({ tmux, sessionName, events });
   }
@@ -741,6 +772,16 @@ export async function runCodexTender(
         }
       }
 
+      if (attach) {
+        await waitForAttachProcessDone({
+          attachProcess,
+          sleepImpl,
+          pollMs: Math.min(effectivePollMs, 1_000),
+          maxWaitMs: Math.min(exitTimeoutMs, 5_000),
+          events,
+        });
+      }
+
       restarts += 1;
       tmux.newSession({
         sessionName,
@@ -755,8 +796,9 @@ export async function runCodexTender(
       });
       events.push({ type: "session_started", mode: "resume", sessionName, threadId });
       paneRateLimitMatchCount = capturePaneRateLimitMatchCount({ tmux, sessionName, events });
-      if (attach && attachProcess?.exitCode !== null) {
-        tmux.attach(sessionName);
+      if (attach) {
+        attachProcess = tmux.attach(sessionName);
+        events.push({ type: "session_attached", sessionName });
       }
       if (recoveryTrigger.confirmGoalPrompt) {
         const promptConfirmed = await confirmResumePrompt({
