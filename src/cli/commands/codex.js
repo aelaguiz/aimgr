@@ -46,7 +46,6 @@ async function runRedisCodexWatchOnce(context, { thresholdPct }) {
       env,
       observedAt: new Date().toISOString(),
     });
-    await publishCodexPreserveResult({ runtime, state: runtime.state, preserved });
     const watched = await watchCodexPoolSelectionOnce(
       {
         state: runtime.state,
@@ -59,6 +58,7 @@ async function runRedisCodexWatchOnce(context, { thresholdPct }) {
         activateCodexPoolSelectionImpl,
       },
     );
+    await publishCodexPreserveResult({ runtime, state: runtime.state, preserved });
     writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
     return { preserved, watched };
   } finally {
@@ -78,12 +78,21 @@ function createRedisCodexStateRuntime({ homeDir, connectRedisStoreImpl }) {
     },
     async withMutableState(fn) {
       const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
+      const stagedCodexPreserves = [];
       try {
         const result = await fn(runtime.state, {
           runtime,
-          publishCodexPreserveResult: async (preserved) =>
-            publishCodexPreserveResult({ runtime, state: runtime.state, preserved }),
+          publishCodexPreserveResult: async (preserved) => {
+            if (preserved?.status === "updated" && preserved.label) {
+              stagedCodexPreserves.push(preserved);
+              return { status: "staged", label: preserved.label };
+            }
+            return null;
+          },
         });
+        for (const preserved of stagedCodexPreserves) {
+          await publishCodexPreserveResult({ runtime, state: runtime.state, preserved });
+        }
         writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
         return result;
       } finally {

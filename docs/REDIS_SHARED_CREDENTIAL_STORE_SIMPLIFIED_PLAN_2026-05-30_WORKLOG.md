@@ -18,6 +18,24 @@
   - `npm run lint`: passed
   - `env -u CODEX_HOME npm test`: 230 passed, 0 failed
 
+## 2026-05-30T17:45Z - Codex Tend Redis review
+
+- Reviewed `aim codex run --tend` against the Redis shared credential cutover.
+- Added regression coverage proving Redis-configured Tend:
+  - reads through the Redis-backed state runtime,
+  - publishes a live Codex auth refresh back to the shared Redis credential row,
+  - does not recreate `~/.aimgr/secrets.json`,
+  - does not publish a staged live-auth refresh if the Tend mutation fails after preservation.
+- Fixed the Redis Tend commit boundary:
+  - `stateRuntime.withMutableState` now stages Codex preserve publishes and commits them only after the mutation callback succeeds.
+  - `aim codex watch --once` now publishes preserved live auth after the watch mutation finishes successfully, instead of before.
+- Verification:
+  - `env -u CODEX_HOME node --test test/codex/codex-10.cases.js test/cli/redis-projection-command.test.js`: 34 passed, 0 failed
+  - `npm run lint`: passed
+  - `env -u CODEX_HOME npm test`: 232 passed, 0 failed
+  - Fresh `code-review` run directory: `/private/tmp/code-review/20260530_113734_774ab675_cca4fdc6`
+  - Fresh review verdict: `approve`, no blocking findings, no non-blocking findings
+
 ## 2026-05-30T16:22Z - This-machine recovery cutover
 
 - Corrected migration source-of-truth behavior:

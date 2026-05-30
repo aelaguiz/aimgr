@@ -2,15 +2,65 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
+import { connectRedisStore, importCredentialsSnapshot, readSnapshot } from "../../src/coordination/redis-store.js";
 import { buildCodexCredentialFingerprint } from "../../src/credentials/codex.js";
+import { resolveCodexAuthFilePath, resolveManagedCodexHomeDir } from "../../src/io/paths.js";
 import { activateCodexPoolSelection, preserveLiveCodexAuthForActiveLabel } from "../../src/targets/codex-cli.js";
 import { runCodexTender } from "../../src/targets/codex-tender.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
+import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 
 const SESSION_ID = "019e5487-026d-7f52-8fbd-1d123045f1c6";
 const OTHER_SESSION_ID = "019e5487-026d-7f52-8fbd-1d123045f1c7";
 const TEST_REMOTE = "ws://aimgr-test";
+const REDIS_PREFIX = "aimgr:codex-tend-test";
+
+function token(accountId, exp = Math.floor(Date.now() / 1000) + 3600) {
+  return makeFakeJwt({
+    exp,
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: accountId,
+      chatgpt_plan_type: "pro",
+    },
+  });
+}
+
+function codexCredential(accountId = "acct_boss", refresh = "REFRESH_BOSS") {
+  return {
+    access: token(accountId),
+    refresh,
+    idToken: token(accountId),
+    accountId,
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+  };
+}
+
+async function seedRedisCodexTender({ home, client }) {
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: REDIS_PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: REDIS_PREFIX });
+  await importCredentialsSnapshot(
+    store,
+    {
+      credentials: [
+        {
+          provider: "openai-codex",
+          label: "boss",
+          credential: codexCredential(),
+          identity: { accountId: "acct_boss" },
+          policy: { pool: { enabled: true } },
+          health: { status: "ready", reason: null },
+        },
+      ],
+    },
+    { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
+  );
+  return store;
+}
 
 function writeMinimalState(home) {
   writeJson(path.join(home, ".aimgr", "secrets.json"), {
@@ -195,6 +245,115 @@ test("codex run --tend reports blocked tender with exit code 1", async () => {
   assert.equal(parsed.ok, false);
   assert.equal(parsed.tended.status, "blocked");
   assert.equal(parsed.tended.reason, "rotation_blocked");
+});
+
+test("redis-configured codex run --tend publishes live auth rotation through Redis state runtime", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const store = await seedRedisCodexTender({ home, client });
+
+  await runCli(["codex", "use", "boss", "--home", home], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: REDIS_PREFIX }),
+  });
+
+  const rotated = codexCredential("acct_boss", "REFRESH_ROTATED_BY_TEND");
+  writeJson(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home, env: {} })), {
+    tokens: {
+      access_token: rotated.access,
+      refresh_token: rotated.refresh,
+      id_token: rotated.idToken,
+      account_id: rotated.accountId,
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  let preserved = null;
+  const out = await runCli(["codex", "run", "--tend", "--no-attach", "--home", home], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: REDIS_PREFIX }),
+    runCodexTenderImpl: async ({ stateRuntime, homeDir, env }) => {
+      assert.ok(stateRuntime?.withMutableState);
+      const readOnly = await stateRuntime.withReadOnlyState(async (state) => ({
+        activeLabel: state.targets.codexCli.activeLabel,
+        refresh: state.credentials["openai-codex"].boss.refresh,
+      }));
+      assert.deepEqual(readOnly, {
+        activeLabel: "boss",
+        refresh: "REFRESH_BOSS",
+      });
+      const result = await stateRuntime.withMutableState(async (state, helpers) => {
+        const preserveResult = preserveLiveCodexAuthForActiveLabel({
+          state,
+          homeDir,
+          env,
+          observedAt: "2026-05-30T14:30:00.000Z",
+        });
+        await helpers.publishCodexPreserveResult(preserveResult);
+        return preserveResult;
+      });
+      preserved = result;
+      return {
+        status: "ended",
+        sessionName: "aimgr-test",
+        threadId: "thread-1",
+        restarts: 0,
+        events: [{ type: "test_preserve", status: result.status }],
+      };
+    },
+  });
+
+  assert.equal(JSON.parse(out).ok, true);
+  assert.equal(preserved.status, "updated");
+  const snapshot = await readSnapshot(store);
+  assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_ROTATED_BY_TEND");
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
+});
+
+test("redis-configured codex run --tend does not publish staged live auth when mutation fails", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const store = await seedRedisCodexTender({ home, client });
+
+  await runCli(["codex", "use", "boss", "--home", home], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: REDIS_PREFIX }),
+  });
+
+  const rotated = codexCredential("acct_boss", "REFRESH_SHOULD_NOT_COMMIT");
+  writeJson(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home, env: {} })), {
+    tokens: {
+      access_token: rotated.access,
+      refresh_token: rotated.refresh,
+      id_token: rotated.idToken,
+      account_id: rotated.accountId,
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  await assert.rejects(
+    runCli(["codex", "run", "--tend", "--no-attach", "--home", home], {
+      env: {},
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: REDIS_PREFIX }),
+      runCodexTenderImpl: async ({ stateRuntime, homeDir, env }) => {
+        await stateRuntime.withMutableState(async (state, helpers) => {
+          const preserveResult = preserveLiveCodexAuthForActiveLabel({
+            state,
+            homeDir,
+            env,
+            observedAt: "2026-05-30T14:35:00.000Z",
+          });
+          await helpers.publishCodexPreserveResult(preserveResult);
+          throw new Error("selection failed after preserve");
+        });
+      },
+    }),
+    /selection failed after preserve/,
+  );
+
+  const snapshot = await readSnapshot(store);
+  assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_BOSS");
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
 test("runCodexTender tends an explicit resumed Codex session without thread discovery", async () => {
