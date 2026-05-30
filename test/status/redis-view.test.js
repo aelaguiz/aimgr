@@ -6,6 +6,7 @@ import { connectRedisStore, importSnapshot } from "../../src/coordination/redis-
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { OPENAI_CODEX_PROVIDER } from "../../src/core/constants.js";
 import { resolveAimgrMachineIdPath, resolveAimgrRedisCachePath } from "../../src/io/paths.js";
+import { writeLocalState } from "../../src/state/local-state.js";
 import { buildRedisStatusView } from "../../src/status/redis-view.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 
@@ -138,6 +139,17 @@ test("Redis status view reads Redis snapshot, writes redacted cache, and exposes
       },
     },
   });
+  writeLocalState({
+    homeDir: home,
+    localState: {
+      targets: {
+        codexCli: {
+          activeLabel: "boss",
+          expectedAccountId: "acct_boss",
+        },
+      },
+    },
+  });
   await seedRedis(client);
 
   const result = await buildRedisStatusView({
@@ -154,8 +166,10 @@ test("Redis status view reads Redis snapshot, writes redacted cache, and exposes
   assert.equal(result.view.redis.labelCount, 1);
   assert.equal(result.view.redis.sessionCount, 1);
   assert.equal(result.view.accounts[0].label, "boss");
+  assert.equal(result.view.codexCli.activeLabel, "boss");
   assert.equal(result.view.redisSessionMatrix[0].sessions.studio.status, "ready");
   assert.equal(result.view.redisSessionMatrix[0].sessions.laptop.status, "missing");
+  assert.equal(result.view.warnings.some((warning) => warning.kind === "codex_import_missing"), false);
 
   const cachePath = resolveAimgrRedisCachePath({ homeDir: home });
   const cache = fs.readFileSync(cachePath, "utf8");

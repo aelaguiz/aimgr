@@ -133,7 +133,11 @@ export function buildWarningsFromCodexTargetStatus(status) {
     });
   }
 
-  if (!status.importedLabels?.length && status.activeLabel) {
+  if (
+    !status.importedLabels?.length
+    && status.activeLabel
+    && (!status.activeAccountPresent || !status.activeCredentialPresent)
+  ) {
     warnings.push({
       kind: "codex_import_missing",
       system: "codex-cli",
