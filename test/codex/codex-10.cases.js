@@ -1,12 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, importCredentialsSnapshot, readSnapshot } from "../../src/coordination/redis-store.js";
 import { buildCodexCredentialFingerprint } from "../../src/credentials/codex.js";
+import { writeJsonFileIfChanged } from "../../src/io/json-store.js";
 import { resolveCodexAuthFilePath, resolveManagedCodexHomeDir } from "../../src/io/paths.js";
 import { activateCodexPoolSelection, preserveLiveCodexAuthForActiveLabel } from "../../src/targets/codex-cli.js";
+import { CodexPtySession, createGoalIntentDetector } from "../../src/targets/codex-pty.js";
+import {
+  readCompleteJsonlRecords,
+  resolveOwnedThreadFromRunTag,
+  resolveRolloutForThreadId,
+  tailGoalStatus,
+} from "../../src/targets/codex-rollout.js";
+import { acquireCodexTendThreadLock } from "../../src/targets/codex-tend-lock.js";
 import { runCodexTender } from "../../src/targets/codex-tender.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
@@ -14,7 +24,7 @@ import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 
 const SESSION_ID = "019e5487-026d-7f52-8fbd-1d123045f1c6";
 const OTHER_SESSION_ID = "019e5487-026d-7f52-8fbd-1d123045f1c7";
-const TEST_REMOTE = "ws://aimgr-test";
+const THIRD_SESSION_ID = "019e5487-026d-7f52-8fbd-1d123045f1c8";
 const REDIS_PREFIX = "aimgr:codex-tend-test";
 
 function token(accountId, exp = Math.floor(Date.now() / 1000) + 3600) {
@@ -73,75 +83,162 @@ function writeMinimalState(home) {
   });
 }
 
-function createFakeTmux() {
-  const tmux = {
-    alive: false,
-    phase: "initial",
-    completeAfterNextGoalRead: false,
-    newSessions: [],
-    sentExit: 0,
-    sentEnter: 0,
-    attached: 0,
-    newSession({ sessionName, cwd, command }) {
-      this.alive = true;
-      this.phase = command.includes(" resume ") ? "resume" : "initial";
-      this.newSessions.push({ sessionName, cwd, command });
+function writeRollout({
+  home,
+  threadId = SESSION_ID,
+  fileName = `rollout-2026-05-30T14-00-00-${threadId}.jsonl`,
+  originator = "aimgr-tend-test",
+  source = "cli",
+  threadSource = "user",
+  goalStatus = "active",
+  partial = "",
+}) {
+  const codexHome = resolveManagedCodexHomeDir({ homeDir: home, env: {} });
+  const rolloutPath = path.join(codexHome, "sessions", "2026", "05", "30", fileName);
+  fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+  const records = [
+    {
+      type: "session_meta",
+      payload: {
+        id: threadId,
+        originator,
+        source,
+        thread_source: threadSource,
+      },
     },
-    hasSession() {
-      if (this.completeAfterNextGoalRead && this.sentEnter > 0) {
-        this.alive = false;
-      }
-      return this.alive;
+    {
+      type: "event_msg",
+      payload: {
+        type: "thread_goal_updated",
+        threadId,
+        goal: { threadId, status: goalStatus },
+      },
     },
-    capturePane() {
-      if (this.phase === "resume") {
-        return [
-          "Resume paused goal?",
-          "1. Resume goal   Mark it active and continue when idle",
-          "2. Leave paused  Keep it paused; use /goal resume later",
-        ].join("\n");
-      }
-      return "";
-    },
-    sendExit() {
-      this.sentExit += 1;
-      this.alive = false;
-    },
-    sendEnter() {
-      this.sentEnter += 1;
-    },
-    attach() {
-      this.attached += 1;
-      return { exitCode: 0 };
-    },
-  };
-  return tmux;
+  ];
+  fs.writeFileSync(
+    rolloutPath,
+    `${records.map((record) => JSON.stringify(record)).join("\n")}\n${partial}`,
+    "utf8",
+  );
+  return rolloutPath;
 }
 
-function createFakePrivateCodexAppServers({ loadedThreadIds = [["thread-1"]], getThreadGoal = async () => null } = {}) {
-  const servers = [];
+function createFakePtyFactory({
+  output = "",
+  ready = { status: "ready" },
+  exitAfterStart = false,
+  onStart,
+} = {}) {
+  const sessions = [];
+  const factory = (options = {}) => {
+    const session = {
+      options,
+      output,
+      starts: [],
+      sentEnter: 0,
+      sentExit: 0,
+      terminated: 0,
+      disposed: 0,
+      exitInfo: exitAfterStart ? { exitCode: 0, signal: null } : null,
+      start(config) {
+        this.starts.push(config);
+        onStart?.({ session: this, config, options });
+        return this;
+      },
+      waitForReady() {
+        return Promise.resolve(ready);
+      },
+      on() {
+        return this;
+      },
+      snapshotOutput() {
+        return this.output;
+      },
+      sendEnter() {
+        this.sentEnter += 1;
+      },
+      sendExit() {
+        this.sentExit += 1;
+        this.exitInfo = { exitCode: 0, signal: null };
+      },
+      waitForExit() {
+        return Promise.resolve(this.exitInfo);
+      },
+      terminate() {
+        this.terminated += 1;
+        this.exitInfo = { exitCode: null, signal: "SIGTERM" };
+      },
+      dispose() {
+        this.disposed += 1;
+      },
+    };
+    sessions.push(session);
+    return session;
+  };
+  return { factory, sessions };
+}
+
+class FakeWritable extends EventEmitter {
+  constructor() {
+    super();
+    this.chunks = [];
+    this.writable = true;
+    this.ended = false;
+  }
+
+  write(chunk) {
+    this.chunks.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+    return true;
+  }
+
+  end() {
+    this.ended = true;
+    this.writable = false;
+  }
+}
+
+class FakeHelperProcess extends EventEmitter {
+  constructor() {
+    super();
+    this.stdin = new FakeWritable();
+    this.stdout = new EventEmitter();
+    this.stderr = new EventEmitter();
+    this.exitCode = null;
+    this.signalCode = null;
+    this.killedWith = null;
+  }
+
+  kill(signal) {
+    this.killedWith = signal;
+    this.signalCode = signal;
+  }
+}
+
+function createFakeHelperSpawn() {
+  const helpers = [];
   return {
-    servers,
-    async startCodexAppServerImpl() {
-      const index = servers.length;
-      const server = {
-        remoteUrl: `ws://aimgr-test-${index + 1}`,
-        stopped: false,
-        client: {
-          listLoadedThreads: async () => loadedThreadIds[Math.min(index, loadedThreadIds.length - 1)] ?? [],
-          getThreadGoal: async ({ threadId }) => getThreadGoal({ threadId, serverIndex: index }),
-        },
-        stop() {
-          server.stopped = true;
-        },
-      };
-      servers.push(server);
-      return server;
+    helpers,
+    spawnImpl() {
+      const helper = new FakeHelperProcess();
+      helpers.push(helper);
+      return helper;
     },
   };
 }
 
-test("codex run --tend wires tmux supervision options and Codex args", async () => {
+function helperMessages(helper) {
+  return helper.stdin.chunks
+    .join("")
+    .split(/\n/)
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line));
+}
+
+function emitHelperMessage(helper, message) {
+  helper.stdout.emit("data", Buffer.from(`${JSON.stringify(message)}\n`, "utf8"));
+}
+
+test("codex run --tend wires PTY supervision options and Codex args", async () => {
   let captured = null;
   const out = await runCli(
     [
@@ -149,14 +246,16 @@ test("codex run --tend wires tmux supervision options and Codex args", async () 
       "run",
       "--tend",
       "--no-attach",
-      "--tmux-session",
-      "overnight-codex",
       "--codex-bin",
       "/tmp/codex-bin",
       "--max-restarts",
       "2",
       "--poll-seconds",
       "0.25",
+      "--bind-timeout-seconds",
+      "7",
+      "--workdir",
+      "/tmp/work",
       "-p",
       "yolo",
       "--",
@@ -169,7 +268,6 @@ test("codex run --tend wires tmux supervision options and Codex args", async () 
         captured = params;
         return {
           status: "ended",
-          sessionName: params.sessionName,
           threadId: "thread-1",
           restarts: 0,
           events: [],
@@ -181,13 +279,22 @@ test("codex run --tend wires tmux supervision options and Codex args", async () 
   const parsed = JSON.parse(out);
   assert.equal(parsed.ok, true);
   assert.equal(parsed.tended.status, "ended");
-  assert.equal(captured.sessionName, "overnight-codex");
+  assert.equal(Object.hasOwn(captured, "sessionName"), false);
   assert.equal(captured.codexBin, "/tmp/codex-bin");
+  assert.equal(captured.cwd, "/tmp/work");
   assert.equal(captured.attach, false);
   assert.equal(captured.maxRestarts, "2");
   assert.equal(captured.pollSeconds, "0.25");
+  assert.equal(captured.bindTimeoutSeconds, "7");
   assert.equal(captured.codexProfile, "yolo");
   assert.deepEqual(captured.codexArgs, ["--model", "gpt-5.5", "--search"]);
+});
+
+test("codex run --tend rejects obsolete tmux session option", async () => {
+  await assert.rejects(
+    runCli(["codex", "run", "--tend", "--tmux-session", "overnight-codex"]),
+    /--tmux-session.*obsolete.*PTY supervisor/,
+  );
 });
 
 for (const flag of ["--profile", "--codex-profile"]) {
@@ -198,7 +305,6 @@ for (const flag of ["--profile", "--codex-profile"]) {
         captured = params;
         return {
           status: "ended",
-          sessionName: params.sessionName,
           threadId: "thread-1",
           restarts: 0,
           events: [],
@@ -218,7 +324,6 @@ for (const flag of ["--resume", "--session-id"]) {
         captured = params;
         return {
           status: "ended",
-          sessionName: params.sessionName,
           threadId: SESSION_ID,
           restarts: 0,
           events: [],
@@ -245,6 +350,522 @@ test("codex run --tend reports blocked tender with exit code 1", async () => {
   assert.equal(parsed.ok, false);
   assert.equal(parsed.tended.status, "blocked");
   assert.equal(parsed.tended.reason, "rotation_blocked");
+});
+
+test("runCodexTender rejects Codex remote passthrough before starting a PTY", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  let started = false;
+
+  await assert.rejects(
+    runCodexTender(
+      {
+        statePath: path.join(home, ".aimgr", "secrets.json"),
+        homeDir: home,
+        preflight: false,
+        codexArgs: ["--remote", "ws://localhost:9999"],
+      },
+      {
+        createPtySessionImpl: () => {
+          started = true;
+          return createFakePtyFactory().factory();
+        },
+      },
+    ),
+    /--remote is incompatible with the PTY\/rollout Tend runtime/,
+  );
+  assert.equal(started, false);
+});
+
+test("runCodexTender binds a new goal by Codex rollout originator without tmux or app-server state", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const { factory, sessions } = createFakePtyFactory({
+    exitAfterStart: true,
+    onStart({ config }) {
+      writeRollout({
+        home,
+        threadId: SESSION_ID,
+        originator: config.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE,
+      });
+    },
+  });
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      codexBin: "/tmp/codex",
+      codexArgs: ["--model", "gpt-5.5"],
+      preflight: false,
+      attach: false,
+      pollSeconds: 0,
+      maxPollIterations: 1,
+      startedAtMs: 0,
+    },
+    {
+      createPtySessionImpl: factory,
+      sleepImpl: async () => {},
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.threadId, SESSION_ID);
+  assert.equal(result.rolloutPath.endsWith(`${SESSION_ID}.jsonl`), true);
+  assert.deepEqual(sessions[0].starts[0].argv, ["/tmp/codex", "--no-alt-screen", "--model", "gpt-5.5"]);
+  assert.equal(sessions[0].starts[0].env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE, result.originator);
+  assert.equal(result.events.some((event) => event.type === "thread_bound"), true);
+});
+
+test("runCodexTender blocks ambiguous tagged goal rollouts", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const { factory } = createFakePtyFactory({ exitAfterStart: true });
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      preflight: false,
+      attach: false,
+      pollSeconds: 0,
+      maxPollIterations: 1,
+      startedAtMs: 0,
+    },
+    {
+      createPtySessionImpl: factory,
+      sleepImpl: async () => {},
+      resolveOwnedThreadFromRunTagImpl: () => ({
+        status: "ambiguous",
+        candidates: [{ threadId: SESSION_ID }, { threadId: OTHER_SESSION_ID }],
+      }),
+    },
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "ambiguous_tagged_goal_rollouts");
+});
+
+test("runCodexTender resumes a known thread using session_meta.id fallback", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const rolloutPath = writeRollout({
+    home,
+    threadId: SESSION_ID,
+    fileName: "rollout-2026-05-30T14-00-00-nonmatching.jsonl",
+  });
+  const { factory, sessions } = createFakePtyFactory({
+    output: "Goal active",
+    exitAfterStart: true,
+  });
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      codexBin: "/tmp/codex",
+      resumeSessionId: SESSION_ID,
+      preflight: false,
+      attach: false,
+      pollSeconds: 0,
+      maxPollIterations: 1,
+      startedAtMs: 0,
+    },
+    {
+      createPtySessionImpl: factory,
+      sleepImpl: async () => {},
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.threadId, SESSION_ID);
+  assert.equal(result.rolloutPath, rolloutPath);
+  assert.deepEqual(sessions[0].starts[0].argv, ["/tmp/codex", "--no-alt-screen", "resume", SESSION_ID]);
+});
+
+test("runCodexTender blocks if an explicit resume prompt cannot be confirmed", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  writeRollout({ home, threadId: SESSION_ID });
+  const { factory } = createFakePtyFactory({ exitAfterStart: true });
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      codexBin: "/tmp/codex",
+      resumeSessionId: SESSION_ID,
+      preflight: false,
+      attach: false,
+      pollSeconds: 0,
+      promptTimeoutSeconds: 1,
+      maxPollIterations: 1,
+      startedAtMs: 0,
+    },
+    {
+      createPtySessionImpl: factory,
+      sleepImpl: async () => {},
+    },
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "resume_prompt_unconfirmed");
+});
+
+test("runCodexTender blocks duplicate live owners for an explicit thread", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  writeRollout({ home, threadId: SESSION_ID });
+  const lock = acquireCodexTendThreadLock({
+    homeDir: home,
+    threadId: SESSION_ID,
+    runid: "existing-run",
+    originator: "aimgr-tend-existing",
+    cwd: "/tmp",
+    mode: "resume",
+  });
+  try {
+    const { factory } = createFakePtyFactory({ output: "Goal active" });
+    const result = await runCodexTender(
+      {
+        statePath: path.join(home, ".aimgr", "secrets.json"),
+        homeDir: home,
+        resumeSessionId: SESSION_ID,
+        preflight: false,
+        attach: false,
+        startedAtMs: 0,
+      },
+      {
+        createPtySessionImpl: factory,
+        sleepImpl: async () => {},
+      },
+    );
+
+    assert.equal(result.status, "blocked");
+    assert.equal(result.reason, "thread_already_tended");
+  } finally {
+    lock.release();
+  }
+});
+
+test("Codex Tend thread lock reclaims stale locks and release only removes the same run", () => {
+  const home = mkTempHome();
+  const stale = acquireCodexTendThreadLock({
+    homeDir: home,
+    threadId: SESSION_ID,
+    runid: "stale-run",
+    originator: "aimgr-tend-stale",
+    cwd: "/tmp",
+    mode: "resume",
+    pid: 0,
+  });
+  const fresh = acquireCodexTendThreadLock({
+    homeDir: home,
+    threadId: SESSION_ID,
+    runid: "fresh-run",
+    originator: "aimgr-tend-fresh",
+    cwd: "/tmp",
+    mode: "resume",
+    pid: process.pid,
+  });
+
+  assert.equal(fresh.status, "acquired");
+  stale.release();
+  assert.equal(fs.existsSync(fresh.path), true);
+  fresh.release();
+  assert.equal(fs.existsSync(fresh.path), false);
+});
+
+test("runCodexTender rotates only on owned goal usageLimited and resumes active goal", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  writeRollout({ home, threadId: SESSION_ID, goalStatus: "usageLimited" });
+  const { factory, sessions } = createFakePtyFactory({
+    output: ["Resume paused goal?", "1. Resume goal"].join("\n"),
+  });
+  let tailCalls = 0;
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      codexBin: "/tmp/codex",
+      resumeSessionId: SESSION_ID,
+      preflight: false,
+      attach: false,
+      pollSeconds: 0,
+      promptTimeoutSeconds: 1,
+      maxPollIterations: 1,
+      startedAtMs: 0,
+    },
+    {
+      createPtySessionImpl: factory,
+      sleepImpl: async () => {},
+      activateCodexPoolSelectionImpl: async () => ({ status: "activated", receipt: {} }),
+      tailGoalStatusImpl: () => {
+        tailCalls += 1;
+        const status = tailCalls === 1 ? "usageLimited" : "active";
+        return { offset: tailCalls, status, goal: { threadId: SESSION_ID, status } };
+      },
+    },
+  );
+
+  assert.equal(result.status, "poll_limit_reached");
+  assert.equal(result.restarts, 1);
+  assert.equal(result.rotations.length, 1);
+  assert.equal(sessions.length, 2);
+  assert.equal(sessions[0].sentExit, 1);
+  assert.equal(sessions[1].sentEnter, 1);
+  assert.deepEqual(sessions[1].starts[0].argv, ["/tmp/codex", "--no-alt-screen", "resume", SESSION_ID]);
+});
+
+test("runCodexTender returns python3_unavailable when the PTY helper cannot spawn", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      preflight: false,
+      attach: false,
+    },
+    {
+      createPtySessionImpl: () => ({
+        on() {
+          return this;
+        },
+        start() {
+          return this;
+        },
+        waitForReady() {
+          return Promise.resolve({ status: "error", reason: "python3_unavailable" });
+        },
+        dispose() {},
+      }),
+    },
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "python3_unavailable");
+});
+
+test("runCodexTender blocks after goal intent when no owned rollout binds", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const { factory } = createFakePtyFactory({
+    onStart({ options }) {
+      options.onGoalIntent();
+    },
+  });
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      preflight: false,
+      attach: false,
+      bindTimeoutSeconds: 0.001,
+      pollSeconds: 0.001,
+      maxPollIterations: 10,
+      startedAtMs: 0,
+    },
+    {
+      createPtySessionImpl: factory,
+      sleepImpl: () => new Promise((resolve) => setTimeout(resolve, 2)),
+      resolveOwnedThreadFromRunTagImpl: () => ({ status: "missing", candidates: [] }),
+    },
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "goal_bind_timeout");
+});
+
+test("runCodexTender ignores generic pane rate-limit text when the owned rollout is active", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  writeRollout({ home, threadId: SESSION_ID, goalStatus: "active" });
+  const { factory } = createFakePtyFactory({
+    output: "Rate limit reached. Goal active",
+  });
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      resumeSessionId: SESSION_ID,
+      preflight: false,
+      attach: false,
+      pollSeconds: 0,
+      maxPollIterations: 1,
+      startedAtMs: 0,
+    },
+    {
+      createPtySessionImpl: factory,
+      sleepImpl: async () => {},
+      activateCodexPoolSelectionImpl: async () => {
+        throw new Error("generic pane/global usage trigger should not rotate");
+      },
+    },
+  );
+
+  assert.equal(result.status, "poll_limit_reached");
+  assert.equal(result.rotations.length, 0);
+});
+
+test("rollout reader ignores corrupt and partial records while preserving offsets", () => {
+  const home = mkTempHome();
+  const rolloutPath = writeRollout({
+    home,
+    threadId: SESSION_ID,
+  });
+  fs.appendFileSync(rolloutPath, "not-json\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\"", "utf8");
+
+  const read = readCompleteJsonlRecords(rolloutPath);
+  assert.equal(read.records.length, 2);
+  assert.equal(read.nextOffset < fs.statSync(rolloutPath).size, true);
+
+  const status = tailGoalStatus({ rolloutPath, threadId: SESSION_ID });
+  assert.equal(status.status, "active");
+});
+
+test("rollout binding uses originator and treats multiple tagged goal sessions as ambiguous", () => {
+  const home = mkTempHome();
+  const originator = "aimgr-tend-ambiguous";
+  writeRollout({ home, threadId: SESSION_ID, originator });
+  writeRollout({ home, threadId: OTHER_SESSION_ID, originator });
+  writeRollout({ home, threadId: THIRD_SESSION_ID, originator: "aimgr-tend-other" });
+  const sessionsDir = path.join(resolveManagedCodexHomeDir({ homeDir: home, env: {} }), "sessions");
+
+  const resolved = resolveOwnedThreadFromRunTag({ sessionsDir, originator, startedAtMs: 0 });
+  assert.equal(resolved.status, "ambiguous");
+  assert.deepEqual(
+    resolved.candidates.map((candidate) => candidate.threadId).sort(),
+    [OTHER_SESSION_ID, SESSION_ID].sort(),
+  );
+
+  const byMeta = resolveRolloutForThreadId({ sessionsDir, threadId: THIRD_SESSION_ID });
+  assert.equal(byMeta.status, "found");
+});
+
+test("rollout binding ignores same-originator sub-agent rollouts", () => {
+  const home = mkTempHome();
+  const originator = "aimgr-tend-subagents";
+  writeRollout({ home, threadId: SESSION_ID, originator });
+  writeRollout({ home, threadId: OTHER_SESSION_ID, originator, threadSource: "subagent" });
+  const sessionsDir = path.join(resolveManagedCodexHomeDir({ homeDir: home, env: {} }), "sessions");
+
+  const resolved = resolveOwnedThreadFromRunTag({ sessionsDir, originator, startedAtMs: 0 });
+  assert.equal(resolved.status, "bound");
+  assert.equal(resolved.threadId, SESSION_ID);
+});
+
+test("Codex goal intent detector observes user /goal submissions only", () => {
+  const observed = [];
+  const detector = createGoalIntentDetector({
+    onGoalIntent: (line) => observed.push(line),
+  });
+
+  detector.push(Buffer.from("hello\r"));
+  detector.push(Buffer.from("/goaX\x7fl test\r"));
+  detector.push(Buffer.from("/goal ignored\r"));
+
+  assert.deepEqual(observed, ["/goal test"]);
+  assert.equal(detector.observed, true);
+});
+
+test("CodexPtySession frames helper protocol, output, resize, exit, and helper errors", async () => {
+  const { spawnImpl, helpers } = createFakeHelperSpawn();
+  const session = new CodexPtySession({
+    spawnImpl,
+    attach: false,
+    stdout: { columns: 90, rows: 30, write() {} },
+  });
+
+  session.start({ argv: ["/tmp/codex", "--no-alt-screen"], cwd: "/tmp/work", env: { TEST_ENV: "1" } });
+  const helper = helpers[0];
+  assert.deepEqual(helperMessages(helper)[0], {
+    type: "start",
+    argv: ["/tmp/codex", "--no-alt-screen"],
+    cwd: "/tmp/work",
+    env: { TEST_ENV: "1" },
+    cols: 90,
+    rows: 30,
+  });
+
+  const readyPromise = session.waitForReady({ timeoutMs: 10 });
+  emitHelperMessage(helper, { type: "ready", pid: 123 });
+  assert.equal((await readyPromise).status, "ready");
+
+  emitHelperMessage(helper, { type: "output", data: Buffer.from("hello").toString("base64") });
+  session.resize({ cols: 101, rows: 41 });
+  session.write("x");
+  session.sendExit();
+  const exitPromise = session.waitForExit({ timeoutMs: 10 });
+  emitHelperMessage(helper, { type: "exit", exitCode: 0, signal: null });
+
+  assert.equal(session.snapshotOutput(), "hello");
+  assert.deepEqual(await exitPromise, { exitCode: 0, signal: null });
+  const messages = helperMessages(helper);
+  assert.deepEqual(messages.at(-3), { type: "resize", cols: 101, rows: 41 });
+  assert.deepEqual(messages.at(-2), { type: "input", data: Buffer.from("x").toString("base64") });
+  assert.deepEqual(messages.at(-1), { type: "input", data: Buffer.from("/exit\r").toString("base64") });
+});
+
+test("CodexPtySession attached mode relays stdin, resize, goal intent, and restores raw mode", () => {
+  const { spawnImpl, helpers } = createFakeHelperSpawn();
+  const stdin = new EventEmitter();
+  stdin.isTTY = true;
+  stdin.isRaw = false;
+  stdin.rawCalls = [];
+  stdin.setRawMode = (value) => {
+    stdin.rawCalls.push(value);
+    stdin.isRaw = value;
+  };
+  stdin.resume = () => {
+    stdin.resumed = true;
+  };
+  const stdout = new EventEmitter();
+  stdout.columns = 120;
+  stdout.rows = 40;
+  stdout.write = () => {};
+  const observed = [];
+  const session = new CodexPtySession({
+    spawnImpl,
+    attach: true,
+    stdin,
+    stdout,
+    onGoalIntent: (line) => observed.push(line),
+  });
+
+  session.start({ argv: ["/tmp/codex"], cwd: "/tmp/work", env: {} });
+  const helper = helpers[0];
+  stdin.emit("data", Buffer.from("/goal now\r"));
+  stdout.columns = 80;
+  stdout.rows = 24;
+  stdout.emit("resize");
+  session.dispose();
+
+  const messages = helperMessages(helper);
+  assert.deepEqual(observed, ["/goal now"]);
+  assert.deepEqual(messages[1], { type: "input", data: Buffer.from("/goal now\r").toString("base64") });
+  assert.deepEqual(messages[2], { type: "resize", cols: 80, rows: 24 });
+  assert.deepEqual(stdin.rawCalls, [true, false]);
+  assert.equal(stdin.resumed, true);
+  assert.equal(helper.stdin.ended, true);
+  assert.equal(helper.killedWith, "SIGTERM");
+});
+
+test("writeJsonFileIfChanged is atomic enough for unchanged rewrites and leaves no temp files", () => {
+  const home = mkTempHome();
+  const filePath = path.join(home, ".aimgr", "state.json");
+  const first = writeJsonFileIfChanged(filePath, { ok: true }, { mode: 0o600 });
+  const second = writeJsonFileIfChanged(filePath, { ok: true }, { mode: 0o600 });
+  const leftovers = fs.readdirSync(path.dirname(filePath)).filter((name) => name.includes(".tmp"));
+
+  assert.equal(first.wrote, true);
+  assert.equal(second.wrote, false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(filePath, "utf8")), { ok: true });
+  assert.deepEqual(leftovers, []);
 });
 
 test("redis-configured codex run --tend publishes live auth rotation through Redis state runtime", async () => {
@@ -295,7 +916,6 @@ test("redis-configured codex run --tend publishes live auth rotation through Red
       preserved = result;
       return {
         status: "ended",
-        sessionName: "aimgr-test",
         threadId: "thread-1",
         restarts: 0,
         events: [{ type: "test_preserve", status: result.status }],
@@ -354,958 +974,6 @@ test("redis-configured codex run --tend does not publish staged live auth when m
   const snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_BOSS");
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
-});
-
-test("runCodexTender tends an explicit resumed Codex session without thread discovery", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let rotations = 0;
-  let goalReads = 0;
-  const appServerClient = {
-    listThreads: async () => {
-      throw new Error("explicit resume should not discover recent threads");
-    },
-    getThreadGoal: async ({ threadId }) => {
-      assert.equal(threadId, SESSION_ID);
-      goalReads += 1;
-      if (goalReads === 1) {
-        return { threadId: SESSION_ID, status: "usageLimited" };
-      }
-      tmux.completeAfterNextGoalRead = true;
-      return { threadId: SESSION_ID, status: "complete" };
-    },
-  };
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      codexBin: "/tmp/codex",
-      codexProfile: "yolo",
-      resumeSessionId: SESSION_ID,
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-    },
-    {
-      tmux,
-      appServerClient,
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => {
-        rotations += 1;
-        return {
-          status: "activated",
-          receipt: { label: "pro2", blockers: [], warnings: [] },
-          wrote: true,
-        };
-      },
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.threadId, SESSION_ID);
-  assert.equal(result.restarts, 1);
-  assert.equal(rotations, 1);
-  assert.equal(tmux.sentEnter, 2);
-  assert.deepEqual(
-    tmux.newSessions.map((session) => session.command),
-    [
-      `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE} -p yolo resume ${SESSION_ID}`,
-      `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE} -p yolo resume ${SESSION_ID}`,
-    ],
-  );
-  assert.ok(result.events.some((event) => event.type === "thread_provided" && event.threadId === SESSION_ID));
-});
-
-test("runCodexTender accepts exact Codex resume passthrough for existing sessions", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  tmux.completeAfterNextGoalRead = true;
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      codexBin: "/tmp/codex",
-      codexArgs: ["resume", SESSION_ID],
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => {
-          throw new Error("resume passthrough should not discover recent threads");
-        },
-        getThreadGoal: async ({ threadId }) => {
-          assert.equal(threadId, SESSION_ID);
-          return { threadId: SESSION_ID, status: "complete" };
-        },
-      },
-      sleepImpl: async () => {},
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.threadId, SESSION_ID);
-  assert.equal(tmux.sentEnter, 1);
-  assert.equal(tmux.newSessions[0].command, `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE} resume ${SESSION_ID}`);
-});
-
-test("runCodexTender rejects unsafe resumed-session inputs before starting tmux", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-
-  const cases = [
-    {
-      input: { resumeSessionId: "--last" },
-      expected: /Codex session id from AIMGR options must be a UUID/,
-    },
-    {
-      input: { codexArgs: ["resume", "--last"] },
-      expected: /Codex session id from Codex resume passthrough must be a UUID/,
-    },
-    {
-      input: { codexArgs: ["resume", "my-thread"] },
-      expected: /Codex session id from Codex resume passthrough must be a UUID/,
-    },
-    {
-      input: { resumeSessionId: SESSION_ID, codexArgs: ["resume", OTHER_SESSION_ID] },
-      expected: /Conflicting Codex session ids/,
-    },
-    {
-      input: { codexArgs: ["resume", SESSION_ID, "continue"] },
-      expected: /only supports `resume <SESSION_ID>`/,
-    },
-    {
-      input: { resumeSessionId: SESSION_ID, codexArgs: ["--model", "gpt-5.5"] },
-      expected: /pass-through args are not supported with tended resume sessions/,
-    },
-    {
-      input: { codexArgs: ["--remote", "ws://127.0.0.1:12345"] },
-      expected: /TEND owns the Codex --remote endpoint/,
-    },
-    {
-      input: { codexArgs: ["--remote=ws://127.0.0.1:12345"] },
-      expected: /TEND owns the Codex --remote endpoint/,
-    },
-    {
-      input: { codexArgs: ["--remote-auth-token-env", "TOKEN"] },
-      expected: /TEND owns the Codex remote auth wiring/,
-    },
-  ];
-
-  for (const { input, expected } of cases) {
-    const tmux = createFakeTmux();
-    await assert.rejects(
-      runCodexTender(
-        {
-          statePath: path.join(home, ".aimgr", "secrets.json"),
-          homeDir: home,
-          sessionName: "aimgr-test",
-          attach: false,
-          preflight: false,
-          ...input,
-        },
-        {
-          tmux,
-        },
-      ),
-      expected,
-    );
-    assert.equal(tmux.newSessions.length, 0);
-  }
-});
-
-test("runCodexTender rotates usage-limited goals and confirms the built-in resume prompt", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let rotations = 0;
-  let goalReads = 0;
-  const appServerClient = {
-    listThreads: async () => [
-      {
-        id: "thread-1",
-        cwd: "/tmp/project",
-        createdAt: 1779500000,
-        updatedAt: 1779500001,
-      },
-    ],
-    getThreadGoal: async () => {
-      goalReads += 1;
-      if (goalReads === 1) {
-        return { threadId: "thread-1", status: "usageLimited" };
-      }
-      tmux.completeAfterNextGoalRead = true;
-      return { threadId: "thread-1", status: "complete" };
-    },
-  };
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      codexBin: "/tmp/codex",
-      codexProfile: "yolo",
-      codexArgs: ["--model", "gpt-5.5"],
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient,
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => {
-        rotations += 1;
-        return {
-          status: "activated",
-          receipt: { label: "pro2", blockers: [], warnings: [] },
-          wrote: true,
-        };
-      },
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.threadId, "thread-1");
-  assert.equal(result.restarts, 1);
-  assert.equal(rotations, 1);
-  assert.equal(tmux.sentExit, 1);
-  assert.equal(tmux.sentEnter, 1);
-  assert.equal(tmux.newSessions.length, 2);
-  assert.match(tmux.newSessions[0].command, /\/tmp\/codex --no-alt-screen --remote ws:\/\/aimgr-test -p yolo --model gpt-5\.5/);
-  assert.match(tmux.newSessions[1].command, /\/tmp\/codex --no-alt-screen --remote ws:\/\/aimgr-test -p yolo resume thread-1/);
-  assert.doesNotMatch(tmux.newSessions[1].command, /\/goal resume/);
-  assert.ok(result.events.some((event) => event.type === "resume_prompt_confirmed"));
-});
-
-test("runCodexTender binds to its private loaded thread instead of a same-cwd sibling", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let rotations = 0;
-  let goalReads = 0;
-  const privateAppServers = createFakePrivateCodexAppServers({
-    loadedThreadIds: [["thread-intended"], ["thread-intended"]],
-    getThreadGoal: async ({ threadId }) => {
-      assert.equal(threadId, "thread-intended");
-      goalReads += 1;
-      if (goalReads === 1) {
-        return { threadId, status: "usageLimited" };
-      }
-      tmux.completeAfterNextGoalRead = true;
-      return { threadId, status: "complete" };
-    },
-  });
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      codexBin: "/tmp/codex",
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-    },
-    {
-      tmux,
-      startCodexAppServerImpl: privateAppServers.startCodexAppServerImpl,
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => {
-        rotations += 1;
-        return {
-          status: "activated",
-          receipt: { label: "pro2", blockers: [], warnings: [] },
-          wrote: true,
-        };
-      },
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.threadId, "thread-intended");
-  assert.equal(result.restarts, 1);
-  assert.equal(rotations, 1);
-  assert.equal(privateAppServers.servers.length, 2);
-  assert.equal(privateAppServers.servers[0].stopped, true);
-  assert.equal(privateAppServers.servers[1].stopped, true);
-  assert.deepEqual(
-    tmux.newSessions.map((session) => session.command),
-    [
-      "/tmp/codex --no-alt-screen --remote ws://aimgr-test-1",
-      "/tmp/codex --no-alt-screen --remote ws://aimgr-test-2 resume thread-intended",
-    ],
-  );
-  assert.ok(tmux.newSessions.every((session) => !session.command.includes("thread-sibling")));
-});
-
-test("runCodexTender blocks instead of guessing when private loaded threads are ambiguous", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let rotations = 0;
-  const privateAppServers = createFakePrivateCodexAppServers({
-    loadedThreadIds: [["thread-intended", "thread-sibling"]],
-  });
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      codexBin: "/tmp/codex",
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-    },
-    {
-      tmux,
-      startCodexAppServerImpl: privateAppServers.startCodexAppServerImpl,
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => {
-        rotations += 1;
-        return { status: "activated" };
-      },
-    },
-  );
-
-  assert.equal(result.status, "blocked");
-  assert.equal(result.reason, "ambiguous_loaded_threads");
-  assert.equal(result.threadId, null);
-  assert.equal(result.restarts, 0);
-  assert.equal(rotations, 0);
-  assert.equal(privateAppServers.servers.length, 1);
-  assert.equal(privateAppServers.servers[0].stopped, false);
-  assert.deepEqual(
-    tmux.newSessions.map((session) => session.command),
-    ["/tmp/codex --no-alt-screen --remote ws://aimgr-test-1"],
-  );
-  assert.ok(result.events.some((event) => event.type === "thread_binding_ambiguous"));
-  assert.ok(result.events.some((event) => event.type === "app_server_left_running_for_live_session"));
-});
-
-test("runCodexTender promotes pass-through profile args to the resume command", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let goalReads = 0;
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      codexBin: "/tmp/codex",
-      codexArgs: ["--model", "gpt-5.5", "--profile", "yolo", "--search"],
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => [
-          {
-            id: "thread-1",
-            cwd: "/tmp/project",
-            createdAt: 1779500000,
-            updatedAt: 1779500001,
-          },
-        ],
-        getThreadGoal: async () => {
-          goalReads += 1;
-          if (goalReads === 1) {
-            return { threadId: "thread-1", status: "usageLimited" };
-          }
-          tmux.completeAfterNextGoalRead = true;
-          return { threadId: "thread-1", status: "complete" };
-        },
-      },
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => ({
-        status: "activated",
-        receipt: { label: "pro2", blockers: [], warnings: [] },
-        wrote: true,
-      }),
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(tmux.newSessions.length, 2);
-  assert.match(tmux.newSessions[0].command, /\/tmp\/codex --no-alt-screen --remote ws:\/\/aimgr-test -p yolo --model gpt-5\.5 --search/);
-  assert.match(tmux.newSessions[1].command, /\/tmp\/codex --no-alt-screen --remote ws:\/\/aimgr-test -p yolo resume thread-1/);
-  assert.doesNotMatch(tmux.newSessions[0].command, /--profile yolo/);
-});
-
-test("runCodexTender rejects conflicting Codex profile inputs before starting tmux", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-
-  await assert.rejects(
-    runCodexTender(
-      {
-        statePath: path.join(home, ".aimgr", "secrets.json"),
-        homeDir: home,
-        codexProfile: "yolo",
-        codexArgs: ["--profile", "other"],
-        sessionName: "aimgr-test",
-        attach: false,
-        preflight: false,
-      },
-      {
-        tmux,
-      },
-    ),
-    /Conflicting Codex profiles: yolo from AIMGR options and other from --profile/,
-  );
-  assert.equal(tmux.newSessions.length, 0);
-});
-
-test("runCodexTender blocks instead of rotating again when the resume prompt cannot be confirmed", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  tmux.capturePane = () => "";
-  let rotations = 0;
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      promptTimeoutSeconds: 0,
-      maxRestarts: 3,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => [
-          {
-            id: "thread-1",
-            cwd: "/tmp/project",
-            createdAt: 1779500000,
-            updatedAt: 1779500001,
-          },
-        ],
-        getThreadGoal: async () => ({ threadId: "thread-1", status: "usageLimited" }),
-      },
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => {
-        rotations += 1;
-        return {
-          status: "activated",
-          receipt: { label: "pro2", blockers: [], warnings: [] },
-          wrote: true,
-        };
-      },
-    },
-  );
-
-  assert.equal(result.status, "blocked");
-  assert.equal(result.reason, "resume_prompt_unconfirmed");
-  assert.equal(result.restarts, 1);
-  assert.equal(rotations, 1);
-  assert.equal(tmux.newSessions.length, 2);
-  assert.ok(result.events.some((event) => event.type === "resume_prompt_timeout"));
-});
-
-test("runCodexTender exits without rotation when no stopped goal exists", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  tmux.hasSession = () => false;
-  let rotations = 0;
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => [
-          {
-            id: "thread-1",
-            cwd: "/tmp/project",
-            createdAt: 1779500000,
-            updatedAt: 1779500001,
-          },
-        ],
-        getThreadGoal: async () => null,
-      },
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => {
-        rotations += 1;
-        return { status: "activated" };
-      },
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.threadId, "thread-1");
-  assert.equal(result.restarts, 0);
-  assert.equal(rotations, 0);
-  assert.equal(tmux.sentExit, 0);
-  assert.equal(tmux.sentEnter, 0);
-  assert.equal(tmux.newSessions.length, 1);
-});
-
-test("runCodexTender rotates and resumes non-goal sessions when the pane shows a rate limit", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let initialPaneCaptures = 0;
-  let rotationArgs = null;
-  tmux.capturePane = () => {
-    if (tmux.phase === "resume") return "";
-    initialPaneCaptures += 1;
-    return initialPaneCaptures === 1 ? "" : "Rate limit reached for gpt-5. Please try again later.";
-  };
-  tmux.hasSession = function hasSession() {
-    if (this.phase === "resume" && this.newSessions.length >= 2) return false;
-    return this.alive;
-  };
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      codexBin: "/tmp/codex",
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => [
-          {
-            id: "thread-1",
-            cwd: "/tmp/project",
-            createdAt: 1779500000,
-            updatedAt: 1779500001,
-          },
-        ],
-        getThreadGoal: async () => null,
-      },
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async (args) => {
-        rotationArgs = args;
-        return {
-          status: "activated",
-          receipt: { label: "pro2", blockers: [], warnings: [] },
-          wrote: true,
-        };
-      },
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.threadId, "thread-1");
-  assert.equal(result.restarts, 1);
-  assert.equal(rotationArgs.avoidCurrentLabel, true);
-  assert.equal(tmux.sentExit, 1);
-  assert.equal(tmux.sentEnter, 0);
-  assert.deepEqual(
-    tmux.newSessions.map((session) => session.command),
-    [
-      `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE}`,
-      `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE} resume thread-1`,
-    ],
-  );
-  assert.ok(result.events.some((event) => event.type === "recovery_triggered" && event.source === "pane"));
-});
-
-test("runCodexTender reattaches after recovery when the old tmux attach exits late", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  const attachHandles = [];
-  let initialPaneCaptures = 0;
-  tmux.capturePane = () => {
-    if (tmux.phase === "resume") return "";
-    initialPaneCaptures += 1;
-    return initialPaneCaptures === 1 ? "" : "Too many requests. Please try again later.";
-  };
-  tmux.hasSession = function hasSession() {
-    if (this.phase === "resume" && this.newSessions.length >= 2) return false;
-    return this.alive;
-  };
-  tmux.attach = (sessionName) => {
-    const handle = { exitCode: null, signalCode: null, sessionName };
-    attachHandles.push(handle);
-    return handle;
-  };
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      codexBin: "/tmp/codex",
-      sessionName: "aimgr-test",
-      attach: true,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => [
-          {
-            id: "thread-1",
-            cwd: "/tmp/project",
-            createdAt: 1779500000,
-            updatedAt: 1779500001,
-          },
-        ],
-        getThreadGoal: async () => null,
-      },
-      sleepImpl: async () => {
-        if (attachHandles[0] && attachHandles[0].exitCode === null) {
-          attachHandles[0].exitCode = 0;
-        }
-      },
-      activateCodexPoolSelectionImpl: async () => ({
-        status: "activated",
-        receipt: { label: "pro2", blockers: [], warnings: [] },
-        wrote: true,
-      }),
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.restarts, 1);
-  assert.equal(attachHandles.length, 2);
-  assert.equal(attachHandles[0].sessionName, "aimgr-test");
-  assert.equal(attachHandles[1].sessionName, "aimgr-test");
-  assert.equal(result.events.filter((event) => event.type === "session_attached").length, 2);
-});
-
-test("runCodexTender rotates non-goal sessions when the active usage snapshot is hard limited", async () => {
-  const home = mkTempHome();
-  const statePath = path.join(home, ".aimgr", "secrets.json");
-  writeMinimalState(home);
-  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  state.targets.codexCli.activeLabel = "boss";
-  writeJson(statePath, state);
-  const tmux = createFakeTmux();
-  tmux.capturePane = () => "";
-  tmux.hasSession = function hasSession() {
-    if (this.phase === "resume" && this.newSessions.length >= 2) return false;
-    return this.alive;
-  };
-  let rotations = 0;
-
-  const result = await runCodexTender(
-    {
-      statePath,
-      homeDir: home,
-      cwd: "/tmp/project",
-      codexBin: "/tmp/codex",
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => [
-          {
-            id: "thread-1",
-            cwd: "/tmp/project",
-            createdAt: 1779500000,
-            updatedAt: 1779500001,
-          },
-        ],
-        getThreadGoal: async () => null,
-      },
-      sleepImpl: async () => {},
-      probeUsageSnapshotsByProviderImpl: async () => ({
-        "openai-codex": {
-          boss: {
-            ok: true,
-            allowed: false,
-            limitReached: true,
-            rateLimitReachedType: "primary",
-            windows: [{ kind: "primary", usedPercent: 100 }, { kind: "secondary", usedPercent: 40 }],
-          },
-        },
-      }),
-      activateCodexPoolSelectionImpl: async () => {
-        rotations += 1;
-        return {
-          status: "activated",
-          receipt: { label: "pro2", blockers: [], warnings: [] },
-          wrote: true,
-        };
-      },
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.restarts, 1);
-  assert.equal(rotations, 1);
-  assert.ok(result.events.some((event) => event.type === "recovery_triggered" && event.source === "usage"));
-});
-
-test("runCodexTender resumes an explicit non-goal Codex session without waiting for a goal prompt", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let hasSessionCalls = 0;
-  tmux.capturePane = () => "";
-  tmux.hasSession = () => {
-    hasSessionCalls += 1;
-    return hasSessionCalls === 1;
-  };
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      codexBin: "/tmp/codex",
-      resumeSessionId: SESSION_ID,
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => {
-          throw new Error("explicit resume should not discover recent threads");
-        },
-        getThreadGoal: async () => null,
-      },
-      sleepImpl: async () => {},
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.threadId, SESSION_ID);
-  assert.equal(result.restarts, 0);
-  assert.equal(tmux.sentEnter, 0);
-  assert.equal(tmux.newSessions.length, 1);
-  assert.ok(result.events.some((event) => event.type === "resume_prompt_not_present"));
-});
-
-test("runCodexTender does not rotate on rate-limit text that was already present at session start", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let hasSessionCalls = 0;
-  let rotations = 0;
-  tmux.capturePane = () => "Rate limit reached for gpt-5. Please try again later.";
-  tmux.hasSession = () => {
-    hasSessionCalls += 1;
-    return hasSessionCalls === 1;
-  };
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => [
-          {
-            id: "thread-1",
-            cwd: "/tmp/project",
-            createdAt: 1779500000,
-            updatedAt: 1779500001,
-          },
-        ],
-        getThreadGoal: async () => null,
-      },
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => {
-        rotations += 1;
-        return { status: "activated" };
-      },
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.restarts, 0);
-  assert.equal(rotations, 0);
-  assert.equal(tmux.sentExit, 0);
-});
-
-test("runCodexTender waits for a thread id before recovering from a non-goal rate limit", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let initialPaneCaptures = 0;
-  let listReads = 0;
-  let rotations = 0;
-  tmux.capturePane = () => {
-    if (tmux.phase === "resume") return "";
-    initialPaneCaptures += 1;
-    return initialPaneCaptures === 1 ? "" : "Too many requests. Please try again later.";
-  };
-  tmux.hasSession = function hasSession() {
-    if (this.phase === "resume" && this.newSessions.length >= 2) return false;
-    return this.alive;
-  };
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      codexBin: "/tmp/codex",
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-      maxPollIterations: 4,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => {
-          listReads += 1;
-          if (listReads === 1) return [];
-          return [
-            {
-              id: "thread-1",
-              cwd: "/tmp/project",
-              createdAt: 1779500000,
-              updatedAt: 1779500001,
-            },
-          ];
-        },
-        getThreadGoal: async () => null,
-      },
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => {
-        rotations += 1;
-        return {
-          status: "activated",
-          receipt: { label: "pro2", blockers: [], warnings: [] },
-          wrote: true,
-        };
-      },
-    },
-  );
-
-  assert.equal(result.status, "ended");
-  assert.equal(result.threadId, "thread-1");
-  assert.equal(result.restarts, 1);
-  assert.equal(rotations, 1);
-  assert.ok(result.events.some((event) => event.type === "rate_limit_recovery_waiting_for_thread"));
-});
-
-test("runCodexTender leaves the current non-goal session alive when no alternate account exists", async () => {
-  const home = mkTempHome();
-  writeMinimalState(home);
-  const tmux = createFakeTmux();
-  let initialPaneCaptures = 0;
-  tmux.capturePane = () => {
-    initialPaneCaptures += 1;
-    return initialPaneCaptures === 1 ? "" : "exceeded retry limit, last status: 429";
-  };
-
-  const result = await runCodexTender(
-    {
-      statePath: path.join(home, ".aimgr", "secrets.json"),
-      homeDir: home,
-      cwd: "/tmp/project",
-      sessionName: "aimgr-test",
-      attach: false,
-      preflight: false,
-      pollSeconds: 0,
-      maxRestarts: 1,
-      startedAtMs: 1_779_500_000_000,
-    },
-    {
-      tmux,
-      appServerClient: {
-        listThreads: async () => [
-          {
-            id: "thread-1",
-            cwd: "/tmp/project",
-            createdAt: 1779500000,
-            updatedAt: 1779500001,
-          },
-        ],
-        getThreadGoal: async () => null,
-      },
-      sleepImpl: async () => {},
-      activateCodexPoolSelectionImpl: async () => ({
-        status: "blocked",
-        receipt: {
-          blockers: [{ reason: "no_alternate_pool_account" }],
-          warnings: [],
-        },
-        wrote: false,
-      }),
-    },
-  );
-
-  assert.equal(result.status, "blocked");
-  assert.equal(result.reason, "no_alternate_pool_account");
-  assert.equal(result.restarts, 0);
-  assert.equal(tmux.sentExit, 0);
-  assert.equal(tmux.alive, true);
-  assert.equal(tmux.newSessions.length, 1);
 });
 
 test("activateCodexPoolSelection can require an alternate without clearing the current auth", async () => {

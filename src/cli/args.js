@@ -41,6 +41,7 @@ export function parseArgs(argv) {
     maxRestarts: undefined,
     pollSeconds: undefined,
     promptTimeoutSeconds: undefined,
+    bindTimeoutSeconds: undefined,
     workdir: undefined,
     afterDoubleDash: [],
   };
@@ -250,6 +251,11 @@ export function parseArgs(argv) {
     }
     if (arg === "--prompt-timeout-seconds") {
       opts.promptTimeoutSeconds = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--bind-timeout-seconds") {
+      opts.bindTimeoutSeconds = argv[i + 1];
       i += 1;
       continue;
     }

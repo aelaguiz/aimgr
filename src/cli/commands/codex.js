@@ -143,6 +143,9 @@ export async function handleCodex(context) {
     if (String(positional[2] ?? "").trim()) {
       throw new Error("Unexpected positional argument for `aim codex run`. Put Codex arguments after `--`.");
     }
+    if (opts.tmuxSession) {
+      throw new Error("`--tmux-session` is obsolete for `aim codex run --tend`; Tend now uses an AIMGR-owned PTY supervisor.");
+    }
     const tended = await runCodexTenderImpl(
       {
         statePath,
@@ -156,11 +159,11 @@ export async function handleCodex(context) {
         codexProfile: opts.codexProfile ?? opts.profile,
         resumeSessionId: opts.resumeSessionId,
         codexArgs: opts.afterDoubleDash,
-        sessionName: opts.tmuxSession,
         attach: !opts.noAttach,
         thresholdPct: opts.rotateBelow5hRemainingPct,
         pollSeconds: opts.pollSeconds,
         promptTimeoutSeconds: opts.promptTimeoutSeconds,
+        bindTimeoutSeconds: opts.bindTimeoutSeconds,
         maxRestarts: opts.maxRestarts,
       },
       {

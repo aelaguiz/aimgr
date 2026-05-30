@@ -117,6 +117,12 @@ aim claude import-native <label> --in <file>
 aim pi use
 ```
 
+`aim codex run --tend` runs Codex under an AIMGR-owned foreground PTY supervisor. It does not use
+tmux, a private Codex app-server, or Codex `--remote`. Tended runs require Python 3 for the small
+repo-owned PTY helper; set `AIMGR_PYTHON_BIN` if `python3` is not the desired interpreter.
+`--tmux-session` is obsolete and fails loudly. Codex pass-through args after `--` must not include
+`--remote` or `--remote-auth-token-env`.
+
 Browser binding policy:
 
 ```bash

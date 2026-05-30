@@ -58,10 +58,34 @@ export function writeTextFileIfChanged(filePath, text, { mode } = {}) {
   }
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, next, {
-    encoding: "utf8",
-    ...(mode !== undefined ? { mode } : {}),
-  });
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  let renamed = false;
+  try {
+    fs.writeFileSync(tempPath, next, {
+      encoding: "utf8",
+      ...(mode !== undefined ? { mode } : {}),
+    });
+    fs.renameSync(tempPath, filePath);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (err) {
+        if (err?.code !== "ENOENT") throw err;
+      }
+    }
+  }
+  if (mode !== undefined) {
+    try {
+      fs.chmodSync(filePath, mode);
+    } catch {
+      // Best effort on non-POSIX filesystems.
+    }
+  }
   return { wrote: true, path: filePath };
 }
 

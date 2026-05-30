@@ -1,5 +1,10 @@
 # Codex overnight account rotation proposals
 
+> **Historical only as of 2026-05-30.** The implemented tmux/private-app-server Tend runtime
+> described below has been superseded. Current Tend uses an AIMGR-owned foreground PTY supervisor
+> plus Codex rollout JSONL ownership, with no tmux runtime, no private Codex app-server, and no
+> Codex `--remote`. See `docs/CODEX_TEND_PTY_SUPERVISOR_CUTOVER_2026-05-30.md`.
+
 Date: 2026-05-23
 Repos reviewed:
 
