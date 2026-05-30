@@ -12,13 +12,10 @@ async function handleRedisCodexUse(context) {
   const { opts, positional, homeDir, env, stdout, setExitCode, probeUsageSnapshotsByProviderImpl, activateCodexPoolSelectionImpl, connectRedisStoreImpl } = context;
   const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
   try {
-    const preserved = preserveLiveCodexAuthForActiveLabel({
-      state: runtime.state,
-      homeDir,
-      env,
-      observedAt: new Date().toISOString(),
-    });
-    await publishCodexPreserveResult({ runtime, state: runtime.state, preserved });
+    const preserved = {
+      status: "skipped",
+      reason: "codex_use_projects_from_redis",
+    };
 
     const explicitLabel = String(positional[2] ?? "").trim() ? normalizeLabel(positional[2]) : null;
     const activated = explicitLabel

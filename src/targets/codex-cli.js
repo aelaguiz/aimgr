@@ -285,7 +285,7 @@ export function preserveLiveCodexAuthForActiveLabel({ state, homeDir, env = {}, 
     accountId,
   };
   try {
-    assertCodexCredentialShape({ label, credential, requireFresh: false });
+    assertCodexCredentialShape({ label, credential, requireFresh: true });
   } catch (err) {
     return {
       status: "skipped",

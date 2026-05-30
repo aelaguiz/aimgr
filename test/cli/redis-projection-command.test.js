@@ -87,6 +87,43 @@ test("redis-configured codex use projects from Redis and writes only local adjun
   assert.doesNotMatch(JSON.stringify(local), /REFRESH_BOSS/);
 });
 
+test("redis-configured codex use does not publish stale local auth before projection", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const store = await seedOpenAiRedis({ home, client });
+  const stale = codexCredential("acct_boss", "REFRESH_STALE_LOCAL");
+  writeJson(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home, env: {} })), {
+    tokens: {
+      access_token: stale.access,
+      refresh_token: stale.refresh,
+      id_token: stale.idToken,
+      account_id: stale.accountId,
+    },
+    last_refresh: new Date().toISOString(),
+  });
+  writeJson(resolveAimgrLocalStatePath({ homeDir: home }), {
+    targets: {
+      codexCli: {
+        activeLabel: "boss",
+        expectedAccountId: "acct_boss",
+      },
+    },
+  });
+
+  const out = await runCli(["codex", "use", "boss", "--home", home], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+  });
+
+  const result = JSON.parse(out);
+  assert.equal(result.ok, true);
+  assert.equal(result.preserved.reason, "codex_use_projects_from_redis");
+  const snapshot = await readSnapshot(store);
+  assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_BOSS");
+  const auth = JSON.parse(fs.readFileSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home, env: {} })), "utf8"));
+  assert.equal(auth.tokens.refresh_token, "REFRESH_BOSS");
+});
+
 test("redis-configured codex watch publishes live auth rotation before exit", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
