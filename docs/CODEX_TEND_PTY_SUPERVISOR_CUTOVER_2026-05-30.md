@@ -1,7 +1,7 @@
 ---
 title: "Codex Tend - PTY Supervisor Cutover - Architecture Plan"
 date: 2026-05-30
-status: active
+status: complete
 fallback_policy: forbidden
 owners: [aelaguiz]
 reviewers: [composer-2.5-fast, plan-audit, thermonuclear-code-quality-review]
@@ -56,6 +56,62 @@ The PTY smoke has already been run multiple times on 2026-05-30. Treat Section 3
 Do not rerun the smoke again during planning, Composer review, plan-audit, or compaction recovery.
 Only rerun a smoke after implementation changes the actual PTY helper/supervisor code or after a
 local runtime upgrade changes the PTY backend assumptions.
+
+<!-- arch_skill:block:implementation_audit:start -->
+# Implementation Audit (authoritative)
+Date: 2026-05-30
+Verdict (code): COMPLETE
+Manual QA: complete (historical smoke receipts accepted; no PTY helper/supervisor code changed after those receipts in this pass)
+
+## Code blockers (why code is not done)
+
+- None.
+
+## Reopened phases (false-complete fixes)
+
+- None.
+
+## Missing items (code gaps; evidence-anchored; no tables)
+
+- None.
+
+## Evidence checked in this pass
+
+- Stage gate:
+  - `arch_stage_gate.py ready --doc docs/CODEX_TEND_PTY_SUPERVISOR_CUTOVER_2026-05-30.md` returned `READY next=implement-loop`.
+- Code shape:
+  - `src/targets/codex-app-server.js` is deleted.
+  - `src/targets/codex-tender.js` is `610` lines, below the 1000-line plan threshold.
+  - `src/targets/codex-pty.js`, `src/targets/codex-pty-helper.py`, `src/targets/codex-rollout.js`,
+    `src/targets/codex-tend-lock.js`, and `src/io/json-store.js` implement the planned PTY,
+    rollout, lock, and atomic-write boundaries.
+  - `package.json` / `package-lock.json` do not include `node-pty`.
+- Runtime side-door search:
+  - Live `src/targets` and `src/cli` surfaces contain no tmux launcher, private Codex app-server
+    launcher/import, loaded-thread-count discovery, or generic pane/global usage trigger.
+  - `--remote` and `--remote-auth-token-env` are rejected for Tend pass-through args.
+  - `--tmux-session` is rejected for `aim codex run --tend`.
+- Tests and syntax:
+  - `python3 -m py_compile src/targets/codex-pty-helper.py` passed.
+  - `npm run lint` passed.
+  - `node --test test/codex/use-watch.test.js` passed: `58` tests, `58` pass.
+  - `npm test` passed: `235` tests, `235` pass.
+- Install:
+  - `npm run install:local` installed wrappers into `/Users/aelaguiz/.local/bin`.
+  - `aim --help` runs from `/Users/aelaguiz/workspace/aimgr/bin/aimgr.js` and shows the current
+    `aim codex run --tend` help, including PTY supervisor wording, obsolete `--tmux-session`,
+    `--bind-timeout-seconds`, and Tend `--remote` rejection wording.
+- Review:
+  - Thermo-nuclear code quality review in the companion audit log found no blockers.
+  - `$plan-audit` implementation check in the companion audit log returned `approve-with-notes` with
+    no blocking plan-code-fit findings.
+
+## Non-blocking follow-ups (manual QA / screenshots / human verification)
+
+- The later attached-latency problem is outside this plan's tmux/app-server cutover scope and is now
+  tracked separately in
+  `docs/CODEX_TEND_PTY_SUPERVISOR_CUTOVER_2026-05-30_WORKLOG.md`.
+<!-- arch_skill:block:implementation_audit:end -->
 
 <!-- arch_skill:block:planning_passes:start -->
 <!--
@@ -992,9 +1048,10 @@ belong to Phase 3.**
 
 ## Phase 3 - Retire stale truth surfaces and verify local installed behavior
 
-**Implementation status (2026-05-30): in progress. Docs, full-suite tests, post-implementation
-smoke, Composer review, and thermonuclear review are complete; commit, push, and global install
-remain.**
+**Implementation status (2026-05-30): complete. Docs, full-suite tests, post-implementation smoke
+receipts, Composer review, thermonuclear review, implementation audit, commit/push evidence, and
+local install evidence are recorded in the worklog, commit history, and implementation-audit block
+above.**
 
 * Goal:
   Make repo truth and the local global installation match the PTY/rollout Tend runtime.

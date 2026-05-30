@@ -3,9 +3,9 @@
 Plan: `docs/CODEX_TEND_PTY_SUPERVISOR_CUTOVER_2026-05-30.md`
 Audit log: `docs/CODEX_TEND_PTY_SUPERVISOR_CUTOVER_2026-05-30_PLAN_AUDIT.md`
 Current plan verdict: ready
-Current implementation code-review verdict: not-run
+Current implementation code-review verdict: approve-with-notes
 Last reviewed: 2026-05-30
-Scope: whole plan, pre-implementation readiness
+Scope: whole plan, pre-implementation readiness plus implementation audit
 
 ## Current Blocking Findings
 
@@ -25,7 +25,64 @@ Previously raised non-blocking notes were folded into the plan before this verdi
 
 ## Current Implementation Findings
 
-Not run. No implementation exists yet.
+### IMP-001 - Thermo-nuclear code quality review
+
+Verdict: approve
+
+Blocking findings: none.
+
+Findings-first review:
+
+- No structural code-quality blocker was found in the implemented PTY/rollout Tend cutover.
+- The implementation avoided the biggest risk the plan called out: it deleted the old
+  tmux/app-server runtime instead of hiding it behind a fallback branch.
+- `src/targets/codex-tender.js` stayed at `610` lines, below the plan's 1000-line decomposition
+  threshold.
+- The code uses focused modules for the new concepts:
+  - `src/targets/codex-pty.js` for the Node PTY session adapter.
+  - `src/targets/codex-pty-helper.py` for POSIX PTY child ownership.
+  - `src/targets/codex-rollout.js` for rollout JSONL identity and goal status.
+  - `src/targets/codex-tend-lock.js` for per-thread Tend ownership locks.
+  - `src/io/json-store.js` for replacement-based writes.
+- The main code-quality tradeoff is intentional: `runCodexTender()` remains a single orchestration
+  state machine rather than being split into many tiny abstractions. At its current size, that is
+  more legible than scattering lifecycle state across a new framework.
+- Non-blocking note: the later attached-latency RCA shows this first PTY architecture is not the
+  final foreground-human transport. That is now tracked in the low-latency foreground-relay plan,
+  not treated as a blocker against this tmux/app-server removal plan.
+
+### IMP-002 - `$plan-audit` implementation check
+
+Verdict: approve-with-notes
+
+Blocking findings: none.
+
+Plan-code-fit result:
+
+- Phase 1 obligations are satisfied by code:
+  - repo-owned Python PTY helper exists and compiles;
+  - Node/helper JSON-line protocol exists;
+  - attached relay/raw-mode handling exists;
+  - rollout parser/resolver/tailer exists;
+  - per-thread lock helper exists;
+  - atomic write helper exists;
+  - focused tests cover the planned seams.
+- Phase 2 obligations are satisfied by code:
+  - `runCodexTender()` builds structured argv/env and removes `--remote`;
+  - new starts set `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=aimgr-tend-<runid>`;
+  - explicit resume is UUID-validated and rollout-backed;
+  - owned rollout `usageLimited` is the only rotation trigger;
+  - old generic pane/global usage triggers are gone;
+  - tmux/app-server code paths are not live;
+  - CLI rejects obsolete `--tmux-session`.
+- Phase 3 obligations are satisfied by code/docs/current evidence:
+  - README/help describe the PTY supervisor and `--bind-timeout-seconds`;
+  - old live-looking docs carry superseded/historical notices;
+  - lint, focused Codex tests, and full tests pass;
+  - local install was refreshed and `aim --help` resolves to this checkout.
+- Non-blocking note: current manual smoke evidence is accepted from the durable worklog/plan
+  receipts. It was not rerun in this pass because the plan explicitly says not to rerun the PTY
+  smoke after compaction unless PTY helper/supervisor code changed.
 
 ## Relevant Code Coverage Ledger
 
@@ -40,6 +97,7 @@ Not run. No implementation exists yet.
 | Superseded docs and side doors | `docs/codex-tend-multi-instance-plan-2026-05-30.md`, `docs/codex-tend-redesign-2026-05-30.md`, `docs/codex-tend-path-bug-analysis-2026-05-30.md`, `docs/codex-tend-instability-findings-2026-05-30.md`, `docs/codex-overnight-account-rotation-proposals-2026-05-23.md` | Ensure humans/agents cannot follow old tmux/app-server guidance after implementation | Explorer + parent | read |
 | Codex rollout source | `/Users/aelaguiz/workspace/codex/codex-rs/protocol/src/protocol.rs`, `rollout/src/recorder.rs`, `rollout/src/list.rs`, `core/src/goals.rs`, `core/src/codex_delegate.rs`, `core/src/thread_manager.rs`, `tui/src/app_server_session.rs`, `tui/src/lib.rs`, `tui/src/app/thread_goal_actions.rs`, `login/src/auth/default_client.rs` | Validate originator, `session_meta`, `thread_source`, `source`, `thread_goal_updated`, resume-by-id, complete-line JSONL, sub-agent discrimination | Explorer | read |
 | Composer external plan review | `/tmp/fresh-consult/codex-tend-pty-plan-composer2-20260530-ivvP2Y`, `/tmp/fresh-consult/codex-tend-pty-plan-composer4-20260530-HiZCLr` | User-requested Composer25 Fast gate | Parent | read |
+| Current implementation | `src/targets/codex-tender.js`, `src/targets/codex-pty.js`, `src/targets/codex-pty-helper.py`, `src/targets/codex-rollout.js`, `src/targets/codex-tend-lock.js`, `src/io/json-store.js`, `src/cli/commands/codex.js`, `src/cli/help.js`, `README.md`, `test/codex/codex-10.cases.js` | Plan-backed implementation audit and thermo-nuclear code-quality review | Parent | read |
 
 ## Required Lens Checklist
 
@@ -96,6 +154,37 @@ Not run. No implementation exists yet.
 - Findings carried forward: none
 - Verdict: ready
 - Next audit focus: implementation-audit after code exists
+
+### Pass 2 - 2026-05-30
+
+- Mode: implementation-audit
+- Scope: full implemented PTY/rollout Tend cutover against
+  `docs/CODEX_TEND_PTY_SUPERVISOR_CUTOVER_2026-05-30.md`
+- Baseline reviewed: current `redis-credential-coordination` branch at `770b127`
+- Test/CI context accepted:
+  - `python3 -m py_compile src/targets/codex-pty-helper.py` passed
+  - `npm run lint` passed
+  - `node --test test/codex/use-watch.test.js` passed: 58 tests, 58 pass
+  - `npm test` passed: 235 tests, 235 pass
+- Native subagents/lenses run:
+  - No native subagents spawned; current harness tool rules only permit subagents on explicit user
+    delegation requests.
+  - Lenses run locally: plan-code-fit, outcome-realization, requirement-traceability,
+    phase-frontier-review, code-and-diff-map, canonical-owner-and-SSOT, existing-pattern-fit,
+    deletion-and-side-door-closure, drift-proof-coupling, caller-invariant-state,
+    elegance-and-code-judo, tiny-team-maintainability, test-code-review, docs-contract-drift,
+    security/process/auth boundary.
+- Code areas read: see coverage ledger.
+- Obligations checked:
+  - Phase 1 PTY/rollout/lock/atomic-write primitives
+  - Phase 2 `runCodexTender()` cutover and old side-door deletion
+  - Phase 3 docs/help/install/test/review evidence
+- Findings added:
+  - IMP-001
+  - IMP-002
+- Findings resolved: none required.
+- Verdict: approve-with-notes
+- Next audit focus: low-latency foreground relay plan once that separate plan is implemented.
 
 ## Plan-Readiness Verdict
 
