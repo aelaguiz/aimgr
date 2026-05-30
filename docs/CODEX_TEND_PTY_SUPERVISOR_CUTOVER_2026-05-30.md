@@ -110,7 +110,7 @@ Manual QA: complete (historical smoke receipts accepted; no PTY helper/superviso
 
 - The later attached-latency problem is outside this plan's tmux/app-server cutover scope and is now
   tracked separately in
-  `docs/CODEX_TEND_PTY_SUPERVISOR_CUTOVER_2026-05-30_WORKLOG.md`.
+  `docs/CODEX_TEND_LOW_LATENCY_FOREGROUND_RELAY_2026-05-30.md`.
 <!-- arch_skill:block:implementation_audit:end -->
 
 <!-- arch_skill:block:planning_passes:start -->
@@ -927,8 +927,8 @@ usageLimited(T) -> rotate shared auth -> stop child -> start `codex resume T` ->
 
 ## Phase 1 - Prove PTY and rollout ownership as reusable Tend primitives
 
-**Implementation status (2026-05-30): completed in
-`docs/CODEX_TEND_PTY_SUPERVISOR_CUTOVER_2026-05-30_WORKLOG.md`.**
+**Implementation status (2026-05-30): complete. Evidence is recorded in commits `500c63a`,
+`770b127`, and the implementation-audit block above.**
 
 * Goal:
   Establish the two replacement primitives, PTY child ownership and rollout-file ownership, with
@@ -986,9 +986,9 @@ usageLimited(T) -> rotate shared auth -> stop child -> start `codex resume T` ->
 
 ## Phase 2 - Cut `runCodexTender` over to PTY + rollout and delete live tmux/app-server behavior
 
-**Implementation status (2026-05-30): completed in
-`docs/CODEX_TEND_PTY_SUPERVISOR_CUTOVER_2026-05-30_WORKLOG.md`; full-suite and review gates still
-belong to Phase 3.**
+**Implementation status (2026-05-30): complete. Evidence is recorded in commits `500c63a`,
+`770b127`, and the implementation-audit block above. Full-suite and review gates belong to Phase
+3.**
 
 * Goal:
   Make the public Tend command use the new runtime end to end: start, bind, watch, rotate, resume,

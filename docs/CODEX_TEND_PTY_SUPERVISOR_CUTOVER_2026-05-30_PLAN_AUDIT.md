@@ -48,8 +48,9 @@ Findings-first review:
   state machine rather than being split into many tiny abstractions. At its current size, that is
   more legible than scattering lifecycle state across a new framework.
 - Non-blocking note: the later attached-latency RCA shows this first PTY architecture is not the
-  final foreground-human transport. That is now tracked in the low-latency foreground-relay plan,
-  not treated as a blocker against this tmux/app-server removal plan.
+  final foreground-human transport. That is now tracked in
+  `docs/CODEX_TEND_LOW_LATENCY_FOREGROUND_RELAY_2026-05-30.md`, not treated as a blocker against
+  this tmux/app-server removal plan.
 
 ### IMP-002 - `$plan-audit` implementation check
 
@@ -184,7 +185,8 @@ Plan-code-fit result:
   - IMP-002
 - Findings resolved: none required.
 - Verdict: approve-with-notes
-- Next audit focus: low-latency foreground relay plan once that separate plan is implemented.
+- Next audit focus: `docs/CODEX_TEND_LOW_LATENCY_FOREGROUND_RELAY_2026-05-30.md` once that separate
+  plan is implemented.
 
 ## Plan-Readiness Verdict
 
