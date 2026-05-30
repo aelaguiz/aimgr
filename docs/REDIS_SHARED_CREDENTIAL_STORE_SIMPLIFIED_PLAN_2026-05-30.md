@@ -1,7 +1,7 @@
 ---
 title: "AIMGR - Redis Shared Credential Store - Architecture Plan"
 date: 2026-05-30
-status: active
+status: implemented
 fallback_policy: forbidden
 owners: [aelaguiz]
 reviewers: [composer-2.5-fast]
@@ -116,6 +116,36 @@ note: This block tracks stage order only. It never overrides readiness blockers 
   ]
 }
 <!-- arch_skill:block:auto_plan_receipts:end -->
+
+<!-- arch_skill:block:implementation_audit:start -->
+## Implementation Audit
+
+Date: 2026-05-30
+
+Verdict: complete for the Redis hard cutover on the configured four-install fleet.
+
+Evidence:
+
+- Code is deployed at `ad6cf70` on this machine, `home`, `agents@amirs-mac-studio`, and `amirs-m3-max-new`.
+- Live Redis contains 24 shared credential records and zero legacy `label`, `session`, or `machine` rows.
+- This machine, `home`, and `amirs-m3-max-new` use `redis://amirs-mac-studio:6380`.
+- `agents@amirs-mac-studio` is the Redis host and uses `redis://127.0.0.1:6380`.
+- All four installs passed `aim redis ping`, `aim codex use pro10`, and `aim status --json` with 24 accounts, 24 Redis credentials, and no warnings.
+- Local non-Codex projection smoke passed with `aim auth write hermes pro10 --auth-file <tmp>/auth.json`.
+- Codex Tend is covered by Redis runtime tests proving successful live-auth publish and failure-without-commit behavior.
+- The two-home Redis projection test proves one AIM home can publish a Codex live-auth rotation and another AIM home reads the updated shared credential without creating `~/.aimgr/secrets.json`.
+- `npm run lint` passed.
+- `env -u CODEX_HOME npm test` passed with 233 tests.
+- Fresh Composer 2.5 Fast recheck passed: `/tmp/fresh-consult/redis-hard-cutover-composer-recheck-20260530TLPehAX/final.txt`.
+- Thermo-nuclear code-quality review passed with no blocking structural regressions.
+
+Known residuals:
+
+- Dormant non-Redis local `secrets.json` fallback paths still exist for unconfigured installs. They are inactive on the configured cutover fleet and are not a live shared credential source.
+- `src/migration/redis-migration.js` and `src/targets/codex-tender.js` remain below, but close to, the 1k-line review threshold.
+
+Decision: implementation accepted for the hard cutover.
+<!-- arch_skill:block:implementation_audit:end -->
 
 # 0) Holistic North Star
 

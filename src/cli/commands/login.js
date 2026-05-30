@@ -234,10 +234,10 @@ export async function handleLogin(context) {
       readOpenclawBindingsFromConfigImpl,
       readOpenclawAgentsListFromConfigImpl,
       loginOpenAICodexImpl,
-        refreshOpenAICodexImpl,
-        refreshAnthropicImpl,
-        writeImpl,
-      });
+      refreshOpenAICodexImpl,
+      refreshAnthropicImpl,
+      writeImpl,
+    });
     return;
   }
 
@@ -250,10 +250,10 @@ export async function handleLogin(context) {
       promptImpl,
       openUrlImpl,
       loginOpenAICodexImpl,
-        refreshOpenAICodexImpl,
-        refreshAnthropicImpl,
-        writeImpl,
-      });
+      refreshOpenAICodexImpl,
+      refreshAnthropicImpl,
+      writeImpl,
+    });
     writeJsonFileWithBackup(statePath, state);
     stdout.write(
       `${JSON.stringify(

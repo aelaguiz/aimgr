@@ -160,6 +160,59 @@ test("redis-configured codex watch publishes live auth rotation before exit", as
   assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_ROTATED");
 });
 
+test("two Redis-configured AIM homes read and update the same shared credential", async () => {
+  const homeA = mkTempHome();
+  const homeB = mkTempHome();
+  const client = new FakeRedisClient();
+  const store = await seedOpenAiRedis({ home: homeA, client });
+  writeAimgrConfig({
+    homeDir: homeB,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+
+  await runCli(["codex", "use", "boss", "--home", homeA], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+  });
+  await runCli(["codex", "use", "boss", "--home", homeB], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+  });
+
+  const rotated = codexCredential("acct_boss", "REFRESH_ROTATED_BY_HOME_A");
+  writeJson(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: homeA, env: {} })), {
+    tokens: {
+      access_token: rotated.access,
+      refresh_token: rotated.refresh,
+      id_token: rotated.idToken,
+      account_id: rotated.accountId,
+    },
+    last_refresh: new Date().toISOString(),
+  });
+
+  const watchOut = await runCli(["codex", "watch", "--once", "--home", homeA], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    probeUsageSnapshotsByProviderImpl: async () => ({
+      "openai-codex": {
+        boss: { ok: true, windows: [{ usedPercent: 1 }] },
+      },
+    }),
+  });
+  assert.equal(JSON.parse(watchOut).preserved.status, "updated");
+
+  await runCli(["codex", "use", "boss", "--home", homeB], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+  });
+  const homeBAuth = JSON.parse(fs.readFileSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: homeB, env: {} })), "utf8"));
+  assert.equal(homeBAuth.tokens.refresh_token, "REFRESH_ROTATED_BY_HOME_A");
+  const snapshot = await readSnapshot(store);
+  assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_ROTATED_BY_HOME_A");
+  assert.equal(fs.existsSync(path.join(homeA, ".aimgr", "secrets.json")), false);
+  assert.equal(fs.existsSync(path.join(homeB, ".aimgr", "secrets.json")), false);
+});
+
 test("redis-configured pi use and hermes auth write read shared Redis credentials", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();

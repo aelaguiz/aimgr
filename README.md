@@ -49,13 +49,15 @@ aim redis snapshot
 
 Migration is the only path that reads old credential stores. It is read-only until the reviewed apply step.
 
-Run collection on every machine:
+For the hard cutover, this machine's current local Codex auth files and archived AIM snapshots are the bootstrap authority. Do not merge old Redis `session:*`, `label:*`, or `machine:*` rows back into the new store; those rows are backup-and-cleanup material only.
+
+Collect the local bootstrap bundle on this machine:
 
 ```bash
 aim redis migrate collect --out <bundle.json>
 ```
 
-Copy the three bundles to one review directory, then plan and apply once:
+Plan and apply once from the reviewed bootstrap bundle directory:
 
 ```bash
 aim redis migrate plan --from <bundle-dir> --out <plan.json>

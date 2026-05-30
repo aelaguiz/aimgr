@@ -1,5 +1,49 @@
 # Redis Shared Credential Store Worklog
 
+## 2026-05-30T16:55Z - Final fleet hard cutover verification
+
+- Current branch and deployed build:
+  - Local repo: `ad6cf70` on `redis-credential-coordination`.
+  - `home`: `ad6cf70`.
+  - `amirs-m3-max-new`: `ad6cf70`.
+  - `agents@amirs-mac-studio`: `ad6cf70`.
+- Live Redis state:
+  - credential records: 24.
+  - legacy labels: 0.
+  - legacy sessions: 0.
+  - legacy machines: 0.
+  - no local stale `aimgr.js codex run --tend` supervisor process is running.
+- Redis connection config:
+  - Local, `home`, and `amirs-m3-max-new`: `redis://amirs-mac-studio:6380`, key prefix `aimgr:v1:`, primary host `agents@amirs-mac-studio`, transport `tailscale`.
+  - `agents@amirs-mac-studio`: `redis://127.0.0.1:6380`, key prefix `aimgr:v1:`, primary host `agents@amirs-mac-studio`, transport `tailscale`.
+- Live smoke:
+  - Local: `aim redis ping` returned `PONG`; `aim codex use pro10` activated `pro10`; `aim status --json` reported 24 accounts, 24 Redis credentials, active Codex label `pro10`, and `warnings: []`.
+  - `home`: `aim redis ping` returned `PONG`; `aim codex use pro10` activated `pro10`; `aim status --json` reported 24 accounts, 24 Redis credentials, active Codex label `pro10`, and `warnings: []`.
+  - `amirs-m3-max-new`: `aim redis ping` returned `PONG`; `aim codex use pro10` activated `pro10`; `aim status --json` reported 24 accounts, 24 Redis credentials, active Codex label `pro10`, and `warnings: []`.
+  - `agents@amirs-mac-studio`: `aim redis ping` returned `PONG` over localhost; `aim codex use pro10` activated `pro10`; `aim status --json` reported 24 accounts, 24 Redis credentials, active Codex label `pro10`, and `warnings: []`.
+  - `pro10` was usable during smoke: allowed `true`, 5h used `23`, week used `69`.
+  - Non-Codex projection smoke: `aim auth write hermes pro10 --auth-file <tmp>/auth.json` returned `ok: true` and wrote an `openai-codex` provider entry from the shared Redis credential.
+- Verification:
+  - `npm run lint`: passed.
+  - `env -u CODEX_HOME node --test test/codex/codex-10.cases.js test/cli/redis-projection-command.test.js`: 35 passed, 0 failed.
+  - `env -u CODEX_HOME npm test`: 233 passed, 0 failed.
+- Composer 2.5 Fast fresh consult:
+  - Runtime/model: Cursor Agent `composer-2.5-fast`.
+  - Run directory: `/tmp/fresh-consult/redis-hard-cutover-composer-20260530TT5q8lm`.
+  - Initial verdict: `pass-with-notes`, blocking `none`.
+  - Notes addressed after the consult:
+    - Added a two-home Redis projection test proving one AIM home can publish a Codex live-auth rotation and another AIM home reads the updated shared credential without creating `~/.aimgr/secrets.json`.
+    - Updated README migration wording so this machine's bootstrap bundle is the import authority and old Redis `session:*`, `label:*`, and `machine:*` rows are cleanup-only.
+    - Reran and recorded the four-install `aim redis ping`, `aim codex use pro10`, `aim status --json`, live Redis legacy-count, and Hermes auth projection smokes above.
+  - Recheck run directory: `/tmp/fresh-consult/redis-hard-cutover-composer-recheck-20260530TLPehAX`.
+  - Recheck verdict: `pass`, blocking `none`.
+- Thermo-nuclear code-quality review:
+  - Verdict: pass, no blocking structural regressions found.
+  - Checked branch diff size, changed source file line counts, Redis runtime boundaries, migration shape, Codex Tend staging boundary, and legacy machine/session references.
+  - `src/migration/redis-migration.js` is still under the 1k-line threshold at 983 lines.
+  - `src/targets/codex-tender.js` remains under the 1k-line threshold at 975 lines.
+  - Residual non-blocking debt: dormant non-Redis local `secrets.json` fallback paths still exist for unconfigured installs, but the four-install cutover fleet is Redis-configured and does not use them.
+
 ## 2026-05-30T16:55Z - Mac Studio localhost correction
 
 - Durable connection rule added:
@@ -68,11 +112,3 @@
 - `npm run lint`
 - `env -u CODEX_HOME npm test`: 229 passed, 0 failed
 - `npm run lint`: passed after the full suite
-
-## Remaining before final hard cutover
-
-- Run the full local test suite once more after the latest source-of-truth correction.
-- Commit and push the build.
-- Pull/reinstall/smoke on `home`, `agents@amirs-mac-studio`, and `amirs-m3-max-new`.
-- After fleet smoke passes, delete old Redis machine/session keys with `aim redis migrate cleanup-legacy --confirm-breaking-cutover`.
-- Run Composer 2.5 Fast fresh consult and thermo-nuclear code-quality review.

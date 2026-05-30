@@ -127,18 +127,18 @@ export async function handleRedis(context) {
   if (subcmd === "import") {
     const inPath = resolveCliPath(opts.inFile, { homeDir, optionName: "--in" });
     const snapshot = JSON.parse(fs.readFileSync(inPath, "utf8"));
-      await withRedisStore({ homeDir, opts }, async (store) => {
-        const results = await importCredentialsSnapshot(store, snapshot, { updatedBy: "aimgr-cli", observedAt: new Date(nowMs).toISOString() });
-        printJson(stdout, {
-          ok: results.every((result) => result.ok),
-          inFile: inPath,
-          counts: {
-            credentials: Array.isArray(snapshot.credentials) ? snapshot.credentials.length : 0,
-            meta: snapshot.meta ? 1 : 0,
-          },
-        });
+    await withRedisStore({ homeDir, opts }, async (store) => {
+      const results = await importCredentialsSnapshot(store, snapshot, { updatedBy: "aimgr-cli", observedAt: new Date(nowMs).toISOString() });
+      printJson(stdout, {
+        ok: results.every((result) => result.ok),
+        inFile: inPath,
+        counts: {
+          credentials: Array.isArray(snapshot.credentials) ? snapshot.credentials.length : 0,
+          meta: snapshot.meta ? 1 : 0,
+        },
       });
-      return;
+    });
+    return;
   }
 
   if (subcmd === "migrate") {
