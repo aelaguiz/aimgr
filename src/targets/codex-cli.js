@@ -2,13 +2,16 @@ import { getCodexCredential } from "../browser/seed.js";
 import { CODEX_AUTH_STORE_MODE_FILE, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { clampPercent } from "../core/numbers.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
-import { assertCodexCredentialShape, findCodexLabelByAccountId } from "../credentials/codex.js";
+import { toIsoFromExpiresMs } from "../core/time.js";
+import { assertCodexCredentialShape, buildCodexCredentialFingerprint, findCodexLabelByAccountId } from "../credentials/codex.js";
+import { decodeJwtPayload } from "../credentials/jwt.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
 import { resolveCodexAuthFilePath, resolveCodexConfigPath, resolveManagedCodexHomeDir } from "../io/paths.js";
 import { appendOpenaiCodexHistory, collectCodexPoolStatusWithExhaustionHistory, recordOpenaiCodexBlockedSelectionHistory } from "../pool/history.js";
 import { getCodexPoolLabels, pickNextBestLocalCliPoolLabel, pickNextCodexUseRoundRobinLabel, rankPoolCandidates } from "../pool/ranking.js";
 import { probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { discoverStatusConfiguredOpenclawCodexAgents, getCodexTargetState, getImportedCodexLabels, getOpenclawAssignments, getOpenclawTargetState, hasImportedCodexReplica } from "../state/accounts.js";
+import { markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
 import { getAuthorityCodexImport } from "../state/authority-codex.js";
 import { ensureStateShape } from "../state/schema.js";
 import { buildCodexAuthDotJson, clearManagedCodexCliActivation, ensureFileBackedCodexHome, readCodexAuthFile, readCodexCliStoreMode } from "./codex-store.js";
@@ -199,6 +202,111 @@ export function getPrimaryRemainingPctFromUsageSnapshot(snapshot) {
   return clampPercent(100 - Number(windows[0]?.usedPercent ?? 0));
 }
 
+function jwtExpiresAt(token) {
+  const claims = decodeJwtPayload(token);
+  const exp = Number(claims?.exp);
+  if (!Number.isFinite(exp) || exp <= 0) return null;
+  return toIsoFromExpiresMs(exp * 1000);
+}
+
+export function preserveLiveCodexAuthForActiveLabel({ state, homeDir, env = {}, observedAt = new Date().toISOString() }) {
+  ensureStateShape(state);
+  const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
+  const readback = readCodexAuthFile({ codexHome });
+  if (readback.ok !== true) {
+    return {
+      status: "skipped",
+      reason: readback.exists ? "auth_unreadable" : "auth_missing",
+      authPath: readback.authPath,
+    };
+  }
+
+  const tokens = isObject(readback.json?.tokens) ? readback.json.tokens : null;
+  const accountId = typeof tokens?.account_id === "string" ? tokens.account_id.trim() : "";
+  const access = typeof tokens?.access_token === "string" ? tokens.access_token.trim() : "";
+  const refresh = typeof tokens?.refresh_token === "string" ? tokens.refresh_token.trim() : "";
+  const idToken = typeof tokens?.id_token === "string" ? tokens.id_token.trim() : "";
+  if (!accountId || !access || !refresh) {
+    return {
+      status: "skipped",
+      reason: "auth_tokens_incomplete",
+      authPath: readback.authPath,
+      accountId: accountId || null,
+    };
+  }
+
+  const target = getCodexTargetState(state);
+  const targetLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
+  const inferredLabel = findCodexLabelByAccountId(state, accountId);
+  const label = targetLabel || inferredLabel;
+  if (!label) {
+    return {
+      status: "skipped",
+      reason: "label_not_found",
+      authPath: readback.authPath,
+      accountId,
+    };
+  }
+
+  const existing = getCodexCredential(state, label);
+  if (!isObject(existing)) {
+    return {
+      status: "skipped",
+      reason: "stored_credential_missing",
+      label,
+      accountId,
+    };
+  }
+  if (typeof existing.accountId === "string" && existing.accountId.trim() && existing.accountId.trim() !== accountId) {
+    return {
+      status: "skipped",
+      reason: "account_mismatch",
+      label,
+      accountId,
+      expectedAccountId: existing.accountId.trim(),
+    };
+  }
+
+  const expiresAt = jwtExpiresAt(idToken) || jwtExpiresAt(access) || existing.expiresAt;
+  const credential = {
+    access,
+    refresh,
+    idToken: idToken || existing.idToken || access,
+    expiresAt,
+    accountId,
+  };
+  try {
+    assertCodexCredentialShape({ label, credential, requireFresh: false });
+  } catch (err) {
+    return {
+      status: "skipped",
+      reason: "live_credential_invalid",
+      label,
+      accountId,
+      detail: String(err?.message ?? err),
+    };
+  }
+
+  const oldFingerprint = buildCodexCredentialFingerprint(existing);
+  const newFingerprint = buildCodexCredentialFingerprint(credential);
+  if (oldFingerprint === newFingerprint) {
+    return {
+      status: "unchanged",
+      label,
+      accountId,
+    };
+  }
+
+  state.credentials[OPENAI_CODEX_PROVIDER][label] = credential;
+  const authorityPromotion = markImportedCodexLabelDirtyState(state, label, { observedAt });
+  return {
+    status: "updated",
+    label,
+    accountId,
+    authorityPromotion,
+  };
+}
+
 export function buildCodexWatchNonfatalWarnings(status) {
   return buildWarningsFromCodexTargetStatus(status)
     .filter((warning) => warning?.kind === "codex_import_missing");
@@ -353,6 +461,7 @@ export async function activateCodexPoolSelection({
   usageByProvider: usageByProviderOverride,
   probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
   selectionMode = "round_robin",
+  avoidCurrentLabel = false,
 }) {
   ensureStateShape(state);
   // Structural target validation comes first: if this machine's Codex home is not
@@ -372,6 +481,12 @@ export async function activateCodexPoolSelection({
     usageByLabel,
     observedAt,
   });
+  const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
+  const currentLabel = currentTarget.activeLabel ?? currentTarget.inferredLabel ?? null;
+  const selectionEligibleLabels =
+    avoidCurrentLabel && currentLabel
+      ? poolStatus.eligibleLabels.filter((label) => label !== currentLabel)
+      : poolStatus.eligibleLabels;
 
   if (poolStatus.labels.length === 0) {
     throw new Error(
@@ -381,8 +496,23 @@ export async function activateCodexPoolSelection({
   }
 
   const target = getCodexTargetState(state);
+  if (avoidCurrentLabel && selectionEligibleLabels.length === 0) {
+    const receipt = {
+      action: "codex_use",
+      status: "blocked",
+      observedAt,
+      previousLabel: currentLabel ?? undefined,
+      warnings: [],
+      blockers: [{ reason: "no_alternate_pool_account" }],
+      reasons: ["avoid_current_label"],
+      wroteAuthJson: false,
+    };
+    target.lastSelectionReceipt = receipt;
+    recordOpenaiCodexBlockedSelectionHistory(state, { observedAt, reason: "no_alternate_pool_account" });
+    return { status: "blocked", receipt, wrote: false };
+  }
+
   if (poolStatus.eligibleLabels.length === 0) {
-    const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
     clearManagedCodexCliActivation({ state, homeDir, env });
     const receipt = {
       action: "codex_use",
@@ -399,20 +529,18 @@ export async function activateCodexPoolSelection({
     return { status: "blocked", receipt, wrote: false };
   }
 
-  const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
-  const currentLabel = currentTarget.activeLabel ?? currentTarget.inferredLabel ?? null;
   let selection;
   if (selectionMode === "round_robin") {
     selection = pickNextCodexUseRoundRobinLabel({
       poolLabels: poolStatus.labels,
-      eligibleLabels: poolStatus.eligibleLabels,
+      eligibleLabels: selectionEligibleLabels,
       currentLabel,
     });
   } else if (selectionMode === "weighted_usage") {
     const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
     const currentAssignments = getOpenclawAssignments(state);
     const rankedCandidates = rankPoolCandidates({
-      labels: poolStatus.eligibleLabels,
+      labels: selectionEligibleLabels,
       usage: usageByLabel,
       currentLabel,
       currentAssignments,
@@ -421,7 +549,10 @@ export async function activateCodexPoolSelection({
       lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
       now: Date.parse(observedAt),
     });
-    selection = pickNextBestLocalCliPoolLabel({ rankedCandidates });
+    selection = pickNextBestLocalCliPoolLabel({
+      rankedCandidates,
+      avoidLabel: avoidCurrentLabel ? currentLabel : null,
+    });
   } else {
     throw new Error(`Unsupported Codex selection mode: ${selectionMode}`);
   }

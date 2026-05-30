@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { Readable } from "node:stream";
 import fs from "node:fs";
 import path from "node:path";
 import { refreshOrLoginCodex } from "../../src/credentials/codex-login.js";
-import { runCli } from "../helpers/cli-runner.js";
+import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { installFakeOpenclaw, readFakeOpenclawRestarts, readFakeOpenclawSessionPatches } from "../helpers/fakes.js";
 import { mkTempHome, withEnv, writeJson, writeOpenclawAuthStore, writeOpenclawSessionsStore } from "../helpers/files.js";
 
@@ -70,6 +71,196 @@ test("refreshOrLoginCodex manual-callback prompts for callback URL and skips bro
   ]);
   assert.equal(cred.accountId, "acct_manual");
   assert.equal(cred.idToken, "ACCESS_TOKEN");
+});
+
+test("login --manual-callback-stdio emits auth_url JSONL and reads callback JSON from stdin", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  let openUrlCalls = 0;
+  const callbackUrl = "http://localhost:1455/auth/callback?code=CODE123&state=STATE456";
+  const out = await runCli(["login", "pro1", "--manual-callback-stdio", "--home", home], {
+    stdin: Readable.from([`${JSON.stringify({ type: "callback_url", url: callbackUrl })}\n`]),
+    openUrlImpl: () => {
+      openUrlCalls += 1;
+      return { ok: true };
+    },
+    loginOpenAICodexImpl: async ({ onAuth, onManualCodeInput, originator }) => {
+      assert.equal(originator, "aimgr");
+      onAuth({ url: "https://auth.openai.example/authorize" });
+      assert.equal(await onManualCodeInput(), callbackUrl);
+      return {
+        access: "ACCESS_TOKEN",
+        refresh: "REFRESH_TOKEN",
+        expires: Date.now() + 3600_000,
+        accountId: "acct_pro1",
+      };
+    },
+  });
+
+  const lines = out.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(openUrlCalls, 0);
+  assert.deepEqual(lines[0], {
+    type: "auth_url",
+    label: "pro1",
+    provider: "openai-codex",
+    url: "https://auth.openai.example/authorize",
+  });
+  assert.equal(lines[1].type, "result");
+  assert.equal(lines[1].ok, true);
+  assert.equal(lines[1].label, "pro1");
+  assert.equal(lines[1].provider, "openai-codex");
+
+  const persisted = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(persisted.credentials["openai-codex"].pro1.accountId, "acct_pro1");
+  assert.equal(persisted.credentials["openai-codex"].pro1.refresh, "REFRESH_TOKEN");
+});
+
+test("login --manual-callback-stdio accepts a raw callback URL on stdin", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const callbackUrl = "http://localhost:1455/auth/callback?code=RAWCODE&state=RAWSTATE";
+  const out = await runCli(["login", "pro1", "--manual-callback-stdio", "--home", home], {
+    stdin: Readable.from([`${callbackUrl}\n`]),
+    loginOpenAICodexImpl: async ({ onAuth, onManualCodeInput }) => {
+      onAuth({ url: "https://auth.openai.example/authorize" });
+      assert.equal(await onManualCodeInput(), callbackUrl);
+      return {
+        access: "ACCESS_TOKEN",
+        refresh: "REFRESH_TOKEN",
+        expires: Date.now() + 3600_000,
+        accountId: "acct_pro1",
+      };
+    },
+  });
+
+  const lines = out.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines[0].type, "auth_url");
+  assert.equal(lines[1].type, "result");
+  assert.equal(lines[1].ok, true);
+});
+
+test("login --manual-callback-stdio refresh success emits only result JSONL", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: {
+      "openai-codex": {
+        pro1: {
+          access: "OLD_ACCESS",
+          refresh: "OLD_REFRESH",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          accountId: "acct_pro1",
+        },
+      },
+      anthropic: {},
+    },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const out = await runCli(["login", "pro1", "--manual-callback-stdio", "--home", home], {
+    stdin: Readable.from([""]),
+    loginOpenAICodexImpl: async () => {
+      throw new Error("OAuth login should not run after refresh succeeds");
+    },
+    refreshOpenAICodexImpl: async () => ({
+      access: "NEW_ACCESS",
+      refresh: "NEW_REFRESH",
+      expires: Date.now() + 3600_000,
+      accountId: "acct_pro1",
+    }),
+  });
+
+  const lines = out.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].type, "result");
+  assert.equal(lines[0].ok, true);
+  assert.equal(lines[0].label, "pro1");
+});
+
+test("login --manual-callback-stdio emits JSONL error and nonzero exit when stdin callback is missing", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      pro1: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
+    },
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
+    pool: { openaiCodex: { history: [] } },
+  });
+
+  const result = await runCliWithExitCode(["login", "pro1", "--manual-callback-stdio", "--home", home], {
+    stdin: Readable.from([""]),
+    loginOpenAICodexImpl: async ({ onAuth, onManualCodeInput }) => {
+      onAuth({ url: "https://auth.openai.example/authorize" });
+      await onManualCodeInput();
+      throw new Error("unreachable");
+    },
+  });
+
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(result.exitCode, 1);
+  assert.equal(lines[0].type, "auth_url");
+  assert.equal(lines[1].type, "error");
+  assert.equal(lines[1].ok, false);
+  assert.equal(lines[1].label, "pro1");
+  assert.match(lines[1].error, /Missing callback URL on stdin/);
+});
+
+test("login --manual-callback-stdio rejects Claude labels as JSONL errors", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  writeJson(statePath, {
+    schemaVersion: "0.2",
+    accounts: {
+      claudalyst: { provider: "anthropic", reauth: { mode: "native-claude" } },
+    },
+    credentials: { "openai-codex": {}, anthropic: {} },
+    imports: { authority: { codex: {}, anthropic: {} } },
+    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {} },
+    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
+  });
+
+  const result = await runCliWithExitCode(["login", "claudalyst", "--manual-callback-stdio", "--home", home], {
+    stdin: Readable.from([""]),
+  });
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(result.exitCode, 1);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].type, "error");
+  assert.equal(lines[0].ok, false);
+  assert.equal(lines[0].label, "claudalyst");
+  assert.match(lines[0].error, /only supports openai-codex labels/);
 });
 
 test("apply materializes only assigned managed profiles and clears stale per-agent overrides", async () => {

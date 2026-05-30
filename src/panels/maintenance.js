@@ -2,8 +2,9 @@ import { loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from
 import { launchBrowserBindingForUrl } from "../browser/launch.js";
 import { promptLine, promptRequiredLine } from "../io/prompts.js";
 import { writeStdout } from "../io/streams.js";
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, SCHEMA_VERSION } from "../core/constants.js";
-import { normalizeLabel } from "../core/normalize.js";
+import { normalizeInteractiveOAuthMode } from "../browser/bindings.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, REAUTH_MODE_MANUAL_CALLBACK, SCHEMA_VERSION } from "../core/constants.js";
+import { normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { maintainAnthropicNativeLabel, recordAccountMaintenanceAttempt, recordAccountMaintenanceFailure, recordAccountMaintenanceSuccess } from "../credentials/anthropic-maintenance.js";
 import { ensureAnthropicLabelConfigured, resolveAnthropicMaintenanceBlockedReason } from "../credentials/claude-native.js";
 import { ensureOpenAICodexInteractiveLoginBinding, refreshOrLoginCodex } from "../credentials/codex-login.js";
@@ -11,6 +12,25 @@ import { ensureProviderConfiguredForLabel } from "../credentials/oauth.js";
 import { syncHermesHomesForLabel } from "../pool/hermes-rebalance.js";
 import { getAuthorityAnthropicImport, markImportedAnthropicLabelDirtyState } from "../state/authority-anthropic.js";
 import { getAuthorityCodexImport, markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
+import { getAccountRecord, getAccountReauthState } from "../state/accounts.js";
+
+function configureManualCallbackStdioProvider({ state, label }) {
+  const account = getAccountRecord(state, label, { create: true });
+  const existingProvider = normalizeProviderId(account?.provider);
+  if (existingProvider && existingProvider !== OPENAI_CODEX_PROVIDER) {
+    throw new Error(
+      `--manual-callback-stdio only supports ${OPENAI_CODEX_PROVIDER} labels; label=${label} is provider=${existingProvider}.`,
+    );
+  }
+  account.provider = OPENAI_CODEX_PROVIDER;
+
+  const reauth = getAccountReauthState(state, label, { create: true });
+  const hasSavedBrowserBinding = Boolean(account.browser) && typeof account.browser === "object" && !Array.isArray(account.browser);
+  if (!normalizeInteractiveOAuthMode(reauth.mode) && !hasSavedBrowserBinding) {
+    reauth.mode = REAUTH_MODE_MANUAL_CALLBACK;
+  }
+  return OPENAI_CODEX_PROVIDER;
+}
 
 export async function performLabelMaintenance({
   state,
@@ -22,15 +42,18 @@ export async function performLabelMaintenance({
   loginOpenAICodexImpl = loginOpenAICodex,
   refreshOpenAICodexImpl = refreshOpenAICodexToken,
   refreshAnthropicImpl = refreshAnthropicToken,
+  manualCallbackAutomation = null,
   writeImpl = writeStdout,
 }) {
   const normalizedLabel = normalizeLabel(label);
-  const provider = await ensureProviderConfiguredForLabel({
-    state,
-    label: normalizedLabel,
-    promptLineImpl,
-    writeImpl,
-  });
+  const provider = manualCallbackAutomation
+    ? configureManualCallbackStdioProvider({ state, label: normalizedLabel })
+    : await ensureProviderConfiguredForLabel({
+        state,
+        label: normalizedLabel,
+        promptLineImpl,
+        writeImpl,
+      });
   const attemptedAt = recordAccountMaintenanceAttempt(state, normalizedLabel, { providerHint: provider });
   let hermesSync = {
     status: "noop",
@@ -46,13 +69,15 @@ export async function performLabelMaintenance({
 
   try {
     if (provider === OPENAI_CODEX_PROVIDER) {
-      const interactiveBinding = await ensureOpenAICodexInteractiveLoginBinding({
-        state,
-        label: normalizedLabel,
-        homeDir,
-        promptLineImpl,
-        writeImpl,
-      });
+      const interactiveBinding = manualCallbackAutomation
+        ? { mode: REAUTH_MODE_MANUAL_CALLBACK }
+        : await ensureOpenAICodexInteractiveLoginBinding({
+            state,
+            label: normalizedLabel,
+            homeDir,
+            promptLineImpl,
+            writeImpl,
+          });
       const cred = await refreshOrLoginCodex({
         state,
         label: normalizedLabel,
@@ -62,6 +87,7 @@ export async function performLabelMaintenance({
         refreshImpl: refreshOpenAICodexImpl,
         promptImpl,
         openUrlImpl,
+        manualCallbackAutomation,
         writeImpl,
       });
       state.credentials[OPENAI_CODEX_PROVIDER][normalizedLabel] = cred;

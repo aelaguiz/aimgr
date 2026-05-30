@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
+node_bin="${AIMGR_NODE_BIN:-$(command -v node)}"
 
 mkdir -p "$target_dir"
 
@@ -13,7 +14,7 @@ install_wrapper() {
   cat >"$target" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-exec node "$repo_root/bin/aimgr.js" "\$@"
+exec "$node_bin" "$repo_root/bin/aimgr.js" "\$@"
 EOF
 
   chmod 755 "$target"
