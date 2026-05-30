@@ -1,12 +1,12 @@
 # Redis Shared Credential Store Worklog
 
-## 2026-05-30T16:55Z - Final fleet hard cutover verification
+## 2026-05-30T17:03Z - Final fleet hard cutover verification
 
 - Current branch and deployed build:
-  - Local repo: `ad6cf70` on `redis-credential-coordination`.
-  - `home`: `ad6cf70`.
-  - `amirs-m3-max-new`: `ad6cf70`.
-  - `agents@amirs-mac-studio`: `ad6cf70`.
+  - Local repo: `3a36ca3` on `redis-credential-coordination`.
+  - `home`: `3a36ca3`.
+  - `amirs-m3-max-new`: `3a36ca3`.
+  - `agents@amirs-mac-studio`: `3a36ca3`.
 - Live Redis state:
   - credential records: 24.
   - legacy labels: 0.
@@ -21,6 +21,7 @@
   - `home`: `aim redis ping` returned `PONG`; `aim codex use pro10` activated `pro10`; `aim status --json` reported 24 accounts, 24 Redis credentials, active Codex label `pro10`, and `warnings: []`.
   - `amirs-m3-max-new`: `aim redis ping` returned `PONG`; `aim codex use pro10` activated `pro10`; `aim status --json` reported 24 accounts, 24 Redis credentials, active Codex label `pro10`, and `warnings: []`.
   - `agents@amirs-mac-studio`: `aim redis ping` returned `PONG` over localhost; `aim codex use pro10` activated `pro10`; `aim status --json` reported 24 accounts, 24 Redis credentials, active Codex label `pro10`, and `warnings: []`.
+  - `agents@amirs-mac-studio` resolves its shell `aim` through the Node global symlink, which points at `/Users/agents/workspace/agents/work/aimgr/repo/aimgr`; `/Users/agents/.local/bin/aim` also works and uses localhost Redis.
   - `pro10` was usable during smoke: allowed `true`, 5h used `23`, week used `69`.
   - Non-Codex projection smoke: `aim auth write hermes pro10 --auth-file <tmp>/auth.json` returned `ok: true` and wrote an `openai-codex` provider entry from the shared Redis credential.
 - Verification:
