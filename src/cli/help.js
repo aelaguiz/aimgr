@@ -1,5 +1,6 @@
 import {
   AIMGR_REDIS_DEFAULT_KEY_PREFIX,
+  AIMGR_REDIS_PRIMARY_LOCAL_URL,
   AIMGR_REDIS_PRIMARY_HOST,
   AIMGR_REDIS_PRIMARY_URL,
   AIMGR_REDIS_TRANSPORT,
@@ -44,7 +45,8 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim browser set <label> --mode manual-callback",
     "",
     "Notes:",
-    `  - Shared SSOT: Redis at the configured Mac Studio primary, normally ${AIMGR_REDIS_PRIMARY_URL}.`,
+    `  - Shared SSOT: Redis at the configured Mac Studio primary, normally ${AIMGR_REDIS_PRIMARY_URL} for remote clients.`,
+    `  - On ${AIMGR_REDIS_PRIMARY_HOST} itself, configure ${AIMGR_REDIS_PRIMARY_LOCAL_URL}; that host talks to its own container over localhost.`,
     "  - Local adjunct file: ~/.aimgr/local-state.json contains projection receipts and local-only target metadata.",
     "  - Legacy ~/.aimgr/secrets.json is migration input only, not live shared truth.",
     "  - V0 supports: openai-codex (ChatGPT/Codex OAuth) + anthropic (Claude Pro/Max OAuth) on macOS.",

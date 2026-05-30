@@ -11,6 +11,8 @@ export const AIMGR_REDIS_DEFAULT_KEY_PREFIX = "aimgr:v1:";
 
 export const AIMGR_REDIS_PRIMARY_URL = "redis://amirs-mac-studio:6380";
 
+export const AIMGR_REDIS_PRIMARY_LOCAL_URL = "redis://127.0.0.1:6380";
+
 export const AIMGR_REDIS_FALLBACK_TAILNET_URL = "redis://100.96.80.106:6380";
 
 export const AIMGR_REDIS_PRIMARY_HOST = "agents@amirs-mac-studio";

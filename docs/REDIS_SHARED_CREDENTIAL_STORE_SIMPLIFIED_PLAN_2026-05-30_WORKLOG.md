@@ -1,5 +1,23 @@
 # Redis Shared Credential Store Worklog
 
+## 2026-05-30T16:55Z - Mac Studio localhost correction
+
+- Durable connection rule added:
+  - Remote clients use `redis://amirs-mac-studio:6380`.
+  - `agents@amirs-mac-studio` is the Redis host and connects to its own Redis container with `redis://127.0.0.1:6380`.
+  - `redis://100.96.80.106:6380` is only the direct Tailnet fallback.
+- Corrected the `agents@amirs-mac-studio` AIM config to use localhost so the host does not depend on its own Tailscale hostname resolving locally.
+- Current fleet smoke label is `pro10`, not `boss`; `boss` was imported but later returned a 401 and needs reauth separately.
+- Killed stale one-shot watcher processes on `agents@amirs-mac-studio` that were still creating old Redis machine rows.
+- Reran legacy cleanup:
+  - credential records: 24
+  - legacy labels: 0
+  - legacy sessions: 0
+  - legacy machines: 0
+- Verification after the localhost/config-doc correction:
+  - `npm run lint`: passed
+  - `env -u CODEX_HOME npm test`: 230 passed, 0 failed
+
 ## 2026-05-30T16:22Z - This-machine recovery cutover
 
 - Corrected migration source-of-truth behavior:

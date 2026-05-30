@@ -348,6 +348,8 @@ redis:
   transport: tailscale
 ```
 
+`url` is per-install connection metadata, not ownership. Remote clients use `redis://amirs-mac-studio:6380`. The Redis host itself, `agents@amirs-mac-studio`, uses `redis://127.0.0.1:6380` because it talks to its own local Docker/Colima Redis container. `redis://100.96.80.106:6380` remains the direct Tailnet IP fallback.
+
 - `~/.aimgr/local-state.json` keeps only local projection receipts and local target preferences.
 - `~/.aimgr/machine-id` is not part of credential identity, credential selection, credential writes, migration apply, repair, or projection. `aim redis configure`, `aim redis config`, `aim redis ping`, and Redis snapshots must not create, register, or return a credential machine id. If any non-credential diagnostic still needs a local install id, that work must be named separately and must not reuse Redis session/machine credential records.
 - Redis stores global credentials:
@@ -511,7 +513,7 @@ No UI work is in scope.
 ## Phase 2 - Runtime Projection Uses One Credential
 
 * Goal:
-  * Make one real runtime path, `aim codex use boss`, project from a global Redis credential with no local-machine credential filter.
+  * Make one real runtime path, `aim codex use <known-valid-label>`, project from a global Redis credential with no local-machine credential filter.
 * Work:
   * This is the first end-to-end slice through the real command boundary.
 * Checklist (must all be done):
@@ -633,8 +635,8 @@ No UI work is in scope.
   * Commit and push the final implementation.
   * Pull/reinstall on this machine, `home`, `agents@amirs-mac-studio`, and `amirs-m3-max-new`.
   * Ensure every install has the same durable Redis config values.
-  * Run `aim redis ping`, `aim status --json`, and `aim codex use boss` on each install.
-  * Run at least one non-Codex projection smoke from the retained target set (`aim pi use` or `aim auth write hermes boss --auth-file <tmp-auth-file>`) against the same Redis credential.
+  * Run `aim redis ping`, `aim status --json`, and `aim codex use pro10` on each install for the current cutover, because `pro10` is the known-valid imported Codex credential.
+  * Run at least one non-Codex projection smoke from the retained target set (`aim pi use` or `aim auth write hermes pro10 --auth-file <tmp-auth-file>`) against the same Redis credential.
   * Trigger or simulate one refresh/update from one install and confirm another install reads the updated credential.
   * Confirm old live `~/.aimgr/secrets.json` files are absent or archived.
   * Delete old production Redis `session:*`, `sessions`, `machine:*`, and `machines` keys only after every install is on the new build and the shared credential smoke passes.
@@ -684,7 +686,7 @@ Avoid verification bureaucracy. The useful checks are behavior checks that prove
 ## 8.3 E2E / device tests (realistic)
 
 - Live Redis smoke on `redis://amirs-mac-studio:6380`.
-- `aim codex use boss` from this machine, `home`, `agents@amirs-mac-studio`, and `amirs-m3-max-new`.
+- `aim codex use pro10` from this machine, `home`, `agents@amirs-mac-studio`, and `amirs-m3-max-new`.
 - One non-Codex projection smoke from the retained target set.
 - One cross-install update/readback check.
 
@@ -705,7 +707,7 @@ No new telemetry system is required. Status should report credential count, prov
 
 ## 9.3 Operational runbook
 
-Expected config on every install:
+Expected config on remote-client installs:
 
 ```yaml
 version: 1
@@ -716,13 +718,26 @@ redis:
   transport: tailscale
 ```
 
+Expected config on the Redis host itself:
+
+```yaml
+version: 1
+redis:
+  url: redis://127.0.0.1:6380
+  keyPrefix: "aimgr:v1:"
+  primaryHost: agents@amirs-mac-studio
+  transport: tailscale
+```
+
+The direct Tailnet fallback is `redis://100.96.80.106:6380`.
+
 Normal checks:
 
 ```bash
 aim redis config
 aim redis ping
 aim status --json
-aim codex use boss
+aim codex use pro10
 ```
 
 If Redis is unavailable, do not mutate credentials locally. Fix Redis connectivity or restore from the last Redis backup/export.

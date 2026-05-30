@@ -4,7 +4,8 @@
 
 The shared source of truth is Redis on `agents` at Amir's Mac Studio over Tailscale. Local tool files are projections only:
 
-- Redis primary: `redis://amirs-mac-studio:6380`
+- Redis URL for remote clients: `redis://amirs-mac-studio:6380`
+- Redis URL on `agents@amirs-mac-studio` itself: `redis://127.0.0.1:6380`
 - fallback Tailnet IP: `redis://100.96.80.106:6380`
 - local config: `~/.aimgr/config.yaml`
 - local-only adjunct state: `~/.aimgr/local-state.json`
@@ -16,9 +17,21 @@ The Redis cutover is intentionally breaking and non-reverse-compatible. Runtime 
 
 Configure each machine to point at the same Redis primary and key prefix:
 
+Remote clients use the Tailscale hostname:
+
 ```bash
 aim redis configure \
   --url redis://amirs-mac-studio:6380 \
+  --key-prefix aimgr:v1: \
+  --primary-host agents@amirs-mac-studio \
+  --transport tailscale
+```
+
+The Redis host itself, `agents@amirs-mac-studio`, connects to its own container over localhost:
+
+```bash
+aim redis configure \
+  --url redis://127.0.0.1:6380 \
   --key-prefix aimgr:v1: \
   --primary-host agents@amirs-mac-studio \
   --transport tailscale
