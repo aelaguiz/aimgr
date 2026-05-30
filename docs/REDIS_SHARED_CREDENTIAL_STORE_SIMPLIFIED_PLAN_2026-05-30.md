@@ -126,7 +126,7 @@ Verdict: complete for the Redis hard cutover on the configured four-install flee
 
 Evidence:
 
-- Code is deployed at `3a36ca3` on this machine, `home`, `agents@amirs-mac-studio`, and `amirs-m3-max-new`.
+- Runtime code was deployed and smoked at `3a36ca3` on this machine, `home`, `agents@amirs-mac-studio`, and `amirs-m3-max-new`; later commits in this section are audit-documentation updates only.
 - Live Redis contains 24 shared credential records and zero legacy `label`, `session`, or `machine` rows.
 - This machine, `home`, and `amirs-m3-max-new` use `redis://amirs-mac-studio:6380`.
 - `agents@amirs-mac-studio` is the Redis host and uses `redis://127.0.0.1:6380`.

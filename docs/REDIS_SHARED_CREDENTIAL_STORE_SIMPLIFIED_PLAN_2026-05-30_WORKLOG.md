@@ -2,11 +2,12 @@
 
 ## 2026-05-30T17:03Z - Final fleet hard cutover verification
 
-- Current branch and deployed build:
+- Runtime code smoke commit:
   - Local repo: `3a36ca3` on `redis-credential-coordination`.
   - `home`: `3a36ca3`.
   - `amirs-m3-max-new`: `3a36ca3`.
   - `agents@amirs-mac-studio`: `3a36ca3`.
+  - Later commits in this worklog section are audit-documentation updates only.
 - Live Redis state:
   - credential records: 24.
   - legacy labels: 0.
