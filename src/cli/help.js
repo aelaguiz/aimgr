@@ -66,6 +66,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  --poll-seconds <sec>              Poll interval for `aim codex run --tend`.",
     "  --prompt-timeout-seconds <sec>    How long to wait for Codex's resume-goal prompt.",
     "  --workdir <dir>                   Working directory for the tended Codex tmux session.",
+    "  -- <codex args...>                TEND owns Codex --remote; do not pass --remote here.",
     "  --in <file>                       Required for `aim claude import-native`.",
     "  --out <file>                      Required for `aim claude export-live`.",
     "  --source-home <dir>               Optional source HOME for native Claude capture/export on the same host.",

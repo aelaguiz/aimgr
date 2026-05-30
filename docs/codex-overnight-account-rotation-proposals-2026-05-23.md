@@ -59,13 +59,16 @@ aim codex run --tend -- --model gpt-5.5 -p yolo --search
 ```
 
 The implemented v1 is tmux-backed. AIMGR starts the normal Codex TUI in tmux,
-uses a provided Codex session UUID or discovers the exact materialized thread id
-through installed Codex app-server state, polls the persisted thread goal,
-rotates only when the goal is `usageLimited`, restarts with plain
-`codex resume <thread-id>`, and confirms Codex's built-in resume-goal prompt by
-sending Enter to the tmux pane.
+uses a provided Codex session UUID or owns a private Codex app-server remote for
+new sessions, binds only to the single thread loaded in that private server,
+polls the persisted thread goal, rotates only when the goal is `usageLimited`,
+restarts through a fresh private remote with plain `codex resume <thread-id>`,
+and confirms Codex's built-in resume-goal prompt by sending Enter to the tmux
+pane.
 Codex profile selection via `-p yolo`, `--profile yolo`, `--codex-profile yolo`,
 or pass-through `-- -p yolo` is preserved on supervised resume.
+Codex pass-through args cannot include `--remote` or `--remote-auth-token-env`
+because AIMGR owns that endpoint to prove thread ownership.
 It requires `tmux` on `PATH`.
 
 Codex help calls the public CLI argument `SESSION_ID`. Internally, AIMGR stores
@@ -574,11 +577,11 @@ This is the main design point.
 The wrapper needs to know whether a Codex exit should be treated as "done" or
 "resume the overnight goal." There are a few ways to do that:
 
-1. Best near-term for AIMGR-launched sessions: record the thread id after the TUI
-   materializes the session, using installed app-server `thread/list` or the
-   rollout path.
-2. Best medium-term: query Codex thread/goal state through the app-server API if
-   the TUI is using a local daemon.
+1. Implemented owner path for AIMGR-launched sessions: start a private local
+   app-server remote, launch the TUI against it, and bind only to the single
+   thread loaded in that private server.
+2. Medium-term hardening: keep using the app-server goal API, but add a stable
+   Codex-side thread identity event or CLI command if the protocol changes.
 3. Good Codex-side addition: expose a small, stable `codex thread status` or
    `codex goal status --thread <id>` command that reports JSON.
 4. Adequate fallback: parse the final "To continue this session, run codex resume

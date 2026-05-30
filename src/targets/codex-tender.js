@@ -1,5 +1,4 @@
 import { spawn, spawnSync } from "node:child_process";
-import path from "node:path";
 import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { resolveCodexWatchThresholdPct } from "../core/watch-options.js";
 import { writeJsonFileWithBackup } from "../io/json-store.js";
@@ -10,7 +9,7 @@ import { getCodexUsagePercents, probeUsageSnapshotsByProvider } from "../pool/us
 import { watchCodexPoolSelectionOnce } from "../pool/watch.js";
 import { loadAimgrState } from "../state/schema.js";
 import { activateCodexPoolSelection, preserveLiveCodexAuthForActiveLabel, readCodexCliTargetStatus } from "./codex-cli.js";
-import { getCodexThreadGoal, listCodexThreads } from "./codex-app-server.js";
+import { startPrivateCodexAppServer } from "./codex-app-server.js";
 
 const STOPPED_FOR_ROTATION_STATUSES = new Set(["usageLimited"]);
 const CODEX_SESSION_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -118,8 +117,24 @@ function normalizeCodexSessionId(value, source) {
   return sessionId;
 }
 
+function assertNoUserOwnedRemoteArgs(codexArgs) {
+  const args = Array.isArray(codexArgs) ? codexArgs : [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = String(args[i] ?? "");
+    if (arg === "--remote" || arg.startsWith("--remote=")) {
+      throw new Error("TEND owns the Codex --remote endpoint; do not pass --remote after `aim codex run --tend --`.");
+    }
+    if (arg === "--remote-auth-token-env" || arg.startsWith("--remote-auth-token-env=")) {
+      throw new Error(
+        "TEND owns the Codex remote auth wiring; do not pass --remote-auth-token-env after `aim codex run --tend --`.",
+      );
+    }
+  }
+}
+
 function normalizeCodexInvocation({ codexProfile, codexArgs, resumeSessionId }) {
   const normalized = extractCodexProfile({ codexProfile, codexArgs });
+  assertNoUserOwnedRemoteArgs(normalized.codexArgs);
   let effectiveResumeSessionId =
     resumeSessionId === undefined || resumeSessionId === null || resumeSessionId === ""
       ? null
@@ -153,8 +168,11 @@ function normalizeCodexInvocation({ codexProfile, codexArgs, resumeSessionId }) 
   return { ...normalized, resumeSessionId: effectiveResumeSessionId };
 }
 
-function buildCodexCommand({ codexBin, mode, threadId, codexArgs, codexProfile }) {
+function buildCodexCommand({ codexBin, mode, threadId, codexArgs, codexProfile, remoteUrl }) {
   const args = [codexBin, "--no-alt-screen"];
+  if (remoteUrl) {
+    args.push("--remote", remoteUrl);
+  }
   if (codexProfile) {
     args.push("-p", codexProfile);
   }
@@ -256,46 +274,71 @@ async function waitForAttachProcessDone({
   return done;
 }
 
-function threadTimestampMatches(thread, { cwd, startedAtSeconds }) {
-  if (thread?.cwd && path.resolve(thread.cwd) !== path.resolve(cwd)) {
-    return false;
-  }
-  const createdAt = Number(thread?.createdAt ?? thread?.created_at ?? 0);
-  if (Number.isFinite(createdAt) && createdAt > 0 && createdAt < startedAtSeconds - 5) {
-    return false;
-  }
-  return true;
+function threadIdFromThread(thread) {
+  return thread?.id ?? thread?.sessionId ?? thread?.session_id ?? null;
 }
 
-async function discoverThreadId({
-  appServerClient,
-  codexBin,
-  codexHome,
-  env,
-  cwd,
-  startedAtSeconds,
-  events,
-}) {
+function uniqueThreadIds(values) {
+  const ids = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const id = typeof value === "string" ? value : threadIdFromThread(value);
+    const normalized = String(id ?? "").trim();
+    if (normalized && !ids.includes(normalized)) {
+      ids.push(normalized);
+    }
+  }
+  return ids;
+}
+
+function adaptLegacyAppServerClient({ appServerClient, codexBin, codexHome, env }) {
+  if (!appServerClient) return null;
+  return {
+    async listLoadedThreads(options) {
+      if (typeof appServerClient.listLoadedThreads === "function") {
+        return appServerClient.listLoadedThreads(options);
+      }
+      if (typeof appServerClient.listThreads === "function") {
+        const threads = await appServerClient.listThreads({ codexBin, codexHome, env, limit: options?.limit ?? 20 });
+        return uniqueThreadIds(threads);
+      }
+      return [];
+    },
+    async getThreadGoal({ threadId }) {
+      return appServerClient.getThreadGoal({ codexBin, codexHome, env, threadId });
+    },
+    async readThread({ threadId }) {
+      if (typeof appServerClient.readThread === "function") {
+        return appServerClient.readThread({ codexBin, codexHome, env, threadId });
+      }
+      return null;
+    },
+  };
+}
+
+async function discoverOwnedThreadId({ appServerClient, events }) {
   try {
-    const threads = await appServerClient.listThreads({ codexBin, codexHome, env, limit: 20 });
-    const candidates = threads
-      .filter((thread) => threadTimestampMatches(thread, { cwd, startedAtSeconds }))
-      .sort((a, b) => Number(b.updatedAt ?? b.updated_at ?? 0) - Number(a.updatedAt ?? a.updated_at ?? 0));
-    const thread = candidates[0] ?? null;
-    return thread?.id ?? thread?.sessionId ?? thread?.session_id ?? null;
+    const threadIds = uniqueThreadIds(await appServerClient.listLoadedThreads({ limit: 20 }));
+    if (threadIds.length > 1) {
+      events.push({ type: "thread_binding_ambiguous", threadIds });
+      return { status: "ambiguous", threadIds };
+    }
+    if (threadIds.length === 1) {
+      return { status: "bound", threadId: threadIds[0] };
+    }
+    return { status: "missing" };
   } catch (err) {
     events.push({
-      type: "thread_list_failed",
+      type: "thread_loaded_list_failed",
       error: String(err?.message ?? err),
     });
-    return null;
+    return { status: "missing" };
   }
 }
 
-async function readGoal({ appServerClient, codexBin, codexHome, env, threadId, events }) {
+async function readGoal({ appServerClient, threadId, events }) {
   if (!threadId) return null;
   try {
-    return await appServerClient.getThreadGoal({ codexBin, codexHome, env, threadId });
+    return await appServerClient.getThreadGoal({ threadId });
   } catch (err) {
     events.push({
       type: "goal_read_failed",
@@ -522,10 +565,8 @@ export async function runCodexTender(
   },
   {
     tmux = createTmuxAdapter(),
-    appServerClient = {
-      listThreads: listCodexThreads,
-      getThreadGoal: getCodexThreadGoal,
-    },
+    appServerClient,
+    startCodexAppServerImpl = startPrivateCodexAppServer,
     sleepImpl = sleep,
     probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
     activateCodexPoolSelectionImpl = activateCodexPoolSelection,
@@ -540,13 +581,47 @@ export async function runCodexTender(
   const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
   const events = [];
   const rotations = [];
-  const startedAtSeconds = Math.floor(Number(startedAtMs) / 1000);
   let threadId = normalizedCodexArgs.resumeSessionId;
+  let appServer = null;
   let preflightResult = null;
   let restarts = 0;
   let paneRateLimitMatchCount = 0;
   let pendingRateLimitRecovery = null;
   let nextUsageRateLimitCheckAtMs = 0;
+
+  const stopCurrentAppServer = async () => {
+    if (!appServer) return;
+    const remoteUrl = appServer.remoteUrl;
+    await Promise.resolve(appServer.stop?.());
+    events.push({ type: "app_server_stopped", remoteUrl });
+    appServer = null;
+  };
+
+  const finish = async (result, { keepAppServer = false } = {}) => {
+    if (keepAppServer && appServer) {
+      events.push({ type: "app_server_left_running_for_live_session", remoteUrl: appServer.remoteUrl });
+      return result;
+    }
+    await stopCurrentAppServer();
+    return result;
+  };
+
+  const startCurrentAppServer = async () => {
+    if (appServer) {
+      return appServer;
+    }
+    if (appServerClient) {
+      appServer = {
+        remoteUrl: "ws://aimgr-test",
+        client: adaptLegacyAppServerClient({ appServerClient, codexBin, codexHome, env }),
+        stop() {},
+      };
+    } else {
+      appServer = await startCodexAppServerImpl({ codexBin, codexHome, env });
+    }
+    events.push({ type: "app_server_started", remoteUrl: appServer.remoteUrl });
+    return appServer;
+  };
 
   if (preflight) {
     const state = loadAimgrState(statePath);
@@ -572,7 +647,7 @@ export async function runCodexTender(
     events.push({ type: "preflight_preserve_live_auth", status: preflightPreserve.status });
     events.push({ type: "preflight_watch", status: preflightResult.status });
     if (preflightResult.status === "blocked") {
-      return {
+      return finish({
         status: "blocked",
         reason: "preflight_watch_blocked",
         sessionName,
@@ -581,25 +656,32 @@ export async function runCodexTender(
         preflight: preflightResult,
         rotations,
         events,
-      };
+      });
     }
   }
 
   if (threadId) {
     events.push({ type: "thread_provided", threadId });
   }
+  await startCurrentAppServer();
   const startMode = threadId ? "resume" : "start";
-  tmux.newSession({
-    sessionName,
-    cwd,
-    command: buildCodexCommand({
-      codexBin,
-      mode: startMode,
-      threadId,
-      codexProfile: normalizedCodexArgs.codexProfile,
-      codexArgs: normalizedCodexArgs.codexArgs,
-    }),
-  });
+  try {
+    tmux.newSession({
+      sessionName,
+      cwd,
+      command: buildCodexCommand({
+        codexBin,
+        mode: startMode,
+        threadId,
+        codexProfile: normalizedCodexArgs.codexProfile,
+        codexArgs: normalizedCodexArgs.codexArgs,
+        remoteUrl: appServer.remoteUrl,
+      }),
+    });
+  } catch (err) {
+    await stopCurrentAppServer();
+    throw err;
+  }
   events.push({ type: "session_started", mode: startMode, sessionName, threadId });
   paneRateLimitMatchCount = capturePaneRateLimitMatchCount({ tmux, sessionName, events });
   let attachProcess = null;
@@ -614,21 +696,26 @@ export async function runCodexTender(
   for (let pollIteration = 0; pollIteration < effectiveMaxPollIterations; pollIteration += 1) {
     const sessionAlive = tmux.hasSession(sessionName);
     if (!threadId) {
-      threadId = await discoverThreadId({
-        appServerClient,
-        codexBin,
-        codexHome,
-        env,
-        cwd,
-        startedAtSeconds,
-        events,
-      });
-      if (threadId) {
+      const discovery = await discoverOwnedThreadId({ appServerClient: appServer.client, events });
+      if (discovery.status === "ambiguous") {
+        return finish({
+          status: "blocked",
+          reason: "ambiguous_loaded_threads",
+          sessionName,
+          threadId,
+          restarts,
+          preflight: preflightResult,
+          rotations,
+          events,
+        }, { keepAppServer: sessionAlive });
+      }
+      if (discovery.threadId) {
+        threadId = discovery.threadId;
         events.push({ type: "thread_discovered", threadId });
       }
     }
 
-    const goal = await readGoal({ appServerClient, codexBin, codexHome, env, threadId, events });
+    const goal = await readGoal({ appServerClient: appServer.client, threadId, events });
     const goalStatus = goal?.status ?? null;
     let recoveryTrigger = STOPPED_FOR_ROTATION_STATUSES.has(goalStatus)
       ? {
@@ -680,7 +767,7 @@ export async function runCodexTender(
 
     if (!sessionAlive && !recoveryTrigger) {
       events.push({ type: "session_ended", goalStatus });
-      return {
+      return finish({
         status: threadId ? "ended" : "ended_without_thread",
         sessionName,
         threadId,
@@ -688,7 +775,7 @@ export async function runCodexTender(
         preflight: preflightResult,
         rotations,
         events,
-      };
+      });
     }
 
     if (recoveryTrigger) {
@@ -708,7 +795,7 @@ export async function runCodexTender(
           source: recoveryTrigger.source,
           goalStatus: recoveryTrigger.goalStatus ?? goalStatus,
         });
-        return {
+        return finish({
           status: "max_restarts_reached",
           sessionName,
           threadId,
@@ -716,7 +803,7 @@ export async function runCodexTender(
           preflight: preflightResult,
           rotations,
           events,
-        };
+        }, { keepAppServer: sessionAlive });
       }
 
       const rotation = await rotateCodexAccount({
@@ -736,7 +823,7 @@ export async function runCodexTender(
         source: recoveryTrigger.source,
       });
       if (rotation.activated.status === "blocked") {
-        return {
+        return finish({
           status: "blocked",
           reason: getRotationBlockedReason(rotation),
           sessionName,
@@ -745,7 +832,7 @@ export async function runCodexTender(
           preflight: preflightResult,
           rotations,
           events,
-        };
+        }, { keepAppServer: tmux.hasSession(sessionName) });
       }
 
       if (tmux.hasSession(sessionName)) {
@@ -782,18 +869,26 @@ export async function runCodexTender(
         });
       }
 
+      await stopCurrentAppServer();
+      await startCurrentAppServer();
       restarts += 1;
-      tmux.newSession({
-        sessionName,
-        cwd,
-        command: buildCodexCommand({
-          codexBin,
-          mode: "resume",
-          threadId,
-          codexProfile: normalizedCodexArgs.codexProfile,
-          codexArgs: normalizedCodexArgs.codexArgs,
-        }),
-      });
+      try {
+        tmux.newSession({
+          sessionName,
+          cwd,
+          command: buildCodexCommand({
+            codexBin,
+            mode: "resume",
+            threadId,
+            codexProfile: normalizedCodexArgs.codexProfile,
+            codexArgs: normalizedCodexArgs.codexArgs,
+            remoteUrl: appServer.remoteUrl,
+          }),
+        });
+      } catch (err) {
+        await stopCurrentAppServer();
+        throw err;
+      }
       events.push({ type: "session_started", mode: "resume", sessionName, threadId });
       paneRateLimitMatchCount = capturePaneRateLimitMatchCount({ tmux, sessionName, events });
       if (attach) {
@@ -810,7 +905,7 @@ export async function runCodexTender(
           events,
         });
         if (!promptConfirmed) {
-          return {
+          return finish({
             status: "blocked",
             reason: "resume_prompt_unconfirmed",
             sessionName,
@@ -819,7 +914,7 @@ export async function runCodexTender(
             preflight: preflightResult,
             rotations,
             events,
-          };
+          }, { keepAppServer: tmux.hasSession(sessionName) });
         }
       } else {
         maybeConfirmResumePrompt({ tmux, sessionName, events });
@@ -832,7 +927,7 @@ export async function runCodexTender(
   }
 
   events.push({ type: "poll_limit_reached" });
-  return {
+  return finish({
     status: "poll_limit_reached",
     sessionName,
     threadId,
@@ -840,5 +935,5 @@ export async function runCodexTender(
     preflight: preflightResult,
     rotations,
     events,
-  };
+  }, { keepAppServer: tmux.hasSession(sessionName) });
 }

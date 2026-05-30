@@ -10,6 +10,7 @@ import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 
 const SESSION_ID = "019e5487-026d-7f52-8fbd-1d123045f1c6";
 const OTHER_SESSION_ID = "019e5487-026d-7f52-8fbd-1d123045f1c7";
+const TEST_REMOTE = "ws://aimgr-test";
 
 function writeMinimalState(home) {
   writeJson(path.join(home, ".aimgr", "secrets.json"), {
@@ -65,6 +66,29 @@ function createFakeTmux() {
     },
   };
   return tmux;
+}
+
+function createFakePrivateCodexAppServers({ loadedThreadIds = [["thread-1"]], getThreadGoal = async () => null } = {}) {
+  const servers = [];
+  return {
+    servers,
+    async startCodexAppServerImpl() {
+      const index = servers.length;
+      const server = {
+        remoteUrl: `ws://aimgr-test-${index + 1}`,
+        stopped: false,
+        client: {
+          listLoadedThreads: async () => loadedThreadIds[Math.min(index, loadedThreadIds.length - 1)] ?? [],
+          getThreadGoal: async ({ threadId }) => getThreadGoal({ threadId, serverIndex: index }),
+        },
+        stop() {
+          server.stopped = true;
+        },
+      };
+      servers.push(server);
+      return server;
+    },
+  };
 }
 
 test("codex run --tend wires tmux supervision options and Codex args", async () => {
@@ -231,8 +255,8 @@ test("runCodexTender tends an explicit resumed Codex session without thread disc
   assert.deepEqual(
     tmux.newSessions.map((session) => session.command),
     [
-      `/tmp/codex --no-alt-screen -p yolo resume ${SESSION_ID}`,
-      `/tmp/codex --no-alt-screen -p yolo resume ${SESSION_ID}`,
+      `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE} -p yolo resume ${SESSION_ID}`,
+      `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE} -p yolo resume ${SESSION_ID}`,
     ],
   );
   assert.ok(result.events.some((event) => event.type === "thread_provided" && event.threadId === SESSION_ID));
@@ -273,7 +297,7 @@ test("runCodexTender accepts exact Codex resume passthrough for existing session
   assert.equal(result.status, "ended");
   assert.equal(result.threadId, SESSION_ID);
   assert.equal(tmux.sentEnter, 1);
-  assert.equal(tmux.newSessions[0].command, `/tmp/codex --no-alt-screen resume ${SESSION_ID}`);
+  assert.equal(tmux.newSessions[0].command, `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE} resume ${SESSION_ID}`);
 });
 
 test("runCodexTender rejects unsafe resumed-session inputs before starting tmux", async () => {
@@ -304,6 +328,18 @@ test("runCodexTender rejects unsafe resumed-session inputs before starting tmux"
     {
       input: { resumeSessionId: SESSION_ID, codexArgs: ["--model", "gpt-5.5"] },
       expected: /pass-through args are not supported with tended resume sessions/,
+    },
+    {
+      input: { codexArgs: ["--remote", "ws://127.0.0.1:12345"] },
+      expected: /TEND owns the Codex --remote endpoint/,
+    },
+    {
+      input: { codexArgs: ["--remote=ws://127.0.0.1:12345"] },
+      expected: /TEND owns the Codex --remote endpoint/,
+    },
+    {
+      input: { codexArgs: ["--remote-auth-token-env", "TOKEN"] },
+      expected: /TEND owns the Codex remote auth wiring/,
     },
   ];
 
@@ -391,10 +427,120 @@ test("runCodexTender rotates usage-limited goals and confirms the built-in resum
   assert.equal(tmux.sentExit, 1);
   assert.equal(tmux.sentEnter, 1);
   assert.equal(tmux.newSessions.length, 2);
-  assert.match(tmux.newSessions[0].command, /\/tmp\/codex --no-alt-screen -p yolo --model gpt-5\.5/);
-  assert.match(tmux.newSessions[1].command, /\/tmp\/codex --no-alt-screen -p yolo resume thread-1/);
+  assert.match(tmux.newSessions[0].command, /\/tmp\/codex --no-alt-screen --remote ws:\/\/aimgr-test -p yolo --model gpt-5\.5/);
+  assert.match(tmux.newSessions[1].command, /\/tmp\/codex --no-alt-screen --remote ws:\/\/aimgr-test -p yolo resume thread-1/);
   assert.doesNotMatch(tmux.newSessions[1].command, /\/goal resume/);
   assert.ok(result.events.some((event) => event.type === "resume_prompt_confirmed"));
+});
+
+test("runCodexTender binds to its private loaded thread instead of a same-cwd sibling", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  let rotations = 0;
+  let goalReads = 0;
+  const privateAppServers = createFakePrivateCodexAppServers({
+    loadedThreadIds: [["thread-intended"], ["thread-intended"]],
+    getThreadGoal: async ({ threadId }) => {
+      assert.equal(threadId, "thread-intended");
+      goalReads += 1;
+      if (goalReads === 1) {
+        return { threadId, status: "usageLimited" };
+      }
+      tmux.completeAfterNextGoalRead = true;
+      return { threadId, status: "complete" };
+    },
+  });
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      cwd: "/tmp/project",
+      codexBin: "/tmp/codex",
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+      maxRestarts: 1,
+    },
+    {
+      tmux,
+      startCodexAppServerImpl: privateAppServers.startCodexAppServerImpl,
+      sleepImpl: async () => {},
+      activateCodexPoolSelectionImpl: async () => {
+        rotations += 1;
+        return {
+          status: "activated",
+          receipt: { label: "pro2", blockers: [], warnings: [] },
+          wrote: true,
+        };
+      },
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.threadId, "thread-intended");
+  assert.equal(result.restarts, 1);
+  assert.equal(rotations, 1);
+  assert.equal(privateAppServers.servers.length, 2);
+  assert.equal(privateAppServers.servers[0].stopped, true);
+  assert.equal(privateAppServers.servers[1].stopped, true);
+  assert.deepEqual(
+    tmux.newSessions.map((session) => session.command),
+    [
+      "/tmp/codex --no-alt-screen --remote ws://aimgr-test-1",
+      "/tmp/codex --no-alt-screen --remote ws://aimgr-test-2 resume thread-intended",
+    ],
+  );
+  assert.ok(tmux.newSessions.every((session) => !session.command.includes("thread-sibling")));
+});
+
+test("runCodexTender blocks instead of guessing when private loaded threads are ambiguous", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const tmux = createFakeTmux();
+  let rotations = 0;
+  const privateAppServers = createFakePrivateCodexAppServers({
+    loadedThreadIds: [["thread-intended", "thread-sibling"]],
+  });
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      cwd: "/tmp/project",
+      codexBin: "/tmp/codex",
+      sessionName: "aimgr-test",
+      attach: false,
+      preflight: false,
+      pollSeconds: 0,
+      maxRestarts: 1,
+    },
+    {
+      tmux,
+      startCodexAppServerImpl: privateAppServers.startCodexAppServerImpl,
+      sleepImpl: async () => {},
+      activateCodexPoolSelectionImpl: async () => {
+        rotations += 1;
+        return { status: "activated" };
+      },
+    },
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "ambiguous_loaded_threads");
+  assert.equal(result.threadId, null);
+  assert.equal(result.restarts, 0);
+  assert.equal(rotations, 0);
+  assert.equal(privateAppServers.servers.length, 1);
+  assert.equal(privateAppServers.servers[0].stopped, false);
+  assert.deepEqual(
+    tmux.newSessions.map((session) => session.command),
+    ["/tmp/codex --no-alt-screen --remote ws://aimgr-test-1"],
+  );
+  assert.ok(result.events.some((event) => event.type === "thread_binding_ambiguous"));
+  assert.ok(result.events.some((event) => event.type === "app_server_left_running_for_live_session"));
 });
 
 test("runCodexTender promotes pass-through profile args to the resume command", async () => {
@@ -448,8 +594,8 @@ test("runCodexTender promotes pass-through profile args to the resume command", 
 
   assert.equal(result.status, "ended");
   assert.equal(tmux.newSessions.length, 2);
-  assert.match(tmux.newSessions[0].command, /\/tmp\/codex --no-alt-screen -p yolo --model gpt-5\.5 --search/);
-  assert.match(tmux.newSessions[1].command, /\/tmp\/codex --no-alt-screen -p yolo resume thread-1/);
+  assert.match(tmux.newSessions[0].command, /\/tmp\/codex --no-alt-screen --remote ws:\/\/aimgr-test -p yolo --model gpt-5\.5 --search/);
+  assert.match(tmux.newSessions[1].command, /\/tmp\/codex --no-alt-screen --remote ws:\/\/aimgr-test -p yolo resume thread-1/);
   assert.doesNotMatch(tmux.newSessions[0].command, /--profile yolo/);
 });
 
@@ -643,8 +789,8 @@ test("runCodexTender rotates and resumes non-goal sessions when the pane shows a
   assert.deepEqual(
     tmux.newSessions.map((session) => session.command),
     [
-      "/tmp/codex --no-alt-screen",
-      "/tmp/codex --no-alt-screen resume thread-1",
+      `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE}`,
+      `/tmp/codex --no-alt-screen --remote ${TEST_REMOTE} resume thread-1`,
     ],
   );
   assert.ok(result.events.some((event) => event.type === "recovery_triggered" && event.source === "pane"));
