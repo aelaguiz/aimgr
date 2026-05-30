@@ -800,15 +800,18 @@ test("CodexPtySession frames helper protocol, output, resize, exit, and helper e
   session.resize({ cols: 101, rows: 41 });
   session.write("x");
   session.sendExit();
+  await new Promise((resolve) => setTimeout(resolve, 1000));
   const exitPromise = session.waitForExit({ timeoutMs: 10 });
   emitHelperMessage(helper, { type: "exit", exitCode: 0, signal: null });
 
   assert.equal(session.snapshotOutput(), "hello");
   assert.deepEqual(await exitPromise, { exitCode: 0, signal: null });
   const messages = helperMessages(helper);
-  assert.deepEqual(messages.at(-3), { type: "resize", cols: 101, rows: 41 });
-  assert.deepEqual(messages.at(-2), { type: "input", data: Buffer.from("x").toString("base64") });
-  assert.deepEqual(messages.at(-1), { type: "input", data: Buffer.from("/exit\r").toString("base64") });
+  assert.equal(messages.some((message) => message.type === "resize" && message.cols === 101 && message.rows === 41), true);
+  const inputPayloads = messages
+    .filter((message) => message.type === "input")
+    .map((message) => Buffer.from(message.data, "base64").toString("utf8"));
+  assert.deepEqual(inputPayloads.slice(-5), ["x", "\x1b", "\x15", "\x04", "\x04"]);
 });
 
 test("CodexPtySession attached mode relays stdin, resize, goal intent, and restores raw mode", () => {

@@ -58,3 +58,54 @@ Verification so far:
 Remaining gates:
 
 - Final repairs, commit, push, and global install.
+
+## 2026-05-30 - Attached input repair
+
+The first PTY supervisor rollout missed the decisive attached-mode test. It proved helper I/O and
+fake stdin, but it did not prove a real foreground `aim codex run --tend` user could type into Codex
+and see/use that input.
+
+Root cause:
+
+- The Python helper used `pty.openpty()` plus `subprocess.Popen(..., start_new_session=True)`.
+- The child process saw TTY-like stdin/stdout, but it did not own a controlling terminal.
+- Direct proof before the fix: a child Python process reported `isatty True True`, then failed
+  opening `/dev/tty` with `OSError [Errno 6] Device not configured`.
+- That is enough to break real TUI input/rendering even when lower-level byte relay tests pass.
+
+Fix:
+
+- Replaced the helper child launch with manual `os.fork()`, `os.setsid()`,
+  `fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)`, `dup2()` for fd 0/1/2, and `os.execvpe()`.
+- Added explicit `waitpid`/process-group cleanup so the forked child still reports normal exit and
+  gets terminated if the helper is disposed.
+- Changed `CodexPtySession.sendExit()` away from typing `/exit`. Real Codex showed that partial
+  `/e` can be accepted by the slash-command popup as `/experimental`. The close sequence is now
+  `Esc`, `Ctrl+U`, `Ctrl+D`, `Ctrl+D`: close transient UI, clear the composer, then use Codex's
+  built-in empty-composer double-quit shortcut.
+
+Smoke receipts:
+
+- Controlling terminal proof after the helper fix: child Python reported `isatty True True` and
+  successfully opened `/dev/tty`.
+- Generic attached PTY proof: outer pseudo-terminal typed `hello-attached`; attached mode displayed
+  it and the child echoed `ECHO:hello-attached`; exit code `0`.
+- Real Codex attached input proof: outer pseudo-terminal typed `typed-aimgr-smoke`; the foreground
+  Codex composer rendered the typed characters; AIMGR `sendExit()` then produced `Shutting down...`
+  and Codex exited with `{"exitCode":0,"signal":null}`.
+- Real Codex close proof: `CodexPtySession.sendExit()` against
+  `/Users/aelaguiz/.local/bin/codex --no-alt-screen` exited with
+  `{"exitCode":0,"signal":null}`, output bytes `6382`, and shutdown text observed.
+
+Verification:
+
+- `python3 -m py_compile src/targets/codex-pty-helper.py` passes.
+- `npm run lint` passes.
+- `node --test test/codex/use-watch.test.js` passes: 58 tests, 58 pass.
+- `npm test` passes: 235 tests, 235 pass.
+
+Important durable note:
+
+- The attached smoke above has already been rerun after the compact-prone false starts. Do not
+  rerun old pre-fix smoke loops as evidence; use only the receipts in this section or newer tests
+  after code changes.

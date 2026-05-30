@@ -230,7 +230,14 @@ export class CodexPtySession extends EventEmitter {
   }
 
   sendExit() {
-    this.write("/exit\r");
+    // Avoid the slash-command popup: a partial "/e" can select /experimental.
+    // Esc closes transient UI, Ctrl+U clears the composer, then double Ctrl+D
+    // uses Codex's built-in empty-composer quit shortcut.
+    const steps = ["\x1b", "\x15", "\x04", "\x04"];
+    const delays = [0, 250, 500, 850];
+    for (const [index, data] of steps.entries()) {
+      setTimeout(() => this.write(data), delays[index]);
+    }
   }
 
   resize({ cols, rows }) {
