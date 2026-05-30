@@ -263,88 +263,11 @@ test("login --manual-callback-stdio rejects Claude labels as JSONL errors", asyn
   assert.match(lines[0].error, /only supports openai-codex labels/);
 });
 
-test("apply materializes only assigned managed profiles and clears stale per-agent overrides", async () => {
-  const home = mkTempHome();
-  const statePath = path.join(home, ".aimgr", "secrets.json");
-
-  writeJson(statePath, {
-    schemaVersion: "0.2",
-    accounts: {
-      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true }, browser: {} },
-      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" }, pool: { enabled: true }, browser: {} },
-    },
-    credentials: {
-      "openai-codex": {
-        boss: {
-          access: "ACCESS_TOKEN",
-          refresh: "REFRESH_TOKEN",
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-          accountId: "acct_123",
-        },
-        qa: {
-          access: "ACCESS_TOKEN_QA",
-          refresh: "REFRESH_TOKEN_QA",
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-          accountId: "acct_456",
-        },
-      },
-      anthropic: {},
-    },
-    imports: {
-      authority: {
-        codex: {},
-      },
-    },
-    targets: {
-      openclaw: {
-        assignments: { agent_boss: "boss" },
-        exclusions: {},
-      },
-      codexCli: {},
-    },
-    pool: { openaiCodex: { history: [] } },
-  });
-
-  writeOpenclawAuthStore(home, "main", {
-    version: 1,
-    profiles: {
-      "openai-codex:boss": { provider: "openai-codex", type: "oauth" },
-      "openai-codex:qa": { provider: "openai-codex", type: "oauth" },
-    },
-    order: {
-      "openai-codex": ["openai-codex:boss", "openai-codex:qa"],
-    },
-  });
-  writeOpenclawAuthStore(home, "agent_stale", {
-    version: 1,
-    profiles: {},
-    order: {
-      "openai-codex": ["openai-codex:qa"],
-    },
-    lastGood: {
-      "openai-codex": "openai-codex:qa",
-    },
-  });
-
-  await runCli(["apply", "--home", home]);
-
-  const mainStorePath = path.join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json");
-  const mainStore = JSON.parse(fs.readFileSync(mainStorePath, "utf8"));
-  assert.ok(mainStore.profiles["openai-codex:boss"]);
-  assert.equal(mainStore.profiles["openai-codex:qa"], undefined);
-  assert.equal(mainStore.profiles["openai-codex:boss"].provider, "openai-codex");
-  assert.equal(mainStore.order?.["openai-codex"], undefined);
-  assert.equal(mainStore.lastGood?.["openai-codex"], undefined);
-
-  const agentStorePath = path.join(home, ".openclaw", "agents", "agent_boss", "agent", "auth-profiles.json");
-  const agentStore = JSON.parse(fs.readFileSync(agentStorePath, "utf8"));
-  assert.deepEqual(agentStore.order["openai-codex"], ["openai-codex:boss"]);
-  assert.equal(agentStore.lastGood["openai-codex"], "openai-codex:boss");
-
-  const staleStorePath = path.join(home, ".openclaw", "agents", "agent_stale", "agent", "auth-profiles.json");
-  const staleStore = JSON.parse(fs.readFileSync(staleStorePath, "utf8"));
-  assert.equal(staleStore.order?.["openai-codex"], undefined);
-  assert.equal(staleStore.lastGood?.["openai-codex"], undefined);
+test("apply is removed after the Redis cutover", async () => {
+  await assert.rejects(
+    () => runCli(["apply", "--home", mkTempHome()]),
+    /aim apply.*removed in the Redis cutover/s,
+  );
 });
 
 test("rebalance openclaw runs the real sync path and then settles to noop on repeat", async () => {

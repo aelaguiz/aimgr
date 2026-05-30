@@ -106,21 +106,3 @@ export function buildAuthorityAnthropicImportStatus(state) {
     dirtyLabels,
   };
 }
-
-export function formatDirtyImportedCodexSyncError({ authoritySource, labels }) {
-  const joined = normalizeRequestedCodexLabels(labels, { context: "dirty imported labels" }).join(", ");
-  return [
-    `Authority import would discard locally refreshed imported labels: ${joined}.`,
-    `Publish them first with \`aim promote codex --to ${authoritySource || "<authority>"} ${joined}\`,`,
-    "or rerun the import with `--discard-dirty` if you want to overwrite the local changes.",
-  ].join(" ");
-}
-
-export function formatDirtyImportedAnthropicSyncError({ authoritySource, labels }) {
-  const joined = normalizeRequestedAnthropicLabels(labels, { context: "dirty imported labels" }).join(", ");
-  return [
-    `Authority import would discard locally refreshed imported Claude labels: ${joined}.`,
-    `Publish them first with \`aim promote claude --to ${authoritySource || "<authority>"} ${joined}\`,`,
-    "or rerun the import with `--discard-dirty` if you want to overwrite the local changes.",
-  ].join(" ");
-}

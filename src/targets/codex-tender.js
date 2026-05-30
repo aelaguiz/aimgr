@@ -467,6 +467,7 @@ function buildUsageRateLimitSummary(snapshot) {
 
 async function detectActiveCodexUsageRateLimit({
   statePath,
+  stateRuntime,
   homeDir,
   env,
   probeUsageSnapshotsByProviderImpl,
@@ -475,9 +476,19 @@ async function detectActiveCodexUsageRateLimit({
   let state;
   let activeLabel;
   try {
-    state = loadAimgrState(statePath);
-    const targetStatus = readCodexCliTargetStatus({ state, homeDir, env });
-    activeLabel = targetStatus.activeLabel ?? targetStatus.inferredLabel ?? null;
+    if (stateRuntime?.withReadOnlyState) {
+      ({ state, activeLabel } = await stateRuntime.withReadOnlyState(async (loadedState) => {
+        const targetStatus = readCodexCliTargetStatus({ state: loadedState, homeDir, env });
+        return {
+          state: loadedState,
+          activeLabel: targetStatus.activeLabel ?? targetStatus.inferredLabel ?? null,
+        };
+      }));
+    } else {
+      state = loadAimgrState(statePath);
+      const targetStatus = readCodexCliTargetStatus({ state, homeDir, env });
+      activeLabel = targetStatus.activeLabel ?? targetStatus.inferredLabel ?? null;
+    }
   } catch (err) {
     events.push({
       type: "usage_rate_limit_scan_failed",
@@ -520,6 +531,7 @@ function getRotationBlockedReason(rotation) {
 
 async function rotateCodexAccount({
   statePath,
+  stateRuntime,
   homeDir,
   env,
   observedAt,
@@ -527,24 +539,34 @@ async function rotateCodexAccount({
   activateCodexPoolSelectionImpl,
   avoidCurrentLabel = false,
 }) {
-  const state = loadAimgrState(statePath);
-  const preserved = preserveLiveCodexAuthForActiveLabel({ state, homeDir, env, observedAt });
-  const activated = await activateCodexPoolSelectionImpl({
-    state,
-    homeDir,
-    env,
-    observedAt,
-    probeUsageSnapshotsByProviderImpl,
-    selectionMode: "weighted_usage",
-    avoidCurrentLabel,
+  const mutate = stateRuntime?.withMutableState
+    ? stateRuntime.withMutableState.bind(stateRuntime)
+    : async (fn) => {
+        const state = loadAimgrState(statePath);
+        const result = await fn(state, { publishCodexPreserveResult: async () => null });
+        writeJsonFileWithBackup(statePath, state);
+        return result;
+      };
+  return mutate(async (state, helpers = {}) => {
+    const preserved = preserveLiveCodexAuthForActiveLabel({ state, homeDir, env, observedAt });
+    await helpers.publishCodexPreserveResult?.(preserved);
+    const activated = await activateCodexPoolSelectionImpl({
+      state,
+      homeDir,
+      env,
+      observedAt,
+      probeUsageSnapshotsByProviderImpl,
+      selectionMode: "weighted_usage",
+      avoidCurrentLabel,
+    });
+    return { activated, preserved };
   });
-  writeJsonFileWithBackup(statePath, state);
-  return { activated, preserved };
 }
 
 export async function runCodexTender(
   {
     statePath,
+    stateRuntime = null,
     homeDir,
     env = {},
     cwd = process.cwd(),
@@ -624,26 +646,38 @@ export async function runCodexTender(
   };
 
   if (preflight) {
-    const state = loadAimgrState(statePath);
-    const preflightPreserve = preserveLiveCodexAuthForActiveLabel({
-      state,
-      homeDir,
-      env,
-      observedAt: new Date().toISOString(),
-    });
-    preflightResult = await watchCodexPoolSelectionOnce(
-      {
+    const mutate = stateRuntime?.withMutableState
+      ? stateRuntime.withMutableState.bind(stateRuntime)
+      : async (fn) => {
+          const state = loadAimgrState(statePath);
+          const result = await fn(state, { publishCodexPreserveResult: async () => null });
+          writeJsonFileWithBackup(statePath, state);
+          return result;
+        };
+    const preflightState = await mutate(async (state, helpers = {}) => {
+      const preflightPreserve = preserveLiveCodexAuthForActiveLabel({
         state,
         homeDir,
         env,
-        thresholdPct: resolveCodexWatchThresholdPct(thresholdPct),
-      },
-      {
-        probeUsageSnapshotsByProviderImpl,
-        activateCodexPoolSelectionImpl,
-      },
-    );
-    writeJsonFileWithBackup(statePath, state);
+        observedAt: new Date().toISOString(),
+      });
+      await helpers.publishCodexPreserveResult?.(preflightPreserve);
+      const watched = await watchCodexPoolSelectionOnce(
+        {
+          state,
+          homeDir,
+          env,
+          thresholdPct: resolveCodexWatchThresholdPct(thresholdPct),
+        },
+        {
+          probeUsageSnapshotsByProviderImpl,
+          activateCodexPoolSelectionImpl,
+        },
+      );
+      return { preflightPreserve, preflightResult: watched };
+    });
+    const preflightPreserve = preflightState.preflightPreserve;
+    preflightResult = preflightState.preflightResult;
     events.push({ type: "preflight_preserve_live_auth", status: preflightPreserve.status });
     events.push({ type: "preflight_watch", status: preflightResult.status });
     if (preflightResult.status === "blocked") {
@@ -747,6 +781,7 @@ export async function runCodexTender(
       nextUsageRateLimitCheckAtMs = observedMs + RATE_LIMIT_USAGE_CHECK_MS;
       recoveryTrigger = await detectActiveCodexUsageRateLimit({
         statePath,
+        stateRuntime,
         homeDir,
         env,
         probeUsageSnapshotsByProviderImpl,
@@ -808,6 +843,7 @@ export async function runCodexTender(
 
       const rotation = await rotateCodexAccount({
         statePath,
+        stateRuntime,
         homeDir,
         env,
         observedAt: new Date().toISOString(),

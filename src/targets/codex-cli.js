@@ -20,8 +20,8 @@ export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
   ensureStateShape(state);
   if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
     throw new Error(
-      "No imported Codex replica is available on this machine yet. " +
-        "Run `aim sync codex --from agents@amirs-mac-studio` first.",
+      "No Redis-backed Codex pool is available on this machine yet. " +
+        "Run `aim redis configure --url redis://amirs-mac-studio:6380 --primary-host agents@amirs-mac-studio`, then complete `aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover`.",
     );
   }
 
@@ -490,8 +490,8 @@ export async function activateCodexPoolSelection({
 
   if (poolStatus.labels.length === 0) {
     throw new Error(
-      "No Codex pool labels are available on this machine yet. " +
-        "Run `aim sync codex --from agents@amirs-mac-studio` first.",
+      "No Redis-backed Codex pool labels are available on this machine yet. " +
+        "Complete `aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover` before using Codex targets.",
     );
   }
 

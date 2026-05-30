@@ -2,6 +2,12 @@ export function parseArgs(argv) {
   const opts = {
     home: undefined,
     state: undefined,
+    url: undefined,
+    keyPrefix: undefined,
+    primaryHost: undefined,
+    transport: undefined,
+    machine: undefined,
+    provider: undefined,
     from: undefined,
     to: undefined,
     mode: undefined,
@@ -12,6 +18,7 @@ export function parseArgs(argv) {
     authFile: undefined,
     inFile: undefined,
     outFile: undefined,
+    planFile: undefined,
     sourceHome: undefined,
     discardDirty: false,
     manualCallbackStdio: false,
@@ -22,6 +29,9 @@ export function parseArgs(argv) {
     once: false,
     tend: false,
     noAttach: false,
+    confirmBreakingCutover: false,
+    allowNonEmpty: false,
+    confirm: false,
     intervalSeconds: undefined,
     rotateBelow5hRemainingPct: undefined,
     pool: undefined,
@@ -50,6 +60,36 @@ export function parseArgs(argv) {
     }
     if (arg === "--state") {
       opts.state = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--url") {
+      opts.url = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--key-prefix") {
+      opts.keyPrefix = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--primary-host") {
+      opts.primaryHost = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--transport") {
+      opts.transport = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--machine") {
+      opts.machine = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--provider") {
+      opts.provider = argv[i + 1];
       i += 1;
       continue;
     }
@@ -108,6 +148,11 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--plan") {
+      opts.planFile = argv[i + 1];
+      i += 1;
+      continue;
+    }
     if (arg === "--source-home") {
       opts.sourceHome = argv[i + 1];
       i += 1;
@@ -152,6 +197,18 @@ export function parseArgs(argv) {
     }
     if (arg === "--no-attach") {
       opts.noAttach = true;
+      continue;
+    }
+    if (arg === "--confirm-breaking-cutover") {
+      opts.confirmBreakingCutover = true;
+      continue;
+    }
+    if (arg === "--confirm") {
+      opts.confirm = true;
+      continue;
+    }
+    if (arg === "--allow-non-empty") {
+      opts.allowNonEmpty = true;
       continue;
     }
     if (arg === "--interval-seconds") {

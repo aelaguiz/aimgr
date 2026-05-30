@@ -46,15 +46,10 @@ export function buildRemoteStateArg(remotePath) {
   return `--state ${shellQuoteSingle(remotePath)}`;
 }
 
-export function buildRemoteAimInternalApplyCommand({ remotePath, subcmd = "apply-codex-promotion" }) {
-  const stateArg = buildRemoteStateArg(remotePath);
-  return ["aim", "internal", subcmd, stateArg].filter(Boolean).join(" ");
-}
-
 export function resolveAuthorityLocator(locator) {
   const raw = String(locator ?? "").trim();
   if (!raw) {
-    throw new Error("Missing authority locator. Use: aim sync codex --from agents@amirs-mac-studio");
+    throw new Error("Missing legacy authority locator. Authority files are read-only migration input after the Redis cutover.");
   }
 
   if (raw.startsWith("ssh://")) {

@@ -334,10 +334,10 @@ test("codex watch loop reuses the one-shot path on every interval", async () => 
     assert.equal(updatedState.targets.codexCli.activeLabel, "boss");
 });
 
-test("codex use fails loudly before any authority import", async () => {
+test("codex use fails loudly before Redis migration imports pool labels", async () => {
   const home = mkTempHome();
   await assert.rejects(
     () => runCli(["codex", "use", "--home", home]),
-    /Run `aim sync codex --from agents@amirs-mac-studio` first/,
+    /Complete `aim redis migrate apply --plan <plan\.json> --confirm-breaking-cutover` before using Codex targets/,
   );
 });

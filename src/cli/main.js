@@ -13,6 +13,8 @@ import { handleInternal } from "./commands/internal.js";
 import { handleLogin } from "./commands/login.js";
 import { handlePi } from "./commands/pi.js";
 import { handlePromote } from "./commands/promote.js";
+import { handleRedis } from "./commands/redis.js";
+import { handleLabel, handleSession } from "./commands/repair.js";
 import { handleAutopin, handlePin } from "./commands/removed.js";
 import { handleRebalance } from "./commands/rebalance.js";
 import { handleStatus } from "./commands/status.js";
@@ -21,6 +23,9 @@ import { handleSync } from "./commands/sync.js";
 const COMMAND_HANDLERS = new Map([
   ["status", handleStatus],
   ["login", handleLogin],
+  ["redis", handleRedis],
+  ["label", handleLabel],
+  ["session", handleSession],
   ["pin", handlePin],
   ["autopin", handleAutopin],
   ["rebalance", handleRebalance],
@@ -62,7 +67,9 @@ export async function main(argv, deps = createDefaultDeps()) {
       defaultDeps.probeUsageSnapshotsByProviderImpl(state, { fetchJsonWithTimeoutImpl, env }),
     activateCodexPoolSelectionImpl = defaultDeps.activateCodexPoolSelectionImpl,
     runCodexTenderImpl = defaultDeps.runCodexTenderImpl,
+    runClaudeCliImpl = defaultDeps.runClaudeCliImpl,
     rebalanceHermesPoolImpl = defaultDeps.rebalanceHermesPoolImpl,
+    connectRedisStoreImpl = defaultDeps.connectRedisStoreImpl,
     sleepImpl = defaultDeps.sleepImpl,
     watchLoopMaxIterations = defaultDeps.watchLoopMaxIterations,
   } = deps ?? {};
@@ -108,7 +115,9 @@ export async function main(argv, deps = createDefaultDeps()) {
     probeUsageSnapshotsByProviderImpl,
     activateCodexPoolSelectionImpl,
     runCodexTenderImpl,
+    runClaudeCliImpl,
     rebalanceHermesPoolImpl,
+    connectRedisStoreImpl,
     sleepImpl,
     watchLoopMaxIterations,
   });

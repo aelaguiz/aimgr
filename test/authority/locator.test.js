@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  buildRemoteAimInternalApplyCommand,
   buildRemoteCatCommand,
   buildRemoteStateArg,
   loadAuthorityState,
@@ -44,10 +43,6 @@ test("authority SSH locators normalize home paths and quote remote shell fragmen
   assert.equal(source.remotePath, '$HOME/Authority Dir/secrets "quoted" $x.json');
   assert.equal(buildRemoteCatCommand(source.remotePath), 'cat -- "$HOME/Authority Dir/secrets \\"quoted\\" \\$x.json"');
   assert.equal(buildRemoteStateArg(source.remotePath), '--state "$HOME/Authority Dir/secrets \\"quoted\\" \\$x.json"');
-  assert.equal(
-    buildRemoteAimInternalApplyCommand({ remotePath: source.remotePath }),
-    'aim internal apply-codex-promotion --state "$HOME/Authority Dir/secrets \\"quoted\\" \\$x.json"',
-  );
 });
 
 test("loadAuthorityState reads SSH authority state through fake ssh without touching production remotes", async () => {

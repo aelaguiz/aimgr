@@ -3,6 +3,12 @@ import { fileURLToPath } from "node:url";
 
 export const SCHEMA_VERSION = "0.2";
 
+export const AIMGR_CONFIG_VERSION = 1;
+
+export const AIMGR_LOCAL_STATE_VERSION = 1;
+
+export const AIMGR_REDIS_DEFAULT_KEY_PREFIX = "aimgr:v1:";
+
 export const OPENAI_CODEX_PROVIDER = "openai-codex";
 
 export const ANTHROPIC_PROVIDER = "anthropic";

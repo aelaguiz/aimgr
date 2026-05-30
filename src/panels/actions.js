@@ -23,6 +23,10 @@ import { markImportedAnthropicLabelDirtyState } from "../state/authority-anthrop
 import { sanitizeForStatus } from "../core/sanitize.js";
 import { activateClaudeLabelSelection } from "../targets/claude-cli.js";
 
+function defaultPersistState({ statePath, state }) {
+  writeJsonFileWithBackup(statePath, state);
+}
+
 export async function runLabelPanelAction({
   action,
   statePath,
@@ -38,9 +42,13 @@ export async function runLabelPanelAction({
   loginOpenAICodexImpl = loginOpenAICodex,
   refreshOpenAICodexImpl = refreshOpenAICodexToken,
   refreshAnthropicImpl = refreshAnthropicToken,
+  performLabelMaintenanceImpl = performLabelMaintenance,
+  activateClaudeLabelSelectionImpl = activateClaudeLabelSelection,
+  persistStateImpl = defaultPersistState,
   writeImpl = writeStdout,
 }) {
   const normalizedLabel = normalizeLabel(label);
+  const persistState = () => persistStateImpl({ statePath, state, label: normalizedLabel });
   if (action === "done") {
     return { done: true };
   }
@@ -58,8 +66,8 @@ export async function runLabelPanelAction({
     || action === "use_native_claude_label"
   ) {
     if (action === "use_native_claude_label") {
-      const activated = activateClaudeLabelSelection({ state, homeDir, label: normalizedLabel });
-      writeJsonFileWithBackup(statePath, state);
+      const activated = activateClaudeLabelSelectionImpl({ state, homeDir, label: normalizedLabel });
+      await persistState();
       writeImpl(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n\n`);
       return { done: false };
     }
@@ -74,7 +82,7 @@ export async function runLabelPanelAction({
         });
         recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
         markImportedAnthropicLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
-        writeJsonFileWithBackup(statePath, state);
+        await persistState();
         writeImpl(
           `${JSON.stringify(
             sanitizeForStatus({
@@ -106,7 +114,7 @@ export async function runLabelPanelAction({
         });
         recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
         markImportedAnthropicLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
-        writeJsonFileWithBackup(statePath, state);
+        await persistState();
         writeImpl(
           `${JSON.stringify(
             sanitizeForStatus({
@@ -167,7 +175,7 @@ export async function runLabelPanelAction({
       state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = refreshed;
       recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
       markImportedAnthropicLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
-      writeJsonFileWithBackup(statePath, state);
+      await persistState();
       writeImpl(`${normalizedLabel} is ready.\n\n`);
     } catch (err) {
       const message = String(err?.message ?? err);
@@ -177,7 +185,7 @@ export async function runLabelPanelAction({
           ? { blockedReason: resolveAnthropicMaintenanceBlockedReason(message) }
           : {}),
       });
-      writeJsonFileWithBackup(statePath, state);
+      await persistState();
       reportPanelActionError(err, { writeImpl });
     }
     return { done: false };
@@ -265,12 +273,12 @@ export async function runLabelPanelAction({
         return { done: false };
       }
 
-      writeJsonFileWithBackup(statePath, state);
+      await persistState();
       writeImpl(`Saved browser setup for ${normalizedLabel}.\n\n`);
 
       if (action !== "change_browser_setup") {
         try {
-          await performLabelMaintenance({
+          await performLabelMaintenanceImpl({
             state,
             label: normalizedLabel,
             homeDir,
@@ -282,10 +290,10 @@ export async function runLabelPanelAction({
             refreshAnthropicImpl,
             writeImpl,
           });
-          writeJsonFileWithBackup(statePath, state);
+          await persistState();
           writeImpl(`${normalizedLabel} is ready.\n\n`);
         } catch (err) {
-          writeJsonFileWithBackup(statePath, state);
+          await persistState();
           reportPanelActionError(err, { writeImpl });
         }
       }
@@ -298,7 +306,7 @@ export async function runLabelPanelAction({
 
   if (action === "reauth_now") {
     try {
-      await performLabelMaintenance({
+      await performLabelMaintenanceImpl({
         state,
         label: normalizedLabel,
         homeDir,
@@ -310,10 +318,10 @@ export async function runLabelPanelAction({
         refreshAnthropicImpl,
         writeImpl,
       });
-      writeJsonFileWithBackup(statePath, state);
+      await persistState();
       writeImpl(`${normalizedLabel} is ready.\n\n`);
     } catch (err) {
-      writeJsonFileWithBackup(statePath, state);
+      await persistState();
       reportPanelActionError(err, { writeImpl });
     }
     return { done: false };
@@ -336,6 +344,9 @@ export async function runLabelControlPanel({
   loginOpenAICodexImpl = loginOpenAICodex,
   refreshOpenAICodexImpl = refreshOpenAICodexToken,
   refreshAnthropicImpl = refreshAnthropicToken,
+  performLabelMaintenanceImpl = performLabelMaintenance,
+  activateClaudeLabelSelectionImpl = activateClaudeLabelSelection,
+  persistStateImpl = defaultPersistState,
   writeImpl = writeStdout,
 }) {
   const normalizedLabel = normalizeLabel(label);
@@ -347,7 +358,7 @@ export async function runLabelControlPanel({
     writeImpl,
   });
   if (provider && provider !== beforeProvider) {
-    writeJsonFileWithBackup(statePath, state);
+    await persistStateImpl({ statePath, state, label: normalizedLabel });
   }
 
   // eslint-disable-next-line no-constant-condition
@@ -391,6 +402,9 @@ export async function runLabelControlPanel({
       loginOpenAICodexImpl,
       refreshOpenAICodexImpl,
       refreshAnthropicImpl,
+      performLabelMaintenanceImpl,
+      activateClaudeLabelSelectionImpl,
+      persistStateImpl,
       writeImpl,
     });
     if (result?.done) {

@@ -56,7 +56,7 @@ export function assertCodexCredentialShape({ label, credential, requireFresh }) 
     throw new Error(`credentials.${OPENAI_CODEX_PROVIDER}.${label}.expiresAt is missing/invalid.`);
   }
   if (requireFresh && expiresMs <= Date.now()) {
-    throw new Error(`Refusing expired openai-codex credentials for label=${label}. Sync or refresh the authority first.`);
+    throw new Error(`Refusing expired openai-codex credentials for label=${label}. Refresh the label with \`aim login ${label}\` before projection.`);
   }
   return cred;
 }

@@ -4,9 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveAuthorityLocator } from "../../src/credentials/authority.js";
 import { buildAnthropicCredentialFingerprint } from "../../src/credentials/anthropic.js";
-import { buildClaudePromotionPayload } from "../../src/credentials/anthropic-promotion.js";
 import { buildCodexCredentialFingerprint } from "../../src/credentials/codex.js";
-import { buildCodexPromotionPayload } from "../../src/credentials/codex-promotion.js";
 import { getAuthorityAnthropicImportLabelStatus } from "../../src/state/authority-anthropic.js";
 import { getAuthorityCodexImportLabelStatus } from "../../src/state/authority-codex.js";
 import { loadAimgrStateFromJsonValue } from "../../src/state/schema.js";
@@ -336,95 +334,13 @@ test("status normalizes malformed SSOT rows on disk without clearing dirty autho
   assert.deepEqual(parsed.imports.authority.anthropic.dirtyLabels, ["claude"]);
 });
 
-test("promotion payload builders reject a different authority source for both providers", () => {
-  const sourcePath = path.join(mkTempHome(), ".aimgr", "source.json");
-  const otherPath = path.join(mkTempHome(), ".aimgr", "other.json");
-  const codexJwt = makeFakeJwt({
-    email: "boss@example.com",
-    "https://api.openai.com/auth": { chatgpt_account_id: "acct_123", chatgpt_plan_type: "pro" },
-  });
-  const codexCredential = {
-    access: codexJwt,
-    refresh: "CODEX_REFRESH",
-    idToken: codexJwt,
-    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-    accountId: "acct_123",
-  };
-  const claudeCredential = buildAnthropicClaudeCredential();
-
-  const codexState = loadAimgrStateFromJsonValue({
-    schemaVersion: "0.2",
-    accounts: {
-      boss: { provider: "openai-codex" },
-    },
-    credentials: {
-      "openai-codex": { boss: codexCredential },
-      anthropic: {},
-    },
-    imports: {
-      authority: {
-        codex: {
-          source: sourcePath,
-          importedAt: new Date(0).toISOString(),
-          labels: ["boss"],
-          labelsByName: {
-            boss: {
-              importedAt: new Date(0).toISOString(),
-              baseAccountId: "acct_123",
-              baseCredentialFingerprint: buildCodexCredentialFingerprint(codexCredential),
-              dirtyLocal: true,
-            },
-          },
-        },
-        anthropic: {},
-      },
-    },
-    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {} },
-    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
-  });
-  const claudeState = loadAimgrStateFromJsonValue({
-    schemaVersion: "0.2",
-    accounts: {
-      boss: { provider: "anthropic", reauth: { mode: "native-claude" } },
-    },
-    credentials: {
-      "openai-codex": {},
-      anthropic: { boss: claudeCredential },
-    },
-    imports: {
-      authority: {
-        codex: {},
-        anthropic: {
-          source: sourcePath,
-          importedAt: new Date(0).toISOString(),
-          labels: ["boss"],
-          labelsByName: {
-            boss: {
-              importedAt: new Date(0).toISOString(),
-              baseCredentialFingerprint: buildAnthropicCredentialFingerprint(claudeCredential),
-              baseIdentity: {
-                accountUuid: "acct_boss",
-                emailAddress: "boss@example.com",
-                organizationUuid: "org_boss",
-              },
-              dirtyLocal: true,
-            },
-          },
-        },
-      },
-    },
-    targets: { openclaw: { assignments: {}, exclusions: {} }, claudeCli: {} },
-    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
-  });
-
-  // Promotion is a compare-and-swap write back to exactly the authority that produced the import;
-  // source drift must fail before a payload can be sent to the wrong file or SSH target.
-  assert.throws(
-    () => buildCodexPromotionPayload({ state: codexState, to: otherPath, labels: ["boss"] }),
-    /different authority/,
+test("removed promote command fails before authority writes", async () => {
+  await assert.rejects(
+    () => runCli(["promote", "codex", "--to", path.join(mkTempHome(), ".aimgr", "source.json"), "boss", "--home", mkTempHome()]),
+    /removed in the Redis cutover/,
   );
-  assert.throws(
-    () => buildClaudePromotionPayload({ state: claudeState, to: otherPath, labels: ["boss"] }),
-    /different authority/,
+  await assert.rejects(
+    () => runCli(["promote", "claude", "--to", path.join(mkTempHome(), ".aimgr", "source.json"), "boss", "--home", mkTempHome()]),
+    /removed in the Redis cutover/,
   );
 });

@@ -1,1 +1,1 @@
-import "../claude/claude-03.cases.js";
+// Claude sync/promote CLI behavior was removed by the Redis cutover.

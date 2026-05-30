@@ -136,13 +136,15 @@ test("parseAnthropicAuthorizationPaste accepts callback URLs and code#state", ()
   assert.throws(() => parseAnthropicAuthorizationPaste("https://console.anthropic.com/oauth/code/callback?code=CODE123"));
 });
 
-test("help text prefers agents@amirs-mac-studio as the authority example", async () => {
+test("help text prefers Redis primary-host setup over authority sync examples", async () => {
   const out = await runCli([]);
-  assert.match(out, /aim sync codex --from <authority>/);
-  assert.match(out, /aim claude use \[label\]\s+# activate the next-best pooled Claude label, or explicitly switch a chosen label/);
+  assert.match(out, /aim redis configure --url <redis-url>/);
+  assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
-  assert.match(out, /Examples: agents@amirs-mac-studio/);
-  assert.match(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
+  assert.match(out, /--primary-host <host>\s+Human-readable Redis primary host, e\.g\. agents@amirs-mac-studio/);
+  assert.match(out, /redis:\/\/amirs-mac-studio:6380/);
+  assert.doesNotMatch(out, /Examples: agents@amirs-mac-studio/);
+  assert.doesNotMatch(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
 });
 
 test("anthropic label maintenance captures the current native Claude login without OAuth flow", async () => {

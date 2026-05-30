@@ -64,121 +64,21 @@ test("codex use refuses non-file-backed Codex homes", async () => {
   );
 });
 
-test("sync codex refuses to clear a stale activation from a non-file-backed Codex home", async () => {
+test("sync codex is removed and does not clear a stale activation", async () => {
   const home = mkTempHome();
-  const authorityHome = mkTempHome();
-  const statePath = path.join(home, ".aimgr", "secrets.json");
-  const authorityStatePath = path.join(authorityHome, ".aimgr", "secrets.json");
-  const bossJwt = makeFakeJwt({
-    email: "boss@example.com",
-    "https://api.openai.com/auth": {
-      chatgpt_account_id: "acct_boss",
-      chatgpt_plan_type: "pro",
-    },
-  });
-  const qaJwt = makeFakeJwt({
-    email: "qa@example.com",
-    "https://api.openai.com/auth": {
-      chatgpt_account_id: "acct_qa",
-      chatgpt_plan_type: "pro",
-    },
-  });
   const codexHome = path.join(home, ".codex");
   const authPath = path.join(codexHome, "auth.json");
-
   fs.mkdirSync(codexHome, { recursive: true });
-  fs.writeFileSync(path.join(codexHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n', "utf8");
   writeJson(authPath, {
     sentinel: "must-not-delete",
-    tokens: {
-      id_token: bossJwt,
-      access_token: bossJwt,
-      refresh_token: "BOSS_REFRESH",
-      account_id: "acct_boss",
-    },
-  });
-
-  writeJson(authorityStatePath, {
-    schemaVersion: "0.2",
-    accounts: {
-      qa: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
-    },
-    credentials: {
-      "openai-codex": {
-        qa: {
-          access: qaJwt,
-          refresh: "QA_REFRESH",
-          idToken: qaJwt,
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-          accountId: "acct_qa",
-        },
-      },
-      anthropic: {},
-    },
-    imports: { authority: { codex: {}, anthropic: {} } },
-    targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, piCli: {}, claudeCli: {} },
-    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
-  });
-
-  writeJson(statePath, {
-    schemaVersion: "0.2",
-    accounts: {
-      boss: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
-    },
-    credentials: {
-      "openai-codex": {
-        boss: {
-          access: bossJwt,
-          refresh: "BOSS_REFRESH",
-          idToken: bossJwt,
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-          accountId: "acct_boss",
-        },
-      },
-      anthropic: {},
-    },
-    imports: {
-      authority: {
-        codex: {
-          source: authorityStatePath,
-          importedAt: new Date().toISOString(),
-          labels: ["boss"],
-          labelsByName: {
-            boss: {
-              importedAt: new Date().toISOString(),
-              baseAccountId: "acct_boss",
-              dirtyLocal: false,
-            },
-          },
-        },
-        anthropic: {},
-      },
-    },
-    targets: {
-      openclaw: { assignments: {}, exclusions: {} },
-      codexCli: {
-        activeLabel: "boss",
-        expectedAccountId: "acct_boss",
-        lastAppliedAt: new Date().toISOString(),
-      },
-      piCli: {},
-      claudeCli: {},
-    },
-    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
   });
 
   await assert.rejects(
-    () => runCli(["sync", "codex", "--from", authorityStatePath, "--home", home]),
-    /Managed Codex activation requires file-backed auth storage/,
+    () => runCli(["sync", "codex", "--from", "/tmp/authority.json", "--home", home]),
+    /sync codex.*removed in the Redis cutover/s,
   );
-
-  // Sync cleanup is allowed to remove AIM-owned file-backed auth, but a keyring/auto
-  // Codex home is outside AIM's managed write contract and must be left untouched.
   assert.equal(fs.existsSync(authPath), true);
   assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).sentinel, "must-not-delete");
-  const persistedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(persistedState.targets.codexCli.activeLabel, "boss");
-  assert.equal(persistedState.credentials["openai-codex"].boss.refresh, "BOSS_REFRESH");
 });
 
 test("pi use clears stale managed openai-codex auth and preserves other Pi providers when no pool account is eligible", async () => {

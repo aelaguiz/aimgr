@@ -1,214 +1,108 @@
 # aimgr
 
-`aimgr` (CLI: `aim`) is a small AI account manager for one job:
+`aimgr` coordinates AI account credentials across the three-machine pool.
 
-- keep labeled paid-account truth in AIM
-- keep browser ownership in AIM
-- compile that truth into downstream targets like OpenClaw, local Codex CLI, local Claude CLI, and local Pi CLI
+The shared source of truth is Redis on `agents` at Amir's Mac Studio over Tailscale. Local tool files are projections only:
 
-The operating model is intentionally simple:
+- Redis primary: `redis://amirs-mac-studio:6380`
+- fallback Tailnet IP: `redis://100.96.80.106:6380`
+- local config: `~/.aimgr/config.yaml`
+- stable machine id: `~/.aimgr/machine-id`
+- local-only adjunct state: `~/.aimgr/local-state.json`
+- legacy `~/.aimgr/secrets.json`: migration input or backup artifact only
 
-- `~/.aimgr/secrets.json` is the durable SSOT
-- browser binding is explicit per label:
-  - `aim-profile` -> `~/.aimgr/browser/<label>/user-data`
-  - `chrome-profile` -> explicit raw Chrome `user-data-dir`
-  - `agent-browser` -> explicit `profile` + `session`
-  - `manual-callback` -> no local browser binding
-- OpenClaw assignments plus local Codex/Claude/Pi auth stores are derived outputs
-- operators think in labels like `boss`, `lessons`, and `qa`, not raw tokens or profile IDs
+The Redis cutover is intentionally breaking and non-reverse-compatible. Runtime credential coordination no longer has file ownership, SSH authority pulls, or promote-back flows.
 
-## North star
+## Setup
 
-One AIM-owned account pool, one obvious operator path, and no legacy drift.
-
-That means:
-
-- `aim <label>` is the primary human path
-- `aim rebalance openclaw` is the canonical OpenClaw assignment command
-- `aim codex use [label]` is the canonical local Codex selection command
-- `aim codex watch` is the canonical local Codex guardrail for overnight rotation
-- `aim codex run --tend` is the tmux-backed local Codex TUI tender for `/goal` sessions
-- `aim claude use [label]` is the canonical local Claude selection command
-- `aim pi use` is the canonical local Pi selection command
-- `aim pin`, `aim autopin openclaw`, and label-first `aim pi use` are removed
-
-## Non-negotiables
-
-- AIM is the only durable credential SSOT.
-- OpenClaw, Codex CLI, Claude CLI, and Pi CLI are derived targets, not competing truth.
-- Operator-facing account state collapses to `ready`, `reauth`, or `blocked`.
-- Labels are explicit; there is no steady-state `default` account semantics.
-- Codex target management is file-backed only in v1. `keyring` and `auto` fail loud.
-- The current human-facing authority for the shared Codex pool is `agents@amirs-mac-studio`.
-
-## Install
-
-### Prereqs
-
-- macOS
-- Node.js `>= 20`
-- Google Chrome installed
-- `openclaw` on `PATH` if you are using the OpenClaw workflow
-- `tmux` on `PATH` if you are using `aim codex run --tend`
-- a file-backed Codex home if AIM will manage your real `~/.codex`
-
-### Global install from this checkout
-
-For local iteration:
+Configure each machine to point at the same Redis primary and key prefix:
 
 ```bash
-cd /Users/agents/workspace/agents/work/aimgr/repo/aimgr
-npm install
-npm link
-
-which aim
-aim --help
+aim redis configure \
+  --url redis://amirs-mac-studio:6380 \
+  --key-prefix aimgr:v1: \
+  --primary-host agents@amirs-mac-studio \
+  --transport tailscale
 ```
 
-For a fixed snapshot instead of a live symlink:
+Check the attachment:
 
 ```bash
-cd /Users/agents/workspace/agents/work/aimgr/repo/aimgr
-npm install -g .
+aim redis config
+aim redis ping
+aim redis snapshot
 ```
 
-For a login-shell-stable install that does not depend on the current NVM global bin path:
+## Migration
+
+Migration is the only path that reads old credential stores. It is read-only until the reviewed apply step.
+
+Run collection on every machine:
 
 ```bash
-cd /Users/agents/workspace/agents/work/aimgr/repo/aimgr
-npm install
-npm run install:local
-
-which aim
-aim --help
+aim redis migrate collect --machine <id> --out <bundle.json>
 ```
 
-This writes `aim` and `aimgr` wrappers into `~/.local/bin` (or `$XDG_BIN_HOME`), which is usually a better fit than `npm link` when Node is managed by `nvm`.
+Copy the three bundles to one review directory, then plan and apply once:
 
-## Quickstart
+```bash
+aim redis migrate plan --from <bundle-dir> --out <plan.json>
+aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover
+aim redis export --out <post-cutover-export.json>
+```
 
-### 1) Start with status
+The migration planner must preserve currently usable Codex and Claude credentials. A plan that would force mass re-login for usable accounts is a failed plan, not an acceptable cutover.
+
+## Runtime Commands
+
+Normal account maintenance:
+
+```bash
+aim <label>
+aim login <label>
+aim login <label> --manual-callback-stdio
+```
+
+Redis administration and repair:
+
+```bash
+aim redis configure --url <redis-url> [--key-prefix <prefix>] [--primary-host <host>] [--transport tailscale]
+aim redis config
+aim redis ping
+aim redis snapshot
+aim redis migrate collect --machine <id> --out <bundle.json>
+aim redis migrate plan --from <bundle-dir> --out <plan.json>
+aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover
+aim label rebind <label> --machine <machineId> --confirm
+aim session handoff <label> --from <machineId> --to <machineId> --confirm
+```
+
+Status:
 
 ```bash
 aim status
-aim status --json | jq .
+aim status --json
+aim status --compact
 ```
 
-Status answers the core operator questions:
-
-- which labels are `ready`, `reauth`, or `blocked`
-- what OpenClaw currently has assigned
-- how the last weighted rebalance spread agents across accounts
-- what the local Codex target currently has selected
-- what the local Claude target currently has selected
-- what the local Pi target currently has selected
-- what the Hermes fleet currently has mapped across live homes
-- what the next-best eligible account would be
-- whether the pool needs more capacity
-- what the last Codex watch receipt decided
-- what the last Hermes rebalance/watch receipts decided
-
-### 2) Maintain or reauth one label
+Target projections:
 
 ```bash
-aim boss
+aim rebalance openclaw
+aim rebalance hermes
+aim auth write hermes <label> --auth-file <abs-path>
+aim codex use [label]
+aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
+aim codex run --tend [-p <profile>] [--resume <session-id>] [-- <codex args...>]
+aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
+aim claude run <label> [-- <claude args...>]
+aim claude capture-native <label> [--source-home <dir>]
+aim claude export-live --out <file> [--source-home <dir>]
+aim claude import-native <label> --in <file>
+aim pi use
 ```
 
-On a TTY, `aim <label>` is the human front door. It opens a guided label panel with numbered choices:
-
-```text
-$ aim boss
-
-boss · openai-codex
-Status: ready
-ChatGPT login: valid
-Browser: agent-browser / agent-boss
-
-What do you want to do?
-  1. Open browser
-  2. Reauth / refresh login
-  3. Change browser setup
-  4. Show details
-  0. Done
-```
-
-Claude labels use a different panel because they are native-bundle-first instead of browser-bound:
-
-```text
-$ aim claudalyst
-
-claudalyst · anthropic
-Status: reauth
-Why: Credentials are expired.
-Stored tokens: expired
-Native bundle: complete
-
-What do you want to do?
-  1. Use this label in Claude
-  2. Refresh native bundle
-  3. Capture current native Claude login
-  4. Import native Claude bundle
-  5. Export current live native bundle
-  6. Show details
-  0. Done
-```
-
-Use explicit `aim login <label>` only when you want the one-shot maintenance/admin lane:
-
-```bash
-aim login boss
-aim login claudalyst
-aim login pro1 --manual-callback-stdio
-```
-
-The maintenance flow:
-
-1. ensures the label has a provider
-2. uses the label's configured login rail
-3. refreshes if possible, otherwise runs the provider's maintenance path
-4. writes credentials into `~/.aimgr/secrets.json`
-5. records account-maintenance facts for status and automation
-
-Important behavior:
-
-- Browser-managed labels use the label's explicit binding, not a guessed browser lane.
-- `aim-profile` uses `~/.aimgr/browser/<label>/user-data`.
-- `chrome-profile` uses the exact `--user-data-dir` you configured and, when present, the exact Chrome `profile-directory`.
-- `agent-browser` uses the exact `--profile` and `--session` you configured.
-- Manual-callback labels print the OAuth URL and prompt for the final callback URL.
-- `aim login <label> --manual-callback-stdio` is the scriptable manual-callback form: stdout is JSONL, AIM emits an `auth_url` event when OAuth is needed, and the caller writes the final callback URL to stdin.
-- Claude labels do not use browser bindings or manual-callback anymore; they capture/import native Claude bundles instead.
-- For Claude labels, non-TTY `aim <label>` and `aim login <label>` do the one-shot maintenance path: refresh the stored native bundle if it is already complete, otherwise capture the current live native Claude login from this host.
-- Claude label maintenance updates `~/.aimgr/secrets.json` only. It does not sync Hermes homes, browser bindings, OpenClaw assignments, or Claude sessions that are already running.
-- Reauth does **not** rebalance OpenClaw or mutate downstream assignments.
-
-When you pick `Use another Chrome profile` from the guided panel, AIM now lists the discovered raw Chrome-style browser homes on this Mac, including OpenClaw browser homes and host Chrome profiles. It tells you the exact `user-data-dir` + `profile-directory` each choice would save, and lets you confirm before writing the binding.
-
-Scriptable manual callback example:
-
-```bash
-aim login pro1 --manual-callback-stdio
-```
-
-When refresh is enough, AIM emits one JSON line with `type: "result"`. When OAuth is needed, AIM first emits:
-
-```json
-{"type":"auth_url","label":"pro1","provider":"openai-codex","url":"https://auth.openai.com/oauth/authorize?..."}
-```
-
-Keep the process running, open that URL from your script, then write one newline-terminated callback value to stdin:
-
-```json
-{"type":"callback_url","url":"http://localhost:1455/auth/callback?code=...&state=..."}
-```
-
-The stdin value can also be the raw callback URL, `code#state`, or `code=...&state=...`.
-
-### 2A) Inspect or repair the browser binding
-
-Daily operators should memorize `aim status`, `aim <label>`, `aim rebalance openclaw`, `aim rebalance hermes`, `aim codex use`, `aim codex watch`, `aim codex run --tend`, `aim hermes watch`, `aim claude use [label]`, and `aim pi use`.
-
-When you need to inspect or repair the browser substrate explicitly, use the advanced/admin surface:
+Browser binding policy:
 
 ```bash
 aim browser show <label>
@@ -218,935 +112,73 @@ aim browser set <label> --mode agent-browser --profile <abs-path> --session <nam
 aim browser set <label> --mode manual-callback
 ```
 
-Non-negotiables:
+## Removed Commands
 
-- AIM never guesses from a workspace-local `agent-browser.json`.
-- AIM never uses the implicit `default` `agent-browser` session.
-- There is no supported "generic Chrome somehow" mode.
-
-Claude-native surfaces live outside the browser-binding lane:
+These commands were removed as live coordination surfaces:
 
 ```bash
-aim claude capture-native <label> [--source-home <dir>]
-aim claude export-live --out <file> [--source-home <dir>]
-aim claude import-native <label> --in <file>
-```
-
-- `capture-native` reads the live native Claude login from a same-host home and stores it on a label.
-- `export-live` writes a portable bundle file from the live native Claude login on this host.
-- `import-native` loads that bundle file into a label on another AIM home.
-
-### 3) Rebalance OpenClaw from the shared pool
-
-Use this when you want AIM to choose assignments across the eligible Codex pool:
-
-```bash
-aim rebalance openclaw
-```
-
-This command:
-
-- evaluates pooled label readiness plus live usage
-- refreshes AIM’s per-agent demand ledger from OpenClaw session token counters
-- spreads agents many-to-one across remaining account headroom instead of burning one label per agent
-- keeps current assignments when they stay within weighted hysteresis
-- writes the derived OpenClaw assignments
-- records an explicit receipt with `allocationMode` plus `perAccountLoad`:
-  - `applied`
-  - `noop`
-  - `applied_with_warnings`
-  - `blocked`
-
-When recent session history exists, rebalance is demand-weighted. When it does not, cold-start agents use an explicit equal-share baseline until AIM has real usage.
-
-If you only want to recompile the current recorded assignments into OpenClaw without reselection:
-
-```bash
-aim sync openclaw
-# alias
 aim apply
-```
-
-### 3A) Rebalance Hermes from the shared pool
-
-Use this when you want AIM to choose labels across the eligible Codex pool for the live Hermes homes that already exist on this machine:
-
-```bash
-aim rebalance hermes
-```
-
-This command:
-
-- discovers live Hermes homes under `~/.hermes/profiles/*`
-- reads each home's native `auth.json` and infers the current AIM label from auth readback
-- refreshes AIM's per-home demand ledger from Hermes `state.db` session tokens when available
-- reuses the same weighted many-to-one allocator that OpenClaw already uses
-- writes only the changed Hermes `auth.json` files
-- records an explicit fleet receipt under `pool.openaiCodex.hermesFleet.lastApplyReceipt`
-
-Non-negotiables:
-
-- AIM still owns Hermes auth only
-- Hermes `config.yaml`, `.env`, `SOUL.md`, and service lifecycle remain outside AIM
-- `aim rebalance hermes` fails loud on unreadable/missing live-home auth instead of inventing a fallback
-- if you need live runtime confirmation after a rebalance/watch write, use `HERMES_HOME=~/.hermes/profiles/<agent_id> hermes status --deep`
-
-### 4) Activate local Codex CLI from the shared pool
-
-First sync the portable pool if needed:
-
-```bash
-aim sync codex --from agents@amirs-mac-studio
-```
-
-Then activate the next eligible label by round-robin:
-
-```bash
-aim codex use
-```
-
-Or explicitly activate one label:
-
-```bash
-aim codex use pro6
-```
-
-This command:
-
-- validates the local Codex home is file-backed
-- probes current pool usage
-- selects the next eligible pooled label when no label is given
-- directly activates the requested label when a label is given
-- writes managed `auth.json`
-- verifies readback
-- records a selection receipt:
-  - `activated`
-  - `noop`
-  - `activated_with_warnings`
-  - `blocked`
-
-The contract is "next Codex process", not hot-swapping an already-running long-lived process.
-
-If you locally reauth one of those imported Codex labels and want to publish that refresh back to the authority, use:
-
-```bash
-aim promote codex --to agents@amirs-mac-studio <label> [<label>...]
-```
-
-Later imports will not silently clobber unpublished local refreshes. `aim sync codex --from ...` now fails loud on those dirty imported labels unless you explicitly add `--discard-dirty`.
-
-### 4A) Guard local Codex overnight
-
-Use this when you want AIM to keep checking the current local Codex target and rotate through the existing selector before the active label falls too low in the 5h window.
-
-Scheduler-safe one-shot:
-
-```bash
-aim codex watch --once --rotate-below-5h-remaining-pct 20
-```
-
-Foreground loop:
-
-```bash
-aim codex watch --interval-seconds 300 --rotate-below-5h-remaining-pct 20
-```
-
-Important behavior:
-
-- watch mode decides from the current active local Codex label's live 5h remaining percentage
-- when the active label drops below threshold, watch delegates to the same selection/apply path as `aim codex use`
-- watch records `targets.codexCli.lastWatchReceipt` in AIM state and surfaces it in `aim status`
-- `--once` is the only scheduler contract; `launchd`, `systemd`, and plain cron should all wake the same one-shot command
-- do not enable both a foreground loop and an OS scheduler on the same host
-- do not use OpenClaw cron for this; AIM owns local Codex auth truth
-
-Simplest install path:
-
-```bash
-cd /path/to/aimgr
-bash ./scripts/install-codex-watch.sh
-# or
-npm run codex-watch:install
-```
-
-That script works from a standalone `aimgr` clone or the nested Mac-host checkout, detects macOS vs Linux, installs the right system scheduler with `sudo` when needed, starts it, and prints the follow-up status/log command.
-
-Rerunning the installer is safe. It refreshes the same single scheduler definition instead of creating parallel watches, and on macOS it also cleans up old GUI/user launchd copies before bootstrapping the canonical system daemon.
-
-When multiple Node installs exist, the installer prefers a Node `>=20` binary automatically and fails loud if it cannot find one. Use `--node-bin /absolute/path/to/node` to override.
-
-Installed scheduler artifacts:
-
-- macOS: `/Library/LaunchDaemons/com.funcountry.agents_host.aim_codex_watch.plist`
-- Ubuntu: `/etc/systemd/system/aim-codex-watch.service` and `/etc/systemd/system/aim-codex-watch.timer`
-
-Plain cron is acceptable only as a thin wake-up lane:
-
-```bash
-# Replace both absolute paths first:
-# - `/absolute/path/to/node` from `command -v node`
-# - `/absolute/path/to/aimgr` with your aimgr checkout root
-*/5 * * * * /absolute/path/to/node /absolute/path/to/aimgr/bin/aimgr.js codex watch --once --rotate-below-5h-remaining-pct 20
-```
-
-If you want to inspect or remove the installed scheduler later:
-
-```bash
-bash ./scripts/install-codex-watch.sh --status
-bash ./scripts/install-codex-watch.sh --uninstall
-```
-
-### 4B) Activate local Pi CLI from the shared pool
-
-Pi uses the same pooled OpenAI/Codex account selector as local Codex CLI, but writes Pi's canonical auth store instead of `~/.codex/auth.json`.
-
-By default AIM targets:
-
-- Pi agent dir: `~/.pi/agent`
-- Pi auth path: `~/.pi/agent/auth.json`
-
-You can override the Pi target dir with `PI_CODING_AGENT_DIR`.
-
-```bash
-aim pi use
-```
-
-This command:
-
-- probes current pooled usage
-- selects the next-best eligible pooled label with the same weighted ranking and hysteresis rules as plain `aim codex use`
-- writes Pi's canonical `auth.json`
-- preserves unrelated non-OpenAI Pi providers already present in that file
-- verifies readback
-- records a selection receipt:
-  - `activated`
-  - `noop`
-  - `activated_with_warnings`
-  - `blocked`
-
-The contract is "next Pi process", not mutating an already-running Pi session in place.
-
-### 4B) Activate local Claude CLI from the local Anthropic pool
-
-Claude uses AIM's Anthropic labels and writes Claude's canonical local auth store:
-
-- Claude dir: `~/.claude`
-- Claude credentials path: `~/.claude/.credentials.json`
-- Claude app-state path: `~/.claude.json` (`oauthAccount` only; AIM preserves unrelated keys)
-
-```bash
-aim claude use
-aim claude use claudalyst
-aim claude capture-native claudalyst
-aim claude export-live --out ~/claude-bundles/claudalyst.json
-aim claude import-native claudalyst --in ~/claude-bundles/claudalyst.json
-```
-
-`aim claude use` without a label:
-
-- probes current Claude subscription usage
-- selects the next-best eligible pooled label with the same weekly-first local selector AIM uses for Codex/Pi
-- writes Claude's canonical `.credentials.json`
-- patches only `oauthAccount` inside `~/.claude.json`
-- verifies readback from Claude's local auth files and does not call `claude auth status`, because some Claude builds mutate auth files during status reads
-- records a selection receipt:
-  - `activated`
-  - `noop`
-  - `activated_with_warnings`
-  - `blocked`
-
-`aim claude use <label>`:
-
-- bypasses usage ranking and directly activates the requested label
-- writes Claude's canonical `.credentials.json`
-- patches only `oauthAccount` inside `~/.claude.json`
-- verifies readback from Claude's local auth files and does not call `claude auth status`, because some Claude builds mutate auth files during status reads
-- records a selection receipt:
-  - `activated`
-  - `noop`
-  - `activated_with_warnings`
-  - `blocked`
-
-Claude-native switching is bundle-first:
-
-- every Claude-switchable label must have a complete stored native Claude bundle:
-  - `~/.claude/.credentials.json`
-  - `~/.claude.json` `oauthAccount`
-- `aim <label>` refreshes an existing stored bundle when possible, or captures the current live native Claude login from this host
-- `aim claude capture-native <label>` captures the current live native Claude login from this host without going through OAuth in AIM
-- `aim claude export-live --out <file>` and `aim claude import-native <label> --in <file>` are the cross-host transport path
-- `aim claude use [label]` only switches labels that already have that complete stored bundle
-- AIM does not treat env-token auth or `.credentials.json`-only projection as native Claude parity
-
-Anthropic refresh tokens rotate on every successful refresh: Claude CLI performs its own refreshes and writes the rotated tokens into the live files in place. Before `aim claude use [label]` overwrites those files, it reads the live bundle, matches it to a stored label by `accountUuid`/email+org identity, and — if the live tokens differ from stored — persists the rotated tokens back into that label's stored bundle. The activation receipt surfaces this as `preSwitchSync = { synced, label, rotatedFields }` so day-to-day label switching no longer silently invalidates refresh tokens.
-
-The contract is "next Claude process", not mutating an already-running Claude session in place.
-
-## Removed commands
-
-These commands are intentionally removed and now hard-error with migration guidance:
-
-```bash
-aim pin <openclaw_agent_id> <label>
-aim autopin openclaw --pool ...
-aim pi use <label>
-```
-
-Use:
-
-- `aim <label>` for reauth
-- `aim rebalance openclaw` for OpenClaw assignment selection
-- `aim codex use [label]` for local Codex selection
-- `aim claude use [label]` for local Claude selection
-- `aim pi use` for local Pi selection
-
-## Codex CLI requirements
-
-AIM only manages file-backed Codex homes in v1.
-
-By default AIM targets:
-
-- AIM state: `~/.aimgr/secrets.json`
-- Codex home: `~/.codex`
-
-Check the effective store mode:
-
-```bash
-grep -n 'cli_auth_credentials_store' ~/.codex/config.toml
-```
-
-If that is set to `keyring` or `auto`, AIM will refuse to manage the home.
-
-You can also point AIM at an alternate managed Codex home:
-
-```bash
-export CODEX_HOME="$HOME/.codex"
-```
-
-## Safe local smoke test
-
-If you want to test without touching your real `~/.aimgr` or `~/.codex`:
-
-```bash
-cd /Users/agents/workspace/agents/work/aimgr/repo/aimgr
-
-TMP_HOME="$(mktemp -d /tmp/aimgr-smoke.XXXXXX)"
-export CODEX_HOME="$TMP_HOME/.codex"
-
-node ./bin/aimgr.js sync codex --from agents@amirs-mac-studio --home "$TMP_HOME"
-node ./bin/aimgr.js status --json --home "$TMP_HOME"
-node ./bin/aimgr.js codex use --home "$TMP_HOME"
-node ./bin/aimgr.js status --home "$TMP_HOME"
-cat "$CODEX_HOME/auth.json"
-```
-
-What you want to see:
-
-- `sync codex` succeeds and creates `$TMP_HOME/.aimgr/secrets.json`
-- `status` shows imported labels and the authority source
-- `codex use` succeeds or clearly reports `blocked`
-- `$CODEX_HOME/auth.json` exists after a successful activation and contains the selected account id
-
-## Real host workflow
-
-### Authority host
-
-On the host that owns the shared AIM pool:
-
-```bash
-aim status
-aim boss
-aim rebalance openclaw
-aim status
-```
-
-### Consumer machine
-
-On the machine that wants to consume the shared Codex pool:
-
-```bash
-aim sync codex --from agents@amirs-mac-studio
-aim codex use
-aim status
-```
-
-Then start a **new** Codex or `codex_local` process and verify it picks up the selected identity.
-
-## Command reference
-
-### `aim status`
-
-Human-readable or JSON summary of:
-
-- labels and operator states
-- warnings
-- OpenClaw assignments and last rebalance receipt
-- weighted spread details (`allocationMode`, `perAccountLoad`)
-- Codex authority source, active label, last selection receipt, and dirty imported labels pending promote
-- Claude authority source, active label, auth method, last selection receipt, and dirty imported labels pending promote
-- Hermes fleet spread, live-home warnings, and last apply/watch receipts
-- next-best candidate and capacity projection
-
-```bash
-aim status
-aim status --json
-```
-
-### `aim <label>` / `aim login <label>`
-
-Primary human path plus explicit admin lane:
-
-```bash
-aim boss
-aim login boss
-aim login pro1 --manual-callback-stdio
-aim claudalyst
-aim login claudalyst
-```
-
-Rules:
-
-- `aim <label>` opens the guided label panel on a TTY
-- non-TTY `aim <label>` behaves like explicit `aim login <label>`
-- `aim login <label>` keeps the one-shot JSON-style maintenance contract for scripts/tests/admin use
-- `aim login <label> --manual-callback-stdio` is the machine-readable OpenAI Codex manual-callback lane: JSONL events on stdout, callback URL on stdin
-- for Claude labels, TTY `aim <label>` exposes native-bundle actions (`use`, `refresh`, `capture`, `import`, `export`, `details`) instead of browser/setup actions
-- for Claude labels, `aim login <label>` refreshes the stored native bundle when it is complete, otherwise it captures the current live Claude login from this host
-- if an imported Codex label changes locally, AIM marks it pending promote instead of pretending the authority already knows
-
-### `aim rebalance openclaw`
-
-Selects pooled Codex labels for configured OpenClaw agents and writes the derived assignment/auth/session state:
-
-```bash
-aim rebalance openclaw
-```
-
-The rebalance planner is intentionally different from Codex next-best label selection:
-
-- it imports per-agent OpenClaw session token counters into AIM’s demand ledger
-- it can assign multiple agents to the same account when remaining headroom supports that
-- it only skips agents when projected weighted demand exceeds remaining eligible supply
-
-### `aim sync openclaw` / `aim apply`
-
-Recompiles already-recorded OpenClaw target state:
-
-```bash
 aim sync openclaw
-aim apply
+aim sync codex --from <authority>
+aim sync claude --from <authority>
+aim promote codex --to <authority> <label> [<label>...]
+aim promote claude --to <authority> <label> [<label>...]
+aim internal apply-codex-promotion
+aim internal apply-claude-promotion
+aim claude use [label]
 ```
 
-### `aim sync codex --from <authority>`
+Use Redis migration once, then use the Redis-backed runtime commands above. Refreshes, native Claude captures/imports/runs, Codex watch/tend rotations, and explicit repair commands publish to Redis directly.
 
-Imports or refreshes the portable Codex pool from an authority source:
+## State Model
 
-```bash
-aim sync codex --from agents@amirs-mac-studio
-```
+Redis records own shared credential truth:
 
-Supported locator forms:
+- labels: provider, label, stable identity, shared browser/reauth/pool policy
+- sessions: provider, label, machine id, credential, identity, lineage, health
+- machines: stable machine metadata and last-seen time
+- meta: migration and cutover metadata
 
-- `agents@amirs-mac-studio`
-- `ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json`
-- `/absolute/path/to/secrets.json`
+`~/.aimgr/local-state.json` owns local-only facts:
 
-Safety rules:
+- target projection receipts
+- active target metadata
+- OpenClaw assignments and exclusions
+- Codex/Pi/Claude/Hermes local history
+- machine-specific concrete browser bindings
 
-- if the import would overwrite or remove a locally refreshed imported label, AIM refuses the sync and tells you which labels are dirty
-- publish those local updates first with `aim promote codex --to <authority> <label>...`
-- or rerun the pull with `--discard-dirty` if you intentionally want the authority copy to win
+Local target auth files are derived outputs:
 
-### `aim promote codex --to <authority> <label> [<label>...]`
-
-Publishes locally refreshed imported Codex credentials back to the same authority they originally came from:
-
-```bash
-aim promote codex --to agents@amirs-mac-studio boss
-aim promote codex --to agents@amirs-mac-studio boss lessons
-```
-
-Promotion is intentionally narrow:
-
-- it only works for imported `openai-codex` labels from the exact same authority source
-- it updates only the requested labels on the authority
-- it uses compare-and-swap protection, so the push fails if the authority copy changed since your last import
-- it does not create labels, delete labels, or push machine-local target state back upstream
-
-### `aim sync claude --from <authority>`
-
-Imports or refreshes the portable Claude label set from an authority source:
-
-```bash
-aim sync claude --from agents@amirs-mac-studio
-```
-
-Supported locator forms are the same as `sync codex`:
-
-- `agents@amirs-mac-studio`
-- `ssh://agents@amirs-mac-studio/~/.aimgr/secrets.json`
-- `/absolute/path/to/secrets.json`
-
-Safety rules:
-
-- if the import would overwrite or remove a locally refreshed imported Claude label, AIM refuses the sync and tells you which labels are dirty
-- publish those local updates first with `aim promote claude --to <authority> <label>...`
-- or rerun the pull with `--discard-dirty` if you intentionally want the authority copy to win
-- authority Claude labels without a complete native bundle still import as labels, so the consumer keeps the label topology and can capture or import the native bundle later
-
-### `aim promote claude --to <authority> <label> [<label>...]`
-
-Publishes locally refreshed imported Claude credentials back to the same authority they originally came from:
-
-```bash
-aim promote claude --to agents@amirs-mac-studio claudalyst
-aim promote claude --to agents@amirs-mac-studio claudalyst amir_claude_personal
-```
-
-Promotion is intentionally narrow:
-
-- it only works for imported `anthropic` labels from the exact same authority source
-- it updates only the requested labels on the authority
-- it uses compare-and-swap protection, so the push fails if the authority copy changed since your last import
-- it does not create labels, delete labels, or push machine-local target state back upstream
-
-### `aim codex use [label]`
-
-Activates Codex for the local managed Codex home:
-
-```bash
-aim codex use
-aim codex use <label>
-```
-
-Operator model:
-
-- `aim codex use` keeps the current round-robin pool rotation.
-- `aim codex use <label>` bypasses rotation and directly activates the requested Codex label.
-- activation affects the next Codex process; it is not a live hot-swap for an already-running Codex session
-
-### `aim codex watch`
-
-Runs the Codex watch decision once for schedulers, or continuously in the foreground:
-
-```bash
-aim codex watch --once --rotate-below-5h-remaining-pct 20
-aim codex watch --interval-seconds 300 --rotate-below-5h-remaining-pct 20
-```
-
-### `aim codex run --tend`
-
-Runs the normal Codex TUI in a tmux session and tends a stopped `/goal` session
-across account rotation:
-
-```bash
-aim codex run --tend
-aim codex run --tend -p yolo
-aim codex run --tend -p yolo --resume 019e5487-026d-7f52-8fbd-1d123045f1c6
-aim codex run --tend -p yolo -- resume 019e5487-026d-7f52-8fbd-1d123045f1c6
-aim codex run --tend -p yolo --no-attach --tmux-session overnight-codex -- --model gpt-5.5
-```
-
-Operator model:
-
-- the Codex TUI is still the interface; AIMGR starts it in tmux and can attach the current terminal
-- `-p yolo`, `--profile yolo`, and `--codex-profile yolo` select the Codex config profile and AIMGR preserves it when resuming after rotation
-- `--resume <session-id>` and `--session-id <session-id>` port an existing Codex session into tending; use the UUID from `To continue this session, run codex resume <uuid>`
-- AIMGR also accepts exact Codex passthrough resume form: `aim codex run --tend -- resume <session-id>`
-- Codex calls the CLI argument `SESSION_ID`; AIMGR stores and polls it internally as `threadId` because Codex app-server goal APIs use `threadId`
-- for new sessions, AIMGR owns a private Codex app-server remote and binds only to the single thread loaded in that private server; it blocks instead of guessing if ownership is ambiguous
-- because TEND owns that private remote, Codex pass-through args after `--` cannot include `--remote` or `--remote-auth-token-env`
-- when the persisted goal reaches `usageLimited`, AIMGR exits the old TUI, rotates through the existing Codex pool selector, starts a fresh private app-server remote, and runs `codex resume <thread-id>`
-- AIMGR confirms Codex's built-in `Resume paused goal?` prompt by sending Enter to the tmux pane
-- AIMGR does not use `codex resume <thread-id> "/goal resume"` because installed Codex treats that as a normal user message, not a slash command
-
-### `aim rebalance hermes`
-
-Selects pooled Codex labels for the live Hermes homes on this machine and writes only their native `auth.json` files:
-
-```bash
-aim rebalance hermes
-```
-
-The Hermes rebalance path is intentionally not a new allocator:
-
-- it discovers live homes from `~/.hermes/profiles/*`
-- it refreshes Hermes demand from `state.db`
-- it reuses the same weighted planner that backs `aim rebalance openclaw`
-- it records receipts in `pool.openaiCodex.hermesFleet`
-
-### `aim auth write hermes <label> --auth-file <abs-path>`
-
-Writes one explicit Hermes `auth.json` from the selected AIM label:
-
-```bash
-aim auth write hermes boss --auth-file /absolute/path/to/auth.json
-```
-
-This is the direct, advanced write path used when a specific Hermes home needs repair. It only accepts a target basename of `auth.json`, preserves unrelated provider entries already present in that file, verifies the resulting Codex pool entry by readback, and does not mutate AIM state.
-
-### `aim hermes watch`
-
-Runs the Hermes watch decision once for schedulers, or continuously in the foreground:
-
-```bash
-aim hermes watch --once --rotate-below-5h-remaining-pct 20
-aim hermes watch --interval-seconds 300 --rotate-below-5h-remaining-pct 20
-```
-
-This is the scheduler-safe Hermes guardrail. It never writes auth directly; it only decides when to call `aim rebalance hermes`.
-
-### `aim claude use`
-
-Activates Claude from AIM's stored native Claude bundles:
-
-```bash
-aim claude use
-aim claude use <label>
-aim claude capture-native <label>
-aim claude export-live --out <file>
-aim claude import-native <label> --in <file>
-```
-
-Operator model:
-
-- `aim claude use` without a label selects the next-best eligible Claude label from the local Anthropic pool.
-- `aim claude use <label>` bypasses ranking and directly activates the requested label.
-- activation writes both `~/.claude/.credentials.json` and `~/.claude.json` `oauthAccount`, then verifies readback from those files
-- activation affects the next Claude process; it is not a live hot-swap for an already-running Claude session
-- if the current host is logged into the wrong Claude account and you want to recapture a different one, use `claude auth logout`, log into the intended account in native Claude, then run `aim claude capture-native <label>` or rerun `aim <label>`
-
-## State layout
-
-Default durable AIM state lives at:
-
-- `~/.aimgr/secrets.json`
-
-Backups are created automatically on write:
-
-- `~/.aimgr/secrets.json.bak.<timestamp>`
-
-Current shape:
-
-```jsonc
-{
-  "schemaVersion": "0.2",
-  "accounts": {
-    "boss": {
-      "provider": "openai-codex",
-      "expect": { "email": "boss@example.com" },
-      "reauth": {
-        "mode": "manual-callback",
-        "lastVerifiedAt": "2026-03-21T03:21:00.000Z"
-      },
-      "pool": { "enabled": true }
-    }
-  },
-  "credentials": {
-    "openai-codex": {
-      "boss": {
-        "access": "...",
-        "refresh": "...",
-        "idToken": "...",
-        "expiresAt": "2026-03-21T05:21:00.000Z",
-        "accountId": "acct_123"
-      }
-    },
-    "anthropic": {}
-  },
-  "imports": {
-    "authority": {
-      "codex": {
-        "source": "agents@amirs-mac-studio",
-        "importedAt": "2026-03-21T03:21:00.000Z",
-        "labels": ["boss", "lessons"],
-        "labelsByName": {
-          "boss": {
-            "importedAt": "2026-03-21T03:21:00.000Z",
-            "baseAccountId": "acct_123",
-            "dirtyLocal": false
-          }
-        }
-      },
-      "anthropic": {
-        "source": "agents@amirs-mac-studio",
-        "importedAt": "2026-03-21T03:21:00.000Z",
-        "labels": ["claudalyst"],
-        "labelsByName": {
-          "claudalyst": {
-            "importedAt": "2026-03-21T03:21:00.000Z",
-            "dirtyLocal": false
-          }
-        }
-      }
-    }
-  },
-  "pool": {
-    "openaiCodex": {
-      "history": [],
-      "agentDemand": {},
-      "hermesFleet": {
-        "demandByHome": {},
-        "lastApplyReceipt": {
-          "status": "applied"
-        },
-        "lastWatchReceipt": {
-          "status": "noop"
-        }
-      }
-    },
-    "anthropic": {
-      "history": []
-    }
-  },
-  "targets": {
-    "openclaw": {
-      "assignments": {
-        "agent_boss": "boss"
-      },
-      "exclusions": {},
-      "lastApplyReceipt": {
-        "status": "applied"
-      }
-    },
-    "codexCli": {
-      "activeLabel": "boss",
-      "homeDir": "/Users/you/.codex",
-      "expectedAccountId": "acct_123",
-      "lastSelectionReceipt": {
-        "status": "activated"
-      },
-      "lastWatchReceipt": {
-        "status": "noop"
-      }
-    },
-    "claudeCli": {
-      "activeLabel": "claudalyst",
-      "credentialsPath": "/Users/you/.claude/.credentials.json",
-      "appStatePath": "/Users/you/.claude.json",
-      "lastSelectionReceipt": {
-        "status": "activated"
-      }
-    }
-  }
-}
-```
-
-Durable truth lives in:
-
-- `accounts`
-- `credentials`
-- `imports.authority.codex`
-- `imports.authority.anthropic`
-- minimal pool history
-
-For imported Codex labels, `imports.authority.codex.labelsByName` tracks the imported baseline per label. `aim status --json` also derives `imports.authority.codex.dirtyLabels` so operators can see which local refreshes still need promotion back to the authority.
-
-For imported Claude labels, `imports.authority.anthropic.labelsByName` plays the same role for native bundle capture/import/refresh work and pending `aim promote claude` follow-through.
-
-Derived target state lives in:
-
-- `targets.openclaw`
-- `targets.codexCli`
-- `targets.claudeCli`
-- `pool.openaiCodex.hermesFleet`
-
-## Troubleshooting
-
-### `aim codex use` says to sync first
-
-Bootstrap the local replica:
-
-```bash
-aim sync codex --from agents@amirs-mac-studio
-```
-
-### `aim codex use` returns `blocked`
-
-There is no eligible pooled account right now.
-
-Fix readiness or capacity first:
-
-```bash
-aim status
-```
-
-Then reauth a label with `aim <label>` or add more pool capacity.
-
-### `aim sync codex --from ...` says it would discard locally refreshed imported labels
-
-Your local AIM replica has a newer refresh for one or more imported labels that has not been published back to the authority yet.
-
-Promote those labels:
-
-```bash
-aim promote codex --to agents@amirs-mac-studio <label> [<label>...]
-```
-
-Or, if you intentionally want to throw away the local refresh and trust the authority copy instead:
-
-```bash
-aim sync codex --from agents@amirs-mac-studio --discard-dirty
-```
-
-`aim status` also surfaces this state as authority-dirty labels pending promote.
-
-### `aim promote codex` says the authority changed since import
-
-Someone refreshed that label on the authority after your last import, or your local base snapshot is stale.
-
-Start by pulling again:
-
-```bash
-aim sync codex --from agents@amirs-mac-studio
-```
-
-Then decide whether to keep the authority copy or re-run local reauth and promote again from the refreshed base.
-
-### `aim sync claude --from ...` says it would discard locally refreshed imported Claude labels
-
-Your local AIM replica has a newer native Claude capture, import, or refresh for one or more imported labels that has not been published back to the authority yet.
-
-Promote those labels:
-
-```bash
-aim promote claude --to agents@amirs-mac-studio <label> [<label>...]
-```
-
-Or, if you intentionally want to throw away the local native Claude refresh and trust the authority copy instead:
-
-```bash
-aim sync claude --from agents@amirs-mac-studio --discard-dirty
-```
-
-`aim status` also surfaces this state as authority-dirty labels pending promote.
-
-### `aim promote claude` says the authority changed since import
-
-Someone refreshed that Claude label on the authority after your last import, or your local base snapshot is stale.
-
-Start by pulling again:
-
-```bash
-aim sync claude --from agents@amirs-mac-studio
-```
-
-Then decide whether to keep the authority copy or re-capture the local native Claude login and promote again from the refreshed base.
-
-### `aim codex watch --once` returns `blocked`
-
-Either the current active Codex target could not be trusted for a watch decision, or the selector had no eligible pooled account when rotation was triggered.
-
-Start with:
-
-```bash
-aim status
-```
-
-Then inspect `codexCli.lastWatchReceipt` and `codexCli.lastSelectionReceipt`:
-
-- if the blocker is about target mismatch or unreadable auth, repair the current Codex target first
-- if the blocker is `no_eligible_pool_account`, fix readiness or add capacity before rerunning the watcher
-
-### `aim claude use` returns `blocked`
-
-There is no eligible pooled Claude account right now.
-
-Fix readiness or capacity first:
-
-```bash
-aim status
-```
-
-Then reauth a Claude label with `aim <label>` or add more Anthropic pool capacity.
-
-### `aim claude use <label>` returns `blocked` with `expired_credentials`
-
-The label exists, but AIM is refusing to project stale Claude credentials into the managed Claude files.
-
-Refresh the label first:
-
-```bash
-aim claudalyst
-# or
-aim login claudalyst
-```
-
-Then rerun:
-
-```bash
-aim claude use claudalyst
-```
-
-### `aim claude use` fails because the Claude label has no complete native bundle
-
-AIM has tokens for the label, but it does not yet have the full native Claude login bundle it needs to switch cleanly.
-
-Fastest fixes:
-
-- log that account into native Claude on this machine so both of these exist for the right identity:
-  - `~/.claude/.credentials.json`
-  - `~/.claude.json` `oauthAccount`
-- run `aim claude capture-native <label>` on the same host, or rerun `aim <label>` so AIM captures that live native login
-- if the login happened on another host, run `aim claude export-live --out <file>` there and `aim claude import-native <label> --in <file>` here
-- rerun `aim claude use`
-
-### `aim status` warns about `claude_target_env_override` or `claude_target_auth_method_mismatch`
-
-Something in the environment is overriding native Claude file-based auth, so AIM can no longer prove the local Claude target is using the projected native bundle.
-
-Common override env vars:
-
-- `CLAUDE_CODE_OAUTH_TOKEN`
-- `ANTHROPIC_AUTH_TOKEN`
-- `ANTHROPIC_API_KEY`
-- `CLAUDE_CODE_USE_BEDROCK`
-- `CLAUDE_CODE_USE_VERTEX`
-- `CLAUDE_CODE_USE_FOUNDRY`
-
-Clear the override, start a fresh Claude process, and recheck:
-
-```bash
-aim status
-```
-
-### Codex home is rejected as `keyring` or `auto`
-
-Use a file-backed Codex home instead, or test with a temp `CODEX_HOME`.
-
-### SSH import fails
-
-Verify the authority host is reachable and has AIM state:
-
-```bash
-ssh agents@amirs-mac-studio 'test -f ~/.aimgr/secrets.json && echo ok'
-```
-
-### Wrong account still appears active after switching
-
-Start a new Claude, Codex, or Pi process for the target you just switched. AIM guarantees next-process behavior, not live hot-swap.
-
-### `aim status --json` and secrets
-
-Status output is redacted. The durable state file itself is not.
+- Codex: `~/.codex/auth.json`
+- Claude: `~/.claude/.credentials.json` and `~/.claude.json`
+- Pi: `~/.pi/agent/auth.json`
+- Hermes: explicit `auth.json` paths
+- OpenClaw: configured agent auth stores and session metadata
 
 ## Development
 
+Run syntax checks:
+
 ```bash
 npm run lint
+```
+
+Run tests:
+
+```bash
 npm test
+```
+
+Run coverage:
+
+```bash
 npm run test:coverage
 ```
 
-The CLI entrypoint is `src/cli.js`; it stays as a thin facade over `src/cli/main.js`.
-Domain behavior lives in purpose-built modules under `src/`, and tests are split by owner under `test/`.
-Coverage uses Node's native test runner and scopes the report to repo `bin/` and `src/` files so temporary fake binaries created by tests do not pollute the signal.
+In this Codex shell, prefer:
 
-Current tests cover:
+```bash
+env -u CODEX_HOME npm test
+```
 
-- secret redaction in `aim status --json`
-- migration and import boundaries
-- AIM-owned login state, browser binding, and native-Claude bundle behavior
-- OpenClaw auth/profile writes and rebalance helpers
-- Codex, Claude, and Pi local activation flows
-- model/session helper logic for OpenClaw
+because an inherited `CODEX_HOME` can point tests at the real Codex home instead of a temp home.
