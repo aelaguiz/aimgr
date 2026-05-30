@@ -2,15 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { resolveAimgrMachineIdPath } from "../../src/io/paths.js";
 import { runCli } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
-
-function writeMachineId(home, machineId) {
-  const machineIdPath = resolveAimgrMachineIdPath({ homeDir: home });
-  fs.mkdirSync(path.dirname(machineIdPath), { recursive: true });
-  fs.writeFileSync(machineIdPath, `${machineId}\n`, "utf8");
-}
 
 function writeState(home) {
   const exp = Math.floor(Date.now() / 1000) + 3600;
@@ -47,9 +40,8 @@ function writeState(home) {
 test("redis migrate collect and plan write redacted operator summaries", async () => {
   const home = mkTempHome();
   const migrationDir = path.join(home, ".aimgr", "redis-migration");
-  const bundlePath = path.join(migrationDir, "studio.json");
+  const bundlePath = path.join(migrationDir, "bundle.json");
   const planPath = path.join(migrationDir, "plan.json");
-  writeMachineId(home, "studio");
   writeState(home);
 
   const collectOut = await runCli([
@@ -58,8 +50,6 @@ test("redis migrate collect and plan write redacted operator summaries", async (
     "collect",
     "--home",
     home,
-    "--machine",
-    "studio",
     "--out",
     bundlePath,
   ]);
@@ -82,8 +72,7 @@ test("redis migrate collect and plan write redacted operator summaries", async (
   ]);
   const planSummary = JSON.parse(planOut);
   assert.equal(planSummary.ok, true);
-  assert.equal(planSummary.summary.importLabelCount, 1);
-  assert.equal(planSummary.summary.importSessionCount, 1);
+  assert.equal(planSummary.summary.importCredentialCount, 1);
   assert.equal(fs.existsSync(planPath), true);
   assert.doesNotMatch(planOut, /REFRESH_TOKEN/);
 });
@@ -91,7 +80,7 @@ test("redis migrate collect and plan write redacted operator summaries", async (
 test("redis migrate apply requires the breaking cutover confirmation", async () => {
   const home = mkTempHome();
   const planPath = path.join(home, "plan.json");
-  writeJson(planPath, { kind: "aimgr.redisMigration.plan.v1", labels: [], sessions: [] });
+  writeJson(planPath, { kind: "aimgr.redisMigration.plan.v1", credentials: [] });
 
   await assert.rejects(
     () => runCli(["redis", "migrate", "apply", "--home", home, "--plan", planPath]),

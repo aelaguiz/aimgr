@@ -1,84 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import path from "node:path";
-import { connectRedisStore, importSnapshot } from "../../src/coordination/redis-store.js";
+import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { OPENAI_CODEX_PROVIDER } from "../../src/core/constants.js";
-import { resolveAimgrMachineIdPath, resolveAimgrRedisCachePath } from "../../src/io/paths.js";
+import { resolveAimgrRedisCachePath } from "../../src/io/paths.js";
 import { writeLocalState } from "../../src/state/local-state.js";
 import { buildRedisStatusView } from "../../src/status/redis-view.js";
+import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
-
-class FakeRedisClient {
-  constructor() {
-    this.values = new Map();
-    this.sets = new Map();
-    this.isOpen = true;
-  }
-
-  async get(key) {
-    return this.values.get(key) ?? null;
-  }
-
-  async set(key, value) {
-    this.values.set(key, value);
-    return "OK";
-  }
-
-  async sAdd(key, member) {
-    const set = this.sets.get(key) ?? new Set();
-    const had = set.has(member);
-    set.add(member);
-    this.sets.set(key, set);
-    return had ? 0 : 1;
-  }
-
-  async sMembers(key) {
-    return [...(this.sets.get(key) ?? new Set())];
-  }
-
-  async mGet(keys) {
-    return keys.map((key) => this.values.get(key) ?? null);
-  }
-
-  async watch() {
-    return "OK";
-  }
-
-  async unwatch() {
-    return "OK";
-  }
-
-  multi() {
-    const ops = [];
-    const client = this;
-    const tx = {
-      set(key, value) {
-        ops.push(["set", key, value]);
-        return tx;
-      },
-      sAdd(key, member) {
-        ops.push(["sAdd", key, member]);
-        return tx;
-      },
-      async exec() {
-        const results = [];
-        for (const [op, key, value] of ops) {
-          results.push(op === "set" ? await client.set(key, value) : await client.sAdd(key, value));
-        }
-        return results;
-      },
-    };
-    return tx;
-  }
-}
-
-function writeMachineId(home, machineId) {
-  const machineIdPath = resolveAimgrMachineIdPath({ homeDir: home });
-  fs.mkdirSync(path.dirname(machineIdPath), { recursive: true });
-  fs.writeFileSync(machineIdPath, `${machineId}\n`, "utf8");
-}
 
 async function seedRedis(client) {
   const store = await connectRedisStore({ client, keyPrefix: "aimgr:status-test" });
@@ -90,24 +20,14 @@ async function seedRedis(client) {
       chatgpt_plan_type: "pro",
     },
   });
-  await importSnapshot(
+  await importCredentialsSnapshot(
     store,
     {
-      machines: [{ machineId: "studio" }, { machineId: "laptop" }],
-      labels: [
+      credentials: [
         {
           provider: OPENAI_CODEX_PROVIDER,
           label: "boss",
-          stableIdentity: { accountId: "acct_boss" },
-          reauth: { mode: "manual-callback" },
-          pool: { enabled: true },
-        },
-      ],
-      sessions: [
-        {
-          provider: OPENAI_CODEX_PROVIDER,
-          label: "boss",
-          machineId: "studio",
+          identity: { accountId: "acct_boss" },
           credential: {
             access: token,
             refresh: "REFRESH_BOSS",
@@ -115,19 +35,21 @@ async function seedRedis(client) {
             accountId: "acct_boss",
             expiresAt: new Date(exp * 1000).toISOString(),
           },
-          identity: { accountId: "acct_boss" },
+          policy: {
+            reauth: { mode: "manual-callback" },
+            pool: { enabled: true },
+          },
           health: { status: "ready", reason: null },
         },
       ],
     },
-    { machineId: "test", observedAt: "2026-05-30T14:00:00.000Z" },
+    { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
 }
 
-test("Redis status view reads Redis snapshot, writes redacted cache, and exposes session matrix", async () => {
+test("Redis status view reads shared credentials, writes redacted cache, and has no session matrix", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
-  writeMachineId(home, "studio");
   writeAimgrConfig({
     homeDir: home,
     config: {
@@ -162,13 +84,12 @@ test("Redis status view reads Redis snapshot, writes redacted cache, and exposes
   assert.equal(result.used, true);
   assert.equal(result.view.statePath, "redis:aimgr:status-test:");
   assert.equal(result.view.redis.status, "live");
-  assert.equal(result.view.redis.machineCount, 2);
-  assert.equal(result.view.redis.labelCount, 1);
-  assert.equal(result.view.redis.sessionCount, 1);
+  assert.equal(result.view.redis.credentialCount, 1);
   assert.equal(result.view.accounts[0].label, "boss");
   assert.equal(result.view.codexCli.activeLabel, "boss");
-  assert.equal(result.view.redisSessionMatrix[0].sessions.studio.status, "ready");
-  assert.equal(result.view.redisSessionMatrix[0].sessions.laptop.status, "missing");
+  assert.equal(result.view.redisCredentials[0].status, "ready");
+  assert.equal(Object.hasOwn(result.view, "redisSessionMatrix"), false);
+  assert.equal(Object.hasOwn(result.view, "redisMachines"), false);
   assert.equal(result.view.warnings.some((warning) => warning.kind === "codex_import_missing"), false);
 
   const cachePath = resolveAimgrRedisCachePath({ homeDir: home });
@@ -179,7 +100,6 @@ test("Redis status view reads Redis snapshot, writes redacted cache, and exposes
 test("Redis status view uses diagnostic cache when Redis is unavailable", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
-  writeMachineId(home, "studio");
   writeAimgrConfig({
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-test" } },

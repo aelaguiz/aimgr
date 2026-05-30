@@ -1,10 +1,9 @@
 import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { readAimgrConfig } from "../../config/aimgr-config.js";
-import { buildLocalMachineInfo } from "../../coordination/machine.js";
 import { buildCoordinationView } from "../../coordination/snapshot.js";
-import { closeRedisStore, connectRedisStore, readSnapshot, registerMachine } from "../../coordination/redis-store.js";
-import { publishMaintainedLabelSession } from "../../coordination/login-publish.js";
-import { closeRedisRuntime, isRedisConfigured, loadRedisRuntime, publishRedisLabelPolicyFromState, refreshRedisRuntimeSnapshot, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
+import { closeRedisStore, connectRedisStore, readSnapshot } from "../../coordination/redis-store.js";
+import { publishMaintainedCredential } from "../../coordination/login-publish.js";
+import { closeRedisRuntime, isRedisConfigured, loadRedisRuntime, publishRedisCredentialPolicyFromState, refreshRedisRuntimeSnapshot, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { isInteractiveTerminal } from "../tty.js";
 import { normalizeLabel, normalizeProviderId } from "../../core/normalize.js";
 import { writeJsonFileWithBackup } from "../../io/json-store.js";
@@ -30,14 +29,11 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
   const config = readAimgrConfig({ homeDir }).config;
   if (!config.redis.url) return null;
 
-  const machine = buildLocalMachineInfo({ homeDir, now: new Date(nowMs) });
   const connectImpl = context.connectRedisStoreImpl ?? connectRedisStore;
   const store = await connectImpl({ url: config.redis.url, keyPrefix: config.redis.keyPrefix });
   try {
-    await registerMachine(store, machine);
     const snapshot = await readSnapshot(store);
     const state = buildCoordinationView(snapshot, {
-      machineId: machine.machineId,
       localState: loadLocalState({ homeDir }),
     });
     const result = await performLabelMaintenance({
@@ -53,25 +49,22 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
       manualCallbackAutomation,
       writeImpl,
     });
-    const published = await publishMaintainedLabelSession({
+    const published = await publishMaintainedCredential({
       store,
       snapshot,
       state,
       label,
       provider: result.provider,
-      machineId: machine.machineId,
       observedAt: result.maintenance?.observedAt ?? new Date(nowMs).toISOString(),
     });
     if (!published.ok) {
-      throw new Error(`Redis publish failed for label=${label}: ${published.session?.code ?? published.label?.code ?? "unknown"}`);
+      throw new Error(`Redis publish failed for label=${label}: ${published.credential?.code ?? "unknown"}`);
     }
     writeRedisLocalStateFromView({ homeDir, state, localState: loadLocalState({ homeDir }) });
     return {
       ...result,
       redis: {
-        machineId: machine.machineId,
-        labelVersion: published.label.record.version,
-        sessionVersion: published.session.record.version,
+        credentialVersion: published.credential.record.version,
       },
     };
   } finally {
@@ -85,30 +78,29 @@ async function persistRedisPanelState({ runtime, state, label, homeDir, nowMs })
   const provider = normalizeProviderId(state?.accounts?.[normalizedLabel]?.provider);
   const credential = provider ? state?.credentials?.[provider]?.[normalizedLabel] : null;
   if (credential) {
-    const published = await publishMaintainedLabelSession({
+    const published = await publishMaintainedCredential({
       store: runtime.store,
       snapshot: runtime.snapshot,
       state,
       label: normalizedLabel,
       provider,
-      machineId: runtime.machineId,
       observedAt,
     });
     if (!published.ok) {
-      throw new Error(`Redis publish failed for label=${normalizedLabel}: ${published.session?.code ?? published.label?.code ?? "unknown"}`);
+      throw new Error(`Redis publish failed for label=${normalizedLabel}: ${published.credential?.code ?? "unknown"}`);
     }
     await refreshRedisRuntimeSnapshot(runtime);
     writeRedisLocalStateFromView({ homeDir, state, localState: runtime.localState });
-    return { label: published.label.record, session: published.session.record };
+    return { credential: published.credential.record };
   }
-  const publishedLabel = await publishRedisLabelPolicyFromState({
+  const publishedCredential = await publishRedisCredentialPolicyFromState({
     runtime,
     state,
     label,
     observedAt,
   });
   writeRedisLocalStateFromView({ homeDir, state, localState: runtime.localState });
-  return { label: publishedLabel, session: null };
+  return { credential: publishedCredential };
 }
 
 async function runRedisLabelControlPanel(context, { label, writeImpl }) {

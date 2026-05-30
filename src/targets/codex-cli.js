@@ -1,5 +1,10 @@
 import { getCodexCredential } from "../browser/seed.js";
-import { CODEX_AUTH_STORE_MODE_FILE, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import {
+  AIMGR_REDIS_PRIMARY_HOST,
+  AIMGR_REDIS_PRIMARY_URL,
+  CODEX_AUTH_STORE_MODE_FILE,
+  OPENAI_CODEX_PROVIDER,
+} from "../core/constants.js";
 import { clampPercent } from "../core/numbers.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { toIsoFromExpiresMs } from "../core/time.js";
@@ -21,7 +26,7 @@ export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
   if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
     throw new Error(
       "No Redis-backed Codex pool is available on this machine yet. " +
-        "Run `aim redis configure --url redis://amirs-mac-studio:6380 --primary-host agents@amirs-mac-studio`, then complete `aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover`.",
+        `Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then complete \`aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover\`.`,
     );
   }
 

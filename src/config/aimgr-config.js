@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
-import { AIMGR_CONFIG_VERSION, AIMGR_REDIS_DEFAULT_KEY_PREFIX } from "../core/constants.js";
+import {
+  AIMGR_CONFIG_VERSION,
+  AIMGR_REDIS_DEFAULT_KEY_PREFIX,
+  AIMGR_REDIS_PRIMARY_HOST,
+  AIMGR_REDIS_PRIMARY_URL,
+} from "../core/constants.js";
 import { isObject } from "../core/normalize.js";
 import { resolveAimgrConfigPath } from "../io/paths.js";
 
@@ -74,7 +79,7 @@ export function getRedisConfig({ homeDir, requireConfigured = true }) {
   const redis = read.config.redis;
   if (requireConfigured && !redis.url) {
     throw new Error(
-      `AIM is not attached to Redis. Run \`aim redis configure --url redis://amirs-mac-studio:6380 --primary-host agents@amirs-mac-studio\`.`,
+      `AIM is not attached to Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`,
     );
   }
   return { ...read, redis };

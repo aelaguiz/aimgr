@@ -63,10 +63,6 @@ export function resolveAimgrConfigPath({ homeDir }) {
   return path.join(resolveAimgrStateDir({ homeDir }), "config.yaml");
 }
 
-export function resolveAimgrMachineIdPath({ homeDir }) {
-  return path.join(resolveAimgrStateDir({ homeDir }), "machine-id");
-}
-
 export function resolveAimgrRedisCachePath({ homeDir }) {
   return path.join(resolveAimgrStateDir({ homeDir }), "redis-cache.json");
 }

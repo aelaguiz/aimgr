@@ -1,10 +1,8 @@
 import { createClient } from "redis";
 import {
+  normalizeCredentialRecord,
   normalizeKeyPrefix,
-  normalizeLabelRecord,
-  normalizeMachineRecord,
   normalizeMetaRecord,
-  normalizeSessionRecord,
 } from "./records.js";
 
 export function buildRedisKeys(keyPrefix) {
@@ -12,14 +10,9 @@ export function buildRedisKeys(keyPrefix) {
   return {
     prefix,
     meta: () => `${prefix}meta`,
-    machines: () => `${prefix}machines`,
-    labels: () => `${prefix}labels`,
-    sessions: () => `${prefix}sessions`,
-    machine: (machineId) => `${prefix}machine:${machineId}`,
-    label: ({ provider, label }) => `${prefix}label:${provider}:${label}`,
-    session: ({ provider, label, machineId }) => `${prefix}session:${provider}:${label}:${machineId}`,
-    sessionsByLabel: ({ provider, label }) => `${prefix}sessionsByLabel:${provider}:${label}`,
-    sessionsByMachine: (machineId) => `${prefix}sessionsByMachine:${machineId}`,
+    credentials: () => `${prefix}credentials`,
+    credentialsByProvider: (provider) => `${prefix}credentialsByProvider:${provider}`,
+    credential: ({ provider, label }) => `${prefix}credential:${provider}:${label}`,
   };
 }
 
@@ -71,41 +64,37 @@ function isRedisWatchError(err) {
 }
 
 export async function readSnapshot(store) {
-  const [metaRaw, machinesRaw, labelsRaw, sessionsRaw] = await Promise.all([
+  const [metaRaw, credentialsRaw] = await Promise.all([
     store.client.get(store.keys.meta()),
-    readIndexedRecords(store, store.keys.machines()),
-    readIndexedRecords(store, store.keys.labels()),
-    readIndexedRecords(store, store.keys.sessions()),
+    readIndexedRecords(store, store.keys.credentials()),
   ]);
   const meta = parseJsonRecord(metaRaw, store.keys.meta());
-  const machines = machinesRaw.map((record) => normalizeMachineRecord(record)).sort((a, b) => a.machineId.localeCompare(b.machineId));
-  const labels = labelsRaw.map((record) => normalizeLabelRecord(record)).sort((a, b) => `${a.provider}:${a.label}`.localeCompare(`${b.provider}:${b.label}`));
-  const sessions = sessionsRaw.map((record) => normalizeSessionRecord(record)).sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+  const credentials = credentialsRaw
+    .map((record) => normalizeCredentialRecord(record))
+    .sort((a, b) => `${a.provider}:${a.label}`.localeCompare(`${b.provider}:${b.label}`));
   return {
     meta: meta ? normalizeMetaRecord(meta) : null,
-    machines,
-    labels,
-    sessions,
+    credentials,
     observedAt: new Date().toISOString(),
     keyPrefix: store.keyPrefix,
   };
 }
 
-function buildWrittenRecord({ current, expectedVersion, nextRecord, machineId, observedAt }) {
+function buildWrittenRecord({ current, expectedVersion, nextRecord, updatedBy, observedAt }) {
   const creating = expectedVersion === null || expectedVersion === undefined;
   const nextVersion = creating ? 1 : Number(expectedVersion) + 1;
   return {
     ...nextRecord,
     createdAt: current?.createdAt ?? nextRecord.createdAt ?? observedAt,
     updatedAt: observedAt,
-    updatedBy: machineId ?? nextRecord.updatedBy ?? null,
+    updatedBy: updatedBy ?? nextRecord.updatedBy ?? null,
     version: nextVersion,
   };
 }
 
 // This is the only shared mutation boundary for Redis-backed AIM state. Callers
 // pass record-shaped data; raw keys and WATCH/MULTI/EXEC stay here.
-export async function casPutJsonRecord(store, { key, indexKeys = [], expectedVersion, nextRecord, machineId, observedAt = new Date().toISOString() }) {
+export async function casPutJsonRecord(store, { key, indexKeys = [], expectedVersion, nextRecord, updatedBy, observedAt = new Date().toISOString() }) {
   await store.client.watch(key);
   try {
     const currentRaw = await store.client.get(key);
@@ -125,7 +114,7 @@ export async function casPutJsonRecord(store, { key, indexKeys = [], expectedVer
       };
     }
 
-    const written = buildWrittenRecord({ current, expectedVersion, nextRecord, machineId, observedAt });
+    const written = buildWrittenRecord({ current, expectedVersion, nextRecord, updatedBy, observedAt });
     const tx = store.client.multi();
     tx.set(key, JSON.stringify(written));
     for (const indexKey of indexKeys) {
@@ -152,85 +141,118 @@ export async function casPutJsonRecord(store, { key, indexKeys = [], expectedVer
   }
 }
 
-export async function publishMeta(store, { expectedVersion, metaRecord, machineId, observedAt } = {}) {
+export async function publishMeta(store, { expectedVersion, metaRecord, updatedBy, observedAt } = {}) {
   const record = normalizeMetaRecord(metaRecord, { now: observedAt });
   return casPutJsonRecord(store, {
     key: store.keys.meta(),
     expectedVersion,
     nextRecord: record,
-    machineId,
+    updatedBy,
     observedAt,
   });
 }
 
-export async function registerMachine(store, machineInfo) {
-  const observedAt = machineInfo.observedAt ?? new Date().toISOString();
-  const key = store.keys.machine(machineInfo.machineId);
-  let lastResult = null;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const current = parseJsonRecord(await store.client.get(key), key);
-    const record = normalizeMachineRecord(
-      {
-        ...current,
-        ...machineInfo,
-        lastSeenAt: observedAt,
-      },
-      { now: observedAt },
-    );
-    lastResult = await casPutJsonRecord(store, {
-      key,
-      indexKeys: [store.keys.machines()],
-      expectedVersion: current?.version ?? null,
-      nextRecord: record,
-      machineId: machineInfo.machineId,
-      observedAt,
-    });
-    if (lastResult.ok || lastResult.code !== "stale_version") return lastResult;
-  }
-  return lastResult;
-}
-
-export async function publishLabel(store, { expectedVersion, labelRecord, machineId, observedAt } = {}) {
-  const record = normalizeLabelRecord(labelRecord, { now: observedAt });
+export async function publishCredential(store, { expectedVersion, credentialRecord, updatedBy, observedAt } = {}) {
+  const record = normalizeCredentialRecord(credentialRecord, { now: observedAt });
   return casPutJsonRecord(store, {
-    key: store.keys.label(record),
-    indexKeys: [store.keys.labels()],
-    expectedVersion,
-    nextRecord: record,
-    machineId,
-    observedAt,
-  });
-}
-
-export async function publishSession(store, { expectedVersion, sessionRecord, machineId, observedAt } = {}) {
-  const record = normalizeSessionRecord(sessionRecord, { now: observedAt });
-  return casPutJsonRecord(store, {
-    key: store.keys.session(record),
+    key: store.keys.credential(record),
     indexKeys: [
-      store.keys.sessions(),
-      store.keys.sessionsByLabel(record),
-      store.keys.sessionsByMachine(record.machineId),
+      store.keys.credentials(),
+      store.keys.credentialsByProvider(record.provider),
     ],
     expectedVersion,
     nextRecord: record,
-    machineId: machineId ?? record.machineId,
+    updatedBy,
     observedAt,
   });
 }
 
-export async function importSnapshot(store, snapshot, { machineId = "import", observedAt = new Date().toISOString() } = {}) {
+export async function importCredentialsSnapshot(store, snapshot, {
+  updatedBy = "import",
+  observedAt = new Date().toISOString(),
+  replaceExisting = false,
+} = {}) {
   const results = [];
+  const current = replaceExisting ? await readSnapshot(store) : null;
+  const currentCredentials = new Map(
+    (current?.credentials ?? []).map((record) => [`${record.provider}:${record.label}`, record]),
+  );
   if (snapshot.meta) {
-    results.push(await publishMeta(store, { expectedVersion: null, metaRecord: snapshot.meta, machineId, observedAt }));
+    results.push(await publishMeta(store, {
+      expectedVersion: replaceExisting ? current?.meta?.version ?? null : null,
+      metaRecord: snapshot.meta,
+      updatedBy,
+      observedAt,
+    }));
   }
-  for (const machine of snapshot.machines ?? []) {
-    results.push(await registerMachine(store, { ...machine, observedAt }));
-  }
-  for (const label of snapshot.labels ?? []) {
-    results.push(await publishLabel(store, { expectedVersion: null, labelRecord: label, machineId, observedAt }));
-  }
-  for (const session of snapshot.sessions ?? []) {
-    results.push(await publishSession(store, { expectedVersion: null, sessionRecord: session, machineId, observedAt }));
+  for (const credential of snapshot.credentials ?? []) {
+    const key = `${credential.provider}:${credential.label}`;
+    results.push(await publishCredential(store, {
+      expectedVersion: replaceExisting ? currentCredentials.get(key)?.version ?? null : null,
+      credentialRecord: credential,
+      updatedBy,
+      observedAt,
+    }));
   }
   return results;
+}
+
+export async function importSnapshot(store, snapshot, options = {}) {
+  return importCredentialsSnapshot(store, snapshot, options);
+}
+
+function legacyKeys(store) {
+  const prefix = store.keyPrefix;
+  return {
+    machines: `${prefix}machines`,
+    labels: `${prefix}labels`,
+    sessions: `${prefix}sessions`,
+  };
+}
+
+export async function readLegacyRedisSnapshot(store) {
+  const keys = legacyKeys(store);
+  const [machines, labels, sessions] = await Promise.all([
+    readIndexedRecords(store, keys.machines),
+    readIndexedRecords(store, keys.labels),
+    readIndexedRecords(store, keys.sessions),
+  ]);
+  return {
+    machines,
+    labels,
+    sessions,
+    observedAt: new Date().toISOString(),
+    keyPrefix: store.keyPrefix,
+  };
+}
+
+async function deleteKeys(store, keys) {
+  const uniqueKeys = [...new Set(keys.filter(Boolean))];
+  if (uniqueKeys.length === 0) return 0;
+  if (typeof store.client.del !== "function") {
+    throw new Error("Redis client does not support DEL.");
+  }
+  return store.client.del(uniqueKeys);
+}
+
+export async function deleteLegacyRedisCredentialKeys(store) {
+  const keys = legacyKeys(store);
+  const snapshot = await readLegacyRedisSnapshot(store);
+  const recordKeys = [
+    ...snapshot.machines.map((record) => `${store.keyPrefix}machine:${record.machineId}`),
+    ...snapshot.labels.map((record) => `${store.keyPrefix}label:${record.provider}:${record.label}`),
+    ...snapshot.sessions.map((record) => `${store.keyPrefix}session:${record.provider}:${record.label}:${record.machineId}`),
+    ...snapshot.sessions.map((record) => `${store.keyPrefix}sessionsByLabel:${record.provider}:${record.label}`),
+    ...snapshot.sessions.map((record) => `${store.keyPrefix}sessionsByMachine:${record.machineId}`),
+  ];
+  const deleted = await deleteKeys(store, [keys.machines, keys.labels, keys.sessions, ...recordKeys]);
+  return {
+    ok: true,
+    deleted,
+    legacyCounts: {
+      machines: snapshot.machines.length,
+      labels: snapshot.labels.length,
+      sessions: snapshot.sessions.length,
+    },
+  };
 }

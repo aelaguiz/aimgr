@@ -6,7 +6,6 @@ export function parseArgs(argv) {
     keyPrefix: undefined,
     primaryHost: undefined,
     transport: undefined,
-    machine: undefined,
     provider: undefined,
     from: undefined,
     to: undefined,
@@ -80,11 +79,6 @@ export function parseArgs(argv) {
     }
     if (arg === "--transport") {
       opts.transport = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--machine") {
-      opts.machine = argv[i + 1];
       i += 1;
       continue;
     }

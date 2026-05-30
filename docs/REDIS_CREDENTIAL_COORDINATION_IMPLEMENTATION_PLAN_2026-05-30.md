@@ -1,16 +1,21 @@
 ---
 title: "AIMGR - Redis Credential Coordination - Architecture Plan"
 date: 2026-05-30
-status: active
+status: superseded
 fallback_policy: forbidden
 owners: [aelaguiz]
 reviewers: [composer-2.5-fast]
 doc_type: architectural_change
 related:
   - docs/three-machine-credential-coordination-investigation-2026-05-30.md
+  - docs/REDIS_SHARED_CREDENTIAL_STORE_SIMPLIFIED_PLAN_2026-05-30.md
 ---
 
 # TL;DR
+
+Superseded: use `docs/REDIS_SHARED_CREDENTIAL_STORE_SIMPLIFIED_PLAN_2026-05-30.md` instead.
+
+This older plan kept a machine-shaped session model. That is not the desired architecture. The replacement plan uses one shared Redis credential record per provider/label, with no credential owner, no source machine, no handoff, and no per-machine credential rows.
 
 ## Outcome
 

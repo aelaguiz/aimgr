@@ -1,8 +1,10 @@
 # Redis-backed three-machine credential coordination
 
 Date: 2026-05-30
-Status: draft after Opus consult and Node Redis transaction correction
+Status: superseded by docs/REDIS_SHARED_CREDENTIAL_STORE_SIMPLIFIED_PLAN_2026-05-30.md
 Author: aelaguiz
+
+Superseded: this investigation kept too much of the old machine/session model. The active plan is now `docs/REDIS_SHARED_CREDENTIAL_STORE_SIMPLIFIED_PLAN_2026-05-30.md`, which uses one shared Redis credential record per provider/label and no machine-owned credential records.
 
 ## Decision
 

@@ -30,6 +30,16 @@ export class FakeRedisClient {
     return keys.map((key) => this.values.get(key) ?? null);
   }
 
+  async del(keys) {
+    const list = Array.isArray(keys) ? keys : [keys];
+    let deleted = 0;
+    for (const key of list) {
+      if (this.values.delete(key)) deleted += 1;
+      if (this.sets.delete(key)) deleted += 1;
+    }
+    return deleted;
+  }
+
   async watch() {
     return "OK";
   }

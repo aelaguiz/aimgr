@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { getCodexCredential } from "../browser/seed.js";
-import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import { assertCodexCredentialShape, findCodexLabelByAccountId } from "../credentials/codex.js";
@@ -207,7 +207,7 @@ export function applyPiCliFromState({ label, homeDir, env = {} }, state) {
   if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
     throw new Error(
       "No Redis-backed Codex pool is available on this machine yet. " +
-        "Run `aim redis configure --url redis://amirs-mac-studio:6380 --primary-host agents@amirs-mac-studio`, then complete `aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover`.",
+        `Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then complete \`aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover\`.`,
     );
   }
 

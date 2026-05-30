@@ -3,10 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
-import { connectRedisStore, importSnapshot, readSnapshot } from "../../src/coordination/redis-store.js";
+import { connectRedisStore, importCredentialsSnapshot, readSnapshot } from "../../src/coordination/redis-store.js";
 import {
   resolveAimgrLocalStatePath,
-  resolveAimgrMachineIdPath,
   resolveAimgrClaudeLabelHomeDir,
   resolveClaudeAuthFilePath,
   resolveCodexAuthFilePath,
@@ -21,12 +20,6 @@ import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential, writeClaudeNativeBundle } from "../helpers/claude.js";
 
 const PREFIX = "aimgr:projection-test";
-
-function writeMachineId(home, machineId) {
-  const machineIdPath = resolveAimgrMachineIdPath({ homeDir: home });
-  fs.mkdirSync(path.dirname(machineIdPath), { recursive: true });
-  fs.writeFileSync(machineIdPath, `${machineId}\n`, "utf8");
-}
 
 function token(accountId, exp = Math.floor(Date.now() / 1000) + 3600) {
   return makeFakeJwt({
@@ -48,30 +41,27 @@ function codexCredential(accountId = "acct_boss", refresh = "REFRESH_BOSS") {
   };
 }
 
-async function seedOpenAiRedis({ home, client, machineId = "studio" }) {
-  writeMachineId(home, machineId);
+async function seedOpenAiRedis({ home, client }) {
   writeAimgrConfig({
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
-  await importSnapshot(
+  await importCredentialsSnapshot(
     store,
     {
-      machines: [{ machineId }],
-      labels: [{ provider: "openai-codex", label: "boss", pool: { enabled: true } }],
-      sessions: [
+      credentials: [
         {
           provider: "openai-codex",
           label: "boss",
-          machineId,
           credential: codexCredential(),
           identity: { accountId: "acct_boss" },
+          policy: { pool: { enabled: true } },
           health: { status: "ready", reason: null },
         },
       ],
     },
-    { machineId: "test", observedAt: "2026-05-30T14:00:00.000Z" },
+    { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
   return store;
 }
@@ -130,10 +120,10 @@ test("redis-configured codex watch publishes live auth rotation before exit", as
   assert.equal(result.ok, true);
   assert.equal(result.preserved.status, "updated");
   const snapshot = await readSnapshot(store);
-  assert.equal(snapshot.sessions.find((session) => session.label === "boss").credential.refresh, "REFRESH_ROTATED");
+  assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_ROTATED");
 });
 
-test("redis-configured pi use and hermes auth write read Redis sessions", async () => {
+test("redis-configured pi use and hermes auth write read shared Redis credentials", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   await seedOpenAiRedis({ home, client });
@@ -166,20 +156,17 @@ test("redis-configured pi use and hermes auth write read Redis sessions", async 
 test("redis-configured claude import-native publishes the native bundle to Redis", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
-  writeMachineId(home, "studio");
   writeAimgrConfig({
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
-  await importSnapshot(
+  await importCredentialsSnapshot(
     store,
     {
-      machines: [{ machineId: "studio" }],
-      labels: [{ provider: "anthropic", label: "claude", pool: { enabled: true } }],
-      sessions: [],
+      credentials: [{ provider: "anthropic", label: "claude", policy: { pool: { enabled: true } } }],
     },
-    { machineId: "test", observedAt: "2026-05-30T14:00:00.000Z" },
+    { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
 
   const bundleFile = path.join(home, "bundle.json");
@@ -199,9 +186,8 @@ test("redis-configured claude import-native publishes the native bundle to Redis
   });
   assert.equal(JSON.parse(out).ok, true);
   const snapshot = await readSnapshot(store);
-  const session = snapshot.sessions.find((entry) => entry.provider === "anthropic" && entry.label === "claude");
-  assert.equal(session.machineId, "studio");
-  assert.equal(session.credential.refresh, "CLAUDE_REFRESH");
+  const credentialRecord = snapshot.credentials.find((entry) => entry.provider === "anthropic" && entry.label === "claude");
+  assert.equal(credentialRecord.credential.refresh, "CLAUDE_REFRESH");
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
@@ -212,44 +198,30 @@ test("redis-configured claude run projects into a per-label home and publishes p
     access: "CLAUDE_ACCESS",
     refresh: "CLAUDE_REFRESH",
   });
-  writeMachineId(home, "studio");
   writeAimgrConfig({
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
-  await importSnapshot(
+  await importCredentialsSnapshot(
     store,
     {
-      machines: [{ machineId: "studio" }],
-      labels: [
+      credentials: [
         {
           provider: "anthropic",
           label: "claude",
-          stableIdentity: {
-            accountUuid: "acct_boss",
-            emailAddress: "boss@example.com",
-            organizationUuid: "org_boss",
-          },
-          pool: { enabled: true },
-        },
-      ],
-      sessions: [
-        {
-          provider: "anthropic",
-          label: "claude",
-          machineId: "studio",
           credential,
           identity: {
             accountUuid: "acct_boss",
             emailAddress: "boss@example.com",
             organizationUuid: "org_boss",
           },
+          policy: { pool: { enabled: true } },
           health: { status: "ready", reason: null },
         },
       ],
     },
-    { machineId: "test", observedAt: "2026-05-30T14:00:00.000Z" },
+    { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
 
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" });
@@ -272,8 +244,8 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.equal(result.ok, true);
   assert.equal(result.claudeRun.homeDir, claudeHome);
   const snapshot = await readSnapshot(store);
-  const session = snapshot.sessions.find((entry) => entry.provider === "anthropic" && entry.label === "claude");
-  assert.equal(session.credential.refresh, "CLAUDE_REFRESH_ROTATED");
+  const credentialRecord = snapshot.credentials.find((entry) => entry.provider === "anthropic" && entry.label === "claude");
+  assert.equal(credentialRecord.credential.refresh, "CLAUDE_REFRESH_ROTATED");
   const local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
   assert.equal(local.targets.claudeCli.activeLabel, "claude");
   assert.match(local.targets.claudeCli.credentialsPath, /claude-homes\/claude\/\.claude\/\.credentials\.json$/);
@@ -284,7 +256,6 @@ test("redis-configured claude run projects into a per-label home and publishes p
 test("redis-configured claude use is retired in favor of claude run", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
-  writeMachineId(home, "studio");
   writeAimgrConfig({
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },

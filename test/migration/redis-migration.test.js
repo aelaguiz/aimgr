@@ -1,85 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import path from "node:path";
 import { connectRedisStore, readSnapshot } from "../../src/coordination/redis-store.js";
-import { resolveAimgrMachineIdPath } from "../../src/io/paths.js";
 import {
   applyRedisMigrationPlan,
   buildRedisMigrationPlan,
   collectRedisMigrationBundle,
 } from "../../src/migration/redis-migration.js";
+import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
-
-class FakeRedisClient {
-  constructor() {
-    this.values = new Map();
-    this.sets = new Map();
-    this.isOpen = true;
-  }
-
-  async get(key) {
-    return this.values.get(key) ?? null;
-  }
-
-  async set(key, value) {
-    this.values.set(key, value);
-    return "OK";
-  }
-
-  async sAdd(key, member) {
-    const set = this.sets.get(key) ?? new Set();
-    const had = set.has(member);
-    set.add(member);
-    this.sets.set(key, set);
-    return had ? 0 : 1;
-  }
-
-  async sMembers(key) {
-    return [...(this.sets.get(key) ?? new Set())];
-  }
-
-  async mGet(keys) {
-    return keys.map((key) => this.values.get(key) ?? null);
-  }
-
-  async watch() {
-    return "OK";
-  }
-
-  async unwatch() {
-    return "OK";
-  }
-
-  multi() {
-    const ops = [];
-    const client = this;
-    const tx = {
-      set(key, value) {
-        ops.push(["set", key, value]);
-        return tx;
-      },
-      sAdd(key, member) {
-        ops.push(["sAdd", key, member]);
-        return tx;
-      },
-      async exec() {
-        const results = [];
-        for (const [op, key, value] of ops) {
-          results.push(op === "set" ? await client.set(key, value) : await client.sAdd(key, value));
-        }
-        return results;
-      },
-    };
-    return tx;
-  }
-}
-
-function writeMachineId(home, machineId) {
-  const machineIdPath = resolveAimgrMachineIdPath({ homeDir: home });
-  fs.mkdirSync(path.dirname(machineIdPath), { recursive: true });
-  fs.writeFileSync(machineIdPath, `${machineId}\n`, "utf8");
-}
 
 function codexCredential(accountId, expSeconds = Math.floor(Date.now() / 1000) + 3600) {
   const token = makeFakeJwt({
@@ -99,9 +28,9 @@ function codexCredential(accountId, expSeconds = Math.floor(Date.now() / 1000) +
   };
 }
 
-function writeLegacyCodexState(home, { label = "boss", accountId = "acct_1", credential = null } = {}) {
+function buildLegacyCodexState({ label = "boss", accountId = "acct_1", credential = null } = {}) {
   const cred = credential ?? codexCredential(accountId);
-  writeJson(path.join(home, ".aimgr", "secrets.json"), {
+  return {
     schemaVersion: "0.2",
     accounts: {
       [label]: {
@@ -134,42 +63,59 @@ function writeLegacyCodexState(home, { label = "boss", accountId = "acct_1", cre
     },
     pool: { openaiCodex: { history: [] } },
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
-  });
+  };
+}
+
+function writeLegacyCodexState(home, { label = "boss", accountId = "acct_1", credential = null } = {}) {
+  const state = buildLegacyCodexState({ label, accountId, credential });
+  writeJson(path.join(home, ".aimgr", "secrets.json"), state);
+  const cred = state.credentials["openai-codex"][label];
   return cred;
 }
 
-function collectHome(home, machineId) {
-  writeMachineId(home, machineId);
+function collectHome(home) {
   return collectRedisMigrationBundle({
     homeDir: home,
-    machineId,
     now: new Date("2026-05-30T14:00:00.000Z"),
   });
 }
 
-test("migration collect reads legacy state candidates and enforces machine id", () => {
+test("migration collect reads local legacy state candidates without requiring machine id", () => {
   const home = mkTempHome();
-  writeMachineId(home, "studio");
   writeLegacyCodexState(home, { label: "boss", accountId: "acct_1" });
-
-  assert.throws(
-    () => collectRedisMigrationBundle({ homeDir: home, machineId: "laptop" }),
-    /Migration machine mismatch/,
-  );
 
   const bundle = collectRedisMigrationBundle({
     homeDir: home,
-    machineId: "studio",
     now: new Date("2026-05-30T14:00:00.000Z"),
   });
   assert.equal(bundle.kind, "aimgr.redisMigration.bundle.v1");
-  assert.equal(bundle.machine.machineId, "studio");
+  assert.equal(bundle.source.hostname.length > 0, true);
   assert.equal(bundle.summary.candidateCount, 1);
   assert.equal(bundle.candidates[0].provider, "openai-codex");
   assert.equal(bundle.candidates[0].label, "boss");
   assert.equal(bundle.candidates[0].validation.ok, true);
   assert.equal(bundle.candidates[0].validation.fresh, true);
   assert.equal(bundle.candidates[0].authorityMeta.dirtyLocal, true);
+});
+
+test("migration collect reads local imported secrets snapshots when current secrets.json is absent", () => {
+  const home = mkTempHome();
+  writeJson(
+    path.join(home, ".aimgr", "secrets.legacy-imported-redis-20260530T1521Z.json"),
+    buildLegacyCodexState({ label: "snapshot", accountId: "acct_snapshot" }),
+  );
+
+  const bundle = collectRedisMigrationBundle({
+    homeDir: home,
+    now: new Date("2026-05-30T14:00:00.000Z"),
+  });
+
+  assert.equal(bundle.summary.candidateCount, 1);
+  assert.equal(bundle.sources.legacyState.exists, false);
+  assert.equal(bundle.sources.legacyStateSnapshots.length, 1);
+  assert.match(bundle.candidates[0].sourcePath, /secrets\.legacy-imported-redis-/);
+  assert.equal(bundle.candidates[0].provider, "openai-codex");
+  assert.equal(bundle.candidates[0].label, "snapshot");
 });
 
 test("migration plan blocks provider label identity conflicts", async () => {
@@ -179,16 +125,16 @@ test("migration plan blocks provider label identity conflicts", async () => {
   writeLegacyCodexState(secondHome, { label: "boss", accountId: "acct_2" });
 
   const plan = await buildRedisMigrationPlan({
-    bundles: [collectHome(firstHome, "studio"), collectHome(secondHome, "laptop")],
+    bundles: [collectHome(firstHome), collectHome(secondHome)],
     now: new Date("2026-05-30T14:00:00.000Z"),
   });
 
   assert.equal(plan.summary.blockedCount, 1);
   assert.equal(plan.blocked[0].reason, "identity_conflict");
-  assert.equal(plan.labels[0].status, "blocked");
+  assert.equal(plan.credentials[0].status, "blocked");
 });
 
-test("migration plan keeps one same-fingerprint lineage instead of importing cloned sessions", async () => {
+test("migration plan selects one best credential per provider and label", async () => {
   const firstHome = mkTempHome();
   const secondHome = mkTempHome();
   const credential = codexCredential("acct_1");
@@ -196,14 +142,46 @@ test("migration plan keeps one same-fingerprint lineage instead of importing clo
   writeLegacyCodexState(secondHome, { label: "boss", accountId: "acct_1", credential });
 
   const plan = await buildRedisMigrationPlan({
-    bundles: [collectHome(firstHome, "studio"), collectHome(secondHome, "laptop")],
+    bundles: [collectHome(firstHome), collectHome(secondHome)],
     now: new Date("2026-05-30T14:00:00.000Z"),
   });
 
-  assert.equal(plan.summary.importLabelCount, 1);
-  assert.equal(plan.summary.importSessionCount, 1);
-  assert.equal(plan.summary.clonedCount, 1);
-  assert.equal(plan.labels[0].status, "import");
+  assert.equal(plan.summary.importCredentialCount, 1);
+  assert.equal(plan.summary.supersededCount, 1);
+  assert.equal(plan.credentials[0].status, "import");
+});
+
+test("migration collect ignores old Redis session rows as import input", async () => {
+  const home = mkTempHome();
+  const legacy = {
+    keyPrefix: "aimgr:v1:",
+    observedAt: "2026-05-30T14:00:00.000Z",
+    labels: [{ provider: "openai-codex", label: "boss", pool: { enabled: true } }],
+    sessions: [
+      {
+        provider: "openai-codex",
+        label: "boss",
+        sessionId: "openai-codex:boss:studio",
+        credential: codexCredential("acct_1"),
+        identity: { accountId: "acct_1" },
+        updatedAt: "2026-05-30T13:59:00.000Z",
+      },
+    ],
+    machines: [{ machineId: "studio" }],
+  };
+  const bundle = collectRedisMigrationBundle({
+    homeDir: home,
+    legacyRedisSnapshot: legacy,
+    now: new Date("2026-05-30T14:00:00.000Z"),
+  });
+  const plan = await buildRedisMigrationPlan({
+    bundles: [bundle],
+    now: new Date("2026-05-30T14:00:00.000Z"),
+  });
+
+  assert.equal(bundle.candidates.some((candidate) => candidate.sourceType === "legacy-redis-session"), false);
+  assert.equal(plan.summary.importCredentialCount, 0);
+  assert.equal(plan.credentials.length, 0);
 });
 
 test("migration plan attempts controlled refresh before marking expired candidates unusable", async () => {
@@ -214,7 +192,7 @@ test("migration plan attempts controlled refresh before marking expired candidat
   const refreshed = codexCredential("acct_1", Math.floor(now.getTime() / 1000) + 3600);
 
   const plan = await buildRedisMigrationPlan({
-    bundles: [collectHome(home, "studio")],
+    bundles: [collectHome(home)],
     now,
     refreshCandidateImpl: async (candidate) => {
       assert.equal(candidate.label, "boss");
@@ -222,31 +200,31 @@ test("migration plan attempts controlled refresh before marking expired candidat
     },
   });
 
-  assert.equal(plan.summary.importLabelCount, 1);
+  assert.equal(plan.summary.importCredentialCount, 1);
   assert.equal(plan.summary.reloginRequiredCount, 0);
   assert.equal(plan.candidates[0].refreshAttempt.status, "refreshed");
   assert.equal(plan.candidates[0].validation.fresh, true);
 });
 
-test("migration apply imports labels and sessions into an empty Redis prefix", async () => {
+test("migration apply imports one credential into an empty Redis prefix", async () => {
   const home = mkTempHome();
   writeLegacyCodexState(home, { label: "boss", accountId: "acct_1" });
   const plan = await buildRedisMigrationPlan({
-    bundles: [collectHome(home, "studio")],
+    bundles: [collectHome(home)],
     now: new Date("2026-05-30T14:00:00.000Z"),
   });
   const store = await connectRedisStore({ client: new FakeRedisClient(), keyPrefix: "aimgr:migration-test" });
 
   const applied = await applyRedisMigrationPlan(store, plan, {
-    machineId: "studio",
+    updatedBy: "aimgr-cli",
     observedAt: "2026-05-30T14:01:00.000Z",
   });
 
   assert.equal(applied.ok, true);
-  assert.deepEqual(applied.counts, { machines: 1, labels: 1, sessions: 1 });
+  assert.deepEqual(applied.counts, { credentials: 1 });
   const snapshot = await readSnapshot(store);
   assert.equal(snapshot.meta.cutover.breakingNonReverseCompatible, true);
-  assert.equal(snapshot.labels[0].label, "boss");
-  assert.equal(snapshot.sessions[0].machineId, "studio");
-  assert.equal(snapshot.sessions[0].credential.accountId, "acct_1");
+  assert.equal(snapshot.credentials[0].label, "boss");
+  assert.equal(snapshot.credentials[0].credential.accountId, "acct_1");
+  assert.equal(snapshot.credentials[0].provenance.lastSourceType, "migration-import");
 });

@@ -7,7 +7,6 @@ The shared source of truth is Redis on `agents` at Amir's Mac Studio over Tailsc
 - Redis primary: `redis://amirs-mac-studio:6380`
 - fallback Tailnet IP: `redis://100.96.80.106:6380`
 - local config: `~/.aimgr/config.yaml`
-- stable machine id: `~/.aimgr/machine-id`
 - local-only adjunct state: `~/.aimgr/local-state.json`
 - legacy `~/.aimgr/secrets.json`: migration input or backup artifact only
 
@@ -40,7 +39,7 @@ Migration is the only path that reads old credential stores. It is read-only unt
 Run collection on every machine:
 
 ```bash
-aim redis migrate collect --machine <id> --out <bundle.json>
+aim redis migrate collect --out <bundle.json>
 ```
 
 Copy the three bundles to one review directory, then plan and apply once:
@@ -48,6 +47,7 @@ Copy the three bundles to one review directory, then plan and apply once:
 ```bash
 aim redis migrate plan --from <bundle-dir> --out <plan.json>
 aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover
+aim redis migrate cleanup-legacy --confirm-breaking-cutover
 aim redis export --out <post-cutover-export.json>
 ```
 
@@ -70,11 +70,11 @@ aim redis configure --url <redis-url> [--key-prefix <prefix>] [--primary-host <h
 aim redis config
 aim redis ping
 aim redis snapshot
-aim redis migrate collect --machine <id> --out <bundle.json>
+aim redis migrate collect --out <bundle.json>
 aim redis migrate plan --from <bundle-dir> --out <plan.json>
 aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover
-aim label rebind <label> --machine <machineId> --confirm
-aim session handoff <label> --from <machineId> --to <machineId> --confirm
+aim redis migrate cleanup-legacy --confirm-breaking-cutover
+aim label rebind <label> --provider <provider> --confirm
 ```
 
 Status:
@@ -134,9 +134,7 @@ Use Redis migration once, then use the Redis-backed runtime commands above. Refr
 
 Redis records own shared credential truth:
 
-- labels: provider, label, stable identity, shared browser/reauth/pool policy
-- sessions: provider, label, machine id, credential, identity, lineage, health
-- machines: stable machine metadata and last-seen time
+- credentials: provider, label, credential, identity, shared browser/reauth/pool policy, health, and audit provenance
 - meta: migration and cutover metadata
 
 `~/.aimgr/local-state.json` owns local-only facts:
@@ -145,7 +143,7 @@ Redis records own shared credential truth:
 - active target metadata
 - OpenClaw assignments and exclusions
 - Codex/Pi/Claude/Hermes local history
-- machine-specific concrete browser bindings
+- local concrete browser bindings
 
 Local target auth files are derived outputs:
 

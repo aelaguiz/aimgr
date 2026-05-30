@@ -1,14 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { normalizeAimgrConfig, readAimgrConfig, writeAimgrConfig } from "../../config/aimgr-config.js";
-import { buildLocalMachineInfo } from "../../coordination/machine.js";
 import {
   closeRedisStore,
   connectRedisStore,
-  importSnapshot,
+  deleteLegacyRedisCredentialKeys,
+  importCredentialsSnapshot,
   readSnapshot,
-  registerMachine,
 } from "../../coordination/redis-store.js";
+import {
+  AIMGR_REDIS_PRIMARY_HOST,
+  AIMGR_REDIS_PRIMARY_URL,
+  AIMGR_REDIS_TRANSPORT,
+} from "../../core/constants.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { resolveCliPath } from "../../io/paths.js";
 import {
@@ -43,7 +47,7 @@ function writeJsonOutput(filePath, value) {
 async function withRedisStore({ homeDir, opts }, fn) {
   const { redis } = readAimgrConfig({ homeDir }).config;
   if (!redis.url) {
-    throw new Error("AIM Redis is not configured. Run `aim redis configure --url redis://amirs-mac-studio:6380 --primary-host agents@amirs-mac-studio`.");
+    throw new Error(`AIM Redis is not configured. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
   }
   const store = await connectRedisStore({
     url: opts.url ?? redis.url,
@@ -72,44 +76,36 @@ export async function handleRedis(context) {
         url: requireRedisUrl(opts),
         keyPrefix: opts.keyPrefix ?? existing.redis.keyPrefix,
         primaryHost: opts.primaryHost ?? existing.redis.primaryHost,
-        transport: opts.transport ?? existing.redis.transport ?? "tailscale",
+        transport: opts.transport ?? existing.redis.transport ?? AIMGR_REDIS_TRANSPORT,
       },
     });
     const written = writeAimgrConfig({ homeDir, config });
-    const machine = buildLocalMachineInfo({ homeDir, now: new Date(nowMs) });
-    printJson(stdout, { ok: true, path: written.path, redis: written.config.redis, machineId: machine.machineId });
+    printJson(stdout, { ok: true, path: written.path, redis: written.config.redis });
     return;
   }
 
   if (subcmd === "config") {
     const read = readAimgrConfig({ homeDir });
-    const machine = buildLocalMachineInfo({ homeDir, now: new Date(nowMs) });
     printJson(stdout, {
       ok: true,
       path: read.path,
       exists: read.exists,
       redis: read.config.redis,
-      machineId: machine.machineId,
-      machineIdPath: machine.machineIdPath,
     });
     return;
   }
 
   if (subcmd === "ping") {
     await withRedisStore({ homeDir, opts }, async (store, redis) => {
-      const machine = buildLocalMachineInfo({ homeDir, now: new Date(nowMs) });
       const pong = await store.client.ping();
-      const registered = await registerMachine(store, machine);
-      printJson(stdout, { ok: pong === "PONG", pong, redis, machineId: machine.machineId, registered });
+      printJson(stdout, { ok: pong === "PONG", pong, redis });
     });
     return;
   }
 
   if (subcmd === "snapshot") {
     await withRedisStore({ homeDir, opts }, async (store) => {
-      const machine = buildLocalMachineInfo({ homeDir, now: new Date(nowMs) });
-      await registerMachine(store, machine);
-      printJson(stdout, { ok: true, snapshot: await readSnapshot(store), machineId: machine.machineId });
+      printJson(stdout, { ok: true, snapshot: await readSnapshot(store) });
     });
     return;
   }
@@ -120,7 +116,7 @@ export async function handleRedis(context) {
       if (opts.outFile) {
         const outPath = resolveCliPath(opts.outFile, { homeDir, optionName: "--out" });
         fs.writeFileSync(outPath, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-        printJson(stdout, { ok: true, outFile: outPath, counts: { labels: snapshot.labels.length, sessions: snapshot.sessions.length, machines: snapshot.machines.length } });
+        printJson(stdout, { ok: true, outFile: outPath, counts: { credentials: snapshot.credentials.length, meta: snapshot.meta ? 1 : 0 } });
       } else {
         printJson(stdout, { ok: true, snapshot });
       }
@@ -131,16 +127,18 @@ export async function handleRedis(context) {
   if (subcmd === "import") {
     const inPath = resolveCliPath(opts.inFile, { homeDir, optionName: "--in" });
     const snapshot = JSON.parse(fs.readFileSync(inPath, "utf8"));
-    await withRedisStore({ homeDir, opts }, async (store) => {
-      const machine = buildLocalMachineInfo({ homeDir, now: new Date(nowMs) });
-      const results = await importSnapshot(store, snapshot, { machineId: machine.machineId, observedAt: new Date(nowMs).toISOString() });
-      printJson(stdout, {
-        ok: results.every((result) => result.ok),
-        inFile: inPath,
-        results,
+      await withRedisStore({ homeDir, opts }, async (store) => {
+        const results = await importCredentialsSnapshot(store, snapshot, { updatedBy: "aimgr-cli", observedAt: new Date(nowMs).toISOString() });
+        printJson(stdout, {
+          ok: results.every((result) => result.ok),
+          inFile: inPath,
+          counts: {
+            credentials: Array.isArray(snapshot.credentials) ? snapshot.credentials.length : 0,
+            meta: snapshot.meta ? 1 : 0,
+          },
+        });
       });
-    });
-    return;
+      return;
   }
 
   if (subcmd === "migrate") {
@@ -148,15 +146,25 @@ export async function handleRedis(context) {
     if (action === "collect") {
       const bundle = collectRedisMigrationBundle({
         homeDir,
-        machineId: opts.machine,
         aimVersion: "0.0.0",
         now: new Date(nowMs),
       });
       const outPath = opts.outFile
         ? resolveCliPath(opts.outFile, { homeDir, optionName: "--out" })
-        : `${defaultMigrationDir({ homeDir })}/${bundle.machine.machineId}.json`;
+        : `${defaultMigrationDir({ homeDir })}/${bundle.bundleId}.json`;
       writeJsonOutput(outPath, bundle);
-      printJson(stdout, { ok: true, outFile: outPath, bundleId: bundle.bundleId, machine: bundle.machine, summary: bundle.summary });
+      printJson(stdout, { ok: true, outFile: outPath, bundleId: bundle.bundleId, source: bundle.source, summary: bundle.summary });
+      return;
+    }
+
+    if (action === "cleanup-legacy") {
+      if (!opts.confirmBreakingCutover) {
+        throw new Error("Legacy Redis cleanup requires --confirm-breaking-cutover.");
+      }
+      await withRedisStore({ homeDir, opts }, async (store) => {
+        const result = await deleteLegacyRedisCredentialKeys(store);
+        printJson(stdout, result);
+      });
       return;
     }
 
@@ -191,18 +199,17 @@ export async function handleRedis(context) {
       const planPath = resolveCliPath(opts.planFile, { homeDir, optionName: "--plan" });
       const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
       await withRedisStore({ homeDir, opts }, async (store) => {
-        const machine = buildLocalMachineInfo({ homeDir, now: new Date(nowMs) });
         const result = await applyRedisMigrationPlan(store, plan, {
-          machineId: machine.machineId,
+          updatedBy: "aimgr-cli",
           observedAt: new Date(nowMs).toISOString(),
           requireEmpty: !opts.allowNonEmpty,
         });
-        printJson(stdout, { ok: result.ok, planFile: planPath, result });
+        printJson(stdout, { ok: result.ok, planFile: planPath, counts: result.counts });
       });
       return;
     }
 
-    throw new Error("Missing redis migrate subcommand. Usage: aim redis migrate collect|plan|apply ...");
+    throw new Error("Missing redis migrate subcommand. Usage: aim redis migrate collect|plan|apply|cleanup-legacy ...");
   }
 
   throw new Error(`Unsupported redis subcommand: ${subcmd}.`);

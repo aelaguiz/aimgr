@@ -17,7 +17,6 @@ import {
 import { findAnthropicLabelByNativeClaudeBundle, getClaudeNativeBundleIdentity } from "../credentials/claude-native.js";
 import { readJsonFile } from "../io/json-store.js";
 import {
-  resolveAimgrMachineIdPath,
   resolveAimgrRedisMigrationDir,
   resolveAimgrStatePath,
   resolveCodexAuthFilePath,
@@ -26,7 +25,7 @@ import {
   resolveHermesProfilesRoot,
   resolveOpenclawAuthStorePath,
 } from "../io/paths.js";
-import { readSnapshot, importSnapshot } from "../coordination/redis-store.js";
+import { importCredentialsSnapshot, readSnapshot } from "../coordination/redis-store.js";
 import { readHermesAuthFile } from "../targets/hermes-auth.js";
 import { readCodexAuthFile } from "../targets/codex-store.js";
 import { discoverOpenclawAgentIdsWithAuthStores } from "../openclaw/stores.js";
@@ -34,6 +33,7 @@ import { loadAimgrStateFromJsonValue } from "../state/schema.js";
 
 export const REDIS_MIGRATION_BUNDLE_VERSION = 1;
 export const REDIS_MIGRATION_PLAN_VERSION = 1;
+const LOCAL_STATE_BACKUP_LIMIT = 5;
 
 function stableHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -50,6 +50,51 @@ function readTextFileIfExists(filePath) {
   } catch (err) {
     return { exists: true, ok: false, path: filePath, error: String(err?.message ?? err) };
   }
+}
+
+function sourceReadSummary(read) {
+  const { text: _text, ...summary } = read;
+  return {
+    ...summary,
+    mtime: fileMtimeIso(read.path),
+  };
+}
+
+function discoverLocalStateSnapshotPaths(primaryStatePath) {
+  const dir = path.dirname(primaryStatePath);
+  const primaryName = path.basename(primaryStatePath);
+  if (!fs.existsSync(dir)) return fs.existsSync(primaryStatePath) ? [primaryStatePath] : [];
+
+  const records = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const filePath = path.join(dir, entry.name);
+    let kind = null;
+    if (entry.name === primaryName) {
+      kind = "primary";
+    } else if (/^secrets\.legacy-imported-redis-.*\.json$/.test(entry.name)) {
+      kind = "local-import-snapshot";
+    } else if (/^secrets\.json\.bak\./.test(entry.name)) {
+      kind = "backup";
+    }
+    if (!kind) continue;
+    records.push({
+      path: filePath,
+      kind,
+      mtimeMs: fs.statSync(filePath).mtimeMs,
+    });
+  }
+
+  const primary = records.filter((record) => record.kind === "primary");
+  const localImports = records
+    .filter((record) => record.kind === "local-import-snapshot")
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const backups = records
+    .filter((record) => record.kind === "backup")
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, LOCAL_STATE_BACKUP_LIMIT);
+
+  return [...new Set([...primary, ...localImports, ...backups].map((record) => record.path))];
 }
 
 function fileMtimeIso(filePath) {
@@ -171,7 +216,7 @@ function validateCredential({ provider, label, credential, nowMs }) {
 function buildCandidate({
   provider,
   label,
-  machine,
+  source,
   sourceType,
   sourcePath,
   sourceMtime = null,
@@ -193,7 +238,7 @@ function buildCandidate({
   const id = stableHash({
     provider: normalizedProvider,
     label: normalizedLabel,
-    machineId: machine.machineId,
+    sourceId: source.id,
     sourceType,
     sourcePath,
     fingerprint: validation.fingerprint,
@@ -203,7 +248,7 @@ function buildCandidate({
     id,
     provider: normalizedProvider,
     label: normalizedLabel,
-    machineId: machine.machineId,
+    source: cloneJson(source),
     sourceType,
     sourcePath,
     sourceMtime,
@@ -231,10 +276,10 @@ function authorityMetaForStateLabel(state, provider, label) {
   return isObject(meta) ? cloneJson(meta) : null;
 }
 
-function collectStateCredentialCandidates({ state, statePath, machine, collectedAt, nowMs }) {
+function collectStateCredentialCandidates({ state, statePath, source, collectedAt, nowMs }) {
   const candidates = [];
   const sourceMtime = fileMtimeIso(statePath);
-  for (const provider of [OPENAI_CODEX_PROVIDER, ANTHROPIC_PROVIDER]) {
+  for (const provider of [OPENAI_CODEX_PROVIDER]) {
     const byLabel = isObject(state?.credentials?.[provider]) ? state.credentials[provider] : {};
     for (const [labelRaw, credential] of Object.entries(byLabel)) {
       if (!isObject(credential)) continue;
@@ -248,7 +293,7 @@ function collectStateCredentialCandidates({ state, statePath, machine, collected
         buildCandidate({
           provider,
           label,
-          machine,
+          source,
           sourceType: "legacy-state",
           sourcePath: statePath,
           sourceMtime,
@@ -272,7 +317,7 @@ function findAnthropicLabelInState(state, nativeClaudeBundle) {
   }
 }
 
-function collectCodexAuthCandidate({ state, homeDir, machine, collectedAt, nowMs }) {
+function collectCodexAuthCandidate({ state, homeDir, source, collectedAt, nowMs }) {
   const codexHome = resolveManagedCodexHomeDir({ homeDir, env: {} });
   const readback = readCodexAuthFile({ codexHome });
   if (readback.ok !== true) return { source: readback, candidates: [] };
@@ -300,7 +345,7 @@ function collectCodexAuthCandidate({ state, homeDir, machine, collectedAt, nowMs
       buildCandidate({
         provider: OPENAI_CODEX_PROVIDER,
         label,
-        machine,
+        source,
         sourceType: "codex-auth-json",
         sourcePath: resolveCodexAuthFilePath(codexHome),
         sourceMtime: fileMtimeIso(resolveCodexAuthFilePath(codexHome)),
@@ -313,7 +358,7 @@ function collectCodexAuthCandidate({ state, homeDir, machine, collectedAt, nowMs
   };
 }
 
-function collectClaudeNativeCandidate({ state, homeDir, machine, collectedAt, nowMs }) {
+function collectClaudeNativeCandidate({ state, homeDir, source, collectedAt, nowMs }) {
   const readback = readClaudeNativeBundle({ homeDir });
   if (!readback.exists || readback.ok !== true || !readback.nativeClaudeBundle) {
     return { source: readback, candidates: [] };
@@ -337,7 +382,7 @@ function collectClaudeNativeCandidate({ state, homeDir, machine, collectedAt, no
       buildCandidate({
         provider: ANTHROPIC_PROVIDER,
         label,
-        machine,
+        source,
         sourceType: "claude-native",
         sourcePath: `${readback.credentialsPath},${readback.appStatePath}`,
         sourceMtime: fileMtimeIso(readback.credentialsPath) ?? fileMtimeIso(readback.appStatePath),
@@ -350,7 +395,7 @@ function collectClaudeNativeCandidate({ state, homeDir, machine, collectedAt, no
   };
 }
 
-function collectHermesCandidates({ state, homeDir, machine, collectedAt, nowMs }) {
+function collectHermesCandidates({ state, homeDir, source, collectedAt, nowMs }) {
   const root = resolveHermesProfilesRoot(homeDir);
   const sources = [];
   const candidates = [];
@@ -367,9 +412,9 @@ function collectHermesCandidates({ state, homeDir, machine, collectedAt, nowMs }
     const label = findCodexLabelByAccountId(state, accountId) ?? normalizeSourceLabel(entry.name, "hermes-current");
     candidates.push(
       buildCandidate({
-        provider: OPENAI_CODEX_PROVIDER,
-        label,
-        machine,
+          provider: OPENAI_CODEX_PROVIDER,
+          label,
+          source,
         sourceType: "hermes-auth-json",
         sourcePath: authPath,
         sourceMtime: fileMtimeIso(authPath),
@@ -404,7 +449,7 @@ function parseOpenclawProfileId(profileId) {
   }
 }
 
-function collectOpenclawCandidates({ state, homeDir, machine, collectedAt, nowMs }) {
+function collectOpenclawCandidates({ state, homeDir, source, collectedAt, nowMs }) {
   const sources = [];
   const candidates = [];
   for (const agentId of discoverOpenclawAgentIdsWithAuthStores(homeDir)) {
@@ -423,7 +468,7 @@ function collectOpenclawCandidates({ state, homeDir, machine, collectedAt, nowMs
       if (!isObject(profile) || String(profile.type ?? "").trim() !== "oauth") continue;
       const parsedProfile = parseOpenclawProfileId(profileId);
       const provider = normalizeProviderId(profile.provider || parsedProfile?.provider);
-      if (![OPENAI_CODEX_PROVIDER, ANTHROPIC_PROVIDER].includes(provider)) continue;
+      if (provider !== OPENAI_CODEX_PROVIDER) continue;
       const label = parsedProfile?.label;
       if (!label) continue;
       const access = typeof profile.access === "string" ? profile.access.trim() : "";
@@ -451,7 +496,7 @@ function collectOpenclawCandidates({ state, homeDir, machine, collectedAt, nowMs
         buildCandidate({
           provider,
           label,
-          machine,
+          source,
           sourceType: "openclaw-auth-store",
           sourcePath: storePath,
           sourceMtime: fileMtimeIso(storePath),
@@ -469,80 +514,82 @@ function collectOpenclawCandidates({ state, homeDir, machine, collectedAt, nowMs
 
 export function collectRedisMigrationBundle({
   homeDir,
-  machineId,
   aimVersion = "0.0.0",
   now = new Date(),
 } = {}) {
   const collectedAt = now.toISOString();
   const nowMs = now.getTime();
-  const machineIdPath = resolveAimgrMachineIdPath({ homeDir });
-  const actualMachineId = fs.existsSync(machineIdPath) ? String(fs.readFileSync(machineIdPath, "utf8")).trim() : "";
-  const requestedMachineId = String(machineId ?? "").trim();
-  if (!requestedMachineId) {
-    throw new Error("Missing --machine for migration collect.");
-  }
-  if (!actualMachineId) {
-    throw new Error(`Cannot collect migration bundle before machine id exists: ${machineIdPath}`);
-  }
-  if (requestedMachineId !== actualMachineId) {
-    throw new Error(`Migration machine mismatch: requested ${requestedMachineId}, local machine id is ${actualMachineId}.`);
-  }
-
-  const machine = {
-    machineId: actualMachineId,
+  const source = {
+    id: stableHash({ homeDir, hostname: os.hostname(), platform: process.platform }).slice(0, 16),
     hostname: os.hostname(),
     platform: process.platform,
     aimVersion,
+    collectedHome: homeDir,
   };
   const statePath = resolveAimgrStatePath({ home: homeDir }, { env: { HOME: homeDir } });
-  const stateSource = readTextFileIfExists(statePath);
   let state = null;
   const candidates = [];
   const sources = {
-    legacyState: stateSource,
+    legacyState: readTextFileIfExists(statePath),
+    legacyStateSnapshots: [],
     codexTarget: null,
-    claudeNative: null,
+    claudeNative: { skipped: true, reason: "anthropic_migration_disabled" },
     hermesAuthFiles: [],
     openclawAuthStores: [],
   };
 
-  if (stateSource.ok === true) {
+  for (const snapshotPath of discoverLocalStateSnapshotPaths(statePath)) {
+    const stateSource = readTextFileIfExists(snapshotPath);
+    if (snapshotPath === statePath) {
+      sources.legacyState = stateSource;
+    } else {
+      sources.legacyStateSnapshots.push(sourceReadSummary(stateSource));
+    }
+    if (stateSource.ok !== true) continue;
     try {
-      state = loadAimgrStateFromJsonValue(JSON.parse(stateSource.text), statePath);
-      candidates.push(...collectStateCredentialCandidates({ state, statePath, machine, collectedAt, nowMs }));
+      const snapshotState = loadAimgrStateFromJsonValue(JSON.parse(stateSource.text), snapshotPath);
+      state = state ?? snapshotState;
+      candidates.push(...collectStateCredentialCandidates({
+        state: snapshotState,
+        statePath: snapshotPath,
+        source,
+        collectedAt,
+        nowMs,
+      }));
     } catch (err) {
-      sources.legacyState = {
-        ...stateSource,
+      const failed = {
+        ...sourceReadSummary(stateSource),
         ok: false,
         error: String(err?.message ?? err),
       };
+      if (snapshotPath === statePath) {
+        sources.legacyState = { ...stateSource, ok: false, error: failed.error };
+      } else {
+        sources.legacyStateSnapshots[sources.legacyStateSnapshots.length - 1] = failed;
+      }
     }
   }
   state = state ?? loadAimgrStateFromJsonValue({ schemaVersion: "0.2" });
 
-  const codexTarget = collectCodexAuthCandidate({ state, homeDir, machine, collectedAt, nowMs });
+  const codexTarget = collectCodexAuthCandidate({ state, homeDir, source, collectedAt, nowMs });
   sources.codexTarget = codexTarget.source;
   candidates.push(...codexTarget.candidates);
 
-  const claudeNative = collectClaudeNativeCandidate({ state, homeDir, machine, collectedAt, nowMs });
-  sources.claudeNative = claudeNative.source;
-  candidates.push(...claudeNative.candidates);
-
-  const hermes = collectHermesCandidates({ state, homeDir, machine, collectedAt, nowMs });
+  const hermes = collectHermesCandidates({ state, homeDir, source, collectedAt, nowMs });
   sources.hermesAuthFiles = hermes.sources;
   candidates.push(...hermes.candidates);
 
-  const openclaw = collectOpenclawCandidates({ state, homeDir, machine, collectedAt, nowMs });
+  const openclaw = collectOpenclawCandidates({ state, homeDir, source, collectedAt, nowMs });
   sources.openclawAuthStores = openclaw.sources;
   candidates.push(...openclaw.candidates);
 
-  const bundleId = stableHash({ machine, collectedAt, candidateIds: candidates.map((candidate) => candidate.id) }).slice(0, 24);
+  const bundleId = stableHash({ source, collectedAt, candidateIds: candidates.map((candidate) => candidate.id) }).slice(0, 24);
   return {
     kind: "aimgr.redisMigration.bundle.v1",
     version: REDIS_MIGRATION_BUNDLE_VERSION,
     bundleId,
     collectedAt,
-    machine,
+    source,
     sources,
     candidates,
     summary: summarizeMigrationBundle({ candidates, sources }),
@@ -643,20 +690,19 @@ function groupBy(items, getKey) {
   return groups;
 }
 
-function buildImportLabel({ provider, label, selected, candidateIds, sessionCandidates }) {
+function buildImportCredential({ provider, label, selected, candidateIds }) {
   return {
     provider,
     label,
     status: "import",
     selectedCandidateId: selected.id,
     candidateIds,
-    sessionCandidateIds: sessionCandidates.map((candidate) => candidate.id),
-    stableIdentity: selected.validation.identity,
-    accountPolicy: selected.accountPolicy,
+    identity: selected.validation.identity,
+    policy: selected.accountPolicy,
   };
 }
 
-function buildBlockedLabel({ provider, label, status, candidateIds, reason, identities = [] }) {
+function buildBlockedCredential({ provider, label, status, candidateIds, reason, identities = [] }) {
   return {
     provider,
     label,
@@ -678,10 +724,8 @@ export async function buildRedisMigrationPlan({
   let candidates = inputBundles.flatMap((bundle) => (Array.isArray(bundle?.candidates) ? bundle.candidates : []));
   candidates = await Promise.all(candidates.map((candidate) => refreshExpiredCandidate(candidate, { refreshCandidateImpl, nowMs })));
 
-  const labels = [];
-  const sessions = [];
+  const credentials = [];
   const superseded = [];
-  const cloned = [];
   const reloginRequired = [];
   const blocked = [];
   const groups = groupBy(candidates, (candidate) => `${candidate.provider}:${candidate.label}`);
@@ -692,21 +736,21 @@ export async function buildRedisMigrationPlan({
     const valid = labelCandidates.filter((candidate) => candidate.validation?.ok === true);
     const fresh = valid.filter((candidate) => candidate.validation?.fresh === true);
     if (fresh.length === 0) {
-      const entry = buildBlockedLabel({
+      const entry = buildBlockedCredential({
         provider,
         label,
         status: "relogin_required",
         candidateIds,
         reason: valid.length > 0 ? "no_fresh_candidate" : "no_valid_candidate",
       });
-      labels.push(entry);
+      credentials.push(entry);
       reloginRequired.push(entry);
       continue;
     }
 
     const identityKeys = [...new Set(fresh.map((candidate) => candidate.validation.identityKey).filter(Boolean))];
     if (identityKeys.length > 1) {
-      const entry = buildBlockedLabel({
+      const entry = buildBlockedCredential({
         provider,
         label,
         status: "blocked",
@@ -714,48 +758,29 @@ export async function buildRedisMigrationPlan({
         reason: "identity_conflict",
         identities: identityKeys,
       });
-      labels.push(entry);
+      credentials.push(entry);
       blocked.push(entry);
       continue;
     }
 
-    const bestByMachine = [];
-    for (const [, machineCandidates] of groupBy(fresh, (candidate) => candidate.machineId)) {
-      const [best, ...rest] = sortCandidatesBestFirst(machineCandidates);
-      bestByMachine.push(best);
-      superseded.push(...rest.map((candidate) => ({ candidateId: candidate.id, reason: "weaker_same_machine_candidate" })));
-    }
-
-    const sessionCandidates = [];
-    for (const [, fingerprintCandidates] of groupBy(sortCandidatesBestFirst(bestByMachine), (candidate) => candidate.validation.fingerprint)) {
-      const [best, ...sameLineageClones] = fingerprintCandidates;
-      sessionCandidates.push(best);
-      cloned.push(...sameLineageClones.map((candidate) => ({
-        candidateId: candidate.id,
-        keptCandidateId: best.id,
-        reason: "same_fingerprint_lineage",
-      })));
-    }
-    const selected = sortCandidatesBestFirst(sessionCandidates)[0];
-    labels.push(buildImportLabel({ provider, label, selected, candidateIds, sessionCandidates }));
-    for (const candidate of sortCandidatesBestFirst(sessionCandidates)) {
-      sessions.push({
-        provider,
-        label,
-        machineId: candidate.machineId,
-        status: "import",
-        candidateId: candidate.id,
-        fingerprint: candidate.validation.fingerprint,
-        sourceType: candidate.sourceType,
-        sourcePath: candidate.sourcePath,
-      });
-    }
+    const [selected, ...weakerCandidates] = sortCandidatesBestFirst(fresh);
+    credentials.push(buildImportCredential({ provider, label, selected, candidateIds }));
+    superseded.push(...weakerCandidates.map((candidate) => ({
+      candidateId: candidate.id,
+      keptCandidateId: selected.id,
+      reason: "weaker_provider_label_candidate",
+    })));
   }
 
   const planId = stableHash({
     plannedAt,
     bundleIds: inputBundles.map((bundle) => bundle.bundleId),
-    labelStatuses: labels.map((label) => [label.provider, label.label, label.status, label.selectedCandidateId]),
+    credentialStatuses: credentials.map((credential) => [
+      credential.provider,
+      credential.label,
+      credential.status,
+      credential.selectedCandidateId,
+    ]),
   }).slice(0, 24);
 
   return {
@@ -764,22 +789,18 @@ export async function buildRedisMigrationPlan({
     planId,
     plannedAt,
     bundleIds: inputBundles.map((bundle) => bundle.bundleId),
-    machines: inputBundles.map((bundle) => bundle.machine).filter(Boolean),
-    labels,
-    sessions,
+    sources: inputBundles.map((bundle) => bundle.source).filter(Boolean),
+    credentials,
     candidates,
     superseded,
-    cloned,
     reloginRequired,
     blocked,
     summary: {
       bundleCount: inputBundles.length,
       candidateCount: candidates.length,
-      importLabelCount: labels.filter((label) => label.status === "import").length,
-      importSessionCount: sessions.length,
+      importCredentialCount: credentials.filter((credential) => credential.status === "import").length,
       blockedCount: blocked.length,
       reloginRequiredCount: reloginRequired.length,
-      clonedCount: cloned.length,
       supersededCount: superseded.length,
     },
   };
@@ -853,48 +874,42 @@ export function assertMigrationPlanCanApply(plan) {
   if (!isObject(plan) || plan.kind !== "aimgr.redisMigration.plan.v1") {
     throw new Error("Migration apply requires an aimgr.redisMigration.plan.v1 plan.");
   }
-  const blockedLabels = (plan.labels ?? []).filter((label) => label.status !== "import");
-  if (blockedLabels.length > 0) {
+  const blockedCredentials = (plan.credentials ?? []).filter((credential) => credential.status !== "import");
+  if (blockedCredentials.length > 0) {
     throw new Error(
-      `Migration plan is not applyable: ${blockedLabels.length} label(s) are blocked or require re-login.`,
+      `Migration plan is not applyable: ${blockedCredentials.length} credential(s) are blocked or require re-login.`,
     );
   }
 }
 
 export function buildRedisSnapshotFromMigrationPlan(plan, { appliedAt = new Date().toISOString(), appliedBy = "migration" } = {}) {
   assertMigrationPlanCanApply(plan);
-  const labels = [];
-  const sessions = [];
-  for (const label of plan.labels ?? []) {
-    const selected = findPlanCandidate(plan, label.selectedCandidateId);
-    if (!selected) throw new Error(`Migration plan references missing selected candidate: ${label.selectedCandidateId}`);
-    labels.push({
-      provider: label.provider,
-      label: label.label,
-      stableIdentity: label.stableIdentity,
-      expect: label.accountPolicy?.expect ?? {},
-      reauth: label.accountPolicy?.reauth ?? {},
-      browser: label.accountPolicy?.browser ?? {},
-      pool: label.accountPolicy?.pool ?? { enabled: true },
-    });
-  }
-  for (const session of plan.sessions ?? []) {
-    const candidate = findPlanCandidate(plan, session.candidateId);
-    if (!candidate) throw new Error(`Migration plan references missing session candidate: ${session.candidateId}`);
-    sessions.push({
-      provider: session.provider,
-      label: session.label,
-      machineId: session.machineId,
+  const credentials = [];
+  for (const plannedCredential of plan.credentials ?? []) {
+    const candidate = findPlanCandidate(plan, plannedCredential.selectedCandidateId);
+    if (!candidate) {
+      throw new Error(`Migration plan references missing selected candidate: ${plannedCredential.selectedCandidateId}`);
+    }
+    credentials.push({
+      provider: plannedCredential.provider,
+      label: plannedCredential.label,
       credential: candidate.credential,
       identity: candidate.validation.identity,
-      lineage: {
-        mode: "migration-import",
+      policy: {
+        expect: plannedCredential.policy?.expect ?? {},
+        reauth: plannedCredential.policy?.reauth ?? {},
+        browser: plannedCredential.policy?.browser ?? {},
+        pool: plannedCredential.policy?.pool ?? { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+      provenance: {
+        lastSourceType: "migration-import",
         fingerprint: candidate.validation.fingerprint,
         sourceType: candidate.sourceType,
         sourcePath: candidate.sourcePath,
+        source: candidate.source ?? {},
         candidateId: candidate.id,
       },
-      health: { status: "ready", reason: null },
     });
   }
   return {
@@ -911,21 +926,17 @@ export function buildRedisSnapshotFromMigrationPlan(plan, { appliedAt = new Date
         bundleIds: plan.bundleIds ?? [],
       },
     },
-    machines: plan.machines ?? [],
-    labels,
-    sessions,
+    credentials,
   };
 }
 
 export async function assertRedisPrefixEmpty(store) {
   const snapshot = await readSnapshot(store);
   const counts = {
-    machines: snapshot.machines.length,
-    labels: snapshot.labels.length,
-    sessions: snapshot.sessions.length,
+    credentials: snapshot.credentials.length,
     meta: snapshot.meta ? 1 : 0,
   };
-  const total = counts.machines + counts.labels + counts.sessions + counts.meta;
+  const total = counts.credentials + counts.meta;
   if (total > 0) {
     throw new Error(`Refusing migration apply into non-empty Redis prefix ${snapshot.keyPrefix}: ${JSON.stringify(counts)}`);
   }
@@ -933,22 +944,22 @@ export async function assertRedisPrefixEmpty(store) {
 }
 
 export async function applyRedisMigrationPlan(store, plan, {
-  machineId = "migration",
+  updatedBy = "migration",
   observedAt = new Date().toISOString(),
   requireEmpty = true,
 } = {}) {
   if (requireEmpty) {
     await assertRedisPrefixEmpty(store);
   }
-  const snapshot = buildRedisSnapshotFromMigrationPlan(plan, { appliedAt: observedAt, appliedBy: machineId });
-  const results = await importSnapshot(store, snapshot, { machineId, observedAt });
+  const snapshot = buildRedisSnapshotFromMigrationPlan(plan, { appliedAt: observedAt, appliedBy: updatedBy });
+  const results = await importCredentialsSnapshot(store, {
+    ...snapshot,
+  }, { updatedBy, observedAt, replaceExisting: !requireEmpty });
   return {
     ok: results.every((result) => result.ok),
     results,
     counts: {
-      machines: snapshot.machines.length,
-      labels: snapshot.labels.length,
-      sessions: snapshot.sessions.length,
+      credentials: snapshot.credentials.length,
     },
   };
 }
@@ -968,5 +979,5 @@ export function readMigrationBundlesFromDir(dirPath) {
       bundles.push(parsed);
     }
   }
-  return bundles.sort((a, b) => String(a.machine?.machineId ?? "").localeCompare(String(b.machine?.machineId ?? "")));
+  return bundles.sort((a, b) => String(a.bundleId ?? "").localeCompare(String(b.bundleId ?? "")));
 }

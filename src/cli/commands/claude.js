@@ -1,7 +1,7 @@
 import fs from "node:fs";
-import { ANTHROPIC_PROVIDER } from "../../core/constants.js";
-import { closeRedisRuntime, isRedisConfigured, loadRedisRuntime, publishRedisStateSession, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
-import { publishMaintainedLabelSession } from "../../coordination/login-publish.js";
+import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, ANTHROPIC_PROVIDER } from "../../core/constants.js";
+import { closeRedisRuntime, isRedisConfigured, loadRedisRuntime, publishRedisStateCredential, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
+import { publishMaintainedCredential } from "../../coordination/login-publish.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { recordAccountMaintenanceAttempt, recordAccountMaintenanceFailure, recordAccountMaintenanceSuccess } from "../../credentials/anthropic-maintenance.js";
 import { captureAnthropicNativeBundleForLabel, exportLiveClaudeNativeBundle, importAnthropicNativeBundleForLabel, resolveAnthropicMaintenanceBlockedReason, syncLiveClaudeRotationBackToLabel } from "../../credentials/claude-native.js";
@@ -24,13 +24,12 @@ async function handleRedisClaudeCaptureNative(context, { label, sourceHome }) {
       sourceHome,
     });
     recordAccountMaintenanceSuccess(runtime.state, label, { homeDir, observedAt: attemptedAt });
-    const published = await publishMaintainedLabelSession({
+    const published = await publishMaintainedCredential({
       store: runtime.store,
       snapshot: runtime.snapshot,
       state: runtime.state,
       label,
       provider: ANTHROPIC_PROVIDER,
-      machineId: runtime.machineId,
       observedAt: attemptedAt,
     });
     if (!published.ok) {
@@ -79,13 +78,12 @@ async function handleRedisClaudeImportNative(context, { label, inFile }) {
       filePath: inFile,
     });
     recordAccountMaintenanceSuccess(runtime.state, label, { homeDir, observedAt: attemptedAt });
-    const published = await publishMaintainedLabelSession({
+    const published = await publishMaintainedCredential({
       store: runtime.store,
       snapshot: runtime.snapshot,
       state: runtime.state,
       label,
       provider: ANTHROPIC_PROVIDER,
-      machineId: runtime.machineId,
       observedAt: attemptedAt,
     });
     if (!published.ok) {
@@ -134,7 +132,7 @@ async function handleRedisClaudeRun(context) {
     const activated = activateClaudeLabelSelection({ state: runtime.state, homeDir: claudeHome, env, label });
     const preSwitchSync = activated?.receipt?.preSwitchSync;
     if (preSwitchSync?.synced === true && preSwitchSync.label) {
-      await publishRedisStateSession({
+      await publishRedisStateCredential({
         runtime,
         state: runtime.state,
         provider: ANTHROPIC_PROVIDER,
@@ -157,7 +155,7 @@ async function handleRedisClaudeRun(context) {
     });
     const postRunSync = syncLiveClaudeRotationBackToLabel({ state: runtime.state, homeDir: claudeHome });
     if (postRunSync.synced === true && postRunSync.label) {
-      await publishRedisStateSession({
+      await publishRedisStateCredential({
         runtime,
         state: runtime.state,
         provider: ANTHROPIC_PROVIDER,
@@ -201,7 +199,7 @@ export async function handleClaude(context) {
   }
   if (subcmd === "run") {
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error("`aim claude run <label>` requires Redis. Run `aim redis configure --url redis://amirs-mac-studio:6380 --primary-host agents@amirs-mac-studio`.");
+      throw new Error(`\`aim claude run <label>\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     await handleRedisClaudeRun(context);
     return;

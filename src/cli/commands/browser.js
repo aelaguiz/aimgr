@@ -2,9 +2,8 @@ import { setBrowserBindingFromCli } from "../../browser/bindings-cli.js";
 import { showBrowserBinding } from "../../browser/bindings.js";
 import { readAimgrConfig } from "../../config/aimgr-config.js";
 import { buildLocalBrowserBindingsFromState, buildSharedBrowserPolicy } from "../../coordination/browser-policy.js";
-import { buildLocalMachineInfo } from "../../coordination/machine.js";
-import { closeRedisStore, connectRedisStore, publishLabel, readSnapshot, registerMachine } from "../../coordination/redis-store.js";
-import { buildCoordinationView, findLabelRecord } from "../../coordination/snapshot.js";
+import { closeRedisStore, connectRedisStore, publishCredential, readSnapshot } from "../../coordination/redis-store.js";
+import { buildCoordinationView, findCredentialRecord } from "../../coordination/snapshot.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { writeJsonFileWithBackup } from "../../io/json-store.js";
 import { loadLocalState, writeLocalState } from "../../state/local-state.js";
@@ -18,20 +17,18 @@ async function handleRedisBrowser(context, { subcmd, label }) {
   const connectImpl = context.connectRedisStoreImpl ?? connectRedisStore;
   const store = await connectImpl({ url: redis.url, keyPrefix: redis.keyPrefix });
   try {
-    const machine = buildLocalMachineInfo({ homeDir, now: new Date(nowMs) });
-    await registerMachine(store, machine);
     const snapshot = await readSnapshot(store);
     const localState = loadLocalState({ homeDir });
-    const state = buildCoordinationView(snapshot, { machineId: machine.machineId, localState });
-    const currentLabel = findLabelRecord(snapshot, { provider: opts.provider ?? "openai-codex", label })
-      ?? (snapshot.labels ?? []).find((record) => record.label === label);
+    const state = buildCoordinationView(snapshot, { localState });
+    const currentCredential = findCredentialRecord(snapshot, { provider: opts.provider ?? "openai-codex", label })
+      ?? (snapshot.credentials ?? []).find((record) => record.label === label);
     if (subcmd === "show") {
       const shown = showBrowserBinding({ state, label, homeDir });
       stdout.write(`${JSON.stringify(sanitizeForStatus({ ...shown, source: "redis" }), null, 2)}\n`);
       return true;
     }
-    if (!currentLabel) {
-      throw new Error(`Cannot set browser policy before Redis label exists: ${label}. Run \`aim login ${label}\` first.`);
+    if (!currentCredential) {
+      throw new Error(`Cannot set browser policy before Redis credential exists: ${label}. Run \`aim login ${label}\` first.`);
     }
     const updated = setBrowserBindingFromCli({ state, label, opts });
     const account = state.accounts[label];
@@ -42,16 +39,18 @@ async function handleRedisBrowser(context, { subcmd, label }) {
         browserBindings: buildLocalBrowserBindingsFromState(state),
       },
     });
-    const published = await publishLabel(store, {
-      expectedVersion: currentLabel.version,
-      machineId: machine.machineId,
+    const published = await publishCredential(store, {
+      expectedVersion: currentCredential.version,
+      updatedBy: "aimgr-cli",
       observedAt: new Date(nowMs).toISOString(),
-      labelRecord: {
-        ...currentLabel,
-        expect: account.expect ?? {},
-        reauth: account.reauth ?? {},
-        browser: buildSharedBrowserPolicy(account.browser),
-        pool: account.pool ?? { enabled: true },
+      credentialRecord: {
+        ...currentCredential,
+        policy: {
+          expect: account.expect ?? {},
+          reauth: account.reauth ?? {},
+          browser: buildSharedBrowserPolicy(account.browser),
+          pool: account.pool ?? { enabled: true },
+        },
       },
     });
     stdout.write(

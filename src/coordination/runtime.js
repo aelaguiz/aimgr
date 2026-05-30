@@ -3,10 +3,11 @@ import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { loadLocalState, writeLocalState } from "../state/local-state.js";
 import { buildLocalBrowserBindingsFromState, buildSharedBrowserPolicy } from "./browser-policy.js";
-import { buildLocalMachineInfo } from "./machine.js";
-import { buildStableIdentityForCredential } from "./login-publish.js";
-import { buildCoordinationView, findLabelRecord, findMachineSession } from "./snapshot.js";
-import { closeRedisStore, connectRedisStore, publishLabel, publishSession, readSnapshot, registerMachine } from "./redis-store.js";
+import { buildStableIdentityForCredential, identitiesAreCompatible } from "./login-publish.js";
+import { buildCoordinationView, findCredentialRecord } from "./snapshot.js";
+import { closeRedisStore, connectRedisStore, publishCredential, readSnapshot } from "./redis-store.js";
+
+const REDIS_UPDATED_BY = "aimgr-cli";
 
 export function isRedisConfigured({ homeDir }) {
   return Boolean(readAimgrConfig({ homeDir }).config.redis.url);
@@ -19,19 +20,15 @@ export async function loadRedisRuntime({
 }) {
   const { redis } = getRedisConfig({ homeDir });
   const store = await connectRedisStoreImpl(redis);
-  const machine = buildLocalMachineInfo({ homeDir, now });
-  await registerMachine(store, machine);
   const snapshot = await readSnapshot(store);
   const localState = loadLocalState({ homeDir });
   const state = buildCoordinationView(snapshot, {
-    machineId: machine.machineId,
     localState,
   });
   return {
     redis,
     store,
-    machine,
-    machineId: machine.machineId,
+    updatedBy: REDIS_UPDATED_BY,
     snapshot,
     localState,
     state,
@@ -54,8 +51,8 @@ export function writeRedisLocalStateFromView({ homeDir, state, localState }) {
   });
 }
 
-function findConflictingLabel(snapshot, { provider, label }) {
-  return (snapshot?.labels ?? []).find((record) => record.label === label && record.provider !== provider) ?? null;
+function findConflictingCredential(snapshot, { provider, label }) {
+  return (snapshot?.credentials ?? []).find((record) => record.label === label && record.provider !== provider) ?? null;
 }
 
 export async function refreshRedisRuntimeSnapshot(runtime) {
@@ -63,7 +60,7 @@ export async function refreshRedisRuntimeSnapshot(runtime) {
   return runtime.snapshot;
 }
 
-export async function publishRedisLabelPolicyFromState({
+export async function publishRedisCredentialPolicyFromState({
   runtime,
   state = runtime?.state,
   label,
@@ -75,30 +72,33 @@ export async function publishRedisLabelPolicyFromState({
   if (!provider) {
     throw new Error(`Cannot publish Redis label policy without a provider for label=${normalizedLabel}.`);
   }
-  const conflicting = findConflictingLabel(runtime.snapshot, { provider, label: normalizedLabel });
+  const conflicting = findConflictingCredential(runtime.snapshot, { provider, label: normalizedLabel });
   if (conflicting) {
     throw new Error(
-      `Redis label=${normalizedLabel} already exists for provider=${conflicting.provider}; refusing to create provider=${provider}.`,
+      `Redis credential label=${normalizedLabel} already exists for provider=${conflicting.provider}; refusing to create provider=${provider}.`,
     );
   }
-  const currentLabel = findLabelRecord(runtime.snapshot, { provider, label: normalizedLabel });
-  const result = await publishLabel(runtime.store, {
-    expectedVersion: currentLabel?.version ?? null,
-    machineId: runtime.machineId,
+  const currentCredential = findCredentialRecord(runtime.snapshot, { provider, label: normalizedLabel });
+  const result = await publishCredential(runtime.store, {
+    expectedVersion: currentCredential?.version ?? null,
+    updatedBy: runtime.updatedBy,
     observedAt,
-    labelRecord: {
-      ...(currentLabel ?? {}),
+    credentialRecord: {
+      ...(currentCredential ?? {}),
       provider,
       label: normalizedLabel,
-      stableIdentity: isObject(currentLabel?.stableIdentity) ? currentLabel.stableIdentity : {},
-      expect: isObject(account.expect) ? account.expect : {},
-      reauth: isObject(account.reauth) ? account.reauth : {},
-      browser: buildSharedBrowserPolicy(account.browser),
-      pool: isObject(account.pool) ? account.pool : { enabled: true },
+      identity: isObject(currentCredential?.identity) ? currentCredential.identity : {},
+      credential: isObject(currentCredential?.credential) ? currentCredential.credential : {},
+      policy: {
+        expect: isObject(account.expect) ? account.expect : {},
+        reauth: isObject(account.reauth) ? account.reauth : {},
+        browser: buildSharedBrowserPolicy(account.browser),
+        pool: isObject(account.pool) ? account.pool : { enabled: true },
+      },
     },
   });
   if (!result.ok) {
-    throw new Error(`Redis stale_version while publishing label policy for ${provider}:${normalizedLabel}; reload and retry.`);
+    throw new Error(`Redis stale_version while publishing credential policy for ${provider}:${normalizedLabel}; reload and retry.`);
   }
   await refreshRedisRuntimeSnapshot(runtime);
   return result.record;
@@ -110,7 +110,7 @@ function getStateCredential(state, provider, label) {
   return state?.credentials?.[normalizedProvider]?.[normalizedLabel] ?? null;
 }
 
-export async function publishRedisStateSession({
+export async function publishRedisStateCredential({
   runtime,
   state = runtime?.state,
   provider,
@@ -122,37 +122,46 @@ export async function publishRedisStateSession({
   const normalizedLabel = normalizeLabel(label);
   const credential = getStateCredential(state, normalizedProvider, normalizedLabel);
   if (!credential) {
-    throw new Error(`Cannot publish Redis session without ${normalizedProvider}.${normalizedLabel} credentials.`);
+    throw new Error(`Cannot publish Redis credential without ${normalizedProvider}.${normalizedLabel} credentials.`);
   }
-  const currentSession = findMachineSession(runtime.snapshot, {
-    provider: normalizedProvider,
-    label: normalizedLabel,
-    machineId: runtime.machineId,
-  });
+  const currentCredential = findCredentialRecord(runtime.snapshot, { provider: normalizedProvider, label: normalizedLabel });
   const identity = buildStableIdentityForCredential(normalizedProvider, credential);
-  const result = await publishSession(runtime.store, {
-    expectedVersion: currentSession?.version ?? null,
-    machineId: runtime.machineId,
+  if (!identitiesAreCompatible(currentCredential?.identity, identity)) {
+    throw new Error(
+      `Redis credential identity mismatch for ${normalizedProvider}:${normalizedLabel}. ` +
+        "Use `aim label rebind <label> --provider <provider> --confirm` only after confirming the account identity.",
+    );
+  }
+  const account = isObject(state?.accounts?.[normalizedLabel]) ? state.accounts[normalizedLabel] : {};
+  const result = await publishCredential(runtime.store, {
+    expectedVersion: currentCredential?.version ?? null,
+    updatedBy: runtime.updatedBy,
     observedAt,
-    sessionRecord: {
+    credentialRecord: {
+      ...(currentCredential ?? {}),
       provider: normalizedProvider,
       label: normalizedLabel,
-      machineId: runtime.machineId,
       credential,
       identity,
-      lineage: {
-        ...(currentSession?.lineage ?? {}),
-        mode: lineageMode,
+      policy: {
+        expect: isObject(account.expect) ? account.expect : {},
+        reauth: isObject(account.reauth) ? account.reauth : {},
+        browser: buildSharedBrowserPolicy(account.browser),
+        pool: isObject(account.pool) ? account.pool : { enabled: true },
       },
       health: {
         status: "ready",
         reason: null,
       },
+      provenance: {
+        ...(isObject(currentCredential?.provenance) ? currentCredential.provenance : {}),
+        lastSourceType: lineageMode,
+      },
     },
   });
   if (!result.ok) {
     throw new Error(
-      `Redis stale_version while publishing ${normalizedProvider}.${normalizedLabel} for ${runtime.machineId}; reload and retry.`,
+      `Redis stale_version while publishing ${normalizedProvider}.${normalizedLabel}; reload and retry.`,
     );
   }
   return result.record;
@@ -162,7 +171,7 @@ export async function publishCodexPreserveResult({ runtime, state, preserved }) 
   if (preserved?.status !== "updated" || !preserved.label) {
     return null;
   }
-  return publishRedisStateSession({
+  return publishRedisStateCredential({
     runtime,
     state,
     provider: OPENAI_CODEX_PROVIDER,
