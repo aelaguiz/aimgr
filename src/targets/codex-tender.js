@@ -8,6 +8,7 @@ import { watchCodexPoolSelectionOnce } from "../pool/watch.js";
 import { probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { loadAimgrState } from "../state/schema.js";
 import { activateCodexPoolSelection, preserveLiveCodexAuthForActiveLabel } from "./codex-cli.js";
+import { createCodexForegroundRelaySession } from "./codex-foreground-relay.js";
 import { createCodexPtySession, hasActiveGoalPane, hasResumeGoalPrompt } from "./codex-pty.js";
 import { isCodexSessionId, resolveOwnedThreadFromRunTag, resolveRolloutForThreadId, tailGoalStatus } from "./codex-rollout.js";
 import { acquireCodexTendThreadLock } from "./codex-tend-lock.js";
@@ -179,6 +180,12 @@ function getRotationBlockedReason(rotation) {
   return rotation?.activated?.receipt?.blockers?.[0]?.reason || "rotation_blocked";
 }
 
+function resolveSessionStartErrorReason({ attach, readyReason }) {
+  if (readyReason === "python3_unavailable") return "python3_unavailable";
+  if (attach && readyReason === "not_tty") return "foreground_relay_not_tty";
+  return attach ? "foreground_relay_failed" : "pty_helper_failed";
+}
+
 async function rotateCodexAccount({
   statePath,
   stateRuntime,
@@ -257,7 +264,7 @@ async function runPreflight({
 async function waitForResumePrompt({ session, sleepImpl, pollMs, timeoutMs, events }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const output = session.snapshotOutput();
+    const output = await Promise.resolve(session.snapshotOutput());
     if (hasResumeGoalPrompt(output)) {
       session.sendEnter();
       events.push({ type: "resume_prompt_confirmed" });
@@ -335,6 +342,7 @@ export async function runCodexTender(
   },
   {
     createPtySessionImpl = createCodexPtySession,
+    createForegroundSessionImpl = createCodexForegroundRelaySession,
     sleepImpl = sleep,
     probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
     activateCodexPoolSelectionImpl = activateCodexPoolSelection,
@@ -404,7 +412,8 @@ export async function runCodexTender(
       codexProfile: normalizedCodexArgs.codexProfile,
       codexArgs: normalizedCodexArgs.codexArgs,
     });
-    session = createPtySessionImpl({
+    const createSessionImpl = attach ? createForegroundSessionImpl : createPtySessionImpl;
+    session = createSessionImpl({
       attach,
       env,
       onGoalIntent,
@@ -420,18 +429,20 @@ export async function runCodexTender(
     try {
       await Promise.resolve(session.start({ argv, cwd, env: childEnv }));
     } catch (err) {
-      events.push({ type: "pty_start_failed", reason: "pty_start_failed", message: String(err?.message ?? err) });
-      return { status: "blocked", reason: "pty_start_failed" };
+      const reason = attach ? "foreground_relay_start_failed" : "pty_start_failed";
+      events.push({ type: reason, reason, message: String(err?.message ?? err) });
+      return { status: "blocked", reason };
     }
     if (session.waitForReady) {
       const ready = await session.waitForReady({ timeoutMs: 5_000 });
       if (!ready) {
-        events.push({ type: "pty_start_timeout" });
-        return { status: "blocked", reason: "pty_start_timeout" };
+        const reason = attach ? "foreground_relay_start_timeout" : "pty_start_timeout";
+        events.push({ type: reason });
+        return { status: "blocked", reason };
       }
       if (ready.status === "error") {
-        const reason = ready.reason === "python3_unavailable" ? "python3_unavailable" : "pty_helper_failed";
-        events.push({ type: "pty_start_failed", reason: ready.reason ?? reason });
+        const reason = resolveSessionStartErrorReason({ attach, readyReason: ready.reason });
+        events.push({ type: attach ? "foreground_relay_start_failed" : "pty_start_failed", reason: ready.reason ?? reason });
         return { status: "blocked", reason };
       }
     }

@@ -144,7 +144,7 @@ export async function handleCodex(context) {
       throw new Error("Unexpected positional argument for `aim codex run`. Put Codex arguments after `--`.");
     }
     if (opts.tmuxSession) {
-      throw new Error("`--tmux-session` is obsolete for `aim codex run --tend`; Tend now uses an AIMGR-owned PTY supervisor.");
+      throw new Error("`--tmux-session` is obsolete for `aim codex run --tend`; Tend now uses an AIMGR-owned foreground relay.");
     }
     const tended = await runCodexTenderImpl(
       {

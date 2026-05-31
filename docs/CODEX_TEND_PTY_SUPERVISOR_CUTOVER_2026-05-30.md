@@ -98,9 +98,12 @@ Manual QA: complete (historical smoke receipts accepted; no PTY helper/superviso
   - `npm test` passed: `235` tests, `235` pass.
 - Install:
   - `npm run install:local` installed wrappers into `/Users/aelaguiz/.local/bin`.
-  - `aim --help` runs from `/Users/aelaguiz/workspace/aimgr/bin/aimgr.js` and shows the current
-    `aim codex run --tend` help, including PTY supervisor wording, obsolete `--tmux-session`,
-    `--bind-timeout-seconds`, and Tend `--remote` rejection wording.
+  - At the time of this historical cutover, `aim --help` ran from
+    `/Users/aelaguiz/workspace/aimgr/bin/aimgr.js` and showed `aim codex run --tend` help with PTY
+    supervisor wording, obsolete `--tmux-session`, `--bind-timeout-seconds`, and Tend `--remote`
+    rejection wording. The later attached-latency implementation supersedes that user-facing wording
+    with foreground-relay language in
+    `docs/CODEX_TEND_LOW_LATENCY_FOREGROUND_RELAY_2026-05-30.md`.
 - Review:
   - Thermo-nuclear code quality review in the companion audit log found no blockers.
   - `$plan-audit` implementation check in the companion audit log returned `approve-with-notes` with

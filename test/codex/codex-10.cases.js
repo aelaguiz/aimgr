@@ -293,7 +293,7 @@ test("codex run --tend wires PTY supervision options and Codex args", async () =
 test("codex run --tend rejects obsolete tmux session option", async () => {
   await assert.rejects(
     runCli(["codex", "run", "--tend", "--tmux-session", "overnight-codex"]),
-    /--tmux-session.*obsolete.*PTY supervisor/,
+    /--tmux-session.*obsolete.*foreground relay/,
   );
 });
 
@@ -375,6 +375,126 @@ test("runCodexTender rejects Codex remote passthrough before starting a PTY", as
     /--remote is incompatible with the PTY\/rollout Tend runtime/,
   );
   assert.equal(started, false);
+});
+
+test("runCodexTender uses the foreground relay for attached sessions", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const { factory, sessions } = createFakePtyFactory({
+    exitAfterStart: true,
+    onStart({ config }) {
+      writeRollout({
+        home,
+        threadId: SESSION_ID,
+        originator: config.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE,
+      });
+    },
+  });
+  let oldPtyUsed = false;
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      codexBin: "/tmp/codex",
+      preflight: false,
+      attach: true,
+      pollSeconds: 0,
+      maxPollIterations: 1,
+      startedAtMs: 0,
+    },
+    {
+      createForegroundSessionImpl: factory,
+      createPtySessionImpl: () => {
+        oldPtyUsed = true;
+        throw new Error("attached Tend must not use the JSON PTY helper");
+      },
+      sleepImpl: async () => {},
+    },
+  );
+
+  assert.equal(result.status, "ended");
+  assert.equal(result.attached, true);
+  assert.equal(oldPtyUsed, false);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].options.attach, true);
+});
+
+test("runCodexTender keeps the JSON PTY helper for no-attach sessions", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  const { factory, sessions } = createFakePtyFactory({ exitAfterStart: true });
+  let foregroundUsed = false;
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      codexBin: "/tmp/codex",
+      preflight: false,
+      attach: false,
+      pollSeconds: 0,
+      maxPollIterations: 1,
+      startedAtMs: 0,
+    },
+    {
+      createForegroundSessionImpl: () => {
+        foregroundUsed = true;
+        throw new Error("no-attach Tend must not use the foreground relay");
+      },
+      createPtySessionImpl: factory,
+      sleepImpl: async () => {},
+    },
+  );
+
+  assert.equal(result.status, "ended_without_thread");
+  assert.equal(result.attached, false);
+  assert.equal(foregroundUsed, false);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].options.attach, false);
+});
+
+test("runCodexTender fails loud when the attached foreground relay cannot start", async () => {
+  const home = mkTempHome();
+  writeMinimalState(home);
+  let oldPtyUsed = false;
+
+  const result = await runCodexTender(
+    {
+      statePath: path.join(home, ".aimgr", "secrets.json"),
+      homeDir: home,
+      codexBin: "/tmp/codex",
+      preflight: false,
+      attach: true,
+      pollSeconds: 0,
+      maxPollIterations: 1,
+      startedAtMs: 0,
+    },
+    {
+      createForegroundSessionImpl: () => ({
+        on() {
+          return this;
+        },
+        start() {
+          return this;
+        },
+        waitForReady() {
+          return Promise.resolve({ status: "error", reason: "not_tty" });
+        },
+        dispose() {},
+      }),
+      createPtySessionImpl: () => {
+        oldPtyUsed = true;
+        throw new Error("attached Tend must not fall back to the JSON PTY helper");
+      },
+      sleepImpl: async () => {},
+    },
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "foreground_relay_not_tty");
+  assert.equal(oldPtyUsed, false);
+  assert.equal(result.events.some((event) => event.type === "foreground_relay_start_failed" && event.reason === "not_tty"), true);
 });
 
 test("runCodexTender binds a new goal by Codex rollout originator without tmux or app-server state", async () => {
@@ -814,7 +934,7 @@ test("CodexPtySession frames helper protocol, output, resize, exit, and helper e
   assert.deepEqual(inputPayloads.slice(-5), ["x", "\x1b", "\x15", "\x04", "\x04"]);
 });
 
-test("CodexPtySession attached mode relays stdin, resize, goal intent, and restores raw mode", () => {
+test("CodexPtySession legacy attached compatibility relays stdin, resize, goal intent, and restores raw mode", () => {
   const { spawnImpl, helpers } = createFakeHelperSpawn();
   const stdin = new EventEmitter();
   stdin.isTTY = true;

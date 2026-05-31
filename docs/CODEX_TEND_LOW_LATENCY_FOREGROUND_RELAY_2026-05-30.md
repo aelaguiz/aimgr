@@ -141,6 +141,87 @@ note: This block tracks stage order only. It never overrides readiness blockers 
 }
 <!-- arch_skill:block:auto_plan_receipts:end -->
 
+<!-- arch_skill:block:implementation_worklog:start -->
+# Implementation Worklog
+
+Date: 2026-05-31
+Status: implemented locally; required review gates complete; final commit/push pending.
+
+## Implemented surfaces
+
+- Added `src/targets/codex-foreground-relay.py` as the attached foreground relay helper. It owns
+  terminal raw mode, PTY child launch with `fork` / `setsid` / `TIOCSCTTY` / fd dup / `execvpe`,
+  process-group cleanup, independent input/output pumps, bounded snapshots, goal-intent detection,
+  and side-channel command/event handling.
+- Added `src/targets/codex-foreground-relay.js` as the Node session adapter. It spawns the helper
+  with terminal stdio inherited by default and uses fd 3/4 pipes only for management messages.
+- Updated `src/targets/codex-tender.js` so `attach === true` selects
+  `createCodexForegroundRelaySession`; `attach === false` keeps `createCodexPtySession`.
+- Added `scripts/smoke-codex-foreground-relay-latency.mjs` as the checked-in synthetic
+  high-output key-to-visible-echo latency gate.
+- Updated focused Tend tests for foreground adapter protocol, real helper protocol, attached vs.
+  `--no-attach` runtime selection, and legacy JSON PTY helper scope.
+- Updated `src/cli/help.js`, `src/cli/commands/codex.js`, and `README.md` wording so attached Tend
+  is described as the foreground relay and `--no-attach` is described as the automation PTY helper.
+
+## Verification receipts
+
+- `node --test test/codex/use-watch.test.js`: PASS, 64 tests.
+- `npm run lint`: PASS.
+- `npm test`: PASS, 241 tests.
+- `node scripts/smoke-codex-foreground-relay-latency.mjs`: PASS with 48 chars at
+  130-WPM-equivalent, output frames `240` bytes every `3ms`, visible output bytes `300892`,
+  p95 `0.26ms`, max `1.19ms`.
+- Real Codex foreground pseudo-terminal smoke: PASS. Helper emitted `ready`; marker
+  `aimgr-relay-smoke` appeared in the visible Codex composer stream; relay `send_exit` closed Codex
+  with exit code `0`; helper exited `0`.
+- Tend resume-prompt side-channel smoke: PASS. `runCodexTender()` attached mode used the real
+  foreground relay adapter/helper against a synthetic Codex child, confirmed the resume prompt via
+  snapshot plus side-channel Enter, and returned `poll_limit_reached` with `attached: true`.
+- Runtime search: PASS. Live Tend routing contains no tmux/app-server launch path; `--remote` and
+  `--remote-auth-token-env` remain rejected; `src/targets/codex-tender.js` selects
+  foreground relay for attached mode and JSON PTY only for `--no-attach`.
+- `npm run install:local`: PASS. `/Users/aelaguiz/.local/bin/aim` points at this checkout and
+  `aim --help` now shows foreground-relay wording.
+
+## Review gates before commit
+
+- `$fresh-consult composer-2.5-fast`: PASS with notes, no blockers. Run directory:
+  `/tmp/fresh-consult/codex-foreground-relay-final-20260531TvNWGF9`.
+- `$thermo-nuclear-code-quality-review`: PASS with notes, no blockers. The review did catch one
+  maintainability issue before finalization: relay-specific adapter/helper tests had been added to the
+  already-large Tend orchestration case file. That was repaired by moving them to
+  `test/codex/foreground-relay.cases.js` and importing them from `test/codex/use-watch.test.js`.
+- `$plan-audit` implementation check: PASS, `approve-with-notes`; see
+  `docs/CODEX_TEND_LOW_LATENCY_FOREGROUND_RELAY_2026-05-30_PLAN_AUDIT.md`.
+<!-- arch_skill:block:implementation_worklog:end -->
+
+<!-- arch_skill:block:implementation_audit:start -->
+# Implementation Audit
+
+Date: 2026-05-31
+Mode: implementation-audit
+Scope: full low-latency foreground relay implementation worktree
+Verdict: `approve-with-notes`
+Audit log: `docs/CODEX_TEND_LOW_LATENCY_FOREGROUND_RELAY_2026-05-30_PLAN_AUDIT.md`
+
+## Code-Review Result
+
+No blocking implementation findings remain. The code matches the plan's intended split:
+attached Tend uses the new foreground relay, `--no-attach` keeps the JSON PTY helper, tmux/app-server
+paths are not reintroduced, and the helper/adapter keep foreground terminal bytes off the management
+side channel.
+
+## Non-Blocking Notes
+
+- Real Codex foreground smoke is recorded in this worklog rather than checked in as a repeatable
+  automation fixture.
+- Terminal restore is implemented in helper cleanup paths and covered indirectly; there is no
+  dedicated automated failure-path test for every early helper exit shape.
+- Bounded snapshot truncation has direct implementation but no dedicated truncation test.
+- Foreground helper runtime diagnostic events still use the legacy `pty_helper_error` event name.
+<!-- arch_skill:block:implementation_audit:end -->
+
 # 0) Holistic North Star
 
 ## 0.1 The claim (falsifiable)
