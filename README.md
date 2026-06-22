@@ -117,6 +117,23 @@ aim claude import-native <label> --in <file>
 aim pi use
 ```
 
+Sakana Fugu / Fugu Ultra are API-key accounts (no OAuth). Configure one account name plus its API
+key per Sakana subscription. Keys are stored only in the shared Redis credential store; status/list
+output shows a redacted fingerprint, never the raw key:
+
+```bash
+aim sakana add <account-name> [--key <api-key>] [--tier standard|pro|max|payg] [--subscription <name>] [--notes <text>]
+aim sakana use <account-name>
+aim sakana list [--json]
+aim sakana show <account-name>
+aim sakana remove <account-name>
+```
+
+Provide the key with `--key`, by piping it on stdin (`echo "$KEY" | aim sakana add pro1`), or
+interactively when prompted. The raw key is never echoed back and never written to `local-state.json`.
+`aim sakana use <account-name>` preserves unrelated `~/.codex/.env` lines, updates only
+`SAKANA_API_KEY`, writes the file as `0600`, and records only a redacted local receipt.
+
 `aim codex run --tend` runs attached Codex sessions through an AIMGR-owned low-latency foreground
 relay. It does not use tmux, a private Codex app-server, or Codex `--remote`. Tended runs require
 Python 3 for the small repo-owned PTY helpers; set `AIMGR_PYTHON_BIN` if `python3` is not the desired

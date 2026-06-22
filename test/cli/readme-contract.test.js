@@ -31,6 +31,11 @@ const PUBLIC_COMMAND_STEMS = [
   "aim claude export-live",
   "aim claude import-native",
   "aim pi use",
+  "aim sakana add",
+  "aim sakana use",
+  "aim sakana list",
+  "aim sakana show",
+  "aim sakana remove",
   "aim browser show",
   "aim browser set",
 ];

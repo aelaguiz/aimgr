@@ -23,6 +23,8 @@ export const OPENAI_CODEX_PROVIDER = "openai-codex";
 
 export const ANTHROPIC_PROVIDER = "anthropic";
 
+export const SAKANA_PROVIDER = "sakana";
+
 export const OPENCLAW_ENFORCED_CODEX_MODEL = "openai-codex/gpt-5.4";
 
 export const OPENCLAW_ENFORCED_ANTHROPIC_MODEL = "anthropic/claude-opus-4-6";

@@ -19,6 +19,10 @@ export function parseArgs(argv) {
     outFile: undefined,
     planFile: undefined,
     sourceHome: undefined,
+    key: undefined,
+    tier: undefined,
+    subscription: undefined,
+    notes: undefined,
     discardDirty: false,
     manualCallbackStdio: false,
     json: false,
@@ -150,6 +154,26 @@ export function parseArgs(argv) {
     }
     if (arg === "--source-home") {
       opts.sourceHome = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--key") {
+      opts.key = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--tier") {
+      opts.tier = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--subscription") {
+      opts.subscription = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--notes") {
+      opts.notes = argv[i + 1];
       i += 1;
       continue;
     }

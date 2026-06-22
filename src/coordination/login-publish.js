@@ -1,7 +1,8 @@
 import { getAnthropicCredential, getCodexCredential } from "../browser/seed.js";
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, SAKANA_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { getClaudeNativeBundleIdentity } from "../credentials/claude-native.js";
+import { buildSakanaKeyFingerprint } from "../providers/sakana.js";
 import { buildSharedBrowserPolicy } from "./browser-policy.js";
 import { findCredentialRecord } from "./snapshot.js";
 import { publishCredential } from "./redis-store.js";
@@ -23,6 +24,11 @@ export function buildStableIdentityForCredential(provider, credential) {
         ? { organizationUuid: credential.organizationUuid.trim() }
         : {}),
     };
+  }
+  if (provider === SAKANA_PROVIDER) {
+    return typeof credential?.apiKey === "string" && credential.apiKey.trim()
+      ? { keyFingerprint: buildSakanaKeyFingerprint(credential.apiKey) }
+      : {};
   }
   return {};
 }

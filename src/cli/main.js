@@ -14,6 +14,7 @@ import { handleLogin } from "./commands/login.js";
 import { handlePi } from "./commands/pi.js";
 import { handlePromote } from "./commands/promote.js";
 import { handleRedis } from "./commands/redis.js";
+import { handleSakana } from "./commands/sakana.js";
 import { handleLabel, handleSession } from "./commands/repair.js";
 import { handleAutopin, handlePin } from "./commands/removed.js";
 import { handleRebalance } from "./commands/rebalance.js";
@@ -37,6 +38,7 @@ const COMMAND_HANDLERS = new Map([
   ["hermes", handleHermes],
   ["claude", handleClaude],
   ["pi", handlePi],
+  ["sakana", handleSakana],
   ["browser", handleBrowser],
   ["internal", handleInternal],
 ]);
