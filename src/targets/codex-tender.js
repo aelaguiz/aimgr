@@ -213,7 +213,6 @@ async function rotateCodexAccount({
       env,
       observedAt,
       probeUsageSnapshotsByProviderImpl,
-      selectionMode: "weighted_usage",
       avoidCurrentLabel,
     });
     return { activated, preserved };

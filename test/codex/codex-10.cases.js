@@ -1166,7 +1166,6 @@ test("activateCodexPoolSelection can require an alternate without clearing the c
         },
       },
     },
-    selectionMode: "weighted_usage",
     avoidCurrentLabel: true,
   });
 

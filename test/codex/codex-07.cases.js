@@ -42,7 +42,7 @@ function writeExplicitCodexState({ home, accounts, credentials, labels = Object.
   return statePath;
 }
 
-test("codex use bootstraps to the first eligible label in pool order", async () => {
+test("codex use picks the label with the most weekly headroom", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const qaJwt = makeFakeJwt({
@@ -136,15 +136,15 @@ test("codex use bootstraps to the first eligible label in pool order", async () 
     assert.equal(result.ok, true);
     assert.equal(result.activated.status, "activated");
     assert.equal(result.activated.receipt.label, "pro2");
-    assert.deepEqual(result.activated.receipt.reasons, ["round_robin_bootstrap_first_eligible"]);
+    assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(updatedState.targets.codexCli.activeLabel, "pro2");
     assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "pro2");
-    assert.deepEqual(updatedState.targets.codexCli.lastSelectionReceipt.reasons, ["round_robin_bootstrap_first_eligible"]);
+    assert.deepEqual(updatedState.targets.codexCli.lastSelectionReceipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
 });
 
-test("back-to-back codex use runs rotate across eligible labels", async () => {
+test("back-to-back codex use runs keep the same most-headroom label", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const bossJwt = makeFakeJwt({
@@ -226,13 +226,15 @@ test("back-to-back codex use runs rotate across eligible labels", async () => {
     const first = JSON.parse(await runCli(["codex", "use", "--home", home], { fetchImpl }));
     const second = JSON.parse(await runCli(["codex", "use", "--home", home], { fetchImpl }));
 
+    assert.equal(first.activated.status, "activated");
     assert.equal(first.activated.receipt.label, "boss");
-    assert.deepEqual(first.activated.receipt.reasons, ["round_robin_bootstrap_first_eligible"]);
-    assert.equal(second.activated.receipt.label, "qa");
-    assert.deepEqual(second.activated.receipt.reasons, ["round_robin_next_eligible"]);
+    assert.deepEqual(first.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
+    assert.equal(second.activated.receipt.label, "boss");
+    assert.equal(second.activated.receipt.previousLabel, "boss");
+    assert.deepEqual(second.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    assert.equal(updatedState.targets.codexCli.activeLabel, "qa");
+    assert.equal(updatedState.targets.codexCli.activeLabel, "boss");
 });
 
 test("codex use <label> activates the requested label without probing usage", async () => {
@@ -286,7 +288,7 @@ test("codex use <label> activates the requested label without probing usage", as
     assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.explicit, true);
 });
 
-test("plain codex use round-robins from an explicitly activated label", async () => {
+test("plain codex use re-ranks by headroom from an explicitly activated label", async () => {
   const home = mkTempHome();
   const bossJwt = makeFakeJwt({
     email: "boss@example.com",
@@ -324,9 +326,14 @@ test("plain codex use round-robins from an explicitly activated label", async ()
       },
     },
   });
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
+      const accountId =
+        init && init.headers && typeof init.headers["ChatGPT-Account-Id"] === "string"
+          ? init.headers["ChatGPT-Account-Id"]
+          : "";
+      const secondaryUsedPercent = accountId === "acct_qa" ? 10 : accountId === "acct_pro6" ? 40 : 60;
       return {
         ok: true,
         status: 200,
@@ -337,6 +344,11 @@ test("plain codex use round-robins from an explicitly activated label", async ()
               used_percent: 5,
               limit_window_seconds: 10800,
               reset_at: Math.floor(Date.now() / 1000) + 3600,
+            },
+            secondary_window: {
+              used_percent: secondaryUsedPercent,
+              limit_window_seconds: 7 * 24 * 3600,
+              reset_at: Math.floor(Date.now() / 1000) + 6 * 24 * 3600,
             },
           },
         }),
@@ -355,7 +367,7 @@ test("plain codex use round-robins from an explicitly activated label", async ()
     assert.equal(explicit.activated.receipt.label, "pro6");
     assert.equal(rotated.activated.receipt.previousLabel, "pro6");
     assert.equal(rotated.activated.receipt.label, "qa");
-    assert.deepEqual(rotated.activated.receipt.reasons, ["round_robin_next_eligible"]);
+    assert.deepEqual(rotated.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
 });
 
 test("codex use <label> records a blocked receipt for invalid explicit labels", async () => {
@@ -423,7 +435,7 @@ test("codex use <label> records a blocked receipt for invalid explicit labels", 
     assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.status, "blocked");
 });
 
-test("codex use uses the inferred active label as the round-robin cursor", async () => {
+test("codex use reports the inferred active label as previousLabel and keeps it on a headroom tie", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const bossJwt = makeFakeJwt({
@@ -515,6 +527,6 @@ test("codex use uses the inferred active label as the round-robin cursor", async
 
     const result = JSON.parse(await runCli(["codex", "use", "--home", home], { fetchImpl }));
     assert.equal(result.activated.receipt.previousLabel, "boss");
-    assert.equal(result.activated.receipt.label, "qa");
-    assert.deepEqual(result.activated.receipt.reasons, ["round_robin_next_eligible"]);
+    assert.equal(result.activated.receipt.label, "boss");
+    assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
 });

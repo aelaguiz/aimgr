@@ -173,17 +173,17 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     const result = JSON.parse(await runCli(["codex", "use", "--home", home], { fetchImpl }));
     assert.equal(result.ok, true);
     assert.equal(result.activated.status, "activated");
-    assert.equal(result.activated.receipt.label, "coder2");
-    assert.deepEqual(result.activated.receipt.reasons, ["round_robin_bootstrap_first_eligible"]);
+    assert.equal(result.activated.receipt.label, "lessons");
+    assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
 
     const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
-    assert.equal(auth.tokens.account_id, "acct_coder2");
+    assert.equal(auth.tokens.account_id, "acct_lessons");
 
     const status = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
-    const coder2 = status.accounts.find((account) => account.label === "coder2");
-    assert.equal(coder2.operator.status, "ready");
-    assert.equal(coder2.operator.detailReason, "missing_browser");
-    assert.equal(status.codexCli.activeLabel, "coder2");
+    const lessons = status.accounts.find((account) => account.label === "lessons");
+    assert.equal(lessons.operator.status, "ready");
+    assert.equal(lessons.operator.detailReason, "missing_browser");
+    assert.equal(status.codexCli.activeLabel, "lessons");
 });
 
 test("derivePoolAccountStatus requires a complete native Claude bundle for anthropic readiness", () => {

@@ -13,7 +13,7 @@ import { decodeJwtPayload } from "../credentials/jwt.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
 import { resolveCodexAuthFilePath, resolveCodexConfigPath, resolveManagedCodexHomeDir } from "../io/paths.js";
 import { appendOpenaiCodexHistory, collectCodexPoolStatusWithExhaustionHistory, recordOpenaiCodexBlockedSelectionHistory } from "../pool/history.js";
-import { getCodexPoolLabels, pickNextBestLocalCliPoolLabel, pickNextCodexUseRoundRobinLabel, rankPoolCandidates } from "../pool/ranking.js";
+import { getCodexPoolLabels, pickNextBestLocalCliPoolLabel, rankPoolCandidates } from "../pool/ranking.js";
 import { probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { discoverStatusConfiguredOpenclawCodexAgents, getCodexTargetState, getImportedCodexLabels, getOpenclawAssignments, getOpenclawTargetState, hasImportedCodexReplica } from "../state/accounts.js";
 import { markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
@@ -469,7 +469,6 @@ export async function activateCodexPoolSelection({
   observedAt: observedAtOverride,
   usageByProvider: usageByProviderOverride,
   probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
-  selectionMode = "round_robin",
   avoidCurrentLabel = false,
 }) {
   ensureStateShape(state);
@@ -538,33 +537,22 @@ export async function activateCodexPoolSelection({
     return { status: "blocked", receipt, wrote: false };
   }
 
-  let selection;
-  if (selectionMode === "round_robin") {
-    selection = pickNextCodexUseRoundRobinLabel({
-      poolLabels: poolStatus.labels,
-      eligibleLabels: selectionEligibleLabels,
-      currentLabel,
-    });
-  } else if (selectionMode === "weighted_usage") {
-    const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
-    const currentAssignments = getOpenclawAssignments(state);
-    const rankedCandidates = rankPoolCandidates({
-      labels: selectionEligibleLabels,
-      usage: usageByLabel,
-      currentLabel,
-      currentAssignments,
-      configuredAgents: configuredCodexAgents,
-      agentDemand: state.pool.openaiCodex.agentDemand,
-      lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
-      now: Date.parse(observedAt),
-    });
-    selection = pickNextBestLocalCliPoolLabel({
-      rankedCandidates,
-      avoidLabel: avoidCurrentLabel ? currentLabel : null,
-    });
-  } else {
-    throw new Error(`Unsupported Codex selection mode: ${selectionMode}`);
-  }
+  const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
+  const currentAssignments = getOpenclawAssignments(state);
+  const rankedCandidates = rankPoolCandidates({
+    labels: selectionEligibleLabels,
+    usage: usageByLabel,
+    currentLabel,
+    currentAssignments,
+    configuredAgents: configuredCodexAgents,
+    agentDemand: state.pool.openaiCodex.agentDemand,
+    lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
+    now: Date.parse(observedAt),
+  });
+  const selection = pickNextBestLocalCliPoolLabel({
+    rankedCandidates,
+    avoidLabel: avoidCurrentLabel ? currentLabel : null,
+  });
   if (!selection) {
     throw new Error("Failed to select a Codex pool label.");
   }

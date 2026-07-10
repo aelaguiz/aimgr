@@ -93,7 +93,6 @@ export async function watchCodexPoolSelectionOnce(
       env,
       observedAt,
       usageByProvider,
-      selectionMode: "weighted_usage",
     });
     const postTarget = readCodexCliTargetStatus({ state, homeDir, env });
     const receipt = {
@@ -180,7 +179,6 @@ export async function watchCodexPoolSelectionOnce(
     env,
     observedAt,
     usageByProvider,
-    selectionMode: "weighted_usage",
   });
   const postTarget = readCodexCliTargetStatus({ state, homeDir, env });
   const receipt = {

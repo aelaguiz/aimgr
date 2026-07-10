@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { extractSessionModelRefFromEntry } from "../../src/openclaw/sessions.js";
-import { pickNextCodexUseRoundRobinLabel } from "../../src/pool/ranking.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, withEnv, writeJson } from "../helpers/files.js";
 
@@ -292,48 +291,6 @@ test("pi use refuses stale cleanup when Pi auth is malformed", async () => {
         assert.equal(updatedState.targets.piCli.lastSelectionReceipt, undefined);
       },
     );
-});
-
-test("pickNextCodexUseRoundRobinLabel rotates to the next eligible label in pool order", () => {
-  const picked = pickNextCodexUseRoundRobinLabel({
-    poolLabels: ["pro1", "pro2", "pro3"],
-    eligibleLabels: ["pro1", "pro2", "pro3"],
-    currentLabel: "pro1",
-  });
-
-  assert.deepEqual(picked, {
-    label: "pro2",
-    keptCurrent: false,
-    reasons: ["round_robin_next_eligible"],
-  });
-});
-
-test("pickNextCodexUseRoundRobinLabel bootstraps to the first eligible label when the current label is unavailable", () => {
-  const picked = pickNextCodexUseRoundRobinLabel({
-    poolLabels: ["boss", "qa", "zzz"],
-    eligibleLabels: ["qa", "zzz"],
-    currentLabel: "boss",
-  });
-
-  assert.deepEqual(picked, {
-    label: "qa",
-    keptCurrent: false,
-    reasons: ["round_robin_bootstrap_first_eligible"],
-  });
-});
-
-test("pickNextCodexUseRoundRobinLabel keeps the only eligible label", () => {
-  const picked = pickNextCodexUseRoundRobinLabel({
-    poolLabels: ["boss", "qa"],
-    eligibleLabels: ["qa"],
-    currentLabel: "qa",
-  });
-
-  assert.deepEqual(picked, {
-    label: "qa",
-    keptCurrent: true,
-    reasons: ["round_robin_single_eligible"],
-  });
 });
 
 test("extractSessionModelRefFromEntry prefers runtime over override", () => {
