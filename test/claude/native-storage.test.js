@@ -24,7 +24,11 @@ import {
   projectClaudeNativeBundleToManagedConfig,
   writeClaudeNativeProjectionPair,
 } from "../../src/targets/claude-cli.js";
-import { materializeClaudeSecurityShim, runClaudeCli } from "../../src/targets/claude-runner.js";
+import {
+  materializeClaudeSecurityShim,
+  runClaudeCli,
+  verifySandboxExecutable,
+} from "../../src/targets/claude-runner.js";
 import { writeJsonFileIfChanged } from "../../src/io/json-store.js";
 import { buildAnthropicClaudeCredential, writeClaudeNativeBundle } from "../helpers/claude.js";
 import { mkTempHome, writeJson } from "../helpers/files.js";
@@ -637,6 +641,88 @@ test("compatibility executable is content-addressed, private, and reusable", () 
   assert.match(first.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(fs.statSync(first.shimPath).mode & 0o777, 0o500);
   assert.equal(fs.statSync(first.shimPath).nlink, 1);
+});
+
+test("sandbox qualification accepts a strict Apple system build without a release-specific digest", () => {
+  const calls = [];
+  const fileStat = {
+    isFile: () => true,
+    isSymbolicLink: () => false,
+    uid: 0,
+    gid: 0,
+    mode: 0o100755,
+  };
+  const result = verifySandboxExecutable({
+    fsImpl: {
+      lstatSync: (filePath) => {
+        assert.equal(filePath, "/usr/bin/sandbox-exec");
+        return fileStat;
+      },
+      accessSync: (filePath, mode) => {
+        assert.equal(filePath, "/usr/bin/sandbox-exec");
+        assert.equal(mode, fs.constants.X_OK);
+      },
+    },
+    spawnSyncImpl: (file, args, options) => {
+      calls.push({ file, args, options });
+      if (args[0] === "--verify") {
+        return { status: 0, signal: null, stdout: "", stderr: "valid on disk" };
+      }
+      return {
+        status: 0,
+        signal: null,
+        stdout: "",
+        stderr: [
+          "Executable=/usr/bin/sandbox-exec",
+          'designated => identifier "com.apple.sandbox-exec" and anchor apple',
+        ].join("\n"),
+      };
+    },
+  });
+  assert.equal(result, "/usr/bin/sandbox-exec");
+  assert.deepEqual(calls.map(({ file, args }) => ({ file, args })), [
+    {
+      file: "/usr/bin/codesign",
+      args: ["--verify", "--strict", "--verbose=2", "/usr/bin/sandbox-exec"],
+    },
+    {
+      file: "/usr/bin/codesign",
+      args: ["-d", "-r-", "/usr/bin/sandbox-exec"],
+    },
+  ]);
+  for (const call of calls) {
+    assert.equal(call.options.shell, false);
+    assert.equal(call.options.env.PATH, "/usr/bin:/bin");
+  }
+});
+
+test("sandbox qualification rejects a valid non-Apple designated requirement", () => {
+  const fileStat = {
+    isFile: () => true,
+    isSymbolicLink: () => false,
+    uid: 0,
+    gid: 0,
+    mode: 0o100755,
+  };
+  assert.throws(
+    () => verifySandboxExecutable({
+      fsImpl: {
+        lstatSync: () => fileStat,
+        accessSync: () => {},
+      },
+      spawnSyncImpl: (_file, args) => (
+        args[0] === "--verify"
+          ? { status: 0, signal: null, stdout: "", stderr: "" }
+          : {
+            status: 0,
+            signal: null,
+            stdout: "",
+            stderr: 'designated => identifier "com.apple.sandbox-exec" and anchor generic',
+          }
+      ),
+    }),
+    /not the qualified Apple system binary/,
+  );
 });
 
 test("targeted boundary exposes only the selected credential and shim to parent and child", () => {

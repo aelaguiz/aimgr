@@ -12,8 +12,8 @@ const NO_KEYCHAIN_PROFILE_PATH = fileURLToPath(
   new URL("../../native/claude/no-keychain.sb", import.meta.url),
 );
 const SANDBOX_EXEC_PATH = "/usr/bin/sandbox-exec";
+const CODESIGN_PATH = "/usr/bin/codesign";
 const CLANG_PATH = "/usr/bin/clang";
-const SUPPORTED_SANDBOX_EXEC_SHA256 = "8290e4be7387a0df83cd1559e86afd880464f269450573d012795761fe298f16";
 const SUPPORTED_CLAUDE = Object.freeze({
   version: "2.1.218",
   sha256: "71abaff59312c9a9b6a1d818365048b42e4e95cc521a823660eded3e0880d9b7",
@@ -233,7 +233,7 @@ export function materializeClaudeSecurityShim({
 }
 
 function verifyCodeSignature(command, { spawnSyncImpl = spawnSync } = {}) {
-  const verified = spawnSyncImpl("/usr/bin/codesign", ["--verify", "--strict", command], {
+  const verified = spawnSyncImpl(CODESIGN_PATH, ["--verify", "--strict", command], {
     encoding: "utf8",
     shell: false,
     timeout: 10_000,
@@ -247,7 +247,7 @@ function verifyCodeSignature(command, { spawnSyncImpl = spawnSync } = {}) {
   if (verified?.status !== 0 || verified?.signal) {
     throw new Error("Installed Claude signature verification failed.");
   }
-  const details = spawnSyncImpl("/usr/bin/codesign", ["-dv", "--verbose=4", command], {
+  const details = spawnSyncImpl(CODESIGN_PATH, ["-dv", "--verbose=4", command], {
     encoding: "utf8",
     shell: false,
     timeout: 10_000,
@@ -268,6 +268,66 @@ function verifyCodeSignature(command, { spawnSyncImpl = spawnSync } = {}) {
   ) {
     throw new Error("Installed Claude signing identity is not the qualified Anthropic identity.");
   }
+}
+
+export function verifySandboxExecutable({
+  fsImpl = fs,
+  spawnSyncImpl = spawnSync,
+} = {}) {
+  let stat;
+  try {
+    stat = fsImpl.lstatSync(SANDBOX_EXEC_PATH);
+    fsImpl.accessSync(SANDBOX_EXEC_PATH, fs.constants.X_OK);
+  } catch {
+    throw new Error("Could not inspect the local macOS sandbox boundary.");
+  }
+  if (
+    !stat.isFile()
+    || stat.isSymbolicLink()
+    || stat.uid !== 0
+    || stat.gid !== 0
+    || (stat.mode & 0o022) !== 0
+  ) {
+    throw new Error("Refusing an unsafe local macOS sandbox boundary.");
+  }
+  const options = {
+    encoding: "utf8",
+    shell: false,
+    timeout: 10_000,
+    maxBuffer: 64 * 1024,
+    env: {
+      LANG: "C",
+      LC_ALL: "C",
+      PATH: "/usr/bin:/bin",
+    },
+  };
+  const verified = spawnSyncImpl(
+    CODESIGN_PATH,
+    ["--verify", "--strict", "--verbose=2", SANDBOX_EXEC_PATH],
+    options,
+  );
+  if (verified?.status !== 0 || verified?.signal) {
+    throw new Error("The local macOS sandbox signature verification failed.");
+  }
+  const details = spawnSyncImpl(
+    CODESIGN_PATH,
+    ["-d", "-r-", SANDBOX_EXEC_PATH],
+    options,
+  );
+  const output = `${details?.stdout ?? ""}\n${details?.stderr ?? ""}`;
+  // Apple ships a distinct sandbox-exec binary with each macOS build. Its
+  // signed designated requirement is the stable authority boundary; a release
+  // hash would reject valid security updates while adding no stronger signer
+  // guarantee.
+  if (
+    details?.status !== 0
+    || details?.signal
+    || !output.includes(`Executable=${SANDBOX_EXEC_PATH}`)
+    || !output.includes('designated => identifier "com.apple.sandbox-exec" and anchor apple')
+  ) {
+    throw new Error("The local macOS sandbox boundary is not the qualified Apple system binary.");
+  }
+  return SANDBOX_EXEC_PATH;
 }
 
 export async function verifyInstalledClaudeExecutable({
@@ -353,6 +413,7 @@ export async function prepareClaudeCliLaunch({
   spawnSyncImpl = spawnSync,
   verifyInstalledClaudeExecutableImpl = verifyInstalledClaudeExecutable,
   materializeClaudeSecurityShimImpl = materializeClaudeSecurityShim,
+  verifySandboxExecutableImpl = verifySandboxExecutable,
 } = {}) {
   const resolvedUserHome = normalizedAbsolute(userHomeDir);
   const resolvedLaunchHome = normalizedAbsolute(homeDir);
@@ -375,9 +436,7 @@ export async function prepareClaudeCliLaunch({
     fsImpl,
     spawnSyncImpl,
   });
-  if (await hashFile(SANDBOX_EXEC_PATH, { fsImpl }) !== SUPPORTED_SANDBOX_EXEC_SHA256) {
-    throw new Error("The local macOS sandbox boundary is not the qualified build.");
-  }
+  const sandboxExecPath = verifySandboxExecutableImpl({ fsImpl, spawnSyncImpl });
   fsImpl.accessSync(NO_KEYCHAIN_PROFILE_PATH, fs.constants.R_OK);
   return Object.freeze({
     command: resolvedCommand,
@@ -385,7 +444,7 @@ export async function prepareClaudeCliLaunch({
     homeDir: resolvedLaunchHome,
     configDir: resolvedConfigDir,
     profilePath: NO_KEYCHAIN_PROFILE_PATH,
-    sandboxExecPath: SANDBOX_EXEC_PATH,
+    sandboxExecPath,
     ...topology,
     ...adapter,
   });
