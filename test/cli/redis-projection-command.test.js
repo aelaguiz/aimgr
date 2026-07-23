@@ -438,7 +438,7 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
-test("redis-configured claude run preserves a terminating signal after fenced cleanup", async () => {
+test("redis-configured claude run preserves a terminating signal and resumes its exact fence", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   writeAimgrConfig({
@@ -485,6 +485,22 @@ test("redis-configured claude run preserves a terminating signal after fenced cl
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
   const fenceKey = [...client.values.keys()].find((key) => key.includes(":fence:claude-rotation:claude"));
   assert.ok(fenceKey);
+  const interruptedFence = client.values.get(fenceKey);
+  let resumedLaunches = 0;
+  const resumedOut = await runCli(["claude", "run", "claude", "--home", home], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: () => {
+      resumedLaunches += 1;
+      assert.equal(client.values.get(fenceKey), interruptedFence);
+      return { status: 0, signal: null };
+    },
+  });
+  assert.equal(resumedOut, "");
+  assert.equal(resumedLaunches, 1);
+  assert.equal(client.values.has(fenceKey), false);
+  assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
 });
 
 test("redis-configured Claude import requires expected identity policy and rejects candidate identity aliases", async () => {
@@ -719,18 +735,20 @@ test("failed post-run publication fences other machines until the originating ho
   assert.deepEqual(failedRun, { stdout: "", exitCode: 2 });
   const failedRunFenceKey = [...client.values.keys()].find((key) => key.includes(":fence:claude-rotation:claude"));
   assert.ok(failedRunFenceKey, "a nonclean exit with unchanged tokens must retain the uncertainty fence");
-  let unsafeRelaunches = 0;
-  await assert.rejects(
-    runCli(["claude", "run", "claude", "--home", home], {
+  let sameHomeRelaunches = 0;
+  const interruptedAgain = await runCliWithExitCode(
+    ["claude", "run", "claude", "--home", home],
+    {
       ...deps,
       runClaudeCliImpl: () => {
-        unsafeRelaunches += 1;
-        return { status: 0, signal: null };
+        sameHomeRelaunches += 1;
+        assert.ok(client.values.has(failedRunFenceKey));
+        return { status: 2, signal: null };
       },
-    }),
-    /unchanged local tokens cannot prove refresh continuity/,
+    },
   );
-  assert.equal(unsafeRelaunches, 0);
+  assert.deepEqual(interruptedAgain, { stdout: "", exitCode: 2 });
+  assert.equal(sameHomeRelaunches, 1);
   assert.ok(client.values.has(failedRunFenceKey));
 
   const expiryOnlyBundle = structuredClone(record.credential.nativeClaudeBundle);
@@ -759,6 +777,7 @@ test("failed post-run publication fences other machines until the originating ho
     arbitrary.credential.nativeClaudeBundle.claudeAiOauth.expiresAt = Date.now() + 10_800_000;
     client.values.set(key, JSON.stringify(arbitrary));
   }
+  let unsafeRelaunches = 0;
   await assert.rejects(
     runCli(["claude", "run", "claude", "--home", home], {
       ...deps,

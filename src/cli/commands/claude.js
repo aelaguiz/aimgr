@@ -366,13 +366,13 @@ async function recoverSharedClaudeRotationFence({
       fence,
     });
     assertRedisClaudeFenceSuccessor({ record, fence });
+  } else if (recovered.reason === "tokens_unchanged") {
+    return { ...recovered, retainedFence: fence };
   } else {
     markRotationPublicationPending(runtime.state.targets.claudeCli, label);
     writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
     throw new Error(
-      recovered.reason === "tokens_unchanged"
-        ? `Claude label=${label} shared rotation fence is unresolved; unchanged local tokens cannot prove refresh continuity.`
-        : `Claude label=${label} shared rotation fence could not be recovered from this machine.`,
+      `Claude label=${label} shared rotation fence could not be recovered from this machine.`,
     );
   }
   await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before clearing a recovered rotation fence" });
@@ -637,7 +637,7 @@ async function handleRedisClaudeRun(context) {
     const target = runtime.state.targets.claudeCli;
     const hadPendingRotation = pendingRotationMap(target)[label]?.pending === true;
     const existingFence = await readRedisClaudeRotationFence(runtime.store, { label });
-    await recoverSharedClaudeRotationFence({
+    const fenceRecovery = await recoverSharedClaudeRotationFence({
       runtime,
       label,
       fence: existingFence,
@@ -647,6 +647,7 @@ async function handleRedisClaudeRun(context) {
       homeDir,
       nowMs,
     });
+    let retainedRunFence = fenceRecovery?.retainedFence ?? null;
     const preRunSync = await syncLiveClaudeRotationBackToLabelFromStorage({
       state: runtime.state,
       descriptor,
@@ -657,7 +658,7 @@ async function handleRedisClaudeRun(context) {
     let preRunFence = null;
     try {
       if (preRunSync.synced === true) {
-        preRunFence = await createClaudeRotationFenceForCurrentCredential({
+        preRunFence = retainedRunFence ?? await createClaudeRotationFenceForCurrentCredential({
           runtime,
           label,
           recoveryStorageId,
@@ -675,6 +676,7 @@ async function handleRedisClaudeRun(context) {
         assertRedisClaudeFenceSuccessor({ record: preRunRecord, fence: preRunFence });
         await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before clearing the pre-run rotation fence" });
         await clearClaudeRotationFenceOrThrow({ runtime, label, fence: preRunFence, guard });
+        if (preRunFence === retainedRunFence) retainedRunFence = null;
       }
     } catch {
       markRotationPublicationPending(target, label);
@@ -707,7 +709,7 @@ async function handleRedisClaudeRun(context) {
     target.appStatePath = descriptor.appStatePath;
     target.lastAppliedAt = observedAt;
     writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-    const runFence = await createClaudeRotationFenceForCurrentCredential({
+    const runFence = retainedRunFence ?? await createClaudeRotationFenceForCurrentCredential({
       runtime,
       label,
       recoveryStorageId,
