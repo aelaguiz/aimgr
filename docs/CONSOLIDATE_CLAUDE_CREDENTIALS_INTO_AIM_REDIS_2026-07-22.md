@@ -24,6 +24,46 @@ related:
   - No bulk live migration before one capture/projection/rotation canary passes.
   - No compatibility fallback to the private registry or direct Keychain status path after cutover.
 
+## Operator Scope Amendments (2026-07-23)
+
+Issued live by the operator during the conducted run; these override conflicting
+phase text below until the operator says otherwise.
+
+- **A1 — Keychain-free runtime if possible.** Operator intent verbatim: "if we
+  can not use the keychain, let's update the plan to not use the keychain."
+  If the official Claude client supports file-only credential storage
+  (`.credentials.json` read AND rotation write-back) in AIM-owned homes,
+  projection and rotation must not create, read, or write any Keychain item.
+  Named exception that survives A1: one-time capture reads of the remaining
+  loaded cohort on `Amir-M5`, whose credentials physically live in the local
+  login Keychain today (migration input only, per existing invariant). If the
+  client hard-requires Keychain, the pre-A1 isolated-Keychain design stands and
+  the evidence must be recorded here.
+- **A2 — Local-only until an explicit operator gate.** Operator intent
+  verbatim: "work locally... when I'm ready to cross machines I will let you
+  know." No contact with `Amirs-M3-Max-2` (or any remote machine): no SSH, no
+  rsync, no remote reads, no remote cleanup. All remaining live proof runs on
+  `Amir-M5`. The North Star acceptance clause "From `Amirs-M3-Max-2`..." and
+  every cross-machine task below are DEFERRED behind the operator's explicit
+  re-authorization, not deleted. Existing remote state from the pre-A2 canary
+  work (AIM-owned `~/.aimgr/claude-homes/pro5`, rsynced working tree at
+  `~/workspace/aimgr`, one inert isolated Keychain item in the locked login
+  Keychain) is frozen as-is; its cleanup is the first task after the gate
+  reopens.
+- **A3 — Tend is not a parity target.** Operator correction: Codex tending is
+  broken and dead. Do not use `aim codex run --tend` as the Claude-management
+  baseline, plan a Claude Tend equivalent, or describe Tend as a working AIM
+  capability. Claude parity here means Redis authority, status, explicit
+  account selection, official credential rotation, and command-line reauth.
+- **A4 — Remote deployment gate reopened.** On 2026-07-23, after the local
+  native no-Keychain run and reauthentication plan completed, the operator
+  explicitly directed AIM to commit and push the result, merge it to current
+  `main`, deploy that code from `~/workspace/aimgr` on
+  `amirs-m3-max-new`, and test it there. This reopens A2 only for repository
+  preservation/update, AIM installation, and the same bounded no-Keychain
+  verification on `Amirs-M3-Max-2`. It does not authorize Keychain unlock,
+  Keychain cleanup, cohort migration, or unrelated remote mutation.
+
 ## North Star
 
 ### Claim
@@ -298,11 +338,12 @@ last_updated: 2026-07-22
   - [x] P2.T1 — Implement account-labelled Redis inventory/status using existing records, usage probing, cache/backoff, and redaction contracts.
   - [ ] P2.T2 — Migrate the canonical candidate policy roster into Redis without credentials and prove candidate-only rows stay closed.
   - [ ] P2.T3 — Capture one loaded `Amir-M5` canary after exact identity and Redis-version checks.
-  - [ ] P2.T4 — Project the canary on `Amirs-M3-Max-2`, verify exact identity, and prove one official rotation publishes back to Redis.
+  - [ ] P2.T4a (amended per A1/A2) — Project the canary from Redis into an AIM-owned per-label home on `Amir-M5`, verify exact identity through the allowlisted status boundary, and prove one official rotation publishes back to Redis advancing only that label — Keychain-free per A1 if the client supports file-only storage. (Pre-A2 progress on the remote leg: projection + exact identity were proven live on `Amirs-M3-Max-2` 2026-07-22, rotation blocked by its locked Keychain; that evidence stands but the remote leg is now gated.)
+  - [ ] P2.T4b (DEFERRED — A2 operator gate) — Repeat projection/identity/rotation from `Amirs-M3-Max-2`, then clean up the frozen pre-A2 remote state.
 - Verification:
   - Local tests plus one bounded live canary; immediate status repeat makes zero additional provider requests.
 - Exit criteria:
-  - The canary is usable remotely from Redis, its local source is no longer required for runtime, and no other credential metadata changed.
+  - The canary is usable from Redis in an AIM-owned home distinct from its capture source, its local source is no longer required for runtime, and no other credential metadata changed. (Remote usability moves to P2.T4b under A2.)
 - Rollback:
   - Restore the canary from its untouched local Keychain source only if projection fails before rotation; never overwrite a newer Redis version.
 
@@ -314,7 +355,7 @@ last_updated: 2026-07-22
   - [x] P3.T2 — Replace direct per-account runtime launchers with AIM-owned Redis projection entry points or mark them migration-only.
   - [x] P3.T3 — Delete the private registry reader, direct Keychain status reader, duplicate usage cache/locks, duplicate CLI dependency injection, and obsolete tests/help/docs.
   - [ ] P3.T4 — Archive or remove superseded local registry/cache artifacts recoverably after code no longer references them.
-  - [ ] P3.T5 — Run full tests, lint, static old-path searches, and a cross-machine read-only Redis inventory.
+  - [ ] P3.T5 — Run full tests, lint, static old-path searches, and a read-only Redis inventory (local under A2; the cross-machine inventory repeat joins P2.T4b behind the operator gate).
 - Verification:
   - Full suite and lint pass; old-path trap searches are empty; Redis reports the expected Anthropic policy roster and loaded credential count; no live raw secrets are emitted.
 - Exit criteria:

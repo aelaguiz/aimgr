@@ -1,16 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  CLAUDE_MANAGED_FILE_STORAGE_MODE,
+  buildClaudeNativeStorageDescriptor,
   buildManagedClaudeNativeStorageDescriptor,
-  captureClaudeNativeBundleFromKeychain,
+  readManagedClaudeNativeBundleFromFiles,
   readClaudeNativeBundleFromStorage,
   readClaudeNativeKeychainOauth,
   readClaudeNativeOauthAccountAtPath,
+  retireManagedClaudeCredentialProjection,
   writeClaudeNativeKeychainOauth,
 } from "../../src/credentials/claude-native-storage.js";
-import { buildClaudeKeychainService } from "../../src/credentials/claude-native-storage.js";
 import {
   planClaudeNativeBundleReplacement,
   syncLiveClaudeRotationBackToLabelFromStorage,
@@ -20,7 +24,7 @@ import {
   projectClaudeNativeBundleToManagedConfig,
   writeClaudeNativeProjectionPair,
 } from "../../src/targets/claude-cli.js";
-import { runClaudeCli } from "../../src/targets/claude-runner.js";
+import { materializeClaudeSecurityShim, runClaudeCli } from "../../src/targets/claude-runner.js";
 import { writeJsonFileIfChanged } from "../../src/io/json-store.js";
 import { buildAnthropicClaudeCredential, writeClaudeNativeBundle } from "../helpers/claude.js";
 import { mkTempHome, writeJson } from "../helpers/files.js";
@@ -28,6 +32,9 @@ import { mkTempHome, writeJson } from "../helpers/files.js";
 const NOW_MS = Date.parse("2026-07-22T18:00:00.000Z");
 const ACCESS = "ACCESS_SECRET_SENTINEL_MUST_NOT_ESCAPE";
 const REFRESH = "REFRESH_SECRET_SENTINEL_MUST_NOT_ESCAPE";
+const NO_KEYCHAIN_PROFILE_PATH = fileURLToPath(
+  new URL("../../native/claude/no-keychain.sb", import.meta.url),
+);
 
 function oauth({
   accessToken = ACCESS,
@@ -85,6 +92,30 @@ function writeExactManagedBundle(configDir, value) {
   fs.chmodSync(path.join(configDir, ".claude.json"), 0o600);
 }
 
+function buildPreparedLaunch(home, {
+  label = "alpha",
+  command = process.execPath,
+} = {}) {
+  const aimgrRoot = path.join(home, ".aimgr");
+  const selectedLabelHome = path.join(aimgrRoot, "claude-homes", label);
+  const configDir = path.join(selectedLabelHome, ".claude");
+  const runtimeRoot = path.join(aimgrRoot, "runtime", "claude-file-store");
+  return {
+    command,
+    userHomeDir: home,
+    homeDir: selectedLabelHome,
+    configDir,
+    profilePath: path.join(home, "no-keychain.sb"),
+    sandboxExecPath: "/usr/bin/sandbox-exec",
+    aimgrRoot,
+    claudeHomesRoot: path.join(aimgrRoot, "claude-homes"),
+    selectedLabelHome,
+    runtimeRoot,
+    adapterDir: path.join(runtimeRoot, "source-sha"),
+    shimPath: path.join(runtimeRoot, "source-sha", "security"),
+  };
+}
+
 test("complete Keychain reader uses exact secret-free argv and wipes raw buffers", async () => {
   const calls = [];
   let stdoutBuffer;
@@ -136,28 +167,35 @@ test("Keychain writer sends the complete bundle only through stdin and wipes it"
     spawnSyncImpl: (file, args, options) => {
       inputReference = options.input;
       copiedInput = Buffer.from(options.input);
-      calls.push({ file, args, options: { ...options, input: "<stdin>" } });
+      calls.push({
+        file,
+        args,
+        options: {
+          ...options,
+          input: "<stdin>",
+        },
+      });
       return { status: 0 };
     },
   });
 
   assert.deepEqual(result, { ok: true });
   assert.equal(calls[0].file, "/usr/bin/security");
-  assert.deepEqual(calls[0].args, [
-    "add-generic-password",
-    "-U",
-    "-a",
-    "test-user",
-    "-s",
-    "Claude Code-credentials-isolated",
-    "-T",
-    fs.realpathSync(process.execPath),
-    "-w",
-  ]);
+  assert.deepEqual(calls[0].args, ["-i"]);
+  assert.equal(calls[0].options.env, undefined);
   assert.doesNotMatch(JSON.stringify(calls), /ACCESS_SECRET|REFRESH_SECRET/);
-  assert.equal(calls[0].args.includes("-A"), false);
-  assert.match(copiedInput.toString("utf8"), /ACCESS_SECRET_SENTINEL/);
-  assert.match(copiedInput.toString("utf8"), /REFRESH_SECRET_SENTINEL/);
+  const command = copiedInput.toString("utf8");
+  assert.match(command, /^add-generic-password -U /);
+  assert.match(command, /-a "test-user"/);
+  assert.match(command, /-s "Claude Code-credentials-isolated"/);
+  assert.match(command, /-T "\/usr\/bin\/security"/);
+  assert.match(command, /-X [a-f0-9]+\n$/);
+  assert.doesNotMatch(command, /(?:^|\s)-A(?:\s|$)/);
+  assert.doesNotMatch(command, /ACCESS_SECRET|REFRESH_SECRET/);
+  const encoded = command.match(/-X ([a-f0-9]+)\n$/)?.[1] ?? "";
+  const decoded = Buffer.from(encoded, "hex").toString("utf8");
+  assert.match(decoded, /ACCESS_SECRET_SENTINEL/);
+  assert.match(decoded, /REFRESH_SECRET_SENTINEL/);
   assert.ok(inputReference.every((byte) => byte === 0));
 
   let invoked = false;
@@ -204,7 +242,7 @@ test("exact app-state reader rejects unsafe identity files and allowlists stable
   );
 });
 
-test("managed descriptors isolate two labels and assemble a complete in-memory bundle", async () => {
+test("managed descriptors isolate two labels and read only their private files", () => {
   const home = mkTempHome();
   const defaultConfigDir = path.join(home, ".claude");
   const alphaDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
@@ -221,26 +259,23 @@ test("managed descriptors isolate two labels and assemble a complete in-memory b
     expectedEmail: "beta@example.com",
     managedRootDir: path.join(home, ".aimgr"),
   });
-  assert.notEqual(alpha.service, beta.service);
-  assert.notEqual(alpha.service, buildClaudeKeychainService({ configDir: defaultConfigDir, defaultConfigDir }));
+  assert.equal(alpha.storageMode, CLAUDE_MANAGED_FILE_STORAGE_MODE);
+  assert.equal(beta.storageMode, CLAUDE_MANAGED_FILE_STORAGE_MODE);
+  assert.equal(alpha.service, undefined);
+  assert.equal(beta.service, undefined);
+  assert.notEqual(alpha.credentialsPath, beta.credentialsPath);
   assert.equal(Object.isFrozen(alpha), true);
 
-  writeJson(alpha.appStatePath, { oauthAccount: account() });
-  fs.chmodSync(alpha.appStatePath, 0o600);
-  let reads = 0;
-  const captured = await captureClaudeNativeBundleFromKeychain({
-    descriptor: alpha,
-    nowMs: NOW_MS,
-    readClaudeNativeKeychainOauthImpl: ({ service }) => {
-      reads += 1;
-      assert.equal(service, alpha.service);
-      return { ok: true, oauth: oauth() };
-    },
-  });
-  assert.equal(reads, 1);
+  writeExactManagedBundle(alpha.configDir, credential());
+  const captured = readManagedClaudeNativeBundleFromFiles({ descriptor: alpha });
   assert.equal(captured.ok, true);
+  assert.equal(captured.source, "file");
   assert.equal(captured.nativeClaudeBundle.claudeAiOauth.refreshToken, REFRESH);
   assert.equal(captured.nativeClaudeBundle.oauthAccount.accountUuid, "acct_alpha");
+  assert.deepEqual(
+    readManagedClaudeNativeBundleFromFiles({ descriptor: beta }),
+    { ok: false, errorKind: "native_storage_empty" },
+  );
 });
 
 test("strict replacement planning rejects stale, ambiguous, and different identities without mutation", () => {
@@ -332,7 +367,7 @@ test("two-file projection restores app state when the credential write fails", (
   assert.equal(fs.readFileSync(appStatePath, "utf8"), appStateBefore);
 });
 
-test("managed projection writes and verifies files plus one isolated Keychain item", async () => {
+test("managed projection writes and verifies only the selected private files", async () => {
   const home = mkTempHome();
   const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
   const descriptor = buildManagedClaudeNativeStorageDescriptor({
@@ -341,31 +376,13 @@ test("managed projection writes and verifies files plus one isolated Keychain it
     expectedEmail: "alpha@example.com",
     managedRootDir: path.join(home, ".aimgr"),
   });
-  let keychainOauth = null;
-  let writes = 0;
-  const readKeychain = () => keychainOauth
-    ? { ok: true, oauth: structuredClone(keychainOauth) }
-    : { ok: false, errorKind: "keychain_item_missing" };
   const result = await projectClaudeNativeBundleToManagedConfig({
     descriptor,
     credential: credential(),
-    trustedApplicationPath: process.execPath,
     nowMs: NOW_MS,
-    readClaudeNativeKeychainOauthImpl: readKeychain,
-    writeClaudeNativeKeychainOauthImpl: ({ service, oauth: next }) => {
-      assert.equal(service, descriptor.service);
-      writes += 1;
-      keychainOauth = structuredClone(next);
-      return { ok: true };
-    },
-    deleteClaudeNativeKeychainOauthImpl: () => {
-      keychainOauth = null;
-      return { ok: true };
-    },
   });
   assert.equal(result.ok, true);
-  assert.equal(writes, 1);
-  assert.equal(keychainOauth.refreshToken, REFRESH);
+  assert.equal(result.storageMode, CLAUDE_MANAGED_FILE_STORAGE_MODE);
   assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, REFRESH);
   assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, ".claude.json"), "utf8")).oauthAccount.emailAddress, "alpha@example.com");
   assert.doesNotMatch(JSON.stringify(result), /ACCESS_SECRET|REFRESH_SECRET/);
@@ -381,25 +398,16 @@ test("managed projection accepts an expired access token when a complete refresh
     managedRootDir: path.join(home, ".aimgr"),
   });
   const expired = credential({ expiresAtMs: NOW_MS - 60_000 });
-  let keychainOauth = null;
   const result = await projectClaudeNativeBundleToManagedConfig({
     descriptor,
     credential: expired,
-    trustedApplicationPath: process.execPath,
     nowMs: NOW_MS,
-    readClaudeNativeKeychainOauthImpl: () => keychainOauth
-      ? { ok: true, oauth: structuredClone(keychainOauth) }
-      : { ok: false, errorKind: "keychain_item_missing" },
-    writeClaudeNativeKeychainOauthImpl: ({ oauth: next }) => {
-      keychainOauth = structuredClone(next);
-      return { ok: true };
-    },
-    deleteClaudeNativeKeychainOauthImpl: () => ({ ok: true }),
   });
 
   assert.equal(result.ok, true);
-  assert.equal(keychainOauth.refreshToken, REFRESH);
-  assert.equal(keychainOauth.expiresAt, NOW_MS - 60_000);
+  const readback = readManagedClaudeNativeBundleFromFiles({ descriptor });
+  assert.equal(readback.nativeClaudeBundle.claudeAiOauth.refreshToken, REFRESH);
+  assert.equal(readback.nativeClaudeBundle.claudeAiOauth.expiresAt, NOW_MS - 60_000);
 });
 
 test("managed projection repairs unchanged credential files to private modes", async () => {
@@ -411,20 +419,10 @@ test("managed projection repairs unchanged credential files to private modes", a
     expectedEmail: "alpha@example.com",
     managedRootDir: path.join(home, ".aimgr"),
   });
-  let keychainOauth = null;
   const options = {
     descriptor,
     credential: credential(),
-    trustedApplicationPath: process.execPath,
     nowMs: NOW_MS,
-    readClaudeNativeKeychainOauthImpl: () => keychainOauth
-      ? { ok: true, oauth: structuredClone(keychainOauth) }
-      : { ok: false, errorKind: "keychain_item_missing" },
-    writeClaudeNativeKeychainOauthImpl: ({ oauth: next }) => {
-      keychainOauth = structuredClone(next);
-      return { ok: true };
-    },
-    deleteClaudeNativeKeychainOauthImpl: () => ({ ok: true }),
   };
   await projectClaudeNativeBundleToManagedConfig(options);
   const credentialsPath = path.join(configDir, ".credentials.json");
@@ -440,7 +438,7 @@ test("managed projection repairs unchanged credential files to private modes", a
   assert.equal(fs.statSync(configDir).mode & 0o777, 0o700);
 });
 
-test("managed projection rejects a symlinked AIM-owned directory before any Keychain write", async () => {
+test("managed projection rejects a symlinked AIM-owned directory before any file write", async () => {
   const home = mkTempHome();
   const external = path.join(home, "external");
   fs.mkdirSync(external);
@@ -452,40 +450,31 @@ test("managed projection rejects a symlinked AIM-owned directory before any Keyc
     expectedEmail: "alpha@example.com",
     managedRootDir: path.join(home, ".aimgr"),
   });
-  let wroteKeychain = false;
+  let wroteCredential = false;
 
   await assert.rejects(
     projectClaudeNativeBundleToManagedConfig({
       descriptor,
       credential: credential(),
-      trustedApplicationPath: process.execPath,
       nowMs: NOW_MS,
-      readClaudeNativeKeychainOauthImpl: () => ({ ok: false, errorKind: "keychain_item_missing" }),
-      writeClaudeNativeKeychainOauthImpl: () => {
-        wroteKeychain = true;
-        return { ok: true };
+      writeJsonFileIfChangedImpl: () => {
+        wroteCredential = true;
+        throw new Error("must not write");
       },
     }),
     /unsafe managed Claude directory/,
   );
-  assert.equal(wroteKeychain, false);
+  assert.equal(wroteCredential, false);
   assert.equal(fs.readdirSync(external).length, 0);
 
-  let keychainReads = 0;
-  const read = await readClaudeNativeBundleFromStorage({
+  const read = readManagedClaudeNativeBundleFromFiles({
     descriptor,
-    nowMs: NOW_MS,
-    readClaudeNativeKeychainOauthImpl: () => {
-      keychainReads += 1;
-      return { ok: false, errorKind: "must_not_run" };
-    },
   });
   assert.deepEqual(read, { ok: false, errorKind: "managed_storage_unsafe" });
-  assert.equal(keychainReads, 0);
   assert.equal(fs.readdirSync(external).length, 0);
 });
 
-test("managed projection restores both files and the prior Keychain item after failed verification", async () => {
+test("managed projection restores both files after file-only readback fails", async () => {
   const home = mkTempHome();
   const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
   const descriptor = buildManagedClaudeNativeStorageDescriptor({
@@ -501,48 +490,36 @@ test("managed projection restores both files and the prior Keychain item after f
   const appStatePath = path.join(configDir, ".claude.json");
   const credentialsBefore = fs.readFileSync(credentialsPath, "utf8");
   const appStateBefore = fs.readFileSync(appStatePath, "utf8");
-  let keychainOauth = structuredClone(oldCredential.nativeClaudeBundle.claudeAiOauth);
-  let readCount = 0;
-  const readKeychain = () => {
-    readCount += 1;
-    if (readCount === 2) {
-      return {
-        ok: true,
-        oauth: oauth({ accessToken: "VERIFY_WRONG_ACCESS", refreshToken: "VERIFY_WRONG_REFRESH", expiresAt: NOW_MS + 180_000 }),
-      };
-    }
-    return { ok: true, oauth: structuredClone(keychainOauth) };
-  };
 
   await assert.rejects(
     () => projectClaudeNativeBundleToManagedConfig({
       descriptor,
       credential: newCredential,
-      trustedApplicationPath: process.execPath,
       nowMs: NOW_MS,
-      readClaudeNativeKeychainOauthImpl: readKeychain,
-      writeClaudeNativeKeychainOauthImpl: ({ oauth: next }) => {
-        keychainOauth = structuredClone(next);
-        return { ok: true };
+      writeJsonFileIfChangedImpl: (filePath, data, options) => {
+        const result = writeJsonFileIfChanged(filePath, data, options);
+        if (filePath === credentialsPath) {
+          const corrupted = structuredClone(data);
+          corrupted.claudeAiOauth.accessToken = "VERIFY_WRONG_ACCESS";
+          fs.writeFileSync(filePath, `${JSON.stringify(corrupted, null, 2)}\n`, { mode: 0o600 });
+        }
+        return result;
       },
-      deleteClaudeNativeKeychainOauthImpl: () => ({ ok: false, errorKind: "unexpected" }),
     }),
-    /Keychain projection readback mismatch/,
+    /projection readback mismatch/,
   );
-  assert.equal(keychainOauth.accessToken, "OLD_ACCESS");
-  assert.equal(keychainOauth.refreshToken, "OLD_REFRESH");
   assert.equal(fs.readFileSync(credentialsPath, "utf8"), credentialsBefore);
   assert.equal(fs.readFileSync(appStatePath, "utf8"), appStateBefore);
 });
 
-test("native storage blocks equal-expiry file and Keychain ambiguity", async () => {
+test("legacy explicit storage still blocks equal-expiry file and Keychain ambiguity", async () => {
   const home = mkTempHome();
   const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
-  const descriptor = buildManagedClaudeNativeStorageDescriptor({
+  const descriptor = buildClaudeNativeStorageDescriptor({
     configDir,
     defaultConfigDir: path.join(home, ".claude"),
+    appStatePath: path.join(configDir, ".claude.json"),
     expectedEmail: "alpha@example.com",
-    managedRootDir: path.join(home, ".aimgr"),
   });
   writeExactManagedBundle(configDir, credential({ access: "FILE_ACCESS", refresh: "FILE_REFRESH" }));
   const result = await readClaudeNativeBundleFromStorage({
@@ -556,7 +533,7 @@ test("native storage blocks equal-expiry file and Keychain ambiguity", async () 
   assert.deepEqual(result, { ok: false, errorKind: "native_storage_freshness_ambiguous" });
 });
 
-test("managed projection blocks a different app-state identity even when files and Keychain tokens are absent", async () => {
+test("managed projection blocks a different app-state identity before credential projection", async () => {
   const home = mkTempHome();
   const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
   const descriptor = buildManagedClaudeNativeStorageDescriptor({
@@ -569,26 +546,24 @@ test("managed projection blocks a different app-state identity even when files a
     oauthAccount: account({ emailAddress: "different@example.com" }),
   });
   fs.chmodSync(descriptor.appStatePath, 0o600);
-  let wroteKeychain = false;
+  let wroteCredential = false;
   await assert.rejects(
     () => projectClaudeNativeBundleToManagedConfig({
       descriptor,
       credential: credential(),
-      trustedApplicationPath: process.execPath,
       nowMs: NOW_MS,
-      readClaudeNativeKeychainOauthImpl: () => ({ ok: false, errorKind: "keychain_item_missing" }),
-      writeClaudeNativeKeychainOauthImpl: () => {
-        wroteKeychain = true;
-        return { ok: true };
+      writeJsonFileIfChangedImpl: () => {
+        wroteCredential = true;
+        throw new Error("must not write");
       },
     }),
     /file_bundle_unavailable/,
   );
-  assert.equal(wroteKeychain, false);
+  assert.equal(wroteCredential, false);
   assert.equal(JSON.parse(fs.readFileSync(descriptor.appStatePath, "utf8")).oauthAccount.emailAddress, "different@example.com");
 });
 
-test("post-run sync chooses a newer same-identity Keychain rotation", async () => {
+test("post-run sync captures a newer same-identity file rotation", async () => {
   const home = mkTempHome();
   const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
   const descriptor = buildManagedClaudeNativeStorageDescriptor({
@@ -598,8 +573,12 @@ test("post-run sync chooses a newer same-identity Keychain rotation", async () =
     managedRootDir: path.join(home, ".aimgr"),
   });
   const stored = credential({ access: "STORED_ACCESS", refresh: "STORED_REFRESH", expiresAtMs: NOW_MS + 120_000 });
-  const rotatedOauth = oauth({ accessToken: "ROTATED_ACCESS", refreshToken: "ROTATED_REFRESH", expiresAt: NOW_MS + 180_000 });
-  writeExactManagedBundle(configDir, stored);
+  const rotated = credential({
+    access: "ROTATED_ACCESS",
+    refresh: "ROTATED_REFRESH",
+    expiresAtMs: NOW_MS + 180_000,
+  });
+  writeExactManagedBundle(configDir, rotated);
   const state = {
     schemaVersion: "0.2",
     accounts: { alpha: { provider: "anthropic", reauth: { mode: "native-claude" } } },
@@ -616,20 +595,147 @@ test("post-run sync chooses a newer same-identity Keychain rotation", async () =
     state,
     descriptor,
     nowMs: NOW_MS,
-    readClaudeNativeKeychainOauthImpl: () => ({ ok: true, oauth: rotatedOauth }),
   });
   assert.equal(result.synced, true, JSON.stringify(result));
   assert.deepEqual(result.rotatedFields.toSorted(), ["accessToken", "expiresAt", "refreshToken"]);
-  assert.equal(result.source, "keychain");
+  assert.equal(result.source, "file");
   assert.equal(state.credentials.anthropic.alpha.access, "ROTATED_ACCESS");
   assert.equal(state.credentials.anthropic.alpha.refresh, "ROTATED_REFRESH");
   assert.doesNotMatch(JSON.stringify(result), /ROTATED_ACCESS|ROTATED_REFRESH/);
 });
 
-test("runner pins both managed config variables and launches the exact trusted executable", async () => {
+test("managed retirement removes only the disposable credential projection", async () => {
   const home = mkTempHome();
-  const alphaDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
-  const betaDir = path.join(home, ".aimgr", "claude-homes", "beta", ".claude");
+  const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
+  const descriptor = buildManagedClaudeNativeStorageDescriptor({
+    configDir,
+    defaultConfigDir: path.join(home, ".claude"),
+    expectedEmail: "alpha@example.com",
+    managedRootDir: path.join(home, ".aimgr"),
+  });
+  await projectClaudeNativeBundleToManagedConfig({
+    descriptor,
+    credential: credential(),
+    nowMs: NOW_MS,
+  });
+  const sessionPath = path.join(configDir, "sessions", "resume-marker");
+  fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+  fs.writeFileSync(sessionPath, "keep");
+
+  assert.deepEqual(retireManagedClaudeCredentialProjection({ descriptor }), { removed: true });
+  assert.equal(fs.existsSync(descriptor.credentialsPath), false);
+  assert.equal(fs.existsSync(descriptor.appStatePath), true);
+  assert.equal(fs.readFileSync(sessionPath, "utf8"), "keep");
+  assert.deepEqual(retireManagedClaudeCredentialProjection({ descriptor }), { removed: false });
+});
+
+test("compatibility executable is content-addressed, private, and reusable", () => {
+  const home = mkTempHome();
+  const first = materializeClaudeSecurityShim({ homeDir: home });
+  const second = materializeClaudeSecurityShim({ homeDir: home });
+  assert.deepEqual(second, first);
+  assert.match(first.sourceSha256, /^[a-f0-9]{64}$/);
+  assert.equal(fs.statSync(first.shimPath).mode & 0o777, 0o500);
+  assert.equal(fs.statSync(first.shimPath).nlink, 1);
+});
+
+test("targeted boundary exposes only the selected credential and shim to parent and child", () => {
+  const home = mkTempHome();
+  const adapter = materializeClaudeSecurityShim({ homeDir: home });
+  const aimgrRoot = path.join(home, ".aimgr");
+  const selectedHome = path.join(aimgrRoot, "claude-homes", "alpha");
+  const selectedCredential = path.join(selectedHome, ".claude", ".credentials.json");
+  const otherCredential = path.join(aimgrRoot, "claude-homes", "beta", ".claude", ".credentials.json");
+  const globalCredential = path.join(home, ".claude", ".credentials.json");
+  const keychainDecoy = path.join(home, "Library", "Keychains", "login.keychain-db");
+  const probePath = path.join(selectedHome, "boundary-probe.cjs");
+  for (const filePath of [selectedCredential, otherCredential, globalCredential, keychainDecoy]) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, "synthetic");
+    fs.chmodSync(filePath, 0o600);
+  }
+  fs.writeFileSync(probePath, `
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+function readable(name) {
+  try {
+    fs.readFileSync(process.env[name], "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+function check() {
+  const shim = spawnSync("security", [
+    "find-generic-password", "-a", "aim-test-user", "-w", "-s", "aim-test-service",
+  ], { encoding: "utf8" });
+  return {
+    shimStatus: shim.status,
+    shimOutputEmpty: (shim.stdout || "") === "" && (shim.stderr || "") === "",
+    selectedReadable: readable("PROBE_SELECTED"),
+    otherReadable: readable("PROBE_OTHER"),
+    globalReadable: readable("PROBE_GLOBAL"),
+    keychainReadable: readable("PROBE_KEYCHAIN"),
+    realSecurityReadable: readable("PROBE_REAL_SECURITY"),
+  };
+}
+if (process.argv.includes("--child")) {
+  process.stdout.write(JSON.stringify(check()));
+} else {
+  const child = spawnSync(process.execPath, [__filename, "--child"], {
+    encoding: "utf8",
+    env: process.env,
+  });
+  process.stdout.write(JSON.stringify({
+    parent: check(),
+    childStatus: child.status,
+    child: JSON.parse(child.stdout),
+  }));
+}
+`);
+  fs.chmodSync(probePath, 0o500);
+
+  const result = spawnSync("/usr/bin/sandbox-exec", [
+    "-D", `USER_HOME=${home}`,
+    "-D", `USER_HOME_ALIAS=${home}`,
+    "-D", `LAUNCH_HOME=${selectedHome}`,
+    "-D", `LAUNCH_HOME_ALIAS=${selectedHome}`,
+    "-D", `AIMGR_ROOT=${aimgrRoot}`,
+    "-D", `SELECTED_LABEL_HOME=${selectedHome}`,
+    "-D", `ADAPTER_RUNTIME_ROOT=${adapter.runtimeRoot}`,
+    "-f", NO_KEYCHAIN_PROFILE_PATH,
+    process.execPath,
+    probePath,
+  ], {
+    encoding: "utf8",
+    env: {
+      PATH: `${adapter.adapterDir}:/usr/bin:/bin`,
+      PROBE_SELECTED: selectedCredential,
+      PROBE_OTHER: otherCredential,
+      PROBE_GLOBAL: globalCredential,
+      PROBE_KEYCHAIN: keychainDecoy,
+      PROBE_REAL_SECURITY: "/usr/bin/security",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const proof = JSON.parse(result.stdout);
+  assert.equal(proof.childStatus, 0);
+  for (const observation of [proof.parent, proof.child]) {
+    assert.deepEqual(observation, {
+      shimStatus: 44,
+      shimOutputEmpty: true,
+      selectedReadable: true,
+      otherReadable: false,
+      globalReadable: false,
+      keychainReadable: false,
+      realSecurityReadable: false,
+    });
+  }
+});
+
+test("runner pins the selected config, shim PATH, cwd, sandbox, and exact Claude argv", async () => {
+  const home = mkTempHome();
+  const preparedLaunch = buildPreparedLaunch(home);
   const calls = [];
   const spawnImpl = (file, args, options) => {
     calls.push({ file, args, options });
@@ -637,60 +743,65 @@ test("runner pins both managed config variables and launches the exact trusted e
   };
 
   await runClaudeCli({
-    command: process.execPath,
-    homeDir: home,
-    configDir: alphaDir,
+    command: preparedLaunch.command,
+    userHomeDir: home,
+    homeDir: preparedLaunch.homeDir,
+    configDir: preparedLaunch.configDir,
+    cwd: home,
     args: ["--exact-argument"],
     env: {
+      PATH: "/custom/bin:/usr/bin:/bin",
       CLAUDE_CONFIG_DIR: "/wrong",
       CLAUDE_SECURESTORAGE_CONFIG_DIR: "/wrong",
+      CLAUDE_CODE_OAUTH_TOKEN: "must-be-scrubbed",
+      ANTHROPIC_API_KEY: "must-be-scrubbed",
+      PRESERVED_PROJECT_ENV: "yes",
     },
+    preparedLaunch,
     spawnImpl,
   });
   assert.equal(calls[0].file, process.execPath);
   assert.match(calls[0].args[0], /src\/targets\/claude-supervisor\.js$/);
-  assert.deepEqual(calls[0].args.slice(1), [path.resolve(process.execPath), "--exact-argument"]);
+  assert.equal(calls[0].args[1], "/usr/bin/sandbox-exec");
+  assert.deepEqual(calls[0].args.slice(-2), [path.resolve(process.execPath), "--exact-argument"]);
   assert.deepEqual(calls[0].options.stdio, ["inherit", "inherit", "inherit", "ipc"]);
-  assert.equal(calls[0].options.env.CLAUDE_CONFIG_DIR, alphaDir);
-  assert.equal(calls[0].options.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, alphaDir);
-
-  await runClaudeCli({
-    command: process.execPath,
-    homeDir: home,
-    env: {
-      CLAUDE_CONFIG_DIR: "/wrong",
-      CLAUDE_SECURESTORAGE_CONFIG_DIR: "/wrong",
-    },
-    spawnImpl,
-  });
-  assert.equal(calls[1].options.env.CLAUDE_CONFIG_DIR, undefined);
-  assert.equal(calls[1].options.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, undefined);
-
-  const defaultConfigDir = path.join(home, ".claude");
-  assert.notEqual(
-    buildClaudeKeychainService({ configDir: alphaDir, defaultConfigDir }),
-    buildClaudeKeychainService({ configDir: betaDir, defaultConfigDir }),
+  assert.equal(calls[0].options.cwd, home);
+  assert.equal(calls[0].options.env.HOME, preparedLaunch.homeDir);
+  assert.equal(calls[0].options.env.CLAUDE_CONFIG_DIR, preparedLaunch.configDir);
+  assert.equal(calls[0].options.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, preparedLaunch.configDir);
+  assert.equal(calls[0].options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+  assert.equal(calls[0].options.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(calls[0].options.env.PRESERVED_PROJECT_ENV, "yes");
+  assert.equal(
+    calls[0].options.env.PATH,
+    `${preparedLaunch.adapterDir}:/custom/bin:/usr/bin:/bin`,
   );
 });
 
-test("runner reports a signalled Claude process as failed", async () => {
+test("runner preserves a signalled Claude process result", async () => {
   const home = mkTempHome();
+  const preparedLaunch = buildPreparedLaunch(home);
   const result = await runClaudeCli({
-    command: process.execPath,
-    homeDir: home,
-    configDir: path.join(home, ".claude"),
+    command: preparedLaunch.command,
+    userHomeDir: home,
+    homeDir: preparedLaunch.homeDir,
+    configDir: preparedLaunch.configDir,
+    preparedLaunch,
     spawnImpl: () => ({ status: null, signal: "SIGTERM" }),
   });
-  assert.deepEqual(result, { status: 1, signal: "SIGTERM" });
+  assert.deepEqual(result, { status: null, signal: "SIGTERM" });
 });
 
-test("runner propagates a real nonzero Claude exit through the supervisor", async () => {
+test("runner preserves a nonzero Claude exit", async () => {
   const home = mkTempHome();
+  const preparedLaunch = buildPreparedLaunch(home);
   const result = await runClaudeCli({
-    command: process.execPath,
-    homeDir: home,
-    configDir: path.join(home, ".claude"),
-    args: ["-e", "process.exit(7)"],
+    command: preparedLaunch.command,
+    userHomeDir: home,
+    homeDir: preparedLaunch.homeDir,
+    configDir: preparedLaunch.configDir,
+    preparedLaunch,
+    spawnImpl: () => ({ status: 7, signal: null }),
   });
   assert.deepEqual(result, { status: 7, signal: null });
 });

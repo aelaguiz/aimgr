@@ -10,7 +10,11 @@ import { resolveHomeDir } from "../io/paths.js";
 import { getAccountRecord } from "../state/accounts.js";
 import { getAuthorityAnthropicImportLabelMeta } from "../state/authority-anthropic.js";
 import { ensureStateShape } from "../state/schema.js";
-import { readClaudeNativeBundleFromStorage } from "./claude-native-storage.js";
+import {
+  CLAUDE_MANAGED_FILE_STORAGE_MODE,
+  readClaudeNativeBundleFromStorage,
+  readManagedClaudeNativeBundleFromFiles,
+} from "./claude-native-storage.js";
 
 export function captureClaudeNativeBundleFromHome({
   homeDir,
@@ -373,11 +377,13 @@ export async function syncLiveClaudeRotationBackToLabelFromStorage({
   nowMs = Date.now(),
   readClaudeNativeKeychainOauthImpl,
 }) {
-  const live = await readClaudeNativeBundleFromStorage({
-    descriptor,
-    nowMs,
-    readClaudeNativeKeychainOauthImpl,
-  });
+  const live = descriptor?.storageMode === CLAUDE_MANAGED_FILE_STORAGE_MODE
+    ? readManagedClaudeNativeBundleFromFiles({ descriptor })
+    : await readClaudeNativeBundleFromStorage({
+        descriptor,
+        nowMs,
+        readClaudeNativeKeychainOauthImpl,
+      });
   if (live.ok !== true) {
     return { synced: false, reason: live.errorKind || "no_live_bundle" };
   }
@@ -385,7 +391,9 @@ export async function syncLiveClaudeRotationBackToLabelFromStorage({
     state,
     nativeClaudeBundle: live.nativeClaudeBundle,
     source: live.source,
-    credentialsPath: live.source === "file" ? path.join(descriptor.configDir, ".credentials.json") : null,
+    credentialsPath: live.source === "file"
+      ? descriptor.credentialsPath ?? path.join(descriptor.configDir, ".credentials.json")
+      : null,
     nowMs,
   });
 }

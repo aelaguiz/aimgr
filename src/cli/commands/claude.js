@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, ANTHROPIC_PROVIDER } from "../../core/constants.js";
 import {
@@ -34,11 +33,12 @@ import {
   syncLiveClaudeRotationBackToLabelFromStorage,
 } from "../../credentials/claude-native.js";
 import {
+  CLAUDE_MANAGED_FILE_STORAGE_MODE,
   buildClaudeNativeStorageDescriptor,
   buildManagedClaudeNativeStorageDescriptor,
-  buildClaudeKeychainService,
   captureClaudeNativeBundleFromKeychain,
   ensureSafeManagedClaudeStorage,
+  retireManagedClaudeCredentialProjection,
 } from "../../credentials/claude-native-storage.js";
 import { writeJsonFileWithBackup } from "../../io/json-store.js";
 import {
@@ -57,7 +57,7 @@ import {
   activateClaudePoolSelection,
   projectClaudeNativeBundleToManagedConfig,
 } from "../../targets/claude-cli.js";
-import { runClaudeCli } from "../../targets/claude-runner.js";
+import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
 import {
   collectClaudeRedisAccountInventory,
   collectClaudeRedisAccountUsageStatus,
@@ -68,6 +68,7 @@ import {
 const CLAUDE_LEASE_RENEW_INTERVAL_MS = Math.floor(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS / 3);
 const CLAUDE_LEASE_RENEW_DEADLINE_MS = 5_000;
 const SAFE_PRE_RUN_STORAGE_REASONS = new Set(["native_storage_empty", "tokens_unchanged", "stale_candidate"]);
+const CLAUDE_RECOVERY_STORAGE_CONTRACT = CLAUDE_MANAGED_FILE_STORAGE_MODE;
 
 async function renewClaudeCredentialLeaseWithinDeadline(lease) {
   let deadlineTimer = null;
@@ -136,7 +137,9 @@ async function assertClaudeCredentialLeaseOwned({ lease, heartbeat, abortControl
 
 function buildClaudeRecoveryStorageId({ installationId, configDir }) {
   return `sha256:${createHash("sha256")
-    .update(`${installationId}\0${path.resolve(configDir).normalize("NFC")}`)
+    .update(
+      `${CLAUDE_RECOVERY_STORAGE_CONTRACT}\0${installationId}\0${path.resolve(configDir).normalize("NFC")}`,
+    )
     .digest("hex")}`;
 }
 
@@ -272,39 +275,6 @@ function clearRotationPublicationPending(target, label) {
   }
 }
 
-function resolveTrustedClaudeExecutable(resolveExecutableOnPathImpl) {
-  const discovered = resolveExecutableOnPathImpl?.("claude");
-  if (!discovered || !path.isAbsolute(discovered)) {
-    throw new Error("Could not resolve the trusted Claude executable for managed Keychain projection.");
-  }
-  try {
-    const resolved = fs.realpathSync(discovered);
-    const stat = fs.statSync(resolved);
-    if (!stat.isFile()) throw new Error("not a file");
-    fs.accessSync(resolved, fs.constants.X_OK);
-    return resolved;
-  } catch {
-    throw new Error("Could not verify the trusted Claude executable for managed Keychain projection.");
-  }
-}
-
-function assertNoManagedClaudeKeychainServiceCollision({ homeDir, snapshot }) {
-  const defaultConfigDir = resolveManagedClaudeDir({ homeDir });
-  const services = new Map();
-  for (const record of snapshot?.credentials ?? []) {
-    if (record.provider !== ANTHROPIC_PROVIDER) continue;
-    const label = normalizeLabel(record.label);
-    const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label });
-    const configDir = resolveManagedClaudeDir({ homeDir: claudeHome });
-    const service = buildClaudeKeychainService({ configDir, defaultConfigDir });
-    const priorConfigDir = services.get(service);
-    if (priorConfigDir && priorConfigDir !== configDir) {
-      throw new Error("Managed Claude Keychain service collision detected; refusing credential projection.");
-    }
-    services.set(service, configDir);
-  }
-}
-
 function requireExpectedClaudeEmail(state, label) {
   const expectedEmail = typeof state?.accounts?.[label]?.expect?.email === "string"
     ? state.accounts[label].expect.email.trim().toLowerCase()
@@ -321,17 +291,6 @@ function requireRedisClaudeCredential(state, label) {
     throw new Error(`Claude label=${label} does not have a credential-ready Redis record.`);
   }
   return credential;
-}
-
-function publicRotationResult(result, redisVersion = null) {
-  const reason = typeof result?.reason === "string" && /^[a-z0-9_]{1,64}$/.test(result.reason)
-    ? result.reason
-    : null;
-  return {
-    synced: result?.synced === true,
-    ...(reason ? { reason } : {}),
-    ...(Number.isInteger(redisVersion) ? { redisVersion } : {}),
-  };
 }
 
 async function publishRotationIfNeeded({ runtime, result, label, observedAt, fence }) {
@@ -368,7 +327,6 @@ async function recoverSharedClaudeRotationFence({
   guard,
   homeDir,
   nowMs,
-  readClaudeNativeKeychainOauthImpl,
 }) {
   if (!fence) return null;
   const baseline = requireClaudeFenceBaseline(runtime, label);
@@ -396,7 +354,6 @@ async function recoverSharedClaudeRotationFence({
     state: runtime.state,
     descriptor,
     nowMs,
-    readClaudeNativeKeychainOauthImpl,
   });
   await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before publishing recovered Claude rotation" });
   let record = null;
@@ -433,7 +390,11 @@ async function handleRedisClaudeCaptureNative(context, { label, sourceHome, sour
     readClaudeNativeKeychainOauthImpl,
     nowMs,
   } = context;
-  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
+  const runtime = await loadRedisRuntime({
+    homeDir,
+    connectRedisStoreImpl,
+    provider: ANTHROPIC_PROVIDER,
+  });
   let guard = null;
   let attemptedAt = null;
   try {
@@ -531,7 +492,11 @@ async function handleRedisClaudeCaptureNative(context, { label, sourceHome, sour
 
 async function handleRedisClaudeImportNative(context, { label, inFile }) {
   const { homeDir, stdout, connectRedisStoreImpl } = context;
-  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
+  const runtime = await loadRedisRuntime({
+    homeDir,
+    connectRedisStoreImpl,
+    provider: ANTHROPIC_PROVIDER,
+  });
   let guard = null;
   let attemptedAt = null;
   try {
@@ -613,24 +578,28 @@ async function handleRedisClaudeRun(context) {
     positional,
     homeDir,
     env,
-    stdout,
     setExitCode,
     connectRedisStoreImpl,
     runClaudeCliImpl = runClaudeCli,
-    readClaudeNativeKeychainOauthImpl,
-    writeClaudeNativeKeychainOauthImpl,
-    deleteClaudeNativeKeychainOauthImpl,
     resolveExecutableOnPathImpl,
     nowMs,
   } = context;
   const label = normalizeLabel(positional[2]);
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label });
   const configDir = resolveManagedClaudeDir({ homeDir: claudeHome });
-  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
+  const launchCwd = process.cwd();
+  const runtime = await loadRedisRuntime({
+    homeDir,
+    connectRedisStoreImpl,
+    provider: ANTHROPIC_PROVIDER,
+  });
   let guard = null;
   let operationError = null;
   let cleanupError = null;
-  let output = null;
+  let processResult = null;
+  let managedDescriptor = null;
+  let credentialProjected = false;
+  let runFenceCreated = false;
   try {
     guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
     // A prior lease owner may have rotated this label between our initial read
@@ -638,7 +607,6 @@ async function handleRedisClaudeRun(context) {
     // projections or choosing the authoritative bundle.
     await refreshRedisRuntimeState(runtime);
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before managed Claude preflight" });
-    assertNoManagedClaudeKeychainServiceCollision({ homeDir, snapshot: runtime.snapshot });
     const expectedEmail = requireExpectedClaudeEmail(runtime.state, label);
     const descriptor = buildManagedClaudeNativeStorageDescriptor({
       configDir,
@@ -646,8 +614,21 @@ async function handleRedisClaudeRun(context) {
       expectedEmail,
       managedRootDir: resolveAimgrStateDir({ homeDir }),
     });
+    managedDescriptor = descriptor;
     ensureSafeManagedClaudeStorage({ descriptor });
-    const trustedApplicationPath = resolveTrustedClaudeExecutable(resolveExecutableOnPathImpl);
+    const discoveredCommand = resolveExecutableOnPathImpl?.("claude");
+    if (!discoveredCommand || !path.isAbsolute(discoveredCommand)) {
+      throw new Error("Could not resolve the installed Claude executable for managed launch.");
+    }
+    const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
+      ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl
+      : prepareClaudeCliLaunch;
+    const preparedLaunch = await prepareLaunchImpl({
+      command: discoveredCommand,
+      userHomeDir: homeDir,
+      homeDir: claudeHome,
+      configDir,
+    });
     const installationId = ensureLocalInstallationId(runtime.localState);
     writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
     const recoveryStorageId = buildClaudeRecoveryStorageId({ installationId, configDir });
@@ -665,13 +646,11 @@ async function handleRedisClaudeRun(context) {
       guard,
       homeDir,
       nowMs,
-      readClaudeNativeKeychainOauthImpl,
     });
     const preRunSync = await syncLiveClaudeRotationBackToLabelFromStorage({
       state: runtime.state,
       descriptor,
       nowMs,
-      readClaudeNativeKeychainOauthImpl,
     });
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before pre-run rotation reconciliation" });
     let preRunRecord = null;
@@ -715,15 +694,12 @@ async function handleRedisClaudeRun(context) {
     clearRotationPublicationPending(target, label);
 
     const credential = requireRedisClaudeCredential(runtime.state, label);
-    const projection = await projectClaudeNativeBundleToManagedConfig({
+    await projectClaudeNativeBundleToManagedConfig({
       descriptor,
       credential,
-      trustedApplicationPath,
       nowMs,
-      readClaudeNativeKeychainOauthImpl,
-      writeClaudeNativeKeychainOauthImpl,
-      deleteClaudeNativeKeychainOauthImpl,
     });
+    credentialProjected = true;
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before native Claude launch" });
     target.activeLabel = label;
     target.claudeDir = configDir;
@@ -737,25 +713,33 @@ async function handleRedisClaudeRun(context) {
       recoveryStorageId,
       observedAt,
     });
+    runFenceCreated = true;
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "after creating the shared rotation fence" });
 
     let launched = null;
     let launchError = null;
     try {
       launched = await runClaudeCliImpl({
-        command: trustedApplicationPath,
+        command: preparedLaunch.command,
+        userHomeDir: homeDir,
         homeDir: claudeHome,
         configDir,
+        cwd: launchCwd,
         args: opts.afterDoubleDash,
         env,
         signal: guard.abortController.signal,
+        preparedLaunch,
       });
     } catch (error) {
       launchError = error;
     }
 
     const safeLaunch = {
-      status: Number.isInteger(launched?.status) ? launched.status : 1,
+      status: Number.isInteger(launched?.status)
+        ? launched.status
+        : typeof launched?.signal === "string"
+          ? null
+          : 1,
       signal: typeof launched?.signal === "string" ? launched.signal : null,
     };
     const launchCompletedCleanly = !launchError && safeLaunch.status === 0 && safeLaunch.signal === null;
@@ -764,7 +748,6 @@ async function handleRedisClaudeRun(context) {
       state: runtime.state,
       descriptor,
       nowMs: Date.now(),
-      readClaudeNativeKeychainOauthImpl,
     });
     let postRunRecord = null;
     let continuityFailed = guard.heartbeat.lost;
@@ -792,32 +775,33 @@ async function handleRedisClaudeRun(context) {
     if (continuityFailed) {
       markRotationPublicationPending(target, label);
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-      throw new Error("Claude rotation publication is pending; rerun this label before launching Claude again.");
+      if (launchError || launchCompletedCleanly) {
+        throw new Error("Claude rotation publication is pending; rerun this label before launching Claude again.");
+      }
+      processResult = safeLaunch;
+    } else {
+      await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before clearing the post-run rotation fence" });
+      await clearClaudeRotationFenceOrThrow({ runtime, label, fence: runFence, guard });
+      runFenceCreated = false;
+      clearRotationPublicationPending(target, label);
+      retireManagedClaudeCredentialProjection({ descriptor });
+      credentialProjected = false;
+      writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+      if (launchError) throw launchError;
+      processResult = safeLaunch;
     }
-    await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before clearing the post-run rotation fence" });
-    await clearClaudeRotationFenceOrThrow({ runtime, label, fence: runFence, guard });
-    clearRotationPublicationPending(target, label);
-    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-    if (launchError) throw launchError;
-    output = {
-      ok: safeLaunch.status === 0 && safeLaunch.signal === null,
-      claudeRun: {
-        label,
-        projection: {
-          action: projection.action,
-          wroteCredentials: projection.wrote?.credentials === true,
-          wroteAppState: projection.wrote?.appState === true,
-          wroteKeychain: true,
-        },
-        launched: safeLaunch,
-        rotation: {
-          before: publicRotationResult(preRunSync, preRunRecord?.version),
-          after: publicRotationResult(postRunSync, postRunRecord?.version),
-        },
-      },
-    };
   } catch (error) {
     operationError = error;
+    if (credentialProjected && !runFenceCreated && managedDescriptor) {
+      try {
+        retireManagedClaudeCredentialProjection({ descriptor: managedDescriptor });
+        credentialProjected = false;
+      } catch {
+        operationError = new Error(
+          "Managed Claude failed before launch fencing and its credential projection could not be retired safely.",
+        );
+      }
+    }
   } finally {
     try {
       await guard?.heartbeat.stop();
@@ -842,9 +826,12 @@ async function handleRedisClaudeRun(context) {
   }
   if (operationError) throw operationError;
   if (cleanupError) throw cleanupError;
-  stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-  if (output.claudeRun.launched.status !== 0 || output.claudeRun.launched.signal !== null) {
-    setExitCode(output.claudeRun.launched.status || 1);
+  if (processResult?.signal) {
+    process.kill(process.pid, processResult.signal);
+    return;
+  }
+  if (processResult?.status !== 0) {
+    setExitCode(Number.isInteger(processResult?.status) ? processResult.status : 1);
   }
 }
 

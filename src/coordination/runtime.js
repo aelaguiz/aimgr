@@ -22,6 +22,7 @@ export function isRedisConfigured({ homeDir }) {
 export async function loadRedisRuntime({
   homeDir,
   connectRedisStoreImpl = connectRedisStore,
+  provider = null,
   now = new Date(),
 }) {
   const { redis } = getRedisConfig({ homeDir });
@@ -30,6 +31,7 @@ export async function loadRedisRuntime({
   const localState = loadLocalState({ homeDir });
   const state = buildCoordinationView(snapshot, {
     localState,
+    provider,
   });
   return {
     redis,
@@ -38,6 +40,7 @@ export async function loadRedisRuntime({
     snapshot,
     localState,
     state,
+    providerScope: normalizeProviderId(provider),
   };
 }
 
@@ -70,6 +73,7 @@ export async function refreshRedisRuntimeState(runtime) {
   await refreshRedisRuntimeSnapshot(runtime);
   runtime.state = buildCoordinationView(runtime.snapshot, {
     localState: runtime.localState,
+    provider: runtime.providerScope,
   });
   return runtime.state;
 }

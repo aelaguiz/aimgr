@@ -15,7 +15,7 @@ import {
   resolvePiAuthFilePath,
 } from "../../src/io/paths.js";
 import { writeClaudeNativeBundleExportFile } from "../../src/credentials/claude-native.js";
-import { runCli } from "../helpers/cli-runner.js";
+import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
@@ -65,6 +65,35 @@ async function seedOpenAiRedis({ home, client }) {
     { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
   return store;
+}
+
+function prepareTestClaudeLaunch({ command, userHomeDir, homeDir, configDir }) {
+  return {
+    command: path.resolve(command),
+    userHomeDir,
+    homeDir,
+    configDir,
+  };
+}
+
+function buildTestClaudeResolver(prepareImpl = prepareTestClaudeLaunch) {
+  const resolve = () => process.execPath;
+  resolve.prepareClaudeCliLaunchImpl = prepareImpl;
+  return resolve;
+}
+
+function rotateProjectedClaudeCredential(configDir, {
+  accessToken,
+  refreshToken,
+  expiresAt = Date.now() + 7_200_000,
+}) {
+  const credentialsPath = resolveClaudeAuthFilePath(configDir);
+  const projected = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+  projected.claudeAiOauth.accessToken = accessToken;
+  projected.claudeAiOauth.refreshToken = refreshToken;
+  projected.claudeAiOauth.expiresAt = expiresAt;
+  fs.writeFileSync(credentialsPath, `${JSON.stringify(projected, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(credentialsPath, 0o600);
 }
 
 test("redis-configured codex use projects from Redis and writes only local adjunct state", async () => {
@@ -255,14 +284,30 @@ test("redis-configured claude import-native publishes the native bundle to Redis
   await importCredentialsSnapshot(
     store,
     {
-      credentials: [{
-        provider: "anthropic",
-        label: "claude",
-        policy: {
-          expect: { email: "boss@example.com" },
-          pool: { enabled: true },
+      credentials: [
+        {
+          provider: "anthropic",
+          label: "claude",
+          policy: {
+            expect: { email: "boss@example.com" },
+            pool: { enabled: true },
+          },
         },
-      }],
+        {
+          provider: "openai-codex",
+          label: "claude",
+          credential: {
+            access: "CODEX_ACCESS",
+            refresh: "CODEX_REFRESH",
+            expiresAt: "2026-07-23T18:00:00.000Z",
+            accountId: "acct_codex",
+          },
+          policy: {
+            expect: { email: "codex@example.com" },
+            pool: { enabled: true },
+          },
+        },
+      ],
     },
     { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
@@ -287,7 +332,10 @@ test("redis-configured claude import-native publishes the native bundle to Redis
   assert.doesNotMatch(out, /CLAUDE_(?:ACCESS|REFRESH)|boss@example\.com|bundle\.json|organization/i);
   const snapshot = await readSnapshot(store);
   const credentialRecord = snapshot.credentials.find((entry) => entry.provider === "anthropic" && entry.label === "claude");
+  const codexRecord = snapshot.credentials.find((entry) => entry.provider === "openai-codex" && entry.label === "claude");
   assert.equal(credentialRecord.credential.refresh, "CLAUDE_REFRESH");
+  assert.equal(codexRecord.credential.refresh, "CODEX_REFRESH");
+  assert.equal(codexRecord.version, 1);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
@@ -329,52 +377,114 @@ test("redis-configured claude run projects into a per-label home and publishes p
 
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" });
   const configDir = path.join(claudeHome, ".claude");
-  const keychain = new Map();
+  let preflightCount = 0;
+  let keychainCalls = 0;
   const out = await runCli(["claude", "run", "claude", "--home", home, "--", "--print", "hello"], {
     env: {},
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
-    resolveExecutableOnPathImpl: () => process.execPath,
-    readClaudeNativeKeychainOauthImpl: async ({ service }) => keychain.has(service)
-      ? { ok: true, oauth: structuredClone(keychain.get(service)) }
-      : { ok: false, errorKind: "keychain_item_missing" },
-    writeClaudeNativeKeychainOauthImpl: ({ service, oauth }) => {
-      keychain.set(service, structuredClone(oauth));
-      return { ok: true };
+    resolveExecutableOnPathImpl: buildTestClaudeResolver((options) => {
+      preflightCount += 1;
+      assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
+      return prepareTestClaudeLaunch(options);
+    }),
+    readClaudeNativeKeychainOauthImpl: () => {
+      keychainCalls += 1;
+      throw new Error("managed run must not read Keychain");
     },
-    deleteClaudeNativeKeychainOauthImpl: ({ service }) => {
-      keychain.delete(service);
-      return { ok: true };
+    writeClaudeNativeKeychainOauthImpl: () => {
+      keychainCalls += 1;
+      throw new Error("managed run must not write Keychain");
     },
-    runClaudeCliImpl: ({ homeDir: launchHome, configDir: launchConfigDir, args }) => {
+    deleteClaudeNativeKeychainOauthImpl: () => {
+      keychainCalls += 1;
+      throw new Error("managed run must not delete Keychain");
+    },
+    runClaudeCliImpl: ({
+      userHomeDir,
+      homeDir: launchHome,
+      configDir: launchConfigDir,
+      cwd,
+      args,
+      preparedLaunch,
+    }) => {
+      assert.equal(userHomeDir, home);
       assert.equal(launchHome, claudeHome);
       assert.equal(launchConfigDir, configDir);
+      assert.equal(cwd, process.cwd());
+      assert.equal(preparedLaunch.configDir, configDir);
       assert.deepEqual(args, ["--print", "hello"]);
       assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
-      const service = [...keychain.keys()][0];
-      keychain.set(service, {
-        ...keychain.get(service),
+      rotateProjectedClaudeCredential(configDir, {
         accessToken: "CLAUDE_ACCESS_ROTATED",
         refreshToken: "CLAUDE_REFRESH_ROTATED",
-        expiresAt: Date.now() + 7200_000,
       });
       return { status: 0, signal: null };
     },
   });
 
-  const result = JSON.parse(out);
-  assert.equal(result.ok, true);
-  assert.equal(result.claudeRun.projection.wroteKeychain, true);
-  assert.equal(result.claudeRun.rotation.after.synced, true);
-  assert.equal(Object.hasOwn(result.claudeRun, "homeDir"), false);
-  assert.doesNotMatch(out, /CLAUDE_(?:ACCESS|REFRESH)|boss@example\.com|claude-homes/);
+  assert.equal(out, "");
+  assert.equal(preflightCount, 1);
+  assert.equal(keychainCalls, 0);
   const snapshot = await readSnapshot(store);
   const credentialRecord = snapshot.credentials.find((entry) => entry.provider === "anthropic" && entry.label === "claude");
   assert.equal(credentialRecord.credential.refresh, "CLAUDE_REFRESH_ROTATED");
+  assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
+  assert.equal(fs.existsSync(path.join(configDir, ".claude.json")), true);
+  assert.equal(fs.existsSync(path.join(home, ".claude", ".credentials.json")), false);
   const local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
   assert.equal(local.targets.claudeCli.activeLabel, "claude");
   assert.match(local.targets.claudeCli.credentialsPath, /claude-homes\/claude\/\.claude\/\.credentials\.json$/);
   assert.doesNotMatch(JSON.stringify(local), /CLAUDE_REFRESH_ROTATED/);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
+});
+
+test("redis-configured claude run preserves a terminating signal after fenced cleanup", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "claude",
+      credential: buildAnthropicClaudeCredential(),
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  const signals = [];
+  const originalKill = process.kill;
+  process.kill = (pid, signal) => {
+    signals.push({ pid, signal });
+    return true;
+  };
+  try {
+    const out = await runCli(["claude", "run", "claude", "--home", home], {
+      env: {},
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+      runClaudeCliImpl: () => ({ status: null, signal: "SIGTERM" }),
+    });
+    assert.equal(out, "");
+  } finally {
+    process.kill = originalKill;
+  }
+  assert.deepEqual(signals, [{ pid: process.pid, signal: "SIGTERM" }]);
+  const configDir = path.join(
+    resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" }),
+    ".claude",
+  );
+  assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
+  const fenceKey = [...client.values.keys()].find((key) => key.includes(":fence:claude-rotation:claude"));
+  assert.ok(fenceKey);
 });
 
 test("redis-configured Claude import requires expected identity policy and rejects candidate identity aliases", async () => {
@@ -526,34 +636,19 @@ test("failed post-run publication fences other machines until the originating ho
       health: { status: "ready", reason: null },
     }],
   });
-  const keychain = new Map();
   const deps = {
     env: {},
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
-    resolveExecutableOnPathImpl: () => process.execPath,
-    readClaudeNativeKeychainOauthImpl: async ({ service }) => keychain.has(service)
-      ? { ok: true, oauth: structuredClone(keychain.get(service)) }
-      : { ok: false, errorKind: "keychain_item_missing" },
-    writeClaudeNativeKeychainOauthImpl: ({ service, oauth }) => {
-      keychain.set(service, structuredClone(oauth));
-      return { ok: true };
-    },
-    deleteClaudeNativeKeychainOauthImpl: ({ service }) => {
-      keychain.delete(service);
-      return { ok: true };
-    },
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
   };
 
   await assert.rejects(
     runCli(["claude", "run", "claude", "--home", home], {
       ...deps,
-      runClaudeCliImpl: () => {
-        const service = [...keychain.keys()][0];
-        keychain.set(service, {
-          ...keychain.get(service),
+      runClaudeCliImpl: ({ configDir }) => {
+        rotateProjectedClaudeCredential(configDir, {
           accessToken: "CLAUDE_ACCESS_ROTATED",
           refreshToken: "CLAUDE_REFRESH_ROTATED",
-          expiresAt: Date.now() + 7200_000,
         });
         for (const [key, raw] of client.values) {
           if (!key.includes(":credential:anthropic:claude") || key.includes(":lease:")) continue;
@@ -606,7 +701,7 @@ test("failed post-run publication fences other machines until the originating ho
     ...deps,
     runClaudeCliImpl: () => ({ status: 0, signal: null }),
   });
-  assert.equal(JSON.parse(repairedOut).ok, true);
+  assert.equal(repairedOut, "");
   local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
   assert.equal(local.targets.claudeCli.rotationPublicationPendingByLabel, undefined);
   const snapshot = await readSnapshot(store);
@@ -614,13 +709,14 @@ test("failed post-run publication fences other machines until the originating ho
   assert.equal(record.credential.refresh, "CLAUDE_REFRESH_ROTATED");
   assert.equal(client.values.has(sharedFenceKey), false);
 
-  await assert.rejects(
-    runCli(["claude", "run", "claude", "--home", home], {
+  const failedRun = await runCliWithExitCode(
+    ["claude", "run", "claude", "--home", home],
+    {
       ...deps,
       runClaudeCliImpl: () => ({ status: 2, signal: null }),
-    }),
-    /rotation publication is pending/,
+    },
   );
+  assert.deepEqual(failedRun, { stdout: "", exitCode: 2 });
   const failedRunFenceKey = [...client.values.keys()].find((key) => key.includes(":fence:claude-rotation:claude"));
   assert.ok(failedRunFenceKey, "a nonclean exit with unchanged tokens must retain the uncertainty fence");
   let unsafeRelaunches = 0;

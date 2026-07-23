@@ -1,0 +1,59 @@
+(version 1)
+
+;; AIM's managed Claude boundary is deliberately allow-default: Claude keeps
+;; its ordinary local project/tool/network behavior, while the credential
+;; escape paths that compete with the selected file projection stay closed.
+(allow default)
+
+;; The official client must observe only AIM's PATH compatibility executable.
+;; Absolute use or copying of the real command is denied independently.
+(deny process-exec
+    (literal "/usr/bin/security"))
+(deny file-read* file-test-existence
+    (literal "/usr/bin/security"))
+
+;; Real user/system Keychain databases and the legacy system-keychain channel.
+(deny file-read* file-test-existence file-write*
+    (subpath (string-append (param "USER_HOME") "/Library/Keychains"))
+    (subpath (string-append (param "USER_HOME_ALIAS") "/Library/Keychains"))
+    (subpath (string-append (param "LAUNCH_HOME") "/Library/Keychains"))
+    (subpath (string-append (param "LAUNCH_HOME_ALIAS") "/Library/Keychains"))
+    (subpath "/Library/Keychains")
+    (subpath "/System/Volumes/Data/Library/Keychains")
+    (subpath "/System/Library/Keychains")
+    (literal "/private/var/run/systemkeychaincheck.done")
+    (literal "/private/var/run/systemkeychaincheck.socket"))
+
+;; Security.framework and the prompt/authentication services it can enlist.
+(deny mach-lookup
+    (global-name-regex #"^com\.apple\.(SecurityServer|securityd(\..*)?|security\..*|CoreAuthentication\..*|ak\.auth\.xpc|CryptoTokenKit\..*)$"))
+(deny authorization-right-obtain)
+(deny appleevent-send)
+(deny lsopen)
+(deny iokit-open
+    (iokit-user-client-class "AppleKeyStoreUserClient")
+    (iokit-user-client-class "AppleFDEKeyStoreUserClient")
+    (iokit-user-client-class "AppleCredentialManagerUserClient")
+    (iokit-user-client-class "AppleSEPUserClient"))
+(deny iokit-open-user-client
+    (iokit-user-client-class "AppleKeyStoreUserClient")
+    (iokit-user-client-class "AppleFDEKeyStoreUserClient")
+    (iokit-user-client-class "AppleCredentialManagerUserClient")
+    (iokit-user-client-class "AppleSEPUserClient"))
+
+;; The caller's global Claude state is never part of a managed label.
+(deny file-read* file-test-existence file-write*
+    (subpath (string-append (param "USER_HOME") "/.claude"))
+    (literal (string-append (param "USER_HOME") "/.claude.json"))
+    (subpath (string-append (param "USER_HOME_ALIAS") "/.claude"))
+    (literal (string-append (param "USER_HOME_ALIAS") "/.claude.json")))
+
+;; No AIM state except this label's home and the reviewed runtime helper is
+;; reachable. This closes every other label without generating a policy.
+(deny file-read* file-test-existence file-write*
+    (require-all
+        (subpath (param "AIMGR_ROOT"))
+        (require-not
+            (require-any
+                (subpath (param "SELECTED_LABEL_HOME"))
+                (subpath (param "ADAPTER_RUNTIME_ROOT"))))))

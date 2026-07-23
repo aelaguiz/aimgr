@@ -71,3 +71,35 @@ test("policy-only Redis records are candidates and do not project empty credenti
   assert.deepEqual(state.accounts.writer.expect, { email: "writer@example.com" });
   assert.equal(Object.hasOwn(state.credentials.anthropic, "writer"), false);
 });
+
+test("provider-scoped coordination views keep same-label Claude policy authoritative", () => {
+  const state = buildCoordinationView({
+    credentials: [
+      normalizeCredentialRecord({
+        provider: "anthropic",
+        label: "shared",
+        credential: {},
+        policy: {
+          expect: { email: "claude@example.com" },
+          reauth: { mode: "native-claude" },
+          pool: { enabled: true },
+        },
+      }),
+      normalizeCredentialRecord({
+        provider: "openai-codex",
+        label: "shared",
+        credential: { access: "codex-access" },
+        policy: {
+          expect: { email: "codex@example.com" },
+          reauth: { mode: "manual-callback" },
+          pool: { enabled: true },
+        },
+      }),
+    ],
+  }, { provider: "anthropic" });
+
+  assert.equal(state.accounts.shared.provider, "anthropic");
+  assert.deepEqual(state.accounts.shared.expect, { email: "claude@example.com" });
+  assert.equal(Object.hasOwn(state.credentials.anthropic, "shared"), false);
+  assert.equal(Object.hasOwn(state.credentials["openai-codex"], "shared"), false);
+});

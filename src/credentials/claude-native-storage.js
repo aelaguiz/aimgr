@@ -10,13 +10,15 @@ import {
   buildClaudeCredentialSummaryFromBundle,
   hasCompleteClaudeNativeBundle,
   normalizeNonEmptyStringArray,
-  readClaudeAuthFile,
 } from "./claude-bundle.js";
 
 const LOCAL_JSON_MAX_BYTES = 256 * 1024;
 const DEFAULT_MIN_REMAINING_MS = 60_000;
+const SECURITY_INTERACTIVE_MAX_LINE_BYTES = 4000;
+const HEX_DIGITS = Buffer.from("0123456789abcdef", "ascii");
 
 export const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
+export const CLAUDE_MANAGED_FILE_STORAGE_MODE = "contained_native_file_v1";
 
 export function buildClaudeKeychainService({ configDir, defaultConfigDir } = {}) {
   const rawConfigDir = typeof configDir === "string" ? configDir.trim() : "";
@@ -33,6 +35,22 @@ export function buildClaudeKeychainService({ configDir, defaultConfigDir } = {})
 
 function wipeBuffer(value) {
   if (Buffer.isBuffer(value)) value.fill(0);
+}
+
+function quoteSecurityInteractiveArgument(value) {
+  const normalized = normalizeRequiredString(value);
+  if (!normalized || /[\0\r\n]/.test(normalized)) return null;
+  return `"${normalized.replace(/[\\"]/g, "\\$&")}"`;
+}
+
+function hexEncodeBuffer(value) {
+  const encoded = Buffer.alloc(value.length * 2);
+  for (let index = 0; index < value.length; index += 1) {
+    const byte = value[index];
+    encoded[index * 2] = HEX_DIGITS[byte >>> 4];
+    encoded[(index * 2) + 1] = HEX_DIGITS[byte & 0x0f];
+  }
+  return encoded;
 }
 
 function executeSecurityRead({ file, args, options, execFileImpl }) {
@@ -176,28 +194,43 @@ export function writeClaudeNativeKeychainOauth({
     return { ok: false, errorKind: "keychain_write_invalid" };
   }
 
-  const secretInput = Buffer.from(`${JSON.stringify({ claudeAiOauth: normalized.oauth })}\n`, "utf8");
+  const secretInput = Buffer.from(JSON.stringify({ claudeAiOauth: normalized.oauth }), "utf8");
+  const encodedSecret = hexEncodeBuffer(secretInput);
+  const accountArgument = quoteSecurityInteractiveArgument(normalizedAccount);
+  const serviceArgument = quoteSecurityInteractiveArgument(normalizedService);
+  const trustedApplicationArgument = quoteSecurityInteractiveArgument(resolvedTrustedApplicationPath);
+  const commandPrefix = accountArgument && serviceArgument && trustedApplicationArgument
+    ? Buffer.from(
+        `add-generic-password -U -a ${accountArgument} -s ${serviceArgument} -T "/usr/bin/security" -T ${trustedApplicationArgument} -X `,
+        "utf8",
+      )
+    : null;
+  const commandInput = commandPrefix
+    ? Buffer.concat([commandPrefix, encodedSecret, Buffer.from("\n", "ascii")])
+    : null;
+  wipeBuffer(commandPrefix);
+  if (!commandInput || commandInput.length > SECURITY_INTERACTIVE_MAX_LINE_BYTES) {
+    wipeBuffer(secretInput);
+    wipeBuffer(encodedSecret);
+    wipeBuffer(commandInput);
+    return { ok: false, errorKind: "keychain_write_invalid" };
+  }
   let result;
   try {
+    // Apple's `security ... -w` prompt uses getpass(3), which truncates input
+    // at 128 characters. Interactive `-X` accepts the complete hex payload
+    // through stdin while keeping it out of argv and the process listing.
+    // AIM reads back rotations through the fixed system Keychain tool, so trust
+    // only that management binary plus the exact Claude executable; never use -A.
     result = spawnSyncImpl(
       "/usr/bin/security",
-      [
-        "add-generic-password",
-        "-U",
-        "-a",
-        normalizedAccount,
-        "-s",
-        normalizedService,
-        "-T",
-        resolvedTrustedApplicationPath,
-        "-w",
-      ],
+      ["-i"],
       {
-        input: secretInput,
+        input: commandInput,
         encoding: null,
         shell: false,
         stdio: ["pipe", "ignore", "ignore"],
-        timeout: 5000,
+        timeout: 7000,
         windowsHide: true,
       },
     );
@@ -205,6 +238,8 @@ export function writeClaudeNativeKeychainOauth({
     return { ok: false, errorKind: "keychain_write_failed" };
   } finally {
     wipeBuffer(secretInput);
+    wipeBuffer(encodedSecret);
+    wipeBuffer(commandInput);
   }
   wipeBuffer(result?.stdout);
   wipeBuffer(result?.stderr);
@@ -265,6 +300,67 @@ function normalizeOauthAccount(value) {
   };
 }
 
+function readOwnedPrivateJsonObject(filePath, {
+  fsImpl = fs,
+  maxBytes = LOCAL_JSON_MAX_BYTES,
+} = {}) {
+  let stat;
+  try {
+    stat = fsImpl.lstatSync(filePath);
+  } catch (error) {
+    return {
+      ok: false,
+      errorKind: error?.code === "ENOENT" ? "missing" : "unavailable",
+    };
+  }
+  if (
+    !stat.isFile()
+    || stat.isSymbolicLink()
+    || stat.nlink !== 1
+    || (typeof process.getuid === "function" && Number.isInteger(stat.uid) && stat.uid !== process.getuid())
+    || !Number.isFinite(stat.size)
+    || stat.size < 0
+    || stat.size > maxBytes
+    || (Number.isInteger(stat.mode) && (stat.mode & 0o077) !== 0)
+  ) {
+    return { ok: false, errorKind: "unsafe" };
+  }
+
+  let descriptor = null;
+  try {
+    const noFollow = Number(fs.constants.O_NOFOLLOW ?? 0);
+    descriptor = fsImpl.openSync(filePath, fs.constants.O_RDONLY | noFollow);
+    const opened = fsImpl.fstatSync(descriptor);
+    if (
+      !opened.isFile()
+      || opened.nlink !== 1
+      || opened.dev !== stat.dev
+      || opened.ino !== stat.ino
+      || (typeof process.getuid === "function" && Number.isInteger(opened.uid) && opened.uid !== process.getuid())
+      || !Number.isFinite(opened.size)
+      || opened.size < 0
+      || opened.size > maxBytes
+      || (Number.isInteger(opened.mode) && (opened.mode & 0o077) !== 0)
+    ) {
+      return { ok: false, errorKind: "unsafe" };
+    }
+    const parsed = JSON.parse(fsImpl.readFileSync(descriptor, "utf8"));
+    return isObject(parsed)
+      ? { ok: true, json: parsed }
+      : { ok: false, errorKind: "malformed" };
+  } catch {
+    return { ok: false, errorKind: "malformed" };
+  } finally {
+    if (descriptor !== null) {
+      try {
+        fsImpl.closeSync(descriptor);
+      } catch {
+        // The read result remains value-free and closed on a descriptor error.
+      }
+    }
+  }
+}
+
 export function readClaudeNativeOauthAccountAtPath({
   appStatePath,
   expectedEmail,
@@ -277,31 +373,18 @@ export function readClaudeNativeOauthAccountAtPath({
     return { ok: false, errorKind: "app_state_descriptor_invalid" };
   }
 
-  let stat;
-  try {
-    stat = fsImpl.lstatSync(rawPath);
-  } catch (error) {
-    return {
-      ok: false,
-      errorKind: error?.code === "ENOENT" ? "app_state_missing" : "app_state_unavailable",
-    };
+  const read = readOwnedPrivateJsonObject(rawPath, { fsImpl, maxBytes });
+  if (read.ok !== true) {
+    const suffix = read.errorKind === "missing"
+      ? "missing"
+      : read.errorKind === "unsafe"
+        ? "unsafe"
+        : read.errorKind === "malformed"
+          ? "malformed"
+          : "unavailable";
+    return { ok: false, errorKind: `app_state_${suffix}` };
   }
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    return { ok: false, errorKind: "app_state_unsafe" };
-  }
-  if (!Number.isFinite(stat.size) || stat.size < 0 || stat.size > maxBytes) {
-    return { ok: false, errorKind: "app_state_unsafe" };
-  }
-  if (Number.isInteger(stat.mode) && (stat.mode & 0o077) !== 0) {
-    return { ok: false, errorKind: "app_state_unsafe" };
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(fsImpl.readFileSync(rawPath, "utf8"));
-  } catch {
-    return { ok: false, errorKind: "app_state_malformed" };
-  }
+  const parsed = read.json;
   if (!isObject(parsed?.oauthAccount)) {
     return { ok: false, errorKind: "app_state_identity_missing" };
   }
@@ -320,6 +403,7 @@ export function buildClaudeNativeStorageDescriptor({
   expectedEmail,
   requireIsolatedService = false,
   managedRootDir = null,
+  storageMode = null,
 } = {}) {
   const rawConfigDir = normalizeRequiredString(configDir);
   const rawDefaultConfigDir = normalizeRequiredString(defaultConfigDir);
@@ -343,27 +427,40 @@ export function buildClaudeNativeStorageDescriptor({
   const resolvedManagedRootDir = rawManagedRootDir
     ? path.resolve(rawManagedRootDir).normalize("NFC")
     : null;
-  const service = buildClaudeKeychainService({
-    configDir: resolvedConfigDir,
-    defaultConfigDir: resolvedDefaultConfigDir,
-  });
-  if (requireIsolatedService && service === CLAUDE_KEYCHAIN_SERVICE) {
+  const fileOnly = storageMode === CLAUDE_MANAGED_FILE_STORAGE_MODE;
+  const service = fileOnly
+    ? null
+    : buildClaudeKeychainService({
+        configDir: resolvedConfigDir,
+        defaultConfigDir: resolvedDefaultConfigDir,
+      });
+  if (requireIsolatedService && !fileOnly && service === CLAUDE_KEYCHAIN_SERVICE) {
     throw new Error("Managed Claude storage requires an isolated Keychain service.");
   }
-  if (requireIsolatedService && !resolvedManagedRootDir) {
+  if ((requireIsolatedService || fileOnly) && !resolvedManagedRootDir) {
     throw new Error("Managed Claude storage requires an explicit managed root directory.");
   }
   if (resolvedManagedRootDir) {
     const relative = path.relative(resolvedManagedRootDir, resolvedConfigDir);
     const segments = relative.split(path.sep);
+    const directLabelConfig = (
+      segments.length === 3
+      && segments[0] === "claude-homes"
+      && /^[A-Za-z0-9_.-]+$/.test(segments[1])
+      && segments[2] === ".claude"
+    );
+    const freshLoginConfig = (
+      segments.length === 4
+      && segments[0] === "claude-homes"
+      && /^[A-Za-z0-9_.-]+$/.test(segments[1])
+      && segments[2] === ".login-staging"
+      && segments[3] === ".claude"
+    );
     if (
       !relative
       || relative.startsWith("..")
       || path.isAbsolute(relative)
-      || segments.length !== 3
-      || segments[0] !== "claude-homes"
-      || !/^[A-Za-z0-9_.-]+$/.test(segments[1])
-      || segments[2] !== ".claude"
+      || (!directLabelConfig && !freshLoginConfig)
     ) {
       throw new Error("Managed Claude config directory is outside its exact AIM-owned root.");
     }
@@ -372,8 +469,11 @@ export function buildClaudeNativeStorageDescriptor({
     configDir: resolvedConfigDir,
     defaultConfigDir: resolvedDefaultConfigDir,
     appStatePath: resolvedAppStatePath,
+    credentialsPath: path.join(resolvedConfigDir, ".credentials.json"),
     expectedEmail: normalizedExpectedEmail,
-    service,
+    ...(fileOnly
+      ? { storageMode: CLAUDE_MANAGED_FILE_STORAGE_MODE }
+      : { service }),
     ...(resolvedManagedRootDir ? { managedRootDir: resolvedManagedRootDir } : {}),
   });
 }
@@ -390,7 +490,7 @@ export function buildManagedClaudeNativeStorageDescriptor({
     defaultConfigDir,
     appStatePath: path.join(rawConfigDir, ".claude.json"),
     expectedEmail,
-    requireIsolatedService: true,
+    storageMode: CLAUDE_MANAGED_FILE_STORAGE_MODE,
     managedRootDir,
   });
 }
@@ -404,6 +504,7 @@ function assertOwnedDirectory(stat) {
 function assertOwnedRegularFile(stat) {
   return stat.isFile()
     && !stat.isSymbolicLink()
+    && stat.nlink === 1
     && (typeof process.getuid !== "function" || !Number.isInteger(stat.uid) || stat.uid === process.getuid());
 }
 
@@ -440,7 +541,7 @@ export function ensureSafeManagedClaudeStorage({ descriptor, fsImpl = fs } = {})
     }
   }
 
-  for (const filePath of [path.join(descriptor.configDir, ".credentials.json"), descriptor.appStatePath]) {
+  for (const filePath of [descriptor.credentialsPath, descriptor.appStatePath]) {
     let stat;
     try {
       stat = fsImpl.lstatSync(filePath);
@@ -466,28 +567,49 @@ function isValidClaudeNativeStorageDescriptor(descriptor) {
     || !path.isAbsolute(String(descriptor.configDir ?? ""))
     || !path.isAbsolute(String(descriptor.defaultConfigDir ?? ""))
     || !path.isAbsolute(String(descriptor.appStatePath ?? ""))
+    || descriptor.credentialsPath !== path.join(descriptor.configDir, ".credentials.json")
     || !normalizeRequiredString(descriptor.expectedEmail)
-    || !normalizeRequiredString(descriptor.service)
   ) {
     return false;
   }
   try {
-    const serviceMatches = buildClaudeKeychainService({
-      configDir: descriptor.configDir,
-      defaultConfigDir: descriptor.defaultConfigDir,
-    }) === descriptor.service;
-    if (!serviceMatches) return false;
+    const fileOnly = descriptor.storageMode === CLAUDE_MANAGED_FILE_STORAGE_MODE;
+    if (fileOnly) {
+      if (
+        descriptor.service !== undefined
+        || !descriptor.managedRootDir
+        || descriptor.appStatePath !== path.join(descriptor.configDir, ".claude.json")
+      ) {
+        return false;
+      }
+    } else {
+      const serviceMatches = buildClaudeKeychainService({
+        configDir: descriptor.configDir,
+        defaultConfigDir: descriptor.defaultConfigDir,
+      }) === descriptor.service;
+      if (!serviceMatches) return false;
+    }
     if (descriptor.managedRootDir) {
       const relative = path.relative(descriptor.managedRootDir, descriptor.configDir);
       const segments = relative.split(path.sep);
+      const directLabelConfig = (
+        segments.length === 3
+        && segments[0] === "claude-homes"
+        && /^[A-Za-z0-9_.-]+$/.test(segments[1])
+        && segments[2] === ".claude"
+      );
+      const freshLoginConfig = (
+        segments.length === 4
+        && segments[0] === "claude-homes"
+        && /^[A-Za-z0-9_.-]+$/.test(segments[1])
+        && segments[2] === ".login-staging"
+        && segments[3] === ".claude"
+      );
       return Boolean(
         relative
         && !relative.startsWith("..")
         && !path.isAbsolute(relative)
-        && segments.length === 3
-        && segments[0] === "claude-homes"
-        && /^[A-Za-z0-9_.-]+$/.test(segments[1])
-        && segments[2] === ".claude"
+        && (directLabelConfig || freshLoginConfig)
       );
     }
     return true;
@@ -551,21 +673,22 @@ export async function captureClaudeNativeBundleFromKeychain({
   };
 }
 
-export function readClaudeNativeBundleFromConfigFiles({ descriptor }) {
+export function readClaudeNativeBundleFromConfigFiles({ descriptor, fsImpl = fs }) {
   if (!isValidClaudeNativeStorageDescriptor(descriptor)) {
     return { ok: false, errorKind: "storage_descriptor_invalid" };
   }
-  const credentials = readClaudeAuthFile({ claudeDir: descriptor.configDir });
+  const credentials = readOwnedPrivateJsonObject(descriptor.credentialsPath, { fsImpl });
   const identity = readClaudeNativeOauthAccountAtPath({
     appStatePath: descriptor.appStatePath,
     expectedEmail: descriptor.expectedEmail,
+    fsImpl,
   });
   if (
     credentials.ok !== true
-    || credentials.claudeAiOauthPresent !== true
+    || !isObject(credentials.json?.claudeAiOauth)
     || identity.ok !== true
   ) {
-    const credentialsMissing = credentials.exists !== true;
+    const credentialsMissing = credentials.errorKind === "missing";
     const identitySafelyEmpty = ["app_state_missing", "app_state_identity_missing"].includes(identity.errorKind);
     return {
       ok: false,
@@ -575,7 +698,7 @@ export function readClaudeNativeBundleFromConfigFiles({ descriptor }) {
     };
   }
   const nativeClaudeBundle = buildClaudeNativeBundle({
-    claudeAiOauth: credentials.claudeAiOauth,
+    claudeAiOauth: credentials.json.claudeAiOauth,
     oauthAccount: identity.oauthAccount,
   });
   if (!hasCompleteClaudeNativeBundle(nativeClaudeBundle)) {
@@ -587,6 +710,52 @@ export function readClaudeNativeBundleFromConfigFiles({ descriptor }) {
     source: "file",
     expiresAtMs: parseTimestampLikeToMs(nativeClaudeBundle.claudeAiOauth.expiresAt),
   };
+}
+
+export function readManagedClaudeNativeBundleFromFiles({
+  descriptor,
+  fsImpl = fs,
+} = {}) {
+  if (descriptor?.storageMode !== CLAUDE_MANAGED_FILE_STORAGE_MODE) {
+    return { ok: false, errorKind: "storage_descriptor_invalid" };
+  }
+  try {
+    ensureSafeManagedClaudeStorage({ descriptor, fsImpl });
+  } catch {
+    return { ok: false, errorKind: "managed_storage_unsafe" };
+  }
+  const result = readClaudeNativeBundleFromConfigFiles({ descriptor, fsImpl });
+  if (result.ok !== true && result.errorKind === "file_bundle_missing") {
+    return { ok: false, errorKind: "native_storage_empty" };
+  }
+  return result;
+}
+
+export function retireManagedClaudeCredentialProjection({
+  descriptor,
+  fsImpl = fs,
+} = {}) {
+  if (
+    descriptor?.storageMode !== CLAUDE_MANAGED_FILE_STORAGE_MODE
+    || !isValidClaudeNativeStorageDescriptor(descriptor)
+  ) {
+    throw new Error("Managed Claude credential retirement requires a file-only descriptor.");
+  }
+  let stat;
+  try {
+    stat = fsImpl.lstatSync(descriptor.credentialsPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return { removed: false };
+    throw new Error("Could not inspect the managed Claude credential projection.");
+  }
+  if (!assertOwnedRegularFile(stat) || (stat.mode & 0o077) !== 0) {
+    throw new Error("Refusing to remove an unsafe managed Claude credential projection.");
+  }
+  fsImpl.unlinkSync(descriptor.credentialsPath);
+  if (fsImpl.existsSync(descriptor.credentialsPath)) {
+    throw new Error("Managed Claude credential projection could not be retired.");
+  }
+  return { removed: true };
 }
 
 function strictIdentity(bundle) {

@@ -1,4 +1,5 @@
 import { createEmptyState } from "../state/empty.js";
+import { normalizeProviderId } from "../core/normalize.js";
 import { ensureStateShape } from "../state/schema.js";
 import { ensureLocalStateShape } from "../state/local-state.js";
 import { hasCredentialMaterial } from "./records.js";
@@ -14,13 +15,15 @@ export function listPoolLabels(snapshot, provider) {
     .sort();
 }
 
-export function buildCoordinationView(snapshot, { localState = null } = {}) {
+export function buildCoordinationView(snapshot, { localState = null, provider = null } = {}) {
   const state = createEmptyState();
   const local = ensureLocalStateShape(localState ?? {});
+  const providerScope = normalizeProviderId(provider);
   state.targets = local.targets;
   state.pool = local.pool;
 
   for (const record of snapshot?.credentials ?? []) {
+    if (providerScope && record.provider !== providerScope) continue;
     state.accounts[record.label] = {
       provider: record.provider,
       expect: record.policy?.expect ?? {},
