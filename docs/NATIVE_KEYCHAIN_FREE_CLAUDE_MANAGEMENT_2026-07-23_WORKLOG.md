@@ -412,6 +412,8 @@ Plan doc:
   failed on the old implementation; valid-Apple and invalid-non-Apple cases now
   pass. Local full suite is 322/322 plus lint; remote focused native suite is
   22/22 plus lint. Fix commit: `fdcda05`.
+- A final full-suite rerun on the deployed M3 Max passed 322/322 with lint and
+  `git diff --check`; the remote tracked worktree stayed clean.
 - The deployed official native command then passed twice:
   `aim claude run pro5 -- --safe-mode --strict-mcp-config
   --no-session-persistence --print --output-format json /usage`.
@@ -437,3 +439,15 @@ Plan doc:
 - Deployment self-check: on track and on scope. The only added code after the
   completed local plan is the directly encountered macOS-build qualification
   fix and its two focused regressions.
+
+## Canonical local AIM installation
+
+- Ran the repository's existing `npm run install:local` from local pushed
+  `main`. Both `/Users/aelaguiz/.local/bin/aim` and
+  `/Users/aelaguiz/.local/bin/aimgr` now execute
+  `/opt/homebrew/bin/node /Users/aelaguiz/workspace/aimgr/bin/aimgr.js`.
+- Verified through the installed `aim` command—not a direct Node fallback:
+  Redis inventory is complete with one ready, identity-matched `pro5` record
+  and `requestCount: 0`.
+- The three unrelated pre-existing local untracked paths remain untouched and
+  outside the AIM deployment commits.

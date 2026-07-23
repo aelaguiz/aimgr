@@ -107,7 +107,7 @@ audit is covered by the conductor final gate (whole-plan sweep + cold verifier),
 | Remote spot-check (parent, read-only over SSH) | Remote side-effect claims | PASS: only ~/.aimgr/claude-homes/pro5 exists (20:39); default ~/.claude (17:11) and ~/.claude.json (18:13) predate live window; remote git HEAD 705d5ea untouched (files rsynced, no commits); no root strays | Until S1 continuation | S1 rotation step |
 | Worker-only proofs accepted on consistency (not reproduced): remote official identity match, non-Anthropic baseline digest sha256:cae59f…, SecKeychainGetStatus lock readout | S1 partial claims | ACCEPTED (audited-consistent) | — | Cold verifier at final gate re-derives |
 | Local `main` full suite 322/322 + lint + diff check after cross-build fix | Whole repository at `fdcda05` | PASS | Code unchanged | Any code edit |
-| M3 Max install + tests | Deployment at `main@fdcda05` | PASS: `npm ci`, AIM wrapper install, full pre-fix suite 320/320, post-fix native slice 22/22, lint, clean tracked worktree | Remote code unchanged | Any deploy/code edit |
+| M3 Max install + tests | Deployment at `main@fdcda05` plus documentation closeout | PASS: `npm ci`, AIM wrapper install, post-fix native slice 22/22, final full suite 322/322, lint, diff check, clean tracked worktree | Remote code unchanged | Any deploy/code edit |
 | M3 Max official `/usage` through `aim claude run pro5` | Cross-machine native no-Keychain product path | PASS twice: success, zero model/API work/tokens/cost; Redis stayed ready v3; requestCount 0; no fence/pending/projection/staging; concurrent real-`security`/SecurityAgent tripwire empty; global Claude and Keychain metadata unchanged | Redis credential/version or remote code changes | Any credential rotation, reauth, or deploy |
 
 ## Wave History
@@ -132,9 +132,14 @@ audit is covered by the conductor final gate (whole-plan sweep + cold verifier),
   the old rsynced checkout were preserved in `stash@{0}`,
   object `eb3baa520889c87c316fdd5c2d79567423ef7783`, named
   `pre-main-deploy-2026-07-23-aimgr`, before switching branches.
-- Remote checkout: `~/workspace/aimgr` is clean on `main@fdcda05`, its `aim`
-  and `aimgr` wrappers point to that checkout, and the unrelated stopped Claude
+- Remote checkout: `~/workspace/aimgr` is clean on pushed `main` (code head
+  `fdcda05`, followed only by deployment-documentation commits), its `aim` and
+  `aimgr` wrappers point to that checkout, and the unrelated stopped Claude
   process in `~/workspace/secrets` was not touched.
+- Local canonical install: `npm run install:local` refreshed both
+  `~/.local/bin/aim` and `~/.local/bin/aimgr`; each executes the current
+  `/Users/aelaguiz/workspace/aimgr/bin/aimgr.js`. Installed-command Redis
+  inventory passed with one ready `pro5` record and `requestCount: 0`.
 - The first live attempt failed safely at sandbox qualification before a fence
   or projection mutation. Redis, old projection, global Claude metadata, and
   Keychain metadata were unchanged. The bounded compatibility fix above was
@@ -143,3 +148,5 @@ audit is covered by the conductor final gate (whole-plan sweep + cold verifier),
   retained the complete audit tail and proved no real `security` or
   `SecurityAgent`, unchanged global/Keychain metadata, Redis v3 ready,
   `requestCount: 0`, and no fence, pending marker, projection, or staging.
+- Final remote repository gate on the deployed code: 322/322 tests, lint, diff
+  check, and clean `main` tracking `origin/main`.
