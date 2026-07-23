@@ -22,6 +22,9 @@ BrowserOS sign-ins, no subscription changes, no enrollment of the 11 unloaded ac
 - `ssh amirs-m3-max-new` reaches hostname Amirs-M3-Max-2 — same machine, both names.
   ~/workspace/secrets present remotely. AIM presence on remote NOT yet verified.
 - aimgr branch redis-credential-coordination; port committed at 2b394f0 (local only, never push).
+- Superseded 2026-07-23: implementation commit `208c965` and the macOS
+  cross-build qualification fix `fdcda05` are pushed on `main`; both local and
+  `Amirs-M3-Max-2` use the same repository checkout and AIM wrappers.
 - secrets repo deliberately NOT checkpointed: operator's uncommitted
   credential-catalog.toml (safety). Worker doc updates there stay uncommitted.
 - Companion docs (secrets repo): docs/claude-usage-checker/{CLAUDE_USAGE_CHECKER.md,
@@ -86,6 +89,13 @@ audit is covered by the conductor final gate (whole-plan sweep + cold verifier),
   Amirs-M3-Max-2 is locked (SecKeychainGetStatus: unlocked=false,
   readable=true, writable=false); unlocking requires operator OS interaction.
   Worker correctly refused to unlock/prompt/weaken ACLs. → Escalations.
+- Deployment defect fix: the first A4 remote run failed before projection
+  because `sandbox-exec` was pinned to the macOS 26.5.2 file hash while the M3
+  Max runs Apple's valid 26.4 build. Replaced the release hash with root-owned,
+  non-writable path checks, strict code-signature verification, and the exact
+  `identifier "com.apple.sandbox-exec" and anchor apple` designated
+  requirement. Regression failed before the fix and passes for valid Apple /
+  invalid non-Apple signer cases.
 
 ## Proof Ledger
 | Proof | Scope covered | Result | Fresh until | Rerun trigger |
@@ -96,11 +106,15 @@ audit is covered by the conductor final gate (whole-plan sweep + cold verifier),
 | `aim claude inventory --json` (parent-rerun, read-only) | Live Redis canary state | PASS: total 1, pro5, credential_expired, identityPolicyMatched true, requestCount 0, source redis — matches worker claim verbatim | Until S1 continuation mutates state | S1 rotation step |
 | Remote spot-check (parent, read-only over SSH) | Remote side-effect claims | PASS: only ~/.aimgr/claude-homes/pro5 exists (20:39); default ~/.claude (17:11) and ~/.claude.json (18:13) predate live window; remote git HEAD 705d5ea untouched (files rsynced, no commits); no root strays | Until S1 continuation | S1 rotation step |
 | Worker-only proofs accepted on consistency (not reproduced): remote official identity match, non-Anthropic baseline digest sha256:cae59f…, SecKeychainGetStatus lock readout | S1 partial claims | ACCEPTED (audited-consistent) | — | Cold verifier at final gate re-derives |
+| Local `main` full suite 322/322 + lint + diff check after cross-build fix | Whole repository at `fdcda05` | PASS | Code unchanged | Any code edit |
+| M3 Max install + tests | Deployment at `main@fdcda05` | PASS: `npm ci`, AIM wrapper install, full pre-fix suite 320/320, post-fix native slice 22/22, lint, clean tracked worktree | Remote code unchanged | Any deploy/code edit |
+| M3 Max official `/usage` through `aim claude run pro5` | Cross-machine native no-Keychain product path | PASS twice: success, zero model/API work/tokens/cost; Redis stayed ready v3; requestCount 0; no fence/pending/projection/staging; concurrent real-`security`/SecurityAgent tripwire empty; global Claude and Keychain metadata unchanged | Redis credential/version or remote code changes | Any credential rotation, reauth, or deploy |
 
 ## Wave History
 | Wave | Dispatched | Returned | Verdicts | Commit |
 |---|---|---|---|---|
 | 1 | S1 (fresh, 2026-07-22; infra-kill resume 2026-07-23T02:17Z) | 2026-07-23T02:24Z STATUS: blocked | AUDIT PASS (all falsifiable claims reproduced; honest partial) | none — no commit until slice complete; worker edits remain uncommitted on 2b394f0 |
+| A4 deployment | Direct parent execution after operator reopened remote gate | 2026-07-23 | PASS for commit/push/main deployment and remote no-Keychain run; provider-issued token rotation not observed and remains an honest open subcriterion | `208c965`, `fdcda05` |
 
 ## Escalations
 | Item | Decision needed | Blocking |
@@ -109,3 +123,23 @@ audit is covered by the conductor final gate (whole-plan sweep + cold verifier),
 | Operator scope directive: eliminate Keychain | RESOLVED as plan amendment A1 (2026-07-23): keychain-free if client supports file-only; worker proving empirically, locally | No — amendment recorded, work proceeding |
 | Operator scope directive: local-only | RESOLVED as plan amendment A2 (2026-07-23): no remote contact until operator gate. Keychain-free probe (run s1-keychain-free-probe-…qVxgTO) was killed by conductor 02:35Z before any remote mutation (verified: probe was in local binary inspection; post-resume remote actions were read-only state checks). Remote residue frozen; cleanup queued behind the gate (P2.T4b) | No — S1 redispatched local-only |
 | Operator remote deployment gate | REOPENED 2026-07-23 under amendment A4: operator explicitly directed commit/push, merge to current `main`, deploy from the existing `~/workspace/aimgr` on `amirs-m3-max-new`, and test the completed no-Keychain path there. Remote preflight is read-only until the local commit is pushed; any dirty remote worktree must be preserved before update | No — bounded deployment and verification authorized; Keychain interaction and cohort migration remain closed |
+| Remote login Keychain lock | RESOLVED FOR RUNTIME: the deployed file-only path passed without unlocking, prompting, reading, writing, or changing Keychain metadata. The old isolated pre-A1 item remains inert and untouched because A4 did not authorize Keychain cleanup | No |
+
+## A4 Deployment Closeout
+
+- Git: implementation branch and `main` pushed; code head `fdcda05`.
+- Remote preservation: all 37 tracked modifications and 17 untracked files in
+  the old rsynced checkout were preserved in `stash@{0}`,
+  object `eb3baa520889c87c316fdd5c2d79567423ef7783`, named
+  `pre-main-deploy-2026-07-23-aimgr`, before switching branches.
+- Remote checkout: `~/workspace/aimgr` is clean on `main@fdcda05`, its `aim`
+  and `aimgr` wrappers point to that checkout, and the unrelated stopped Claude
+  process in `~/workspace/secrets` was not touched.
+- The first live attempt failed safely at sandbox qualification before a fence
+  or projection mutation. Redis, old projection, global Claude metadata, and
+  Keychain metadata were unchanged. The bounded compatibility fix above was
+  tested, committed, pushed, and deployed before retry.
+- Final live result: official native `/usage` passed twice; the second run
+  retained the complete audit tail and proved no real `security` or
+  `SecurityAgent`, unchanged global/Keychain metadata, Redis v3 ready,
+  `requestCount: 0`, and no fence, pending marker, projection, or staging.

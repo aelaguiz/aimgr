@@ -387,3 +387,53 @@ Plan doc:
   generic login command, contained file-backed storage, and directly affected
   tests only. Tend, automatic selection, migration, remotes, global cleanup,
   new commands, and new frameworks remain out of scope.
+
+## Post-completion deployment on Amirs-M3-Max-2
+
+- Recorded at: 2026-07-23.
+- The operator explicitly reopened the remote gate for commit/push, deployment,
+  and bounded verification. The implementation was committed as `208c965`,
+  fast-forwarded to `main`, and pushed. The remote's prior 37 tracked
+  modifications and 17 untracked files were preserved before update in
+  `stash@{0}` (`eb3baa520889c87c316fdd5c2d79567423ef7783`,
+  `pre-main-deploy-2026-07-23-aimgr`).
+- `~/workspace/aimgr` on the M3 Max was switched to pushed `main`; `npm ci` and
+  the existing local-wrapper installer completed. The remote full suite passed
+  320/320 and lint passed before the live attempt.
+- The first live attempt failed closed before credential projection because
+  the runner pinned `/usr/bin/sandbox-exec` to Amir-M5's macOS 26.5.2 hash,
+  while the M3 Max has Apple's different macOS 26.4 build. Redis remained v3;
+  no fence/pending marker appeared; no real `security`/SecurityAgent ran; and
+  global Claude and Keychain metadata were unchanged.
+- Replaced only that release-specific hash with a stable authority check:
+  root-owned and non-writable `/usr/bin/sandbox-exec`, strict Apple
+  `codesign --verify`, and exact designated requirement
+  `identifier "com.apple.sandbox-exec" and anchor apple`. A regression first
+  failed on the old implementation; valid-Apple and invalid-non-Apple cases now
+  pass. Local full suite is 322/322 plus lint; remote focused native suite is
+  22/22 plus lint. Fix commit: `fdcda05`.
+- The deployed official native command then passed twice:
+  `aim claude run pro5 -- --safe-mode --strict-mcp-config
+  --no-session-persistence --print --output-format json /usage`.
+  It returned success with zero model turns, API duration, tokens, and cost.
+- Final remote evidence:
+  - concurrent monitoring observed no real `/usr/bin/security` or
+    `SecurityAgent`;
+  - global `~/.claude/.credentials.json`, `~/.claude.json`, and login-Keychain
+    metadata were unchanged across the run;
+  - Redis `pro5` stayed complete, ready, identity-bound v3 with
+    `login-maintenance` provenance;
+  - inventory remained complete with `requestCount: 0`;
+  - shared fence, local pending marker, disposable projection, and login
+    staging were absent after the run;
+  - the old pre-A2 file projection was therefore retired safely;
+  - the inert isolated pre-A1 Keychain item was not touched, and the unrelated
+    stopped Claude process in `~/workspace/secrets` was left alone.
+- Honest residual: the fresh provider credential remained unchanged during the
+  remote `/usage`, so no provider-issued rotation advance is claimed. The
+  cross-machine runtime, identity continuity, cleanup, and no-Keychain
+  guarantees are proven; the synthetic official-client fixture remains the
+  rotation-publication proof.
+- Deployment self-check: on track and on scope. The only added code after the
+  completed local plan is the directly encountered macOS-build qualification
+  fix and its two focused regressions.
