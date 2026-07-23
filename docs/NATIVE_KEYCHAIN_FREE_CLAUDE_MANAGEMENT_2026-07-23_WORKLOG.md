@@ -451,3 +451,78 @@ Plan doc:
   and `requestCount: 0`.
 - The three unrelated pre-existing local untracked paths remain untouched and
   outside the AIM deployment commits.
+
+## Native Linux x64 deployment on `home`
+
+- Recorded at: 2026-07-23.
+- The operator explicitly authorized installation and Linux verification on
+  the Ubuntu home server. Scope stayed inside managed Claude run/login platform
+  compatibility, the existing local installer, and directly affected tests.
+- Grounded target:
+  - host `amir-server` through SSH alias `home`;
+  - Ubuntu 24.04, Linux x86_64, Node `22.22.3`;
+  - official standalone Claude `2.1.218`;
+  - resolved executable
+    `/home/aelaguiz/.local/share/claude/versions/2.1.218`;
+  - regular, user-owned, single-link executable with SHA-256
+    `e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2`.
+- Extended only `src/targets/claude-runner.js`:
+  - the existing Darwin arm64 qualification, compatibility shim, and Apple
+    sandbox path remain unchanged;
+  - Linux x64 accepts only the exact qualified `2.1.218` artifact;
+  - Linux skips macOS `security`, Keychain, `codesign`, and `sandbox-exec`
+    machinery and directly supervises the verified ELF;
+  - the existing label-scoped `HOME`, `CLAUDE_CONFIG_DIR`, Redis
+    lease/fence/projection/readback/retirement lifecycle, exact argv/cwd, and
+    signal handling remain shared;
+  - Linux dynamic-loader injection variables are removed before launch.
+- Proof before deployment:
+  - affected suite: 57/57 pass locally;
+  - full local repository suite: 331/331 pass;
+  - lint and `git diff --check`: pass;
+  - disposable Ubuntu runner probe verified the real Linux artifact and
+    returned `2.1.218 (Claude Code)` through the supervisor with status `0`;
+  - the probe used a temporary per-label home, did not create a credential,
+    left the global credential metadata unchanged, and was removed.
+- Deployment:
+  - implementation commit `bdf1f8d` was pushed to `main`;
+  - the remote checkout's old branch was proven to be an ancestor, then the
+    existing local `main` was fast-forwarded without reset;
+  - the pre-existing untracked `docs/bugs/` content was preserved;
+  - `npm ci` and `npm run install:local` completed;
+  - canonical wrappers now execute the current checkout through
+    `/home/aelaguiz/.local/bin/node`;
+  - remote affected suite: 55 pass, 2 Darwin-only integration tests skipped,
+    0 fail; remote lint passed.
+- Installed product proof:
+  - `aim redis ping` returned `PONG`;
+  - `aim claude run pro8 -- --version` launched the real Linux client and
+    returned `2.1.218 (Claude Code)`;
+  - the managed credential was absent before and retired after the run while
+    label-scoped application state persisted;
+  - post-run Redis inventory remained value-safe with `requestCount: 0`;
+  - a bounded public `aim claude status pro8 --fresh --json` retry returned
+    `usage_readable` with three provider windows and one request.
+- Broad Linux-suite honesty:
+  - after removing the server's ambient `CODEX_HOME`, the only remaining
+    broad-suite failure was the existing Codex Tend foreground-relay test;
+  - all 61 assertions in that file pass, then Linux reports asynchronous
+    `ECONNRESET` activity after the final test;
+  - this is unrelated to Claude, matches the operator's prior statement that
+    Tend is broken/dead, and was not changed in this deployment.
+- Containment distinction:
+  - Linux native Claude already uses file storage, so no Keychain compatibility
+    boundary is required;
+  - per-label session/config routing is preserved, but Linux direct execution
+    does not provide the macOS Seatbelt rule that denies absolute reads of
+    global or other-label AIM paths;
+  - Bubblewrap exists on the server but its unprivileged UID-map setup is
+    blocked by the host's AppArmor/user-namespace policy. No privileged system
+    change or container framework was added.
+- No model-bearing prompt was invoked. Non-TTY `/usage` attempts were not
+  accepted as proof because their process-session exit prevented the SSH shell
+  from writing a separate receipt; the deterministic `--version`, lifecycle,
+  exact-fetch, and public status proofs above are the acceptance evidence.
+- Self-check: on track and on scope. No OAuth implementation, credential
+  fallback, Redis schema, general Linux sandbox, Codex/Tend repair, or package
+  audit work was added.
