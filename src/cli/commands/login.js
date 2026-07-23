@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
-import { readAimgrConfig } from "../../config/aimgr-config.js";
 import { acquireRedisCredentialLease } from "../../coordination/redis-credential-lease.js";
 import {
   clearRedisClaudeRotationFence,
@@ -11,10 +10,11 @@ import {
   readRedisClaudeRotationFence,
 } from "../../coordination/redis-claude-rotation-fence.js";
 import { buildCoordinationView } from "../../coordination/snapshot.js";
-import { closeRedisStore, connectRedisStore, readSnapshot } from "../../coordination/redis-store.js";
+import { readSnapshot } from "../../coordination/redis-store.js";
 import { publishMaintainedCredential } from "../../coordination/login-publish.js";
 import { closeRedisRuntime, isRedisConfigured, loadRedisRuntime, publishRedisCredentialPolicyFromState, refreshRedisRuntimeSnapshot, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { persistAnthropicNativeBundleForLabel } from "../../credentials/claude-native.js";
+import { ensureProviderConfiguredForLabel } from "../../credentials/oauth.js";
 import {
   CLAUDE_MANAGED_FILE_STORAGE_MODE,
   buildManagedClaudeNativeStorageDescriptor,
@@ -40,14 +40,24 @@ import { createManualCallbackStdioProtocol, writeJsonLine } from "../manual-call
 
 const CLAUDE_LOGIN_STAGING_DIRNAME = ".login-staging";
 const CLAUDE_LOGIN_RECOVERY_CONTRACT = `${CLAUDE_MANAGED_FILE_STORAGE_MODE}:login-staging-v1`;
+const CLAUDE_EMPTY_LINEAGE_FINGERPRINT = `sha256:${createHash("sha256")
+  .update("aimgr.claude-empty-lineage.v1")
+  .digest("hex")}`;
 
-function buildClaudeTokenLineageFingerprint(credential) {
+function buildClaudeLoginLineageFingerprint(credential) {
   const access = typeof credential?.access === "string" ? credential.access.trim() : "";
   const refresh = typeof credential?.refresh === "string" ? credential.refresh.trim() : "";
-  if (!access || !refresh) return null;
-  return `sha256:${createHash("sha256")
-    .update(JSON.stringify({ access, refresh }))
-    .digest("hex")}`;
+  if (access && refresh) {
+    return `sha256:${createHash("sha256")
+      .update(JSON.stringify({ access, refresh }))
+      .digest("hex")}`;
+  }
+  return credential
+    && typeof credential === "object"
+    && !Array.isArray(credential)
+    && Object.keys(credential).length === 0
+    ? CLAUDE_EMPTY_LINEAGE_FINGERPRINT
+    : null;
 }
 
 function currentAnthropicRecord(snapshot, label) {
@@ -200,7 +210,20 @@ async function recoverClaudeLoginFence({
   nowMs,
 }) {
   const current = currentAnthropicRecord(snapshot, label);
-  const currentFingerprint = buildClaudeTokenLineageFingerprint(current?.credential);
+  const currentFingerprint = buildClaudeLoginLineageFingerprint(current?.credential);
+  if (
+    currentFingerprint === CLAUDE_EMPTY_LINEAGE_FINGERPRINT
+    && fence.baseTokenLineageFingerprint === CLAUDE_EMPTY_LINEAGE_FINGERPRINT
+    && current.version !== fence.baseCredentialVersion
+  ) {
+    await assertClaudeLoginLeaseOwned({
+      lease,
+      phase: "before rejecting changed enrollment policy",
+    });
+    await clearClaudeLoginFence({ store, label, fence, lease });
+    removeClaudeLoginStaging({ homeDir, label, stagingHome });
+    throw new Error(`Claude label=${label} changed outside its login fence.`);
+  }
   if (!current || !currentFingerprint) {
     throw new Error(`Claude label=${label} has no valid Redis lineage for login recovery.`);
   }
@@ -363,7 +386,7 @@ async function performRedisClaudeLogin(context, {
     removeClaudeLoginStaging({ homeDir, label, stagingHome });
     ensureSafeManagedClaudeStorage({ descriptor });
     const current = currentAnthropicRecord(preparationSnapshot, label);
-    const baseTokenLineageFingerprint = buildClaudeTokenLineageFingerprint(current?.credential);
+    const baseTokenLineageFingerprint = buildClaudeLoginLineageFingerprint(current?.credential);
     if (!current || !Number.isInteger(current.version) || !baseTokenLineageFingerprint) {
       removeClaudeLoginStaging({ homeDir, label, stagingHome });
       throw new Error(`Claude label=${label} has no valid Redis lineage for fresh login.`);
@@ -430,7 +453,7 @@ async function performRedisClaudeLogin(context, {
       throw new Error(`Claude label=${label} login coordination changed while the browser was open.`);
     }
     const current = currentAnthropicRecord(completionSnapshot, label);
-    const currentFingerprint = buildClaudeTokenLineageFingerprint(current?.credential);
+    const currentFingerprint = buildClaudeLoginLineageFingerprint(current?.credential);
     if (
       !current
       || !currentFingerprint
@@ -459,6 +482,17 @@ async function performRedisClaudeLogin(context, {
           },
           redis: { credentialVersion: current.version },
         };
+      }
+      if (
+        currentFingerprint === CLAUDE_EMPTY_LINEAGE_FINGERPRINT
+        && fence.baseTokenLineageFingerprint === CLAUDE_EMPTY_LINEAGE_FINGERPRINT
+      ) {
+        await assertClaudeLoginLeaseOwned({
+          lease,
+          phase: "before rejecting changed enrollment policy",
+        });
+        await clearClaudeLoginFence({ store, label, fence, lease });
+        removeClaudeLoginStaging({ homeDir, label, stagingHome });
       }
       throw new Error(`Claude label=${label} changed outside its login fence.`);
     }
@@ -564,7 +598,6 @@ async function performRedisClaudeLogin(context, {
 async function performRedisLabelMaintenance(context, { label, manualCallbackAutomation = null, writeImpl }) {
   const {
     homeDir,
-    env,
     promptLineImpl,
     promptImpl,
     openUrlImpl,
@@ -572,15 +605,16 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
     refreshOpenAICodexImpl,
     nowMs,
   } = context;
-  const config = readAimgrConfig({ homeDir }).config;
-  if (!config.redis.url) return null;
+  if (!isRedisConfigured({ homeDir })) return null;
 
-  const connectImpl = context.connectRedisStoreImpl ?? connectRedisStore;
-  const store = await connectImpl({ url: config.redis.url, keyPrefix: config.redis.keyPrefix });
+  const runtime = await loadRedisRuntime({
+    homeDir,
+    connectRedisStoreImpl: context.connectRedisStoreImpl,
+    now: new Date(nowMs),
+  });
   try {
-    const snapshot = await readSnapshot(store);
+    const { store, snapshot, localState } = runtime;
     const normalizedLabel = normalizeLabel(label);
-    const localState = loadLocalState({ homeDir });
     const anthropicRecord = currentAnthropicRecord(snapshot, normalizedLabel);
     if (anthropicRecord) {
       if (manualCallbackAutomation) {
@@ -597,10 +631,51 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
         label: normalizedLabel,
       });
     }
-    const state = buildCoordinationView(snapshot, { localState });
+    const state = runtime.state;
+    const provider = await ensureProviderConfiguredForLabel({
+      state,
+      label: normalizedLabel,
+      promptLineImpl,
+      writeImpl,
+    });
+    if (provider === ANTHROPIC_PROVIDER) {
+      if (manualCallbackAutomation) {
+        throw new Error("Anthropic login does not use the Codex manual-callback JSONL protocol.");
+      }
+      const expectedEmail = String(
+        await promptLineImpl(`Expected Claude email for "${normalizedLabel}":`),
+      ).trim().toLowerCase();
+      if (!expectedEmail) {
+        throw new Error(`Claude label=${normalizedLabel} requires an expected email before login.`);
+      }
+      const account = state.accounts[normalizedLabel];
+      state.accounts[normalizedLabel] = {
+        ...account,
+        expect: {
+          ...(account?.expect ?? {}),
+          email: expectedEmail,
+        },
+      };
+      await publishRedisCredentialPolicyFromState({
+        runtime,
+        state,
+        label: normalizedLabel,
+        observedAt: new Date(nowMs).toISOString(),
+      });
+      const anthropicState = buildCoordinationView(runtime.snapshot, {
+        localState,
+        provider: ANTHROPIC_PROVIDER,
+      });
+      return await performRedisClaudeLogin(context, {
+        store,
+        state: anthropicState,
+        localState,
+        label: normalizedLabel,
+      });
+    }
     const result = await performLabelMaintenance({
       state,
-      label,
+      label: normalizedLabel,
       homeDir,
       promptLineImpl,
       promptImpl,
@@ -615,12 +690,12 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
       store,
       snapshot,
       state,
-      label,
+      label: normalizedLabel,
       provider: result.provider,
       observedAt: result.maintenance?.observedAt ?? new Date(nowMs).toISOString(),
     });
     if (!published.ok) {
-      throw new Error(`Redis publish failed for label=${label}: ${published.credential?.code ?? "unknown"}`);
+      throw new Error(`Redis publish failed for label=${normalizedLabel}: ${published.credential?.code ?? "unknown"}`);
     }
     writeRedisLocalStateFromView({ homeDir, state, localState: loadLocalState({ homeDir }) });
     return {
@@ -630,7 +705,7 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
       },
     };
   } finally {
-    await closeRedisStore(store);
+    await closeRedisRuntime(runtime);
   }
 }
 

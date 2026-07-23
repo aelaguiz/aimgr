@@ -68,8 +68,9 @@ aim redis export --out <post-cutover-export.json>
 
 The migration planner preserves currently usable Codex credentials. Generic Redis import may seed
 Claude policy-only candidate records, but generic import and migration apply reject Claude credential
-and identity material. A complete Claude credential enters Redis only through the per-label leased
-`aim claude capture-native` or `aim claude import-native` boundary.
+and identity material. A complete Claude credential enters Redis through contained
+`aim login <label>`, or through the per-label leased `aim claude capture-native` and
+`aim claude import-native` boundaries for legacy ingestion.
 
 ## Runtime Commands
 
