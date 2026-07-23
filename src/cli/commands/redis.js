@@ -12,7 +12,9 @@ import {
   AIMGR_REDIS_PRIMARY_HOST,
   AIMGR_REDIS_PRIMARY_URL,
   AIMGR_REDIS_TRANSPORT,
+  ANTHROPIC_PROVIDER,
 } from "../../core/constants.js";
+import { isObject, normalizeProviderId } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { resolveCliPath } from "../../io/paths.js";
 import {
@@ -44,6 +46,21 @@ function writeJsonOutput(filePath, value) {
   }
 }
 
+function assertGenericRedisImportHasNoClaudeCredential(snapshot) {
+  for (const record of Array.isArray(snapshot?.credentials) ? snapshot.credentials : []) {
+    if (normalizeProviderId(record?.provider) !== ANTHROPIC_PROVIDER) continue;
+    if (
+      Object.keys(isObject(record.credential) ? record.credential : {}).length > 0
+      || Object.keys(isObject(record.identity) ? record.identity : {}).length > 0
+      || Object.keys(isObject(record.stableIdentity) ? record.stableIdentity : {}).length > 0
+    ) {
+      throw new Error(
+        "Generic Redis import cannot write Claude credential or identity material; use `aim claude import-native`.",
+      );
+    }
+  }
+}
+
 async function withRedisStore({ homeDir, opts }, fn) {
   const { redis } = readAimgrConfig({ homeDir }).config;
   if (!redis.url) {
@@ -61,7 +78,7 @@ async function withRedisStore({ homeDir, opts }, fn) {
 }
 
 export async function handleRedis(context) {
-  const { opts, positional, homeDir, stdout, nowMs, refreshOpenAICodexImpl, refreshAnthropicImpl } = context;
+  const { opts, positional, homeDir, stdout, nowMs, refreshOpenAICodexImpl } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
     throw new Error("Missing redis subcommand. Usage: aim redis configure|config|ping|snapshot|export|import|migrate ...");
@@ -127,6 +144,7 @@ export async function handleRedis(context) {
   if (subcmd === "import") {
     const inPath = resolveCliPath(opts.inFile, { homeDir, optionName: "--in" });
     const snapshot = JSON.parse(fs.readFileSync(inPath, "utf8"));
+    assertGenericRedisImportHasNoClaudeCredential(snapshot);
     await withRedisStore({ homeDir, opts }, async (store) => {
       const results = await importCredentialsSnapshot(store, snapshot, { updatedBy: "aimgr-cli", observedAt: new Date(nowMs).toISOString() });
       printJson(stdout, {
@@ -181,7 +199,6 @@ export async function handleRedis(context) {
         now: new Date(nowMs),
         refreshCandidateImpl: createMigrationRefreshCandidateImpl({
           refreshOpenAICodexImpl,
-          refreshAnthropicImpl,
         }),
       });
       const outPath = opts.outFile

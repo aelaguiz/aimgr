@@ -1,10 +1,21 @@
+import fs from "node:fs";
+import path from "node:path";
 import { getAnthropicCredential } from "../browser/seed.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { assertAnthropicCredentialShape } from "../credentials/anthropic.js";
 import { cloneJsonObject, getClaudeNativeBundle, hasCompleteClaudeNativeBundle, normalizeNonEmptyStringArray, readClaudeAppStateFile, readClaudeNativeBundle } from "../credentials/claude-bundle.js";
-import { syncLiveClaudeRotationBackToLabel } from "../credentials/claude-native.js";
-import { writeJsonFileIfChanged } from "../io/json-store.js";
+import { planClaudeNativeBundleReplacement, syncLiveClaudeRotationBackToLabel } from "../credentials/claude-native.js";
+import {
+  captureClaudeNativeBundleFromKeychain,
+  deleteClaudeNativeKeychainOauth,
+  ensureSafeManagedClaudeStorage,
+  readClaudeNativeBundleFromConfigFiles,
+  readClaudeNativeBundleFromStorage,
+  readClaudeNativeKeychainOauth,
+  writeClaudeNativeKeychainOauth,
+} from "../credentials/claude-native-storage.js";
+import { writeJsonFileIfChanged, writeTextFileIfChanged } from "../io/json-store.js";
 import { resolveClaudeAppStatePath, resolveClaudeAuthFilePath, resolveManagedClaudeDir } from "../io/paths.js";
 import { appendAnthropicHistory, buildAnthropicExhaustionHistoryEntries, recordAnthropicBlockedSelectionHistory } from "../pool/history.js";
 import { collectAnthropicPoolStatus, getAnthropicPoolLabels, pickNextBestLocalCliPoolLabel, rankPoolCandidates } from "../pool/ranking.js";
@@ -31,25 +42,267 @@ export function buildClaudeAuthDotJson({ credential }) {
   };
 }
 
-// `.claude.json` is a mixed Claude app-state file. AIM owns only the
-// `oauthAccount` key there and must preserve unrelated settings exactly.
-
-export function writeClaudeAppStateOauthAccount({ homeDir, credential }) {
+function buildClaudeAppStatePayload({ current, credential }) {
   const bundle = getClaudeNativeBundle(credential);
   const oauthAccount = cloneJsonObject(bundle?.oauthAccount);
   if (!oauthAccount) {
     throw new Error("Refusing to write Claude app state without a native Claude oauthAccount bundle.");
   }
-  const current = readClaudeAppStateFile({ homeDir });
-  if (current.exists === true && current.ok !== true) {
-    throw new Error(`Refusing to mutate unreadable Claude app state file: ${current.error || current.appStatePath}`);
-  }
-  const next = {
+  return {
     ...(current.ok === true && isObject(current.json) ? current.json : {}),
     oauthAccount,
     hasCompletedOnboarding: true,
     hasAvailableSubscription: true,
   };
+}
+
+function snapshotProjectionFile(filePath, { fsImpl = fs } = {}) {
+  let stat;
+  try {
+    stat = fsImpl.lstatSync(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return { exists: false, filePath };
+    throw new Error("Could not inspect Claude projection target.");
+  }
+  if (
+    !stat.isFile()
+    || stat.isSymbolicLink()
+    || (typeof process.getuid === "function" && Number.isInteger(stat.uid) && stat.uid !== process.getuid())
+  ) {
+    throw new Error("Refusing to overwrite an unsafe Claude projection target.");
+  }
+  fsImpl.chmodSync(filePath, 0o600);
+  return {
+    exists: true,
+    filePath,
+    text: fsImpl.readFileSync(filePath, "utf8"),
+    mode: 0o600,
+  };
+}
+
+function restoreProjectionSnapshot(snapshot, {
+  fsImpl = fs,
+  writeTextFileIfChangedImpl = writeTextFileIfChanged,
+} = {}) {
+  if (!snapshot.exists) {
+    fsImpl.rmSync(snapshot.filePath, { force: true });
+    return;
+  }
+  writeTextFileIfChangedImpl(snapshot.filePath, snapshot.text, { mode: snapshot.mode || 0o600 });
+}
+
+export function writeClaudeNativeProjectionPair({
+  homeDir,
+  claudeDir = resolveManagedClaudeDir({ homeDir }),
+  credential,
+  fsImpl = fs,
+  writeJsonFileIfChangedImpl = writeJsonFileIfChanged,
+  writeTextFileIfChangedImpl = writeTextFileIfChanged,
+  verifyImpl = null,
+} = {}) {
+  const credentialsPath = resolveClaudeAuthFilePath(claudeDir);
+  const appStatePath = resolveClaudeAppStatePath({ homeDir });
+  const credentialsSnapshot = snapshotProjectionFile(credentialsPath, { fsImpl });
+  const appStateSnapshot = snapshotProjectionFile(appStatePath, { fsImpl });
+  const currentAppState = readClaudeAppStateFile({ homeDir });
+  if (currentAppState.exists === true && currentAppState.ok !== true) {
+    throw new Error("Refusing to mutate unreadable Claude app state file.");
+  }
+  const authPayload = buildClaudeAuthDotJson({ credential });
+  const appStatePayload = buildClaudeAppStatePayload({ current: currentAppState, credential });
+  const rollback = () => {
+    restoreProjectionSnapshot(credentialsSnapshot, { fsImpl, writeTextFileIfChangedImpl });
+    restoreProjectionSnapshot(appStateSnapshot, { fsImpl, writeTextFileIfChangedImpl });
+  };
+
+  let appStateWrite = { wrote: false, path: appStatePath };
+  let credentialsWrite = { wrote: false, path: credentialsPath };
+  try {
+    // Identity is preflighted before either write. If the second atomic rename
+    // fails, restore the first file before surfacing the failure.
+    appStateWrite = writeJsonFileIfChangedImpl(appStatePath, appStatePayload, { mode: 0o600 });
+    credentialsWrite = writeJsonFileIfChangedImpl(credentialsPath, authPayload, { mode: 0o600 });
+    const verification = typeof verifyImpl === "function" ? verifyImpl() : null;
+    return {
+      credentialsPath,
+      appStatePath,
+      credentialsWrite,
+      appStateWrite,
+      verification,
+      rollback,
+    };
+  } catch (error) {
+    try {
+      rollback();
+    } catch {
+      throw new Error("Claude native projection failed and could not be rolled back safely.");
+    }
+    throw error;
+  }
+}
+
+export async function projectClaudeNativeBundleToManagedConfig({
+  descriptor,
+  credential,
+  trustedApplicationPath,
+  nowMs = Date.now(),
+  readClaudeNativeKeychainOauthImpl = readClaudeNativeKeychainOauth,
+  writeClaudeNativeKeychainOauthImpl = writeClaudeNativeKeychainOauth,
+  deleteClaudeNativeKeychainOauthImpl = deleteClaudeNativeKeychainOauth,
+  fsImpl = fs,
+  writeJsonFileIfChangedImpl = writeJsonFileIfChanged,
+  writeTextFileIfChangedImpl = writeTextFileIfChanged,
+} = {}) {
+  if (
+    !descriptor
+    || !path.isAbsolute(String(descriptor.configDir ?? ""))
+    || descriptor.appStatePath !== path.join(descriptor.configDir, ".claude.json")
+    || !path.isAbsolute(String(trustedApplicationPath ?? ""))
+  ) {
+    throw new Error("Managed Claude projection requires an exact config-dir descriptor.");
+  }
+  ensureSafeManagedClaudeStorage({ descriptor, fsImpl });
+  const candidatePlan = planClaudeNativeBundleReplacement({
+    currentBundle: null,
+    candidateBundle: credential,
+    expectedEmail: descriptor.expectedEmail,
+    nowMs,
+    allowExpiredCandidate: true,
+  });
+  if (candidatePlan.ok !== true) {
+    throw new Error(`Managed Claude projection blocked: ${candidatePlan.reason}.`);
+  }
+
+  const current = await readClaudeNativeBundleFromStorage({
+    descriptor,
+    nowMs,
+    readClaudeNativeKeychainOauthImpl,
+  });
+  if (current.ok === true) {
+    const replacement = planClaudeNativeBundleReplacement({
+      currentBundle: current.nativeClaudeBundle,
+      candidateBundle: credential,
+      expectedEmail: descriptor.expectedEmail,
+      nowMs,
+      allowExpiredCandidate: true,
+    });
+    if (replacement.ok !== true) {
+      throw new Error(`Managed Claude projection blocked: ${replacement.reason}.`);
+    }
+  } else if (current.errorKind !== "native_storage_empty") {
+    throw new Error(`Managed Claude projection blocked: ${current.errorKind || "native_storage_unavailable"}.`);
+  }
+
+  const projection = writeClaudeNativeProjectionPair({
+    homeDir: descriptor.configDir,
+    claudeDir: descriptor.configDir,
+    credential,
+    fsImpl,
+    writeJsonFileIfChangedImpl,
+    writeTextFileIfChangedImpl,
+    verifyImpl: () => {
+      const verified = readClaudeNativeBundleFromConfigFiles({ descriptor });
+      if (verified.ok !== true) {
+        throw new Error("Managed Claude projection readback failed.");
+      }
+      const verificationPlan = planClaudeNativeBundleReplacement({
+        currentBundle: credential,
+        candidateBundle: verified.nativeClaudeBundle,
+        expectedEmail: descriptor.expectedEmail,
+        nowMs,
+        allowExpiredCandidate: true,
+      });
+      if (verificationPlan.ok !== true || verificationPlan.action !== "noop") {
+        throw new Error("Managed Claude projection readback mismatch.");
+      }
+      return {
+        ok: true,
+        source: "file",
+      };
+    },
+  });
+  const priorKeychain = current.keychainState ?? { present: false };
+  const candidateOauth = getClaudeNativeBundle(credential)?.claudeAiOauth;
+  let keychainAttempted = false;
+  try {
+    keychainAttempted = true;
+    const writeResult = writeClaudeNativeKeychainOauthImpl({
+      service: descriptor.service,
+      oauth: candidateOauth,
+      trustedApplicationPath,
+    });
+    if (writeResult?.ok !== true) {
+      throw new Error("Managed Claude Keychain projection failed.");
+    }
+    const verifiedKeychain = await captureClaudeNativeBundleFromKeychain({
+      descriptor,
+      nowMs,
+      minRemainingMs: 0,
+      allowExpired: true,
+      readClaudeNativeKeychainOauthImpl,
+    });
+    const verificationPlan = verifiedKeychain.ok === true
+      ? planClaudeNativeBundleReplacement({
+          currentBundle: credential,
+          candidateBundle: verifiedKeychain.nativeClaudeBundle,
+          expectedEmail: descriptor.expectedEmail,
+          nowMs,
+          allowExpiredCandidate: true,
+        })
+      : null;
+    if (verificationPlan?.ok !== true || verificationPlan.action !== "noop") {
+      throw new Error("Managed Claude Keychain projection readback mismatch.");
+    }
+  } catch (error) {
+    let keychainRestored = !keychainAttempted;
+    if (keychainAttempted && priorKeychain.present === true) {
+      const restored = writeClaudeNativeKeychainOauthImpl({
+        service: descriptor.service,
+        oauth: priorKeychain.oauth,
+        trustedApplicationPath,
+      });
+      if (restored?.ok === true) {
+        const readback = await readClaudeNativeKeychainOauthImpl({ service: descriptor.service });
+        const expected = JSON.stringify(priorKeychain.oauth);
+        const actual = readback?.ok === true ? JSON.stringify(readback.oauth) : "";
+        keychainRestored = expected === actual;
+      }
+    } else if (keychainAttempted) {
+      const deleted = deleteClaudeNativeKeychainOauthImpl({ service: descriptor.service });
+      if (deleted?.ok === true) {
+        const readback = await readClaudeNativeKeychainOauthImpl({ service: descriptor.service });
+        keychainRestored = readback?.ok !== true && readback?.errorKind === "keychain_item_missing";
+      }
+    }
+    try {
+      projection.rollback();
+    } catch {
+      throw new Error("Managed Claude projection failed and file rollback could not be verified.");
+    }
+    if (!keychainRestored) {
+      throw new Error("Managed Claude projection failed and Keychain rollback could not be verified.");
+    }
+    throw error;
+  }
+  return {
+    ok: true,
+    action: current.ok === true ? "projected_existing" : "projected_new",
+    wrote: {
+      credentials: projection.credentialsWrite.wrote,
+      appState: projection.appStateWrite.wrote,
+    },
+  };
+}
+
+// `.claude.json` is a mixed Claude app-state file. AIM owns only the
+// `oauthAccount` key there and must preserve unrelated settings exactly.
+
+export function writeClaudeAppStateOauthAccount({ homeDir, credential }) {
+  const current = readClaudeAppStateFile({ homeDir });
+  if (current.exists === true && current.ok !== true) {
+    throw new Error(`Refusing to mutate unreadable Claude app state file: ${current.error || current.appStatePath}`);
+  }
+  const next = buildClaudeAppStatePayload({ current, credential });
   return writeJsonFileIfChanged(resolveClaudeAppStatePath({ homeDir }), next, { mode: 0o600 });
 }
 
@@ -82,16 +335,29 @@ export function applyClaudeCliFromState({ label, homeDir }, state) {
   });
 
   const claudeDir = resolveManagedClaudeDir({ homeDir });
-  const authPayload = buildClaudeAuthDotJson({ credential });
-  const credentialsWrite = writeJsonFileIfChanged(resolveClaudeAuthFilePath(claudeDir), authPayload, { mode: 0o600 });
-  const appStateWrite = writeClaudeAppStateOauthAccount({ homeDir, credential });
-  const readback = readClaudeNativeBundle({ homeDir });
-  if (readback.ok !== true) {
-    throw new Error("Failed to read back managed Claude auth bundle after apply.");
-  }
-  if (!hasCompleteClaudeNativeBundle(readback.nativeClaudeBundle) || !readback.summary) {
-    throw new Error("Claude readback is missing native auth bundle fields after apply.");
-  }
+  const projection = writeClaudeNativeProjectionPair({
+    homeDir,
+    claudeDir,
+    credential,
+    verifyImpl: () => {
+      const verified = readClaudeNativeBundle({ homeDir });
+      if (verified.ok !== true) {
+        throw new Error("Failed to read back managed Claude auth bundle after apply.");
+      }
+      if (!hasCompleteClaudeNativeBundle(verified.nativeClaudeBundle) || !verified.summary) {
+        throw new Error("Claude readback is missing native auth bundle fields after apply.");
+      }
+      const replacement = planClaudeNativeBundleReplacement({
+        currentBundle: credential,
+        candidateBundle: verified.nativeClaudeBundle,
+      });
+      if (replacement.ok !== true || replacement.action !== "noop") {
+        throw new Error("Claude readback identity or token mismatch after apply.");
+      }
+      return verified;
+    },
+  });
+  const readback = projection.verification;
   const inferredLabel = getAnthropicCredentialMatchLabel(state, {
     accessToken: readback.summary.access,
     refreshToken: readback.summary.refresh,
@@ -116,8 +382,8 @@ export function applyClaudeCliFromState({ label, homeDir }, state) {
     credentialsPath: readback.credentialsPath,
     appStatePath: readback.appStatePath,
     wrote: {
-      credentials: credentialsWrite.wrote,
-      appState: appStateWrite.wrote,
+      credentials: projection.credentialsWrite.wrote,
+      appState: projection.appStateWrite.wrote,
     },
     preSwitchSync,
   };

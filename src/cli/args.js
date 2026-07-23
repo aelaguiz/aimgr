@@ -19,6 +19,7 @@ export function parseArgs(argv) {
     outFile: undefined,
     planFile: undefined,
     sourceHome: undefined,
+    sourceConfigDir: undefined,
     key: undefined,
     tier: undefined,
     subscription: undefined,
@@ -30,6 +31,7 @@ export function parseArgs(argv) {
     accounts: false,
     help: false,
     once: false,
+    fresh: false,
     tend: false,
     noAttach: false,
     confirmBreakingCutover: false,
@@ -157,6 +159,11 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--source-config-dir") {
+      opts.sourceConfigDir = argv[i + 1];
+      i += 1;
+      continue;
+    }
     if (arg === "--key") {
       opts.key = argv[i + 1];
       i += 1;
@@ -208,6 +215,10 @@ export function parseArgs(argv) {
     }
     if (arg === "--once") {
       opts.once = true;
+      continue;
+    }
+    if (arg === "--fresh") {
+      opts.fresh = true;
       continue;
     }
     if (arg === "--tend") {

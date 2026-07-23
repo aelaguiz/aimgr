@@ -6,11 +6,12 @@ import { buildStatusView } from "../../status/view.js";
 import { buildRedisStatusView } from "../../status/redis-view.js";
 
 export async function handleStatus(context) {
-  const { opts, statePath, homeDir, env, stdout, probeUsageSnapshotsByProviderImpl, nowMs } = context;
+  const { opts, statePath, homeDir, env, stdout, probeUsageSnapshotsByProviderImpl, fetchJsonWithTimeoutImpl, nowMs } = context;
   const redisStatus = await buildRedisStatusView({
     homeDir,
     env,
     probeUsageSnapshotsByProviderImpl,
+    fetchJsonWithTimeoutImpl,
     nowMs,
   });
   if (redisStatus.used) {

@@ -8,6 +8,7 @@ import { resolveAimgrLocalStatePath } from "../../src/io/paths.js";
 import { runCli } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
+import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 
 function token(accountId, exp = Math.floor(Date.now() / 1000) + 3600) {
   return makeFakeJwt({
@@ -182,4 +183,51 @@ test("redis-configured login refuses to overwrite a credential with a different 
   const credential = snapshot.credentials.find((entry) => entry.label === "boss");
   assert.equal(credential.credential.refresh, "OLD_REFRESH");
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
+});
+
+test("Redis generic login and panel cannot become side-door Claude credential writers", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const credential = buildAnthropicClaudeCredential();
+  const store = await seedLoginRedis({
+    home,
+    client,
+    keyPrefix: "aimgr:claude-login-block-test",
+    credentialRecord: {
+      provider: "anthropic",
+      label: "pro7",
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      credential,
+      policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } },
+      health: { status: "ready", reason: null },
+    },
+  });
+  let panelCalls = 0;
+
+  await assert.rejects(
+    runCli(["login", "pro7", "--home", home], {
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:claude-login-block-test" }),
+    }),
+    /Redis-backed Claude maintenance.*aim claude run/,
+  );
+  await assert.rejects(
+    runCli(["pro7", "--home", home], {
+      stdin: { isTTY: true },
+      stdout: { isTTY: true },
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:claude-login-block-test" }),
+      runLabelControlPanelImpl: async () => {
+        panelCalls += 1;
+      },
+    }),
+    /Redis-backed Claude maintenance.*aim claude run/,
+  );
+
+  assert.equal(panelCalls, 0);
+  const snapshot = await readSnapshot(store);
+  assert.equal(snapshot.credentials[0].version, 1);
+  assert.equal(snapshot.credentials[0].credential.refresh, credential.refresh);
 });

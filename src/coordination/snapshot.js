@@ -1,6 +1,7 @@
 import { createEmptyState } from "../state/empty.js";
 import { ensureStateShape } from "../state/schema.js";
 import { ensureLocalStateShape } from "../state/local-state.js";
+import { hasCredentialMaterial } from "./records.js";
 
 export function findCredentialRecord(snapshot, { provider, label }) {
   return (snapshot?.credentials ?? []).find((record) => record.provider === provider && record.label === label) ?? null;
@@ -30,8 +31,10 @@ export function buildCoordinationView(snapshot, { localState = null } = {}) {
       },
       pool: record.policy?.pool ?? { enabled: true },
     };
-    state.credentials[record.provider] = state.credentials[record.provider] ?? {};
-    state.credentials[record.provider][record.label] = record.credential;
+    if (hasCredentialMaterial(record.credential)) {
+      state.credentials[record.provider] = state.credentials[record.provider] ?? {};
+      state.credentials[record.provider][record.label] = record.credential;
+    }
   }
 
   ensureStateShape(state);

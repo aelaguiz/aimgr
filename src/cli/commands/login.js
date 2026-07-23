@@ -1,4 +1,4 @@
-import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { readAimgrConfig } from "../../config/aimgr-config.js";
 import { buildCoordinationView } from "../../coordination/snapshot.js";
 import { closeRedisStore, connectRedisStore, readSnapshot } from "../../coordination/redis-store.js";
@@ -23,7 +23,6 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
     openUrlImpl,
     loginOpenAICodexImpl,
     refreshOpenAICodexImpl,
-    refreshAnthropicImpl,
     nowMs,
   } = context;
   const config = readAimgrConfig({ homeDir }).config;
@@ -36,6 +35,13 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
     const state = buildCoordinationView(snapshot, {
       localState: loadLocalState({ homeDir }),
     });
+    const normalizedLabel = normalizeLabel(label);
+    if (normalizeProviderId(state?.accounts?.[normalizedLabel]?.provider) === ANTHROPIC_PROVIDER) {
+      throw new Error(
+        `Redis-backed Claude maintenance for label=${normalizedLabel} is owned by ` +
+          "`aim claude capture-native`, `aim claude import-native`, and `aim claude run`.",
+      );
+    }
     const result = await performLabelMaintenance({
       state,
       label,
@@ -45,7 +51,7 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
       openUrlImpl,
       loginOpenAICodexImpl,
       refreshOpenAICodexImpl,
-      refreshAnthropicImpl,
+      allowAnthropicNativeMaintenance: false,
       manualCallbackAutomation,
       writeImpl,
     });
@@ -116,12 +122,18 @@ async function runRedisLabelControlPanel(context, { label, writeImpl }) {
     runLabelControlPanelImpl,
     loginOpenAICodexImpl,
     refreshOpenAICodexImpl,
-    refreshAnthropicImpl,
     connectRedisStoreImpl,
     nowMs,
   } = context;
   const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl, now: new Date(nowMs) });
   try {
+    const normalizedLabel = normalizeLabel(label);
+    if (normalizeProviderId(runtime.state?.accounts?.[normalizedLabel]?.provider) === ANTHROPIC_PROVIDER) {
+      throw new Error(
+        `Redis-backed Claude maintenance for label=${normalizedLabel} is owned by ` +
+          "`aim claude capture-native`, `aim claude import-native`, and `aim claude run`.",
+      );
+    }
     await runLabelControlPanelImpl({
       statePath: null,
       state: runtime.state,
@@ -135,7 +147,7 @@ async function runRedisLabelControlPanel(context, { label, writeImpl }) {
       readOpenclawAgentsListFromConfigImpl,
       loginOpenAICodexImpl,
       refreshOpenAICodexImpl,
-      refreshAnthropicImpl,
+      allowAnthropicNativeMaintenance: false,
       persistStateImpl: () => persistRedisPanelState({ runtime, state: runtime.state, label, homeDir, nowMs }),
       writeImpl,
     });
@@ -145,7 +157,7 @@ async function runRedisLabelControlPanel(context, { label, writeImpl }) {
 }
 
 export async function handleLogin(context) {
-  const { opts, positional, statePath, homeDir, shorthandLabel, stdin, stdout, env, setExitCode, repoRoot, promptLineImpl, promptImpl, openUrlImpl, readOpenclawBindingsFromConfigImpl, readOpenclawAgentsListFromConfigImpl, runLabelControlPanelImpl, loginOpenAICodexImpl, refreshOpenAICodexImpl, refreshAnthropicImpl } = context;
+  const { opts, positional, statePath, homeDir, shorthandLabel, stdin, stdout, env, setExitCode, repoRoot, promptLineImpl, promptImpl, openUrlImpl, readOpenclawBindingsFromConfigImpl, readOpenclawAgentsListFromConfigImpl, runLabelControlPanelImpl, loginOpenAICodexImpl, refreshOpenAICodexImpl } = context;
   const rawLabel = shorthandLabel ?? positional[1];
   const writeImpl = (chunk) => stdout.write(chunk);
   if (opts.manualCallbackStdio) {
@@ -184,7 +196,6 @@ export async function handleLogin(context) {
         openUrlImpl,
         loginOpenAICodexImpl,
         refreshOpenAICodexImpl,
-        refreshAnthropicImpl,
         manualCallbackAutomation,
         writeImpl: () => {},
       });
@@ -235,7 +246,6 @@ export async function handleLogin(context) {
       readOpenclawAgentsListFromConfigImpl,
       loginOpenAICodexImpl,
       refreshOpenAICodexImpl,
-      refreshAnthropicImpl,
       writeImpl,
     });
     return;
@@ -251,7 +261,6 @@ export async function handleLogin(context) {
       openUrlImpl,
       loginOpenAICodexImpl,
       refreshOpenAICodexImpl,
-      refreshAnthropicImpl,
       writeImpl,
     });
     writeJsonFileWithBackup(statePath, state);

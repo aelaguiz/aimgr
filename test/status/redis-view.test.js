@@ -3,12 +3,17 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
-import { OPENAI_CODEX_PROVIDER } from "../../src/core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../src/core/constants.js";
 import { resolveAimgrRedisCachePath } from "../../src/io/paths.js";
 import { writeLocalState } from "../../src/state/local-state.js";
-import { buildRedisStatusView } from "../../src/status/redis-view.js";
+import {
+  AIMGR_REDIS_STATUS_CACHE_KIND,
+  AIMGR_REDIS_STATUS_CACHE_MAX_AGE_MS,
+  buildRedisStatusView,
+} from "../../src/status/redis-view.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
+import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 
 async function seedRedis(client) {
   const store = await connectRedisStore({ client, keyPrefix: "aimgr:status-test" });
@@ -27,7 +32,11 @@ async function seedRedis(client) {
         {
           provider: OPENAI_CODEX_PROVIDER,
           label: "boss",
-          identity: { accountId: "acct_boss" },
+          identity: {
+            accountId: "acct_boss",
+            emailAddress: "cache-private@example.test",
+            organizationUuid: "org-cache-private",
+          },
           credential: {
             access: token,
             refresh: "REFRESH_BOSS",
@@ -36,10 +45,12 @@ async function seedRedis(client) {
             expiresAt: new Date(exp * 1000).toISOString(),
           },
           policy: {
+            expect: { email: "cache-private@example.test" },
             reauth: { mode: "manual-callback" },
+            browser: { userDataDir: "/private/cache/browser/path" },
             pool: { enabled: true },
           },
-          health: { status: "ready", reason: null },
+          health: { status: "ready", reason: "RAW_PRIVATE_HEALTH_REASON" },
         },
       ],
     },
@@ -54,7 +65,7 @@ test("Redis status view reads shared credentials, writes redacted cache, and has
     homeDir: home,
     config: {
       redis: {
-        url: "redis://fake:6379",
+        url: "redis://cache-user:cache-password@fake:6379/0?token=cache-query-secret",
         keyPrefix: "aimgr:status-test",
         primaryHost: "fake",
         transport: "test",
@@ -84,6 +95,7 @@ test("Redis status view reads shared credentials, writes redacted cache, and has
   assert.equal(result.used, true);
   assert.equal(result.view.statePath, "redis:aimgr:status-test:");
   assert.equal(result.view.redis.status, "live");
+  assert.equal(result.view.redis.url, "redis://fake:6379/0");
   assert.equal(result.view.redis.credentialCount, 1);
   assert.equal(result.view.accounts[0].label, "boss");
   assert.equal(result.view.codexCli.activeLabel, "boss");
@@ -94,7 +106,14 @@ test("Redis status view reads shared credentials, writes redacted cache, and has
 
   const cachePath = resolveAimgrRedisCachePath({ homeDir: home });
   const cache = fs.readFileSync(cachePath, "utf8");
+  const cacheEnvelope = JSON.parse(cache);
+  assert.equal(cacheEnvelope.statusView.kind, AIMGR_REDIS_STATUS_CACHE_KIND);
   assert.doesNotMatch(cache, /REFRESH_BOSS/);
+  assert.doesNotMatch(
+    cache,
+    /cache-user|cache-password|cache-query-secret|cache-private@example|acct_boss|org-cache-private|private\/cache\/browser|RAW_PRIVATE_HEALTH_REASON/,
+  );
+  assert.doesNotMatch(cache, /"identity"|"policy"|"reason"/);
 });
 
 test("Redis status view uses diagnostic cache when Redis is unavailable", async () => {
@@ -105,14 +124,17 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
     config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-test" } },
   });
   await seedRedis(client);
+  const observedAtMs = Date.parse("2026-07-22T18:00:00.000Z");
 
   await buildRedisStatusView({
     homeDir: home,
+    nowMs: observedAtMs,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
     probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }),
   });
   const cached = await buildRedisStatusView({
     homeDir: home,
+    nowMs: observedAtMs + 60_000,
     connectRedisStoreImpl: async () => {
       throw new Error("redis down");
     },
@@ -121,6 +143,82 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
 
   assert.equal(cached.used, true);
   assert.equal(cached.view.redis.status, "cache");
-  assert.match(cached.view.redis.error, /redis down/);
+  assert.equal(cached.view.redis.error, "unavailable");
   assert.equal(cached.view.warnings.at(-1).kind, "redis_status_cache_used");
+
+  await assert.rejects(
+    buildRedisStatusView({
+      homeDir: home,
+      nowMs: observedAtMs + AIMGR_REDIS_STATUS_CACHE_MAX_AGE_MS + 1,
+      connectRedisStoreImpl: async () => {
+        throw new Error("RAW_STALE_CACHE_ERROR");
+      },
+      probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }),
+    }),
+    (error) => {
+      assert.equal(error.message, "Redis status is unavailable.");
+      assert.doesNotMatch(error.message, /RAW_STALE_CACHE_ERROR/);
+      return true;
+    },
+  );
+});
+
+test("ordinary Redis status routes Claude through the bounded canonical cache", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const nowMs = Date.now();
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-claude-test" } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: "aimgr:status-claude-test" });
+  const credential = buildAnthropicClaudeCredential({ expiresAtMs: nowMs + 3_600_000 });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: ANTHROPIC_PROVIDER,
+      label: "claude",
+      credential,
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } },
+      health: { status: "ready", reason: null },
+    }],
+  });
+
+  let directProbeCalls = 0;
+  let claudeRequests = 0;
+  const deps = {
+    homeDir: home,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-claude-test" }),
+    probeUsageSnapshotsByProviderImpl: async (state) => {
+      directProbeCalls += 1;
+      assert.deepEqual(state.credentials[ANTHROPIC_PROVIDER], {});
+      return { [OPENAI_CODEX_PROVIDER]: {}, [ANTHROPIC_PROVIDER]: { forbidden: true } };
+    },
+    fetchJsonWithTimeoutImpl: async (url, options) => {
+      claudeRequests += 1;
+      assert.equal(url, "https://api.anthropic.com/api/oauth/usage");
+      assert.match(options.headers.Authorization, /^Bearer /);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 12, resets_at: new Date(nowMs + 3_600_000).toISOString() },
+          seven_day: { utilization: 34, resets_at: new Date(nowMs + 7 * 86_400_000).toISOString() },
+        }),
+      };
+    },
+  };
+
+  const first = await buildRedisStatusView({ ...deps, nowMs });
+  const second = await buildRedisStatusView({ ...deps, nowMs: nowMs + 60_000 });
+
+  assert.equal(first.view.accounts[0].usage.ok, true);
+  assert.equal(first.view.accounts[0].usage.status, "usage_readable");
+  assert.equal(second.view.accounts[0].usage.ok, true);
+  assert.equal(directProbeCalls, 2);
+  assert.equal(claudeRequests, 1);
 });

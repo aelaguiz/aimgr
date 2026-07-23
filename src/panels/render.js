@@ -32,30 +32,24 @@ export function buildAnthropicLabelPanelActions(panelState) {
     });
     actions.push({
       key: "2",
-      action: "refresh_native_claude_bundle",
-      label: "Refresh native bundle",
-      details: ["Will refresh stored Claude tokens and keep the same native Claude identity metadata."],
-    });
-    actions.push({
-      key: "3",
       action: "capture_native_claude",
       label: "Capture current native Claude login",
       details: ["Will read the live Claude login files from this host and store them on this label."],
     });
     actions.push({
-      key: "4",
+      key: "3",
       action: "import_native_claude_bundle",
       label: "Import native Claude bundle",
       details: ["Will ask for a portable Claude bundle JSON file path and store it on this label."],
     });
     actions.push({
-      key: "5",
+      key: "4",
       action: "export_live_native_claude_bundle",
       label: "Export current live native bundle",
       details: ["Will ask where to write a portable Claude bundle JSON from the live Claude login on this host."],
     });
     actions.push({
-      key: "6",
+      key: "5",
       action: "show_details",
       label: "Show details",
       details: [`Will print the raw provider, credential, and native Claude state for ${panelState.label}.`],

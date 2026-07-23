@@ -1,4 +1,4 @@
-import { loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
+import { loginOpenAICodex, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
 import { launchBrowserBindingForUrl } from "../browser/launch.js";
 import { promptLine, promptRequiredLine } from "../io/prompts.js";
 import { writeStdout } from "../io/streams.js";
@@ -41,7 +41,7 @@ export async function performLabelMaintenance({
   openUrlImpl = launchBrowserBindingForUrl,
   loginOpenAICodexImpl = loginOpenAICodex,
   refreshOpenAICodexImpl = refreshOpenAICodexToken,
-  refreshAnthropicImpl = refreshAnthropicToken,
+  allowAnthropicNativeMaintenance = true,
   manualCallbackAutomation = null,
   writeImpl = writeStdout,
 }) {
@@ -92,12 +92,17 @@ export async function performLabelMaintenance({
       });
       state.credentials[OPENAI_CODEX_PROVIDER][normalizedLabel] = cred;
     } else if (provider === ANTHROPIC_PROVIDER) {
+      if (!allowAnthropicNativeMaintenance) {
+        throw new Error(
+          `Redis-backed Claude maintenance for label=${normalizedLabel} is owned by ` +
+            "`aim claude capture-native`, `aim claude import-native`, and `aim claude run`.",
+        );
+      }
       ensureAnthropicLabelConfigured(state, normalizedLabel);
       const cred = await maintainAnthropicNativeLabel({
         state,
         label: normalizedLabel,
         homeDir,
-        refreshImpl: refreshAnthropicImpl,
       });
       state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = cred;
     } else {

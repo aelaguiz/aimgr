@@ -66,7 +66,10 @@ aim redis migrate cleanup-legacy --confirm-breaking-cutover
 aim redis export --out <post-cutover-export.json>
 ```
 
-The migration planner must preserve currently usable Codex and Claude credentials. A plan that would force mass re-login for usable accounts is a failed plan, not an acceptable cutover.
+The migration planner preserves currently usable Codex credentials. Generic Redis import may seed
+Claude policy-only candidate records, but generic import and migration apply reject Claude credential
+and identity material. A complete Claude credential enters Redis only through the per-label leased
+`aim claude capture-native` or `aim claude import-native` boundary.
 
 ## Runtime Commands
 
@@ -110,12 +113,52 @@ aim codex use [label]
 aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
 aim codex run --tend [-p <profile>] [--resume <session-id>] [-- <codex args...>]
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
+aim claude inventory [--json]
+aim claude status [account...] [--fresh] [--json]
+aim claude usage [account...] [--fresh] [--json]
 aim claude run <label> [-- <claude args...>]
-aim claude capture-native <label> [--source-home <dir>]
+aim claude capture-native <label> [--source-home <dir>] [--source-config-dir <dir>]
 aim claude export-live --out <file> [--source-home <dir>]
 aim claude import-native <label> --in <file>
 aim pi use
 ```
+
+`aim claude inventory` is the instant account-coverage view for Redis-backed Claude labels. It reads
+the configured AIM Redis credential records once and makes zero Anthropic, BrowserOS, Keychain,
+native-file, or Claude CLI calls. Candidate-only policy records remain visible as non-ready rows;
+complete, expired, incomplete, blocked, and identity-conflicting records remain distinguishable.
+Local Claude directories and browser profiles are projections or enrollment surfaces, never account
+names or inventory authority.
+
+`aim claude status` and its exact `aim claude usage` alias accept only canonical Anthropic labels in
+the shared Redis store. Invalid labels fail before external I/O. Unknown labels fail after the one
+Redis read and before any provider request. Candidate-only, incomplete, or expired credentials are
+reported locally and never sent to Anthropic.
+
+The usage commands are browserless and cookie-free: they do not inspect browser state, invoke a
+model, rotate credentials, or fall back to `claude.ai`. A normal run reuses the strictly allowlisted
+provider-usage section in AIM's existing `~/.aimgr/redis-cache.json`. An uncached run makes exactly
+one no-retry OAuth usage `GET` per selected ready account, with at most three requests in flight;
+`--fresh` bypasses a fresh success entry while preserving the one-request-per-account limit.
+Transient failures are briefly backed off, and usage observed within the prior hour may be shown
+only when clearly marked stale. The cache is written atomically with owner-only (`0600`) permissions.
+
+Human output uses an `account` column, and JSON uses `accounts[].label` plus `missingAccounts`.
+Neither schema nor the provider-usage cache contains tokens, authorization headers, raw Redis
+credentials, email addresses, account or organization UUIDs, identity/policy objects, native paths,
+Keychain identifiers, browser-profile names, raw provider errors, or full provider responses.
+Only canonical labels, closed plan metadata, credential/auth states, rate-limit percentages and
+resets, bounded timestamps, cache age, and fixed error classifications are exposed.
+
+Claude access-token expiry is not the same thing as subscription inactivity. `credential_expired`
+means the stored access credential needs maintenance; `stale_auth` means Anthropic rejected it.
+Neither state by itself proves that billing was cancelled. Initial login or genuine reauthentication
+may use the approved BrowserOS/native protocol, but a complete identity-checked native bundle must
+then be captured into Redis. After capture, Redis is the authority and each managed Claude home is a
+derived per-label projection whose newer token rotations are published back with Redis CAS. Claude
+capture, import, and run share one per-label lease. Managed runs retain a durable uncertainty fence
+until the exact supervised Claude child exits cleanly without rotation or a genuinely new
+access/refresh token pair is published as that fence's explicit successor.
 
 Sakana Fugu / Fugu Ultra are API-key accounts (no OAuth). Configure one account name plus its API
 key per Sakana subscription. Keys are stored only in the shared Redis credential store; status/list

@@ -26,12 +26,14 @@ export async function buildStatusView({
   homeDir,
   env = {},
   probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
+  usageByProviderOverride = null,
   nowMs = Date.now(),
 }) {
   ensureStateShape(state);
   const authorityCodexImportStatus = buildAuthorityCodexImportStatus(state);
   const authorityAnthropicImportStatus = buildAuthorityAnthropicImportStatus(state);
-  const usageByProvider = await probeUsageSnapshotsByProviderImpl(state, { env });
+  const usageByProvider = usageByProviderOverride
+    ?? await probeUsageSnapshotsByProviderImpl(state, { env });
   const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
   const codexPool = collectCodexPoolStatus({
     state,

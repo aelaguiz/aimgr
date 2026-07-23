@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { runCli } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
+import { buildAnthropicLabelPanelActions } from "../../src/panels/render.js";
 
 test("guided panel open browser delegates to the existing binding launcher", async () => {
   const home = mkTempHome();
@@ -145,4 +146,14 @@ test("interactive Anthropic label panel offers native Claude actions and no manu
   assert.doesNotMatch(out, /Change browser setup/);
   assert.doesNotMatch(out, /Browser:/);
   assert.match(out, /Native bundle: missing/);
+});
+
+test("Anthropic panel never offers a direct rotating-token refresh action", () => {
+  const actions = buildAnthropicLabelPanelActions({
+    label: "pro7",
+    nativeBundleComplete: true,
+  });
+
+  assert.equal(actions.some((action) => action.action === "refresh_native_claude_bundle"), false);
+  assert.equal(actions.some((action) => /refresh native bundle/i.test(action.label)), false);
 });

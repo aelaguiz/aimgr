@@ -10,6 +10,10 @@ function timestamp(value, fallback) {
   return raw || fallback;
 }
 
+export function hasCredentialMaterial(value) {
+  return isObject(value) && Object.keys(value).length > 0;
+}
+
 export function normalizeKeyPrefix(value = AIMGR_REDIS_DEFAULT_KEY_PREFIX) {
   const raw = String(value ?? "").trim() || AIMGR_REDIS_DEFAULT_KEY_PREFIX;
   return raw.endsWith(":") ? raw : `${raw}:`;
@@ -44,14 +48,19 @@ export function normalizeCredentialRecord(record = {}, { now = new Date().toISOS
   const provider = normalizeProviderId(source.provider);
   if (!provider) throw new Error("Redis credential record is missing provider.");
   const label = normalizeLabel(source.label);
+  const credential = isObject(source.credential) ? source.credential : {};
   return {
     kind: "aimgr.credential.v1",
     provider,
     label,
-    credential: isObject(source.credential) ? source.credential : {},
+    credential,
     identity: isObject(source.identity) ? source.identity : isObject(source.stableIdentity) ? source.stableIdentity : {},
     policy: normalizeCredentialPolicy(source),
-    health: isObject(source.health) ? source.health : { status: "ready", reason: null },
+    health: hasCredentialMaterial(credential)
+      ? isObject(source.health)
+        ? source.health
+        : { status: "ready", reason: null }
+      : { status: "candidate", reason: "credential_missing" },
     provenance: isObject(source.provenance) ? source.provenance : {},
     createdAt: timestamp(source.createdAt, now),
     updatedAt: timestamp(source.updatedAt, now),

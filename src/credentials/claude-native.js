@@ -2,15 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureAccountShape } from "../browser/bindings.js";
 import { getAnthropicCredential } from "../browser/seed.js";
-import { toIsoFromExpiresMs } from "../core/time.js";
 import { ANTHROPIC_PROVIDER, CLAUDE_NATIVE_BUNDLE_EXPORT_VERSION, REAUTH_MODE_NATIVE_CLAUDE } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
-import { buildClaudeCredentialSummaryFromBundle, buildClaudeNativeBundle, deriveAnthropicCredentialFromClaudeBundle, getClaudeNativeBundle, hasCompleteClaudeNativeBundle, readClaudeNativeBundle, updateClaudeBundleTokenFields } from "./claude-bundle.js";
+import { buildClaudeCredentialSummaryFromBundle, buildClaudeNativeBundle, deriveAnthropicCredentialFromClaudeBundle, getClaudeNativeBundle, hasCompleteClaudeNativeBundle, readClaudeNativeBundle } from "./claude-bundle.js";
 import { readJsonFile, writeJsonFileIfChanged } from "../io/json-store.js";
 import { resolveHomeDir } from "../io/paths.js";
 import { getAccountRecord } from "../state/accounts.js";
 import { getAuthorityAnthropicImportLabelMeta } from "../state/authority-anthropic.js";
 import { ensureStateShape } from "../state/schema.js";
+import { readClaudeNativeBundleFromStorage } from "./claude-native-storage.js";
 
 export function captureClaudeNativeBundleFromHome({
   homeDir,
@@ -94,33 +94,160 @@ export function getClaudeNativeBundleIdentity(source) {
   };
 }
 
+export function getStrictClaudeNativeBundleIdentity(source) {
+  const identity = getClaudeNativeBundleIdentity(source);
+  return identity.accountUuid && identity.emailAddress && identity.organizationUuid
+    ? {
+        accountUuid: identity.accountUuid,
+        emailAddress: identity.emailAddress,
+        organizationUuid: identity.organizationUuid,
+      }
+    : null;
+}
+
 export function doClaudeNativeBundleIdentitiesMatch(left, right) {
-  const leftIdentity = getClaudeNativeBundleIdentity(left);
-  const rightIdentity = getClaudeNativeBundleIdentity(right);
-  if (leftIdentity.accountUuid && rightIdentity.accountUuid) {
-    return leftIdentity.accountUuid === rightIdentity.accountUuid;
+  const leftIdentity = getStrictClaudeNativeBundleIdentity(left);
+  const rightIdentity = getStrictClaudeNativeBundleIdentity(right);
+  return Boolean(
+    leftIdentity
+    && rightIdentity
+    && leftIdentity.accountUuid === rightIdentity.accountUuid
+    && leftIdentity.emailAddress === rightIdentity.emailAddress
+    && leftIdentity.organizationUuid === rightIdentity.organizationUuid
+  );
+}
+
+function nativeTokenSet(source) {
+  const bundle = getClaudeNativeBundle(source);
+  const oauth = isObject(bundle?.claudeAiOauth) ? bundle.claudeAiOauth : null;
+  return oauth
+    ? {
+        accessToken: typeof oauth.accessToken === "string" ? oauth.accessToken.trim() : "",
+        refreshToken: typeof oauth.refreshToken === "string" ? oauth.refreshToken.trim() : "",
+        expiresAtMs: Number(oauth.expiresAt),
+      }
+    : null;
+}
+
+function hasSameNativeTokenSet(left, right) {
+  const a = nativeTokenSet(left);
+  const b = nativeTokenSet(right);
+  return Boolean(
+    a
+    && b
+    && a.accessToken
+    && a.refreshToken
+    && a.accessToken === b.accessToken
+    && a.refreshToken === b.refreshToken
+    && a.expiresAtMs === b.expiresAtMs
+  );
+}
+
+export function planClaudeNativeBundleReplacement({
+  currentBundle,
+  candidateBundle,
+  expectedEmail = null,
+  nowMs = Date.now(),
+  minRemainingMs = 0,
+  allowExpiredCandidate = false,
+} = {}) {
+  const candidate = buildClaudeNativeBundle(getClaudeNativeBundle(candidateBundle));
+  const candidateIdentity = getStrictClaudeNativeBundleIdentity(candidate);
+  const candidateOauth = nativeTokenSet(candidate);
+  const normalizedExpectedEmail = typeof expectedEmail === "string" ? expectedEmail.trim().toLowerCase() : "";
+  if (!candidate || !hasCompleteClaudeNativeBundle(candidate) || !candidateIdentity || !candidateOauth) {
+    return { ok: false, action: "blocked", reason: "candidate_incomplete" };
   }
+  if (normalizedExpectedEmail && candidateIdentity.emailAddress !== normalizedExpectedEmail) {
+    return { ok: false, action: "blocked", reason: "identity_mismatch" };
+  }
+  const current = buildClaudeNativeBundle(getClaudeNativeBundle(currentBundle));
+  if (!current && isObject(currentBundle) && Object.keys(currentBundle).length > 0) {
+    return { ok: false, action: "blocked", reason: "current_incomplete" };
+  }
+  if (current) {
+    if (!hasCompleteClaudeNativeBundle(current)) {
+      return { ok: false, action: "blocked", reason: "current_incomplete" };
+    }
+    if (!doClaudeNativeBundleIdentitiesMatch(current, candidate)) {
+      return { ok: false, action: "blocked", reason: "identity_conflict" };
+    }
+    if (hasSameNativeTokenSet(current, candidate)) {
+      return { ok: true, action: "noop", reason: "tokens_unchanged" };
+    }
+  }
+
+  const freshnessFloor = Number(nowMs) + Math.max(0, Number(minRemainingMs) || 0);
   if (
-    leftIdentity.emailAddress
-    && rightIdentity.emailAddress
-    && leftIdentity.organizationUuid
-    && rightIdentity.organizationUuid
+    !Number.isFinite(candidateOauth.expiresAtMs)
+    || (!allowExpiredCandidate && candidateOauth.expiresAtMs <= freshnessFloor)
   ) {
-    return (
-      leftIdentity.emailAddress === rightIdentity.emailAddress
-      && leftIdentity.organizationUuid === rightIdentity.organizationUuid
+    return { ok: false, action: "blocked", reason: "candidate_expired" };
+  }
+  if (!current) return { ok: true, action: "create", reason: "empty_current" };
+
+  const currentOauth = nativeTokenSet(current);
+  if (!currentOauth || !Number.isFinite(currentOauth.expiresAtMs)) {
+    return { ok: false, action: "blocked", reason: "current_incomplete" };
+  }
+  if (candidateOauth.expiresAtMs < currentOauth.expiresAtMs) {
+    return { ok: false, action: "blocked", reason: "stale_candidate" };
+  }
+  if (candidateOauth.expiresAtMs === currentOauth.expiresAtMs) {
+    return { ok: false, action: "blocked", reason: "ambiguous_equal_expiry" };
+  }
+  return { ok: true, action: "update", reason: "candidate_newer" };
+}
+
+function strictClaudeIdentitiesFromRecord(record) {
+  const identity = isObject(record?.identity) ? record.identity : {};
+  const accountUuid = typeof identity.accountUuid === "string" ? identity.accountUuid.trim() : "";
+  const emailAddress = typeof identity.emailAddress === "string" ? identity.emailAddress.trim().toLowerCase() : "";
+  const organizationUuid = typeof identity.organizationUuid === "string" ? identity.organizationUuid.trim() : "";
+  const stored = accountUuid && emailAddress && organizationUuid
+    ? { accountUuid, emailAddress, organizationUuid }
+    : null;
+  const derived = getStrictClaudeNativeBundleIdentity(record?.credential);
+  return [stored, derived].filter(Boolean);
+}
+
+export function findAnthropicSnapshotIdentityConflict(snapshot, {
+  nativeClaudeBundle,
+  excludeLabel,
+} = {}) {
+  const candidateIdentity = getStrictClaudeNativeBundleIdentity(nativeClaudeBundle);
+  if (!candidateIdentity) return null;
+  const excluded = excludeLabel ? normalizeLabel(excludeLabel) : null;
+  for (const record of snapshot?.credentials ?? []) {
+    if (normalizeProviderId(record?.provider) !== ANTHROPIC_PROVIDER) continue;
+    const label = normalizeLabel(record.label);
+    if (excluded && label === excluded) continue;
+    const matches = strictClaudeIdentitiesFromRecord(record).some((recordIdentity) =>
+      recordIdentity.accountUuid === candidateIdentity.accountUuid
+      && recordIdentity.emailAddress === candidateIdentity.emailAddress
+      && recordIdentity.organizationUuid === candidateIdentity.organizationUuid);
+    if (matches) {
+      return label;
+    }
+  }
+  return null;
+}
+
+export function assertNoAnthropicSnapshotIdentityConflict(snapshot, options = {}) {
+  const duplicateLabel = findAnthropicSnapshotIdentityConflict(snapshot, options);
+  if (duplicateLabel) {
+    throw new Error(
+      `That native Claude login is already stored on label=${duplicateLabel}. Refusing duplicate Anthropic bundle capture/import.`,
     );
   }
-  if (leftIdentity.refreshToken && rightIdentity.refreshToken) {
-    return leftIdentity.refreshToken === rightIdentity.refreshToken;
-  }
-  return false;
 }
 
 export function findAnthropicLabelByNativeClaudeBundle(state, { nativeClaudeBundle, excludeLabel } = {}) {
-  ensureStateShape(state);
   const excluded = excludeLabel ? normalizeLabel(excludeLabel) : null;
-  for (const [label, credential] of Object.entries(state.credentials[ANTHROPIC_PROVIDER])) {
+  const credentials = isObject(state?.credentials?.[ANTHROPIC_PROVIDER])
+    ? state.credentials[ANTHROPIC_PROVIDER]
+    : {};
+  for (const [label, credential] of Object.entries(credentials)) {
     if (excluded && normalizeLabel(label) === excluded) continue;
     if (!hasCompleteClaudeNativeBundle(credential)) continue;
     if (doClaudeNativeBundleIdentitiesMatch(credential, nativeClaudeBundle)) {
@@ -137,10 +264,16 @@ export function findAnthropicLabelByNativeClaudeBundle(state, { nativeClaudeBund
 // Call this before overwriting live Claude auth so the previous label's
 // stored bundle picks up any rotated tokens first.
 
-export function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
+export function syncClaudeNativeBundleBackToLabel({
+  state,
+  nativeClaudeBundle,
+  source = "file",
+  credentialsPath = null,
+  nowMs = Date.now(),
+}) {
   ensureStateShape(state);
-  const live = readClaudeNativeBundle({ homeDir });
-  if (!live.exists || live.ok !== true || !hasCompleteClaudeNativeBundle(live.nativeClaudeBundle) || !live.summary) {
+  const liveBundle = buildClaudeNativeBundle(nativeClaudeBundle);
+  if (!hasCompleteClaudeNativeBundle(liveBundle) || !getStrictClaudeNativeBundleIdentity(liveBundle)) {
     return { synced: false, reason: "no_live_bundle" };
   }
   const target = state.targets?.claudeCli;
@@ -151,13 +284,13 @@ export function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
     if (
       activeCredential
       && hasCompleteClaudeNativeBundle(activeCredential)
-      && doClaudeNativeBundleIdentitiesMatch(activeCredential, live.nativeClaudeBundle)
+      && doClaudeNativeBundleIdentitiesMatch(activeCredential, liveBundle)
     ) {
       matchedLabel = activeLabel;
     }
   }
   if (!matchedLabel) {
-    matchedLabel = findAnthropicLabelByNativeClaudeBundle(state, { nativeClaudeBundle: live.nativeClaudeBundle });
+    matchedLabel = findAnthropicLabelByNativeClaudeBundle(state, { nativeClaudeBundle: liveBundle });
   }
   if (!matchedLabel) {
     return { synced: false, reason: "no_label_for_identity" };
@@ -165,7 +298,7 @@ export function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
   const stored = getAnthropicCredential(state, matchedLabel);
   const storedBundle = getClaudeNativeBundle(stored);
   const storedOauth = isObject(storedBundle?.claudeAiOauth) ? storedBundle.claudeAiOauth : {};
-  const liveOauth = live.nativeClaudeBundle.claudeAiOauth;
+  const liveOauth = liveBundle.claudeAiOauth;
   const rotatedFields = [];
   if (storedOauth.accessToken !== liveOauth.accessToken) rotatedFields.push("accessToken");
   if (storedOauth.refreshToken !== liveOauth.refreshToken) rotatedFields.push("refreshToken");
@@ -174,12 +307,17 @@ export function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
     return { synced: false, reason: "tokens_unchanged", label: matchedLabel };
   }
   const importMeta = getAuthorityAnthropicImportLabelMeta(state, matchedLabel);
-  if (importMeta && importMeta.dirtyLocal !== true && typeof importMeta.importedAt === "string") {
+  if (
+    source === "file"
+    && importMeta
+    && importMeta.dirtyLocal !== true
+    && typeof importMeta.importedAt === "string"
+  ) {
     const importedAtMs = Date.parse(importMeta.importedAt);
     let liveMtimeMs = null;
-    if (live.credentialsPath) {
+    if (credentialsPath) {
       try {
-        liveMtimeMs = fs.statSync(live.credentialsPath).mtimeMs;
+        liveMtimeMs = fs.statSync(credentialsPath).mtimeMs;
       } catch {
         liveMtimeMs = null;
       }
@@ -192,18 +330,64 @@ export function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
       return { synced: false, reason: "authority_import_newer", label: matchedLabel };
     }
   }
-  const refreshedBundle = updateClaudeBundleTokenFields({
-    nativeClaudeBundle: storedBundle,
-    access: liveOauth.accessToken,
-    refresh: liveOauth.refreshToken,
-    expiresAt: toIsoFromExpiresMs(liveOauth.expiresAt),
+  const replacement = planClaudeNativeBundleReplacement({
+    currentBundle: storedBundle,
+    candidateBundle: liveBundle,
+    nowMs,
+    // An expired access token can still carry the only valid rotating refresh
+    // lineage. Preserve a strictly newer same-identity bundle so the official
+    // Claude client can refresh it on the next managed launch.
+    allowExpiredCandidate: true,
   });
+  if (replacement.ok !== true) {
+    return { synced: false, reason: replacement.reason, label: matchedLabel };
+  }
+  if (replacement.action === "noop") {
+    return { synced: false, reason: "tokens_unchanged", label: matchedLabel };
+  }
   const nextCredential = deriveAnthropicCredentialFromClaudeBundle({
     existingCredential: stored,
-    nativeClaudeBundle: refreshedBundle,
+    nativeClaudeBundle: liveBundle,
   });
   state.credentials[ANTHROPIC_PROVIDER][matchedLabel] = nextCredential;
-  return { synced: true, label: matchedLabel, rotatedFields };
+  return { synced: true, label: matchedLabel, rotatedFields, source };
+}
+
+export function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
+  const live = readClaudeNativeBundle({ homeDir });
+  if (!live.exists || live.ok !== true || !hasCompleteClaudeNativeBundle(live.nativeClaudeBundle) || !live.summary) {
+    return { synced: false, reason: "no_live_bundle" };
+  }
+  return syncClaudeNativeBundleBackToLabel({
+    state,
+    nativeClaudeBundle: live.nativeClaudeBundle,
+    source: "file",
+    credentialsPath: live.credentialsPath,
+    nowMs: Date.now(),
+  });
+}
+
+export async function syncLiveClaudeRotationBackToLabelFromStorage({
+  state,
+  descriptor,
+  nowMs = Date.now(),
+  readClaudeNativeKeychainOauthImpl,
+}) {
+  const live = await readClaudeNativeBundleFromStorage({
+    descriptor,
+    nowMs,
+    readClaudeNativeKeychainOauthImpl,
+  });
+  if (live.ok !== true) {
+    return { synced: false, reason: live.errorKind || "no_live_bundle" };
+  }
+  return syncClaudeNativeBundleBackToLabel({
+    state,
+    nativeClaudeBundle: live.nativeClaudeBundle,
+    source: live.source,
+    credentialsPath: live.source === "file" ? path.join(descriptor.configDir, ".credentials.json") : null,
+    nowMs,
+  });
 }
 
 export function ensureAnthropicLabelConfigured(state, label) {
@@ -263,8 +447,15 @@ export function resolveAnthropicBlockedReasonForStatus({
   return normalizedBlockedReason;
 }
 
-export function validateAnthropicNativeBundleForLabel({ state, label, nativeClaudeBundle }) {
-  ensureStateShape(state);
+export function validateAnthropicNativeBundleForLabel({
+  state,
+  label,
+  nativeClaudeBundle,
+  allowExpiredAccess = false,
+}) {
+  if (!isObject(state)) {
+    throw new Error("Refusing native Claude bundle without AIM state.");
+  }
   const normalizedLabel = normalizeLabel(label);
   const bundle = buildClaudeNativeBundle(nativeClaudeBundle);
   const summary = buildClaudeCredentialSummaryFromBundle(bundle);
@@ -274,12 +465,24 @@ export function validateAnthropicNativeBundleForLabel({ state, label, nativeClau
     );
   }
 
-  const account = ensureAnthropicLabelConfigured(state, normalizedLabel);
+  const strictIdentity = getStrictClaudeNativeBundleIdentity(bundle);
+  if (!strictIdentity) {
+    throw new Error(
+      `Refusing native Claude bundle for label=${normalizedLabel} without complete stable identity.`,
+    );
+  }
+  const account = isObject(state.accounts[normalizedLabel]) ? state.accounts[normalizedLabel] : null;
+  const configuredProvider = normalizeProviderId(account?.provider);
+  if (configuredProvider && configuredProvider !== ANTHROPIC_PROVIDER) {
+    throw new Error(
+      `Refusing to store native Claude auth on non-Anthropic label=${normalizedLabel} provider=${configuredProvider}.`,
+    );
+  }
   const expectedEmail =
-    typeof account.expect?.email === "string" ? account.expect.email.trim().toLowerCase() : "";
+    typeof account?.expect?.email === "string" ? account.expect.email.trim().toLowerCase() : "";
   if (expectedEmail && summary.emailAddress !== expectedEmail) {
     throw new Error(
-      `Native Claude login for label=${normalizedLabel} is ${summary.emailAddress}, but AIM expects ${expectedEmail}.`,
+      `Native Claude login for label=${normalizedLabel} failed identity_mismatch validation.`,
     );
   }
 
@@ -293,19 +496,41 @@ export function validateAnthropicNativeBundleForLabel({ state, label, nativeClau
     );
   }
 
+  const replacement = planClaudeNativeBundleReplacement({
+    currentBundle: isObject(state?.credentials?.[ANTHROPIC_PROVIDER]?.[normalizedLabel])
+      ? state.credentials[ANTHROPIC_PROVIDER][normalizedLabel]
+      : null,
+    candidateBundle: bundle,
+    expectedEmail,
+    allowExpiredCandidate: allowExpiredAccess,
+  });
+  if (replacement.ok !== true) {
+    throw new Error(
+      `Refusing native Claude bundle for label=${normalizedLabel}: ${replacement.reason}.`,
+    );
+  }
+
   return {
     bundle,
     summary,
+    action: replacement.action,
   };
 }
 
-export function persistAnthropicNativeBundleForLabel({ state, label, nativeClaudeBundle }) {
+export function persistAnthropicNativeBundleForLabel({
+  state,
+  label,
+  nativeClaudeBundle,
+  allowExpiredAccess = false,
+}) {
   const normalizedLabel = normalizeLabel(label);
-  const { bundle, summary } = validateAnthropicNativeBundleForLabel({
+  const { bundle, summary, action } = validateAnthropicNativeBundleForLabel({
     state,
     label: normalizedLabel,
     nativeClaudeBundle,
+    allowExpiredAccess,
   });
+  ensureAnthropicLabelConfigured(state, normalizedLabel);
   const existingCredential = getAnthropicCredential(state, normalizedLabel);
   const credential = deriveAnthropicCredentialFromClaudeBundle({
     existingCredential,
@@ -316,6 +541,7 @@ export function persistAnthropicNativeBundleForLabel({ state, label, nativeClaud
     label: normalizedLabel,
     credential,
     summary,
+    action,
   };
 }
 
@@ -416,13 +642,19 @@ export function captureAnthropicNativeBundleForLabel({ state, label, sourceHome 
   };
 }
 
-export function importAnthropicNativeBundleForLabel({ state, label, filePath }) {
+export function importAnthropicNativeBundleForLabel({
+  state,
+  label,
+  filePath,
+  allowExpiredAccess = false,
+}) {
   const normalizedLabel = normalizeLabel(label);
   const imported = readClaudeNativeBundleExportFile({ filePath });
   const persisted = persistAnthropicNativeBundleForLabel({
     state,
     label: normalizedLabel,
     nativeClaudeBundle: imported.payload.nativeClaudeBundle,
+    allowExpiredAccess,
   });
   return {
     label: normalizedLabel,

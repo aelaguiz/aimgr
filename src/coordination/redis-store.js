@@ -4,6 +4,7 @@ import {
   normalizeKeyPrefix,
   normalizeMetaRecord,
 } from "./records.js";
+import { normalizeProviderId } from "../core/normalize.js";
 
 export function buildRedisKeys(keyPrefix) {
   const prefix = normalizeKeyPrefix(keyPrefix);
@@ -16,11 +17,22 @@ export function buildRedisKeys(keyPrefix) {
   };
 }
 
-export async function connectRedisStore({ url, keyPrefix, client = null } = {}) {
+export function buildRedisStatusClientOptions({ timeoutMs = 2_000 } = {}) {
+  const boundedTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.round(timeoutMs) : 2_000;
+  return {
+    socket: {
+      connectTimeout: boundedTimeoutMs,
+      socketTimeout: boundedTimeoutMs,
+      reconnectStrategy: false,
+    },
+  };
+}
+
+export async function connectRedisStore({ url, keyPrefix, client = null, clientOptions = {} } = {}) {
   if (!url && !client) {
     throw new Error("Missing Redis URL.");
   }
-  const redisClient = client ?? createClient({ url });
+  const redisClient = client ?? createClient({ ...clientOptions, url });
   if (!client) {
     redisClient.on("error", () => {});
     await redisClient.connect();
@@ -48,14 +60,19 @@ function parseJsonRecord(raw, key) {
   }
 }
 
-async function readIndexedRecords(store, indexKey) {
+async function readIndexedRecordEntries(store, indexKey) {
   const keys = await store.client.sMembers(indexKey);
   const sortedKeys = [...keys].sort();
   if (sortedKeys.length === 0) return [];
   const values = await store.client.mGet(sortedKeys);
-  return values
-    .map((raw, index) => parseJsonRecord(raw, sortedKeys[index]))
-    .filter(Boolean);
+  return values.map((raw, index) => ({
+    key: sortedKeys[index],
+    value: parseJsonRecord(raw, sortedKeys[index]),
+  })).filter((entry) => entry.value !== null);
+}
+
+async function readIndexedRecords(store, indexKey) {
+  return (await readIndexedRecordEntries(store, indexKey)).map((entry) => entry.value);
 }
 
 function isRedisWatchError(err) {
@@ -78,6 +95,27 @@ export async function readSnapshot(store) {
     observedAt: new Date().toISOString(),
     keyPrefix: store.keyPrefix,
   };
+}
+
+export async function readCredentialRecordsByProvider(store, provider) {
+  const normalizedProvider = normalizeProviderId(provider);
+  if (!normalizedProvider) {
+    throw new Error("Missing provider for Redis credential read.");
+  }
+  const entries = await readIndexedRecordEntries(store, store.keys.credentialsByProvider(normalizedProvider));
+  const records = [];
+  const identities = new Set();
+  for (const entry of entries) {
+    const record = normalizeCredentialRecord(entry.value);
+    const expectedKey = store.keys.credential(record);
+    const identity = `${record.provider}:${record.label}`;
+    if (entry.key !== expectedKey || record.provider !== normalizedProvider || identities.has(identity)) {
+      throw new Error("Redis provider credential index is inconsistent.");
+    }
+    identities.add(identity);
+    records.push(record);
+  }
+  return records.sort((left, right) => left.label.localeCompare(right.label));
 }
 
 function buildWrittenRecord({ current, expectedVersion, nextRecord, updatedBy, observedAt }) {

@@ -1,14 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { connectRedisStore, readSnapshot } from "../../src/coordination/redis-store.js";
+import { connectRedisStore, publishCredential, readSnapshot } from "../../src/coordination/redis-store.js";
 import {
   applyRedisMigrationPlan,
   buildRedisMigrationPlan,
   collectRedisMigrationBundle,
+  createMigrationRefreshCandidateImpl,
 } from "../../src/migration/redis-migration.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
+import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 
 function codexCredential(accountId, expSeconds = Math.floor(Date.now() / 1000) + 3600) {
   const token = makeFakeJwt({
@@ -206,6 +208,26 @@ test("migration plan attempts controlled refresh before marking expired candidat
   assert.equal(plan.candidates[0].validation.fresh, true);
 });
 
+test("migration refresh cannot directly rotate an Anthropic refresh token", async () => {
+  let calls = 0;
+  const refreshCandidate = createMigrationRefreshCandidateImpl({
+    refreshAnthropicImpl: async () => {
+      calls += 1;
+      throw new Error("must not run");
+    },
+  });
+
+  await assert.rejects(
+    refreshCandidate({
+      provider: "anthropic",
+      label: "pro7",
+      credential: buildAnthropicClaudeCredential(),
+    }),
+    /Anthropic migration refresh is retired/,
+  );
+  assert.equal(calls, 0);
+});
+
 test("migration apply imports one credential into an empty Redis prefix", async () => {
   const home = mkTempHome();
   writeLegacyCodexState(home, { label: "boss", accountId: "acct_1" });
@@ -227,4 +249,83 @@ test("migration apply imports one credential into an empty Redis prefix", async 
   assert.equal(snapshot.credentials[0].label, "boss");
   assert.equal(snapshot.credentials[0].credential.accountId, "acct_1");
   assert.equal(snapshot.credentials[0].provenance.lastSourceType, "migration-import");
+});
+
+test("migration apply rejects Anthropic credentials before replacing a non-empty Redis record", async () => {
+  const store = await connectRedisStore({ client: new FakeRedisClient(), keyPrefix: "aimgr:anthropic-migration-block" });
+  const existingCredential = buildAnthropicClaudeCredential({
+    access: "EXISTING_ACCESS",
+    refresh: "EXISTING_REFRESH",
+    emailAddress: "existing@example.test",
+    organizationUuid: "org_existing",
+  });
+  const seeded = await publishCredential(store, {
+    expectedVersion: null,
+    credentialRecord: {
+      provider: "anthropic",
+      label: "pro7",
+      credential: existingCredential,
+      identity: { email: "existing@example.test", organizationUuid: "org_existing" },
+      policy: { pool: { enabled: true } },
+    },
+    updatedBy: "test-seed",
+    observedAt: "2026-07-22T10:00:00.000Z",
+  });
+  assert.equal(seeded.ok, true);
+  const before = await readSnapshot(store);
+
+  const replacementCredential = buildAnthropicClaudeCredential({
+    access: "REPLACEMENT_ACCESS",
+    refresh: "REPLACEMENT_REFRESH",
+    emailAddress: "replacement@example.test",
+    organizationUuid: "org_replacement",
+  });
+  const plan = {
+    kind: "aimgr.redisMigration.plan.v1",
+    version: 1,
+    planId: "anthropic-replacement-plan",
+    plannedAt: "2026-07-22T10:01:00.000Z",
+    bundleIds: ["anthropic-replacement-bundle"],
+    credentials: [
+      {
+        provider: "Anthropic",
+        label: "pro7",
+        status: "import",
+        selectedCandidateId: "anthropic-replacement-candidate",
+      },
+    ],
+    candidates: [
+      {
+        id: "anthropic-replacement-candidate",
+        provider: "Anthropic",
+        label: "pro7",
+        credential: replacementCredential,
+        validation: {
+          identity: { email: "replacement@example.test", organizationUuid: "org_replacement" },
+          fingerprint: "sha256:replacement",
+        },
+        sourceType: "legacy-state",
+        sourcePath: "/redacted/legacy-state.json",
+        source: { hostname: "test-host" },
+      },
+    ],
+  };
+
+  await assert.rejects(
+    () => applyRedisMigrationPlan(store, plan, {
+      updatedBy: "aimgr-cli",
+      observedAt: "2026-07-22T10:02:00.000Z",
+      // This is the programmatic equivalent of `aim redis migrate apply --allow-non-empty`.
+      requireEmpty: false,
+    }),
+    /Redis migration apply cannot write Claude credentials/,
+  );
+
+  const after = await readSnapshot(store);
+  assert.deepEqual(after.meta, before.meta);
+  assert.deepEqual(after.credentials, before.credentials);
+  assert.equal(after.credentials.length, 1);
+  assert.equal(after.credentials[0].version, 1);
+  assert.equal(after.credentials[0].credential.access, "EXISTING_ACCESS");
+  assert.equal(after.credentials[0].identity.email, "existing@example.test");
 });

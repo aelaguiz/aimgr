@@ -122,10 +122,68 @@ export function extractCodexRateLimitMetadata(data) {
   return metadata;
 }
 
+const CLAUDE_LIMIT_KINDS = new Set(["session", "weekly_all", "weekly_scoped"]);
+const CLAUDE_LIMIT_SEVERITIES = new Set(["normal", "warning", "critical", "exceeded", "blocked"]);
+
+function normalizeClaudeUsageLabel(value, fallback) {
+  const label = typeof value === "string" ? value.trim() : "";
+  if (label && label.length <= 40 && /^[A-Za-z0-9][A-Za-z0-9 ._:/()-]*$/.test(label)) {
+    return label;
+  }
+  return fallback;
+}
+
+function claudeLimitSortRank(window) {
+  if (window?.kind === "session") return 0;
+  if (window?.kind === "weekly_all") return 1;
+  if (window?.kind === "weekly_scoped") return 2;
+  return 3;
+}
+
 export function buildClaudeUsageWindows(data) {
+  if (Array.isArray(data?.limits) && data.limits.length > 0) {
+    const windows = data.limits
+      .map((limit, sourceIndex) => {
+        const usedPercent = limit?.percent;
+        if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) return null;
+        const rawKind = typeof limit?.kind === "string" ? limit.kind.trim() : "";
+        if (!CLAUDE_LIMIT_KINDS.has(rawKind)) return null;
+        const kind = rawKind;
+        const modelName = normalizeClaudeUsageLabel(limit?.scope?.model?.display_name, "");
+        const surfaceName = normalizeClaudeUsageLabel(
+          limit?.scope?.surface?.display_name ?? limit?.scope?.surface,
+          "",
+        );
+        if (kind === "weekly_scoped" && !modelName && !surfaceName) return null;
+        const label =
+          kind === "session"
+            ? "5h"
+            : kind === "weekly_all"
+              ? "Week"
+              : modelName || surfaceName;
+        const resetAt = limit?.resets_at ? new Date(limit.resets_at).getTime() : undefined;
+        const rawSeverity = typeof limit?.severity === "string" ? limit.severity.trim().toLowerCase() : "";
+        const severity = CLAUDE_LIMIT_SEVERITIES.has(rawSeverity) ? rawSeverity : "";
+        return {
+          label,
+          usedPercent: clampPercent(usedPercent),
+          ...(Number.isFinite(resetAt) ? { resetAt } : {}),
+          ...(kind ? { kind } : {}),
+          ...(severity ? { severity } : {}),
+          ...(typeof limit?.is_active === "boolean" ? { active: limit.is_active } : {}),
+          sourceIndex,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => claudeLimitSortRank(left) - claudeLimitSortRank(right) || left.sourceIndex - right.sourceIndex)
+      .map(({ sourceIndex: _sourceIndex, ...window }) => window);
+    if (windows.length > 0) {
+      return windows;
+    }
+  }
   const windows = [];
 
-  if (data?.five_hour?.utilization !== undefined) {
+  if (typeof data?.five_hour?.utilization === "number" && Number.isFinite(data.five_hour.utilization)) {
     windows.push({
       label: "5h",
       usedPercent: clampPercent(data.five_hour.utilization),
@@ -133,7 +191,7 @@ export function buildClaudeUsageWindows(data) {
     });
   }
 
-  if (data?.seven_day?.utilization !== undefined) {
+  if (typeof data?.seven_day?.utilization === "number" && Number.isFinite(data.seven_day.utilization)) {
     windows.push({
       label: "Week",
       usedPercent: clampPercent(data.seven_day.utilization),
@@ -141,15 +199,15 @@ export function buildClaudeUsageWindows(data) {
     });
   }
 
-  if (data?.seven_day_sonnet?.utilization !== undefined) {
+  if (typeof data?.seven_day_sonnet?.utilization === "number" && Number.isFinite(data.seven_day_sonnet.utilization)) {
     windows.push({
-      label: "Sonnet",
+      label: "Fable",
       usedPercent: clampPercent(data.seven_day_sonnet.utilization),
       resetAt: data.seven_day_sonnet.resets_at ? new Date(data.seven_day_sonnet.resets_at).getTime() : undefined,
     });
   }
 
-  if (data?.seven_day_opus?.utilization !== undefined) {
+  if (typeof data?.seven_day_opus?.utilization === "number" && Number.isFinite(data.seven_day_opus.utilization)) {
     windows.push({
       label: "Opus",
       usedPercent: clampPercent(data.seven_day_opus.utilization),
@@ -160,73 +218,9 @@ export function buildClaudeUsageWindows(data) {
   return windows;
 }
 
-export function resolveClaudeWebSessionKey({ env = {} } = {}) {
-  const direct = env.CLAUDE_AI_SESSION_KEY?.trim() ?? env.CLAUDE_WEB_SESSION_KEY?.trim();
-  if (direct?.startsWith("sk-ant-")) {
-    return direct;
-  }
-
-  const cookieHeader = env.CLAUDE_WEB_COOKIE?.trim();
-  if (!cookieHeader) {
-    return undefined;
-  }
-  const stripped = cookieHeader.replace(/^cookie:\s*/i, "");
-  const match = stripped.match(/(?:^|;\s*)sessionKey=([^;\s]+)/i);
-  const value = match?.[1]?.trim();
-  return value?.startsWith("sk-ant-") ? value : undefined;
-}
-
-export async function fetchClaudeWebUsage({
-  sessionKey,
-  timeoutMs,
-  fetchJsonWithTimeoutImpl = fetchJsonWithTimeout,
-}) {
-  const headers = {
-    Cookie: `sessionKey=${sessionKey}`,
-    Accept: "application/json",
-  };
-
-  const orgRes = await fetchJsonWithTimeoutImpl(
-    "https://claude.ai/api/organizations",
-    { method: "GET", headers },
-    timeoutMs,
-  );
-  if (!orgRes.ok) {
-    return null;
-  }
-
-  const orgs = await orgRes.json();
-  const orgId = typeof orgs?.[0]?.uuid === "string" ? orgs[0].uuid.trim() : "";
-  if (!orgId) {
-    return null;
-  }
-
-  const usageRes = await fetchJsonWithTimeoutImpl(
-    `https://claude.ai/api/organizations/${orgId}/usage`,
-    { method: "GET", headers },
-    timeoutMs,
-  );
-  if (!usageRes.ok) {
-    return null;
-  }
-
-  const data = await usageRes.json();
-  const windows = buildClaudeUsageWindows(data);
-  if (windows.length === 0) {
-    return null;
-  }
-
-  return {
-    provider: ANTHROPIC_PROVIDER,
-    ok: true,
-    windows,
-  };
-}
-
 export async function fetchClaudeUsageSnapshot({
   accessToken,
   timeoutMs,
-  env = {},
   fetchJsonWithTimeoutImpl = fetchJsonWithTimeout,
 }) {
   const res = await fetchJsonWithTimeoutImpl(
@@ -257,16 +251,6 @@ export async function fetchClaudeUsageSnapshot({
     }
 
     const missingScope = res.status === 403 && message?.includes("scope requirement user:profile");
-    if (missingScope) {
-      const sessionKey = resolveClaudeWebSessionKey({ env });
-      if (sessionKey) {
-        const web = await fetchClaudeWebUsage({ sessionKey, timeoutMs, fetchJsonWithTimeoutImpl });
-        if (web) {
-          return web;
-        }
-      }
-    }
-
     return {
       provider: ANTHROPIC_PROVIDER,
       ok: false,
@@ -277,8 +261,24 @@ export async function fetchClaudeUsageSnapshot({
     };
   }
 
-  const data = await res.json();
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    return {
+      provider: ANTHROPIC_PROVIDER,
+      ok: false,
+      status: "malformed",
+    };
+  }
   const windows = buildClaudeUsageWindows(data);
+  if (windows.length === 0) {
+    return {
+      provider: ANTHROPIC_PROVIDER,
+      ok: false,
+      status: "malformed",
+    };
+  }
   const opusUnavailable =
     Object.hasOwn(data ?? {}, "seven_day_opus") && (data?.seven_day_opus === null || data?.seven_day_opus === undefined);
 
@@ -301,7 +301,7 @@ export function getCodexUsagePercents(snapshot) {
   };
 }
 
-export async function probeUsageSnapshotsByProvider(state, { env = {}, fetchJsonWithTimeoutImpl = fetchJsonWithTimeout } = {}) {
+export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeoutImpl = fetchJsonWithTimeout } = {}) {
   ensureStateShape(state);
   const usageByProvider = {
     [OPENAI_CODEX_PROVIDER]: {},
@@ -341,7 +341,7 @@ export async function probeUsageSnapshotsByProvider(state, { env = {}, fetchJson
           usageByProvider[ANTHROPIC_PROVIDER][label] = await fetchClaudeUsageSnapshot({
             accessToken: cred.access,
             timeoutMs: 8000,
-            env,
+            allowWebFallback: false,
             fetchJsonWithTimeoutImpl,
           });
         } catch (err) {

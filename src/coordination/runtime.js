@@ -1,9 +1,15 @@
 import { getRedisConfig, readAimgrConfig } from "../config/aimgr-config.js";
-import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { loadLocalState, writeLocalState } from "../state/local-state.js";
 import { buildLocalBrowserBindingsFromState, buildSharedBrowserPolicy } from "./browser-policy.js";
-import { buildStableIdentityForCredential, identitiesAreCompatible } from "./login-publish.js";
+import { buildRedisClaudeRotationFenceProvenance } from "./redis-claude-rotation-fence.js";
+import {
+  assertCredentialPublicationFreshness,
+  buildStableIdentityForCredential,
+  identitiesAreCompatible,
+} from "./login-publish.js";
+import { hasCredentialMaterial } from "./records.js";
 import { buildCoordinationView, findCredentialRecord } from "./snapshot.js";
 import { closeRedisStore, connectRedisStore, publishCredential, readSnapshot } from "./redis-store.js";
 
@@ -60,6 +66,14 @@ export async function refreshRedisRuntimeSnapshot(runtime) {
   return runtime.snapshot;
 }
 
+export async function refreshRedisRuntimeState(runtime) {
+  await refreshRedisRuntimeSnapshot(runtime);
+  runtime.state = buildCoordinationView(runtime.snapshot, {
+    localState: runtime.localState,
+  });
+  return runtime.state;
+}
+
 export async function publishRedisCredentialPolicyFromState({
   runtime,
   state = runtime?.state,
@@ -79,6 +93,7 @@ export async function publishRedisCredentialPolicyFromState({
     );
   }
   const currentCredential = findCredentialRecord(runtime.snapshot, { provider, label: normalizedLabel });
+  const credential = isObject(currentCredential?.credential) ? currentCredential.credential : {};
   const result = await publishCredential(runtime.store, {
     expectedVersion: currentCredential?.version ?? null,
     updatedBy: runtime.updatedBy,
@@ -88,13 +103,19 @@ export async function publishRedisCredentialPolicyFromState({
       provider,
       label: normalizedLabel,
       identity: isObject(currentCredential?.identity) ? currentCredential.identity : {},
-      credential: isObject(currentCredential?.credential) ? currentCredential.credential : {},
+      credential,
       policy: {
         expect: isObject(account.expect) ? account.expect : {},
         reauth: isObject(account.reauth) ? account.reauth : {},
         browser: buildSharedBrowserPolicy(account.browser),
         pool: isObject(account.pool) ? account.pool : { enabled: true },
       },
+      health: isObject(currentCredential?.health)
+        ? currentCredential.health
+        : hasCredentialMaterial(credential)
+          ? { status: "ready", reason: null }
+          : { status: "candidate", reason: "credential_missing" },
+      provenance: isObject(currentCredential?.provenance) ? currentCredential.provenance : {},
     },
   });
   if (!result.ok) {
@@ -117,6 +138,7 @@ export async function publishRedisStateCredential({
   label,
   observedAt = new Date().toISOString(),
   lineageMode = "local-rotation",
+  rotationFence = null,
 }) {
   const normalizedProvider = normalizeProviderId(provider);
   const normalizedLabel = normalizeLabel(label);
@@ -132,7 +154,15 @@ export async function publishRedisStateCredential({
         "Use `aim label rebind <label> --provider <provider> --confirm` only after confirming the account identity.",
     );
   }
+  assertCredentialPublicationFreshness({
+    provider: normalizedProvider,
+    label: normalizedLabel,
+    currentRecord: currentCredential,
+    nextCredential: credential,
+    nextIdentity: identity,
+  });
   const account = isObject(state?.accounts?.[normalizedLabel]) ? state.accounts[normalizedLabel] : {};
+  const currentProvenance = isObject(currentCredential?.provenance) ? currentCredential.provenance : {};
   const result = await publishCredential(runtime.store, {
     expectedVersion: currentCredential?.version ?? null,
     updatedBy: runtime.updatedBy,
@@ -154,7 +184,9 @@ export async function publishRedisStateCredential({
         reason: null,
       },
       provenance: {
-        ...(isObject(currentCredential?.provenance) ? currentCredential.provenance : {}),
+        ...(normalizedProvider === ANTHROPIC_PROVIDER
+          ? buildRedisClaudeRotationFenceProvenance(currentProvenance, rotationFence)
+          : currentProvenance),
         lastSourceType: lineageMode,
       },
     },
@@ -164,6 +196,18 @@ export async function publishRedisStateCredential({
       `Redis stale_version while publishing ${normalizedProvider}.${normalizedLabel}; reload and retry.`,
     );
   }
+  const credentials = (runtime.snapshot?.credentials ?? [])
+    .filter((record) => record.provider !== normalizedProvider || record.label !== normalizedLabel);
+  // Keep the runtime's CAS/freshness baseline detached from the mutable state
+  // view. Callers often rotate the next credential in that view in place.
+  credentials.push(structuredClone(result.record));
+  credentials.sort((left, right) =>
+    `${left.provider}:${left.label}`.localeCompare(`${right.provider}:${right.label}`));
+  runtime.snapshot = {
+    ...(runtime.snapshot ?? {}),
+    credentials,
+    observedAt: result.record.updatedAt,
+  };
   return result.record;
 }
 

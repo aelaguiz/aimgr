@@ -1,5 +1,5 @@
 import path from "node:path";
-import { loginOpenAICodex, refreshAnthropicToken, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
+import { loginOpenAICodex, refreshOpenAICodexToken } from "@mariozechner/pi-ai";
 import { resolveBrowserBinding, setBrowserBinding } from "../browser/bindings.js";
 import { discoverSelectableChromeBindings } from "../browser/selectable-profiles.js";
 import { launchBrowserBindingForUrl } from "../browser/launch.js";
@@ -8,7 +8,7 @@ import { promptLine, promptMenuChoice, promptRequiredLine } from "../io/prompts.
 import { writeStdout } from "../io/streams.js";
 import { ANTHROPIC_PROVIDER, BROWSER_MODE_AIM_PROFILE, REAUTH_MODE_MANUAL_CALLBACK } from "../core/constants.js";
 import { normalizeLabel, normalizeProviderId } from "../core/normalize.js";
-import { recordAccountMaintenanceAttempt, recordAccountMaintenanceFailure, recordAccountMaintenanceSuccess, refreshAnthropicNativeBundleCredential } from "../credentials/anthropic-maintenance.js";
+import { recordAccountMaintenanceAttempt, recordAccountMaintenanceFailure, recordAccountMaintenanceSuccess } from "../credentials/anthropic-maintenance.js";
 import { captureAnthropicNativeBundleForLabel, exportLiveClaudeNativeBundle, importAnthropicNativeBundleForLabel, resolveAnthropicMaintenanceBlockedReason } from "../credentials/claude-native.js";
 import { ensureProviderConfiguredForLabel } from "../credentials/oauth.js";
 import { writeJsonFileWithBackup } from "../io/json-store.js";
@@ -41,7 +41,7 @@ export async function runLabelPanelAction({
   readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
   loginOpenAICodexImpl = loginOpenAICodex,
   refreshOpenAICodexImpl = refreshOpenAICodexToken,
-  refreshAnthropicImpl = refreshAnthropicToken,
+  allowAnthropicNativeMaintenance = true,
   performLabelMaintenanceImpl = performLabelMaintenance,
   activateClaudeLabelSelectionImpl = activateClaudeLabelSelection,
   persistStateImpl = defaultPersistState,
@@ -62,7 +62,6 @@ export async function runLabelPanelAction({
     action === "capture_native_claude"
     || action === "import_native_claude_bundle"
     || action === "export_live_native_claude_bundle"
-    || action === "refresh_native_claude_bundle"
     || action === "use_native_claude_label"
   ) {
     if (action === "use_native_claude_label") {
@@ -167,16 +166,6 @@ export async function runLabelPanelAction({
         return { done: false };
       }
 
-      const refreshed = await refreshAnthropicNativeBundleCredential({
-        state,
-        label: normalizedLabel,
-        refreshImpl: refreshAnthropicImpl,
-      });
-      state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = refreshed;
-      recordAccountMaintenanceSuccess(state, normalizedLabel, { homeDir, observedAt: attemptedAt });
-      markImportedAnthropicLabelDirtyState(state, normalizedLabel, { observedAt: attemptedAt });
-      await persistState();
-      writeImpl(`${normalizedLabel} is ready.\n\n`);
     } catch (err) {
       const message = String(err?.message ?? err);
       recordAccountMaintenanceFailure(state, normalizedLabel, {
@@ -287,7 +276,7 @@ export async function runLabelPanelAction({
             openUrlImpl,
             loginOpenAICodexImpl,
             refreshOpenAICodexImpl,
-            refreshAnthropicImpl,
+            allowAnthropicNativeMaintenance,
             writeImpl,
           });
           await persistState();
@@ -315,7 +304,7 @@ export async function runLabelPanelAction({
         openUrlImpl,
         loginOpenAICodexImpl,
         refreshOpenAICodexImpl,
-        refreshAnthropicImpl,
+        allowAnthropicNativeMaintenance,
         writeImpl,
       });
       await persistState();
@@ -343,7 +332,7 @@ export async function runLabelControlPanel({
   readOpenclawAgentsListFromConfigImpl = readOpenclawAgentsListFromConfig,
   loginOpenAICodexImpl = loginOpenAICodex,
   refreshOpenAICodexImpl = refreshOpenAICodexToken,
-  refreshAnthropicImpl = refreshAnthropicToken,
+  allowAnthropicNativeMaintenance = true,
   performLabelMaintenanceImpl = performLabelMaintenance,
   activateClaudeLabelSelectionImpl = activateClaudeLabelSelection,
   persistStateImpl = defaultPersistState,
@@ -359,6 +348,12 @@ export async function runLabelControlPanel({
   });
   if (provider && provider !== beforeProvider) {
     await persistStateImpl({ statePath, state, label: normalizedLabel });
+  }
+  if (provider === ANTHROPIC_PROVIDER && !allowAnthropicNativeMaintenance) {
+    throw new Error(
+      `Redis-backed Claude maintenance for label=${normalizedLabel} is owned by ` +
+        "`aim claude capture-native`, `aim claude import-native`, and `aim claude run`.",
+    );
   }
 
   // eslint-disable-next-line no-constant-condition
@@ -401,7 +396,7 @@ export async function runLabelControlPanel({
       readOpenclawAgentsListFromConfigImpl,
       loginOpenAICodexImpl,
       refreshOpenAICodexImpl,
-      refreshAnthropicImpl,
+      allowAnthropicNativeMaintenance,
       performLabelMaintenanceImpl,
       activateClaudeLabelSelectionImpl,
       persistStateImpl,

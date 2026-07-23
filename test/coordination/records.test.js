@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  hasCredentialMaterial,
   normalizeCredentialRecord,
   normalizeKeyPrefix,
   normalizeMetaRecord,
 } from "../../src/coordination/records.js";
+import { buildCoordinationView } from "../../src/coordination/snapshot.js";
 
 test("Redis records normalize shared metadata", () => {
   const now = "2026-05-30T14:00:00.000Z";
@@ -44,4 +46,28 @@ test("Redis credential records normalize provider label policy identity and cred
   assert.deepEqual(credential.policy.pool, { enabled: false });
   assert.deepEqual(credential.provenance, { lastSourceType: "migration" });
   assert.throws(() => normalizeCredentialRecord({ label: "boss" }), /missing provider/);
+});
+
+test("policy-only Redis records are candidates and do not project empty credentials", () => {
+  const candidate = normalizeCredentialRecord(
+    {
+      provider: "anthropic",
+      label: "writer",
+      credential: {},
+      policy: {
+        expect: { email: "writer@example.com" },
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    },
+    { now: "2026-07-22T14:00:00.000Z" },
+  );
+
+  assert.equal(hasCredentialMaterial(candidate.credential), false);
+  assert.deepEqual(candidate.health, { status: "candidate", reason: "credential_missing" });
+
+  const state = buildCoordinationView({ credentials: [candidate] });
+  assert.equal(state.accounts.writer.provider, "anthropic");
+  assert.deepEqual(state.accounts.writer.expect, { email: "writer@example.com" });
+  assert.equal(Object.hasOwn(state.credentials.anthropic, "writer"), false);
 });

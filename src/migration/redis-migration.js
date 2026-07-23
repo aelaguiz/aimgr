@@ -10,9 +10,7 @@ import { assertCodexCredentialShape, buildCodexCredentialFingerprint, findCodexL
 import { decodeJwtPayload, extractOpenAICodexAccountIdFromToken } from "../credentials/jwt.js";
 import {
   buildClaudeCredentialSummaryFromBundle,
-  deriveAnthropicCredentialFromClaudeBundle,
   readClaudeNativeBundle,
-  updateClaudeBundleTokenFields,
 } from "../credentials/claude-bundle.js";
 import { findAnthropicLabelByNativeClaudeBundle, getClaudeNativeBundleIdentity } from "../credentials/claude-native.js";
 import { readJsonFile } from "../io/json-store.js";
@@ -806,7 +804,7 @@ export async function buildRedisMigrationPlan({
   };
 }
 
-export function createMigrationRefreshCandidateImpl({ refreshOpenAICodexImpl, refreshAnthropicImpl } = {}) {
+export function createMigrationRefreshCandidateImpl({ refreshOpenAICodexImpl } = {}) {
   return async (candidate) => {
     if (candidate.provider === OPENAI_CODEX_PROVIDER) {
       if (typeof refreshOpenAICodexImpl !== "function") {
@@ -833,34 +831,9 @@ export function createMigrationRefreshCandidateImpl({ refreshOpenAICodexImpl, re
       };
     }
     if (candidate.provider === ANTHROPIC_PROVIDER) {
-      if (typeof refreshAnthropicImpl !== "function") {
-        throw new Error("Anthropic refresh implementation is unavailable.");
-      }
-      const updated = await refreshAnthropicImpl(candidate.credential.refresh);
-      const expiresAt = toIsoFromExpiresMs(updated.expires);
-      if (!expiresAt) throw new Error("refresh returned no expires");
-      if (isObject(candidate.credential.nativeClaudeBundle)) {
-        const nativeClaudeBundle = updateClaudeBundleTokenFields({
-          nativeClaudeBundle: candidate.credential.nativeClaudeBundle,
-          access: updated.access,
-          refresh: updated.refresh,
-          expiresAt,
-        });
-        return {
-          credential: deriveAnthropicCredentialFromClaudeBundle({
-            existingCredential: candidate.credential,
-            nativeClaudeBundle,
-          }),
-        };
-      }
-      return {
-        credential: {
-          ...candidate.credential,
-          access: updated.access,
-          refresh: updated.refresh,
-          expiresAt,
-        },
-      };
+      throw new Error(
+        "Anthropic migration refresh is retired; use `aim claude capture-native` or `aim claude import-native`, then `aim claude run`.",
+      );
     }
     throw new Error(`Unsupported provider for migration refresh: ${candidate.provider}`);
   };
@@ -952,6 +925,11 @@ export async function applyRedisMigrationPlan(store, plan, {
     await assertRedisPrefixEmpty(store);
   }
   const snapshot = buildRedisSnapshotFromMigrationPlan(plan, { appliedAt: observedAt, appliedBy: updatedBy });
+  if (snapshot.credentials.some((record) => normalizeProviderId(record.provider) === ANTHROPIC_PROVIDER)) {
+    throw new Error(
+      "Redis migration apply cannot write Claude credentials; use `aim claude import-native` under the per-label lease.",
+    );
+  }
   const results = await importCredentialsSnapshot(store, {
     ...snapshot,
   }, { updatedBy, observedAt, replaceExisting: !requireEmpty });

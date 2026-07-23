@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { AIMGR_LOCAL_STATE_VERSION } from "../core/constants.js";
 import { isObject } from "../core/normalize.js";
 import { readJsonFile, writeJsonFileWithBackupIfChanged } from "../io/json-store.js";
 import { resolveAimgrLocalStatePath } from "../io/paths.js";
 import { pruneHermesFleetDemand, pruneOpenaiCodexAgentDemand, pruneOpenaiCodexHistory } from "./demand.js";
+
+const INSTALLATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function createEmptyLocalState() {
   return {
@@ -62,6 +65,21 @@ export function ensureLocalStateShape(localState) {
   state.pool.anthropic.history = pruneOpenaiCodexHistory(state.pool.anthropic.history);
   state.browserBindings = isObject(state.browserBindings) ? state.browserBindings : {};
   return state;
+}
+
+export function ensureLocalInstallationId(localState, { randomUUIDImpl = randomUUID } = {}) {
+  const state = ensureLocalStateShape(localState);
+  const current = typeof state.installationId === "string" ? state.installationId.trim() : "";
+  if (INSTALLATION_ID_PATTERN.test(current)) {
+    state.installationId = current.toLowerCase();
+    return state.installationId;
+  }
+  const generated = String(randomUUIDImpl()).trim().toLowerCase();
+  if (!INSTALLATION_ID_PATTERN.test(generated)) {
+    throw new Error("Could not create a valid AIM installation identifier.");
+  }
+  state.installationId = generated;
+  return generated;
 }
 
 export function loadLocalState({ homeDir }) {

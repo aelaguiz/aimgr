@@ -54,6 +54,9 @@ export function writeTextFileIfChanged(filePath, text, { mode } = {}) {
     }
   }
   if (current === next) {
+    if (mode !== undefined) {
+      fs.chmodSync(filePath, mode);
+    }
     return { wrote: false, path: filePath };
   }
 
@@ -80,11 +83,7 @@ export function writeTextFileIfChanged(filePath, text, { mode } = {}) {
     }
   }
   if (mode !== undefined) {
-    try {
-      fs.chmodSync(filePath, mode);
-    } catch {
-      // Best effort on non-POSIX filesystems.
-    }
+    fs.chmodSync(filePath, mode);
   }
   return { wrote: true, path: filePath };
 }
