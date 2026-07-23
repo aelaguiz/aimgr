@@ -526,3 +526,35 @@ Plan doc:
 - Self-check: on track and on scope. No OAuth implementation, credential
   fallback, Redis schema, general Linux sandbox, Codex/Tend repair, or package
   audit work was added.
+
+## Interrupted Linux run fence recovery
+
+- Recorded at: 2026-07-23.
+- Live symptom: pressing Ctrl-C once at Claude's workspace-trust prompt on
+  `home` left `pro5` unable to relaunch because its shared rotation fence saw
+  an unchanged managed token pair.
+- Value-free diagnosis proved that Redis remained at the exact fence baseline,
+  the current Linux installation and managed config directory matched the
+  fence's recovery-storage identity, the complete managed projection was
+  token- and expiry-identical to Redis, and no prior process remained.
+- Minimal correction: same-storage unchanged-token recovery now retains and
+  reuses the exact existing fence for the retry. It does not clear, replace, or
+  weaken the fence; other machines and unrelated Redis lineages remain blocked.
+- Test-first proof:
+  - both new continuation expectations failed at the reported recovery branch
+    before the source change;
+  - projection tests passed `12/12`;
+  - related Claude lifecycle tests passed `47/47`;
+  - the full local suite passed `331/331`, with lint and `git diff --check`.
+- Commit `9c9b2d3` was pushed to `main`, fast-forwarded onto `home`, and
+  installed through the canonical local-wrapper script. Remote focused tests
+  passed `16/16` and lint passed.
+- No-model live recovery:
+  `aim claude run pro5 -- --version` returned
+  `2.1.218 (Claude Code)`. Afterward the shared fence, pending marker, and
+  disposable credential projection were absent; Redis remained at version
+  `3`; and no AIM/Claude supervisor process remained.
+- Self-check: on track and on scope. Only the existing run/fence continuation,
+  its direct regressions, and these evidence records changed. Signal plumbing,
+  Redis schema, Linux containment, account/session behavior, Tend, and
+  unrelated tests were not expanded.

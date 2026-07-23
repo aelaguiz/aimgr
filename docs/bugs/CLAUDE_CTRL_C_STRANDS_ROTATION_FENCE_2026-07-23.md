@@ -1,7 +1,7 @@
 ---
 title: "Interrupted managed Claude run cannot resume its rotation fence"
 date: 2026-07-23
-status: fix-ready
+status: resolved
 owners:
   - aelaguiz
 reviewers: []
@@ -30,9 +30,8 @@ related:
   storage ID matches exactly, and the managed projection is complete and
   token-identical, relaunch Claude under the existing fence. Do not clear or
   replace the fence during recovery.
-- **Status:** Fix-ready. Current code, current tests, and the live `pro5` state
-  establish the failure and the minimal correction. No product code has been
-  changed for this bug yet.
+- **Status:** Resolved in `9c9b2d3`. The fix is pushed, deployed on `home`, and
+  recovered the live stranded `pro5` fence through the ordinary run path.
 
 <!-- bugs:block:tldr:end -->
 
@@ -246,6 +245,19 @@ Local proof:
 - Lint: pass.
 - `git diff --check`: pass.
 
-Live deployment and the no-model `pro5` recovery remain pending.
+Live proof on `home`:
+
+- Pushed commit `9c9b2d3` was fast-forwarded onto the remote's existing clean
+  `main`; its unrelated untracked Tend bug document was preserved.
+- Remote projection/fence tests passed `16/16`, lint passed, and the canonical
+  wrappers were reinstalled through `npm run install:local`.
+- `aim claude run pro5 -- --version` launched the official contained Linux
+  client and returned `2.1.218 (Claude Code)` without a prompt or model request.
+- The post-run value-free check showed: no shared fence, no local pending
+  marker, no disposable credential projection, Redis still at credential
+  version `3`, and no remaining AIM/Claude supervisor process.
+- The original operator command is unblocked. A later Ctrl-C may still retain
+  its safety fence, but the next invocation on this same managed storage now
+  resumes that fence instead of dead-ending.
 
 <!-- bugs:block:implementation:end -->
