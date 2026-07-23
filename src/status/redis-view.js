@@ -271,7 +271,7 @@ export async function buildRedisStatusView({
   const configRead = readAimgrConfig({ homeDir });
   const redisConfig = configRead.config.redis;
   if (!redisConfig.url) {
-    return { used: false, view: null };
+    return { used: false, view: null, claudeUsageStatus: null };
   }
 
   const cachePath = resolveAimgrRedisCachePath({ homeDir });
@@ -326,7 +326,7 @@ export async function buildRedisStatusView({
         releaseRedisCacheLock(cacheLock);
       }
     }
-    return { used: true, view };
+    return { used: true, view, claudeUsageStatus };
   } catch {
     const cachedRaw = readCachedRedisStatusView({ homeDir, cachePath }).view;
     const cached = cachedRaw ? buildRedisDiagnosticCacheView(cachedRaw) : null;
@@ -350,7 +350,7 @@ export async function buildRedisStatusView({
           releaseRedisCacheLock(cacheLock);
         }
       }
-      return { used: true, view: cached };
+      return { used: true, view: cached, claudeUsageStatus: null };
     }
     throw new Error("Redis status is unavailable.");
   } finally {

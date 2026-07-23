@@ -28,6 +28,7 @@ export async function handleStatus(context) {
       renderStatusText(view, {
         showAssignments: opts.assignments === true,
         ...(opts.accounts === true ? { showAccounts: true } : {}),
+        claudeUsageStatus: redisStatus.claudeUsageStatus,
       }),
     );
     return;

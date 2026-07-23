@@ -55,7 +55,8 @@ test("status text shows manual-callback and browser-managed login modes", async 
   });
 
   const out = await runCli(["status", "--accounts", "--home", home]);
-  assert.match(out, /ACCOUNTS \(2\)/);
+  assert.match(out, /CODEX ACCOUNTS \(1\)/);
+  assert.match(out, /CLAUDE ACCOUNTS \(1\)/);
   assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
   assert.match(out, /claude\s+reauth\s+native-claude\s+--\s+--\s+--\s+--\s+--\s+anthropic\s+missing_credentials/);
   assert.match(out, /manual_label\s+reauth\s+manual-callback\s+--\s+--\s+--\s+--\s+--\s+openai-codex\s+missing_credentials/);

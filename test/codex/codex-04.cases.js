@@ -209,36 +209,37 @@ test("status --json surfaces receipt and projection branches", async () => {
     assert.ok(parsed.projection.load_pct_7d >= parsed.projection.load_pct_72h);
 
     const textOut = await runCli(["status", "--home", home], { fetchImpl });
-    assert.match(textOut, /POOL NOW/);
+    assert.match(textOut, /^CODEX ACCOUNTS \(1\)/);
+    assert.match(textOut, /\nCLAUDE ACCOUNTS \(0\)/);
     assert.doesNotMatch(textOut, /OpenClaw assignments/);
     assert.doesNotMatch(textOut, /agent_boss -> boss/);
-    assert.match(textOut, /ACCOUNTS \(1\)/);
     assert.match(textOut, /average\s+--\s+--\s+\S+\s+96%\s+1\.0h\s+--\s+--\s+all\s+-/);
-    assert.match(textOut, /LAST REBALANCE/);
-    assert.match(textOut, /Spread: boss=3 agent\(s\)\/180w/);
-    assert.match(textOut, /last_watch\s+noop/);
-    assert.match(textOut, /\n\nlabel=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n$/);
+    assert.doesNotMatch(textOut, /POOL NOW|LAST REBALANCE|Spread:|last_watch|WARNINGS/);
+    assert.match(
+      textOut,
+      /\nCODEX ACTIVE\nlabel=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n\nCLAUDE ACTIVE\nlabel=none\n$/,
+    );
 
     const compactOut = await runCli(["status", "--compact", "--home", home], { fetchImpl });
     assert.match(compactOut, /^load=150(?:\.0)?%  spare=0w  5h_floor=\d+(?:\.\d+)?%\(boss\)  7d_floor=\d+(?:\.\d+)?%\(boss\)  eta=0(?:\.0)?h\n$/);
 
     const textOutWithAccounts = await runCli(["status", "--accounts", "--home", home], { fetchImpl });
-    assert.match(textOutWithAccounts, /POOL NOW/);
-    assert.match(textOutWithAccounts, /ACCOUNTS \(1\)/);
+    assert.match(textOutWithAccounts, /^CODEX ACCOUNTS \(1\)/);
+    assert.match(textOutWithAccounts, /\nCLAUDE ACCOUNTS \(0\)/);
     assert.match(textOutWithAccounts, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
     assert.match(textOutWithAccounts, /average\s+--\s+--\s+\S+\s+96%\s+1\.0h\s+--\s+--\s+all\s+-/);
-    assert.match(textOutWithAccounts, /LAST REBALANCE/);
-    assert.match(textOutWithAccounts, /Spread: boss=3 agent\(s\)\/180w/);
-    assert.match(textOutWithAccounts, /last_watch\s+noop/);
-    assert.match(textOutWithAccounts, /\n\nlabel=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n$/);
+    assert.doesNotMatch(textOutWithAccounts, /POOL NOW|LAST REBALANCE|Spread:|last_watch/);
 
     const textOutWithAssignments = await runCli(["status", "--assignments", "--home", home], { fetchImpl });
-    assert.match(textOutWithAssignments, /POOL NOW/);
+    assert.match(textOutWithAssignments, /^CODEX ACCOUNTS \(1\)/);
     assert.match(textOutWithAssignments, /OpenClaw assignments/);
     assert.match(textOutWithAssignments, /- agent_boss -> boss/);
     assert.match(textOutWithAssignments, /average\s+--\s+--\s+\S+\s+96%\s+1\.0h\s+--\s+--\s+all\s+-/);
-    assert.match(textOutWithAssignments, /last_watch\s+noop/);
-    assert.match(textOutWithAssignments, /\n\nlabel=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n$/);
+    assert.doesNotMatch(textOutWithAssignments, /POOL NOW|last_watch/);
+    assert.match(
+      textOutWithAssignments,
+      /\nCODEX ACTIVE\nlabel=boss  5h_used=96%  5h_in=1\.0h  wk_used=--  wk_in=--\n\nCLAUDE ACTIVE\nlabel=none\n$/,
+    );
 });
 
 test("codex watch --once noops when the active label stays above the 5h remaining threshold", async () => {

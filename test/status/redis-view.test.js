@@ -218,7 +218,10 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
 
   assert.equal(first.view.accounts[0].usage.ok, true);
   assert.equal(first.view.accounts[0].usage.status, "usage_readable");
+  assert.equal(first.claudeUsageStatus.accounts[0].label, "claude");
+  assert.equal(first.claudeUsageStatus.accounts[0].usage.ok, true);
   assert.equal(second.view.accounts[0].usage.ok, true);
+  assert.equal(second.claudeUsageStatus.accounts[0].source, "cache");
   assert.equal(directProbeCalls, 2);
   assert.equal(claudeRequests, 1);
 });

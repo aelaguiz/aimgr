@@ -964,7 +964,7 @@ function usageColumns(accounts, nowMs) {
   return { headers, values };
 }
 
-export function renderClaudeRedisAccountUsageStatus(result) {
+export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics = true } = {}) {
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
@@ -981,11 +981,15 @@ export function renderClaudeRedisAccountUsageStatus(result) {
   const lines = [
     `CLAUDE ACCOUNT USAGE (${accounts.length})`,
     ...formatStatusTable(rows),
-    `requests=${Number(result?.requestCount ?? 0)}  cache_ttl=${Number(result?.cacheTtlSeconds ?? 0)}s  stale_max=${Number(result?.staleMaxSeconds ?? 0)}s`,
-    `cache_state=${formatCacheState(result?.cacheState)}  cache_write=${result?.cacheWriteFailed === true ? "failed" : "ok"}`,
   ];
-  if (Array.isArray(result?.missingAccounts) && result.missingAccounts.length > 0) {
-    lines.push(`missing_accounts=${result.missingAccounts.join(",")}`);
+  if (includeDiagnostics) {
+    lines.push(
+      `requests=${Number(result?.requestCount ?? 0)}  cache_ttl=${Number(result?.cacheTtlSeconds ?? 0)}s  stale_max=${Number(result?.staleMaxSeconds ?? 0)}s`,
+      `cache_state=${formatCacheState(result?.cacheState)}  cache_write=${result?.cacheWriteFailed === true ? "failed" : "ok"}`,
+    );
+    if (Array.isArray(result?.missingAccounts) && result.missingAccounts.length > 0) {
+      lines.push(`missing_accounts=${result.missingAccounts.join(",")}`);
+    }
   }
   return `${lines.join("\n")}\n`;
 }
