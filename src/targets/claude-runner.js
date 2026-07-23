@@ -14,11 +14,21 @@ const NO_KEYCHAIN_PROFILE_PATH = fileURLToPath(
 const SANDBOX_EXEC_PATH = "/usr/bin/sandbox-exec";
 const CODESIGN_PATH = "/usr/bin/codesign";
 const CLANG_PATH = "/usr/bin/clang";
-const SUPPORTED_CLAUDE = Object.freeze({
-  version: "2.1.218",
-  sha256: "71abaff59312c9a9b6a1d818365048b42e4e95cc521a823660eded3e0880d9b7",
-  identifier: "com.anthropic.claude-code",
-  teamIdentifier: "Q6L2SF6YDW",
+const DARWIN_SANDBOX_LAUNCH_MODE = "darwin-sandbox";
+const LINUX_DIRECT_LAUNCH_MODE = "linux-direct";
+const SUPPORTED_CLAUDE_BUILDS = Object.freeze({
+  "darwin-arm64": Object.freeze({
+    version: "2.1.218",
+    sha256: "71abaff59312c9a9b6a1d818365048b42e4e95cc521a823660eded3e0880d9b7",
+    identifier: "com.anthropic.claude-code",
+    teamIdentifier: "Q6L2SF6YDW",
+    launchMode: DARWIN_SANDBOX_LAUNCH_MODE,
+  }),
+  "linux-x64": Object.freeze({
+    version: "2.1.218",
+    sha256: "e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2",
+    launchMode: LINUX_DIRECT_LAUNCH_MODE,
+  }),
 });
 const AUTH_ENV_KEYS = Object.freeze([
   "ANTHROPIC_API_KEY",
@@ -37,6 +47,11 @@ const AUTH_ENV_KEYS = Object.freeze([
   "DYLD_FRAMEWORK_PATH",
   "DYLD_INSERT_LIBRARIES",
   "DYLD_LIBRARY_PATH",
+  "LD_AUDIT",
+  "LD_DEBUG",
+  "LD_LIBRARY_PATH",
+  "LD_PRELOAD",
+  "LD_PROFILE",
 ]);
 const SHIM_SEMANTIC_CASES = Object.freeze([
   {
@@ -232,7 +247,14 @@ export function materializeClaudeSecurityShim({
   });
 }
 
-function verifyCodeSignature(command, { spawnSyncImpl = spawnSync } = {}) {
+function resolveSupportedClaudeBuild({ platform = process.platform, arch = process.arch } = {}) {
+  return SUPPORTED_CLAUDE_BUILDS[`${platform}-${arch}`] ?? null;
+}
+
+function verifyCodeSignature(command, {
+  build = SUPPORTED_CLAUDE_BUILDS["darwin-arm64"],
+  spawnSyncImpl = spawnSync,
+} = {}) {
   const verified = spawnSyncImpl(CODESIGN_PATH, ["--verify", "--strict", command], {
     encoding: "utf8",
     shell: false,
@@ -262,9 +284,9 @@ function verifyCodeSignature(command, { spawnSyncImpl = spawnSync } = {}) {
   if (
     details?.status !== 0
     || details?.signal
-    || !output.includes(`Identifier=${SUPPORTED_CLAUDE.identifier}`)
-    || !output.includes(`TeamIdentifier=${SUPPORTED_CLAUDE.teamIdentifier}`)
-    || !output.includes(`Anthropic PBC (${SUPPORTED_CLAUDE.teamIdentifier})`)
+    || !output.includes(`Identifier=${build.identifier}`)
+    || !output.includes(`TeamIdentifier=${build.teamIdentifier}`)
+    || !output.includes(`Anthropic PBC (${build.teamIdentifier})`)
   ) {
     throw new Error("Installed Claude signing identity is not the qualified Anthropic identity.");
   }
@@ -334,9 +356,14 @@ export async function verifyInstalledClaudeExecutable({
   command,
   fsImpl = fs,
   spawnSyncImpl = spawnSync,
+  platform = process.platform,
+  arch = process.arch,
+  hashFileImpl = hashFile,
+  verifyCodeSignatureImpl = verifyCodeSignature,
 } = {}) {
-  if (process.platform !== "darwin" || process.arch !== "arm64") {
-    throw new Error("Managed Claude supports only the qualified native Darwin arm64 tuple.");
+  const build = resolveSupportedClaudeBuild({ platform, arch });
+  if (!build) {
+    throw new Error("Managed Claude supports only qualified native Darwin arm64 and Linux x64 builds.");
   }
   const rawCommand = normalizedAbsolute(command);
   if (!rawCommand) {
@@ -359,13 +386,15 @@ export async function verifyInstalledClaudeExecutable({
     throw new Error("Refusing an unsafe installed Claude executable.");
   }
   fsImpl.accessSync(resolvedCommand, fs.constants.X_OK);
-  if (path.basename(resolvedCommand) !== SUPPORTED_CLAUDE.version) {
-    throw new Error(`Installed Claude version is not the qualified ${SUPPORTED_CLAUDE.version} build.`);
+  if (path.basename(resolvedCommand) !== build.version) {
+    throw new Error(`Installed Claude version is not the qualified ${build.version} build.`);
   }
-  if (await hashFile(resolvedCommand, { fsImpl }) !== SUPPORTED_CLAUDE.sha256) {
+  if (await hashFileImpl(resolvedCommand, { fsImpl }) !== build.sha256) {
     throw new Error("Installed Claude digest is not the qualified native build.");
   }
-  verifyCodeSignature(resolvedCommand, { spawnSyncImpl });
+  if (platform === "darwin") {
+    verifyCodeSignatureImpl(resolvedCommand, { build, spawnSyncImpl });
+  }
   return resolvedCommand;
 }
 
@@ -411,6 +440,8 @@ export async function prepareClaudeCliLaunch({
   configDir,
   fsImpl = fs,
   spawnSyncImpl = spawnSync,
+  platform = process.platform,
+  arch = process.arch,
   verifyInstalledClaudeExecutableImpl = verifyInstalledClaudeExecutable,
   materializeClaudeSecurityShimImpl = materializeClaudeSecurityShim,
   verifySandboxExecutableImpl = verifySandboxExecutable,
@@ -426,11 +457,28 @@ export async function prepareClaudeCliLaunch({
     launchHome: resolvedLaunchHome,
     configDir: resolvedConfigDir,
   });
+  const build = resolveSupportedClaudeBuild({ platform, arch });
+  if (!build) {
+    throw new Error("Managed Claude supports only qualified native Darwin arm64 and Linux x64 builds.");
+  }
   const resolvedCommand = await verifyInstalledClaudeExecutableImpl({
     command,
     fsImpl,
     spawnSyncImpl,
+    platform,
+    arch,
   });
+  const common = {
+    command: resolvedCommand,
+    userHomeDir: resolvedUserHome,
+    homeDir: resolvedLaunchHome,
+    configDir: resolvedConfigDir,
+    launchMode: build.launchMode,
+    ...topology,
+  };
+  if (build.launchMode === LINUX_DIRECT_LAUNCH_MODE) {
+    return Object.freeze(common);
+  }
   const adapter = materializeClaudeSecurityShimImpl({
     homeDir: resolvedUserHome,
     fsImpl,
@@ -439,13 +487,9 @@ export async function prepareClaudeCliLaunch({
   const sandboxExecPath = verifySandboxExecutableImpl({ fsImpl, spawnSyncImpl });
   fsImpl.accessSync(NO_KEYCHAIN_PROFILE_PATH, fs.constants.R_OK);
   return Object.freeze({
-    command: resolvedCommand,
-    userHomeDir: resolvedUserHome,
-    homeDir: resolvedLaunchHome,
-    configDir: resolvedConfigDir,
+    ...common,
     profilePath: NO_KEYCHAIN_PROFILE_PATH,
     sandboxExecPath,
-    ...topology,
     ...adapter,
   });
 }
@@ -456,7 +500,10 @@ function buildContainedLaunchEnvironment({ preparedLaunch, env }) {
   launchEnv.HOME = preparedLaunch.homeDir;
   launchEnv.CLAUDE_CONFIG_DIR = preparedLaunch.configDir;
   launchEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR = preparedLaunch.configDir;
-  launchEnv.PATH = `${preparedLaunch.adapterDir}:${String(env?.PATH ?? "/usr/bin:/bin")}`;
+  const inheritedPath = String(env?.PATH ?? "/usr/bin:/bin");
+  launchEnv.PATH = preparedLaunch.launchMode === DARWIN_SANDBOX_LAUNCH_MODE
+    ? `${preparedLaunch.adapterDir}:${inheritedPath}`
+    : inheritedPath;
   launchEnv.DISABLE_AUTOUPDATER = "1";
   launchEnv.DISABLE_UPDATES = "1";
   return launchEnv;
@@ -474,6 +521,21 @@ function buildSandboxArgs(preparedLaunch, args) {
     "-f", preparedLaunch.profilePath,
     preparedLaunch.command,
     ...(Array.isArray(args) ? args : []),
+  ];
+}
+
+function buildSupervisorArgs(preparedLaunch, args) {
+  if (preparedLaunch.launchMode === LINUX_DIRECT_LAUNCH_MODE) {
+    return [
+      SUPERVISOR_PATH,
+      preparedLaunch.command,
+      ...(Array.isArray(args) ? args : []),
+    ];
+  }
+  return [
+    SUPERVISOR_PATH,
+    preparedLaunch.sandboxExecPath,
+    ...buildSandboxArgs(preparedLaunch, args),
   ];
 }
 
@@ -500,23 +562,27 @@ export async function runClaudeCli({
     homeDir,
     configDir,
   });
+  const validCommon = (
+    prepared
+    && normalizedAbsolute(prepared.command)
+    && normalizedAbsolute(prepared.homeDir)
+    && normalizedAbsolute(prepared.configDir)
+  );
+  const validPlatformBoundary = prepared?.launchMode === LINUX_DIRECT_LAUNCH_MODE
+    || (
+      prepared?.launchMode === DARWIN_SANDBOX_LAUNCH_MODE
+      && normalizedAbsolute(prepared.profilePath)
+      && normalizedAbsolute(prepared.sandboxExecPath)
+      && normalizedAbsolute(prepared.adapterDir)
+    );
   if (
-    !prepared
-    || !normalizedAbsolute(prepared.command)
-    || !normalizedAbsolute(prepared.homeDir)
-    || !normalizedAbsolute(prepared.configDir)
-    || !normalizedAbsolute(prepared.profilePath)
-    || !normalizedAbsolute(prepared.sandboxExecPath)
-    || !normalizedAbsolute(prepared.adapterDir)
+    !validCommon
+    || !validPlatformBoundary
   ) {
-    throw new Error("Claude launch requires a completed no-Keychain preflight.");
+    throw new Error("Claude launch requires a completed managed preflight.");
   }
   const launchEnv = buildContainedLaunchEnvironment({ preparedLaunch: prepared, env });
-  const child = spawnImpl(process.execPath, [
-    SUPERVISOR_PATH,
-    prepared.sandboxExecPath,
-    ...buildSandboxArgs(prepared, args),
-  ], {
+  const child = spawnImpl(process.execPath, buildSupervisorArgs(prepared, args), {
     stdio: ["inherit", "inherit", "inherit", "ipc"],
     env: launchEnv,
     cwd: resolvedCwd,

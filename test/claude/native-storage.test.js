@@ -26,7 +26,9 @@ import {
 } from "../../src/targets/claude-cli.js";
 import {
   materializeClaudeSecurityShim,
+  prepareClaudeCliLaunch,
   runClaudeCli,
+  verifyInstalledClaudeExecutable,
   verifySandboxExecutable,
 } from "../../src/targets/claude-runner.js";
 import { writeJsonFileIfChanged } from "../../src/io/json-store.js";
@@ -99,21 +101,27 @@ function writeExactManagedBundle(configDir, value) {
 function buildPreparedLaunch(home, {
   label = "alpha",
   command = process.execPath,
+  launchMode = "darwin-sandbox",
 } = {}) {
   const aimgrRoot = path.join(home, ".aimgr");
   const selectedLabelHome = path.join(aimgrRoot, "claude-homes", label);
   const configDir = path.join(selectedLabelHome, ".claude");
   const runtimeRoot = path.join(aimgrRoot, "runtime", "claude-file-store");
-  return {
+  const common = {
     command,
     userHomeDir: home,
     homeDir: selectedLabelHome,
     configDir,
-    profilePath: path.join(home, "no-keychain.sb"),
-    sandboxExecPath: "/usr/bin/sandbox-exec",
+    launchMode,
     aimgrRoot,
     claudeHomesRoot: path.join(aimgrRoot, "claude-homes"),
     selectedLabelHome,
+  };
+  if (launchMode === "linux-direct") return common;
+  return {
+    ...common,
+    profilePath: path.join(home, "no-keychain.sb"),
+    sandboxExecPath: "/usr/bin/sandbox-exec",
     runtimeRoot,
     adapterDir: path.join(runtimeRoot, "source-sha"),
     shimPath: path.join(runtimeRoot, "source-sha", "security"),
@@ -633,7 +641,9 @@ test("managed retirement removes only the disposable credential projection", asy
   assert.deepEqual(retireManagedClaudeCredentialProjection({ descriptor }), { removed: false });
 });
 
-test("compatibility executable is content-addressed, private, and reusable", () => {
+test("compatibility executable is content-addressed, private, and reusable", {
+  skip: process.platform !== "darwin",
+}, () => {
   const home = mkTempHome();
   const first = materializeClaudeSecurityShim({ homeDir: home });
   const second = materializeClaudeSecurityShim({ homeDir: home });
@@ -725,7 +735,9 @@ test("sandbox qualification rejects a valid non-Apple designated requirement", (
   );
 });
 
-test("targeted boundary exposes only the selected credential and shim to parent and child", () => {
+test("targeted boundary exposes only the selected credential and shim to parent and child", {
+  skip: process.platform !== "darwin",
+}, () => {
   const home = mkTempHome();
   const adapter = materializeClaudeSecurityShim({ homeDir: home });
   const aimgrRoot = path.join(home, ".aimgr");
@@ -862,6 +874,155 @@ test("runner pins the selected config, shim PATH, cwd, sandbox, and exact Claude
     calls[0].options.env.PATH,
     `${preparedLaunch.adapterDir}:/custom/bin:/usr/bin:/bin`,
   );
+});
+
+test("Linux qualification accepts only the pinned native x64 artifact without Darwin signing", async () => {
+  const command = "/home/test/.local/share/claude/versions/2.1.218";
+  let signatureChecked = false;
+  const result = await verifyInstalledClaudeExecutable({
+    command,
+    platform: "linux",
+    arch: "x64",
+    fsImpl: {
+      realpathSync: (filePath) => {
+        assert.equal(filePath, command);
+        return command;
+      },
+      lstatSync: (filePath) => {
+        assert.equal(filePath, command);
+        return {
+          isFile: () => true,
+          isSymbolicLink: () => false,
+          nlink: 1,
+          uid: typeof process.getuid === "function" ? process.getuid() : 0,
+        };
+      },
+      accessSync: (filePath, mode) => {
+        assert.equal(filePath, command);
+        assert.equal(mode, fs.constants.X_OK);
+      },
+    },
+    hashFileImpl: async (filePath) => {
+      assert.equal(filePath, command);
+      return "e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2";
+    },
+    verifyCodeSignatureImpl: () => {
+      signatureChecked = true;
+    },
+  });
+  assert.equal(result, command);
+  assert.equal(signatureChecked, false);
+});
+
+test("Linux qualification rejects an unqualified digest and unsupported architecture", async () => {
+  const command = "/home/test/.local/share/claude/versions/2.1.218";
+  const fsImpl = {
+    realpathSync: () => command,
+    lstatSync: () => ({
+      isFile: () => true,
+      isSymbolicLink: () => false,
+      nlink: 1,
+      uid: typeof process.getuid === "function" ? process.getuid() : 0,
+    }),
+    accessSync: () => {},
+  };
+  await assert.rejects(
+    () => verifyInstalledClaudeExecutable({
+      command,
+      platform: "linux",
+      arch: "x64",
+      fsImpl,
+      hashFileImpl: async () => "0".repeat(64),
+    }),
+    /digest is not the qualified native build/,
+  );
+  await assert.rejects(
+    () => verifyInstalledClaudeExecutable({
+      command,
+      platform: "linux",
+      arch: "arm64",
+      fsImpl,
+    }),
+    /only qualified native Darwin arm64 and Linux x64 builds/,
+  );
+});
+
+test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", async () => {
+  const home = mkTempHome();
+  const command = "/home/test/.local/share/claude/versions/2.1.218";
+  const selectedLabelHome = path.join(home, ".aimgr", "claude-homes", "alpha");
+  const configDir = path.join(selectedLabelHome, ".claude");
+  let verified = false;
+  const prepared = await prepareClaudeCliLaunch({
+    command,
+    userHomeDir: home,
+    homeDir: selectedLabelHome,
+    configDir,
+    platform: "linux",
+    arch: "x64",
+    verifyInstalledClaudeExecutableImpl: async (options) => {
+      assert.equal(options.command, command);
+      assert.equal(options.platform, "linux");
+      assert.equal(options.arch, "x64");
+      verified = true;
+      return command;
+    },
+    materializeClaudeSecurityShimImpl: () => {
+      throw new Error("Linux preflight must not materialize the macOS security shim.");
+    },
+    verifySandboxExecutableImpl: () => {
+      throw new Error("Linux preflight must not inspect sandbox-exec.");
+    },
+  });
+  assert.equal(verified, true);
+  assert.equal(prepared.launchMode, "linux-direct");
+  assert.equal(prepared.command, command);
+  assert.equal(prepared.homeDir, selectedLabelHome);
+  assert.equal(prepared.configDir, configDir);
+  assert.equal(prepared.profilePath, undefined);
+  assert.equal(prepared.sandboxExecPath, undefined);
+  assert.equal(prepared.adapterDir, undefined);
+});
+
+test("Linux runner pins the selected config and directly supervises the exact Claude argv", async () => {
+  const home = mkTempHome();
+  const preparedLaunch = buildPreparedLaunch(home, {
+    launchMode: "linux-direct",
+    command: "/home/test/.local/share/claude/versions/2.1.218",
+  });
+  const calls = [];
+  await runClaudeCli({
+    command: preparedLaunch.command,
+    userHomeDir: home,
+    homeDir: preparedLaunch.homeDir,
+    configDir: preparedLaunch.configDir,
+    cwd: home,
+    args: ["--version"],
+    env: {
+      PATH: "/custom/bin:/usr/bin:/bin",
+      CLAUDE_CONFIG_DIR: "/wrong",
+      CLAUDE_CODE_OAUTH_TOKEN: "must-be-scrubbed",
+      LD_LIBRARY_PATH: "/untrusted",
+      LD_PRELOAD: "/untrusted/library.so",
+      PRESERVED_PROJECT_ENV: "yes",
+    },
+    preparedLaunch,
+    spawnImpl: (file, args, options) => {
+      calls.push({ file, args, options });
+      return { status: 0, signal: null };
+    },
+  });
+  assert.equal(calls[0].file, process.execPath);
+  assert.match(calls[0].args[0], /src\/targets\/claude-supervisor\.js$/);
+  assert.deepEqual(calls[0].args.slice(1), [preparedLaunch.command, "--version"]);
+  assert.equal(calls[0].options.cwd, home);
+  assert.equal(calls[0].options.env.HOME, preparedLaunch.homeDir);
+  assert.equal(calls[0].options.env.CLAUDE_CONFIG_DIR, preparedLaunch.configDir);
+  assert.equal(calls[0].options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+  assert.equal(calls[0].options.env.LD_LIBRARY_PATH, undefined);
+  assert.equal(calls[0].options.env.LD_PRELOAD, undefined);
+  assert.equal(calls[0].options.env.PRESERVED_PROJECT_ENV, "yes");
+  assert.equal(calls[0].options.env.PATH, "/custom/bin:/usr/bin:/bin");
 });
 
 test("runner preserves a signalled Claude process result", async () => {
