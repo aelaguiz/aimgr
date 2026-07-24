@@ -28,7 +28,9 @@ import {
   ensureManagedClaudePersonalSkillsLink,
   materializeClaudeSecurityShim,
   prepareClaudeCliLaunch,
+  resolveEnabledClaudeUserPlugins,
   runClaudeCli,
+  syncManagedClaudePluginPreferences,
   verifyInstalledClaudeExecutable,
   verifySandboxExecutable,
 } from "../../src/targets/claude-runner.js";
@@ -103,6 +105,7 @@ function buildPreparedLaunch(home, {
   label = "alpha",
   command = process.execPath,
   launchMode = "darwin-sandbox",
+  userPluginDirs = [],
 } = {}) {
   const aimgrRoot = path.join(home, ".aimgr");
   const selectedLabelHome = path.join(aimgrRoot, "claude-homes", label);
@@ -114,6 +117,7 @@ function buildPreparedLaunch(home, {
     homeDir: selectedLabelHome,
     configDir,
     launchMode,
+    userPluginDirs,
     aimgrRoot,
     claudeHomesRoot: path.join(aimgrRoot, "claude-homes"),
     selectedLabelHome,
@@ -747,6 +751,17 @@ test("targeted boundary isolates Claude profiles without hiding ordinary user se
   const otherCredential = path.join(aimgrRoot, "claude-homes", "beta", ".claude", ".credentials.json");
   const globalCredential = path.join(home, ".claude", ".credentials.json");
   const globalSettings = path.join(home, ".claude", "settings.json");
+  const globalPluginRegistry = path.join(home, ".claude", "plugins", "installed_plugins.json");
+  const globalPluginFile = path.join(
+    home,
+    ".claude",
+    "plugins",
+    "cache",
+    "market",
+    "proof",
+    "1.0.0",
+    "plugin.json",
+  );
   const personalSkills = path.join(home, ".claude", "skills");
   const personalSkill = path.join(personalSkills, "shared-proof", "SKILL.md");
   const sharedSkill = path.join(selectedHome, ".claude", "skills", "shared-proof", "SKILL.md");
@@ -758,6 +773,8 @@ test("targeted boundary isolates Claude profiles without hiding ordinary user se
     otherCredential,
     globalCredential,
     globalSettings,
+    globalPluginRegistry,
+    globalPluginFile,
     personalSkill,
     keychainDecoy,
     userToolConfig,
@@ -798,6 +815,9 @@ function check() {
     globalReadable: readable("PROBE_GLOBAL"),
     globalWritable: writable("PROBE_GLOBAL"),
     globalSettingsReadable: readable("PROBE_GLOBAL_SETTINGS"),
+    globalPluginRegistryReadable: readable("PROBE_GLOBAL_PLUGIN_REGISTRY"),
+    globalPluginReadable: readable("PROBE_GLOBAL_PLUGIN"),
+    globalPluginWritable: writable("PROBE_GLOBAL_PLUGIN"),
     personalSkillReadable: readable("PROBE_PERSONAL_SKILL"),
     personalSkillWritable: writable("PROBE_PERSONAL_SKILL"),
     personalSkillDirectWritable: writable("PROBE_PERSONAL_SKILL_DIRECT"),
@@ -841,6 +861,8 @@ if (process.argv.includes("--child")) {
       PROBE_OTHER: otherCredential,
       PROBE_GLOBAL: globalCredential,
       PROBE_GLOBAL_SETTINGS: globalSettings,
+      PROBE_GLOBAL_PLUGIN_REGISTRY: globalPluginRegistry,
+      PROBE_GLOBAL_PLUGIN: globalPluginFile,
       PROBE_PERSONAL_SKILL: sharedSkill,
       PROBE_PERSONAL_SKILL_DIRECT: personalSkill,
       PROBE_KEYCHAIN: keychainDecoy,
@@ -860,6 +882,9 @@ if (process.argv.includes("--child")) {
       globalReadable: false,
       globalWritable: false,
       globalSettingsReadable: false,
+      globalPluginRegistryReadable: false,
+      globalPluginReadable: true,
+      globalPluginWritable: false,
       personalSkillReadable: true,
       personalSkillWritable: false,
       personalSkillDirectWritable: false,
@@ -934,9 +959,129 @@ test("managed Claude shares only the exact personal skills directory and rejects
   );
 });
 
+test("managed Claude resolves enabled user plugins from Claude's canonical state", () => {
+  const home = mkTempHome();
+  const claudeDir = path.join(home, ".claude");
+  const cacheDir = path.join(claudeDir, "plugins", "cache");
+  const alphaDir = path.join(cacheDir, "market", "alpha", "1.0.0");
+  const betaDir = path.join(cacheDir, "market", "beta", "1.0.0");
+  const zetaDir = path.join(cacheDir, "market", "zeta", "2.0.0");
+  for (const pluginDir of [alphaDir, betaDir, zetaDir]) {
+    fs.mkdirSync(pluginDir, { recursive: true });
+  }
+  writeJson(path.join(claudeDir, "settings.json"), {
+    enabledPlugins: {
+      "zeta@market": true,
+      "beta@market": false,
+      "alpha@market": true,
+    },
+  });
+  writeJson(path.join(claudeDir, "plugins", "installed_plugins.json"), {
+    version: 2,
+    plugins: {
+      "alpha@market": [
+        { scope: "project", installPath: "/not/a/user/install" },
+        { scope: "user", installPath: alphaDir },
+      ],
+      "beta@market": [{ scope: "user", installPath: betaDir }],
+      "zeta@market": [{ scope: "user", installPath: zetaDir }],
+    },
+  });
+
+  assert.deepEqual(resolveEnabledClaudeUserPlugins({ userHomeDir: home }), [
+    { id: "alpha@market", installPath: fs.realpathSync(alphaDir) },
+    { id: "zeta@market", installPath: fs.realpathSync(zetaDir) },
+  ]);
+
+  const emptyHome = mkTempHome();
+  assert.deepEqual(resolveEnabledClaudeUserPlugins({ userHomeDir: emptyHome }), []);
+});
+
+test("managed Claude fails closed on contradictory or unsafe enabled plugin state", () => {
+  const missingInstallHome = mkTempHome();
+  const missingClaudeDir = path.join(missingInstallHome, ".claude");
+  fs.mkdirSync(path.join(missingClaudeDir, "plugins", "cache"), { recursive: true });
+  writeJson(path.join(missingClaudeDir, "settings.json"), {
+    enabledPlugins: { "missing@market": true },
+  });
+  writeJson(path.join(missingClaudeDir, "plugins", "installed_plugins.json"), {
+    version: 2,
+    plugins: {
+      "missing@market": [{ scope: "project", installPath: "/tmp/project-plugin" }],
+    },
+  });
+  assert.throws(
+    () => resolveEnabledClaudeUserPlugins({ userHomeDir: missingInstallHome }),
+    /no unambiguous user installation/,
+  );
+
+  const escapingHome = mkTempHome();
+  const escapingClaudeDir = path.join(escapingHome, ".claude");
+  const outsideDir = path.join(escapingHome, "outside-plugin");
+  fs.mkdirSync(path.join(escapingClaudeDir, "plugins", "cache"), { recursive: true });
+  fs.mkdirSync(outsideDir);
+  writeJson(path.join(escapingClaudeDir, "settings.json"), {
+    enabledPlugins: { "escape@market": true },
+  });
+  writeJson(path.join(escapingClaudeDir, "plugins", "installed_plugins.json"), {
+    version: 2,
+    plugins: {
+      "escape@market": [{ scope: "user", installPath: outsideDir }],
+    },
+  });
+  assert.throws(
+    () => resolveEnabledClaudeUserPlugins({ userHomeDir: escapingHome }),
+    /escapes the user plugin cache/,
+  );
+});
+
+test("managed Claude mirrors only the requested ADHD always-on preference", () => {
+  const home = mkTempHome();
+  const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
+  const source = path.join(home, ".claude", ".i-have-adhd-always");
+  const destination = path.join(configDir, ".i-have-adhd-always");
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(source, "");
+
+  assert.deepEqual(syncManagedClaudePluginPreferences({
+    userHomeDir: home,
+    configDir,
+    enabledPluginIds: ["i-have-adhd@i-have-adhd"],
+  }), {
+    enabled: true,
+    path: destination,
+  });
+  assert.equal(fs.readFileSync(destination, "utf8"), "");
+  assert.equal(fs.statSync(destination).mode & 0o777, 0o600);
+
+  fs.unlinkSync(source);
+  assert.deepEqual(syncManagedClaudePluginPreferences({
+    userHomeDir: home,
+    configDir,
+    enabledPluginIds: ["i-have-adhd@i-have-adhd"],
+  }), {
+    enabled: false,
+    path: null,
+  });
+  assert.equal(fs.existsSync(destination), false);
+
+  fs.writeFileSync(source, "");
+  syncManagedClaudePluginPreferences({
+    userHomeDir: home,
+    configDir,
+    enabledPluginIds: [],
+  });
+  assert.equal(fs.existsSync(destination), false);
+});
+
 test("runner preserves the user home while pinning Claude config and exact launch behavior", async () => {
   const home = mkTempHome();
-  const preparedLaunch = buildPreparedLaunch(home);
+  const pluginDirs = [
+    path.join(home, ".claude", "plugins", "cache", "market", "alpha", "1.0.0"),
+    path.join(home, ".claude", "plugins", "cache", "market", "zeta", "2.0.0"),
+  ];
+  const preparedLaunch = buildPreparedLaunch(home, { userPluginDirs: pluginDirs });
   const calls = [];
   const spawnImpl = (file, args, options) => {
     calls.push({ file, args, options });
@@ -965,7 +1110,14 @@ test("runner preserves the user home while pinning Claude config and exact launc
   assert.equal(calls[0].file, process.execPath);
   assert.match(calls[0].args[0], /src\/targets\/claude-supervisor\.js$/);
   assert.equal(calls[0].args[1], "/usr/bin/sandbox-exec");
-  assert.deepEqual(calls[0].args.slice(-2), [path.resolve(process.execPath), "--exact-argument"]);
+  assert.deepEqual(calls[0].args.slice(-6), [
+    path.resolve(process.execPath),
+    "--plugin-dir",
+    pluginDirs[0],
+    "--plugin-dir",
+    pluginDirs[1],
+    "--exact-argument",
+  ]);
   assert.deepEqual(calls[0].options.stdio, ["inherit", "inherit", "inherit", "ipc"]);
   assert.equal(calls[0].options.cwd, home);
   assert.equal(calls[0].options.env.HOME, preparedLaunch.userHomeDir);
@@ -1098,8 +1250,30 @@ test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", as
   const selectedLabelHome = path.join(home, ".aimgr", "claude-homes", "alpha");
   const configDir = path.join(selectedLabelHome, ".claude");
   const personalSkills = path.join(home, ".claude", "skills");
+  const pluginDir = path.join(
+    home,
+    ".claude",
+    "plugins",
+    "cache",
+    "i-have-adhd",
+    "i-have-adhd",
+    "0.1.0",
+  );
   fs.mkdirSync(personalSkills, { recursive: true });
+  fs.mkdirSync(pluginDir, { recursive: true });
   fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(home, ".claude", ".i-have-adhd-always"), "");
+  writeJson(path.join(home, ".claude", "settings.json"), {
+    enabledPlugins: {
+      "i-have-adhd@i-have-adhd": true,
+    },
+  });
+  writeJson(path.join(home, ".claude", "plugins", "installed_plugins.json"), {
+    version: 2,
+    plugins: {
+      "i-have-adhd@i-have-adhd": [{ scope: "user", installPath: pluginDir }],
+    },
+  });
   let verified = false;
   const prepared = await prepareClaudeCliLaunch({
     command,
@@ -1130,14 +1304,79 @@ test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", as
   assert.equal(prepared.profilePath, undefined);
   assert.equal(prepared.sandboxExecPath, undefined);
   assert.equal(prepared.adapterDir, undefined);
+  assert.deepEqual(prepared.userPluginDirs, [fs.realpathSync(pluginDir)]);
   assert.equal(fs.readlinkSync(path.join(configDir, "skills")), personalSkills);
+  assert.equal(
+    fs.existsSync(path.join(configDir, ".i-have-adhd-always")),
+    true,
+  );
+});
+
+test("fresh login staging remains plugin-free", async () => {
+  const home = mkTempHome();
+  const command = "/home/test/.local/share/claude/versions/2.1.218";
+  const stagingHome = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "alpha",
+    ".login-staging",
+  );
+  const configDir = path.join(stagingHome, ".claude");
+  const pluginDir = path.join(
+    home,
+    ".claude",
+    "plugins",
+    "cache",
+    "i-have-adhd",
+    "i-have-adhd",
+    "0.1.0",
+  );
+  fs.mkdirSync(pluginDir, { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(home, ".claude", ".i-have-adhd-always"), "");
+  writeJson(path.join(home, ".claude", "settings.json"), {
+    enabledPlugins: {
+      "i-have-adhd@i-have-adhd": true,
+    },
+  });
+  writeJson(path.join(home, ".claude", "plugins", "installed_plugins.json"), {
+    version: 2,
+    plugins: {
+      "i-have-adhd@i-have-adhd": [{ scope: "user", installPath: pluginDir }],
+    },
+  });
+
+  const prepared = await prepareClaudeCliLaunch({
+    command,
+    userHomeDir: home,
+    homeDir: stagingHome,
+    configDir,
+    platform: "linux",
+    arch: "x64",
+    verifyInstalledClaudeExecutableImpl: async () => command,
+  });
+
+  assert.deepEqual(prepared.userPluginDirs, []);
+  assert.equal(fs.existsSync(path.join(configDir, "skills")), false);
+  assert.equal(fs.existsSync(path.join(configDir, ".i-have-adhd-always")), false);
 });
 
 test("Linux runner preserves the user home and directly supervises the exact Claude argv", async () => {
   const home = mkTempHome();
+  const pluginDir = path.join(
+    home,
+    ".claude",
+    "plugins",
+    "cache",
+    "market",
+    "alpha",
+    "1.0.0",
+  );
   const preparedLaunch = buildPreparedLaunch(home, {
     launchMode: "linux-direct",
     command: "/home/test/.local/share/claude/versions/2.1.218",
+    userPluginDirs: [pluginDir],
   });
   const calls = [];
   await runClaudeCli({
@@ -1164,7 +1403,12 @@ test("Linux runner preserves the user home and directly supervises the exact Cla
   });
   assert.equal(calls[0].file, process.execPath);
   assert.match(calls[0].args[0], /src\/targets\/claude-supervisor\.js$/);
-  assert.deepEqual(calls[0].args.slice(1), [preparedLaunch.command, "--version"]);
+  assert.deepEqual(calls[0].args.slice(1), [
+    preparedLaunch.command,
+    "--plugin-dir",
+    pluginDir,
+    "--version",
+  ]);
   assert.equal(calls[0].options.cwd, home);
   assert.equal(calls[0].options.env.HOME, preparedLaunch.userHomeDir);
   assert.notEqual(calls[0].options.env.HOME, preparedLaunch.homeDir);

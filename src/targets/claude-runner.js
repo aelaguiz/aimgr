@@ -16,6 +16,8 @@ const CODESIGN_PATH = "/usr/bin/codesign";
 const CLANG_PATH = "/usr/bin/clang";
 const DARWIN_SANDBOX_LAUNCH_MODE = "darwin-sandbox";
 const LINUX_DIRECT_LAUNCH_MODE = "linux-direct";
+const ADHD_PLUGIN_ID = "i-have-adhd@i-have-adhd";
+const ADHD_ALWAYS_ON_FILE = ".i-have-adhd-always";
 const SUPPORTED_CLAUDE_BUILDS = Object.freeze({
   "darwin-arm64": Object.freeze({
     identifier: "com.anthropic.claude-code",
@@ -401,6 +403,181 @@ function dataVolumeAlias(filePath) {
   return filePath.startsWith("/Users/") ? `/System/Volumes/Data${filePath}` : filePath;
 }
 
+function readOptionalJson(filePath, { fsImpl = fs, description } = {}) {
+  let raw;
+  try {
+    raw = fsImpl.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw new Error(`Could not read the normal Claude ${description}.`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`The normal Claude ${description} is malformed.`);
+  }
+}
+
+function ownedRegularFileExists(filePath, { fsImpl = fs, description } = {}) {
+  let stat;
+  try {
+    stat = fsImpl.lstatSync(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw new Error(`Could not inspect the ${description}.`);
+  }
+  if (
+    !stat.isFile()
+    || stat.isSymbolicLink()
+    || (
+      typeof process.getuid === "function"
+      && Number.isInteger(stat.uid)
+      && stat.uid !== process.getuid()
+    )
+  ) {
+    throw new Error(`Refusing an unsafe ${description}.`);
+  }
+  return true;
+}
+
+export function resolveEnabledClaudeUserPlugins({
+  userHomeDir,
+  fsImpl = fs,
+} = {}) {
+  const resolvedUserHome = normalizedAbsolute(userHomeDir);
+  if (!resolvedUserHome) {
+    throw new Error("Managed Claude plugin discovery requires an absolute user home.");
+  }
+  const claudeDir = path.join(resolvedUserHome, ".claude");
+  const settings = readOptionalJson(path.join(claudeDir, "settings.json"), {
+    fsImpl,
+    description: "plugin settings",
+  });
+  if (settings === null) return [];
+  if (typeof settings !== "object" || Array.isArray(settings)) {
+    throw new Error("The normal Claude plugin settings are malformed.");
+  }
+  if (settings.enabledPlugins === undefined) return [];
+  if (
+    settings.enabledPlugins === null
+    || typeof settings.enabledPlugins !== "object"
+    || Array.isArray(settings.enabledPlugins)
+  ) {
+    throw new Error("The normal Claude enabled plugin settings are malformed.");
+  }
+  const enabledIds = Object.entries(settings.enabledPlugins)
+    .filter(([, enabled]) => enabled === true)
+    .map(([id]) => id)
+    .sort();
+  if (enabledIds.length === 0) return [];
+
+  const registry = readOptionalJson(path.join(claudeDir, "plugins", "installed_plugins.json"), {
+    fsImpl,
+    description: "installed plugin registry",
+  });
+  if (
+    registry === null
+    || registry.plugins === null
+    || typeof registry.plugins !== "object"
+    || Array.isArray(registry.plugins)
+  ) {
+    throw new Error("The normal Claude installed plugin registry is unavailable or malformed.");
+  }
+
+  const cacheRoot = path.join(claudeDir, "plugins", "cache");
+  let resolvedCacheRoot;
+  try {
+    assertOwnedDirectory(cacheRoot, { fsImpl });
+    resolvedCacheRoot = fsImpl.realpathSync(cacheRoot);
+  } catch {
+    throw new Error("Refusing an unsafe normal Claude plugin cache.");
+  }
+
+  return enabledIds.map((id) => {
+    const records = registry.plugins[id];
+    const userRecords = Array.isArray(records)
+      ? records.filter((record) => record?.scope === "user")
+      : [];
+    if (userRecords.length !== 1) {
+      throw new Error("An enabled normal Claude plugin has no unambiguous user installation.");
+    }
+    const installPath = normalizedAbsolute(userRecords[0].installPath);
+    if (!installPath) {
+      throw new Error("An enabled normal Claude plugin has an unsafe installation path.");
+    }
+    let resolvedInstallPath;
+    try {
+      assertOwnedDirectory(installPath, { fsImpl });
+      resolvedInstallPath = fsImpl.realpathSync(installPath);
+    } catch {
+      throw new Error("An enabled normal Claude plugin has an unsafe installation path.");
+    }
+    const relative = path.relative(resolvedCacheRoot, resolvedInstallPath);
+    if (
+      !relative
+      || relative === ".."
+      || relative.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relative)
+    ) {
+      throw new Error("An enabled normal Claude plugin escapes the user plugin cache.");
+    }
+    return Object.freeze({ id, installPath: resolvedInstallPath });
+  });
+}
+
+export function syncManagedClaudePluginPreferences({
+  userHomeDir,
+  configDir,
+  enabledPluginIds = [],
+  fsImpl = fs,
+} = {}) {
+  const resolvedUserHome = normalizedAbsolute(userHomeDir);
+  const resolvedConfigDir = normalizedAbsolute(configDir);
+  if (!resolvedUserHome || !resolvedConfigDir) {
+    throw new Error("Managed Claude plugin preferences require absolute user and config directories.");
+  }
+  assertOwnedDirectory(resolvedConfigDir, { fsImpl });
+  const destination = path.join(resolvedConfigDir, ADHD_ALWAYS_ON_FILE);
+  const pluginEnabled = enabledPluginIds.includes(ADHD_PLUGIN_ID);
+  let preferenceEnabled = false;
+  if (pluginEnabled) {
+    const source = path.join(resolvedUserHome, ".claude", ADHD_ALWAYS_ON_FILE);
+    preferenceEnabled = ownedRegularFileExists(source, {
+      fsImpl,
+      description: "normal Claude ADHD preference",
+    });
+  }
+
+  const destinationExists = ownedRegularFileExists(destination, {
+    fsImpl,
+    description: "managed Claude ADHD preference",
+  });
+
+  if (preferenceEnabled && !destinationExists) {
+    try {
+      fsImpl.writeFileSync(destination, "", { flag: "wx", mode: 0o600 });
+    } catch {
+      throw new Error("Could not create the managed Claude ADHD preference.");
+    }
+    ownedRegularFileExists(destination, {
+      fsImpl,
+      description: "managed Claude ADHD preference",
+    });
+    return { enabled: true, path: destination };
+  }
+  if (!preferenceEnabled && destinationExists) {
+    try {
+      fsImpl.unlinkSync(destination);
+    } catch {
+      throw new Error("Could not remove the managed Claude ADHD preference.");
+    }
+  }
+  return {
+    enabled: preferenceEnabled,
+    path: preferenceEnabled ? destination : null,
+  };
+}
+
 export function ensureManagedClaudePersonalSkillsLink({
   userHomeDir,
   configDir,
@@ -550,10 +727,21 @@ export async function prepareClaudeCliLaunch({
     platform,
     arch,
   });
+  let userPlugins = [];
   if (!loginStaging) {
     ensureManagedClaudePersonalSkillsLink({
       userHomeDir: resolvedUserHome,
       configDir: resolvedConfigDir,
+      fsImpl,
+    });
+    userPlugins = resolveEnabledClaudeUserPlugins({
+      userHomeDir: resolvedUserHome,
+      fsImpl,
+    });
+    syncManagedClaudePluginPreferences({
+      userHomeDir: resolvedUserHome,
+      configDir: resolvedConfigDir,
+      enabledPluginIds: userPlugins.map(({ id }) => id),
       fsImpl,
     });
   }
@@ -563,6 +751,7 @@ export async function prepareClaudeCliLaunch({
     homeDir: resolvedLaunchHome,
     configDir: resolvedConfigDir,
     launchMode: build.launchMode,
+    userPluginDirs: Object.freeze(userPlugins.map(({ installPath }) => installPath)),
     ...topology,
   };
   if (build.launchMode === LINUX_DIRECT_LAUNCH_MODE) {
@@ -615,18 +804,28 @@ function buildSandboxArgs(preparedLaunch, args) {
   ];
 }
 
+function buildClaudeArgs(preparedLaunch, args) {
+  const pluginArgs = (preparedLaunch.userPluginDirs ?? [])
+    .flatMap((pluginDir) => ["--plugin-dir", pluginDir]);
+  return [
+    ...pluginArgs,
+    ...(Array.isArray(args) ? args : []),
+  ];
+}
+
 function buildSupervisorArgs(preparedLaunch, args) {
+  const claudeArgs = buildClaudeArgs(preparedLaunch, args);
   if (preparedLaunch.launchMode === LINUX_DIRECT_LAUNCH_MODE) {
     return [
       SUPERVISOR_PATH,
       preparedLaunch.command,
-      ...(Array.isArray(args) ? args : []),
+      ...claudeArgs,
     ];
   }
   return [
     SUPERVISOR_PATH,
     preparedLaunch.sandboxExecPath,
-    ...buildSandboxArgs(preparedLaunch, args),
+    ...buildSandboxArgs(preparedLaunch, claudeArgs),
   ];
 }
 
@@ -658,6 +857,13 @@ export async function runClaudeCli({
     && normalizedAbsolute(prepared.command)
     && normalizedAbsolute(prepared.homeDir)
     && normalizedAbsolute(prepared.configDir)
+    && (
+      prepared.userPluginDirs === undefined
+      || (
+        Array.isArray(prepared.userPluginDirs)
+        && prepared.userPluginDirs.every((pluginDir) => normalizedAbsolute(pluginDir))
+      )
+    )
   );
   const validPlatformBoundary = prepared?.launchMode === LINUX_DIRECT_LAUNCH_MODE
     || (

@@ -11,7 +11,8 @@
 ;; the whole process tree: ordinary descendants such as gh and Codex need them.
 
 ;; The caller's global Claude state is never part of a managed label. Personal
-;; skills are the one read-only exception; all writes stay closed.
+;; skills and installed plugin packages are the read-only exceptions; all
+;; writes stay closed.
 (deny file-write*
     (subpath (string-append (param "USER_HOME") "/.claude"))
     (literal (string-append (param "USER_HOME") "/.claude.json"))
@@ -21,12 +22,16 @@
     (require-all
         (subpath (string-append (param "USER_HOME") "/.claude"))
         (require-not
-            (subpath (string-append (param "USER_HOME") "/.claude/skills"))))
+            (require-any
+                (subpath (string-append (param "USER_HOME") "/.claude/skills"))
+                (subpath (string-append (param "USER_HOME") "/.claude/plugins/cache")))))
     (literal (string-append (param "USER_HOME") "/.claude.json"))
     (require-all
         (subpath (string-append (param "USER_HOME_ALIAS") "/.claude"))
         (require-not
-            (subpath (string-append (param "USER_HOME_ALIAS") "/.claude/skills"))))
+            (require-any
+                (subpath (string-append (param "USER_HOME_ALIAS") "/.claude/skills"))
+                (subpath (string-append (param "USER_HOME_ALIAS") "/.claude/plugins/cache")))))
     (literal (string-append (param "USER_HOME_ALIAS") "/.claude.json")))
 
 ;; No AIM state except this label's home and the reviewed runtime helper is
