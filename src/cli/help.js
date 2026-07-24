@@ -56,7 +56,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     `  - On ${AIMGR_REDIS_PRIMARY_HOST} itself, configure ${AIMGR_REDIS_PRIMARY_LOCAL_URL}; that host talks to its own container over localhost.`,
     "  - Local adjunct file: ~/.aimgr/local-state.json contains projection receipts and local-only target metadata.",
     "  - Legacy ~/.aimgr/secrets.json is migration input only, not live shared truth.",
-    "  - Managed Claude run/login is qualified for the native 2.1.218 client on macOS arm64 and Linux x64.",
+    "  - Managed Claude run/login requires Anthropic-signed native Claude on macOS arm64 and the qualified 2.1.218 client on Linux x64.",
     "  - Browser-managed OAuth supports explicit per-label bindings: aim-profile, chrome-profile, or agent-browser.",
     "  - `aim sync`, `aim promote`, and `aim apply` were removed by the Redis cutover; use migration once, then Redis-backed runtime commands.",
     "  - Generic Redis import/migration never writes Claude credentials; use leased `aim claude capture-native` or `aim claude import-native`.",

@@ -876,6 +876,46 @@ test("runner pins the selected config, shim PATH, cwd, sandbox, and exact Claude
   );
 });
 
+test("Darwin qualification trusts the Anthropic signing identity without a release pin", async () => {
+  const command = "/Users/test/.local/share/claude/versions/9.9.9";
+  let signatureChecked = false;
+  const result = await verifyInstalledClaudeExecutable({
+    command,
+    platform: "darwin",
+    arch: "arm64",
+    fsImpl: {
+      realpathSync: (filePath) => {
+        assert.equal(filePath, command);
+        return command;
+      },
+      lstatSync: (filePath) => {
+        assert.equal(filePath, command);
+        return {
+          isFile: () => true,
+          isSymbolicLink: () => false,
+          nlink: 1,
+          uid: typeof process.getuid === "function" ? process.getuid() : 0,
+        };
+      },
+      accessSync: (filePath, mode) => {
+        assert.equal(filePath, command);
+        assert.equal(mode, fs.constants.X_OK);
+      },
+    },
+    hashFileImpl: async () => {
+      throw new Error("Darwin qualification must not pin a release digest.");
+    },
+    verifyCodeSignatureImpl: (filePath, { build }) => {
+      assert.equal(filePath, command);
+      assert.equal(build.identifier, "com.anthropic.claude-code");
+      assert.equal(build.teamIdentifier, "Q6L2SF6YDW");
+      signatureChecked = true;
+    },
+  });
+  assert.equal(result, command);
+  assert.equal(signatureChecked, true);
+});
+
 test("Linux qualification accepts only the pinned native x64 artifact without Darwin signing", async () => {
   const command = "/home/test/.local/share/claude/versions/2.1.218";
   let signatureChecked = false;

@@ -18,8 +18,6 @@ const DARWIN_SANDBOX_LAUNCH_MODE = "darwin-sandbox";
 const LINUX_DIRECT_LAUNCH_MODE = "linux-direct";
 const SUPPORTED_CLAUDE_BUILDS = Object.freeze({
   "darwin-arm64": Object.freeze({
-    version: "2.1.218",
-    sha256: "71abaff59312c9a9b6a1d818365048b42e4e95cc521a823660eded3e0880d9b7",
     identifier: "com.anthropic.claude-code",
     teamIdentifier: "Q6L2SF6YDW",
     launchMode: DARWIN_SANDBOX_LAUNCH_MODE,
@@ -386,14 +384,15 @@ export async function verifyInstalledClaudeExecutable({
     throw new Error("Refusing an unsafe installed Claude executable.");
   }
   fsImpl.accessSync(resolvedCommand, fs.constants.X_OK);
-  if (path.basename(resolvedCommand) !== build.version) {
-    throw new Error(`Installed Claude version is not the qualified ${build.version} build.`);
-  }
-  if (await hashFileImpl(resolvedCommand, { fsImpl }) !== build.sha256) {
-    throw new Error("Installed Claude digest is not the qualified native build.");
-  }
   if (platform === "darwin") {
     verifyCodeSignatureImpl(resolvedCommand, { build, spawnSyncImpl });
+  } else {
+    if (path.basename(resolvedCommand) !== build.version) {
+      throw new Error(`Installed Claude version is not the qualified ${build.version} build.`);
+    }
+    if (await hashFileImpl(resolvedCommand, { fsImpl }) !== build.sha256) {
+      throw new Error("Installed Claude digest is not the qualified native build.");
+    }
   }
   return resolvedCommand;
 }
