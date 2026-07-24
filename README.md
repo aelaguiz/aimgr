@@ -82,6 +82,15 @@ aim login <label>
 aim login <label> --manual-callback-stdio
 ```
 
+Scheduled OAuth maintenance on the M3:
+
+```bash
+aim auth maintain
+cd ~/workspace/aimgr
+bash scripts/install-auth-maintainer.sh
+bash scripts/install-auth-maintainer.sh --uninstall
+```
+
 Redis administration and repair:
 
 ```bash

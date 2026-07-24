@@ -1,7 +1,7 @@
 ---
 title: "AIM - Combined Claude and Codex OAuth Maintainer - Architecture Plan"
 date: 2026-07-24
-status: active
+status: complete
 fallback_policy: forbidden
 owners: [aelaguiz]
 reviewers: []
@@ -475,7 +475,7 @@ Existing interactive paths remain the unchanged fallback during development.
 
 ## Phase 2 - Install the one LaunchAgent on M3
 
-**Status:** IN PROGRESS
+**Status:** COMPLETE
 
 ### Goal
 
@@ -488,17 +488,17 @@ LaunchAgent, and verify two distinct scheduled passes.
 
 ### Checklist (must all be done)
 
-- [ ] Commit and push the Phase 1 implementation to main.
-- [ ] Update `/Users/aelaguiz/workspace/aimgr` on
+- [x] Commit and push the Phase 1 implementation to main.
+- [x] Update `/Users/aelaguiz/workspace/aimgr` on
   `amirs-m3-max-new` to that exact commit.
-- [ ] Verify canonical `aim`, Node, Redis connectivity, and writable
+- [x] Verify canonical `aim`, Node, Redis connectivity, and writable
   `~/.aimgr/logs`.
-- [ ] Run `aim auth maintain` once manually and inspect Redis/status outcomes.
-- [ ] Install `com.funcountry.aimgr.auth-maintainer` as the logged-in user with
+- [x] Run `aim auth maintain` once manually and inspect Redis/status outcomes.
+- [x] Install `com.funcountry.aimgr.auth-maintainer` as the logged-in user with
   `StartInterval=60`.
-- [ ] Verify `launchctl` status and two distinct subsequent scheduled log
+- [x] Verify `launchctl` status and two distinct subsequent scheduled log
   entries.
-- [ ] Confirm no browser, Keychain prompt, model turn, cross-label write, or
+- [x] Confirm no browser, Keychain prompt, model turn, cross-label write, or
   stuck process occurred.
 
 ### Verification (required proof)
@@ -515,10 +515,10 @@ Record only the exact installed command and uninstall command in README.
 
 ### Exit criteria (all required)
 
-- [ ] Exactly one auth-maintainer LaunchAgent is loaded on the M3.
-- [ ] The job runs every minute and exits; no resident AIM process remains.
-- [ ] Redis contains only expected per-label successor writes.
-- [ ] Manual reauthentication remains the existing `aim login <label>` UX.
+- [x] Exactly one auth-maintainer LaunchAgent is loaded on the M3.
+- [x] The job runs every minute and exits; no resident AIM process remains.
+- [x] Redis contains only expected per-label successor writes.
+- [x] Manual reauthentication remains the existing `aim login <label>` UX.
 
 ### Rollback
 
@@ -599,6 +599,20 @@ not manually delete credentials or markers.
   architecture, production surfaces, provider variants, or adjacent cleanup.
 - **Follow-ups:** Deploy the exact tested main commit to `amirs-m3-max-new`
   only after Phase 1 passes.
+
+## 2026-07-24 - M3 deployment accepted
+
+- **Context:** The exact tested implementation commit was installed on
+  `amirs-m3-max-new` after the local proof gate passed.
+- **Decision:** Accept the rollout after one manual pass refreshed ten due
+  Claude labels with zero failures and two scheduled passes exited cleanly
+  without additional writes.
+- **Consequences:** `com.funcountry.aimgr.auth-maintainer` is the sole
+  recurrence owner and runs the one-shot every 60 seconds. An active `pro5`
+  session on the Ubuntu host remains the owner of its existing rotation lease;
+  the maintainer correctly skips it rather than racing it.
+- **Follow-ups:** Use the existing `aim login <label>` only when status
+  conclusively reports `reauth_required`.
 
 ## 2026-07-24 - Use a launchd one-shot, not a resident daemon
 
