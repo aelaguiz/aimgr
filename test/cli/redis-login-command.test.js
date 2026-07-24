@@ -131,7 +131,13 @@ test("redis-configured login refreshes and publishes the shared credential witho
         accountId: "acct_123",
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
       },
-      policy: { reauth: { mode: "manual-callback" }, pool: { enabled: true } },
+      policy: {
+        reauth: {
+          mode: "manual-callback",
+          blockedReason: "oauth_reauth_required",
+        },
+        pool: { enabled: true },
+      },
     },
   });
 
@@ -156,6 +162,7 @@ test("redis-configured login refreshes and publishes the shared credential witho
   const snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials[0].credential.refresh, "NEW_REFRESH");
   assert.equal(snapshot.credentials[0].credential.access, refreshedAccess);
+  assert.equal(snapshot.credentials[0].policy.reauth.blockedReason, undefined);
   const localState = fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8");
   assert.doesNotMatch(localState, /NEW_REFRESH/);
 });

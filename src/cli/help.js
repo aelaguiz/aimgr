@@ -29,6 +29,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim rebalance openclaw # choose pooled Codex assignments for configured OpenClaw agents",
     "  aim rebalance hermes   # choose pooled Codex assignments for live Hermes homes",
     "  aim auth write hermes <label> --auth-file <abs-path>  # write Hermes auth.json only",
+    "  aim auth maintain     # refresh due Redis-backed Claude and Codex OAuth credentials once",
     "  aim codex use [label] # activate the eligible openai-codex label with the lowest current 5h usage, or explicitly switch a chosen label",
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
     "  aim codex run --tend [-p <profile>] [--resume <session-id>] [-- <codex args...>]  # run Codex TUI through the AIMGR foreground relay and tend goals across account rotation",

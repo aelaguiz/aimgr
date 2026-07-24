@@ -15,6 +15,7 @@ import {
   resolvePiAuthFilePath,
 } from "../../src/io/paths.js";
 import { writeClaudeNativeBundleExportFile } from "../../src/credentials/claude-native.js";
+import { maintainRedisClaudeCredential } from "../../src/cli/commands/claude.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
@@ -473,6 +474,177 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.match(local.targets.claudeCli.credentialsPath, /claude-homes\/claude\/\.claude\/\.credentials\.json$/);
   assert.doesNotMatch(JSON.stringify(local), /CLAUDE_REFRESH_ROTATED/);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
+});
+
+test("Claude maintenance uses the exact bounded no-model run and returns a result without changing interactive behavior", async () => {
+  const nowMs = Date.parse("2026-07-24T12:00:00.000Z");
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const credential = buildAnthropicClaudeCredential({
+    access: "CLAUDE_ACCESS",
+    refresh: "CLAUDE_REFRESH",
+    expiresAtMs: nowMs + 4 * 60_000,
+  });
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "claude",
+      credential,
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: {
+        expect: { email: "boss@example.com" },
+        reauth: { mode: "native-claude" },
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  const timerDelays = [];
+  const clearedTimers = [];
+  let launches = 0;
+  let exitCodeChanges = 0;
+  const context = {
+    opts: { afterDoubleDash: [] },
+    positional: ["claude", "run", "claude"],
+    homeDir: home,
+    env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+    setExitCode: () => {
+      exitCodeChanges += 1;
+    },
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    nowMs,
+    setTimeoutImpl: (_callback, delay) => {
+      timerDelays.push(delay);
+      return { unref() {} };
+    },
+    clearTimeoutImpl: (timer) => {
+      clearedTimers.push(timer);
+    },
+    runClaudeCliImpl: ({ configDir, args, env, signal }) => {
+      launches += 1;
+      assert.deepEqual(args, [
+        "--safe-mode",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--print",
+        "--output-format",
+        "json",
+        "/usage",
+      ]);
+      assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, undefined);
+      assert.ok(signal instanceof AbortSignal);
+      rotateProjectedClaudeCredential(configDir, {
+        accessToken: "CLAUDE_ACCESS_ROTATED",
+        refreshToken: "CLAUDE_REFRESH_ROTATED",
+        expiresAt: nowMs + 2 * 60 * 60_000,
+      });
+      return { status: 0, signal: null };
+    },
+  };
+
+  assert.deepEqual(
+    await maintainRedisClaudeCredential(context, { label: "claude" }),
+    { outcome: "refreshed", timedOut: false, status: 0, signal: null },
+  );
+  assert.deepEqual(timerDelays, [30_000]);
+  assert.equal(clearedTimers.length, 1);
+  assert.equal(exitCodeChanges, 0);
+  assert.equal(launches, 1);
+
+  assert.deepEqual(
+    await maintainRedisClaudeCredential(context, { label: "claude" }),
+    { outcome: "skipped", timedOut: false, status: 0, signal: null },
+  );
+  assert.equal(launches, 1, "the under-lease freshness recheck must skip the provider");
+  const snapshot = await readSnapshot(store);
+  assert.equal(snapshot.credentials[0].credential.refresh, "CLAUDE_REFRESH_ROTATED");
+});
+
+test("Claude maintenance marks only a clean exact missing-token result as reauth_required", async () => {
+  const nowMs = Date.parse("2026-07-24T12:00:00.000Z");
+  const runCase = async ({ clean }) => {
+    const home = mkTempHome();
+    const client = new FakeRedisClient();
+    const credential = buildAnthropicClaudeCredential({
+      expiresAtMs: nowMs + 4 * 60_000,
+    });
+    writeAimgrConfig({
+      homeDir: home,
+      config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+    });
+    const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+    await importCredentialsSnapshot(store, {
+      credentials: [{
+        provider: "anthropic",
+        label: "claude",
+        credential,
+        identity: {
+          accountUuid: "acct_boss",
+          emailAddress: "boss@example.com",
+          organizationUuid: "org_boss",
+        },
+        policy: {
+          expect: { email: "boss@example.com" },
+          reauth: { mode: "native-claude" },
+          pool: { enabled: true },
+        },
+      }],
+    });
+    const result = await maintainRedisClaudeCredential({
+      opts: { afterDoubleDash: [] },
+      positional: ["claude", "run", "claude"],
+      homeDir: home,
+      env: {},
+      setExitCode: () => {
+        throw new Error("maintenance must not set the parent exit code");
+      },
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+      nowMs,
+      runClaudeCliImpl: ({ configDir }) => {
+        if (clean) {
+          fs.unlinkSync(resolveClaudeAuthFilePath(configDir));
+          return { status: 0, signal: null };
+        }
+        return { status: 2, signal: null };
+      },
+    }, { label: "claude" });
+    return {
+      client,
+      home,
+      result,
+      snapshot: await readSnapshot(store),
+    };
+  };
+
+  const terminal = await runCase({ clean: true });
+  assert.equal(terminal.result.outcome, "reauth_required");
+  assert.equal(
+    terminal.snapshot.credentials[0].policy.reauth.blockedReason,
+    "oauth_reauth_required",
+  );
+  assert.equal(
+    [...terminal.client.values.keys()].some((key) => key.includes(":fence:claude-rotation:claude")),
+    false,
+  );
+
+  const transient = await runCase({ clean: false });
+  assert.equal(transient.result.outcome, "failed");
+  assert.equal(transient.snapshot.credentials[0].policy.reauth.blockedReason, undefined);
+  assert.equal(
+    [...transient.client.values.keys()].some((key) => key.includes(":fence:claude-rotation:claude")),
+    true,
+  );
 });
 
 test("redis-configured claude run preserves a terminating signal and resumes its exact fence", async () => {

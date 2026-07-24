@@ -146,6 +146,44 @@ test("Redis Claude inventory is provider-filtered, offline, candidate-safe, and 
   assert.doesNotMatch(serialized, /DO_NOT_EXPOSE_PROVENANCE_NOTE|privateNote/);
 });
 
+test("Claude Redis views expose reauth_required without probing and preserve ordinary expiry", async () => {
+  const marked = anthropicRecord("marked");
+  marked.policy.reauth.blockedReason = "oauth_reauth_required";
+  const expiredCredential = buildCredential("expired");
+  expiredCredential.expiresAt = new Date(NOW_MS - 1).toISOString();
+  expiredCredential.nativeClaudeBundle.claudeAiOauth.expiresAt = NOW_MS - 1;
+  const expired = anthropicRecord("expired", { credential: expiredCredential });
+  const { homeDir, connectRedisStoreImpl } = await setup([marked, expired]);
+
+  const inventory = await collectClaudeRedisAccountInventory({
+    homeDir,
+    nowMs: NOW_MS,
+    connectRedisStoreImpl,
+  });
+  const inventoryByLabel = new Map(inventory.accounts.map((account) => [account.label, account]));
+  assert.equal(inventoryByLabel.get("marked").state, "reauth_required");
+  assert.equal(inventoryByLabel.get("expired").state, "credential_expired");
+  assert.equal(inventory.counts.reauthRequired, 1);
+  assert.match(renderClaudeRedisAccountInventory(inventory), /reauth_required/);
+
+  let providerRequests = 0;
+  const status = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    records: [marked, expired],
+    nowMs: NOW_MS,
+    fetchClaudeUsageSnapshotImpl: async () => {
+      providerRequests += 1;
+      throw new Error("terminal and expired rows must not probe");
+    },
+  });
+  const statusByLabel = new Map(status.accounts.map((account) => [account.label, account]));
+  assert.equal(statusByLabel.get("marked").authState, "reauth_required");
+  assert.equal(statusByLabel.get("expired").authState, "credential_expired");
+  assert.equal(status.requestCount, 0);
+  assert.equal(providerRequests, 0);
+  assert.match(renderClaudeRedisAccountUsageStatus(status), /reauth_required/);
+});
+
 test("Redis Claude status skips candidates, disables web fallback, and reuses the shared cache", async () => {
   const { homeDir, connectRedisStoreImpl } = await setup([
     anthropicRecord("ready"),

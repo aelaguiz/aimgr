@@ -141,6 +141,7 @@ test("parseAnthropicAuthorizationPaste accepts callback URLs and code#state", ()
 test("help text prefers Redis primary-host setup over authority sync examples", async () => {
   const out = await runCli([]);
   assert.match(out, /aim redis configure --url <redis-url>/);
+  assert.match(out, /aim auth maintain\s+# refresh due Redis-backed Claude and Codex OAuth credentials once/);
   assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
   assert.match(out, /--primary-host <host>\s+Human-readable Redis primary host, e\.g\. agents@amirs-mac-studio/);

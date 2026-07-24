@@ -312,6 +312,7 @@ function buildCredentialFacts(record, nowMs) {
   const subscriptionType = normalizePlan(credential.subscriptionType ?? summary?.subscriptionType);
   const rateLimitTier = normalizePlan(credential.rateLimitTier ?? summary?.rateLimitTier);
   const evidence = normalizeBillingEvidence(record, nowMs);
+  const reauthRequired = record?.policy?.reauth?.blockedReason === "oauth_reauth_required";
   const scopes = Array.isArray(credential.scopes)
     ? credential.scopes.map((scope) => String(scope ?? "").trim()).filter(Boolean)
     : Array.isArray(summary?.scopes)
@@ -349,7 +350,9 @@ function buildCredentialFacts(record, nowMs) {
   );
 
   let state;
-  if (Object.keys(credential).length === 0) {
+  if (reauthRequired) {
+    state = "reauth_required";
+  } else if (Object.keys(credential).length === 0) {
     state = "credential_missing";
   } else if (candidateRecord) {
     state = "credential_candidate";
@@ -717,6 +720,7 @@ export async function collectClaudeRedisAccountInventory({
     credentialCandidate: countState("credential_candidate"),
     credentialIncomplete: countState("credential_incomplete"),
     credentialExpired: countState("credential_expired"),
+    reauthRequired: countState("reauth_required"),
     identityUnverified: countState("identity_unverified"),
     identityMismatch: countState("identity_mismatch"),
     duplicateAccount: countState("duplicate_account"),

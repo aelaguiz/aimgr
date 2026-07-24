@@ -166,6 +166,10 @@ export async function publishMaintainedCredential({
     nextIdentity: stableIdentity,
   });
   const currentProvenance = isObject(currentCredential?.provenance) ? currentCredential.provenance : {};
+  const reauth = isObject(account.reauth) ? { ...account.reauth } : {};
+  if (reauth.blockedReason === "oauth_reauth_required") {
+    delete reauth.blockedReason;
+  }
   const result = await publishCredential(store, {
     expectedVersion: currentCredential?.version ?? null,
     updatedBy,
@@ -178,7 +182,7 @@ export async function publishMaintainedCredential({
       identity: stableIdentity,
       policy: {
         expect: isObject(account.expect) ? account.expect : {},
-        reauth: isObject(account.reauth) ? account.reauth : {},
+        reauth,
         browser: buildSharedBrowserPolicy(account.browser),
         pool: isObject(account.pool) ? account.pool : { enabled: true },
       },
@@ -194,6 +198,13 @@ export async function publishMaintainedCredential({
       },
     },
   });
+  if (
+    result.ok
+    && isObject(account.reauth)
+    && account.reauth.blockedReason === "oauth_reauth_required"
+  ) {
+    delete account.reauth.blockedReason;
+  }
   return {
     ok: result.ok,
     credential: result,

@@ -15,6 +15,7 @@ import {
   closeRedisRuntime,
   isRedisConfigured,
   loadRedisRuntime,
+  publishRedisCredentialPolicyFromState,
   publishRedisStateCredential,
   refreshRedisRuntimeState,
   writeRedisLocalStateFromView,
@@ -52,6 +53,8 @@ import { markImportedAnthropicLabelDirtyState } from "../../state/authority-anth
 import { ensureLocalInstallationId } from "../../state/local-state.js";
 import { loadAimgrState } from "../../state/schema.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
+import { parseExpiresAtToMs } from "../../core/time.js";
+import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.js";
 import {
   activateClaudeLabelSelection,
   activateClaudePoolSelection,
@@ -69,6 +72,18 @@ const CLAUDE_LEASE_RENEW_INTERVAL_MS = Math.floor(DEFAULT_REDIS_CREDENTIAL_LEASE
 const CLAUDE_LEASE_RENEW_DEADLINE_MS = 5_000;
 const SAFE_PRE_RUN_STORAGE_REASONS = new Set(["native_storage_empty", "tokens_unchanged", "stale_candidate"]);
 const CLAUDE_RECOVERY_STORAGE_CONTRACT = CLAUDE_MANAGED_FILE_STORAGE_MODE;
+const CLAUDE_MAINTENANCE_TIMEOUT_MS = 30_000;
+const CLAUDE_MAINTENANCE_DUE_WINDOW_MS = 5 * 60_000;
+const CLAUDE_MAINTENANCE_SKIPPED = Symbol("claude-maintenance-skipped");
+const CLAUDE_MAINTENANCE_ARGS = Object.freeze([
+  "--safe-mode",
+  "--strict-mcp-config",
+  "--no-session-persistence",
+  "--print",
+  "--output-format",
+  "json",
+  "/usage",
+]);
 
 async function renewClaudeCredentialLeaseWithinDeadline(lease) {
   let deadlineTimer = null;
@@ -222,7 +237,9 @@ async function acquireClaudeCredentialLeaseGuard(runtime, label) {
     label,
   });
   if (!lease) {
-    throw new Error(`Claude label=${label} is busy on another AIM process or machine; retry shortly.`);
+    const error = new Error(`Claude label=${label} is busy on another AIM process or machine; retry shortly.`);
+    error.code = "AIMGR_CREDENTIAL_BUSY";
+    throw error;
   }
   const abortController = new AbortController();
   const heartbeat = startClaudeCredentialLeaseHeartbeat({ lease, abortController });
@@ -572,7 +589,7 @@ async function handleRedisClaudeImportNative(context, { label, inFile }) {
   }
 }
 
-async function handleRedisClaudeRun(context) {
+async function handleRedisClaudeRun(context, { maintenance = false } = {}) {
   const {
     opts,
     positional,
@@ -584,6 +601,8 @@ async function handleRedisClaudeRun(context) {
     resolveExecutableOnPathImpl,
     nowMs,
   } = context;
+  const setMaintenanceTimer = context.setTimeoutImpl ?? setTimeout;
+  const clearMaintenanceTimer = context.clearTimeoutImpl ?? clearTimeout;
   const label = normalizeLabel(positional[2]);
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label });
   const configDir = resolveManagedClaudeDir({ homeDir: claudeHome });
@@ -600,6 +619,8 @@ async function handleRedisClaudeRun(context) {
   let managedDescriptor = null;
   let credentialProjected = false;
   let runFenceCreated = false;
+  let maintenanceTimer = null;
+  let maintenanceTimedOut = false;
   try {
     guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
     // A prior lease owner may have rotated this label between our initial read
@@ -607,6 +628,21 @@ async function handleRedisClaudeRun(context) {
     // projections or choosing the authoritative bundle.
     await refreshRedisRuntimeState(runtime);
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before managed Claude preflight" });
+    const refreshedRecord = currentRedisClaudeRecord(runtime, label);
+    const refreshedExpiryMs = parseExpiresAtToMs(refreshedRecord?.credential?.expiresAt);
+    if (
+      maintenance
+      && (
+        refreshedRecord?.policy?.reauth?.blockedReason === "oauth_reauth_required"
+        || (
+          hasCompleteClaudeNativeBundle(refreshedRecord?.credential)
+          && refreshedExpiryMs !== null
+          && refreshedExpiryMs > nowMs + CLAUDE_MAINTENANCE_DUE_WINDOW_MS
+        )
+      )
+    ) {
+      throw CLAUDE_MAINTENANCE_SKIPPED;
+    }
     const expectedEmail = requireExpectedClaudeEmail(runtime.state, label);
     const descriptor = buildManagedClaudeNativeStorageDescriptor({
       configDir,
@@ -696,6 +732,7 @@ async function handleRedisClaudeRun(context) {
     clearRotationPublicationPending(target, label);
 
     const credential = requireRedisClaudeCredential(runtime.state, label);
+    const preRunCredentialComplete = hasCompleteClaudeNativeBundle(credential);
     await projectClaudeNativeBundleToManagedConfig({
       descriptor,
       credential,
@@ -721,19 +758,31 @@ async function handleRedisClaudeRun(context) {
     let launched = null;
     let launchError = null;
     try {
+      if (maintenance) {
+        maintenanceTimer = setMaintenanceTimer(() => {
+          maintenanceTimedOut = true;
+          guard.abortController.abort();
+        }, CLAUDE_MAINTENANCE_TIMEOUT_MS);
+        maintenanceTimer.unref?.();
+      }
       launched = await runClaudeCliImpl({
         command: preparedLaunch.command,
         userHomeDir: homeDir,
         homeDir: claudeHome,
         configDir,
         cwd: launchCwd,
-        args: opts.afterDoubleDash,
+        args: maintenance ? CLAUDE_MAINTENANCE_ARGS : opts.afterDoubleDash,
         env,
         signal: guard.abortController.signal,
         preparedLaunch,
       });
     } catch (error) {
       launchError = error;
+    } finally {
+      if (maintenanceTimer) {
+        clearMaintenanceTimer(maintenanceTimer);
+        maintenanceTimer = null;
+      }
     }
 
     const safeLaunch = {
@@ -768,13 +817,47 @@ async function handleRedisClaudeRun(context) {
         continuityFailed = true;
       }
     }
+    const terminalMissingTokens = maintenance
+      && preRunCredentialComplete
+      && launchCompletedCleanly
+      && postRunSync.reason === "native_storage_empty";
+    let maintenanceOutcome = null;
+    let terminalHandlingError = null;
+    if (terminalMissingTokens && !continuityFailed) {
+      try {
+        await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before recording terminal Claude refresh failure" });
+        await clearClaudeRotationFenceOrThrow({ runtime, label, fence: runFence, guard });
+        runFenceCreated = false;
+        clearRotationPublicationPending(target, label);
+        retireManagedClaudeCredentialProjection({ descriptor });
+        credentialProjected = false;
+        runtime.state.accounts[label].reauth = {
+          ...(isObject(runtime.state.accounts[label].reauth) ? runtime.state.accounts[label].reauth : {}),
+          blockedReason: "oauth_reauth_required",
+        };
+        await publishRedisCredentialPolicyFromState({
+          runtime,
+          state: runtime.state,
+          label,
+          observedAt: new Date().toISOString(),
+        });
+        writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+        maintenanceOutcome = "reauth_required";
+      } catch {
+        terminalHandlingError = new Error("Claude terminal refresh state could not be published safely.");
+      }
+    }
+    if (terminalHandlingError) throw terminalHandlingError;
     continuityFailed = continuityFailed
       || guard.heartbeat.lost
       || (
-        postRunSync.synced !== true
+        !maintenanceOutcome
+        && postRunSync.synced !== true
         && (postRunSync.reason !== "tokens_unchanged" || !launchCompletedCleanly)
       );
-    if (continuityFailed) {
+    if (maintenanceOutcome) {
+      processResult = { ...safeLaunch, maintenanceOutcome };
+    } else if (continuityFailed) {
       markRotationPublicationPending(target, label);
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
       if (launchError || launchCompletedCleanly) {
@@ -790,11 +873,27 @@ async function handleRedisClaudeRun(context) {
       credentialProjected = false;
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
       if (launchError) throw launchError;
-      processResult = safeLaunch;
+      processResult = {
+        ...safeLaunch,
+        ...(maintenance
+          ? { maintenanceOutcome: postRunSync.synced === true ? "refreshed" : "unchanged" }
+          : {}),
+      };
     }
   } catch (error) {
-    operationError = error;
-    if (credentialProjected && !runFenceCreated && managedDescriptor) {
+    if (
+      error === CLAUDE_MAINTENANCE_SKIPPED
+      || (maintenance && error?.code === "AIMGR_CREDENTIAL_BUSY")
+    ) {
+      processResult = {
+        status: 0,
+        signal: null,
+        maintenanceOutcome: "skipped",
+      };
+    } else {
+      operationError = error;
+    }
+    if (operationError && credentialProjected && !runFenceCreated && managedDescriptor) {
       try {
         retireManagedClaudeCredentialProjection({ descriptor: managedDescriptor });
         credentialProjected = false;
@@ -805,6 +904,7 @@ async function handleRedisClaudeRun(context) {
       }
     }
   } finally {
+    if (maintenanceTimer) clearMaintenanceTimer(maintenanceTimer);
     try {
       await guard?.heartbeat.stop();
     } catch {
@@ -828,6 +928,15 @@ async function handleRedisClaudeRun(context) {
   }
   if (operationError) throw operationError;
   if (cleanupError) throw cleanupError;
+  if (maintenance) {
+    return {
+      outcome: processResult?.maintenanceOutcome
+        ?? (processResult?.status === 0 && !processResult?.signal ? "unchanged" : "failed"),
+      timedOut: maintenanceTimedOut,
+      status: processResult?.status ?? null,
+      signal: processResult?.signal ?? null,
+    };
+  }
   if (processResult?.signal) {
     process.kill(process.pid, processResult.signal);
     return;
@@ -835,6 +944,23 @@ async function handleRedisClaudeRun(context) {
   if (processResult?.status !== 0) {
     setExitCode(Number.isInteger(processResult?.status) ? processResult.status : 1);
   }
+}
+
+export async function maintainRedisClaudeCredential(context, { label }) {
+  const maintenanceEnv = { ...context.env };
+  delete maintenanceEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  return handleRedisClaudeRun(
+    {
+      ...context,
+      env: maintenanceEnv,
+      positional: ["claude", "run", normalizeLabel(label)],
+      opts: {
+        ...context.opts,
+        afterDoubleDash: CLAUDE_MAINTENANCE_ARGS,
+      },
+    },
+    { maintenance: true },
+  );
 }
 
 export async function handleClaude(context) {

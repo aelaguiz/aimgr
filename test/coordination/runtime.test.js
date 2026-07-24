@@ -216,3 +216,95 @@ test("login-maintenance publication uses the same Anthropic rollback guard", asy
   assert.equal(snapshot.credentials[0].version, 1);
   assert.equal(snapshot.credentials[0].credential.refresh, "REFRESH_CURRENT");
 });
+
+test("successful credential publication clears only oauth_reauth_required and only after CAS", async () => {
+  const credential = anthropicCredential({
+    access: "ACCESS_CURRENT",
+    refresh: "REFRESH_CURRENT",
+    expiresAtMs: INITIAL_EXPIRY + 2 * 60 * 60_000,
+  });
+  const exact = await createRuntimeWithRecord({
+    provider: ANTHROPIC_PROVIDER,
+    label: "writer",
+    credential,
+    identity: buildStableIdentityForCredential(ANTHROPIC_PROVIDER, credential),
+    policy: {
+      reauth: {
+        mode: "native-claude",
+        blockedReason: "oauth_reauth_required",
+      },
+      pool: { enabled: true },
+    },
+  });
+  const exactResult = await publishMaintainedCredential({
+    store: exact.store,
+    snapshot: exact.runtime.snapshot,
+    state: exact.state,
+    label: "writer",
+    provider: ANTHROPIC_PROVIDER,
+  });
+  assert.equal(exactResult.ok, true);
+  assert.deepEqual(exact.state.accounts.writer.reauth, { mode: "native-claude" });
+  assert.deepEqual(
+    (await readSnapshot(exact.store)).credentials[0].policy.reauth,
+    { mode: "native-claude" },
+  );
+
+  const unrelated = await createRuntimeWithRecord({
+    provider: ANTHROPIC_PROVIDER,
+    label: "writer",
+    credential,
+    identity: buildStableIdentityForCredential(ANTHROPIC_PROVIDER, credential),
+    policy: {
+      reauth: {
+        mode: "native-claude",
+        blockedReason: "operator_policy_block",
+      },
+      pool: { enabled: true },
+    },
+  });
+  const unrelatedResult = await publishMaintainedCredential({
+    store: unrelated.store,
+    snapshot: unrelated.runtime.snapshot,
+    state: unrelated.state,
+    label: "writer",
+    provider: ANTHROPIC_PROVIDER,
+  });
+  assert.equal(unrelatedResult.ok, true);
+  assert.equal(
+    (await readSnapshot(unrelated.store)).credentials[0].policy.reauth.blockedReason,
+    "operator_policy_block",
+  );
+
+  const stale = await createRuntimeWithRecord({
+    provider: ANTHROPIC_PROVIDER,
+    label: "writer",
+    credential,
+    identity: buildStableIdentityForCredential(ANTHROPIC_PROVIDER, credential),
+    policy: {
+      reauth: {
+        mode: "native-claude",
+        blockedReason: "oauth_reauth_required",
+      },
+      pool: { enabled: true },
+    },
+  });
+  const concurrent = await publishCredential(stale.store, {
+    expectedVersion: 1,
+    updatedBy: "concurrent-test",
+    credentialRecord: stale.runtime.snapshot.credentials[0],
+  });
+  assert.equal(concurrent.ok, true);
+  const staleResult = await publishMaintainedCredential({
+    store: stale.store,
+    snapshot: stale.runtime.snapshot,
+    state: stale.state,
+    label: "writer",
+    provider: ANTHROPIC_PROVIDER,
+  });
+  assert.equal(staleResult.ok, false);
+  assert.equal(
+    stale.state.accounts.writer.reauth.blockedReason,
+    "oauth_reauth_required",
+  );
+});

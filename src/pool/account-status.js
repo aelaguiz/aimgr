@@ -51,6 +51,16 @@ export function derivePoolAccountStatus({ account, label, credentials, browserFa
         })
       : blockedReason;
 
+  if (blockedReason === "oauth_reauth_required") {
+    return {
+      operatorStatus: "reauth",
+      detailReason: "reauth_required",
+      eligible: false,
+      actionRequired: "run_aim_label",
+      reason: "OAuth refresh is no longer usable; run the existing AIM login flow.",
+    };
+  }
+
   if (provider === ANTHROPIC_PROVIDER) {
     if (effectiveAnthropicBlockedReason) {
       return {

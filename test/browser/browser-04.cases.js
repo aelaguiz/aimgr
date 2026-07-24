@@ -384,3 +384,45 @@ test("derivePoolAccountStatus keeps fresh browser-managed credentials ready when
   assert.equal(status.eligible, true);
   assert.equal(status.actionRequired, "run_aim_browser_set");
 });
+
+test("derivePoolAccountStatus exposes the exact terminal OAuth marker separately from ordinary expiry", () => {
+  const now = Date.now();
+  const credentials = {
+    access: "ACCESS_TOKEN",
+    refresh: "REFRESH_TOKEN",
+    expiresAt: new Date(now + 3600_000).toISOString(),
+    accountId: "acct_123",
+  };
+  const terminal = derivePoolAccountStatus({
+    account: {
+      provider: "openai-codex",
+      reauth: {
+        mode: "manual-callback",
+        blockedReason: "oauth_reauth_required",
+      },
+    },
+    label: "boss",
+    credentials,
+    browserFacts: {},
+    now,
+  });
+  assert.equal(terminal.operatorStatus, "reauth");
+  assert.equal(terminal.detailReason, "reauth_required");
+  assert.equal(terminal.eligible, false);
+
+  const expired = derivePoolAccountStatus({
+    account: {
+      provider: "openai-codex",
+      reauth: { mode: "manual-callback" },
+    },
+    label: "boss",
+    credentials: {
+      ...credentials,
+      expiresAt: new Date(now - 1).toISOString(),
+    },
+    browserFacts: {},
+    now,
+  });
+  assert.equal(expired.operatorStatus, "reauth");
+  assert.equal(expired.detailReason, "missing_credentials");
+});
