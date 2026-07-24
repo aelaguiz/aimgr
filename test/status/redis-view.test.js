@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
+import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../src/core/constants.js";
 import { resolveAimgrRedisCachePath } from "../../src/io/paths.js";
@@ -187,6 +188,10 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
       health: { status: "ready", reason: null },
     }],
   });
+  await acquireRedisCredentialLease(store, {
+    provider: ANTHROPIC_PROVIDER,
+    label: "claude",
+  });
 
   let directProbeCalls = 0;
   let claudeRequests = 0;
@@ -218,7 +223,9 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
 
   assert.equal(first.view.accounts[0].usage.ok, true);
   assert.equal(first.view.accounts[0].usage.status, "usage_readable");
+  assert.equal(first.view.accounts[0].usage.locked, true);
   assert.equal(first.claudeUsageStatus.accounts[0].label, "claude");
+  assert.equal(first.claudeUsageStatus.accounts[0].locked, true);
   assert.equal(first.claudeUsageStatus.accounts[0].usage.ok, true);
   assert.equal(second.view.accounts[0].usage.ok, true);
   assert.equal(second.claudeUsageStatus.accounts[0].source, "cache");

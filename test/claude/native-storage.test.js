@@ -25,6 +25,7 @@ import {
   writeClaudeNativeProjectionPair,
 } from "../../src/targets/claude-cli.js";
 import {
+  ensureManagedClaudePersonalSkillsLink,
   materializeClaudeSecurityShim,
   prepareClaudeCliLaunch,
   runClaudeCli,
@@ -745,6 +746,10 @@ test("targeted boundary isolates Claude profiles without hiding ordinary user se
   const selectedCredential = path.join(selectedHome, ".claude", ".credentials.json");
   const otherCredential = path.join(aimgrRoot, "claude-homes", "beta", ".claude", ".credentials.json");
   const globalCredential = path.join(home, ".claude", ".credentials.json");
+  const globalSettings = path.join(home, ".claude", "settings.json");
+  const personalSkills = path.join(home, ".claude", "skills");
+  const personalSkill = path.join(personalSkills, "shared-proof", "SKILL.md");
+  const sharedSkill = path.join(selectedHome, ".claude", "skills", "shared-proof", "SKILL.md");
   const keychainDecoy = path.join(home, "Library", "Keychains", "login.keychain-db");
   const userToolConfig = path.join(home, ".config", "gh", "hosts.yml");
   const probePath = path.join(selectedHome, "boundary-probe.cjs");
@@ -752,6 +757,8 @@ test("targeted boundary isolates Claude profiles without hiding ordinary user se
     selectedCredential,
     otherCredential,
     globalCredential,
+    globalSettings,
+    personalSkill,
     keychainDecoy,
     userToolConfig,
   ]) {
@@ -759,12 +766,21 @@ test("targeted boundary isolates Claude profiles without hiding ordinary user se
     fs.writeFileSync(filePath, "synthetic");
     fs.chmodSync(filePath, 0o600);
   }
+  fs.symlinkSync(personalSkills, path.join(selectedHome, ".claude", "skills"), "dir");
   fs.writeFileSync(probePath, `
 const fs = require("node:fs");
 const { spawnSync } = require("node:child_process");
 function readable(name) {
   try {
     fs.readFileSync(process.env[name], "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+function writable(name) {
+  try {
+    fs.appendFileSync(process.env[name], "changed");
     return true;
   } catch {
     return false;
@@ -780,6 +796,11 @@ function check() {
     selectedReadable: readable("PROBE_SELECTED"),
     otherReadable: readable("PROBE_OTHER"),
     globalReadable: readable("PROBE_GLOBAL"),
+    globalWritable: writable("PROBE_GLOBAL"),
+    globalSettingsReadable: readable("PROBE_GLOBAL_SETTINGS"),
+    personalSkillReadable: readable("PROBE_PERSONAL_SKILL"),
+    personalSkillWritable: writable("PROBE_PERSONAL_SKILL"),
+    personalSkillDirectWritable: writable("PROBE_PERSONAL_SKILL_DIRECT"),
     keychainReadable: readable("PROBE_KEYCHAIN"),
     realSecurityReadable: readable("PROBE_REAL_SECURITY"),
     userToolReadable: readable("PROBE_USER_TOOL"),
@@ -803,9 +824,9 @@ if (process.argv.includes("--child")) {
 
   const result = spawnSync("/usr/bin/sandbox-exec", [
     "-D", `USER_HOME=${home}`,
-    "-D", `USER_HOME_ALIAS=${home}`,
+    "-D", `USER_HOME_ALIAS=${fs.realpathSync(home)}`,
     "-D", `LAUNCH_HOME=${selectedHome}`,
-    "-D", `LAUNCH_HOME_ALIAS=${selectedHome}`,
+    "-D", `LAUNCH_HOME_ALIAS=${fs.realpathSync(selectedHome)}`,
     "-D", `AIMGR_ROOT=${aimgrRoot}`,
     "-D", `SELECTED_LABEL_HOME=${selectedHome}`,
     "-D", `ADAPTER_RUNTIME_ROOT=${adapter.runtimeRoot}`,
@@ -819,6 +840,9 @@ if (process.argv.includes("--child")) {
       PROBE_SELECTED: selectedCredential,
       PROBE_OTHER: otherCredential,
       PROBE_GLOBAL: globalCredential,
+      PROBE_GLOBAL_SETTINGS: globalSettings,
+      PROBE_PERSONAL_SKILL: sharedSkill,
+      PROBE_PERSONAL_SKILL_DIRECT: personalSkill,
       PROBE_KEYCHAIN: keychainDecoy,
       PROBE_REAL_SECURITY: "/usr/bin/security",
       PROBE_USER_TOOL: userToolConfig,
@@ -834,11 +858,80 @@ if (process.argv.includes("--child")) {
       selectedReadable: true,
       otherReadable: false,
       globalReadable: false,
+      globalWritable: false,
+      globalSettingsReadable: false,
+      personalSkillReadable: true,
+      personalSkillWritable: false,
+      personalSkillDirectWritable: false,
       keychainReadable: true,
       realSecurityReadable: true,
       userToolReadable: true,
     });
   }
+});
+
+test("managed Claude shares only the exact personal skills directory and rejects conflicts", () => {
+  const home = mkTempHome();
+  const selectedHome = path.join(home, ".aimgr", "claude-homes", "alpha");
+  const configDir = path.join(selectedHome, ".claude");
+  const source = path.join(home, ".claude", "skills");
+  const destination = path.join(configDir, "skills");
+  fs.mkdirSync(configDir, { recursive: true });
+
+  assert.deepEqual(
+    ensureManagedClaudePersonalSkillsLink({
+      userHomeDir: home,
+      configDir,
+    }),
+    { linked: false, reason: "source_missing" },
+  );
+
+  fs.mkdirSync(path.join(source, "shared-proof"), { recursive: true });
+  fs.writeFileSync(path.join(source, "shared-proof", "SKILL.md"), "proof");
+  assert.deepEqual(
+    ensureManagedClaudePersonalSkillsLink({
+      userHomeDir: home,
+      configDir,
+    }),
+    { linked: true, path: destination },
+  );
+  assert.equal(fs.lstatSync(destination).isSymbolicLink(), true);
+  assert.equal(fs.readlinkSync(destination), source);
+
+  assert.deepEqual(
+    ensureManagedClaudePersonalSkillsLink({
+      userHomeDir: home,
+      configDir,
+    }),
+    { linked: true, path: destination },
+  );
+
+  const conflictHome = mkTempHome();
+  const conflictConfig = path.join(conflictHome, ".aimgr", "claude-homes", "alpha", ".claude");
+  fs.mkdirSync(path.join(conflictHome, ".claude", "skills"), { recursive: true });
+  fs.mkdirSync(path.join(conflictConfig, "skills"), { recursive: true });
+  assert.throws(
+    () => ensureManagedClaudePersonalSkillsLink({
+      userHomeDir: conflictHome,
+      configDir: conflictConfig,
+    }),
+    /conflicting managed Claude skills path/,
+  );
+
+  const wrongLinkHome = mkTempHome();
+  const wrongLinkConfig = path.join(wrongLinkHome, ".aimgr", "claude-homes", "alpha", ".claude");
+  const wrongTarget = path.join(wrongLinkHome, "other-skills");
+  fs.mkdirSync(path.join(wrongLinkHome, ".claude", "skills"), { recursive: true });
+  fs.mkdirSync(wrongTarget, { recursive: true });
+  fs.mkdirSync(wrongLinkConfig, { recursive: true });
+  fs.symlinkSync(wrongTarget, path.join(wrongLinkConfig, "skills"), "dir");
+  assert.throws(
+    () => ensureManagedClaudePersonalSkillsLink({
+      userHomeDir: wrongLinkHome,
+      configDir: wrongLinkConfig,
+    }),
+    /conflicting managed Claude skills path/,
+  );
 });
 
 test("runner preserves the user home while pinning Claude config and exact launch behavior", async () => {
@@ -1004,6 +1097,9 @@ test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", as
   const command = "/home/test/.local/share/claude/versions/2.1.218";
   const selectedLabelHome = path.join(home, ".aimgr", "claude-homes", "alpha");
   const configDir = path.join(selectedLabelHome, ".claude");
+  const personalSkills = path.join(home, ".claude", "skills");
+  fs.mkdirSync(personalSkills, { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
   let verified = false;
   const prepared = await prepareClaudeCliLaunch({
     command,
@@ -1034,6 +1130,7 @@ test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", as
   assert.equal(prepared.profilePath, undefined);
   assert.equal(prepared.sandboxExecPath, undefined);
   assert.equal(prepared.adapterDir, undefined);
+  assert.equal(fs.readlinkSync(path.join(configDir, "skills")), personalSkills);
 });
 
 test("Linux runner preserves the user home and directly supervises the exact Claude argv", async () => {

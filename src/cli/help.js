@@ -34,6 +34,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
     "  aim codex run --tend [-p <profile>] [--resume <session-id>] [-- <codex args...>]  # run Codex TUI through the AIMGR foreground relay and tend goals across account rotation",
     "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
+    "  aim claude run <label> (opus|fable) [--resume]  # common one-line managed Claude launch presets",
     "  aim claude run <label> [-- <claude args...>]  # project the Redis-backed Claude label into a per-label home and launch Claude",
     "  aim claude inventory [--json]  # Redis-backed Claude account coverage; zero provider requests",
     "  aim claude status [account...] [--fresh] [--json]  # browserless Redis-backed usage by account label; bounded AIM cache",

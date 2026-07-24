@@ -401,6 +401,85 @@ function dataVolumeAlias(filePath) {
   return filePath.startsWith("/Users/") ? `/System/Volumes/Data${filePath}` : filePath;
 }
 
+export function ensureManagedClaudePersonalSkillsLink({
+  userHomeDir,
+  configDir,
+  fsImpl = fs,
+} = {}) {
+  const resolvedUserHome = normalizedAbsolute(userHomeDir);
+  const resolvedConfigDir = normalizedAbsolute(configDir);
+  if (!resolvedUserHome || !resolvedConfigDir) {
+    throw new Error("Managed Claude skills setup requires absolute user and config directories.");
+  }
+  const source = path.join(resolvedUserHome, ".claude", "skills");
+  const destination = path.join(resolvedConfigDir, "skills");
+  let destinationStat = null;
+  try {
+    destinationStat = fsImpl.lstatSync(destination);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw new Error("Could not inspect the managed Claude skills path.");
+    }
+  }
+  if (destinationStat) {
+    let target = null;
+    try {
+      if (destinationStat.isSymbolicLink()) {
+        target = fsImpl.readlinkSync(destination);
+      }
+    } catch {
+      throw new Error("Could not inspect the managed Claude skills path.");
+    }
+    if (
+      !target
+      || path.resolve(path.dirname(destination), target).normalize("NFC") !== source
+    ) {
+      throw new Error("Refusing a conflicting managed Claude skills path.");
+    }
+  }
+
+  let sourceStat;
+  try {
+    sourceStat = fsImpl.lstatSync(source);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { linked: false, reason: "source_missing" };
+    }
+    throw new Error("Could not inspect the personal Claude skills directory.");
+  }
+  if (
+    !sourceStat.isDirectory()
+    || sourceStat.isSymbolicLink()
+    || (
+      typeof process.getuid === "function"
+      && Number.isInteger(sourceStat.uid)
+      && sourceStat.uid !== process.getuid()
+    )
+  ) {
+    throw new Error("Refusing an unsafe personal Claude skills directory.");
+  }
+  if (destinationStat) {
+    return { linked: true, path: destination };
+  }
+
+  assertOwnedDirectory(resolvedConfigDir, { fsImpl });
+  try {
+    fsImpl.symlinkSync(source, destination, "dir");
+  } catch {
+    throw new Error("Could not create the managed Claude skills link.");
+  }
+  let createdTarget = null;
+  try {
+    createdTarget = fsImpl.readlinkSync(destination);
+  } catch {
+    // The generic error below keeps filesystem details out of the CLI.
+  }
+  if (path.resolve(path.dirname(destination), createdTarget ?? "").normalize("NFC") !== source) {
+    throw new Error("Could not verify the managed Claude skills link.");
+  }
+  return { linked: true, path: destination };
+}
+
 function assertContainedLaunchTopology({ userHomeDir, launchHome, configDir }) {
   const aimgrRoot = path.join(userHomeDir, ".aimgr");
   const claudeHomesRoot = path.join(aimgrRoot, "claude-homes");
@@ -429,6 +508,7 @@ function assertContainedLaunchTopology({ userHomeDir, launchHome, configDir }) {
     aimgrRoot,
     claudeHomesRoot,
     selectedLabelHome: launchHome,
+    loginStaging: freshLoginConfig,
   };
 }
 
@@ -451,7 +531,10 @@ export async function prepareClaudeCliLaunch({
   if (!resolvedUserHome || !resolvedLaunchHome || !resolvedConfigDir) {
     throw new Error("Managed Claude preflight requires absolute user, label, and config directories.");
   }
-  const topology = assertContainedLaunchTopology({
+  const {
+    loginStaging,
+    ...topology
+  } = assertContainedLaunchTopology({
     userHomeDir: resolvedUserHome,
     launchHome: resolvedLaunchHome,
     configDir: resolvedConfigDir,
@@ -467,6 +550,13 @@ export async function prepareClaudeCliLaunch({
     platform,
     arch,
   });
+  if (!loginStaging) {
+    ensureManagedClaudePersonalSkillsLink({
+      userHomeDir: resolvedUserHome,
+      configDir: resolvedConfigDir,
+      fsImpl,
+    });
+  }
   const common = {
     command: resolvedCommand,
     userHomeDir: resolvedUserHome,

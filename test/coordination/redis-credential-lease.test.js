@@ -4,6 +4,7 @@ import { connectRedisStore } from "../../src/coordination/redis-store.js";
 import {
   acquireRedisCredentialLease,
   DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
+  readHeldRedisCredentialLeaseLabels,
 } from "../../src/coordination/redis-credential-lease.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 
@@ -68,6 +69,33 @@ test("credential lease contends per normalized provider and label", async () => 
   assert.ok(first);
   assert.equal(blocked, null);
   assert.ok(otherLabel);
+});
+
+test("credential lease status reports only live labels without exposing owners", async () => {
+  const client = new FakeRedisClient();
+  const store = await connectRedisStore({ client, keyPrefix: "aimgr:test" });
+  await acquireRedisCredentialLease(store, {
+    provider: "anthropic",
+    label: "pro7",
+    ttlMs: 100,
+  });
+
+  assert.deepEqual(
+    [...await readHeldRedisCredentialLeaseLabels(store, {
+      provider: "anthropic",
+      labels: ["PRO7", "pro8"],
+    })],
+    ["pro7"],
+  );
+
+  client.advanceTime(101);
+  assert.deepEqual(
+    [...await readHeldRedisCredentialLeaseLabels(store, {
+      provider: "anthropic",
+      labels: ["pro7", "pro8"],
+    })],
+    [],
+  );
 });
 
 test("credential lease renews its TTL and expires without a renewal", async () => {

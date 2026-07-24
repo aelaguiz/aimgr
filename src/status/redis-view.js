@@ -241,6 +241,7 @@ function buildCanonicalClaudeUsageByLabel(status) {
       ...(account.errorKind ? { errorKind: account.errorKind } : {}),
       source: account.source,
       stale: account.stale === true,
+      locked: account.locked === true,
     };
   }
   return usageByLabel;
@@ -288,6 +289,7 @@ export async function buildRedisStatusView({
     const claudeUsageStatus = await collectClaudeRedisAccountUsageStatus({
       homeDir,
       records: snapshot.credentials,
+      redisStore: store,
       fresh: false,
       nowMs,
       fetchJsonWithTimeoutImpl,

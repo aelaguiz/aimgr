@@ -1092,6 +1092,11 @@ export async function handleClaude(context) {
     );
   }
   if (subcmd === "run") {
+    if (positional.length > 3) {
+      throw new Error(
+        `Unknown Claude run preset: ${positional[3]}. Use opus, fable, or -- <claude args...>.`,
+      );
+    }
     if (!isRedisConfigured({ homeDir })) {
       throw new Error(`\`aim claude run <label>\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }

@@ -55,7 +55,7 @@ function normalizeLeaseProvider(value) {
 
 function buildCredentialLeaseKey(store, { provider, label }) {
   const rawPrefix = typeof store?.keyPrefix === "string" ? store.keyPrefix.trim() : "";
-  if (!rawPrefix || typeof store?.client?.set !== "function" || typeof store?.client?.eval !== "function") {
+  if (!rawPrefix) {
     throw new Error("Invalid Redis store for credential lease.");
   }
   const normalizedProvider = normalizeLeaseProvider(provider);
@@ -96,6 +96,9 @@ export async function acquireRedisCredentialLease(store, {
   label,
   ttlMs = DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
 } = {}) {
+  if (typeof store?.client?.set !== "function" || typeof store?.client?.eval !== "function") {
+    throw new Error("Invalid Redis store for credential lease.");
+  }
   const boundedTtlMs = normalizeLeaseTtlMs(ttlMs);
   const key = buildCredentialLeaseKey(store, { provider, label });
   const keyPrefix = normalizeKeyPrefix(store.keyPrefix);
@@ -175,4 +178,33 @@ export async function acquireRedisCredentialLease(store, {
     return succeeded(result);
   });
   return Object.freeze(lease);
+}
+
+/**
+ * Reads whether provider/label leases currently exist without exposing their
+ * opaque ownership tokens.
+ */
+export async function readHeldRedisCredentialLeaseLabels(store, {
+  provider,
+  labels = [],
+} = {}) {
+  if (!Array.isArray(labels) || typeof store?.client?.mGet !== "function") {
+    throw new Error("Invalid Redis store for credential lease.");
+  }
+  const normalizedLabels = [...new Set(labels.map((label) => normalizeLabel(label)))];
+  if (normalizedLabels.length === 0) return new Set();
+  const keys = normalizedLabels.map((label) => buildCredentialLeaseKey(store, { provider, label }));
+
+  let values;
+  try {
+    values = await store.client.mGet(keys);
+  } catch {
+    throw redisLeaseError("status read");
+  }
+  if (!Array.isArray(values) || values.length !== normalizedLabels.length) {
+    throw redisLeaseError("status read");
+  }
+  return new Set(
+    normalizedLabels.filter((_, index) => typeof values[index] === "string" && values[index].length > 0),
+  );
 }

@@ -126,6 +126,7 @@ aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remainin
 aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--json]
 aim claude usage [account...] [--fresh] [--json]
+aim claude run <label> (opus|fable) [--resume]
 aim claude run <label> [-- <claude args...>]
 aim claude capture-native <label> [--source-home <dir>] [--source-config-dir <dir>]
 aim claude export-live --out <file> [--source-home <dir>]

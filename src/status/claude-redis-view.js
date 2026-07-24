@@ -6,6 +6,7 @@ import {
   connectRedisStore,
   readCredentialRecordsByProvider,
 } from "../coordination/redis-store.js";
+import { readHeldRedisCredentialLeaseLabels } from "../coordination/redis-credential-lease.js";
 import { buildStableIdentityForCredential } from "../coordination/login-publish.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
@@ -414,10 +415,12 @@ function normalizeSelectedLabels(values) {
   return labels;
 }
 
-async function readAnthropicRecords({
+async function readAnthropicRedisData({
   homeDir,
+  includeLeaseState = false,
   connectRedisStoreImpl = connectRedisStore,
   readCredentialRecordsByProviderImpl = readCredentialRecordsByProvider,
+  readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
 } = {}) {
   let store = null;
   try {
@@ -426,7 +429,14 @@ async function readAnthropicRecords({
       ...redis,
       clientOptions: buildRedisStatusClientOptions({ timeoutMs: CLAUDE_REDIS_READ_TIMEOUT_MS }),
     });
-    return await readCredentialRecordsByProviderImpl(store, ANTHROPIC_PROVIDER);
+    const records = await readCredentialRecordsByProviderImpl(store, ANTHROPIC_PROVIDER);
+    const lockedLabels = includeLeaseState
+      ? await readHeldRedisCredentialLeaseLabelsImpl(store, {
+          provider: ANTHROPIC_PROVIDER,
+          labels: records.map((record) => record.label),
+        })
+      : new Set();
+    return { records, lockedLabels };
   } catch {
     throw new Error("Claude Redis account inventory is unavailable.");
   } finally {
@@ -685,7 +695,11 @@ export async function collectClaudeRedisAccountInventory({
   connectRedisStoreImpl = connectRedisStore,
   readCredentialRecordsByProviderImpl = readCredentialRecordsByProvider,
 } = {}) {
-  const records = await readAnthropicRecords({ homeDir, connectRedisStoreImpl, readCredentialRecordsByProviderImpl });
+  const { records } = await readAnthropicRedisData({
+    homeDir,
+    connectRedisStoreImpl,
+    readCredentialRecordsByProviderImpl,
+  });
   const facts = selectFacts(records, [], nowMs);
   const cached = readCachedProviderUsage({ homeDir, cachePath, provider: ANTHROPIC_PROVIDER });
   const cacheEntries = normalizeCacheEntries(cached.entries, nowMs);
@@ -744,22 +758,49 @@ export async function collectClaudeRedisAccountInventory({
 export async function collectClaudeRedisAccountUsageStatus({
   homeDir,
   records = null,
+  redisStore = null,
   selectedLabels = [],
   fresh = false,
   nowMs = Date.now(),
   cachePath = resolveAimgrRedisCachePath({ homeDir }),
   connectRedisStoreImpl = connectRedisStore,
   readCredentialRecordsByProviderImpl = readCredentialRecordsByProvider,
+  readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
   fetchClaudeUsageSnapshotImpl = fetchClaudeUsageSnapshot,
   fetchJsonWithTimeoutImpl,
   acquireRedisCacheLockImpl = acquireRedisCacheLock,
   writeCachedProviderUsageImpl = writeCachedProviderUsage,
 } = {}) {
   const normalizedLabels = normalizeSelectedLabels(selectedLabels);
-  const authoritativeRecords = Array.isArray(records)
-    ? records.filter((record) => record?.provider === ANTHROPIC_PROVIDER)
-    : await readAnthropicRecords({ homeDir, connectRedisStoreImpl, readCredentialRecordsByProviderImpl });
+  let authoritativeRecords;
+  let lockedLabels;
+  if (Array.isArray(records)) {
+    authoritativeRecords = records.filter((record) => record?.provider === ANTHROPIC_PROVIDER);
+    lockedLabels = redisStore
+      ? await readHeldRedisCredentialLeaseLabelsImpl(redisStore, {
+          provider: ANTHROPIC_PROVIDER,
+          labels: authoritativeRecords.map((record) => record.label),
+        })
+      : new Set();
+  } else {
+    const redisData = await readAnthropicRedisData({
+      homeDir,
+      includeLeaseState: true,
+      connectRedisStoreImpl,
+      readCredentialRecordsByProviderImpl,
+      readHeldRedisCredentialLeaseLabelsImpl,
+    });
+    authoritativeRecords = redisData.records;
+    lockedLabels = redisData.lockedLabels;
+  }
   const facts = selectFacts(authoritativeRecords, normalizedLabels, nowMs);
+  const buildResult = (options) => buildStatusResult({
+    ...options,
+    accounts: options.accounts.map((account) => ({
+      ...account,
+      locked: lockedLabels.has(account.label),
+    })),
+  });
   let cacheRead = readCachedProviderUsage({ homeDir, cachePath, provider: ANTHROPIC_PROVIDER });
   let cacheEntries = normalizeCacheEntries(cacheRead.entries, nowMs);
   const authoritativeLabels = new Set(authoritativeRecords.map((record) => record.label));
@@ -773,7 +814,7 @@ export async function collectClaudeRedisAccountUsageStatus({
     const accounts = facts.map((entry) => entry.credentialReady
       ? buildStaticAccount(entry, "cache_unsafe")
       : buildStaticAccount(entry));
-    return buildStatusResult({ accounts, nowMs, requestCount: 0, fresh, cacheState: cacheRead.state });
+    return buildResult({ accounts, nowMs, requestCount: 0, fresh, cacheState: cacheRead.state });
   }
 
   for (const entry of facts) {
@@ -790,7 +831,7 @@ export async function collectClaudeRedisAccountUsageStatus({
   }
 
   if (pending.length === 0) {
-    return buildStatusResult({
+    return buildResult({
       accounts: facts.map((entry) => accountsByLabel.get(entry.record.label)),
       nowMs,
       requestCount: 0,
@@ -807,7 +848,7 @@ export async function collectClaudeRedisAccountUsageStatus({
         buildRefreshInProgressAccount(pendingEntry.facts, pendingEntry.cachedEntry, nowMs),
       );
     }
-    return buildStatusResult({
+    return buildResult({
       accounts: facts.map((entry) => accountsByLabel.get(entry.record.label)),
       nowMs,
       requestCount: 0,
@@ -832,7 +873,7 @@ export async function collectClaudeRedisAccountUsageStatus({
           buildStaticAccount(pendingEntry.facts, "cache_unsafe"),
         );
       }
-      return buildStatusResult({
+      return buildResult({
         accounts: facts.map((entry) => accountsByLabel.get(entry.record.label)),
         nowMs,
         requestCount: 0,
@@ -900,7 +941,7 @@ export async function collectClaudeRedisAccountUsageStatus({
     releaseRedisCacheLock(lock);
   }
 
-  return buildStatusResult({
+  return buildResult({
     accounts: facts.map((entry) => accountsByLabel.get(entry.record.label)),
     nowMs,
     requestCount,
@@ -991,12 +1032,13 @@ export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
-  const rows = [["account", "plan", "state", ...columns.headers, "source"]];
+  const rows = [["account", "plan", "state", "lock", ...columns.headers, "source"]];
   for (const account of accounts) {
     rows.push([
       account.label,
       formatPlan(account),
       account.authState,
+      account.locked === true ? "yes" : "--",
       ...columns.values(account),
       account.source,
     ]);
@@ -1004,6 +1046,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics
   if (accounts.length > 0) {
     rows.push([
       "average",
+      "--",
       "--",
       "--",
       ...columns.averageValues(),

@@ -417,8 +417,8 @@ test("redis-configured claude run projects into a per-label home and publishes p
   const configDir = path.join(claudeHome, ".claude");
   let preflightCount = 0;
   let keychainCalls = 0;
-  const out = await runCli(["claude", "run", "claude", "--home", home, "--", "--print", "hello"], {
-    env: {},
+  const out = await runCli(["claude", "run", "claude", "opus", "--resume"], {
+    env: { HOME: home },
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
     resolveExecutableOnPathImpl: buildTestClaudeResolver((options) => {
       preflightCount += 1;
@@ -450,7 +450,14 @@ test("redis-configured claude run projects into a per-label home and publishes p
       assert.equal(launchConfigDir, configDir);
       assert.equal(cwd, process.cwd());
       assert.equal(preparedLaunch.configDir, configDir);
-      assert.deepEqual(args, ["--print", "hello"]);
+      assert.deepEqual(args, [
+        "--dangerously-skip-permissions",
+        "--model",
+        "opus",
+        "--effort",
+        "max",
+        "--resume",
+      ]);
       assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
       rotateProjectedClaudeCredential(configDir, {
         accessToken: "CLAUDE_ACCESS_ROTATED",

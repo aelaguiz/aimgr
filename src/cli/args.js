@@ -1,4 +1,30 @@
+function expandClaudeRunPreset(argv) {
+  if (argv[0] !== "claude" || argv[1] !== "run" || !argv[2]) return argv;
+  let presetArgs;
+  if (argv[3] === "opus") {
+    presetArgs = [
+      "--dangerously-skip-permissions",
+      "--model",
+      "opus",
+      "--effort",
+      "max",
+    ];
+  } else if (argv[3] === "fable") {
+    presetArgs = [
+      "--dangerously-skip-permissions",
+      "--model",
+      "claude-fable-5",
+      "--effort",
+      "xhigh",
+    ];
+  } else {
+    return argv;
+  }
+  return [...argv.slice(0, 3), "--", ...presetArgs, ...argv.slice(4)];
+}
+
 export function parseArgs(argv) {
+  argv = expandClaudeRunPreset(argv);
   const opts = {
     home: undefined,
     state: undefined,

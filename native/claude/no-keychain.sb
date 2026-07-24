@@ -10,11 +10,23 @@
 ;; file-fallback semantics. Do not deny macOS credential or trust services for
 ;; the whole process tree: ordinary descendants such as gh and Codex need them.
 
-;; The caller's global Claude state is never part of a managed label.
-(deny file-read* file-test-existence file-write*
+;; The caller's global Claude state is never part of a managed label. Personal
+;; skills are the one read-only exception; all writes stay closed.
+(deny file-write*
     (subpath (string-append (param "USER_HOME") "/.claude"))
     (literal (string-append (param "USER_HOME") "/.claude.json"))
     (subpath (string-append (param "USER_HOME_ALIAS") "/.claude"))
+    (literal (string-append (param "USER_HOME_ALIAS") "/.claude.json")))
+(deny file-read* file-test-existence
+    (require-all
+        (subpath (string-append (param "USER_HOME") "/.claude"))
+        (require-not
+            (subpath (string-append (param "USER_HOME") "/.claude/skills"))))
+    (literal (string-append (param "USER_HOME") "/.claude.json"))
+    (require-all
+        (subpath (string-append (param "USER_HOME_ALIAS") "/.claude"))
+        (require-not
+            (subpath (string-append (param "USER_HOME_ALIAS") "/.claude/skills"))))
     (literal (string-append (param "USER_HOME_ALIAS") "/.claude.json")))
 
 ;; No AIM state except this label's home and the reviewed runtime helper is
@@ -26,3 +38,11 @@
             (require-any
                 (subpath (param "SELECTED_LABEL_HOME"))
                 (subpath (param "ADAPTER_RUNTIME_ROOT"))))))
+
+;; Cover both the caller-facing and filesystem-canonical paths so following the
+;; label symlink never turns the shared skill tree into a writable surface.
+(deny file-write*
+    (subpath (string-append (param "USER_HOME") "/.claude/skills"))
+    (subpath (string-append (param "USER_HOME_ALIAS") "/.claude/skills"))
+    (subpath (string-append (param "LAUNCH_HOME") "/.claude/skills"))
+    (subpath (string-append (param "LAUNCH_HOME_ALIAS") "/.claude/skills")))

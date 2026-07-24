@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseAnthropicAuthorizationPaste } from "../../src/credentials/oauth.js";
 import { derivePoolAccountStatus } from "../../src/pool/account-status.js";
+import { parseArgs } from "../../src/cli/args.js";
 import { buildAnthropicClaudeCredential, writeClaudeNativeBundle } from "../helpers/claude.js";
 import { runCli } from "../helpers/cli-runner.js";
 import { installFakeClaude } from "../helpers/fakes.js";
@@ -142,12 +143,50 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   const out = await runCli([]);
   assert.match(out, /aim redis configure --url <redis-url>/);
   assert.match(out, /aim auth maintain\s+# refresh due Redis-backed Claude and Codex OAuth credentials once/);
+  assert.match(out, /aim claude run <label> \(opus\|fable\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
   assert.match(out, /--primary-host <host>\s+Human-readable Redis primary host, e\.g\. agents@amirs-mac-studio/);
   assert.match(out, /redis:\/\/amirs-mac-studio:6380/);
   assert.doesNotMatch(out, /Examples: agents@amirs-mac-studio/);
   assert.doesNotMatch(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
+});
+
+test("Claude run presets expand into the existing explicit passthrough boundary", () => {
+  const opus = parseArgs(["claude", "run", "pro7", "opus", "--resume"]);
+  assert.deepEqual(opus.positional, ["claude", "run", "pro7"]);
+  assert.deepEqual(opus.opts.afterDoubleDash, [
+    "--dangerously-skip-permissions",
+    "--model",
+    "opus",
+    "--effort",
+    "max",
+    "--resume",
+  ]);
+
+  const fable = parseArgs(["claude", "run", "pro8", "fable"]);
+  assert.deepEqual(fable.positional, ["claude", "run", "pro8"]);
+  assert.deepEqual(fable.opts.afterDoubleDash, [
+    "--dangerously-skip-permissions",
+    "--model",
+    "claude-fable-5",
+    "--effort",
+    "xhigh",
+  ]);
+
+  const explicit = parseArgs(["claude", "run", "pro9", "--", "--model", "sonnet"]);
+  assert.deepEqual(explicit.positional, ["claude", "run", "pro9"]);
+  assert.deepEqual(explicit.opts.afterDoubleDash, ["--model", "sonnet"]);
+});
+
+test("Claude run rejects an unknown preset before Redis or launch work", async () => {
+  const home = mkTempHome();
+  await assert.rejects(
+    () => runCli(["claude", "run", "pro7", "opuz"], {
+      env: { HOME: home },
+    }),
+    /Unknown Claude run preset: opuz/,
+  );
 });
 
 test("anthropic label maintenance captures the current native Claude login without OAuth flow", async () => {
