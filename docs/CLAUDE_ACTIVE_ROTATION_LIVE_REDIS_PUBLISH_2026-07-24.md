@@ -1,7 +1,7 @@
 ---
 title: "AIM - Active Claude Rotation Live Redis Publish - Mini Architecture Plan"
 date: 2026-07-24
-status: active
+status: complete
 fallback_policy: forbidden
 owners: [aelaguiz]
 reviewers: []
@@ -357,7 +357,7 @@ publication behavior remains intact.
 
 ## Phase 2 - Publish and deploy the exact tested commit
 
-**Status:** ACTIVE
+**Status:** COMPLETE
 
 ### Goal
 
@@ -365,21 +365,21 @@ Make future managed Claude runs use the proven fix on both AIM hosts.
 
 ### Checklist (must all be done)
 
-- [ ] Commit the scoped implementation and documentation.
-- [ ] Fast-forward/push `main` to the tested commit.
-- [ ] Fast-forward `home` and `amirs-m3-max-new` AIM checkouts to that exact
+- [x] Commit the scoped implementation and documentation.
+- [x] Fast-forward/push `main` to the tested commit.
+- [x] Fast-forward `home` and `amirs-m3-max-new` AIM checkouts to that exact
   commit using their established canonical install path.
-- [ ] Run the focused regression test from deployed checkout(s).
-- [ ] Confirm canonical `aim` resolves to the deployed checkout.
-- [ ] Confirm the M3 OAuth maintainer remains loaded and healthy.
-- [ ] Do not stop or modify the already-running `pro5` session.
+- [x] Run the focused regression test from deployed checkout(s).
+- [x] Confirm canonical `aim` resolves to the deployed checkout.
+- [x] Confirm the M3 OAuth maintainer remains loaded and healthy.
+- [x] Do not stop or modify the already-running `pro5` session.
 
 ### Exit criteria
 
-- [ ] Local, origin, home, and M3 resolve to the same tested commit.
-- [ ] Deployed focused proof passes.
-- [ ] No deployment created a second installation or service.
-- [ ] Existing `pro5` continues untouched; its next normal run will load the
+- [x] Local, origin, home, and M3 resolve to the same tested commit.
+- [x] Deployed focused proof passes.
+- [x] No deployment created a second installation or service.
+- [x] Existing `pro5` continues untouched; its next normal run will load the
   fix.
 
 ### Rollback
@@ -449,3 +449,15 @@ No new operator command is introduced.
 - **Decision:** Freeze Sections 0, 5, 6, 7, and 8 before production edits.
 - **Consequence:** Testing and deployment may prove only this behavior; they
   cannot add adjacent cleanup, abstractions, or product changes.
+
+## 2026-07-24 - Accept the exact-commit deployment
+
+- **Context:** Commit `6214f0028626db6914ab1df8acb95a49b0f062b9`
+  passed 346/346 locally, a clean independent audit, and the 16-case focused
+  test on both deployment hosts.
+- **Decision:** Accept deployment after canonical wrappers were refreshed on
+  local, `home`, and `amirs-m3-max-new`; the M3 LaunchAgent completed its first
+  reloaded pass with exit 0.
+- **Consequence:** Future managed Claude runs publish each real rotation within
+  30 seconds. The pre-existing `pro5` process stayed on PID 2896533 and will
+  load the fix only after its next normal restart.

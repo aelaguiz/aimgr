@@ -64,3 +64,33 @@ Plan:
   and not overbuilt.
 - Phase 1 is complete. Phase 2 is active.
 - Self-check: on track; on scope; no drift detected.
+
+## Phase 2 publication and deployment
+
+- Recorded at: 2026-07-24T17:06:01Z.
+- Implementation commit:
+  `6214f0028626db6914ab1df8acb95a49b0f062b9`.
+- Fast-forwarded local `main` and `origin/main` to the implementation commit.
+- Refreshed the canonical local `~/.local/bin/aim` wrapper.
+- `home`:
+  - fast-forwarded its existing `main` checkout from `32ad1d9` to `6214f00`;
+  - preserved its unrelated untracked bug document;
+  - refreshed the canonical `/home/aelaguiz/.local/bin/aim` wrapper;
+  - focused managed-run test file passed 16/16;
+  - the active `pro5` process remained the exact same PID, 2896533, before and
+    after deployment.
+- `amirs-m3-max-new`:
+  - safely unloaded the one-shot auth-maintainer LaunchAgent before checkout
+    mutation, then restored exactly that one job;
+  - fast-forwarded its clean `main` checkout from `f01bf8d` to `6214f00`;
+  - refreshed the canonical `/Users/aelaguiz/.local/bin/aim` wrapper;
+  - focused managed-run test file passed 16/16;
+  - the restored LaunchAgent ran once and settled `not running`, with
+    `runs=1`, `last exit code=0`, and
+    `refreshed=0 unchanged=0 reauth_required=0 failed=0 skipped=38`;
+  - no second service or resident maintainer process exists.
+- Final pre-closeout verification placed local, origin, home, and M3 on the
+  same implementation commit.
+- Self-check: on track; on scope; no drift detected. Deployment changed only
+  the canonical AIM checkouts/wrappers and the pre-existing single M3
+  LaunchAgent lifecycle; it did not touch the active Claude session.
