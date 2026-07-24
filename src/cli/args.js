@@ -1,14 +1,16 @@
+export const CLAUDE_OPUS_RUN_PRESET_ARGS = Object.freeze([
+  "--dangerously-skip-permissions",
+  "--model",
+  "opus",
+  "--effort",
+  "max",
+]);
+
 function expandClaudeRunPreset(argv) {
   if (argv[0] !== "claude" || argv[1] !== "run" || !argv[2]) return argv;
   let presetArgs;
   if (argv[3] === "opus") {
-    presetArgs = [
-      "--dangerously-skip-permissions",
-      "--model",
-      "opus",
-      "--effort",
-      "max",
-    ];
+    presetArgs = CLAUDE_OPUS_RUN_PRESET_ARGS;
   } else if (argv[3] === "fable") {
     presetArgs = [
       "--dangerously-skip-permissions",

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { CLAUDE_OPUS_RUN_PRESET_ARGS } from "../args.js";
 import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, ANTHROPIC_PROVIDER } from "../../core/constants.js";
 import {
   DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
@@ -61,6 +62,11 @@ import {
   projectClaudeNativeBundleToManagedConfig,
 } from "../../targets/claude-cli.js";
 import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
+import {
+  listRecentManagedClaudeSessions,
+  renderRecentManagedClaudeSessions,
+  resolveManagedClaudeSession,
+} from "../../targets/claude-sessions.js";
 import {
   collectClaudeRedisAccountInventory,
   collectClaudeRedisAccountUsageStatus,
@@ -672,7 +678,10 @@ async function handleRedisClaudeImportNative(context, { label, inFile }) {
   }
 }
 
-async function handleRedisClaudeRun(context, { maintenance = false } = {}) {
+async function handleRedisClaudeRun(context, {
+  maintenance = false,
+  launchCwd = process.cwd(),
+} = {}) {
   const {
     opts,
     positional,
@@ -689,7 +698,6 @@ async function handleRedisClaudeRun(context, { maintenance = false } = {}) {
   const label = normalizeLabel(positional[2]);
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label });
   const configDir = resolveManagedClaudeDir({ homeDir: claudeHome });
-  const launchCwd = process.cwd();
   const runtime = await loadRedisRuntime({
     homeDir,
     connectRedisStoreImpl,
@@ -1088,8 +1096,56 @@ export async function handleClaude(context) {
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
     throw new Error(
-      "Missing claude subcommand. Usage: aim claude inventory [--json] | aim claude status [account...] [--fresh] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
+      "Missing claude subcommand. Usage: aim claude list [--json] | aim claude resume <row-or-thread-id> | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
     );
+  }
+  if (subcmd === "list") {
+    if (positional.length > 2) {
+      throw new Error("`aim claude list` does not accept positional arguments.");
+    }
+    const sessions = listRecentManagedClaudeSessions({ homeDir });
+    if (opts.json) {
+      stdout.write(`${JSON.stringify({
+        sessions: sessions.map((session) => ({
+          rank: session.rank,
+          lastUsedAt: session.lastUsedAt,
+          account: session.account,
+          threadName: session.threadName,
+          threadId: session.threadId,
+          cwd: session.cwd,
+        })),
+      }, null, 2)}\n`);
+    } else {
+      stdout.write(renderRecentManagedClaudeSessions(sessions, { homeDir, nowMs }));
+    }
+    return;
+  }
+  if (subcmd === "resume") {
+    if (positional.length !== 3) {
+      throw new Error("Usage: aim claude resume <row-or-thread-id>");
+    }
+    const session = resolveManagedClaudeSession({
+      homeDir,
+      selector: positional[2],
+    });
+    if (!isRedisConfigured({ homeDir })) {
+      throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+    }
+    await handleRedisClaudeRun({
+      ...context,
+      positional: ["claude", "run", session.account],
+      opts: {
+        ...opts,
+        afterDoubleDash: [
+          ...CLAUDE_OPUS_RUN_PRESET_ARGS,
+          "--resume",
+          session.threadId,
+        ],
+      },
+    }, {
+      launchCwd: session.cwd,
+    });
+    return;
   }
   if (subcmd === "run") {
     if (positional.length > 3) {
@@ -1274,7 +1330,7 @@ export async function handleClaude(context) {
     }
   }
   if (subcmd !== "use") {
-    throw new Error(`Unsupported claude subcommand: ${subcmd} (supported: inventory, status, usage, run, use, capture-native, export-live, import-native).`);
+    throw new Error(`Unsupported claude subcommand: ${subcmd} (supported: list, resume, inventory, status, usage, run, use, capture-native, export-live, import-native).`);
   }
   if (isRedisConfigured({ homeDir })) {
     throw new Error("`aim claude use` was retired for Redis installs. Use `aim claude run <label> [-- <claude args...>]`.");

@@ -483,6 +483,122 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
+test("claude resume reuses the selected managed account, working directory, and Opus preset", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const threadId = "11111111-1111-4111-8111-111111111111";
+  const launchCwd = path.join(home, "workspace", "selected-project");
+  fs.mkdirSync(launchCwd, { recursive: true });
+  const sessionPath = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "claude",
+    ".claude",
+    "projects",
+    "selected-project",
+    `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+  fs.writeFileSync(sessionPath, `${JSON.stringify({
+    type: "user",
+    sessionId: threadId,
+    cwd: launchCwd,
+    timestamp: "2026-07-24T17:00:00.000Z",
+  })}\n`, "utf8");
+
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "claude",
+      credential: buildAnthropicClaudeCredential(),
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: {
+        expect: { email: "boss@example.com" },
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    }],
+  });
+
+  const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" });
+  const configDir = path.join(claudeHome, ".claude");
+  const out = await runCli(["claude", "resume", "1", "--home", home], {
+    env: { HOME: home },
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: ({
+      userHomeDir,
+      homeDir: actualClaudeHome,
+      configDir: actualConfigDir,
+      cwd,
+      args,
+    }) => {
+      assert.equal(userHomeDir, home);
+      assert.equal(actualClaudeHome, claudeHome);
+      assert.equal(actualConfigDir, configDir);
+      assert.equal(cwd, launchCwd);
+      assert.deepEqual(args, [
+        "--dangerously-skip-permissions",
+        "--model",
+        "opus",
+        "--effort",
+        "max",
+        "--resume",
+        threadId,
+      ]);
+      return { status: 0, signal: null };
+    },
+  });
+
+  assert.equal(out, "");
+  assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
+});
+
+test("claude resume rejects a missing recorded directory before connecting to Redis", async () => {
+  const home = mkTempHome();
+  const threadId = "22222222-2222-4222-8222-222222222222";
+  const sessionPath = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "claude",
+    ".claude",
+    "projects",
+    "missing-project",
+    `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+  fs.writeFileSync(sessionPath, `${JSON.stringify({
+    type: "user",
+    sessionId: threadId,
+    cwd: path.join(home, "workspace", "missing-project"),
+    timestamp: "2026-07-24T17:00:00.000Z",
+  })}\n`, "utf8");
+
+  let redisCalls = 0;
+  await assert.rejects(
+    runCli(["claude", "resume", threadId, "--home", home], {
+      env: { HOME: home },
+      connectRedisStoreImpl: () => {
+        redisCalls += 1;
+        throw new Error("Redis must not be contacted");
+      },
+    }),
+    /working directory is unavailable/,
+  );
+  assert.equal(redisCalls, 0);
+});
+
 test("redis-configured claude run publishes each token rotation before exit without duplicating same-lineage ticks", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
