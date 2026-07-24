@@ -15,7 +15,7 @@ import {
   resolvePiAuthFilePath,
 } from "../../src/io/paths.js";
 import { writeClaudeNativeBundleExportFile } from "../../src/credentials/claude-native.js";
-import { maintainRedisClaudeCredential } from "../../src/cli/commands/claude.js";
+import { handleClaude, maintainRedisClaudeCredential } from "../../src/cli/commands/claude.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
@@ -474,6 +474,129 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.match(local.targets.claudeCli.credentialsPath, /claude-homes\/claude\/\.claude\/\.credentials\.json$/);
   assert.doesNotMatch(JSON.stringify(local), /CLAUDE_REFRESH_ROTATED/);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
+});
+
+test("redis-configured claude run publishes each token rotation before exit without duplicating same-lineage ticks", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "claude",
+      credential: buildAnthropicClaudeCredential({
+        access: "CLAUDE_ACCESS",
+        refresh: "CLAUDE_REFRESH",
+      }),
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: {
+        expect: { email: "boss@example.com" },
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    }],
+  });
+
+  const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" });
+  const configDir = path.join(claudeHome, ".claude");
+  const timers = [];
+  const clearedTimers = [];
+  let resolveLaunch;
+  let markLaunchStarted;
+  let launchResolved = false;
+  const launchStarted = new Promise((resolve) => {
+    markLaunchStarted = resolve;
+  });
+  const launchResult = new Promise((resolve) => {
+    resolveLaunch = () => {
+      launchResolved = true;
+      resolve({ status: 0, signal: null });
+    };
+  });
+
+  const command = handleClaude({
+    opts: { afterDoubleDash: ["--model", "opus"] },
+    positional: ["claude", "run", "claude"],
+    homeDir: home,
+    env: {},
+    stdout: { write() {} },
+    setExitCode: () => {
+      throw new Error("the successful run must not set an exit code");
+    },
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    nowMs: Date.now(),
+    setTimeoutImpl: (callback, delay) => {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutImpl: (timer) => {
+      clearedTimers.push(timer);
+    },
+    runClaudeCliImpl: ({ args }) => {
+      assert.deepEqual(args, ["--model", "opus"]);
+      markLaunchStarted();
+      return launchResult;
+    },
+  });
+
+  await launchStarted;
+  assert.equal(launchResolved, false);
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 30_000);
+  assert.equal((await readSnapshot(store)).credentials[0].version, 1);
+
+  rotateProjectedClaudeCredential(configDir, {
+    accessToken: "CLAUDE_ACCESS_ROTATED",
+    refreshToken: "CLAUDE_REFRESH_ROTATED",
+  });
+  await timers.shift().callback();
+  const rotated = await readSnapshot(store);
+  assert.equal(launchResolved, false);
+  assert.equal(rotated.credentials[0].version, 2);
+  assert.equal(rotated.credentials[0].credential.refresh, "CLAUDE_REFRESH_ROTATED");
+
+  rotateProjectedClaudeCredential(configDir, {
+    accessToken: "CLAUDE_ACCESS_ROTATED",
+    refreshToken: "CLAUDE_REFRESH_ROTATED",
+    expiresAt: Date.now() + 10_800_000,
+  });
+  assert.equal(timers.length, 1);
+  await timers.shift().callback();
+  assert.equal((await readSnapshot(store)).credentials[0].version, 2);
+
+  rotateProjectedClaudeCredential(configDir, {
+    accessToken: "CLAUDE_ACCESS_ROTATED_AGAIN",
+    refreshToken: "CLAUDE_REFRESH_ROTATED_AGAIN",
+    expiresAt: Date.now() + 14_400_000,
+  });
+  assert.equal(timers.length, 1);
+  await timers.shift().callback();
+  const rotatedAgain = await readSnapshot(store);
+  assert.equal(rotatedAgain.credentials[0].version, 3);
+  assert.equal(rotatedAgain.credentials[0].credential.refresh, "CLAUDE_REFRESH_ROTATED_AGAIN");
+
+  assert.equal(timers.length, 1);
+  await timers.shift().callback();
+  assert.equal((await readSnapshot(store)).credentials[0].version, 3);
+
+  resolveLaunch();
+  await command;
+  assert.equal(
+    [...client.values.keys()].some((key) => key.includes(":fence:claude-rotation:claude")),
+    false,
+  );
+  assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
+  assert.equal(clearedTimers.length, 1);
 });
 
 test("Claude maintenance uses the exact bounded no-model run and returns a result without changing interactive behavior", async () => {

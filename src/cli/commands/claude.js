@@ -70,6 +70,7 @@ import {
 
 const CLAUDE_LEASE_RENEW_INTERVAL_MS = Math.floor(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS / 3);
 const CLAUDE_LEASE_RENEW_DEADLINE_MS = 5_000;
+const CLAUDE_ACTIVE_ROTATION_SYNC_INTERVAL_MS = 30_000;
 const SAFE_PRE_RUN_STORAGE_REASONS = new Set(["native_storage_empty", "tokens_unchanged", "stale_candidate"]);
 const CLAUDE_RECOVERY_STORAGE_CONTRACT = CLAUDE_MANAGED_FILE_STORAGE_MODE;
 const CLAUDE_MAINTENANCE_TIMEOUT_MS = 30_000;
@@ -333,6 +334,88 @@ async function publishRotationIfNeeded({ runtime, result, label, observedAt, fen
     lineageMode: "native-claude-rotation",
     rotationFence: fence,
   });
+}
+
+function startClaudeActiveRotationPublisher({
+  runtime,
+  label,
+  descriptor,
+  fence,
+  guard,
+  setTimeoutImpl,
+  clearTimeoutImpl,
+}) {
+  let stopped = false;
+  let failed = false;
+  let timer = null;
+  let inFlight = null;
+
+  const schedule = () => {
+    if (stopped || failed) return;
+    timer = setTimeoutImpl(() => {
+      timer = null;
+      inFlight = (async () => {
+        try {
+          await assertClaudeCredentialLeaseOwned({
+            ...guard,
+            phase: "before active-run rotation reconciliation",
+          });
+          const nowMs = Date.now();
+          const result = await syncLiveClaudeRotationBackToLabelFromStorage({
+            state: runtime.state,
+            descriptor,
+            nowMs,
+          });
+          if (result.synced !== true) return;
+          if (result.label !== label) {
+            throw new Error("Claude managed-storage rotation resolved to an unexpected account label.");
+          }
+          const currentFingerprint = buildClaudeTokenLineageFingerprint(
+            currentRedisClaudeRecord(runtime, label)?.credential,
+          );
+          const candidateFingerprint = buildClaudeTokenLineageFingerprint(
+            runtime.state?.credentials?.[ANTHROPIC_PROVIDER]?.[label],
+          );
+          if (candidateFingerprint && candidateFingerprint === currentFingerprint) return;
+          await assertClaudeCredentialLeaseOwned({
+            ...guard,
+            phase: "before active-run rotation publication",
+          });
+          const record = await publishRotationIfNeeded({
+            runtime,
+            result,
+            label,
+            observedAt: new Date(nowMs).toISOString(),
+            fence,
+          });
+          assertRedisClaudeFenceSuccessor({ record, fence });
+        } catch {
+          failed = true;
+          guard.abortController.abort();
+        }
+      })().finally(() => {
+        inFlight = null;
+        schedule();
+      });
+      return inFlight;
+    }, CLAUDE_ACTIVE_ROTATION_SYNC_INTERVAL_MS);
+    timer.unref?.();
+  };
+
+  schedule();
+  return {
+    get failed() {
+      return failed;
+    },
+    async stop() {
+      stopped = true;
+      if (timer) {
+        clearTimeoutImpl(timer);
+        timer = null;
+      }
+      if (inFlight) await inFlight;
+    },
+  };
 }
 
 async function recoverSharedClaudeRotationFence({
@@ -621,6 +704,8 @@ async function handleRedisClaudeRun(context, { maintenance = false } = {}) {
   let runFenceCreated = false;
   let maintenanceTimer = null;
   let maintenanceTimedOut = false;
+  let activeRotationPublisher = null;
+  let activeRotationPublicationFailed = false;
   try {
     guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
     // A prior lease owner may have rotated this label between our initial read
@@ -755,6 +840,17 @@ async function handleRedisClaudeRun(context, { maintenance = false } = {}) {
     runFenceCreated = true;
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "after creating the shared rotation fence" });
 
+    if (!maintenance) {
+      activeRotationPublisher = startClaudeActiveRotationPublisher({
+        runtime,
+        label,
+        descriptor,
+        fence: runFence,
+        guard,
+        setTimeoutImpl: setMaintenanceTimer,
+        clearTimeoutImpl: clearMaintenanceTimer,
+      });
+    }
     let launched = null;
     let launchError = null;
     try {
@@ -784,6 +880,11 @@ async function handleRedisClaudeRun(context, { maintenance = false } = {}) {
         maintenanceTimer = null;
       }
     }
+    if (activeRotationPublisher) {
+      await activeRotationPublisher.stop();
+      activeRotationPublicationFailed = activeRotationPublisher.failed;
+      activeRotationPublisher = null;
+    }
 
     const safeLaunch = {
       status: Number.isInteger(launched?.status)
@@ -801,7 +902,7 @@ async function handleRedisClaudeRun(context, { maintenance = false } = {}) {
       nowMs: Date.now(),
     });
     let postRunRecord = null;
-    let continuityFailed = guard.heartbeat.lost;
+    let continuityFailed = guard.heartbeat.lost || activeRotationPublicationFailed;
     if (!continuityFailed) {
       try {
         await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before post-run rotation publication" });
@@ -905,6 +1006,13 @@ async function handleRedisClaudeRun(context, { maintenance = false } = {}) {
     }
   } finally {
     if (maintenanceTimer) clearMaintenanceTimer(maintenanceTimer);
+    if (activeRotationPublisher) {
+      try {
+        await activeRotationPublisher.stop();
+      } catch {
+        cleanupError = new Error("Claude active-run rotation publisher shutdown failed.");
+      }
+    }
     try {
       await guard?.heartbeat.stop();
     } catch {
