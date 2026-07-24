@@ -238,6 +238,42 @@ export function pickNextBestPoolLabel({ rankedCandidates }) {
   return candidates[0] ?? null;
 }
 
+export function pickLeastUsedCodexPoolLabel({ labels, usage, avoidLabel }) {
+  const avoided = typeof avoidLabel === "string" && avoidLabel.trim() ? normalizeLabel(avoidLabel) : null;
+  const candidates = [...new Set(
+    (Array.isArray(labels) ? labels : []).map((label) => normalizeLabel(label)),
+  )]
+    .filter((label) => label !== avoided)
+    .map((label) => {
+      const snapshot = usage?.[label] ?? null;
+      if (snapshot?.ok !== true || isUsageSnapshotExhausted(snapshot)) return null;
+      const capacity = buildLabelCapacityInfo(snapshot);
+      const windows = Array.isArray(snapshot?.windows) ? snapshot.windows : [];
+      return {
+        label,
+        primaryUsedPct: capacity.primaryUsedPct,
+        tieBreakUsedPct: windows.length > 1 ? capacity.secondaryUsedPct : capacity.primaryUsedPct,
+      };
+    })
+    .filter(Boolean)
+    .filter((candidate) => (
+      Number.isFinite(candidate.primaryUsedPct)
+      && Number.isFinite(candidate.tieBreakUsedPct)
+    ))
+    .sort((a, b) => {
+      if (a.primaryUsedPct !== b.primaryUsedPct) return a.primaryUsedPct - b.primaryUsedPct;
+      if (a.tieBreakUsedPct !== b.tieBreakUsedPct) return a.tieBreakUsedPct - b.tieBreakUsedPct;
+      return a.label.localeCompare(b.label);
+    });
+  const best = candidates[0] ?? null;
+  if (!best) return null;
+  return {
+    label: best.label,
+    keptCurrent: false,
+    reasons: ["lowest_5h_used"],
+  };
+}
+
 export function pickNextBestLocalCliPoolLabel({
   rankedCandidates,
   minPrimaryRemainingPct = LOCAL_CLI_MIN_PRIMARY_REMAINING_PCT,

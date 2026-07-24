@@ -42,7 +42,18 @@ function codexCredential(accountId = "acct_boss", refresh = "REFRESH_BOSS") {
   };
 }
 
-async function seedOpenAiRedis({ home, client }) {
+function codexRecord(label, accountId) {
+  return {
+    provider: "openai-codex",
+    label,
+    credential: codexCredential(accountId, `REFRESH_${label.toUpperCase()}`),
+    identity: { accountId },
+    policy: { pool: { enabled: true } },
+    health: { status: "ready", reason: null },
+  };
+}
+
+async function seedOpenAiRedis({ home, client, records = [codexRecord("boss", "acct_boss")] }) {
   writeAimgrConfig({
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
@@ -51,16 +62,7 @@ async function seedOpenAiRedis({ home, client }) {
   await importCredentialsSnapshot(
     store,
     {
-      credentials: [
-        {
-          provider: "openai-codex",
-          label: "boss",
-          credential: codexCredential(),
-          identity: { accountId: "acct_boss" },
-          policy: { pool: { enabled: true } },
-          health: { status: "ready", reason: null },
-        },
-      ],
+      credentials: records,
     },
     { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
@@ -115,6 +117,41 @@ test("redis-configured codex use projects from Redis and writes only local adjun
   const local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
   assert.equal(local.targets.codexCli.activeLabel, "boss");
   assert.doesNotMatch(JSON.stringify(local), /REFRESH_BOSS/);
+});
+
+test("redis-configured automatic codex use selects the lowest current 5h usage", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  await seedOpenAiRedis({
+    home,
+    client,
+    records: [
+      codexRecord("qa", "acct_qa"),
+      codexRecord("pro2", "acct_pro2"),
+    ],
+  });
+
+  const out = await runCli(["codex", "use", "--home", home], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    probeUsageSnapshotsByProviderImpl: async () => ({
+      "openai-codex": {
+        qa: {
+          ok: true,
+          windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 92 }],
+        },
+        pro2: {
+          ok: true,
+          windows: [{ kind: "primary", usedPercent: 2 }, { kind: "secondary", usedPercent: 1 }],
+        },
+      },
+    }),
+  });
+
+  const result = JSON.parse(out);
+  assert.equal(result.ok, true);
+  assert.equal(result.activated.receipt.label, "qa");
+  assert.deepEqual(result.activated.receipt.reasons, ["lowest_5h_used"]);
 });
 
 test("redis-configured codex use does not publish stale local auth before projection", async () => {

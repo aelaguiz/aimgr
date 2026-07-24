@@ -25,6 +25,7 @@ async function handleRedisCodexUse(context) {
           homeDir,
           env,
           probeUsageSnapshotsByProviderImpl,
+          selectLeastUsed: true,
         });
     writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
     stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", preserved, activated }), null, 2)}\n`);
@@ -241,7 +242,13 @@ export async function handleCodex(context) {
   const explicitLabel = String(positional[2] ?? "").trim() ? normalizeLabel(positional[2]) : null;
   const activated = explicitLabel
     ? activateCodexLabelSelection({ state, homeDir, env, label: explicitLabel })
-    : await activateCodexPoolSelectionImpl({ state, homeDir, env, probeUsageSnapshotsByProviderImpl });
+    : await activateCodexPoolSelectionImpl({
+        state,
+        homeDir,
+        env,
+        probeUsageSnapshotsByProviderImpl,
+        selectLeastUsed: true,
+      });
   writeJsonFileWithBackup(statePath, state);
   stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);
   if (activated.status === "blocked") {

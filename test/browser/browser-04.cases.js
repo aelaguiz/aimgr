@@ -175,7 +175,7 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     assert.equal(result.ok, true);
     assert.equal(result.activated.status, "activated");
     assert.equal(result.activated.receipt.label, "lessons");
-    assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
+    assert.deepEqual(result.activated.receipt.reasons, ["lowest_5h_used"]);
 
     const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
     assert.equal(auth.tokens.account_id, "acct_lessons");

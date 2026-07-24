@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { projectPoolCapacity } from "../../src/pool/capacity.js";
 import { isUsageSnapshotHardRateLimited } from "../../src/pool/account-status.js";
-import { pickNextBestLocalCliPoolLabel, pickNextBestPoolLabel, rankPoolCandidates } from "../../src/pool/ranking.js";
+import { pickLeastUsedCodexPoolLabel, pickNextBestLocalCliPoolLabel, pickNextBestPoolLabel, rankPoolCandidates } from "../../src/pool/ranking.js";
 import { fetchCodexUsageSnapshot } from "../../src/pool/usage.js";
 
 test("rankPoolCandidates keeps current label when it stays within the weighted hysteresis threshold", () => {
@@ -46,6 +46,26 @@ test("rankPoolCandidates favors weekly weighted headroom over the lowest 5h-used
 
   assert.equal(ranked[0].label, "pro2");
   assert.equal(ranked[1].label, "qa");
+});
+
+test("pickLeastUsedCodexPoolLabel chooses lowest 5h usage before weekly usage", () => {
+  const picked = pickLeastUsedCodexPoolLabel({
+    labels: ["qa", "pro2"],
+    usage: {
+      qa: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 92 }],
+      },
+      pro2: {
+        ok: true,
+        windows: [{ kind: "primary", usedPercent: 2 }, { kind: "secondary", usedPercent: 1 }],
+      },
+    },
+  });
+
+  assert.equal(picked.label, "qa");
+  assert.equal(picked.keptCurrent, false);
+  assert.deepEqual(picked.reasons, ["lowest_5h_used"]);
 });
 
 test("pickNextBestLocalCliPoolLabel picks the lowest weekly-used label over the 5h-free gate", () => {

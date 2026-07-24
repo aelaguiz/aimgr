@@ -215,6 +215,51 @@ test("Redis Claude status skips candidates, disables web fallback, and reuses th
   assert.match(renderClaudeRedisAccountUsageStatus(first), /ready/);
 });
 
+test("Claude usage status renders one fleet average across every readable window column", () => {
+  const rendered = renderClaudeRedisAccountUsageStatus({
+    checkedAtMs: NOW_MS,
+    accounts: [
+      {
+        label: "alpha",
+        subscriptionType: "max",
+        rateLimitTier: "max_20x",
+        authState: "usage_readable",
+        source: "live",
+        usage: {
+          ok: true,
+          windows: [
+            { label: "5h", kind: "session", usedPercent: 10, resetAt: NOW_MS + 1 * 60 * 60_000 },
+            { label: "Week", kind: "weekly_all", usedPercent: 20, resetAt: NOW_MS + 2 * 24 * 60 * 60_000 },
+            { label: "Fable", kind: "weekly_scoped", usedPercent: 40, resetAt: NOW_MS + 4 * 24 * 60 * 60_000 },
+            { label: "Context", kind: "weekly_scoped", usedPercent: 60, resetAt: NOW_MS + 6 * 24 * 60 * 60_000 },
+          ],
+        },
+      },
+      {
+        label: "beta",
+        subscriptionType: "max",
+        rateLimitTier: "max_20x",
+        authState: "usage_readable",
+        source: "cache",
+        usage: {
+          ok: true,
+          windows: [
+            { label: "5h", kind: "session", usedPercent: 30, resetAt: NOW_MS + 3 * 60 * 60_000 },
+            { label: "Fable", kind: "weekly_scoped", usedPercent: 80, resetAt: NOW_MS + 6 * 24 * 60 * 60_000 },
+            { label: "Opus", kind: "weekly_scoped", usedPercent: 50 },
+          ],
+        },
+      },
+    ],
+  });
+
+  assert.match(
+    rendered,
+    /average\s+--\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+--\s+60%\s+6\.0d\s+all/,
+  );
+  assert.equal(rendered.match(/^average\s/gm)?.length, 1);
+});
+
 test("failed refresh keeps one-hour stale usage and caches provider backoff without re-aging it", async () => {
   const { homeDir, connectRedisStoreImpl } = await setup([anthropicRecord("ready")]);
   let calls = 0;

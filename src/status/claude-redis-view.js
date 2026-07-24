@@ -16,7 +16,11 @@ import {
 } from "../credentials/claude-bundle.js";
 import { resolveAimgrRedisCachePath } from "../io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../pool/usage.js";
-import { formatStatusTable } from "./table.js";
+import {
+  averageStatusNumbers,
+  formatStatusDeltaMsCell,
+  formatStatusTable,
+} from "./table.js";
 import {
   acquireRedisCacheLock,
   readCachedProviderUsage,
@@ -944,24 +948,39 @@ function usageColumns(accounts, nowMs) {
       .filter((window) => window.kind === "weekly_scoped" && !fixed.has(window.label.toLowerCase()))
       .map((window) => window.label)),
   )].sort((left, right) => left.localeCompare(right));
-  const headers = ["5h", "5h_in", "week", "wk_in", "Fable", "Fb_in", "Opus", "Op_in", ...extra.flatMap((label) => [label, `${label}_in`])];
+  const windows = [
+    { headers: ["5h", "5h_in"], labels: ["5h", "Session"] },
+    { headers: ["week", "wk_in"], labels: ["Week", "Weekly"] },
+    { headers: ["Fable", "Fb_in"], labels: ["Fable", "Sonnet"] },
+    { headers: ["Opus", "Op_in"], labels: ["Opus"] },
+    ...extra.map((label) => ({
+      headers: [label, `${label}_in`],
+      labels: [label],
+    })),
+  ];
+  const headers = windows.flatMap((window) => window.headers);
   const values = (entry) => {
-    const session = findWindow(entry.usage, ["5h", "Session"]);
-    const week = findWindow(entry.usage, ["Week", "Weekly"]);
-    const fable = findWindow(entry.usage, ["Fable", "Sonnet"]);
-    const opus = findWindow(entry.usage, ["Opus"]);
-    return [
-      formatPercent(session), formatReset(session, nowMs),
-      formatPercent(week), formatReset(week, nowMs),
-      formatPercent(fable), formatReset(fable, nowMs),
-      formatPercent(opus), formatReset(opus, nowMs),
-      ...extra.flatMap((label) => {
-        const window = findWindow(entry.usage, [label]);
-        return [formatPercent(window), formatReset(window, nowMs)];
-      }),
-    ];
+    return windows.flatMap(({ labels }) => {
+      const window = findWindow(entry.usage, labels);
+      return [formatPercent(window), formatReset(window, nowMs)];
+    });
   };
-  return { headers, values };
+  const averageValues = () => windows.flatMap(({ labels }) => {
+    const matched = accounts.map((entry) => findWindow(entry.usage, labels));
+    const usedPercent = averageStatusNumbers(matched.map((window) => {
+      const value = Number(window?.usedPercent);
+      return Number.isFinite(value) ? value : null;
+    }));
+    const resetDeltaMs = averageStatusNumbers(matched.map((window) => {
+      const resetAt = Number(window?.resetAt);
+      return Number.isFinite(resetAt) ? resetAt - nowMs : null;
+    }));
+    return [
+      Number.isFinite(usedPercent) ? `${Math.round(usedPercent)}%` : "--",
+      formatStatusDeltaMsCell(resetDeltaMs),
+    ];
+  });
+  return { headers, values, averageValues };
 }
 
 export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics = true } = {}) {
@@ -976,6 +995,15 @@ export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics
       account.authState,
       ...columns.values(account),
       account.source,
+    ]);
+  }
+  if (accounts.length > 0) {
+    rows.push([
+      "average",
+      "--",
+      "--",
+      ...columns.averageValues(),
+      "all",
     ]);
   }
   const lines = [

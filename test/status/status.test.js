@@ -109,6 +109,7 @@ test("plain status text contains only Codex accounts, Claude usage, and active l
   assert.match(text, /\nCLAUDE ACCOUNT USAGE \(1\)\n/);
   assert.match(text, /boss\s+ready\s+manual-callback\s+8d\s+12%\s+2\.0h\s+34%\s+5\.0d\s+openai-codex/);
   assert.match(text, /pro7\s+max\/max_20x\s+usage_readable\s+23%\s+3\.0h\s+45%\s+6\.0d\s+67%\s+6\.0d/);
+  assert.match(text, /average\s+--\s+--\s+23%\s+3\.0h\s+45%\s+6\.0d\s+67%\s+6\.0d\s+--\s+--\s+all/);
   assert.match(
     text,
     /\nCODEX ACTIVE\nlabel=boss  5h_used=12%  5h_in=2\.0h  wk_used=34%  wk_in=5\.0d\n\nCLAUDE ACTIVE\nlabel=pro7\n$/,

@@ -13,7 +13,7 @@ import { decodeJwtPayload } from "../credentials/jwt.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
 import { resolveCodexAuthFilePath, resolveCodexConfigPath, resolveManagedCodexHomeDir } from "../io/paths.js";
 import { appendOpenaiCodexHistory, collectCodexPoolStatusWithExhaustionHistory, recordOpenaiCodexBlockedSelectionHistory } from "../pool/history.js";
-import { getCodexPoolLabels, pickNextBestLocalCliPoolLabel, rankPoolCandidates } from "../pool/ranking.js";
+import { getCodexPoolLabels, pickLeastUsedCodexPoolLabel, pickNextBestLocalCliPoolLabel, rankPoolCandidates } from "../pool/ranking.js";
 import { probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { discoverStatusConfiguredOpenclawCodexAgents, getCodexTargetState, getImportedCodexLabels, getOpenclawAssignments, getOpenclawTargetState, hasImportedCodexReplica } from "../state/accounts.js";
 import { markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
@@ -470,6 +470,7 @@ export async function activateCodexPoolSelection({
   usageByProvider: usageByProviderOverride,
   probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
   avoidCurrentLabel = false,
+  selectLeastUsed = false,
 }) {
   ensureStateShape(state);
   // Structural target validation comes first: if this machine's Codex home is not
@@ -537,22 +538,31 @@ export async function activateCodexPoolSelection({
     return { status: "blocked", receipt, wrote: false };
   }
 
-  const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
-  const currentAssignments = getOpenclawAssignments(state);
-  const rankedCandidates = rankPoolCandidates({
-    labels: selectionEligibleLabels,
-    usage: usageByLabel,
-    currentLabel,
-    currentAssignments,
-    configuredAgents: configuredCodexAgents,
-    agentDemand: state.pool.openaiCodex.agentDemand,
-    lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
-    now: Date.parse(observedAt),
-  });
-  const selection = pickNextBestLocalCliPoolLabel({
-    rankedCandidates,
-    avoidLabel: avoidCurrentLabel ? currentLabel : null,
-  });
+  let selection;
+  if (selectLeastUsed) {
+    selection = pickLeastUsedCodexPoolLabel({
+      labels: selectionEligibleLabels,
+      usage: usageByLabel,
+      avoidLabel: avoidCurrentLabel ? currentLabel : null,
+    });
+  } else {
+    const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);
+    const currentAssignments = getOpenclawAssignments(state);
+    const rankedCandidates = rankPoolCandidates({
+      labels: selectionEligibleLabels,
+      usage: usageByLabel,
+      currentLabel,
+      currentAssignments,
+      configuredAgents: configuredCodexAgents,
+      agentDemand: state.pool.openaiCodex.agentDemand,
+      lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
+      now: Date.parse(observedAt),
+    });
+    selection = pickNextBestLocalCliPoolLabel({
+      rankedCandidates,
+      avoidLabel: avoidCurrentLabel ? currentLabel : null,
+    });
+  }
   if (!selection) {
     throw new Error("Failed to select a Codex pool label.");
   }

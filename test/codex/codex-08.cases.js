@@ -5,7 +5,7 @@ import path from "node:path";
 import { runCli } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 
-test("repeated codex use runs stay on the same label when headroom ties", async () => {
+test("repeated codex use runs stay deterministic when usage ties", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const pro1Jwt = makeFakeJwt({
@@ -108,7 +108,7 @@ test("repeated codex use runs stay on the same label when headroom ties", async 
     assert.deepEqual(labels, ["pro1", "pro1", "pro1", "pro1"]);
 });
 
-test("codex use activates the label with the most weekly headroom", async () => {
+test("codex use activates the label with the lowest 5h usage", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const pro1Jwt = makeFakeJwt({
@@ -232,12 +232,12 @@ test("codex use activates the label with the most weekly headroom", async () => 
     assert.equal(result.ok, true);
     assert.equal(result.activated.status, "activated");
     assert.equal(result.activated.receipt.label, "pro2");
-    assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
+    assert.deepEqual(result.activated.receipt.reasons, ["lowest_5h_used"]);
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(updatedState.targets.codexCli.activeLabel, "pro2");
     assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "pro2");
-    assert.deepEqual(updatedState.targets.codexCli.lastSelectionReceipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
+    assert.deepEqual(updatedState.targets.codexCli.lastSelectionReceipt.reasons, ["lowest_5h_used"]);
 });
 
 test("codex use skips expired labels and activates the next eligible pool account", async () => {
@@ -326,7 +326,7 @@ test("codex use skips expired labels and activates the next eligible pool accoun
     const result = JSON.parse(await runCli(["codex", "use", "--home", home], { fetchImpl }));
 
     const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used_over_5h_gate"]);
+    assert.deepEqual(result.activated.receipt.reasons, ["lowest_5h_used"]);
     assert.equal(updatedState.targets.codexCli.activeLabel, "qa");
     assert.equal(updatedState.targets.codexCli.lastSelectionReceipt.label, "qa");
     assert.deepEqual(updatedState.pool.openaiCodex.history.at(-1), {
