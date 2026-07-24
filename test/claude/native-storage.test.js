@@ -735,7 +735,7 @@ test("sandbox qualification rejects a valid non-Apple designated requirement", (
   );
 });
 
-test("targeted boundary exposes only the selected credential and shim to parent and child", {
+test("targeted boundary isolates Claude profiles without hiding ordinary user services", {
   skip: process.platform !== "darwin",
 }, () => {
   const home = mkTempHome();
@@ -746,8 +746,15 @@ test("targeted boundary exposes only the selected credential and shim to parent 
   const otherCredential = path.join(aimgrRoot, "claude-homes", "beta", ".claude", ".credentials.json");
   const globalCredential = path.join(home, ".claude", ".credentials.json");
   const keychainDecoy = path.join(home, "Library", "Keychains", "login.keychain-db");
+  const userToolConfig = path.join(home, ".config", "gh", "hosts.yml");
   const probePath = path.join(selectedHome, "boundary-probe.cjs");
-  for (const filePath of [selectedCredential, otherCredential, globalCredential, keychainDecoy]) {
+  for (const filePath of [
+    selectedCredential,
+    otherCredential,
+    globalCredential,
+    keychainDecoy,
+    userToolConfig,
+  ]) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, "synthetic");
     fs.chmodSync(filePath, 0o600);
@@ -775,6 +782,7 @@ function check() {
     globalReadable: readable("PROBE_GLOBAL"),
     keychainReadable: readable("PROBE_KEYCHAIN"),
     realSecurityReadable: readable("PROBE_REAL_SECURITY"),
+    userToolReadable: readable("PROBE_USER_TOOL"),
   };
 }
 if (process.argv.includes("--child")) {
@@ -813,6 +821,7 @@ if (process.argv.includes("--child")) {
       PROBE_GLOBAL: globalCredential,
       PROBE_KEYCHAIN: keychainDecoy,
       PROBE_REAL_SECURITY: "/usr/bin/security",
+      PROBE_USER_TOOL: userToolConfig,
     },
   });
   assert.equal(result.status, 0, result.stderr);
@@ -825,13 +834,14 @@ if (process.argv.includes("--child")) {
       selectedReadable: true,
       otherReadable: false,
       globalReadable: false,
-      keychainReadable: false,
-      realSecurityReadable: false,
+      keychainReadable: true,
+      realSecurityReadable: true,
+      userToolReadable: true,
     });
   }
 });
 
-test("runner pins the selected config, shim PATH, cwd, sandbox, and exact Claude argv", async () => {
+test("runner preserves the user home while pinning Claude config and exact launch behavior", async () => {
   const home = mkTempHome();
   const preparedLaunch = buildPreparedLaunch(home);
   const calls = [];
@@ -848,6 +858,7 @@ test("runner pins the selected config, shim PATH, cwd, sandbox, and exact Claude
     cwd: home,
     args: ["--exact-argument"],
     env: {
+      HOME: home,
       PATH: "/custom/bin:/usr/bin:/bin",
       CLAUDE_CONFIG_DIR: "/wrong",
       CLAUDE_SECURESTORAGE_CONFIG_DIR: "/wrong",
@@ -864,7 +875,8 @@ test("runner pins the selected config, shim PATH, cwd, sandbox, and exact Claude
   assert.deepEqual(calls[0].args.slice(-2), [path.resolve(process.execPath), "--exact-argument"]);
   assert.deepEqual(calls[0].options.stdio, ["inherit", "inherit", "inherit", "ipc"]);
   assert.equal(calls[0].options.cwd, home);
-  assert.equal(calls[0].options.env.HOME, preparedLaunch.homeDir);
+  assert.equal(calls[0].options.env.HOME, preparedLaunch.userHomeDir);
+  assert.notEqual(calls[0].options.env.HOME, preparedLaunch.homeDir);
   assert.equal(calls[0].options.env.CLAUDE_CONFIG_DIR, preparedLaunch.configDir);
   assert.equal(calls[0].options.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, preparedLaunch.configDir);
   assert.equal(calls[0].options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
@@ -1024,7 +1036,7 @@ test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", as
   assert.equal(prepared.adapterDir, undefined);
 });
 
-test("Linux runner pins the selected config and directly supervises the exact Claude argv", async () => {
+test("Linux runner preserves the user home and directly supervises the exact Claude argv", async () => {
   const home = mkTempHome();
   const preparedLaunch = buildPreparedLaunch(home, {
     launchMode: "linux-direct",
@@ -1039,6 +1051,7 @@ test("Linux runner pins the selected config and directly supervises the exact Cl
     cwd: home,
     args: ["--version"],
     env: {
+      HOME: home,
       PATH: "/custom/bin:/usr/bin:/bin",
       CLAUDE_CONFIG_DIR: "/wrong",
       CLAUDE_CODE_OAUTH_TOKEN: "must-be-scrubbed",
@@ -1056,7 +1069,8 @@ test("Linux runner pins the selected config and directly supervises the exact Cl
   assert.match(calls[0].args[0], /src\/targets\/claude-supervisor\.js$/);
   assert.deepEqual(calls[0].args.slice(1), [preparedLaunch.command, "--version"]);
   assert.equal(calls[0].options.cwd, home);
-  assert.equal(calls[0].options.env.HOME, preparedLaunch.homeDir);
+  assert.equal(calls[0].options.env.HOME, preparedLaunch.userHomeDir);
+  assert.notEqual(calls[0].options.env.HOME, preparedLaunch.homeDir);
   assert.equal(calls[0].options.env.CLAUDE_CONFIG_DIR, preparedLaunch.configDir);
   assert.equal(calls[0].options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
   assert.equal(calls[0].options.env.LD_LIBRARY_PATH, undefined);

@@ -496,7 +496,9 @@ export async function prepareClaudeCliLaunch({
 function buildContainedLaunchEnvironment({ preparedLaunch, env }) {
   const launchEnv = { ...(env ?? {}) };
   for (const key of AUTH_ENV_KEYS) delete launchEnv[key];
-  launchEnv.HOME = preparedLaunch.homeDir;
+  // Claude's supported config roots isolate its profile. Keep the actual user
+  // home for descendant developer tools such as git, gh, Codex, and rustup.
+  launchEnv.HOME = preparedLaunch.userHomeDir;
   launchEnv.CLAUDE_CONFIG_DIR = preparedLaunch.configDir;
   launchEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR = preparedLaunch.configDir;
   const inheritedPath = String(env?.PATH ?? "/usr/bin:/bin");
