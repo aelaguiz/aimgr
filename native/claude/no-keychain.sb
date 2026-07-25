@@ -11,12 +11,25 @@
 ;; the whole process tree: ordinary descendants such as gh and Codex need them.
 
 ;; The caller's global Claude state is never part of a managed label. Personal
-;; skills and installed plugin packages are the read-only exceptions; all
-;; writes stay closed.
+;; skills and installed plugin packages are read-only exceptions. Exact
+;; user-configured hook/MCP roots are inserted at launch so trusted
+;; customizations retain their normal state without opening unrelated state.
 (deny file-write*
-    (subpath (string-append (param "USER_HOME") "/.claude"))
+    (require-all
+        (subpath (string-append (param "USER_HOME") "/.claude"))
+        (require-not
+            (require-any
+                (literal "/.aimgr-no-user-customizations")
+                ;; AIM_USER_CUSTOMIZATION_ACCESS_EXCEPTIONS
+            )))
     (literal (string-append (param "USER_HOME") "/.claude.json"))
-    (subpath (string-append (param "USER_HOME_ALIAS") "/.claude"))
+    (require-all
+        (subpath (string-append (param "USER_HOME_ALIAS") "/.claude"))
+        (require-not
+            (require-any
+                (literal "/.aimgr-no-user-customizations")
+                ;; AIM_USER_CUSTOMIZATION_ACCESS_EXCEPTIONS
+            )))
     (literal (string-append (param "USER_HOME_ALIAS") "/.claude.json")))
 (deny file-read* file-test-existence
     (require-all
@@ -24,14 +37,20 @@
         (require-not
             (require-any
                 (subpath (string-append (param "USER_HOME") "/.claude/skills"))
-                (subpath (string-append (param "USER_HOME") "/.claude/plugins/cache")))))
+                (subpath (string-append (param "USER_HOME") "/.claude/plugins/cache"))
+                (literal "/.aimgr-no-user-customizations")
+                ;; AIM_USER_CUSTOMIZATION_ACCESS_EXCEPTIONS
+            )))
     (literal (string-append (param "USER_HOME") "/.claude.json"))
     (require-all
         (subpath (string-append (param "USER_HOME_ALIAS") "/.claude"))
         (require-not
             (require-any
                 (subpath (string-append (param "USER_HOME_ALIAS") "/.claude/skills"))
-                (subpath (string-append (param "USER_HOME_ALIAS") "/.claude/plugins/cache")))))
+                (subpath (string-append (param "USER_HOME_ALIAS") "/.claude/plugins/cache"))
+                (literal "/.aimgr-no-user-customizations")
+                ;; AIM_USER_CUSTOMIZATION_ACCESS_EXCEPTIONS
+            )))
     (literal (string-append (param "USER_HOME_ALIAS") "/.claude.json")))
 
 ;; No AIM state except this label's home and the reviewed runtime helper is

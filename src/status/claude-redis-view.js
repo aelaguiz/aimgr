@@ -958,6 +958,55 @@ function findWindow(usage, labels) {
     : null;
 }
 
+function findFiveHourWindow(usage) {
+  return Array.isArray(usage?.windows)
+    ? usage.windows.find((entry) => (
+        entry?.kind === "session"
+        || String(entry?.label ?? "").toLowerCase() === "5h"
+      )) ?? null
+    : null;
+}
+
+export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
+  if (preset !== "fable" && preset !== "opus") {
+    throw new Error("Claude automatic selection requires the fable or opus preset.");
+  }
+  const candidates = (Array.isArray(result?.accounts) ? result.accounts : [])
+    .filter((account) => account?.authState === "usage_readable" && account?.locked !== true)
+    .map((account) => {
+      const fiveHourWindow = findFiveHourWindow(account?.usage);
+      const rankingWindow = preset === "fable"
+        ? findWindow(account?.usage, ["Fable", "Sonnet"])
+        : fiveHourWindow;
+      const usedPercent = Number(rankingWindow?.usedPercent);
+      const fiveHourUsedPercent = Number(fiveHourWindow?.usedPercent);
+      let label;
+      try {
+        label = normalizeLabel(account?.label);
+      } catch {
+        return null;
+      }
+      return Number.isFinite(usedPercent)
+        && usedPercent >= 0
+        && usedPercent < 100
+        && Number.isFinite(fiveHourUsedPercent)
+        && fiveHourUsedPercent >= 0
+        && fiveHourUsedPercent < 100
+        ? { label, usedPercent, fiveHourUsedPercent }
+        : null;
+    })
+    .filter(Boolean)
+    .sort((left, right) => (
+      left.usedPercent - right.usedPercent
+      || left.fiveHourUsedPercent - right.fiveHourUsedPercent
+      || left.label.localeCompare(right.label)
+    ));
+  const selected = candidates[0];
+  return selected
+    ? { label: selected.label, usedPercent: selected.usedPercent }
+    : null;
+}
+
 function formatPercent(window) {
   const value = Number(window?.usedPercent);
   return Number.isFinite(value) ? `${Math.round(value)}%` : "--";

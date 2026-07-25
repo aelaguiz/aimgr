@@ -18,6 +18,31 @@ const DARWIN_SANDBOX_LAUNCH_MODE = "darwin-sandbox";
 const LINUX_DIRECT_LAUNCH_MODE = "linux-direct";
 const ADHD_PLUGIN_ID = "i-have-adhd@i-have-adhd";
 const ADHD_ALWAYS_ON_FILE = ".i-have-adhd-always";
+const USER_HOOKS_OVERLAY_FILE = ".aimgr-user-hooks.json";
+const USER_MCP_OVERLAY_FILE = ".aimgr-user-mcp.json";
+const CUSTOMIZATION_ACCESS_MARKER = ";; AIM_USER_CUSTOMIZATION_ACCESS_EXCEPTIONS";
+const PROTECTED_GLOBAL_CLAUDE_ENTRIES = new Set([
+  ".claude.json",
+  ".credentials.json",
+  "CLAUDE.md",
+  "backups",
+  "cache",
+  "daemon",
+  "downloads",
+  "file-history",
+  "history.jsonl",
+  "ide",
+  "jobs",
+  "paste-cache",
+  "plans",
+  "projects",
+  "session-env",
+  "sessions",
+  "settings.json",
+  "shell-snapshots",
+  "tasks",
+  "telemetry",
+]);
 const SUPPORTED_CLAUDE_BUILDS = Object.freeze({
   "darwin-arm64": Object.freeze({
     identifier: "com.anthropic.claude-code",
@@ -247,6 +272,91 @@ export function materializeClaudeSecurityShim({
   });
 }
 
+function renderSandboxCustomizationAccess(customizationRoots) {
+  const rendered = customizationRoots
+    .flatMap(({ name, kind }) => {
+      const operation = kind === "directory" ? "subpath" : "literal";
+      return [
+        `                (${operation} (string-append (param "USER_HOME") "/.claude/${name}"))`,
+        `                (${operation} (string-append (param "USER_HOME_ALIAS") "/.claude/${name}"))`,
+      ];
+    })
+    .join("\n");
+  return rendered;
+}
+
+export function materializeClaudeSandboxProfile({
+  runtimeRoot,
+  customizationRoots = [],
+  fsImpl = fs,
+} = {}) {
+  const resolvedRuntimeRoot = normalizedAbsolute(runtimeRoot);
+  if (!resolvedRuntimeRoot || !Array.isArray(customizationRoots)) {
+    throw new Error("Managed Claude sandbox setup requires a runtime root and customization roots.");
+  }
+  if (customizationRoots.some(({ name, kind } = {}) => (
+    !/^[A-Za-z0-9._-]+$/.test(String(name ?? ""))
+    || (kind !== "directory" && kind !== "file")
+  ))) {
+    throw new Error("Managed Claude sandbox setup received an unsafe customization root.");
+  }
+  assertOwnedDirectory(resolvedRuntimeRoot, { fsImpl, requirePrivate: true });
+  const template = fsImpl.readFileSync(NO_KEYCHAIN_PROFILE_PATH, "utf8");
+  if (!template.includes(CUSTOMIZATION_ACCESS_MARKER)) {
+    throw new Error("Managed Claude sandbox template is missing its customization boundary.");
+  }
+  const accessRules = renderSandboxCustomizationAccess(customizationRoots);
+  const rendered = template.replaceAll(CUSTOMIZATION_ACCESS_MARKER, accessRules);
+  const profilesDir = path.join(resolvedRuntimeRoot, "profiles");
+  ensureOwnedDirectory(profilesDir, { fsImpl });
+  const profilePath = path.join(profilesDir, `${hashBuffer(Buffer.from(rendered))}.sb`);
+  const exists = ownedRegularFileExists(profilePath, {
+    fsImpl,
+    description: "managed Claude sandbox profile",
+  });
+  if (exists) {
+    let current;
+    try {
+      current = fsImpl.readFileSync(profilePath, "utf8");
+    } catch {
+      throw new Error("Could not read the managed Claude sandbox profile.");
+    }
+    if (current !== rendered) {
+      throw new Error("Refusing a contradictory managed Claude sandbox profile.");
+    }
+    fsImpl.chmodSync(profilePath, 0o400);
+    return profilePath;
+  }
+  try {
+    fsImpl.writeFileSync(profilePath, rendered, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o400,
+    });
+  } catch (error) {
+    if (error?.code !== "EEXIST") {
+      throw new Error("Could not write the managed Claude sandbox profile.");
+    }
+  }
+  if (!ownedRegularFileExists(profilePath, {
+    fsImpl,
+    description: "managed Claude sandbox profile",
+  })) {
+    throw new Error("Could not verify the managed Claude sandbox profile.");
+  }
+  let installed;
+  try {
+    installed = fsImpl.readFileSync(profilePath, "utf8");
+  } catch {
+    throw new Error("Could not read the managed Claude sandbox profile.");
+  }
+  if (installed !== rendered) {
+    throw new Error("Refusing a contradictory managed Claude sandbox profile.");
+  }
+  fsImpl.chmodSync(profilePath, 0o400);
+  return profilePath;
+}
+
 function resolveSupportedClaudeBuild({ platform = process.platform, arch = process.arch } = {}) {
   return SUPPORTED_CLAUDE_BUILDS[`${platform}-${arch}`] ?? null;
 }
@@ -438,6 +548,196 @@ function ownedRegularFileExists(filePath, { fsImpl = fs, description } = {}) {
     throw new Error(`Refusing an unsafe ${description}.`);
   }
   return true;
+}
+
+function requireOptionalObjectField(source, field, description) {
+  if (source === null || source[field] === undefined) return null;
+  const value = source[field];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`The normal Claude ${description} are malformed.`);
+  }
+  return Object.keys(value).length > 0 ? value : null;
+}
+
+function syncPrivateJsonOverlay(filePath, payload, {
+  fsImpl = fs,
+  description,
+} = {}) {
+  const exists = ownedRegularFileExists(filePath, { fsImpl, description });
+  if (payload === null) {
+    if (exists) {
+      try {
+        fsImpl.unlinkSync(filePath);
+      } catch {
+        throw new Error(`Could not remove the stale ${description}.`);
+      }
+    }
+    return null;
+  }
+
+  const next = `${JSON.stringify(payload, null, 2)}\n`;
+  if (exists) {
+    let current;
+    try {
+      current = fsImpl.readFileSync(filePath, "utf8");
+    } catch {
+      throw new Error(`Could not read the ${description}.`);
+    }
+    if (current === next) {
+      fsImpl.chmodSync(filePath, 0o600);
+      return filePath;
+    }
+  }
+
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  let renamed = false;
+  try {
+    fsImpl.writeFileSync(tempPath, next, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    fsImpl.renameSync(tempPath, filePath);
+    renamed = true;
+  } catch {
+    throw new Error(`Could not write the ${description}.`);
+  } finally {
+    if (!renamed) {
+      try {
+        fsImpl.unlinkSync(tempPath);
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          throw new Error(`Could not clean up the ${description}.`);
+        }
+      }
+    }
+  }
+  fsImpl.chmodSync(filePath, 0o600);
+  ownedRegularFileExists(filePath, { fsImpl, description });
+  return filePath;
+}
+
+function normalClaudeEntryIsReferenced({
+  serializedCustomizations,
+  userHomeDir,
+  entryName,
+}) {
+  return [
+    `${userHomeDir}/.claude/${entryName}`,
+    `${dataVolumeAlias(userHomeDir)}/.claude/${entryName}`,
+    `~/.claude/${entryName}`,
+    `$HOME/.claude/${entryName}`,
+    `\${HOME}/.claude/${entryName}`,
+  ].some((candidate) => serializedCustomizations.includes(candidate));
+}
+
+function resolveReferencedClaudeCustomizationRoots({
+  userHomeDir,
+  hooks,
+  mcpServers,
+  fsImpl = fs,
+}) {
+  const claudeDir = path.join(userHomeDir, ".claude");
+  let entries;
+  try {
+    entries = fsImpl.readdirSync(claudeDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw new Error("Could not inspect normal Claude customization paths.");
+  }
+  const serializedCustomizations = JSON.stringify({ hooks, mcpServers });
+  const roots = [];
+  for (const entry of entries) {
+    if (
+      !/^[A-Za-z0-9._-]+$/.test(entry.name)
+      || !normalClaudeEntryIsReferenced({
+        serializedCustomizations,
+        userHomeDir,
+        entryName: entry.name,
+      })
+    ) {
+      continue;
+    }
+    if (PROTECTED_GLOBAL_CLAUDE_ENTRIES.has(entry.name)) {
+      throw new Error("A user customization references protected normal Claude state.");
+    }
+    if (entry.name === "skills" || entry.name === "plugins") continue;
+    const sourcePath = path.join(claudeDir, entry.name);
+    let stat;
+    try {
+      stat = fsImpl.lstatSync(sourcePath);
+    } catch {
+      throw new Error("Could not inspect a referenced normal Claude customization.");
+    }
+    if (
+      (!stat.isDirectory() && !stat.isFile())
+      || stat.isSymbolicLink()
+      || (
+        typeof process.getuid === "function"
+        && Number.isInteger(stat.uid)
+        && stat.uid !== process.getuid()
+      )
+    ) {
+      throw new Error("Refusing an unsafe normal Claude customization path.");
+    }
+    roots.push(Object.freeze({
+      name: entry.name,
+      kind: stat.isDirectory() ? "directory" : "file",
+    }));
+  }
+  return roots.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function syncManagedClaudeUserCustomizations({
+  userHomeDir,
+  configDir,
+  fsImpl = fs,
+} = {}) {
+  const resolvedUserHome = normalizedAbsolute(userHomeDir);
+  const resolvedConfigDir = normalizedAbsolute(configDir);
+  if (!resolvedUserHome || !resolvedConfigDir) {
+    throw new Error("Managed Claude customization setup requires absolute user and config directories.");
+  }
+  assertOwnedDirectory(resolvedConfigDir, { fsImpl });
+  const settings = readOptionalJson(path.join(resolvedUserHome, ".claude", "settings.json"), {
+    fsImpl,
+    description: "user settings",
+  });
+  const appState = readOptionalJson(path.join(resolvedUserHome, ".claude.json"), {
+    fsImpl,
+    description: "user app state",
+  });
+  if (settings !== null && (typeof settings !== "object" || Array.isArray(settings))) {
+    throw new Error("The normal Claude user settings are malformed.");
+  }
+  if (appState !== null && (typeof appState !== "object" || Array.isArray(appState))) {
+    throw new Error("The normal Claude user app state is malformed.");
+  }
+  const hooks = requireOptionalObjectField(settings, "hooks", "user hooks");
+  const mcpServers = requireOptionalObjectField(appState, "mcpServers", "user MCP servers");
+  const hooksPath = syncPrivateJsonOverlay(
+    path.join(resolvedConfigDir, USER_HOOKS_OVERLAY_FILE),
+    hooks === null ? null : { hooks },
+    { fsImpl, description: "managed Claude user-hooks overlay" },
+  );
+  const mcpConfigPath = syncPrivateJsonOverlay(
+    path.join(resolvedConfigDir, USER_MCP_OVERLAY_FILE),
+    mcpServers === null ? null : { mcpServers },
+    { fsImpl, description: "managed Claude user-MCP overlay" },
+  );
+  return Object.freeze({
+    hooksPath,
+    mcpConfigPath,
+    customizationRoots: Object.freeze(resolveReferencedClaudeCustomizationRoots({
+      userHomeDir: resolvedUserHome,
+      hooks,
+      mcpServers,
+      fsImpl,
+    })),
+  });
 }
 
 export function resolveEnabledClaudeUserPlugins({
@@ -700,6 +1000,8 @@ export async function prepareClaudeCliLaunch({
   arch = process.arch,
   verifyInstalledClaudeExecutableImpl = verifyInstalledClaudeExecutable,
   materializeClaudeSecurityShimImpl = materializeClaudeSecurityShim,
+  materializeClaudeSandboxProfileImpl = materializeClaudeSandboxProfile,
+  syncManagedClaudeUserCustomizationsImpl = syncManagedClaudeUserCustomizations,
   verifySandboxExecutableImpl = verifySandboxExecutable,
 } = {}) {
   const resolvedUserHome = normalizedAbsolute(userHomeDir);
@@ -728,6 +1030,11 @@ export async function prepareClaudeCliLaunch({
     arch,
   });
   let userPlugins = [];
+  let userCustomizations = {
+    hooksPath: null,
+    mcpConfigPath: null,
+    customizationRoots: Object.freeze([]),
+  };
   if (!loginStaging) {
     ensureManagedClaudePersonalSkillsLink({
       userHomeDir: resolvedUserHome,
@@ -744,6 +1051,11 @@ export async function prepareClaudeCliLaunch({
       enabledPluginIds: userPlugins.map(({ id }) => id),
       fsImpl,
     });
+    userCustomizations = syncManagedClaudeUserCustomizationsImpl({
+      userHomeDir: resolvedUserHome,
+      configDir: resolvedConfigDir,
+      fsImpl,
+    });
   }
   const common = {
     command: resolvedCommand,
@@ -752,6 +1064,9 @@ export async function prepareClaudeCliLaunch({
     configDir: resolvedConfigDir,
     launchMode: build.launchMode,
     userPluginDirs: Object.freeze(userPlugins.map(({ installPath }) => installPath)),
+    userHooksPath: userCustomizations.hooksPath,
+    userMcpConfigPath: userCustomizations.mcpConfigPath,
+    customizationRoots: userCustomizations.customizationRoots,
     ...topology,
   };
   if (build.launchMode === LINUX_DIRECT_LAUNCH_MODE) {
@@ -763,10 +1078,14 @@ export async function prepareClaudeCliLaunch({
     spawnSyncImpl,
   });
   const sandboxExecPath = verifySandboxExecutableImpl({ fsImpl, spawnSyncImpl });
-  fsImpl.accessSync(NO_KEYCHAIN_PROFILE_PATH, fs.constants.R_OK);
+  const profilePath = materializeClaudeSandboxProfileImpl({
+    runtimeRoot: adapter.runtimeRoot,
+    customizationRoots: userCustomizations.customizationRoots,
+    fsImpl,
+  });
   return Object.freeze({
     ...common,
-    profilePath: NO_KEYCHAIN_PROFILE_PATH,
+    profilePath,
     sandboxExecPath,
     ...adapter,
   });
@@ -805,9 +1124,18 @@ function buildSandboxArgs(preparedLaunch, args) {
 }
 
 function buildClaudeArgs(preparedLaunch, args) {
+  const customizationArgs = [
+    ...(preparedLaunch.userHooksPath
+      ? ["--settings", preparedLaunch.userHooksPath]
+      : []),
+    ...(preparedLaunch.userMcpConfigPath
+      ? ["--mcp-config", preparedLaunch.userMcpConfigPath]
+      : []),
+  ];
   const pluginArgs = (preparedLaunch.userPluginDirs ?? [])
     .flatMap((pluginDir) => ["--plugin-dir", pluginDir]);
   return [
+    ...customizationArgs,
     ...pluginArgs,
     ...(Array.isArray(args) ? args : []),
   ];
@@ -857,6 +1185,16 @@ export async function runClaudeCli({
     && normalizedAbsolute(prepared.command)
     && normalizedAbsolute(prepared.homeDir)
     && normalizedAbsolute(prepared.configDir)
+    && (
+      prepared.userHooksPath === undefined
+      || prepared.userHooksPath === null
+      || normalizedAbsolute(prepared.userHooksPath)
+    )
+    && (
+      prepared.userMcpConfigPath === undefined
+      || prepared.userMcpConfigPath === null
+      || normalizedAbsolute(prepared.userMcpConfigPath)
+    )
     && (
       prepared.userPluginDirs === undefined
       || (

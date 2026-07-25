@@ -6,27 +6,40 @@ export const CLAUDE_OPUS_RUN_PRESET_ARGS = Object.freeze([
   "max",
 ]);
 
+export const CLAUDE_FABLE_RUN_PRESET_ARGS = Object.freeze([
+  "--dangerously-skip-permissions",
+  "--model",
+  "claude-fable-5",
+  "--effort",
+  "xhigh",
+]);
+
+function claudeRunPresetArgs(value) {
+  if (value === "opus") return CLAUDE_OPUS_RUN_PRESET_ARGS;
+  if (value === "fable") return CLAUDE_FABLE_RUN_PRESET_ARGS;
+  return null;
+}
+
 function expandClaudeRunPreset(argv) {
-  if (argv[0] !== "claude" || argv[1] !== "run" || !argv[2]) return argv;
-  let presetArgs;
-  if (argv[3] === "opus") {
-    presetArgs = CLAUDE_OPUS_RUN_PRESET_ARGS;
-  } else if (argv[3] === "fable") {
-    presetArgs = [
-      "--dangerously-skip-permissions",
-      "--model",
-      "claude-fable-5",
-      "--effort",
-      "xhigh",
-    ];
-  } else {
-    return argv;
+  if (argv[0] !== "claude" || argv[1] !== "run" || !argv[2]) {
+    return { argv, autoSelect: false, autoSelectPreset: null };
   }
-  return [...argv.slice(0, 3), "--", ...presetArgs, ...argv.slice(4)];
+  const explicitPresetArgs = claudeRunPresetArgs(argv[3]);
+  const autoPresetArgs = explicitPresetArgs ? null : claudeRunPresetArgs(argv[2]);
+  const presetArgs = explicitPresetArgs ?? autoPresetArgs;
+  if (!presetArgs) return { argv, autoSelect: false, autoSelectPreset: null };
+  const prefixLength = autoPresetArgs ? 2 : 3;
+  const tailIndex = autoPresetArgs ? 3 : 4;
+  return {
+    argv: [...argv.slice(0, prefixLength), "--", ...presetArgs, ...argv.slice(tailIndex)],
+    autoSelect: Boolean(autoPresetArgs),
+    autoSelectPreset: autoPresetArgs ? argv[2] : null,
+  };
 }
 
 export function parseArgs(argv) {
-  argv = expandClaudeRunPreset(argv);
+  const expandedClaudeRun = expandClaudeRunPreset(argv);
+  argv = expandedClaudeRun.argv;
   const opts = {
     home: undefined,
     state: undefined,
@@ -77,6 +90,8 @@ export function parseArgs(argv) {
     promptTimeoutSeconds: undefined,
     bindTimeoutSeconds: undefined,
     workdir: undefined,
+    claudeAutoSelect: expandedClaudeRun.autoSelect,
+    claudeAutoSelectPreset: expandedClaudeRun.autoSelectPreset,
     afterDoubleDash: [],
   };
   const positional = [];

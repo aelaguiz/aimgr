@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   CLAUDE_MANAGED_FILE_STORAGE_MODE,
   buildClaudeNativeStorageDescriptor,
@@ -26,10 +25,12 @@ import {
 } from "../../src/targets/claude-cli.js";
 import {
   ensureManagedClaudePersonalSkillsLink,
+  materializeClaudeSandboxProfile,
   materializeClaudeSecurityShim,
   prepareClaudeCliLaunch,
   resolveEnabledClaudeUserPlugins,
   runClaudeCli,
+  syncManagedClaudeUserCustomizations,
   syncManagedClaudePluginPreferences,
   verifyInstalledClaudeExecutable,
   verifySandboxExecutable,
@@ -41,10 +42,6 @@ import { mkTempHome, writeJson } from "../helpers/files.js";
 const NOW_MS = Date.parse("2026-07-22T18:00:00.000Z");
 const ACCESS = "ACCESS_SECRET_SENTINEL_MUST_NOT_ESCAPE";
 const REFRESH = "REFRESH_SECRET_SENTINEL_MUST_NOT_ESCAPE";
-const NO_KEYCHAIN_PROFILE_PATH = fileURLToPath(
-  new URL("../../native/claude/no-keychain.sb", import.meta.url),
-);
-
 function oauth({
   accessToken = ACCESS,
   refreshToken = REFRESH,
@@ -106,6 +103,8 @@ function buildPreparedLaunch(home, {
   command = process.execPath,
   launchMode = "darwin-sandbox",
   userPluginDirs = [],
+  userHooksPath = null,
+  userMcpConfigPath = null,
 } = {}) {
   const aimgrRoot = path.join(home, ".aimgr");
   const selectedLabelHome = path.join(aimgrRoot, "claude-homes", label);
@@ -118,6 +117,9 @@ function buildPreparedLaunch(home, {
     configDir,
     launchMode,
     userPluginDirs,
+    userHooksPath,
+    userMcpConfigPath,
+    customizationRoots: [],
     aimgrRoot,
     claudeHomesRoot: path.join(aimgrRoot, "claude-homes"),
     selectedLabelHome,
@@ -762,6 +764,12 @@ test("targeted boundary isolates Claude profiles without hiding ordinary user se
     "1.0.0",
     "plugin.json",
   );
+  const globalCustomizationFile = path.join(
+    home,
+    ".claude",
+    "shared-hook",
+    "state.txt",
+  );
   const personalSkills = path.join(home, ".claude", "skills");
   const personalSkill = path.join(personalSkills, "shared-proof", "SKILL.md");
   const sharedSkill = path.join(selectedHome, ".claude", "skills", "shared-proof", "SKILL.md");
@@ -775,6 +783,7 @@ test("targeted boundary isolates Claude profiles without hiding ordinary user se
     globalSettings,
     globalPluginRegistry,
     globalPluginFile,
+    globalCustomizationFile,
     personalSkill,
     keychainDecoy,
     userToolConfig,
@@ -818,6 +827,8 @@ function check() {
     globalPluginRegistryReadable: readable("PROBE_GLOBAL_PLUGIN_REGISTRY"),
     globalPluginReadable: readable("PROBE_GLOBAL_PLUGIN"),
     globalPluginWritable: writable("PROBE_GLOBAL_PLUGIN"),
+    globalCustomizationReadable: readable("PROBE_GLOBAL_CUSTOMIZATION"),
+    globalCustomizationWritable: writable("PROBE_GLOBAL_CUSTOMIZATION"),
     personalSkillReadable: readable("PROBE_PERSONAL_SKILL"),
     personalSkillWritable: writable("PROBE_PERSONAL_SKILL"),
     personalSkillDirectWritable: writable("PROBE_PERSONAL_SKILL_DIRECT"),
@@ -841,6 +852,10 @@ if (process.argv.includes("--child")) {
 }
 `);
   fs.chmodSync(probePath, 0o500);
+  const profilePath = materializeClaudeSandboxProfile({
+    runtimeRoot: adapter.runtimeRoot,
+    customizationRoots: [{ name: "shared-hook", kind: "directory" }],
+  });
 
   const result = spawnSync("/usr/bin/sandbox-exec", [
     "-D", `USER_HOME=${home}`,
@@ -850,7 +865,7 @@ if (process.argv.includes("--child")) {
     "-D", `AIMGR_ROOT=${aimgrRoot}`,
     "-D", `SELECTED_LABEL_HOME=${selectedHome}`,
     "-D", `ADAPTER_RUNTIME_ROOT=${adapter.runtimeRoot}`,
-    "-f", NO_KEYCHAIN_PROFILE_PATH,
+    "-f", profilePath,
     process.execPath,
     probePath,
   ], {
@@ -863,6 +878,7 @@ if (process.argv.includes("--child")) {
       PROBE_GLOBAL_SETTINGS: globalSettings,
       PROBE_GLOBAL_PLUGIN_REGISTRY: globalPluginRegistry,
       PROBE_GLOBAL_PLUGIN: globalPluginFile,
+      PROBE_GLOBAL_CUSTOMIZATION: globalCustomizationFile,
       PROBE_PERSONAL_SKILL: sharedSkill,
       PROBE_PERSONAL_SKILL_DIRECT: personalSkill,
       PROBE_KEYCHAIN: keychainDecoy,
@@ -885,6 +901,8 @@ if (process.argv.includes("--child")) {
       globalPluginRegistryReadable: false,
       globalPluginReadable: true,
       globalPluginWritable: false,
+      globalCustomizationReadable: true,
+      globalCustomizationWritable: true,
       personalSkillReadable: true,
       personalSkillWritable: false,
       personalSkillDirectWritable: false,
@@ -956,6 +974,85 @@ test("managed Claude shares only the exact personal skills directory and rejects
       configDir: wrongLinkConfig,
     }),
     /conflicting managed Claude skills path/,
+  );
+});
+
+test("managed Claude mirrors only complete user MCP and hook overlays on every launch", () => {
+  const home = mkTempHome();
+  const claudeDir = path.join(home, ".claude");
+  const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
+  const hookRoot = path.join(claudeDir, "custom-hook");
+  const mcpRoot = path.join(claudeDir, "custom-mcp");
+  fs.mkdirSync(hookRoot, { recursive: true });
+  fs.mkdirSync(mcpRoot, { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+  const hooks = {
+    SessionStart: [{
+      hooks: [{
+        type: "command",
+        command: `${hookRoot}/start.sh`,
+      }],
+    }],
+  };
+  const mcpServers = {
+    browseros: {
+      type: "http",
+      url: "http://127.0.0.1:9000/mcp",
+    },
+    custom: {
+      command: `${mcpRoot}/server`,
+      args: ["--stdio"],
+    },
+  };
+  writeJson(path.join(claudeDir, "settings.json"), {
+    hooks,
+    enabledPlugins: { "proof@market": true },
+    theme: "dark",
+  });
+  writeJson(path.join(home, ".claude.json"), {
+    mcpServers,
+    oauthAccount: { accessToken: "OAUTH_MUST_NOT_ENTER_OVERLAY" },
+    projects: { "/private/project": { allowedTools: ["Bash"] } },
+  });
+
+  const result = syncManagedClaudeUserCustomizations({
+    userHomeDir: home,
+    configDir,
+  });
+  assert.deepEqual(JSON.parse(fs.readFileSync(result.hooksPath, "utf8")), { hooks });
+  assert.deepEqual(JSON.parse(fs.readFileSync(result.mcpConfigPath, "utf8")), { mcpServers });
+  assert.deepEqual(result.customizationRoots, [
+    { name: "custom-hook", kind: "directory" },
+    { name: "custom-mcp", kind: "directory" },
+  ]);
+  assert.equal(fs.statSync(result.hooksPath).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(result.mcpConfigPath).mode & 0o777, 0o600);
+  assert.doesNotMatch(
+    `${fs.readFileSync(result.hooksPath, "utf8")}${fs.readFileSync(result.mcpConfigPath, "utf8")}`,
+    /OAUTH_MUST_NOT_ENTER_OVERLAY|enabledPlugins|projects|theme/,
+  );
+
+  writeJson(path.join(claudeDir, "settings.json"), { hooks: {} });
+  writeJson(path.join(home, ".claude.json"), { mcpServers: {} });
+  const cleared = syncManagedClaudeUserCustomizations({
+    userHomeDir: home,
+    configDir,
+  });
+  assert.deepEqual(cleared, {
+    hooksPath: null,
+    mcpConfigPath: null,
+    customizationRoots: [],
+  });
+  assert.equal(fs.existsSync(result.hooksPath), false);
+  assert.equal(fs.existsSync(result.mcpConfigPath), false);
+
+  writeJson(path.join(claudeDir, "settings.json"), { hooks: [] });
+  assert.throws(
+    () => syncManagedClaudeUserCustomizations({
+      userHomeDir: home,
+      configDir,
+    }),
+    /user hooks are malformed/,
   );
 });
 
@@ -1077,11 +1174,17 @@ test("managed Claude mirrors only the requested ADHD always-on preference", () =
 
 test("runner preserves the user home while pinning Claude config and exact launch behavior", async () => {
   const home = mkTempHome();
+  const userHooksPath = path.join(home, ".aimgr-user-hooks.json");
+  const userMcpConfigPath = path.join(home, ".aimgr-user-mcp.json");
   const pluginDirs = [
     path.join(home, ".claude", "plugins", "cache", "market", "alpha", "1.0.0"),
     path.join(home, ".claude", "plugins", "cache", "market", "zeta", "2.0.0"),
   ];
-  const preparedLaunch = buildPreparedLaunch(home, { userPluginDirs: pluginDirs });
+  const preparedLaunch = buildPreparedLaunch(home, {
+    userPluginDirs: pluginDirs,
+    userHooksPath,
+    userMcpConfigPath,
+  });
   const calls = [];
   const spawnImpl = (file, args, options) => {
     calls.push({ file, args, options });
@@ -1110,8 +1213,12 @@ test("runner preserves the user home while pinning Claude config and exact launc
   assert.equal(calls[0].file, process.execPath);
   assert.match(calls[0].args[0], /src\/targets\/claude-supervisor\.js$/);
   assert.equal(calls[0].args[1], "/usr/bin/sandbox-exec");
-  assert.deepEqual(calls[0].args.slice(-6), [
+  assert.deepEqual(calls[0].args.slice(-10), [
     path.resolve(process.execPath),
+    "--settings",
+    userHooksPath,
+    "--mcp-config",
+    userMcpConfigPath,
     "--plugin-dir",
     pluginDirs[0],
     "--plugin-dir",
@@ -1267,6 +1374,17 @@ test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", as
     enabledPlugins: {
       "i-have-adhd@i-have-adhd": true,
     },
+    hooks: {
+      SessionStart: [{
+        hooks: [{ type: "command", command: "/usr/bin/true" }],
+      }],
+    },
+  });
+  writeJson(path.join(home, ".claude.json"), {
+    mcpServers: {
+      browseros: { type: "http", url: "http://127.0.0.1:9000/mcp" },
+    },
+    oauthAccount: { accessToken: "DO_NOT_COPY" },
   });
   writeJson(path.join(home, ".claude", "plugins", "installed_plugins.json"), {
     version: 2,
@@ -1305,6 +1423,19 @@ test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", as
   assert.equal(prepared.sandboxExecPath, undefined);
   assert.equal(prepared.adapterDir, undefined);
   assert.deepEqual(prepared.userPluginDirs, [fs.realpathSync(pluginDir)]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userHooksPath, "utf8")), {
+    hooks: {
+      SessionStart: [{
+        hooks: [{ type: "command", command: "/usr/bin/true" }],
+      }],
+    },
+  });
+  assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userMcpConfigPath, "utf8")), {
+    mcpServers: {
+      browseros: { type: "http", url: "http://127.0.0.1:9000/mcp" },
+    },
+  });
+  assert.deepEqual(prepared.customizationRoots, []);
   assert.equal(fs.readlinkSync(path.join(configDir, "skills")), personalSkills);
   assert.equal(
     fs.existsSync(path.join(configDir, ".i-have-adhd-always")),
@@ -1339,6 +1470,16 @@ test("fresh login staging remains plugin-free", async () => {
     enabledPlugins: {
       "i-have-adhd@i-have-adhd": true,
     },
+    hooks: {
+      SessionStart: [{
+        hooks: [{ type: "command", command: "/usr/bin/true" }],
+      }],
+    },
+  });
+  writeJson(path.join(home, ".claude.json"), {
+    mcpServers: {
+      browseros: { type: "http", url: "http://127.0.0.1:9000/mcp" },
+    },
   });
   writeJson(path.join(home, ".claude", "plugins", "installed_plugins.json"), {
     version: 2,
@@ -1358,12 +1499,18 @@ test("fresh login staging remains plugin-free", async () => {
   });
 
   assert.deepEqual(prepared.userPluginDirs, []);
+  assert.equal(prepared.userHooksPath, null);
+  assert.equal(prepared.userMcpConfigPath, null);
   assert.equal(fs.existsSync(path.join(configDir, "skills")), false);
   assert.equal(fs.existsSync(path.join(configDir, ".i-have-adhd-always")), false);
+  assert.equal(fs.existsSync(path.join(configDir, ".aimgr-user-hooks.json")), false);
+  assert.equal(fs.existsSync(path.join(configDir, ".aimgr-user-mcp.json")), false);
 });
 
 test("Linux runner preserves the user home and directly supervises the exact Claude argv", async () => {
   const home = mkTempHome();
+  const userHooksPath = path.join(home, ".aimgr-user-hooks.json");
+  const userMcpConfigPath = path.join(home, ".aimgr-user-mcp.json");
   const pluginDir = path.join(
     home,
     ".claude",
@@ -1377,6 +1524,8 @@ test("Linux runner preserves the user home and directly supervises the exact Cla
     launchMode: "linux-direct",
     command: "/home/test/.local/share/claude/versions/2.1.218",
     userPluginDirs: [pluginDir],
+    userHooksPath,
+    userMcpConfigPath,
   });
   const calls = [];
   await runClaudeCli({
@@ -1405,6 +1554,10 @@ test("Linux runner preserves the user home and directly supervises the exact Cla
   assert.match(calls[0].args[0], /src\/targets\/claude-supervisor\.js$/);
   assert.deepEqual(calls[0].args.slice(1), [
     preparedLaunch.command,
+    "--settings",
+    userHooksPath,
+    "--mcp-config",
+    userMcpConfigPath,
     "--plugin-dir",
     pluginDir,
     "--version",

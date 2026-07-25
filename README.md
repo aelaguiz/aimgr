@@ -128,6 +128,7 @@ aim claude status [account...] [--fresh] [--json]
 aim claude usage [account...] [--fresh] [--json]
 aim claude list [--json]
 aim claude resume <row-or-thread-id>
+aim claude run (opus|fable) [--resume]
 aim claude run <label> (opus|fable) [--resume]
 aim claude run <label> [-- <claude args...>]
 aim claude capture-native <label> [--source-home <dir>] [--source-config-dir <dir>]
@@ -135,6 +136,10 @@ aim claude export-live --out <file> [--source-home <dir>]
 aim claude import-native <label> --in <file>
 aim pi use
 ```
+
+The label-free Claude presets select only unlocked readable accounts. `fable`
+ranks by Fable/Sonnet usage and uses five-hour usage as its tie-break;
+`opus` ranks by the shared five-hour usage.
 
 `aim claude inventory` is the instant account-coverage view for Redis-backed Claude labels. It reads
 the configured AIM Redis credential records once and makes zero Anthropic, BrowserOS, Keychain,
@@ -172,6 +177,11 @@ derived per-label projection whose newer token rotations are published back with
 capture, import, and run share one per-label lease. Managed runs retain a durable uncertainty fence
 until the exact supervised Claude child exits cleanly without rotation or a genuinely new
 access/refresh token pair is published as that fence's explicit successor.
+Each normal managed launch also inherits the machine's complete user-level
+Claude MCP definitions, personal skills, enabled user plugins, and user hooks
+at launch time. AIM passes field-only MCP/hook overlays through Claude's native
+options; credentials, sessions, project trust, and unrelated user settings
+remain label-isolated.
 
 Sakana Fugu / Fugu Ultra are API-key accounts (no OAuth). Configure one account name plus its API
 key per Sakana subscription. Keys are stored only in the shared Redis credential store; status/list

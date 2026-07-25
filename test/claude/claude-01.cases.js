@@ -143,6 +143,7 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   const out = await runCli([]);
   assert.match(out, /aim redis configure --url <redis-url>/);
   assert.match(out, /aim auth maintain\s+# refresh due Redis-backed Claude and Codex OAuth credentials once/);
+  assert.match(out, /aim claude run \(opus\|fable\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \(opus\|fable\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
@@ -153,8 +154,35 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
 });
 
 test("Claude run presets expand into the existing explicit passthrough boundary", () => {
+  const automaticOpus = parseArgs(["claude", "run", "opus", "--resume"]);
+  assert.deepEqual(automaticOpus.positional, ["claude", "run"]);
+  assert.equal(automaticOpus.opts.claudeAutoSelect, true);
+  assert.equal(automaticOpus.opts.claudeAutoSelectPreset, "opus");
+  assert.deepEqual(automaticOpus.opts.afterDoubleDash, [
+    "--dangerously-skip-permissions",
+    "--model",
+    "opus",
+    "--effort",
+    "max",
+    "--resume",
+  ]);
+
+  const automaticFable = parseArgs(["claude", "run", "fable"]);
+  assert.deepEqual(automaticFable.positional, ["claude", "run"]);
+  assert.equal(automaticFable.opts.claudeAutoSelect, true);
+  assert.equal(automaticFable.opts.claudeAutoSelectPreset, "fable");
+  assert.deepEqual(automaticFable.opts.afterDoubleDash, [
+    "--dangerously-skip-permissions",
+    "--model",
+    "claude-fable-5",
+    "--effort",
+    "xhigh",
+  ]);
+
   const opus = parseArgs(["claude", "run", "pro7", "opus", "--resume"]);
   assert.deepEqual(opus.positional, ["claude", "run", "pro7"]);
+  assert.equal(opus.opts.claudeAutoSelect, false);
+  assert.equal(opus.opts.claudeAutoSelectPreset, null);
   assert.deepEqual(opus.opts.afterDoubleDash, [
     "--dangerously-skip-permissions",
     "--model",
@@ -166,6 +194,7 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
 
   const fable = parseArgs(["claude", "run", "pro8", "fable"]);
   assert.deepEqual(fable.positional, ["claude", "run", "pro8"]);
+  assert.equal(fable.opts.claudeAutoSelectPreset, null);
   assert.deepEqual(fable.opts.afterDoubleDash, [
     "--dangerously-skip-permissions",
     "--model",
@@ -176,7 +205,9 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
 
   const explicit = parseArgs(["claude", "run", "pro9", "--", "--model", "sonnet"]);
   assert.deepEqual(explicit.positional, ["claude", "run", "pro9"]);
+  assert.equal(explicit.opts.claudeAutoSelect, false);
   assert.deepEqual(explicit.opts.afterDoubleDash, ["--model", "sonnet"]);
+  assert.equal(explicit.opts.claudeAutoSelectPreset, null);
 });
 
 test("Claude run rejects an unknown preset before Redis or launch work", async () => {

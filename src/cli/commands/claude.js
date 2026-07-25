@@ -72,6 +72,7 @@ import {
   collectClaudeRedisAccountUsageStatus,
   renderClaudeRedisAccountInventory,
   renderClaudeRedisAccountUsageStatus,
+  selectLeastUsedUnlockedClaudeAccount,
 } from "../../status/claude-redis-view.js";
 
 const CLAUDE_LEASE_RENEW_INTERVAL_MS = Math.floor(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS / 3);
@@ -1154,7 +1155,31 @@ export async function handleClaude(context) {
       );
     }
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error(`\`aim claude run <label>\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+      throw new Error(`\`aim claude run\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+    }
+    if (opts.claudeAutoSelect === true) {
+      const usageStatus = await collectClaudeRedisAccountUsageStatus({
+        homeDir,
+        fresh: true,
+        nowMs,
+        fetchJsonWithTimeoutImpl,
+        connectRedisStoreImpl,
+      });
+      const selected = selectLeastUsedUnlockedClaudeAccount(usageStatus, {
+        preset: opts.claudeAutoSelectPreset,
+      });
+      if (!selected) {
+        throw new Error(
+          opts.claudeAutoSelectPreset === "fable"
+            ? "No unlocked Claude account with readable Fable and five-hour usage is available."
+            : "No unlocked Claude account with readable five-hour usage is available.",
+        );
+      }
+      await handleRedisClaudeRun({
+        ...context,
+        positional: ["claude", "run", selected.label],
+      });
+      return;
     }
     await handleRedisClaudeRun(context);
     return;

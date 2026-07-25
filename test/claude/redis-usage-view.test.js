@@ -17,6 +17,7 @@ import {
   collectClaudeRedisAccountUsageStatus,
   renderClaudeRedisAccountInventory,
   renderClaudeRedisAccountUsageStatus,
+  selectLeastUsedUnlockedClaudeAccount,
 } from "../../src/status/claude-redis-view.js";
 import {
   AIMGR_REDIS_CACHE_MAX_BYTES,
@@ -87,6 +88,50 @@ function successSnapshot(percent = 12, resetAt = NOW_MS + 60 * 60_000) {
     ],
   };
 }
+
+test("Claude automatic selection ranks Fable separately from Opus five-hour usage", () => {
+  const account = (label, fiveHourUsedPercent, fableUsedPercent, options = {}) => ({
+    label,
+    authState: options.authState ?? "usage_readable",
+    locked: options.locked === true,
+    usage: {
+      ok: true,
+      windows: [
+        { label: "5h", kind: "session", usedPercent: fiveHourUsedPercent, active: false },
+        { label: "Week", kind: "weekly_all", usedPercent: 40, active: true },
+        ...(fableUsedPercent === null
+          ? []
+          : [{ label: "Fable", kind: "weekly_scoped", usedPercent: fableUsedPercent, active: true }]),
+      ],
+    },
+  });
+  const result = {
+    accounts: [
+      account("locked", 0, 0, { locked: true }),
+      account("limited", 1, 1, { authState: "usage_limited" }),
+      account("missing", 0, null),
+      account("lower-five-hour", 2, 70),
+      account("fable-tie-high-five-hour", 50, 10),
+      account("fable-winner", 20, 10),
+    ],
+  };
+
+  assert.deepEqual(selectLeastUsedUnlockedClaudeAccount(result, { preset: "fable" }), {
+    label: "fable-winner",
+    usedPercent: 10,
+  });
+  assert.deepEqual(selectLeastUsedUnlockedClaudeAccount(result, { preset: "opus" }), {
+    label: "missing",
+    usedPercent: 0,
+  });
+  assert.equal(selectLeastUsedUnlockedClaudeAccount({
+    accounts: [account("locked", 0, 0, { locked: true })],
+  }, { preset: "fable" }), null);
+  assert.throws(
+    () => selectLeastUsedUnlockedClaudeAccount(result),
+    /requires the fable or opus preset/,
+  );
+});
 
 test("Redis Claude inventory is provider-filtered, offline, candidate-safe, and strictly allowlisted", async () => {
   const ready = anthropicRecord("ready");
