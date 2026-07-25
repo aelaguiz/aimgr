@@ -124,9 +124,15 @@ export function readManagedClaudeSessions({ homeDir }) {
   ));
 }
 
-export function listRecentManagedClaudeSessions({ homeDir }) {
+export function listRecentManagedClaudeSessions({
+  homeDir,
+  limit = CLAUDE_RECENT_SESSION_LIMIT,
+}) {
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new Error("Claude session list count must be a positive integer.");
+  }
   return readManagedClaudeSessions({ homeDir })
-    .slice(0, CLAUDE_RECENT_SESSION_LIMIT)
+    .slice(0, limit)
     .map((session, index) => ({ ...session, rank: index + 1 }));
 }
 
@@ -139,7 +145,7 @@ export function resolveManagedClaudeSession({ homeDir, selector }) {
   let selected;
   if (/^\d+$/.test(value)) {
     const rank = Number(value);
-    selected = Number.isSafeInteger(rank) && rank >= 1 && rank <= CLAUDE_RECENT_SESSION_LIMIT
+    selected = Number.isSafeInteger(rank) && rank >= 1
       ? sessions[rank - 1]
       : null;
   } else if (SESSION_ID_PATTERN.test(value)) {

@@ -1140,14 +1140,28 @@ export async function handleClaude(context) {
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
     throw new Error(
-      "Missing claude subcommand. Usage: aim claude list [--json] | aim claude resume <row-or-thread-id> | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
+      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume <row-or-thread-id> | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
     );
   }
   if (subcmd === "list") {
-    if (positional.length > 2) {
-      throw new Error("`aim claude list` does not accept positional arguments.");
+    const requestedCount = positional[2];
+    if (
+      positional.length > 3
+      || (
+        requestedCount !== undefined
+        && (
+          !/^\d+$/.test(requestedCount)
+          || !Number.isSafeInteger(Number(requestedCount))
+          || Number(requestedCount) < 1
+        )
+      )
+    ) {
+      throw new Error("Usage: aim claude list [count] [--json]");
     }
-    const sessions = listRecentManagedClaudeSessions({ homeDir });
+    const sessions = listRecentManagedClaudeSessions({
+      homeDir,
+      ...(requestedCount === undefined ? {} : { limit: Number(requestedCount) }),
+    });
     if (opts.json) {
       stdout.write(`${JSON.stringify({
         sessions: sessions.map((session) => ({

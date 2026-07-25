@@ -127,6 +127,17 @@ test("managed Claude sessions list the newest 50 with persisted name and ID fall
   assert.equal(sessions[2].threadName, null);
   assert.equal(sessions[2].thread, THREAD_IDS[2]);
 
+  const allListedSessions = listRecentManagedClaudeSessions({
+    homeDir: home,
+    limit: 51,
+  });
+  assert.equal(allListedSessions.length, 51);
+  assert.equal(allListedSessions[50].rank, 51);
+  assert.throws(
+    () => listRecentManagedClaudeSessions({ homeDir: home, limit: 0 }),
+    /positive integer/,
+  );
+
   const rendered = renderRecentManagedClaudeSessions(sessions, {
     homeDir: home,
     nowMs: NOW_MS,
@@ -157,6 +168,16 @@ test("managed Claude sessions list the newest 50 with persisted name and ID fall
     threadId: THREAD_IDS[0],
     cwd: path.join(home, "workspace", "project-1"),
   });
+
+  const expandedJson = JSON.parse(await runCli(
+    ["claude", "list", "51", "--json", "--home", home],
+    { nowImpl: () => NOW_MS },
+  ));
+  assert.equal(expandedJson.sessions.length, 51);
+  await assert.rejects(
+    runCli(["claude", "list", "0", "--home", home]),
+    /Usage: aim claude list \[count\]/,
+  );
 });
 
 test("managed Claude sessions resolve a current row or any exact thread ID and reject missing directories", () => {
@@ -171,8 +192,12 @@ test("managed Claude sessions resolve a current row or any exact thread ID and r
     resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[50] }).threadId,
     THREAD_IDS[50],
   );
+  assert.equal(
+    resolveManagedClaudeSession({ homeDir: home, selector: "51" }).threadId,
+    THREAD_IDS[50],
+  );
   assert.throws(
-    () => resolveManagedClaudeSession({ homeDir: home, selector: "51" }),
+    () => resolveManagedClaudeSession({ homeDir: home, selector: "52" }),
     /was not found/,
   );
   assert.throws(

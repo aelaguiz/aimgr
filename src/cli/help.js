@@ -34,7 +34,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
     "  aim codex run --tend [-p <profile>] [--resume <session-id>] [-- <codex args...>]  # run Codex TUI through the AIMGR foreground relay and tend goals across account rotation",
     "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
-    "  aim claude list [--json]  # show the 50 most recent local managed Claude sessions",
+    "  aim claude list [count] [--json]  # show recent local managed Claude sessions (default: 50)",
     "  aim claude resume <row-or-thread-id>  # resume with the recorded account and working directory",
     "  aim claude run (opus|fable) [--resume]  # launch an unlocked account by preset usage: Fable-scoped for fable, shared 5h for opus",
     "  aim claude run <label> (opus|fable) [--resume]  # common one-line managed Claude launch presets",
