@@ -12,19 +12,10 @@ import { runCli } from "../helpers/cli-runner.js";
 import { mkTempHome } from "../helpers/files.js";
 
 const NOW_MS = Date.parse("2026-07-24T18:00:00.000Z");
-const THREAD_IDS = [
-  "00000000-0000-4000-8000-000000000001",
-  "00000000-0000-4000-8000-000000000002",
-  "00000000-0000-4000-8000-000000000003",
-  "00000000-0000-4000-8000-000000000004",
-  "00000000-0000-4000-8000-000000000005",
-  "00000000-0000-4000-8000-000000000006",
-  "00000000-0000-4000-8000-000000000007",
-  "00000000-0000-4000-8000-000000000008",
-  "00000000-0000-4000-8000-000000000009",
-  "00000000-0000-4000-8000-000000000010",
-  "00000000-0000-4000-8000-000000000011",
-];
+const THREAD_IDS = Array.from(
+  { length: 51 },
+  (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+);
 
 function writeManagedSession({
   home,
@@ -67,7 +58,7 @@ function writeManagedSession({
   return sessionPath;
 }
 
-function seedElevenSessions(home) {
+function seedFiftyOneSessions(home) {
   for (let index = 0; index < THREAD_IDS.length; index += 1) {
     const timestampMs = NOW_MS - ((index + 1) * 3_600_000);
     const timestamp = index === THREAD_IDS.length - 1
@@ -113,19 +104,19 @@ function seedElevenSessions(home) {
   }
 }
 
-test("managed Claude sessions list the newest ten with persisted name and ID fallbacks", async () => {
+test("managed Claude sessions list the newest 50 with persisted name and ID fallbacks", async () => {
   const home = mkTempHome();
-  seedElevenSessions(home);
+  seedFiftyOneSessions(home);
 
   const allSessions = readManagedClaudeSessions({ homeDir: home });
-  assert.equal(allSessions.length, 11);
+  assert.equal(allSessions.length, 51);
   assert.deepEqual(allSessions.map((session) => session.threadId), THREAD_IDS);
 
   const sessions = listRecentManagedClaudeSessions({ homeDir: home });
-  assert.equal(sessions.length, 10);
+  assert.equal(sessions.length, 50);
   assert.deepEqual(
     sessions.map((session) => session.rank),
-    Array.from({ length: 10 }, (_, index) => index + 1),
+    Array.from({ length: 50 }, (_, index) => index + 1),
   );
   assert.equal(sessions[0].account, "pro5");
   assert.equal(sessions[0].threadName, "Current release");
@@ -141,7 +132,7 @@ test("managed Claude sessions list the newest ten with persisted name and ID fal
   assert.match(rendered, /#\s+last_used\s+account\s+thread\s+working_directory/);
   assert.match(rendered, /1\s+1h ago\s+pro5\s+Current release\s+~\/workspace\/project-1/);
   assert.match(rendered, new RegExp(THREAD_IDS[2]));
-  assert.doesNotMatch(rendered, new RegExp(THREAD_IDS[10]));
+  assert.doesNotMatch(rendered, new RegExp(THREAD_IDS[50]));
 
   let redisCalls = 0;
   const json = JSON.parse(await runCli(
@@ -155,7 +146,7 @@ test("managed Claude sessions list the newest ten with persisted name and ID fal
     },
   ));
   assert.equal(redisCalls, 0);
-  assert.equal(json.sessions.length, 10);
+  assert.equal(json.sessions.length, 50);
   assert.deepEqual(json.sessions[0], {
     rank: 1,
     lastUsedAt: "2026-07-24T17:00:00.000Z",
@@ -168,18 +159,18 @@ test("managed Claude sessions list the newest ten with persisted name and ID fal
 
 test("managed Claude sessions resolve a current row or any exact thread ID and reject missing directories", () => {
   const home = mkTempHome();
-  seedElevenSessions(home);
+  seedFiftyOneSessions(home);
 
   assert.equal(
     resolveManagedClaudeSession({ homeDir: home, selector: "2" }).threadId,
     THREAD_IDS[1],
   );
   assert.equal(
-    resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[10] }).threadId,
-    THREAD_IDS[10],
+    resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[50] }).threadId,
+    THREAD_IDS[50],
   );
   assert.throws(
-    () => resolveManagedClaudeSession({ homeDir: home, selector: "11" }),
+    () => resolveManagedClaudeSession({ homeDir: home, selector: "51" }),
     /was not found/,
   );
   assert.throws(

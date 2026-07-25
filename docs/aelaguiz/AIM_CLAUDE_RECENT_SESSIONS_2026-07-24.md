@@ -18,7 +18,7 @@ aim claude list
 aim claude resume <row-or-thread-id>
 ```
 
-`list` shows the ten most recently used sessions across AIM-managed Claude
+`list` shows the 50 most recently used sessions across AIM-managed Claude
 account homes. It shows a thread name when Claude persisted one, otherwise the
 thread ID, plus the working directory and account label. `resume` reuses the
 recorded account and working directory and launches the exact thread with the
@@ -31,12 +31,12 @@ Worklog:
 
 ### Claim
 
-Amir can see and resume his ten newest locally managed Claude sessions without
+Amir can see and resume his 50 newest locally managed Claude sessions without
 remembering which AIM account or working directory created them.
 
 ### In scope
 
-- List ten recent top-level Claude sessions from local AIM-managed homes.
+- List 50 recent top-level Claude sessions from local AIM-managed homes.
 - Show last-used age, account, thread name-or-ID, and working directory.
 - Keep the underlying thread ID in JSON even when a name is displayed.
 - Resume by current row number or exact thread ID.
@@ -53,7 +53,7 @@ remembering which AIM account or working directory created them.
 
 ### Definition of done
 
-- `aim claude list` prints at most ten newest local managed sessions.
+- `aim claude list` prints at most 50 newest local managed sessions.
 - Named threads display the persisted custom or AI title; unnamed threads
   display the exact UUID.
 - `aim claude list --json` includes both `threadName` and `threadId`.
@@ -65,7 +65,7 @@ remembering which AIM account or working directory created them.
 <!-- lilarch:block:requirements:start -->
 ## Requirements and Defaults
 
-- R1: The default list size is exactly ten and has no configuration surface.
+- R1: The default list size is exactly 50 and has no configuration surface.
 - R2: Recency is the newest valid persisted event timestamp, with file mtime
   only as a fallback.
 - R3: Thread display precedence is the latest non-empty custom title, then the
@@ -73,7 +73,7 @@ remembering which AIM account or working directory created them.
 - R4: The account is the AIM label whose managed home owns the transcript.
 - R5: Only top-level `projects/<project>/<uuid>.jsonl` transcripts count.
 - R6: Row numbers resolve against a fresh list at invocation time; exact UUIDs
-  may resolve an older local session outside the newest ten.
+  may resolve an older local session outside the newest 50.
 - R7: Resume defaults to the existing Opus shortcut:
   `--dangerously-skip-permissions --model opus --effort max --resume <uuid>`.
 - R8: Resume must fail before Redis or Claude launch if the recorded working
@@ -83,7 +83,7 @@ remembering which AIM account or working directory created them.
   involved.
 
 Defaults needing no further question were explicitly approved in the preceding
-UX mock plus the operator's 2026-07-24 limit amendment: command names, ten rows,
+UX mock plus the operator's 2026-07-25 limit amendment: command names, 50 rows,
 row-or-ID resume, name-or-ID display, account
 and directory columns, and Opus resume expansion.
 <!-- lilarch:block:requirements:end -->
@@ -93,7 +93,7 @@ and directory columns, and Opus resume expansion.
 - Human-authorized outcome: the two accepted UX mocks and the instruction to
   make the smallest plan, implement it, and test it.
 - Smallest sufficient solution: read Claude's existing per-label JSONL files on
-  demand, render ten rows, and route one selected record into the existing run
+  demand, render 50 rows, and route one selected record into the existing run
   function.
 - Initial minimal convergence closure: none. No competing AIM session-list or
   Claude-resume owner exists.
@@ -185,7 +185,7 @@ PASS.
 
 - R1–R6: `src/targets/claude-sessions.js` reads only top-level managed Claude
   transcripts, derives recency/name/account/directory directly from them,
-  returns ten rows, and resolves a fresh row or any exact UUID.
+  returns 50 rows, and resolves a fresh row or any exact UUID.
 - R7–R9: `src/cli/commands/claude.js` keeps list local and Redis-free, validates
   the selected directory before Redis, then calls the existing managed run path
   with the recorded account/cwd and exact Opus resume arguments.
@@ -195,7 +195,7 @@ PASS.
 - Repository proof: lint passed; full suite passed 355/355.
 - Live read-only proof: the repository CLI returned all nine real local
   managed sessions currently discoverable, exceeding the prior five-row cap
-  and remaining below the new ten-row ceiling; its JSON returned nine valid
+  and remaining below the new 50-row ceiling; its JSON returned nine valid
   records with both `threadName` and `threadId`.
 - Final scope audit: no database, index, cache, daemon, watcher, Redis session
   state, remote access, cross-machine aggregation, search, pagination, rename,

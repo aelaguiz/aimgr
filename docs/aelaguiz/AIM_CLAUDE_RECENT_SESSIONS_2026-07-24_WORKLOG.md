@@ -34,3 +34,12 @@ Plan: [AIM_CLAUDE_RECENT_SESSIONS_2026-07-24.md](./AIM_CLAUDE_RECENT_SESSIONS_20
 - Updated live read-only proof returned all nine currently discoverable real
   sessions, confirming the prior five-row cap is gone; JSON validated all nine.
 - Full repository regression proof remained green at 355/355.
+
+## 2026-07-25
+
+- Operator amended the display limit from ten to 50. The single shared limit,
+  help text, plan contract, and focused fixture changed; session discovery,
+  selection, resume behavior, and persistence remain unchanged.
+- Focused session tests passed 2/2, lint and `git diff --check` passed, and the
+  installed local command returned exactly 50 of the currently discoverable
+  sessions.

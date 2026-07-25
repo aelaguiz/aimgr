@@ -5,7 +5,7 @@ import { formatDurationRough } from "../core/time.js";
 import { resolveAimgrStateDir } from "../io/paths.js";
 import { formatStatusTable } from "../status/table.js";
 
-export const CLAUDE_RECENT_SESSION_LIMIT = 10;
+export const CLAUDE_RECENT_SESSION_LIMIT = 50;
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
