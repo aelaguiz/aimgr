@@ -192,8 +192,19 @@ Current verdict: `PASS`.
   `codex=readable`.
 - The existing fake-Redis command test proves `aim codex use` projects Codex
   auth and writes only local adjunct state.
+- A live end-to-end run used the installed canonical `aim` executable inside
+  the exact production sandbox profile emitted by `prepareClaudeCliLaunch`.
+  With `CODEX_HOME` explicitly absent and no `--home` argument, it rotated
+  Codex from `pro11` to `pro4`; AIM returned
+  `status=activated auth_written=true`, and active-label, inferred-label, and
+  account readback all matched `pro4`.
+- The same managed sandbox then restored `pro11`; AIM again returned
+  `status=activated auth_written=true`, and all three readbacks matched
+  `pro11`. Final state is the original `pro11` account.
 
-No live Redis record, Codex credential, Claude credential, provider request, or
-running managed Claude process was changed during verification.
+The live proof changed the Codex credential only for the two intentional
+rotation operations and restored the original account. It made no model or
+provider request, changed no Claude credential, and disturbed no running
+managed Claude process.
 
 <!-- bugs:block:verification:end -->
