@@ -30,3 +30,10 @@ Plan:
   `0c7696c2ba9651b48eecec3d5be8e6c5e4dc303f0f263f5850031b695d9b0f5f`;
   the staged source and marker were absent after exit; the fork remained
   listed under `pro11`; and `pro11` returned to unlocked `usage_readable`.
+- Installed locally, committed and pushed implementation `b351576`, then
+  fast-forwarded and installed that exact revision on Amirs-M3-Max-2, Mac
+  Studio, home, and claw. Each host passed a read-only
+  `aim claude list --json` smoke check.
+- Final scope audit passed. The implementation contains only the frozen
+  busy-resume branch, shared selector call, transient staging owner, focused
+  tests, and documentation.

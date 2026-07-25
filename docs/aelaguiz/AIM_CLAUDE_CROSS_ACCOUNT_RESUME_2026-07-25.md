@@ -1,7 +1,7 @@
 ---
 title: "AIM Claude cross-account resume"
 date: 2026-07-25
-status: active
+status: complete
 owners:
   - aelaguiz
 reviewers: []
@@ -211,5 +211,23 @@ attempt.
 <!-- arch_skill:block:implementation_audit:start -->
 ## Implementation Audit
 
-Pending finish mode.
+`PASS`.
+
+- `src/cli/commands/claude.js` preserves direct resume, catches only the
+  credential-busy result, reuses the existing Opus selector, excludes the
+  source account, and launches the destination through the existing lease and
+  rotation owner.
+- `src/targets/claude-sessions.js` owns deterministic provenance, stable
+  source staging, companion copying, collision refusal, a private marker that
+  hides the temporary duplicate, and exact cleanup.
+- Focused tests passed 4/4 and 22/22; lint and `git diff --check` passed; the
+  full suite passed 369/369.
+- The real installed command produced provenance fork
+  `92ae17a3-54fe-4d2f-9448-fad2dd8bc518` on `pro11`, preserved the source hash,
+  removed the staged source/marker, retained the fork, and released the
+  destination lease.
+- Commit `b351576` was installed and smoke-tested on Amir-M5,
+  Amirs-M3-Max-2, Mac Studio, home, and claw. No out-of-scope session service,
+  CLI option, retry engine, daemon, migration, or credential behavior was
+  added.
 <!-- arch_skill:block:implementation_audit:end -->
