@@ -5,6 +5,7 @@ import {
   acquireRedisCredentialLease,
   DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
   readHeldRedisCredentialLeaseLabels,
+  renewOrReacquireRedisCredentialLease,
 } from "../../src/coordination/redis-credential-lease.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 
@@ -125,6 +126,50 @@ test("credential lease renews its TTL and expires without a renewal", async () =
   assert.equal(await first.renew(), false);
 });
 
+test("sleep-tolerant lease recovery reclaims only an expired unowned lease", async () => {
+  const client = new FakeRedisClient();
+  const store = await connectRedisStore({ client, keyPrefix: "aimgr:test" });
+  const lease = await acquireRedisCredentialLease(store, {
+    provider: "anthropic",
+    label: "pro7",
+    ttlMs: 100,
+  });
+  const key = leaseKey(client);
+  const opaqueOwner = client.values.get(key);
+
+  client.advanceTime(101);
+  assert.equal(await client.get(key), null);
+  assert.equal(await renewOrReacquireRedisCredentialLease(lease), true);
+  assert.equal(await client.get(key), opaqueOwner);
+  assert.equal(await acquireRedisCredentialLease(store, {
+    provider: "anthropic",
+    label: "pro7",
+    ttlMs: 100,
+  }), null);
+  assert.equal(await lease.release(), true);
+});
+
+test("sleep-tolerant lease recovery never steals from a replacement owner", async () => {
+  const client = new FakeRedisClient();
+  const store = await connectRedisStore({ client, keyPrefix: "aimgr:test" });
+  const stale = await acquireRedisCredentialLease(store, {
+    provider: "anthropic",
+    label: "pro7",
+    ttlMs: 100,
+  });
+
+  client.advanceTime(101);
+  const replacement = await acquireRedisCredentialLease(store, {
+    provider: "anthropic",
+    label: "pro7",
+    ttlMs: 100,
+  });
+  assert.ok(replacement);
+  assert.equal(await renewOrReacquireRedisCredentialLease(stale), false);
+  assert.equal(await replacement.renew(), true);
+  assert.equal(await replacement.release(), true);
+});
+
 test("credential lease release only deletes a lease still owned by that caller", async () => {
   const client = new FakeRedisClient();
   const store = await connectRedisStore({ client, keyPrefix: "aimgr:test" });
@@ -198,5 +243,9 @@ test("credential lease failures do not expose Redis error details or ownership t
     throw new Error(`backend leaked ${options.arguments[0]}`);
   };
   await assert.rejects(lease.renew(), (error) => error.message === "Redis credential lease renewal failed.");
+  await assert.rejects(
+    renewOrReacquireRedisCredentialLease(lease),
+    (error) => error.message === "Redis credential lease recovery failed.",
+  );
   await assert.rejects(lease.release(), (error) => error.message === "Redis credential lease release failed.");
 });

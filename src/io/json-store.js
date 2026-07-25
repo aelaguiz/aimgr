@@ -16,7 +16,9 @@ export function readJsonFile(filePath) {
 
 export function writeJsonFileWithBackup(filePath, data) {
   const dir = path.dirname(filePath);
-  fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
 
   if (fs.existsSync(filePath)) {
     const backupPath = `${filePath}.bak.${formatTimestampForBackup()}`;

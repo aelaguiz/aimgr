@@ -5,6 +5,7 @@ import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, ANTHROPIC_PROVIDER }
 import {
   DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
   acquireRedisCredentialLease,
+  renewOrReacquireRedisCredentialLease,
 } from "../../coordination/redis-credential-lease.js";
 import {
   clearRedisClaudeRotationFence,
@@ -97,7 +98,7 @@ async function renewClaudeCredentialLeaseWithinDeadline(lease) {
   let deadlineTimer = null;
   try {
     const renewal = Promise.resolve()
-      .then(() => lease.renew())
+      .then(() => renewOrReacquireRedisCredentialLease(lease))
       .then(
         (renewed) => renewed === true,
         () => false,

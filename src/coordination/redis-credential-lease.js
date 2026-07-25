@@ -6,12 +6,28 @@ export const DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS = 30_000;
 
 const MAX_REDIS_CREDENTIAL_LEASE_TTL_MS = 3_600_000;
 const leaseGuardedDeleteCapabilities = new WeakMap();
+const leaseRecoveryCapabilities = new WeakMap();
 
 // The ownership check and expiry extension must remain one Redis operation.
 const RENEW_CREDENTIAL_LEASE_SCRIPT = `
 -- AIMGR_CREDENTIAL_LEASE_RENEW_V1
 if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0
+`;
+
+// Long-running managed Claude sessions may wake after their short lease
+// expired. Reclaim only an absent key; a replacement owner always wins.
+const RENEW_OR_REACQUIRE_CREDENTIAL_LEASE_SCRIPT = `
+-- AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1
+local owner = redis.call("GET", KEYS[1])
+if owner == ARGV[1] then
+  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+if not owner then
+  redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+  return 1
 end
 return 0
 `;
@@ -85,6 +101,17 @@ export async function guardedDeleteWithRedisCredentialLease(lease, {
 }
 
 /**
+ * Renews an existing opaque lease or atomically reclaims it after expiry only
+ * when no replacement owner exists. This is reserved for explicitly
+ * sleep-tolerant long-running operations.
+ */
+export async function renewOrReacquireRedisCredentialLease(lease) {
+  const capability = leaseRecoveryCapabilities.get(lease);
+  if (!capability) throw new Error("Invalid Redis credential lease for recovery.");
+  return capability();
+}
+
+/**
  * Atomically acquires one provider/label lease in an already-connected store.
  *
  * The returned object deliberately exposes no key or ownership token. A null
@@ -150,6 +177,21 @@ export async function acquireRedisCredentialLease(store, {
       return succeeded(result);
     },
   };
+  leaseRecoveryCapabilities.set(lease, async () => {
+    if (!active) return false;
+    let result;
+    try {
+      result = await store.client.eval(RENEW_OR_REACQUIRE_CREDENTIAL_LEASE_SCRIPT, {
+        keys: [key],
+        arguments: [token, String(boundedTtlMs)],
+      });
+    } catch {
+      throw redisLeaseError("recovery");
+    }
+    const recovered = succeeded(result);
+    if (!recovered) active = false;
+    return recovered;
+  });
   leaseGuardedDeleteCapabilities.set(lease, async ({ targetKey, expectedValue } = {}) => {
     if (
       !active

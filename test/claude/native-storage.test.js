@@ -745,12 +745,16 @@ test("sandbox qualification rejects a valid non-Apple designated requirement", (
 test("targeted boundary isolates Claude profiles without hiding ordinary user services", {
   skip: process.platform !== "darwin",
 }, () => {
-  const home = mkTempHome();
+  const home = fs.realpathSync(mkTempHome());
   const adapter = materializeClaudeSecurityShim({ homeDir: home });
   const aimgrRoot = path.join(home, ".aimgr");
   const selectedHome = path.join(aimgrRoot, "claude-homes", "alpha");
   const selectedCredential = path.join(selectedHome, ".claude", ".credentials.json");
   const otherCredential = path.join(aimgrRoot, "claude-homes", "beta", ".claude", ".credentials.json");
+  const aimgrConfig = path.join(aimgrRoot, "config.yaml");
+  const aimgrLocalState = path.join(aimgrRoot, "local-state.json");
+  const aimgrLocalStateBackup = `${aimgrLocalState}.bak.proof`;
+  const aimgrLegacySecrets = path.join(aimgrRoot, "secrets.json");
   const globalCredential = path.join(home, ".claude", ".credentials.json");
   const globalSettings = path.join(home, ".claude", "settings.json");
   const globalPluginRegistry = path.join(home, ".claude", "plugins", "installed_plugins.json");
@@ -775,10 +779,13 @@ test("targeted boundary isolates Claude profiles without hiding ordinary user se
   const sharedSkill = path.join(selectedHome, ".claude", "skills", "shared-proof", "SKILL.md");
   const keychainDecoy = path.join(home, "Library", "Keychains", "login.keychain-db");
   const userToolConfig = path.join(home, ".config", "gh", "hosts.yml");
-  const probePath = path.join(selectedHome, "boundary-probe.cjs");
+  const probePath = path.join(home, "boundary-probe.cjs");
   for (const filePath of [
     selectedCredential,
     otherCredential,
+    aimgrConfig,
+    aimgrLocalState,
+    aimgrLegacySecrets,
     globalCredential,
     globalSettings,
     globalPluginRegistry,
@@ -821,6 +828,13 @@ function check() {
     shimOutputEmpty: (shim.stdout || "") === "" && (shim.stderr || "") === "",
     selectedReadable: readable("PROBE_SELECTED"),
     otherReadable: readable("PROBE_OTHER"),
+    aimgrConfigReadable: readable("PROBE_AIMGR_CONFIG"),
+    aimgrConfigWritable: writable("PROBE_AIMGR_CONFIG"),
+    aimgrLocalStateReadable: readable("PROBE_AIMGR_LOCAL_STATE"),
+    aimgrLocalStateWritable: writable("PROBE_AIMGR_LOCAL_STATE"),
+    aimgrLocalStateBackupWritable: writable("PROBE_AIMGR_LOCAL_STATE_BACKUP"),
+    aimgrLegacySecretsReadable: readable("PROBE_AIMGR_LEGACY_SECRETS"),
+    aimgrLegacySecretsWritable: writable("PROBE_AIMGR_LEGACY_SECRETS"),
     globalReadable: readable("PROBE_GLOBAL"),
     globalWritable: writable("PROBE_GLOBAL"),
     globalSettingsReadable: readable("PROBE_GLOBAL_SETTINGS"),
@@ -857,7 +871,7 @@ if (process.argv.includes("--child")) {
     customizationRoots: [{ name: "shared-hook", kind: "directory" }],
   });
 
-  const result = spawnSync("/usr/bin/sandbox-exec", [
+  const sandboxParameters = [
     "-D", `USER_HOME=${home}`,
     "-D", `USER_HOME_ALIAS=${fs.realpathSync(home)}`,
     "-D", `LAUNCH_HOME=${selectedHome}`,
@@ -866,6 +880,9 @@ if (process.argv.includes("--child")) {
     "-D", `SELECTED_LABEL_HOME=${selectedHome}`,
     "-D", `ADAPTER_RUNTIME_ROOT=${adapter.runtimeRoot}`,
     "-f", profilePath,
+  ];
+  const result = spawnSync("/usr/bin/sandbox-exec", [
+    ...sandboxParameters,
     process.execPath,
     probePath,
   ], {
@@ -874,6 +891,10 @@ if (process.argv.includes("--child")) {
       PATH: `${adapter.adapterDir}:/usr/bin:/bin`,
       PROBE_SELECTED: selectedCredential,
       PROBE_OTHER: otherCredential,
+      PROBE_AIMGR_CONFIG: aimgrConfig,
+      PROBE_AIMGR_LOCAL_STATE: aimgrLocalState,
+      PROBE_AIMGR_LOCAL_STATE_BACKUP: aimgrLocalStateBackup,
+      PROBE_AIMGR_LEGACY_SECRETS: aimgrLegacySecrets,
       PROBE_GLOBAL: globalCredential,
       PROBE_GLOBAL_SETTINGS: globalSettings,
       PROBE_GLOBAL_PLUGIN_REGISTRY: globalPluginRegistry,
@@ -895,6 +916,13 @@ if (process.argv.includes("--child")) {
       shimOutputEmpty: true,
       selectedReadable: true,
       otherReadable: false,
+      aimgrConfigReadable: true,
+      aimgrConfigWritable: false,
+      aimgrLocalStateReadable: true,
+      aimgrLocalStateWritable: true,
+      aimgrLocalStateBackupWritable: true,
+      aimgrLegacySecretsReadable: false,
+      aimgrLegacySecretsWritable: false,
       globalReadable: false,
       globalWritable: false,
       globalSettingsReadable: false,
@@ -911,6 +939,29 @@ if (process.argv.includes("--child")) {
       userToolReadable: true,
     });
   }
+
+  const jsonStoreUrl = new URL("../../src/io/json-store.js", import.meta.url).href;
+  const productionWrite = spawnSync("/usr/bin/sandbox-exec", [
+    ...sandboxParameters,
+    process.execPath,
+    "--input-type=module",
+    "-e",
+    `const { writeJsonFileWithBackup } = await import(${JSON.stringify(jsonStoreUrl)});
+writeJsonFileWithBackup(process.env.PROBE_AIMGR_LOCAL_STATE, { proof: true });`,
+  ], {
+    encoding: "utf8",
+    env: {
+      PATH: "/usr/bin:/bin",
+      PROBE_AIMGR_LOCAL_STATE: aimgrLocalState,
+    },
+  });
+  assert.equal(productionWrite.status, 0, productionWrite.stderr);
+  assert.equal(
+    fs.readdirSync(aimgrRoot).some(
+      (name) => /^local-state[.]json[.]bak[.]\d{8}-\d{9}$/.test(name),
+    ),
+    true,
+  );
 });
 
 test("managed Claude shares only the exact personal skills directory and rejects conflicts", () => {

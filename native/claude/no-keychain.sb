@@ -53,15 +53,50 @@
             )))
     (literal (string-append (param "USER_HOME_ALIAS") "/.claude.json")))
 
-;; No AIM state except this label's home and the reviewed runtime helper is
-;; reachable. This closes every other label without generating a policy.
-(deny file-read* file-test-existence file-write*
+;; AIM's Redis configuration and local projection receipt let a managed Claude
+;; rotate Codex normally. Credential-bearing AIM state and every other label
+;; remain closed.
+(deny file-write*
+    (literal (string-append (param "AIMGR_ROOT") "/config.yaml")))
+(deny file-write*
     (require-all
         (subpath (param "AIMGR_ROOT"))
         (require-not
             (require-any
                 (subpath (param "SELECTED_LABEL_HOME"))
-                (subpath (param "ADAPTER_RUNTIME_ROOT"))))))
+                (subpath (param "ADAPTER_RUNTIME_ROOT"))
+                (literal (string-append (param "AIMGR_ROOT") "/local-state.json"))
+                (regex (string-append
+                    "^"
+                    (param "AIMGR_ROOT")
+                    "/local-state[.]json[.]bak[.].+$"))))))
+(deny file-read*
+    (require-all
+        (subpath (param "AIMGR_ROOT"))
+        (require-not
+            (require-any
+                (subpath (param "SELECTED_LABEL_HOME"))
+                (subpath (param "ADAPTER_RUNTIME_ROOT"))
+                (literal (string-append (param "AIMGR_ROOT") "/config.yaml"))
+                (literal (string-append (param "AIMGR_ROOT") "/local-state.json"))
+                (regex (string-append
+                    "^"
+                    (param "AIMGR_ROOT")
+                    "/local-state[.]json[.]bak[.].+$"))))))
+(deny file-test-existence
+    (require-all
+        (subpath (param "AIMGR_ROOT"))
+        (require-not
+            (require-any
+                (literal (param "AIMGR_ROOT"))
+                (subpath (param "SELECTED_LABEL_HOME"))
+                (subpath (param "ADAPTER_RUNTIME_ROOT"))
+                (literal (string-append (param "AIMGR_ROOT") "/config.yaml"))
+                (literal (string-append (param "AIMGR_ROOT") "/local-state.json"))
+                (regex (string-append
+                    "^"
+                    (param "AIMGR_ROOT")
+                    "/local-state[.]json[.]bak[.].+$"))))))
 
 ;; Cover both the caller-facing and filesystem-canonical paths so following the
 ;; label symlink never turns the shared skill tree into a writable surface.

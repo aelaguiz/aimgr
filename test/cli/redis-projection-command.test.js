@@ -4,7 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, importCredentialsSnapshot, readSnapshot } from "../../src/coordination/redis-store.js";
-import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
+import {
+  acquireRedisCredentialLease,
+  DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
+} from "../../src/coordination/redis-credential-lease.js";
 import {
   resolveAimgrLocalStatePath,
   resolveAimgrClaudeLabelHomeDir,
@@ -481,6 +484,108 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.match(local.targets.claudeCli.credentialsPath, /claude-homes\/claude\/\.claude\/\.credentials\.json$/);
   assert.doesNotMatch(JSON.stringify(local), /CLAUDE_REFRESH_ROTATED/);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
+});
+
+test("managed Claude heartbeat reclaims an expired unowned lease after timer suspension", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const credential = buildAnthropicClaudeCredential({
+    access: "CLAUDE_ACCESS",
+    refresh: "CLAUDE_REFRESH",
+  });
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "claude",
+      credential,
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: {
+        expect: { email: "boss@example.com" },
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    }],
+  });
+
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const heartbeatTimers = [];
+  let resolveLaunch = null;
+  let launchSignal = null;
+  let markLaunchStarted;
+  const launchStarted = new Promise((resolve) => {
+    markLaunchStarted = resolve;
+  });
+  globalThis.setTimeout = (callback, delay) => {
+    const timer = {
+      callback,
+      delay,
+      cleared: false,
+      unref() {},
+    };
+    heartbeatTimers.push(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => {
+    timer.cleared = true;
+  };
+
+  try {
+    const command = handleClaude({
+      opts: { afterDoubleDash: [] },
+      positional: ["claude", "run", "claude"],
+      homeDir: home,
+      env: {},
+      stdout: { write() {} },
+      setExitCode: () => {
+        throw new Error("the recovered run must not set an exit code");
+      },
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+      nowMs: Date.now(),
+      setTimeoutImpl: () => ({ unref() {} }),
+      clearTimeoutImpl() {},
+      runClaudeCliImpl: ({ signal }) => {
+        launchSignal = signal;
+        markLaunchStarted();
+        return new Promise((resolve) => {
+          resolveLaunch = resolve;
+        });
+      },
+    });
+
+    await launchStarted;
+    const heartbeatTimer = heartbeatTimers.find(
+      (timer) => timer.delay === 10_000 && timer.cleared === false,
+    );
+    assert.ok(heartbeatTimer);
+    client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    heartbeatTimer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(launchSignal.aborted, false);
+    assert.equal(
+      [...client.values.keys()].some((key) => key.includes(":lease:credential:anthropic:claude")),
+      true,
+    );
+
+    resolveLaunch({ status: 0, signal: null });
+    await command;
+  } finally {
+    resolveLaunch?.({ status: 1, signal: null });
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
 });
 
 test("automatic Fable run skips a locked account and launches the lowest Fable usage", async () => {
