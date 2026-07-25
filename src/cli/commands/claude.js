@@ -64,9 +64,11 @@ import {
 } from "../../targets/claude-cli.js";
 import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
 import {
+  buildManagedClaudeSessionForkName,
   listRecentManagedClaudeSessions,
   renderRecentManagedClaudeSessions,
   resolveManagedClaudeSession,
+  stageManagedClaudeSessionFork,
 } from "../../targets/claude-sessions.js";
 import {
   collectClaudeRedisAccountInventory,
@@ -277,6 +279,30 @@ async function releaseClaudeCredentialLeaseGuard(guard) {
   if (await guard.lease.release() !== true && !guard.heartbeat.lost) {
     throw new Error("Claude credential lease release failed.");
   }
+}
+
+async function selectAutomaticClaudeAccount(context, {
+  preset,
+  excludeLabels = [],
+} = {}) {
+  const {
+    homeDir,
+    nowMs,
+    fetchJsonWithTimeoutImpl,
+    connectRedisStoreImpl,
+  } = context;
+  const excluded = new Set(excludeLabels.map((label) => normalizeLabel(label)));
+  const usageStatus = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    fresh: true,
+    nowMs,
+    fetchJsonWithTimeoutImpl,
+    connectRedisStoreImpl,
+  });
+  return selectLeastUsedUnlockedClaudeAccount({
+    ...usageStatus,
+    accounts: usageStatus.accounts.filter((account) => !excluded.has(account.label)),
+  }, { preset });
 }
 
 function pendingRotationMap(target) {
@@ -683,6 +709,7 @@ async function handleRedisClaudeImportNative(context, { label, inFile }) {
 async function handleRedisClaudeRun(context, {
   maintenance = false,
   launchCwd = process.cwd(),
+  sessionFork = null,
 } = {}) {
   const {
     opts,
@@ -716,6 +743,7 @@ async function handleRedisClaudeRun(context, {
   let maintenanceTimedOut = false;
   let activeRotationPublisher = null;
   let activeRotationPublicationFailed = false;
+  let stagedSessionFork = null;
   try {
     guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
     // A prior lease owner may have rotated this label between our initial read
@@ -825,6 +853,13 @@ async function handleRedisClaudeRun(context, {
       );
     }
     clearRotationPublicationPending(target, label);
+
+    if (sessionFork) {
+      stagedSessionFork = stageManagedClaudeSessionFork({
+        session: sessionFork,
+        targetConfigDir: configDir,
+      });
+    }
 
     const credential = requireRedisClaudeCredential(runtime.state, label);
     const preRunCredentialComplete = hasCompleteClaudeNativeBundle(credential);
@@ -1016,6 +1051,13 @@ async function handleRedisClaudeRun(context, {
     }
   } finally {
     if (maintenanceTimer) clearMaintenanceTimer(maintenanceTimer);
+    if (stagedSessionFork) {
+      try {
+        stagedSessionFork.cleanup();
+      } catch {
+        cleanupError = new Error("Could not clean the staged Claude session fork.");
+      }
+    }
     if (activeRotationPublisher) {
       try {
         await activeRotationPublisher.stop();
@@ -1133,7 +1175,7 @@ export async function handleClaude(context) {
     if (!isRedisConfigured({ homeDir })) {
       throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
-    await handleRedisClaudeRun({
+    const directContext = {
       ...context,
       positional: ["claude", "run", session.account],
       opts: {
@@ -1144,8 +1186,46 @@ export async function handleClaude(context) {
           session.threadId,
         ],
       },
+    };
+    try {
+      await handleRedisClaudeRun(directContext, {
+        launchCwd: session.cwd,
+      });
+      return;
+    } catch (error) {
+      if (error?.code !== "AIMGR_CREDENTIAL_BUSY") throw error;
+    }
+
+    const selected = await selectAutomaticClaudeAccount(context, {
+      preset: "opus",
+      excludeLabels: [session.account],
+    });
+    if (!selected) {
+      throw new Error(
+        `Claude label=${session.account} is busy and no other unlocked Claude account with readable five-hour usage is available.`,
+      );
+    }
+    const forkName = buildManagedClaudeSessionForkName(session);
+    stdout.write(
+      `${session.account} is busy; forking session onto ${selected.label} as "${forkName}".\n`,
+    );
+    await handleRedisClaudeRun({
+      ...context,
+      positional: ["claude", "run", selected.label],
+      opts: {
+        ...opts,
+        afterDoubleDash: [
+          ...CLAUDE_OPUS_RUN_PRESET_ARGS,
+          "--resume",
+          session.threadId,
+          "--fork-session",
+          "--name",
+          forkName,
+        ],
+      },
     }, {
       launchCwd: session.cwd,
+      sessionFork: session,
     });
     return;
   }
@@ -1159,14 +1239,7 @@ export async function handleClaude(context) {
       throw new Error(`\`aim claude run\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     if (opts.claudeAutoSelect === true) {
-      const usageStatus = await collectClaudeRedisAccountUsageStatus({
-        homeDir,
-        fresh: true,
-        nowMs,
-        fetchJsonWithTimeoutImpl,
-        connectRedisStoreImpl,
-      });
-      const selected = selectLeastUsedUnlockedClaudeAccount(usageStatus, {
+      const selected = await selectAutomaticClaudeAccount(context, {
         preset: opts.claudeAutoSelectPreset,
       });
       if (!selected) {

@@ -765,6 +765,299 @@ test("claude resume reuses the selected managed account, working directory, and 
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
 });
 
+test("claude resume forks onto the least-used unlocked Opus account when the recorded account is busy", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const nowMs = Date.now();
+  const threadId = "33333333-3333-4333-8333-333333333333";
+  const forkThreadId = "44444444-4444-4444-8444-444444444444";
+  const launchCwd = path.join(home, "workspace", "selected-project");
+  const sourceProjectDir = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "boss",
+    ".claude",
+    "projects",
+    "selected-project",
+  );
+  const sourcePath = path.join(sourceProjectDir, `${threadId}.jsonl`);
+  fs.mkdirSync(launchCwd, { recursive: true });
+  fs.mkdirSync(sourceProjectDir, { recursive: true });
+  const sourceContent = [
+    JSON.stringify({
+      type: "user",
+      sessionId: threadId,
+      cwd: launchCwd,
+      timestamp: "2026-07-24T17:00:00.000Z",
+    }),
+    JSON.stringify({
+      type: "custom-title",
+      customTitle: "Review puzzle quality",
+      timestamp: "2026-07-24T17:00:01.000Z",
+    }),
+    "",
+  ].join("\n");
+  fs.writeFileSync(sourcePath, sourceContent, "utf8");
+
+  const record = (label) => {
+    const emailAddress = `${label}@example.com`;
+    const organizationUuid = `org_${label}`;
+    const credential = buildAnthropicClaudeCredential({
+      access: `ACCESS_${label.toUpperCase()}`,
+      refresh: `REFRESH_${label.toUpperCase()}`,
+      expiresAtMs: nowMs + 3_600_000,
+      emailAddress,
+      organizationName: `${label} Org`,
+      organizationUuid,
+    });
+    credential.nativeClaudeBundle.oauthAccount.accountUuid = `acct_${label}`;
+    return {
+      provider: "anthropic",
+      label,
+      credential,
+      identity: {
+        accountUuid: `acct_${label}`,
+        emailAddress,
+        organizationUuid,
+      },
+      policy: {
+        expect: { email: emailAddress },
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    };
+  };
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [record("boss"), record("low"), record("high")],
+  });
+  const sourceLease = await acquireRedisCredentialLease(store, {
+    provider: "anthropic",
+    label: "boss",
+  });
+  const fiveHourUsage = {
+    ACCESS_BOSS: 0,
+    ACCESS_LOW: 10,
+    ACCESS_HIGH: 70,
+  };
+  let launchedLabel = null;
+  let targetConfigDir = null;
+
+  try {
+    const out = await runCli(["claude", "resume", threadId, "--home", home], {
+      env: { HOME: home },
+      nowImpl: () => nowMs,
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+      fetchJsonWithTimeoutImpl: async (_url, options) => {
+        const accessToken = String(options?.headers?.Authorization ?? "").replace(/^Bearer /, "");
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            five_hour: {
+              utilization: fiveHourUsage[accessToken],
+              resets_at: new Date(nowMs + 3_600_000).toISOString(),
+            },
+            seven_day: {
+              utilization: 20,
+              resets_at: new Date(nowMs + 86_400_000).toISOString(),
+            },
+            seven_day_sonnet: {
+              utilization: 30,
+              resets_at: new Date(nowMs + 86_400_000).toISOString(),
+            },
+          }),
+        };
+      },
+      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+      runClaudeCliImpl: ({
+        homeDir: launchHome,
+        configDir,
+        cwd,
+        args,
+      }) => {
+        launchedLabel = path.basename(launchHome);
+        targetConfigDir = configDir;
+        const stagedPath = path.join(
+          configDir,
+          "projects",
+          "selected-project",
+          `${threadId}.jsonl`,
+        );
+        const stagedMarkerPath = path.join(
+          configDir,
+          "projects",
+          "selected-project",
+          `${threadId}.aimgr-staged-fork`,
+        );
+        assert.equal(fs.readFileSync(stagedPath, "utf8"), sourceContent);
+        assert.equal(fs.existsSync(stagedMarkerPath), true);
+        assert.equal(cwd, launchCwd);
+        assert.deepEqual(args, [
+          "--dangerously-skip-permissions",
+          "--model",
+          "opus",
+          "--effort",
+          "max",
+          "--resume",
+          threadId,
+          "--fork-session",
+          "--name",
+          "[fork from boss/33333333] Review puzzle quality",
+        ]);
+        fs.writeFileSync(
+          path.join(configDir, "projects", "selected-project", `${forkThreadId}.jsonl`),
+          `${JSON.stringify({
+            type: "user",
+            sessionId: forkThreadId,
+            cwd: launchCwd,
+            timestamp: "2026-07-24T18:00:00.000Z",
+          })}\n${JSON.stringify({
+            type: "custom-title",
+            customTitle: "[fork from boss/33333333] Review puzzle quality",
+            timestamp: "2026-07-24T18:00:01.000Z",
+          })}\n`,
+          "utf8",
+        );
+        return { status: 0, signal: null };
+      },
+    });
+
+    assert.equal(
+      out,
+      'boss is busy; forking session onto low as "[fork from boss/33333333] Review puzzle quality".\n',
+    );
+    assert.equal(launchedLabel, "low");
+    assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+    assert.equal(
+      fs.existsSync(path.join(
+        targetConfigDir,
+        "projects",
+        "selected-project",
+        `${threadId}.jsonl`,
+      )),
+      false,
+    );
+    assert.equal(
+      fs.existsSync(path.join(
+        targetConfigDir,
+        "projects",
+        "selected-project",
+        `${threadId}.aimgr-staged-fork`,
+      )),
+      false,
+    );
+    assert.equal(
+      fs.existsSync(path.join(
+        targetConfigDir,
+        "projects",
+        "selected-project",
+        `${forkThreadId}.jsonl`,
+      )),
+      true,
+    );
+
+    const listed = JSON.parse(await runCli(["claude", "list", "--json", "--home", home]));
+    const fork = listed.sessions.find((session) => session.threadId === forkThreadId);
+    assert.equal(fork.account, "low");
+    assert.equal(
+      fork.threadName,
+      "[fork from boss/33333333] Review puzzle quality",
+    );
+  } finally {
+    await sourceLease.release();
+  }
+});
+
+test("claude resume fails safely when the recorded account is busy and no destination is unlocked", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const nowMs = Date.now();
+  const threadId = "55555555-5555-4555-8555-555555555555";
+  const launchCwd = path.join(home, "workspace", "selected-project");
+  const sessionPath = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "boss",
+    ".claude",
+    "projects",
+    "selected-project",
+    `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(launchCwd, { recursive: true });
+  fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+  fs.writeFileSync(sessionPath, `${JSON.stringify({
+    type: "user",
+    sessionId: threadId,
+    cwd: launchCwd,
+    timestamp: "2026-07-24T17:00:00.000Z",
+  })}\n`, "utf8");
+
+  const credential = buildAnthropicClaudeCredential({
+    expiresAtMs: nowMs + 3_600_000,
+  });
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "boss",
+      credential,
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: {
+        expect: { email: "boss@example.com" },
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  const sourceLease = await acquireRedisCredentialLease(store, {
+    provider: "anthropic",
+    label: "boss",
+  });
+
+  try {
+    await assert.rejects(
+      runCli(["claude", "resume", threadId, "--home", home], {
+        env: { HOME: home },
+        nowImpl: () => nowMs,
+        connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+        fetchJsonWithTimeoutImpl: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            five_hour: {
+              utilization: 0,
+              resets_at: new Date(nowMs + 3_600_000).toISOString(),
+            },
+            seven_day: {
+              utilization: 0,
+              resets_at: new Date(nowMs + 86_400_000).toISOString(),
+            },
+          }),
+        }),
+        resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+      }),
+      /busy and no other unlocked Claude account/,
+    );
+  } finally {
+    await sourceLease.release();
+  }
+});
+
 test("claude resume rejects a missing recorded directory before connecting to Redis", async () => {
   const home = mkTempHome();
   const threadId = "22222222-2222-4222-8222-222222222222";

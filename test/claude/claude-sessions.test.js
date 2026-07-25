@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  buildManagedClaudeSessionForkName,
   listRecentManagedClaudeSessions,
   readManagedClaudeSessions,
   renderRecentManagedClaudeSessions,
   resolveManagedClaudeSession,
+  stageManagedClaudeSessionFork,
 } from "../../src/targets/claude-sessions.js";
 import { runCli } from "../helpers/cli-runner.js";
 import { mkTempHome } from "../helpers/files.js";
@@ -184,4 +186,95 @@ test("managed Claude sessions resolve a current row or any exact thread ID and r
     /working directory is unavailable/,
   );
   assert.deepEqual(listRecentManagedClaudeSessions({ homeDir: mkTempHome() }), []);
+});
+
+test("managed Claude session fork staging copies exact source data and cleans only its destination copy", () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  const sourcePath = writeManagedSession({
+    home,
+    account: "pro10",
+    threadId,
+    cwd: path.join(home, "workspace", "puzzledb"),
+    timestamp: new Date(NOW_MS).toISOString(),
+    events: [{
+      type: "custom-title",
+      customTitle: "Review puzzle quality",
+      timestamp: new Date(NOW_MS).toISOString(),
+    }],
+  });
+  const sourceCompanionPath = path.join(path.dirname(sourcePath), threadId);
+  fs.mkdirSync(path.join(sourceCompanionPath, "tool-results"), { recursive: true });
+  fs.writeFileSync(
+    path.join(sourceCompanionPath, "tool-results", "result.txt"),
+    "source tool result\n",
+    "utf8",
+  );
+  const sourceContent = fs.readFileSync(sourcePath, "utf8");
+  const session = resolveManagedClaudeSession({ homeDir: home, selector: threadId });
+  const targetConfigDir = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "pro11",
+    ".claude",
+  );
+
+  assert.equal(
+    buildManagedClaudeSessionForkName(session),
+    `[fork from pro10/${threadId.slice(0, 8)}] Review puzzle quality`,
+  );
+  const staged = stageManagedClaudeSessionFork({ session, targetConfigDir });
+  assert.equal(fs.existsSync(staged.targetMarkerPath), true);
+  assert.equal(fs.readFileSync(staged.targetTranscriptPath, "utf8"), sourceContent);
+  assert.equal(
+    fs.readFileSync(path.join(staged.targetCompanionPath, "tool-results", "result.txt"), "utf8"),
+    "source tool result\n",
+  );
+  assert.deepEqual(
+    readManagedClaudeSessions({ homeDir: home })
+      .filter((candidate) => candidate.threadId === threadId)
+      .map((candidate) => candidate.account),
+    ["pro10"],
+  );
+
+  staged.cleanup();
+  assert.equal(fs.existsSync(staged.targetMarkerPath), false);
+  assert.equal(fs.existsSync(staged.targetTranscriptPath), false);
+  assert.equal(fs.existsSync(staged.targetCompanionPath), false);
+  assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+});
+
+test("managed Claude session fork staging refuses an existing destination transcript", () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  const sourcePath = writeManagedSession({
+    home,
+    account: "pro10",
+    threadId,
+    cwd: path.join(home, "workspace", "puzzledb"),
+    timestamp: new Date(NOW_MS).toISOString(),
+  });
+  const session = resolveManagedClaudeSession({ homeDir: home, selector: threadId });
+  const targetConfigDir = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "pro11",
+    ".claude",
+  );
+  const targetPath = path.join(
+    targetConfigDir,
+    "projects",
+    path.basename(path.dirname(sourcePath)),
+    `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, "existing destination\n", "utf8");
+
+  assert.throws(
+    () => stageManagedClaudeSessionFork({ session, targetConfigDir }),
+    /already exists in the selected destination account/,
+  );
+  assert.equal(fs.readFileSync(targetPath, "utf8"), "existing destination\n");
 });

@@ -8,6 +8,7 @@ import { formatStatusTable } from "../status/table.js";
 export const CLAUDE_RECENT_SESSION_LIMIT = 50;
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const STAGED_FORK_MARKER_SUFFIX = ".aimgr-staged-fork";
 
 function readDirectory(directory, { missingIsEmpty = false } = {}) {
   try {
@@ -72,6 +73,7 @@ function parseSessionFile({ filePath, account, threadId, fallbackTimestampMs }) 
     threadName,
     thread: threadName ?? threadId,
     cwd,
+    transcriptPath: filePath,
     lastUsedAt: new Date(observedAtMs).toISOString(),
     lastUsedMs: observedAtMs,
   };
@@ -96,6 +98,9 @@ export function readManagedClaudeSessions({ homeDir }) {
         if (!fileEntry.isFile() || !fileEntry.name.endsWith(".jsonl")) continue;
         const threadId = fileEntry.name.slice(0, -".jsonl".length);
         if (!SESSION_ID_PATTERN.test(threadId)) continue;
+        if (fs.existsSync(path.join(projectDir, `${threadId}${STAGED_FORK_MARKER_SUFFIX}`))) {
+          continue;
+        }
         const filePath = path.join(projectDir, fileEntry.name);
         let fallbackTimestampMs;
         try {
@@ -159,6 +164,161 @@ export function resolveManagedClaudeSession({ homeDir, selector }) {
     throw new Error(`Claude session working directory is unavailable: ${selected.cwd}`);
   }
   return selected;
+}
+
+export function buildManagedClaudeSessionForkName(session) {
+  const account = normalizeLabel(session?.account);
+  const threadId = String(session?.threadId ?? "").toLowerCase();
+  if (!SESSION_ID_PATTERN.test(threadId)) {
+    throw new Error("Cannot fork an invalid managed Claude thread ID.");
+  }
+  const title = normalizeThreadName(session?.threadName) ?? threadId;
+  return `[fork from ${account}/${threadId.slice(0, 8)}] ${title}`;
+}
+
+export function stageManagedClaudeSessionFork({ session, targetConfigDir }) {
+  const sourcePath = typeof session?.transcriptPath === "string"
+    ? path.resolve(session.transcriptPath)
+    : null;
+  const threadId = String(session?.threadId ?? "").toLowerCase();
+  const resolvedTargetConfigDir = typeof targetConfigDir === "string"
+    ? path.resolve(targetConfigDir)
+    : null;
+  if (
+    !sourcePath
+    || !resolvedTargetConfigDir
+    || !SESSION_ID_PATTERN.test(threadId)
+    || path.basename(sourcePath) !== `${threadId}.jsonl`
+  ) {
+    throw new Error("Cannot stage an invalid managed Claude session fork.");
+  }
+
+  let sourceStat;
+  try {
+    sourceStat = fs.lstatSync(sourcePath);
+  } catch {
+    throw new Error("Could not read the managed Claude source transcript.");
+  }
+  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+    throw new Error("Managed Claude source transcript is not a safe regular file.");
+  }
+
+  const projectName = path.basename(path.dirname(sourcePath));
+  if (!projectName || projectName === "." || projectName === path.sep) {
+    throw new Error("Managed Claude source transcript has an invalid project directory.");
+  }
+  const targetProjectsRoot = path.join(resolvedTargetConfigDir, "projects");
+  const targetProjectDir = path.join(targetProjectsRoot, projectName);
+  const targetTranscriptPath = path.join(targetProjectDir, `${threadId}.jsonl`);
+  const sourceCompanionPath = path.join(path.dirname(sourcePath), threadId);
+  const targetCompanionPath = path.join(targetProjectDir, threadId);
+  const targetMarkerPath = path.join(
+    targetProjectDir,
+    `${threadId}${STAGED_FORK_MARKER_SUFFIX}`,
+  );
+  if (
+    fs.existsSync(targetTranscriptPath)
+    || fs.existsSync(targetCompanionPath)
+    || fs.existsSync(targetMarkerPath)
+  ) {
+    throw new Error(
+      `Claude session ${threadId} already exists in the selected destination account.`,
+    );
+  }
+
+  let projectDirectoryCreated = false;
+  let markerCreated = false;
+  let transcriptCreated = false;
+  let companionCreated = false;
+  const cleanup = () => {
+    let failed = false;
+    try {
+      if (companionCreated && fs.existsSync(targetCompanionPath)) {
+        fs.rmSync(targetCompanionPath, { recursive: true });
+      }
+      companionCreated = false;
+    } catch {
+      failed = true;
+    }
+    try {
+      if (transcriptCreated && fs.existsSync(targetTranscriptPath)) {
+        fs.unlinkSync(targetTranscriptPath);
+      }
+      transcriptCreated = false;
+    } catch {
+      failed = true;
+    }
+    try {
+      if (markerCreated && fs.existsSync(targetMarkerPath)) {
+        fs.unlinkSync(targetMarkerPath);
+      }
+      markerCreated = false;
+    } catch {
+      failed = true;
+    }
+    if (projectDirectoryCreated) {
+      try {
+        fs.rmdirSync(targetProjectDir);
+        projectDirectoryCreated = false;
+      } catch (error) {
+        if (error?.code !== "ENOTEMPTY") failed = true;
+      }
+    }
+    if (failed) {
+      throw new Error("Could not clean the staged Claude session fork.");
+    }
+  };
+
+  try {
+    if (!fs.existsSync(targetProjectDir)) {
+      fs.mkdirSync(targetProjectDir, { recursive: true });
+      projectDirectoryCreated = true;
+    }
+    fs.writeFileSync(targetMarkerPath, "", { flag: "wx", mode: 0o600 });
+    markerCreated = true;
+    fs.copyFileSync(sourcePath, targetTranscriptPath, fs.constants.COPYFILE_EXCL);
+    transcriptCreated = true;
+
+    if (fs.existsSync(sourceCompanionPath)) {
+      const companionStat = fs.lstatSync(sourceCompanionPath);
+      if (!companionStat.isDirectory() || companionStat.isSymbolicLink()) {
+        throw new Error("Managed Claude session companion is not a safe directory.");
+      }
+      companionCreated = true;
+      fs.cpSync(sourceCompanionPath, targetCompanionPath, {
+        recursive: true,
+        errorOnExist: true,
+        force: false,
+      });
+    }
+
+    const sourceStatAfter = fs.lstatSync(sourcePath);
+    if (
+      !sourceStatAfter.isFile()
+      || sourceStatAfter.isSymbolicLink()
+      || sourceStatAfter.dev !== sourceStat.dev
+      || sourceStatAfter.ino !== sourceStat.ino
+      || sourceStatAfter.size !== sourceStat.size
+      || sourceStatAfter.mtimeMs !== sourceStat.mtimeMs
+    ) {
+      throw new Error("Managed Claude source transcript changed while staging the fork.");
+    }
+  } catch (error) {
+    try {
+      cleanup();
+    } catch {
+      throw new Error("Claude session fork staging failed and could not be cleaned safely.");
+    }
+    if (error?.message?.startsWith("Managed Claude")) throw error;
+    throw new Error("Could not stage the managed Claude session fork.");
+  }
+
+  return Object.freeze({
+    targetMarkerPath,
+    targetTranscriptPath,
+    targetCompanionPath: companionCreated ? targetCompanionPath : null,
+    cleanup,
+  });
 }
 
 function displayWorkingDirectory(cwd, homeDir) {
