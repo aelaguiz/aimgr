@@ -25,7 +25,6 @@ import {
 } from "../../src/targets/claude-cli.js";
 import {
   ensureManagedClaudePersonalSkillsLink,
-  materializeClaudeSandboxProfile,
   materializeClaudeSecurityShim,
   prepareClaudeCliLaunch,
   resolveEnabledClaudeUserPlugins,
@@ -33,7 +32,6 @@ import {
   syncManagedClaudeUserCustomizations,
   syncManagedClaudePluginPreferences,
   verifyInstalledClaudeExecutable,
-  verifySandboxExecutable,
 } from "../../src/targets/claude-runner.js";
 import { writeJsonFileIfChanged } from "../../src/io/json-store.js";
 import { buildAnthropicClaudeCredential, writeClaudeNativeBundle } from "../helpers/claude.js";
@@ -101,7 +99,7 @@ function writeExactManagedBundle(configDir, value) {
 function buildPreparedLaunch(home, {
   label = "alpha",
   command = process.execPath,
-  launchMode = "darwin-sandbox",
+  launchMode = "darwin-direct",
   userPluginDirs = [],
   userHooksPath = null,
   userMcpConfigPath = null,
@@ -119,7 +117,6 @@ function buildPreparedLaunch(home, {
     userPluginDirs,
     userHooksPath,
     userMcpConfigPath,
-    customizationRoots: [],
     aimgrRoot,
     claudeHomesRoot: path.join(aimgrRoot, "claude-homes"),
     selectedLabelHome,
@@ -127,8 +124,6 @@ function buildPreparedLaunch(home, {
   if (launchMode === "linux-direct") return common;
   return {
     ...common,
-    profilePath: path.join(home, "no-keychain.sb"),
-    sandboxExecPath: "/usr/bin/sandbox-exec",
     runtimeRoot,
     adapterDir: path.join(runtimeRoot, "source-sha"),
     shimPath: path.join(runtimeRoot, "source-sha", "security"),
@@ -660,310 +655,6 @@ test("compatibility executable is content-addressed, private, and reusable", {
   assert.equal(fs.statSync(first.shimPath).nlink, 1);
 });
 
-test("sandbox qualification accepts a strict Apple system build without a release-specific digest", () => {
-  const calls = [];
-  const fileStat = {
-    isFile: () => true,
-    isSymbolicLink: () => false,
-    uid: 0,
-    gid: 0,
-    mode: 0o100755,
-  };
-  const result = verifySandboxExecutable({
-    fsImpl: {
-      lstatSync: (filePath) => {
-        assert.equal(filePath, "/usr/bin/sandbox-exec");
-        return fileStat;
-      },
-      accessSync: (filePath, mode) => {
-        assert.equal(filePath, "/usr/bin/sandbox-exec");
-        assert.equal(mode, fs.constants.X_OK);
-      },
-    },
-    spawnSyncImpl: (file, args, options) => {
-      calls.push({ file, args, options });
-      if (args[0] === "--verify") {
-        return { status: 0, signal: null, stdout: "", stderr: "valid on disk" };
-      }
-      return {
-        status: 0,
-        signal: null,
-        stdout: "",
-        stderr: [
-          "Executable=/usr/bin/sandbox-exec",
-          'designated => identifier "com.apple.sandbox-exec" and anchor apple',
-        ].join("\n"),
-      };
-    },
-  });
-  assert.equal(result, "/usr/bin/sandbox-exec");
-  assert.deepEqual(calls.map(({ file, args }) => ({ file, args })), [
-    {
-      file: "/usr/bin/codesign",
-      args: ["--verify", "--strict", "--verbose=2", "/usr/bin/sandbox-exec"],
-    },
-    {
-      file: "/usr/bin/codesign",
-      args: ["-d", "-r-", "/usr/bin/sandbox-exec"],
-    },
-  ]);
-  for (const call of calls) {
-    assert.equal(call.options.shell, false);
-    assert.equal(call.options.env.PATH, "/usr/bin:/bin");
-  }
-});
-
-test("sandbox qualification rejects a valid non-Apple designated requirement", () => {
-  const fileStat = {
-    isFile: () => true,
-    isSymbolicLink: () => false,
-    uid: 0,
-    gid: 0,
-    mode: 0o100755,
-  };
-  assert.throws(
-    () => verifySandboxExecutable({
-      fsImpl: {
-        lstatSync: () => fileStat,
-        accessSync: () => {},
-      },
-      spawnSyncImpl: (_file, args) => (
-        args[0] === "--verify"
-          ? { status: 0, signal: null, stdout: "", stderr: "" }
-          : {
-            status: 0,
-            signal: null,
-            stdout: "",
-            stderr: 'designated => identifier "com.apple.sandbox-exec" and anchor generic',
-          }
-      ),
-    }),
-    /not the qualified Apple system binary/,
-  );
-});
-
-test("targeted boundary isolates Claude profiles without hiding ordinary user services", {
-  skip: process.platform !== "darwin",
-}, () => {
-  const home = fs.realpathSync(mkTempHome());
-  const adapter = materializeClaudeSecurityShim({ homeDir: home });
-  const aimgrRoot = path.join(home, ".aimgr");
-  const selectedHome = path.join(aimgrRoot, "claude-homes", "alpha");
-  const selectedCredential = path.join(selectedHome, ".claude", ".credentials.json");
-  const otherCredential = path.join(aimgrRoot, "claude-homes", "beta", ".claude", ".credentials.json");
-  const aimgrConfig = path.join(aimgrRoot, "config.yaml");
-  const aimgrLocalState = path.join(aimgrRoot, "local-state.json");
-  const aimgrLocalStateBackup = `${aimgrLocalState}.bak.proof`;
-  const aimgrLegacySecrets = path.join(aimgrRoot, "secrets.json");
-  const globalCredential = path.join(home, ".claude", ".credentials.json");
-  const globalSettings = path.join(home, ".claude", "settings.json");
-  const globalPluginRegistry = path.join(home, ".claude", "plugins", "installed_plugins.json");
-  const globalPluginFile = path.join(
-    home,
-    ".claude",
-    "plugins",
-    "cache",
-    "market",
-    "proof",
-    "1.0.0",
-    "plugin.json",
-  );
-  const globalCustomizationFile = path.join(
-    home,
-    ".claude",
-    "shared-hook",
-    "state.txt",
-  );
-  const personalSkills = path.join(home, ".claude", "skills");
-  const personalSkill = path.join(personalSkills, "shared-proof", "SKILL.md");
-  const sharedSkill = path.join(selectedHome, ".claude", "skills", "shared-proof", "SKILL.md");
-  const keychainDecoy = path.join(home, "Library", "Keychains", "login.keychain-db");
-  const userToolConfig = path.join(home, ".config", "gh", "hosts.yml");
-  const probePath = path.join(home, "boundary-probe.cjs");
-  for (const filePath of [
-    selectedCredential,
-    otherCredential,
-    aimgrConfig,
-    aimgrLocalState,
-    aimgrLegacySecrets,
-    globalCredential,
-    globalSettings,
-    globalPluginRegistry,
-    globalPluginFile,
-    globalCustomizationFile,
-    personalSkill,
-    keychainDecoy,
-    userToolConfig,
-  ]) {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, "synthetic");
-    fs.chmodSync(filePath, 0o600);
-  }
-  fs.symlinkSync(personalSkills, path.join(selectedHome, ".claude", "skills"), "dir");
-  fs.writeFileSync(probePath, `
-const fs = require("node:fs");
-const { spawnSync } = require("node:child_process");
-function readable(name) {
-  try {
-    fs.readFileSync(process.env[name], "utf8");
-    return true;
-  } catch {
-    return false;
-  }
-}
-function writable(name) {
-  try {
-    fs.appendFileSync(process.env[name], "changed");
-    return true;
-  } catch {
-    return false;
-  }
-}
-function check() {
-  const shim = spawnSync("security", [
-    "find-generic-password", "-a", "aim-test-user", "-w", "-s", "aim-test-service",
-  ], { encoding: "utf8" });
-  return {
-    shimStatus: shim.status,
-    shimOutputEmpty: (shim.stdout || "") === "" && (shim.stderr || "") === "",
-    selectedReadable: readable("PROBE_SELECTED"),
-    otherReadable: readable("PROBE_OTHER"),
-    aimgrConfigReadable: readable("PROBE_AIMGR_CONFIG"),
-    aimgrConfigWritable: writable("PROBE_AIMGR_CONFIG"),
-    aimgrLocalStateReadable: readable("PROBE_AIMGR_LOCAL_STATE"),
-    aimgrLocalStateWritable: writable("PROBE_AIMGR_LOCAL_STATE"),
-    aimgrLocalStateBackupWritable: writable("PROBE_AIMGR_LOCAL_STATE_BACKUP"),
-    aimgrLegacySecretsReadable: readable("PROBE_AIMGR_LEGACY_SECRETS"),
-    aimgrLegacySecretsWritable: writable("PROBE_AIMGR_LEGACY_SECRETS"),
-    globalReadable: readable("PROBE_GLOBAL"),
-    globalWritable: writable("PROBE_GLOBAL"),
-    globalSettingsReadable: readable("PROBE_GLOBAL_SETTINGS"),
-    globalPluginRegistryReadable: readable("PROBE_GLOBAL_PLUGIN_REGISTRY"),
-    globalPluginReadable: readable("PROBE_GLOBAL_PLUGIN"),
-    globalPluginWritable: writable("PROBE_GLOBAL_PLUGIN"),
-    globalCustomizationReadable: readable("PROBE_GLOBAL_CUSTOMIZATION"),
-    globalCustomizationWritable: writable("PROBE_GLOBAL_CUSTOMIZATION"),
-    personalSkillReadable: readable("PROBE_PERSONAL_SKILL"),
-    personalSkillWritable: writable("PROBE_PERSONAL_SKILL"),
-    personalSkillDirectWritable: writable("PROBE_PERSONAL_SKILL_DIRECT"),
-    keychainReadable: readable("PROBE_KEYCHAIN"),
-    realSecurityReadable: readable("PROBE_REAL_SECURITY"),
-    userToolReadable: readable("PROBE_USER_TOOL"),
-  };
-}
-if (process.argv.includes("--child")) {
-  process.stdout.write(JSON.stringify(check()));
-} else {
-  const child = spawnSync(process.execPath, [__filename, "--child"], {
-    encoding: "utf8",
-    env: process.env,
-  });
-  process.stdout.write(JSON.stringify({
-    parent: check(),
-    childStatus: child.status,
-    child: JSON.parse(child.stdout),
-  }));
-}
-`);
-  fs.chmodSync(probePath, 0o500);
-  const profilePath = materializeClaudeSandboxProfile({
-    runtimeRoot: adapter.runtimeRoot,
-    customizationRoots: [{ name: "shared-hook", kind: "directory" }],
-  });
-
-  const sandboxParameters = [
-    "-D", `USER_HOME=${home}`,
-    "-D", `USER_HOME_ALIAS=${fs.realpathSync(home)}`,
-    "-D", `LAUNCH_HOME=${selectedHome}`,
-    "-D", `LAUNCH_HOME_ALIAS=${fs.realpathSync(selectedHome)}`,
-    "-D", `AIMGR_ROOT=${aimgrRoot}`,
-    "-D", `SELECTED_LABEL_HOME=${selectedHome}`,
-    "-D", `ADAPTER_RUNTIME_ROOT=${adapter.runtimeRoot}`,
-    "-f", profilePath,
-  ];
-  const result = spawnSync("/usr/bin/sandbox-exec", [
-    ...sandboxParameters,
-    process.execPath,
-    probePath,
-  ], {
-    encoding: "utf8",
-    env: {
-      PATH: `${adapter.adapterDir}:/usr/bin:/bin`,
-      PROBE_SELECTED: selectedCredential,
-      PROBE_OTHER: otherCredential,
-      PROBE_AIMGR_CONFIG: aimgrConfig,
-      PROBE_AIMGR_LOCAL_STATE: aimgrLocalState,
-      PROBE_AIMGR_LOCAL_STATE_BACKUP: aimgrLocalStateBackup,
-      PROBE_AIMGR_LEGACY_SECRETS: aimgrLegacySecrets,
-      PROBE_GLOBAL: globalCredential,
-      PROBE_GLOBAL_SETTINGS: globalSettings,
-      PROBE_GLOBAL_PLUGIN_REGISTRY: globalPluginRegistry,
-      PROBE_GLOBAL_PLUGIN: globalPluginFile,
-      PROBE_GLOBAL_CUSTOMIZATION: globalCustomizationFile,
-      PROBE_PERSONAL_SKILL: sharedSkill,
-      PROBE_PERSONAL_SKILL_DIRECT: personalSkill,
-      PROBE_KEYCHAIN: keychainDecoy,
-      PROBE_REAL_SECURITY: "/usr/bin/security",
-      PROBE_USER_TOOL: userToolConfig,
-    },
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const proof = JSON.parse(result.stdout);
-  assert.equal(proof.childStatus, 0);
-  for (const observation of [proof.parent, proof.child]) {
-    assert.deepEqual(observation, {
-      shimStatus: 44,
-      shimOutputEmpty: true,
-      selectedReadable: true,
-      otherReadable: false,
-      aimgrConfigReadable: true,
-      aimgrConfigWritable: false,
-      aimgrLocalStateReadable: true,
-      aimgrLocalStateWritable: true,
-      aimgrLocalStateBackupWritable: true,
-      aimgrLegacySecretsReadable: false,
-      aimgrLegacySecretsWritable: false,
-      globalReadable: false,
-      globalWritable: false,
-      globalSettingsReadable: false,
-      globalPluginRegistryReadable: false,
-      globalPluginReadable: true,
-      globalPluginWritable: false,
-      globalCustomizationReadable: true,
-      globalCustomizationWritable: true,
-      personalSkillReadable: true,
-      personalSkillWritable: false,
-      personalSkillDirectWritable: false,
-      keychainReadable: true,
-      realSecurityReadable: true,
-      userToolReadable: true,
-    });
-  }
-
-  const jsonStoreUrl = new URL("../../src/io/json-store.js", import.meta.url).href;
-  const productionWrite = spawnSync("/usr/bin/sandbox-exec", [
-    ...sandboxParameters,
-    process.execPath,
-    "--input-type=module",
-    "-e",
-    `const { writeJsonFileWithBackup } = await import(${JSON.stringify(jsonStoreUrl)});
-writeJsonFileWithBackup(process.env.PROBE_AIMGR_LOCAL_STATE, { proof: true });`,
-  ], {
-    encoding: "utf8",
-    env: {
-      PATH: "/usr/bin:/bin",
-      PROBE_AIMGR_LOCAL_STATE: aimgrLocalState,
-    },
-  });
-  assert.equal(productionWrite.status, 0, productionWrite.stderr);
-  assert.equal(
-    fs.readdirSync(aimgrRoot).some(
-      (name) => /^local-state[.]json[.]bak[.]\d{8}-\d{9}$/.test(name),
-    ),
-    true,
-  );
-});
-
 test("managed Claude shares only the exact personal skills directory and rejects conflicts", () => {
   const home = mkTempHome();
   const selectedHome = path.join(home, ".aimgr", "claude-homes", "alpha");
@@ -1072,10 +763,6 @@ test("managed Claude mirrors only complete user MCP and hook overlays on every l
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(result.hooksPath, "utf8")), { hooks });
   assert.deepEqual(JSON.parse(fs.readFileSync(result.mcpConfigPath, "utf8")), { mcpServers });
-  assert.deepEqual(result.customizationRoots, [
-    { name: "custom-hook", kind: "directory" },
-    { name: "custom-mcp", kind: "directory" },
-  ]);
   assert.equal(fs.statSync(result.hooksPath).mode & 0o777, 0o600);
   assert.equal(fs.statSync(result.mcpConfigPath).mode & 0o777, 0o600);
   assert.doesNotMatch(
@@ -1092,7 +779,6 @@ test("managed Claude mirrors only complete user MCP and hook overlays on every l
   assert.deepEqual(cleared, {
     hooksPath: null,
     mcpConfigPath: null,
-    customizationRoots: [],
   });
   assert.equal(fs.existsSync(result.hooksPath), false);
   assert.equal(fs.existsSync(result.mcpConfigPath), false);
@@ -1263,9 +949,8 @@ test("runner preserves the user home while pinning Claude config and exact launc
   });
   assert.equal(calls[0].file, process.execPath);
   assert.match(calls[0].args[0], /src\/targets\/claude-supervisor\.js$/);
-  assert.equal(calls[0].args[1], "/usr/bin/sandbox-exec");
-  assert.deepEqual(calls[0].args.slice(-10), [
-    path.resolve(process.execPath),
+  assert.deepEqual(calls[0].args.slice(1), [
+    preparedLaunch.command,
     "--settings",
     userHooksPath,
     "--mcp-config",
@@ -1289,6 +974,39 @@ test("runner preserves the user home while pinning Claude config and exact launc
     calls[0].options.env.PATH,
     `${preparedLaunch.adapterDir}:/custom/bin:/usr/bin:/bin`,
   );
+});
+
+test("Darwin runner permits ps and a nested build sandbox", {
+  skip: process.platform !== "darwin",
+}, async () => {
+  const home = mkTempHome();
+  const preparedLaunch = buildPreparedLaunch(home);
+  const result = await runClaudeCli({
+    command: preparedLaunch.command,
+    userHomeDir: home,
+    homeDir: preparedLaunch.homeDir,
+    configDir: preparedLaunch.configDir,
+    cwd: home,
+    args: [
+      "-e",
+      [
+        'const { spawnSync } = require("node:child_process");',
+        'const ps = spawnSync("/bin/ps", ["-p", "1"], { stdio: "ignore" });',
+        "const nested = spawnSync(",
+        '  "/usr/bin/sandbox-exec",',
+        '  ["-p", "(version 1) (allow default)", "/bin/echo", "nested-ok"],',
+        '  { stdio: "ignore" },',
+        ");",
+        "process.exit(ps.status === 0 && nested.status === 0 ? 0 : 1);",
+      ].join("\n"),
+    ],
+    env: {
+      HOME: home,
+      PATH: "/usr/bin:/bin",
+    },
+    preparedLaunch,
+  });
+  assert.deepEqual(result, { status: 0, signal: null });
 });
 
 test("Darwin qualification trusts the Anthropic signing identity without a release pin", async () => {
@@ -1402,7 +1120,7 @@ test("Linux qualification rejects an unqualified digest and unsupported architec
   );
 });
 
-test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", async () => {
+test("Linux preflight omits the macOS Keychain adapter", async () => {
   const home = mkTempHome();
   const command = "/home/test/.local/share/claude/versions/2.1.218";
   const selectedLabelHome = path.join(home, ".aimgr", "claude-homes", "alpha");
@@ -1461,17 +1179,12 @@ test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", as
     materializeClaudeSecurityShimImpl: () => {
       throw new Error("Linux preflight must not materialize the macOS security shim.");
     },
-    verifySandboxExecutableImpl: () => {
-      throw new Error("Linux preflight must not inspect sandbox-exec.");
-    },
   });
   assert.equal(verified, true);
   assert.equal(prepared.launchMode, "linux-direct");
   assert.equal(prepared.command, command);
   assert.equal(prepared.homeDir, selectedLabelHome);
   assert.equal(prepared.configDir, configDir);
-  assert.equal(prepared.profilePath, undefined);
-  assert.equal(prepared.sandboxExecPath, undefined);
   assert.equal(prepared.adapterDir, undefined);
   assert.deepEqual(prepared.userPluginDirs, [fs.realpathSync(pluginDir)]);
   assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userHooksPath, "utf8")), {
@@ -1486,7 +1199,6 @@ test("Linux preflight omits the macOS Keychain adapter and sandbox boundary", as
       browseros: { type: "http", url: "http://127.0.0.1:9000/mcp" },
     },
   });
-  assert.deepEqual(prepared.customizationRoots, []);
   assert.equal(fs.readlinkSync(path.join(configDir, "skills")), personalSkills);
   assert.equal(
     fs.existsSync(path.join(configDir, ".i-have-adhd-always")),
