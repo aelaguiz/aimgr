@@ -10,6 +10,7 @@ import {
   resolveManagedClaudeSession,
   stageManagedClaudeSessionFork,
 } from "../../src/targets/claude-sessions.js";
+import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { runCli } from "../helpers/cli-runner.js";
 import { mkTempHome } from "../helpers/files.js";
 
@@ -84,6 +85,20 @@ function seedFiftyOneSessions(home) {
           customTitle: "   ",
           timestamp,
         },
+        {
+          type: "assistant",
+          isSidechain: false,
+          message: { model: "claude-opus-4-8" },
+          effort: "medium",
+          timestamp,
+        },
+        {
+          type: "assistant",
+          isSidechain: true,
+          message: { model: "claude-fable-5" },
+          effort: "xhigh",
+          timestamp,
+        },
       );
     }
     if (index === 1) {
@@ -123,6 +138,8 @@ test("managed Claude sessions list the newest 50 with persisted name and ID fall
   assert.equal(sessions[0].account, "pro5");
   assert.equal(sessions[0].threadName, "Current release");
   assert.equal(sessions[0].thread, "Current release");
+  assert.equal(sessions[0].model, "claude-opus-4-8");
+  assert.equal(sessions[0].effort, "medium");
   assert.equal(sessions[1].threadName, "Investigate tokens");
   assert.equal(sessions[2].threadName, null);
   assert.equal(sessions[2].thread, THREAD_IDS[2]);
@@ -211,6 +228,33 @@ test("managed Claude sessions resolve a current row or any exact thread ID and r
     /working directory is unavailable/,
   );
   assert.deepEqual(listRecentManagedClaudeSessions({ homeDir: mkTempHome() }), []);
+});
+
+test("managed Claude resume refuses to guess when exact runtime metadata is absent", async () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  writeManagedSession({
+    home,
+    account: "pro5",
+    threadId,
+    cwd: path.join(home, "workspace", "project"),
+    timestamp: new Date(NOW_MS).toISOString(),
+  });
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:test:" } },
+  });
+  let redisCalls = 0;
+  await assert.rejects(
+    runCli(["claude", "resume", threadId, "--home", home], {
+      connectRedisStoreImpl: () => {
+        redisCalls += 1;
+        throw new Error("resume must fail before Redis I/O");
+      },
+    }),
+    /does not record an exact model and effort; refusing to guess/,
+  );
+  assert.equal(redisCalls, 0);
 });
 
 test("managed Claude session fork staging copies exact source data and cleans only its destination copy", () => {

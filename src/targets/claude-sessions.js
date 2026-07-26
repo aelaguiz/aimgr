@@ -8,6 +8,8 @@ import { formatStatusTable } from "../status/table.js";
 export const CLAUDE_RECENT_SESSION_LIMIT = 50;
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SESSION_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SESSION_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const STAGED_FORK_MARKER_SUFFIX = ".aimgr-staged-fork";
 
 function readDirectory(directory, { missingIsEmpty = false } = {}) {
@@ -38,6 +40,8 @@ function parseSessionFile({ filePath, account, threadId, fallbackTimestampMs }) 
   let customTitle = null;
   let aiTitle = null;
   let lastUsedMs = null;
+  let model = null;
+  let effort = null;
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
     let entry;
@@ -62,6 +66,21 @@ function parseSessionFile({ filePath, account, threadId, fallbackTimestampMs }) 
       const title = normalizeThreadName(entry.aiTitle);
       if (title) aiTitle = title;
     }
+    const observedModel = typeof entry?.message?.model === "string"
+      ? entry.message.model.trim()
+      : "";
+    const observedEffort = typeof entry?.effort === "string"
+      ? entry.effort.trim().toLowerCase()
+      : "";
+    if (
+      entry?.type === "assistant"
+      && entry?.isSidechain !== true
+      && SESSION_MODEL_PATTERN.test(observedModel)
+      && SESSION_EFFORT_LEVELS.has(observedEffort)
+    ) {
+      model = observedModel;
+      effort = observedEffort;
+    }
   }
   if (!cwd) return null;
   const observedAtMs = lastUsedMs ?? fallbackTimestampMs;
@@ -73,6 +92,8 @@ function parseSessionFile({ filePath, account, threadId, fallbackTimestampMs }) 
     threadName,
     thread: threadName ?? threadId,
     cwd,
+    model,
+    effort,
     transcriptPath: filePath,
     lastUsedAt: new Date(observedAtMs).toISOString(),
     lastUsedMs: observedAtMs,

@@ -684,7 +684,7 @@ test("automatic Fable run skips a locked account and launches the lowest Fable u
   await lockedLease.release();
 });
 
-test("claude resume reuses the selected managed account, working directory, and Opus preset", async () => {
+test("claude resume reuses the exact recorded Fable model and effort", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const threadId = "11111111-1111-4111-8111-111111111111";
@@ -701,12 +701,22 @@ test("claude resume reuses the selected managed account, working directory, and 
     `${threadId}.jsonl`,
   );
   fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
-  fs.writeFileSync(sessionPath, `${JSON.stringify({
-    type: "user",
-    sessionId: threadId,
-    cwd: launchCwd,
-    timestamp: "2026-07-24T17:00:00.000Z",
-  })}\n`, "utf8");
+  fs.writeFileSync(sessionPath, [
+    JSON.stringify({
+      type: "user",
+      sessionId: threadId,
+      cwd: launchCwd,
+      timestamp: "2026-07-24T17:00:00.000Z",
+    }),
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: false,
+      message: { model: "claude-fable-5" },
+      effort: "xhigh",
+      timestamp: "2026-07-24T17:00:01.000Z",
+    }),
+    "",
+  ].join("\n"), "utf8");
 
   writeAimgrConfig({
     homeDir: home,
@@ -751,9 +761,9 @@ test("claude resume reuses the selected managed account, working directory, and 
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
-        "opus",
+        "claude-fable-5",
         "--effort",
-        "max",
+        "xhigh",
         "--resume",
         threadId,
       ]);
@@ -924,7 +934,7 @@ test("claude resume explicitly switches to the least-used unlocked Fable account
   );
 });
 
-test("claude resume forks onto the least-used unlocked Opus account when the recorded account is busy", async () => {
+test("claude resume preserves Fable and uses Fable usage when the recorded account is busy", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -954,6 +964,13 @@ test("claude resume forks onto the least-used unlocked Opus account when the rec
       type: "custom-title",
       customTitle: "Review puzzle quality",
       timestamp: "2026-07-24T17:00:01.000Z",
+    }),
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: false,
+      message: { model: "claude-fable-5" },
+      effort: "xhigh",
+      timestamp: "2026-07-24T17:00:02.000Z",
     }),
     "",
   ].join("\n");
@@ -999,10 +1016,10 @@ test("claude resume forks onto the least-used unlocked Opus account when the rec
     provider: "anthropic",
     label: "boss",
   });
-  const fiveHourUsage = {
-    ACCESS_BOSS: 0,
-    ACCESS_LOW: 10,
-    ACCESS_HIGH: 70,
+  const usage = {
+    ACCESS_BOSS: { fiveHour: 0, fable: 0 },
+    ACCESS_LOW: { fiveHour: 10, fable: 70 },
+    ACCESS_HIGH: { fiveHour: 70, fable: 5 },
   };
   let launchedLabel = null;
   let targetConfigDir = null;
@@ -1019,7 +1036,7 @@ test("claude resume forks onto the least-used unlocked Opus account when the rec
           status: 200,
           json: async () => ({
             five_hour: {
-              utilization: fiveHourUsage[accessToken],
+              utilization: usage[accessToken].fiveHour,
               resets_at: new Date(nowMs + 3_600_000).toISOString(),
             },
             seven_day: {
@@ -1027,7 +1044,7 @@ test("claude resume forks onto the least-used unlocked Opus account when the rec
               resets_at: new Date(nowMs + 86_400_000).toISOString(),
             },
             seven_day_sonnet: {
-              utilization: 30,
+              utilization: usage[accessToken].fable,
               resets_at: new Date(nowMs + 86_400_000).toISOString(),
             },
           }),
@@ -1060,9 +1077,9 @@ test("claude resume forks onto the least-used unlocked Opus account when the rec
         assert.deepEqual(args, [
           "--dangerously-skip-permissions",
           "--model",
-          "opus",
+          "claude-fable-5",
           "--effort",
-          "max",
+          "xhigh",
           "--resume",
           threadId,
           "--fork-session",
@@ -1089,9 +1106,9 @@ test("claude resume forks onto the least-used unlocked Opus account when the rec
 
     assert.equal(
       out,
-      'boss is busy; forking session onto low as "[fork from boss/33333333] Review puzzle quality".\n',
+      'boss is busy; forking session onto high as "[fork from boss/33333333] Review puzzle quality".\n',
     );
-    assert.equal(launchedLabel, "low");
+    assert.equal(launchedLabel, "high");
     assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
     assert.equal(
       fs.existsSync(path.join(
@@ -1123,7 +1140,7 @@ test("claude resume forks onto the least-used unlocked Opus account when the rec
 
     const listed = JSON.parse(await runCli(["claude", "list", "--json", "--home", home]));
     const fork = listed.sessions.find((session) => session.threadId === forkThreadId);
-    assert.equal(fork.account, "low");
+    assert.equal(fork.account, "high");
     assert.equal(
       fork.threadName,
       "[fork from boss/33333333] Review puzzle quality",
@@ -1151,12 +1168,22 @@ test("claude resume fails safely when the recorded account is busy and no destin
   );
   fs.mkdirSync(launchCwd, { recursive: true });
   fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
-  fs.writeFileSync(sessionPath, `${JSON.stringify({
-    type: "user",
-    sessionId: threadId,
-    cwd: launchCwd,
-    timestamp: "2026-07-24T17:00:00.000Z",
-  })}\n`, "utf8");
+  fs.writeFileSync(sessionPath, [
+    JSON.stringify({
+      type: "user",
+      sessionId: threadId,
+      cwd: launchCwd,
+      timestamp: "2026-07-24T17:00:00.000Z",
+    }),
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: false,
+      message: { model: "claude-opus-5" },
+      effort: "max",
+      timestamp: "2026-07-24T17:00:01.000Z",
+    }),
+    "",
+  ].join("\n"), "utf8");
 
   const credential = buildAnthropicClaudeCredential({
     expiresAtMs: nowMs + 3_600_000,

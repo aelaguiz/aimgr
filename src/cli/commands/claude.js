@@ -1195,6 +1195,20 @@ export async function handleClaude(context) {
       throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     const requestedSwitchPreset = opts.claudeResumeSwitchAccountPreset;
+    const preservedResumeArgs = session.model && session.effort
+      ? [
+        "--dangerously-skip-permissions",
+        "--model",
+        session.model,
+        "--effort",
+        session.effort,
+      ]
+      : null;
+    if (!requestedSwitchPreset && !preservedResumeArgs) {
+      throw new Error(
+        `Claude session ${session.threadId} does not record an exact model and effort; refusing to guess.`,
+      );
+    }
     if (!requestedSwitchPreset) {
       const directContext = {
         ...context,
@@ -1202,7 +1216,7 @@ export async function handleClaude(context) {
         opts: {
           ...opts,
           afterDoubleDash: [
-            ...CLAUDE_OPUS_RUN_PRESET_ARGS,
+            ...preservedResumeArgs,
             "--resume",
             session.threadId,
           ],
@@ -1218,10 +1232,15 @@ export async function handleClaude(context) {
       }
     }
 
-    const forkPreset = requestedSwitchPreset ?? "opus";
-    const forkPresetArgs = forkPreset === "fable"
-      ? CLAUDE_FABLE_RUN_PRESET_ARGS
-      : CLAUDE_OPUS_RUN_PRESET_ARGS;
+    const forkPreset = requestedSwitchPreset
+      ?? (session.model.toLowerCase().includes("fable") ? "fable" : "opus");
+    const forkResumeArgs = requestedSwitchPreset
+      ? (
+        forkPreset === "fable"
+          ? CLAUDE_FABLE_RUN_PRESET_ARGS
+          : CLAUDE_OPUS_RUN_PRESET_ARGS
+      )
+      : preservedResumeArgs;
     const selected = await selectAutomaticClaudeAccount(context, {
       preset: forkPreset,
       excludeLabels: [session.account],
@@ -1248,7 +1267,7 @@ export async function handleClaude(context) {
       opts: {
         ...opts,
         afterDoubleDash: [
-          ...forkPresetArgs,
+          ...forkResumeArgs,
           "--resume",
           session.threadId,
           "--fork-session",
