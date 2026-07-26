@@ -765,6 +765,165 @@ test("claude resume reuses the selected managed account, working directory, and 
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
 });
 
+test("claude resume explicitly switches to the least-used unlocked Fable account", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const nowMs = Date.now();
+  const threadId = "66666666-6666-4666-8666-666666666666";
+  const launchCwd = path.join(home, "workspace", "selected-project");
+  const sourcePath = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "boss",
+    ".claude",
+    "projects",
+    "selected-project",
+    `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(launchCwd, { recursive: true });
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  const sourceContent = [
+    JSON.stringify({
+      type: "user",
+      sessionId: threadId,
+      cwd: launchCwd,
+      timestamp: "2026-07-24T17:00:00.000Z",
+    }),
+    JSON.stringify({
+      type: "custom-title",
+      customTitle: "Continue rate-limited work",
+      timestamp: "2026-07-24T17:00:01.000Z",
+    }),
+    "",
+  ].join("\n");
+  fs.writeFileSync(sourcePath, sourceContent, "utf8");
+
+  const record = (label) => {
+    const emailAddress = `${label}@example.com`;
+    const organizationUuid = `org_${label}`;
+    const credential = buildAnthropicClaudeCredential({
+      access: `ACCESS_${label.toUpperCase()}`,
+      refresh: `REFRESH_${label.toUpperCase()}`,
+      expiresAtMs: nowMs + 3_600_000,
+      emailAddress,
+      organizationName: `${label} Org`,
+      organizationUuid,
+    });
+    credential.nativeClaudeBundle.oauthAccount.accountUuid = `acct_${label}`;
+    return {
+      provider: "anthropic",
+      label,
+      credential,
+      identity: {
+        accountUuid: `acct_${label}`,
+        emailAddress,
+        organizationUuid,
+      },
+      policy: {
+        expect: { email: emailAddress },
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    };
+  };
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [record("boss"), record("fablelow"), record("opuslow")],
+  });
+
+  const usageByAccessToken = {
+    ACCESS_BOSS: { fiveHour: 1, fable: 1 },
+    ACCESS_FABLELOW: { fiveHour: 80, fable: 5 },
+    ACCESS_OPUSLOW: { fiveHour: 10, fable: 60 },
+  };
+  let launchedLabel = null;
+  let targetConfigDir = null;
+  const out = await runCli([
+    "claude",
+    "resume",
+    threadId,
+    "--switch-account",
+    "fable",
+    "--home",
+    home,
+  ], {
+    env: { HOME: home },
+    nowImpl: () => nowMs,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    fetchJsonWithTimeoutImpl: async (_url, options) => {
+      const accessToken = String(options?.headers?.Authorization ?? "").replace(/^Bearer /, "");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: {
+            utilization: usageByAccessToken[accessToken].fiveHour,
+            resets_at: new Date(nowMs + 3_600_000).toISOString(),
+          },
+          seven_day: {
+            utilization: 20,
+            resets_at: new Date(nowMs + 86_400_000).toISOString(),
+          },
+          seven_day_sonnet: {
+            utilization: usageByAccessToken[accessToken].fable,
+            resets_at: new Date(nowMs + 86_400_000).toISOString(),
+          },
+        }),
+      };
+    },
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: ({ homeDir: launchHome, configDir, cwd, args }) => {
+      launchedLabel = path.basename(launchHome);
+      targetConfigDir = configDir;
+      assert.equal(cwd, launchCwd);
+      assert.equal(
+        fs.readFileSync(path.join(
+          configDir,
+          "projects",
+          "selected-project",
+          `${threadId}.jsonl`,
+        ), "utf8"),
+        sourceContent,
+      );
+      assert.deepEqual(args, [
+        "--dangerously-skip-permissions",
+        "--model",
+        "claude-fable-5",
+        "--effort",
+        "xhigh",
+        "--resume",
+        threadId,
+        "--fork-session",
+        "--name",
+        "[fork from boss/66666666] Continue rate-limited work",
+      ]);
+      return { status: 0, signal: null };
+    },
+  });
+
+  assert.equal(
+    out,
+    "Switching session from boss to fablelow using fable as "
+      + "\"[fork from boss/66666666] Continue rate-limited work\".\n",
+  );
+  assert.equal(launchedLabel, "fablelow");
+  assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+  assert.equal(
+    fs.existsSync(path.join(
+      targetConfigDir,
+      "projects",
+      "selected-project",
+      `${threadId}.jsonl`,
+    )),
+    false,
+  );
+});
+
 test("claude resume forks onto the least-used unlocked Opus account when the recorded account is busy", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
@@ -1028,34 +1187,48 @@ test("claude resume fails safely when the recorded account is busy and no destin
     provider: "anthropic",
     label: "boss",
   });
+  const cliDeps = {
+    env: { HOME: home },
+    nowImpl: () => nowMs,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    fetchJsonWithTimeoutImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        five_hour: {
+          utilization: 0,
+          resets_at: new Date(nowMs + 3_600_000).toISOString(),
+        },
+        seven_day: {
+          utilization: 0,
+          resets_at: new Date(nowMs + 86_400_000).toISOString(),
+        },
+      }),
+    }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+  };
 
   try {
     await assert.rejects(
-      runCli(["claude", "resume", threadId, "--home", home], {
-        env: { HOME: home },
-        nowImpl: () => nowMs,
-        connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
-        fetchJsonWithTimeoutImpl: async () => ({
-          ok: true,
-          status: 200,
-          json: async () => ({
-            five_hour: {
-              utilization: 0,
-              resets_at: new Date(nowMs + 3_600_000).toISOString(),
-            },
-            seven_day: {
-              utilization: 0,
-              resets_at: new Date(nowMs + 86_400_000).toISOString(),
-            },
-          }),
-        }),
-        resolveExecutableOnPathImpl: buildTestClaudeResolver(),
-      }),
+      runCli(["claude", "resume", threadId, "--home", home], cliDeps),
       /busy and no other unlocked Claude account/,
     );
   } finally {
     await sourceLease.release();
   }
+
+  await assert.rejects(
+    runCli([
+      "claude",
+      "resume",
+      threadId,
+      "--switch-account",
+      "fable",
+      "--home",
+      home,
+    ], cliDeps),
+    /No other unlocked Claude account with readable Fable usage is available/,
+  );
 });
 
 test("claude resume rejects a missing recorded directory before connecting to Redis", async () => {

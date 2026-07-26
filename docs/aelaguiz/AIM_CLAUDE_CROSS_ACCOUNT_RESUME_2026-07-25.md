@@ -24,6 +24,10 @@ transcript, and asks Claude to create a distinct fork named:
 The original transcript and active process remain untouched. AIM never bypasses
 credential leases.
 
+`aim claude resume <row-or-thread-id> --switch-account fable|opus` explicitly
+skips the recorded account and immediately uses the same fork path. `fable`
+ranks alternatives by Fable usage; `opus` ranks them by shared five-hour usage.
+
 Worklog:
 [AIM_CLAUDE_CROSS_ACCOUNT_RESUME_2026-07-25_WORKLOG.md](./AIM_CLAUDE_CROSS_ACCOUNT_RESUME_2026-07-25_WORKLOG.md)
 
@@ -33,7 +37,9 @@ Worklog:
 
 Amir can run `aim claude resume <selector>` even when the session's recorded
 Claude account is busy, provided another healthy account is unlocked. The
-result is visibly a fork with source provenance.
+result is visibly a fork with source provenance. Amir can also request that
+fork before the source account is busy by adding
+`--switch-account fable|opus`.
 
 ### In scope
 
@@ -45,6 +51,8 @@ result is visibly a fork with source provenance.
 - Use Claude's native `--fork-session` and `--name` capabilities.
 - Retain the new fork under the destination account and remove the staged
   source copy after Claude exits or launch fails.
+- Add one explicit `--switch-account fable|opus` resume option that skips the
+  recorded account and selects by the requested preset's existing ranking.
 
 ### Out of scope
 
@@ -52,7 +60,8 @@ result is visibly a fork with source provenance.
 - A shared transcript store, session database, migration, daemon, or cleanup
   service.
 - Cross-machine transcript transfer.
-- New CLI flags, configurable naming, model selection, or Fable resume.
+- Any new CLI option beyond `--switch-account fable|opus`, configurable naming,
+  an interactive account picker, or arbitrary model selection.
 - Recovering an orphan left by an uncatchable process kill.
 
 ### Definition of done
@@ -64,8 +73,12 @@ result is visibly a fork with source provenance.
 - The original transcript is unchanged; the temporary destination copy is
   removed; the new fork persists.
 - No unlocked destination produces a clear safe failure.
-- Focused tests, lint, full suite, one live AIM/OAuth proof, local install, and
-  fleet deployment pass.
+- Explicit Fable/Opus switching skips the recorded account even when it is free,
+  uses the matching preset and ranking, and fails safely when no alternative
+  exists.
+- Focused tests, lint, `git diff --check`, and the full suite pass. The prior
+  real AIM/OAuth fork proof remains authoritative for the unchanged staging and
+  native Claude boundary.
 
 <!-- lilarch:block:requirements:start -->
 ## Requirements and Defaults
@@ -85,29 +98,40 @@ result is visibly a fork with source provenance.
   of launching a questionable snapshot.
 - R7: The new fork is normal destination-account session history. Only the
   temporary source-ID copy is removed.
+- R8: `--switch-account` accepts exactly `fable` or `opus` and is valid only on
+  `aim claude resume`.
+- R9: Explicit switching never attempts to acquire the recorded account. It
+  excludes that label before selecting an alternative.
+- R10: Fable switching uses the existing Fable/Sonnet ranking and Fable launch
+  preset; Opus switching uses the existing five-hour ranking and Opus preset.
+- R11: Explicit switching reuses the same provenance, staging, native
+  `--fork-session`, cleanup, and destination lease path as busy fallback.
 
-Defaults: automatic fallback, Opus ranking, no new user choice, no compatibility
-path, and no lease bypass.
+Defaults: no flag preserves automatic busy-only Opus fallback; explicit
+switching requires a preset; no compatibility path and no lease bypass.
 <!-- lilarch:block:requirements:end -->
 
 ## Scope and Simplicity Contract
 
-- **Human-authorized outcome:** resume any listed local session when its
-  recorded account is in use, retain explicit fork provenance, plan tightly,
-  implement, test, and deploy.
-- **Smallest sufficient solution:** one busy-error branch in the existing
-  resume command plus one transcript-staging owner beside the existing session
-  reader, using Claude's proven native fork/name flags.
+- **Human-authorized outcome:** retain the shipped busy-account fork behavior
+  and add one way to resume a rate-limited session on a different account,
+  selected for Fable or Opus usage, with a mini-plan, implementation, and tests.
+- **Smallest sufficient solution:** one parsed resume option that enters the
+  existing cross-account fork branch before the direct launch and supplies the
+  requested existing selector and launch preset.
 - **Initial minimal convergence closure:** factor the existing automatic Claude
   account selection call inside `src/cli/commands/claude.js` so automatic run
   and busy-resume fallback cannot define different ranking behavior.
-- **Scope freeze:** only resume orchestration, session staging, their focused
-  tests, this doc/worklog, and deployment are authorized.
-- **Enough proof:** direct-path regression, busy-path selection/arguments,
-  source immutability, stage cleanup, retained fork, no-destination failure,
-  focused tests, lint, full suite, and one real live command.
-- **Do not build:** shared storage, registries, new options, retry engines,
-  background cleanup, remote session sync, or credential concurrency.
+- **Scope freeze:** only resume option parsing, orchestration through the
+  existing fork path, help/README text, focused tests, and this doc/worklog are
+  authorized for the explicit-switch delta.
+- **Enough proof:** unflagged direct-path regression, explicit Fable selection
+  when it differs from five-hour selection, exact Fable fork arguments,
+  invalid-option rejection, no-alternative failure, focused tests, lint,
+  `git diff --check`, and full suite.
+- **Do not build:** shared storage, registries, additional options, an account
+  picker, retry engines, background cleanup, remote session sync, credential
+  concurrency, or a second fork implementation.
 - **Accepted residual risk:** an uncatchable kill can leave the exact staged
   source copy in the destination home; AIM will refuse to overwrite it rather
   than guessing that it is safe to delete.
@@ -115,9 +139,9 @@ path, and no lease bypass.
 <!-- arch_skill:block:research_grounding:start -->
 ## Research Grounding
 
-- `src/cli/commands/claude.js` currently resolves a session and always passes
-  `session.account` to `handleRedisClaudeRun`; the lease failure occurs before
-  credential projection or Claude launch.
+- `src/cli/commands/claude.js` first passes `session.account` to
+  `handleRedisClaudeRun`; a busy lease triggers the shipped Opus fork path
+  before credential projection or Claude launch.
 - `src/targets/claude-sessions.js` already owns discovery, thread identity,
   title precedence, account ownership, and working-directory validation.
 - Claude Code `2.1.219` exposes native `--fork-session` and `--name`.
@@ -129,6 +153,9 @@ path, and no lease bypass.
   `89f2b2b8-11bd-4dbc-bf5b-1d8246e6d05c`; Claude consumed 40,167 cached-context
   tokens, `aim claude list` showed the exact provenance title, and the source
   hash remained unchanged.
+- `selectLeastUsedUnlockedClaudeAccount` already supports both required
+  policies: Fable/Sonnet usage with five-hour tie-breaking for `fable`, and
+  shared five-hour usage for `opus`.
 <!-- arch_skill:block:research_grounding:end -->
 
 <!-- arch_skill:block:current_architecture:start -->
@@ -140,6 +167,10 @@ acquires that account's Redis credential lease and fails immediately when
 another process holds it. Session files remain isolated below each managed
 account's `.claude/projects` tree, so another account cannot resolve the UUID
 without a staged copy.
+
+There is no explicit way to choose a new account while the recorded account is
+still unlocked, so rate-limited sessions take the direct path and reopen on the
+same quota.
 <!-- arch_skill:block:current_architecture:end -->
 
 <!-- arch_skill:block:target_architecture:start -->
@@ -153,6 +184,11 @@ lease is acquired, the session owner stages the source transcript and optional
 companion directory. Claude launches with native fork/name arguments. AIM's
 existing run `finally` path removes the staged source while retaining Claude's
 new thread.
+
+When `--switch-account fable|opus` is present, `handleClaude` skips the direct
+attempt and enters that same fork branch with the requested selector and preset
+arguments. Without the option, the current direct and busy-fallback behavior is
+unchanged.
 <!-- arch_skill:block:target_architecture:end -->
 
 <!-- arch_skill:block:call_site_audit:start -->
@@ -165,6 +201,10 @@ new thread.
     during its existing lifecycle cleanup.
   - automatic `claude run opus|fable`: reuse the factored selection helper with
     no behavior change.
+- `src/cli/args.js`
+  - parse and validate the single resume-only `--switch-account` option.
+- `src/cli/help.js` and `README.md`
+  - document the exact explicit-switch command.
 - `src/targets/claude-sessions.js`
   - expose the resolved transcript path internally.
   - own safe stage/cleanup for a cross-account fork.
@@ -186,32 +226,34 @@ new thread.
 - Launch the destination with native fork/name flags and clean the staged
   source in the run lifecycle.
 
-### Phase 2 — Proof and deployment
+### Phase 2 — Explicit preset-aware switch
 
-- Run focused session and CLI tests, lint, `git diff --check`, and the full
-  suite.
-- Run one real local AIM/OAuth busy-account resume proof and verify list
-  provenance, original integrity, destination health, and cleanup.
-- Install locally, commit/push `main`, fast-forward the fleet, install there,
-  and run read-only smoke checks.
+- Parse `--switch-account fable|opus` only for Claude resume.
+- Route it directly through the existing selection and native fork path,
+  excluding the recorded account and using the matching preset arguments.
+- Preserve unflagged direct resume and busy-only Opus fallback unchanged.
+
+### Phase 3 — Proof
+
+- Add focused integration coverage for explicit Fable ranking/arguments,
+  invalid option values, and no-alternative failure.
+- Run focused CLI tests, lint, `git diff --check`, and the full suite.
 <!-- arch_skill:block:phase_plan:end -->
 
 <!-- lilarch:block:plan_audit:start -->
 ## Plan Audit
 
-`PASS`. The plan has two phases and every item maps to the explicit human
-outcome or the frozen selection-helper convergence closure. It uses Claude's
-proven native capabilities instead of a session service. The original direct
-path and credential lease remain authoritative. Tests exercise behavior and
-cleanup rather than adding repo-policing machinery. The only accepted
-unhandled case is an uncatchable process kill, which fails closed on the next
-attempt.
+`PASS`. The amended plan has three phases and the new phase maps exactly to the
+explicit request to move a resumed session to different Fable or Opus quota.
+It reuses the shipped selector, staging, naming, native fork, cleanup, and lease
+owners. The no-flag path remains authoritative. No new storage, picker,
+selection policy, concurrency behavior, or runtime service is authorized.
 <!-- lilarch:block:plan_audit:end -->
 
 <!-- arch_skill:block:implementation_audit:start -->
 ## Implementation Audit
 
-`PASS`.
+Prior busy-fallback implementation: `PASS`.
 
 - `src/cli/commands/claude.js` preserves direct resume, catches only the
   credential-busy result, reuses the existing Opus selector, excludes the
@@ -230,4 +272,21 @@ attempt.
   Amirs-M3-Max-2, Mac Studio, home, and claw. No out-of-scope session service,
   CLI option, retry engine, daemon, migration, or credential behavior was
   added.
+
+Explicit `--switch-account fable|opus` delta: `PASS`.
+
+- `src/cli/args.js` accepts only `fable` or `opus` on Claude resume and rejects
+  missing, invalid, and unrelated-command use before Redis or launch work.
+- `src/cli/commands/claude.js` skips the direct source launch only when the
+  option is present, excludes the source label, selects through the existing
+  preset-aware policy, and reuses the existing fork/staging/cleanup path with
+  the matching preset arguments.
+- The explicit Fable integration proof kept the source account unlocked, made
+  Fable and five-hour rankings disagree, selected the Fable-low alternative,
+  used the exact Fable/native-fork arguments, preserved the source, and removed
+  the staged copy.
+- Focused suites passed 17/17 and 23/23; lint and `git diff --check` passed; the
+  full suite passed 371/371.
+- Final scope audit found no new storage, selector, picker, lease behavior,
+  concurrency path, daemon, or fork implementation.
 <!-- arch_skill:block:implementation_audit:end -->

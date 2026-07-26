@@ -143,6 +143,7 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   const out = await runCli([]);
   assert.match(out, /aim redis configure --url <redis-url>/);
   assert.match(out, /aim auth maintain\s+# refresh due Redis-backed Claude and Codex OAuth credentials once/);
+  assert.match(out, /aim claude resume <row-or-thread-id> \[--switch-account fable\|opus\]/);
   assert.match(out, /aim claude run \(opus\|fable\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \(opus\|fable\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
@@ -208,6 +209,40 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
   assert.equal(explicit.opts.claudeAutoSelect, false);
   assert.deepEqual(explicit.opts.afterDoubleDash, ["--model", "sonnet"]);
   assert.equal(explicit.opts.claudeAutoSelectPreset, null);
+});
+
+test("Claude resume switch-account accepts only the fable and opus presets", () => {
+  const fable = parseArgs([
+    "claude",
+    "resume",
+    "36",
+    "--switch-account",
+    "fable",
+  ]);
+  assert.deepEqual(fable.positional, ["claude", "resume", "36"]);
+  assert.equal(fable.opts.claudeResumeSwitchAccountPreset, "fable");
+
+  const opus = parseArgs([
+    "claude",
+    "resume",
+    "thread-id",
+    "--switch-account",
+    "opus",
+  ]);
+  assert.equal(opus.opts.claudeResumeSwitchAccountPreset, "opus");
+
+  assert.throws(
+    () => parseArgs(["claude", "resume", "36", "--switch-account", "sonnet"]),
+    /--switch-account requires fable or opus/,
+  );
+  assert.throws(
+    () => parseArgs(["claude", "resume", "36", "--switch-account"]),
+    /--switch-account requires fable or opus/,
+  );
+  assert.throws(
+    () => parseArgs(["claude", "run", "pro7", "--switch-account", "fable"]),
+    /Unknown option: --switch-account/,
+  );
 });
 
 test("Claude run rejects an unknown preset before Redis or launch work", async () => {

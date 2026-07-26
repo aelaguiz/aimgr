@@ -37,3 +37,17 @@ Plan:
 - Final scope audit passed. The implementation contains only the frozen
   busy-resume branch, shared selector call, transient staging owner, focused
   tests, and documentation.
+- The operator explicitly reopened scope for one narrow addition:
+  `aim claude resume <selector> --switch-account fable|opus`. The amended plan
+  freezes the delta to option parsing plus reuse of the existing selection and
+  fork path; no new storage, picker, lease behavior, daemon, or selection
+  policy is authorized.
+- Implemented the explicit switch in the existing parser and resume branch.
+  `fable` reuses Fable/Sonnet ranking and the Fable preset; `opus` reuses
+  five-hour ranking and the Opus preset. Both exclude the source label and
+  enter the existing staged native-fork path.
+- Added one parser/help test and one end-to-end explicit Fable switch test. The
+  existing no-destination test now also proves explicit switching fails safely.
+- Focused suites passed 17/17 and 23/23; lint and `git diff --check` passed; the
+  full repository suite passed 371/371.
+- Final self-audit marked the delta complete with no scope expansion.

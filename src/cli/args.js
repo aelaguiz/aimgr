@@ -92,6 +92,7 @@ export function parseArgs(argv) {
     workdir: undefined,
     claudeAutoSelect: expandedClaudeRun.autoSelect,
     claudeAutoSelectPreset: expandedClaudeRun.autoSelectPreset,
+    claudeResumeSwitchAccountPreset: undefined,
     afterDoubleDash: [],
   };
   const positional = [];
@@ -262,6 +263,18 @@ export function parseArgs(argv) {
     }
     if (arg === "--fresh") {
       opts.fresh = true;
+      continue;
+    }
+    if (arg === "--switch-account") {
+      if (argv[0] !== "claude" || argv[1] !== "resume") {
+        throw new Error("Unknown option: --switch-account");
+      }
+      const preset = argv[i + 1];
+      if (preset !== "fable" && preset !== "opus") {
+        throw new Error("--switch-account requires fable or opus.");
+      }
+      opts.claudeResumeSwitchAccountPreset = preset;
+      i += 1;
       continue;
     }
     if (arg === "--tend") {

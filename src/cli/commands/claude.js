@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { CLAUDE_OPUS_RUN_PRESET_ARGS } from "../args.js";
+import {
+  CLAUDE_FABLE_RUN_PRESET_ARGS,
+  CLAUDE_OPUS_RUN_PRESET_ARGS,
+} from "../args.js";
 import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, ANTHROPIC_PROVIDER } from "../../core/constants.js";
 import {
   DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
@@ -1180,7 +1183,9 @@ export async function handleClaude(context) {
   }
   if (subcmd === "resume") {
     if (positional.length !== 3) {
-      throw new Error("Usage: aim claude resume <row-or-thread-id>");
+      throw new Error(
+        "Usage: aim claude resume <row-or-thread-id> [--switch-account fable|opus]",
+      );
     }
     const session = resolveManagedClaudeSession({
       homeDir,
@@ -1189,47 +1194,61 @@ export async function handleClaude(context) {
     if (!isRedisConfigured({ homeDir })) {
       throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
-    const directContext = {
-      ...context,
-      positional: ["claude", "run", session.account],
-      opts: {
-        ...opts,
-        afterDoubleDash: [
-          ...CLAUDE_OPUS_RUN_PRESET_ARGS,
-          "--resume",
-          session.threadId,
-        ],
-      },
-    };
-    try {
-      await handleRedisClaudeRun(directContext, {
-        launchCwd: session.cwd,
-      });
-      return;
-    } catch (error) {
-      if (error?.code !== "AIMGR_CREDENTIAL_BUSY") throw error;
+    const requestedSwitchPreset = opts.claudeResumeSwitchAccountPreset;
+    if (!requestedSwitchPreset) {
+      const directContext = {
+        ...context,
+        positional: ["claude", "run", session.account],
+        opts: {
+          ...opts,
+          afterDoubleDash: [
+            ...CLAUDE_OPUS_RUN_PRESET_ARGS,
+            "--resume",
+            session.threadId,
+          ],
+        },
+      };
+      try {
+        await handleRedisClaudeRun(directContext, {
+          launchCwd: session.cwd,
+        });
+        return;
+      } catch (error) {
+        if (error?.code !== "AIMGR_CREDENTIAL_BUSY") throw error;
+      }
     }
 
+    const forkPreset = requestedSwitchPreset ?? "opus";
+    const forkPresetArgs = forkPreset === "fable"
+      ? CLAUDE_FABLE_RUN_PRESET_ARGS
+      : CLAUDE_OPUS_RUN_PRESET_ARGS;
     const selected = await selectAutomaticClaudeAccount(context, {
-      preset: "opus",
+      preset: forkPreset,
       excludeLabels: [session.account],
     });
     if (!selected) {
+      if (requestedSwitchPreset) {
+        const usage = forkPreset === "fable" ? "Fable" : "five-hour";
+        throw new Error(
+          `No other unlocked Claude account with readable ${usage} usage is available for --switch-account ${forkPreset}.`,
+        );
+      }
       throw new Error(
         `Claude label=${session.account} is busy and no other unlocked Claude account with readable five-hour usage is available.`,
       );
     }
     const forkName = buildManagedClaudeSessionForkName(session);
-    stdout.write(
-      `${session.account} is busy; forking session onto ${selected.label} as "${forkName}".\n`,
-    );
+    const forkReason = requestedSwitchPreset
+      ? `Switching session from ${session.account} to ${selected.label} using ${forkPreset}`
+      : `${session.account} is busy; forking session onto ${selected.label}`;
+    stdout.write(`${forkReason} as "${forkName}".\n`);
     await handleRedisClaudeRun({
       ...context,
       positional: ["claude", "run", selected.label],
       opts: {
         ...opts,
         afterDoubleDash: [
-          ...CLAUDE_OPUS_RUN_PRESET_ARGS,
+          ...forkPresetArgs,
           "--resume",
           session.threadId,
           "--fork-session",

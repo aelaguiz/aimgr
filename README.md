@@ -127,7 +127,7 @@ aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--json]
 aim claude usage [account...] [--fresh] [--json]
 aim claude list [count] [--json]
-aim claude resume <row-or-thread-id>
+aim claude resume <row-or-thread-id> [--switch-account fable|opus]
 aim claude run (opus|fable) [--resume]
 aim claude run <label> (opus|fable) [--resume]
 aim claude run <label> [-- <claude args...>]
