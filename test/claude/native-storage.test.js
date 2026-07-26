@@ -719,7 +719,7 @@ test("managed Claude shares only the exact personal skills directory and rejects
   );
 });
 
-test("managed Claude mirrors only complete user MCP and hook overlays on every launch", () => {
+test("managed Claude mirrors only allowlisted user settings and MCPs on every launch", () => {
   const home = mkTempHome();
   const claudeDir = path.join(home, ".claude");
   const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
@@ -746,8 +746,14 @@ test("managed Claude mirrors only complete user MCP and hook overlays on every l
       args: ["--stdio"],
     },
   };
+  const statusLine = {
+    type: "command",
+    command: "bash ~/.claude/statusline-command.sh",
+    refreshInterval: 2,
+  };
   writeJson(path.join(claudeDir, "settings.json"), {
     hooks,
+    statusLine,
     enabledPlugins: { "proof@market": true },
     theme: "dark",
   });
@@ -761,7 +767,10 @@ test("managed Claude mirrors only complete user MCP and hook overlays on every l
     userHomeDir: home,
     configDir,
   });
-  assert.deepEqual(JSON.parse(fs.readFileSync(result.hooksPath, "utf8")), { hooks });
+  assert.deepEqual(JSON.parse(fs.readFileSync(result.hooksPath, "utf8")), {
+    hooks,
+    statusLine,
+  });
   assert.deepEqual(JSON.parse(fs.readFileSync(result.mcpConfigPath, "utf8")), { mcpServers });
   assert.equal(fs.statSync(result.hooksPath).mode & 0o777, 0o600);
   assert.equal(fs.statSync(result.mcpConfigPath).mode & 0o777, 0o600);
@@ -770,7 +779,7 @@ test("managed Claude mirrors only complete user MCP and hook overlays on every l
     /OAUTH_MUST_NOT_ENTER_OVERLAY|enabledPlugins|projects|theme/,
   );
 
-  writeJson(path.join(claudeDir, "settings.json"), { hooks: {} });
+  writeJson(path.join(claudeDir, "settings.json"), { hooks: {}, statusLine: {} });
   writeJson(path.join(home, ".claude.json"), { mcpServers: {} });
   const cleared = syncManagedClaudeUserCustomizations({
     userHomeDir: home,
@@ -790,6 +799,14 @@ test("managed Claude mirrors only complete user MCP and hook overlays on every l
       configDir,
     }),
     /user hooks are malformed/,
+  );
+  writeJson(path.join(claudeDir, "settings.json"), { statusLine: "invalid" });
+  assert.throws(
+    () => syncManagedClaudeUserCustomizations({
+      userHomeDir: home,
+      configDir,
+    }),
+    /user status-line settings are malformed/,
   );
 });
 
@@ -1148,6 +1165,11 @@ test("Linux preflight omits the macOS Keychain adapter", async () => {
         hooks: [{ type: "command", command: "/usr/bin/true" }],
       }],
     },
+    statusLine: {
+      type: "command",
+      command: "bash ~/.claude/statusline-command.sh",
+      refreshInterval: 2,
+    },
   });
   writeJson(path.join(home, ".claude.json"), {
     mcpServers: {
@@ -1192,6 +1214,11 @@ test("Linux preflight omits the macOS Keychain adapter", async () => {
       SessionStart: [{
         hooks: [{ type: "command", command: "/usr/bin/true" }],
       }],
+    },
+    statusLine: {
+      type: "command",
+      command: "bash ~/.claude/statusline-command.sh",
+      refreshInterval: 2,
     },
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userMcpConfigPath, "utf8")), {

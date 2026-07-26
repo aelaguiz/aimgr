@@ -470,11 +470,20 @@ export function syncManagedClaudeUserCustomizations({
     throw new Error("The normal Claude user app state is malformed.");
   }
   const hooks = requireOptionalObjectField(settings, "hooks", "user hooks");
+  const statusLine = requireOptionalObjectField(
+    settings,
+    "statusLine",
+    "user status-line settings",
+  );
   const mcpServers = requireOptionalObjectField(appState, "mcpServers", "user MCP servers");
+  const userSettings = {
+    ...(hooks === null ? {} : { hooks }),
+    ...(statusLine === null ? {} : { statusLine }),
+  };
   const hooksPath = syncPrivateJsonOverlay(
     path.join(resolvedConfigDir, USER_HOOKS_OVERLAY_FILE),
-    hooks === null ? null : { hooks },
-    { fsImpl, description: "managed Claude user-hooks overlay" },
+    Object.keys(userSettings).length === 0 ? null : userSettings,
+    { fsImpl, description: "managed Claude user-settings overlay" },
   );
   const mcpConfigPath = syncPrivateJsonOverlay(
     path.join(resolvedConfigDir, USER_MCP_OVERLAY_FILE),
