@@ -89,6 +89,9 @@ const CLAUDE_RECOVERY_STORAGE_CONTRACT = CLAUDE_MANAGED_FILE_STORAGE_MODE;
 const CLAUDE_MAINTENANCE_TIMEOUT_MS = 30_000;
 const CLAUDE_MAINTENANCE_DUE_WINDOW_MS = 5 * 60_000;
 const CLAUDE_MAINTENANCE_SKIPPED = Symbol("claude-maintenance-skipped");
+const CLAUDE_LEASE_RENEWED = "renewed";
+const CLAUDE_LEASE_CONTENDED = "contended";
+const CLAUDE_LEASE_UNREACHABLE = "unreachable";
 const CLAUDE_MAINTENANCE_ARGS = Object.freeze([
   "--safe-mode",
   "--strict-mcp-config",
@@ -105,11 +108,14 @@ async function renewClaudeCredentialLeaseWithinDeadline(lease) {
     const renewal = Promise.resolve()
       .then(() => renewOrReacquireRedisCredentialLease(lease))
       .then(
-        (renewed) => renewed === true,
-        () => false,
+        (renewed) => renewed === true ? CLAUDE_LEASE_RENEWED : CLAUDE_LEASE_CONTENDED,
+        () => CLAUDE_LEASE_UNREACHABLE,
       );
     const deadline = new Promise((resolve) => {
-      deadlineTimer = setTimeout(() => resolve(false), CLAUDE_LEASE_RENEW_DEADLINE_MS);
+      deadlineTimer = setTimeout(
+        () => resolve(CLAUDE_LEASE_UNREACHABLE),
+        CLAUDE_LEASE_RENEW_DEADLINE_MS,
+      );
       deadlineTimer.unref?.();
     });
     return await Promise.race([renewal, deadline]);
@@ -118,29 +124,68 @@ async function renewClaudeCredentialLeaseWithinDeadline(lease) {
   }
 }
 
-function startClaudeCredentialLeaseHeartbeat({ lease, abortController }) {
+function startClaudeCredentialLeaseHeartbeat({
+  lease,
+  abortController,
+  pauseForUncertainOwnership = null,
+  resumeAfterOwnershipRecovered = null,
+}) {
   let stopped = false;
   let timer = null;
   let inFlight = null;
   let lost = false;
+  let paused = false;
+
+  const loseOwnership = () => {
+    lost = true;
+    abortController.abort();
+  };
+  const applyRenewalResult = async (result) => {
+    if (stopped) return result;
+    if (result === CLAUDE_LEASE_CONTENDED) {
+      loseOwnership();
+      return result;
+    }
+    if (result === CLAUDE_LEASE_UNREACHABLE) {
+      if (paused) return result;
+      paused = true;
+      try {
+        if (await pauseForUncertainOwnership?.() === true) return result;
+      } catch {
+        // Failure to pause cannot preserve safe ownership uncertainty.
+      }
+      loseOwnership();
+      return result;
+    }
+    if (paused) {
+      try {
+        if (await resumeAfterOwnershipRecovered?.() !== true) {
+          loseOwnership();
+          return CLAUDE_LEASE_UNREACHABLE;
+        }
+      } catch {
+        loseOwnership();
+        return CLAUDE_LEASE_UNREACHABLE;
+      }
+      paused = false;
+    }
+    return result;
+  };
+  const renewNow = () => {
+    if (inFlight) return inFlight;
+    inFlight = renewClaudeCredentialLeaseWithinDeadline(lease)
+      .then(applyRenewalResult)
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
 
   const schedule = () => {
     if (stopped || lost) return;
     timer = setTimeout(() => {
-      inFlight = (async () => {
-        try {
-          if (await renewClaudeCredentialLeaseWithinDeadline(lease) !== true) lost = true;
-        } catch {
-          lost = true;
-        }
-        if (lost) {
-          abortController.abort();
-        } else {
-          schedule();
-        }
-      })().finally(() => {
-        inFlight = null;
-      });
+      timer = null;
+      void renewNow().finally(schedule);
     }, CLAUDE_LEASE_RENEW_INTERVAL_MS);
     timer.unref?.();
   };
@@ -149,6 +194,10 @@ function startClaudeCredentialLeaseHeartbeat({ lease, abortController }) {
     get lost() {
       return lost;
     },
+    get paused() {
+      return paused;
+    },
+    renewNow,
     async stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
@@ -157,11 +206,28 @@ function startClaudeCredentialLeaseHeartbeat({ lease, abortController }) {
   };
 }
 
-async function assertClaudeCredentialLeaseOwned({ lease, heartbeat, abortController, phase }) {
-  if (heartbeat?.lost || await renewClaudeCredentialLeaseWithinDeadline(lease) !== true) {
+async function assertClaudeCredentialLeaseOwned({
+  lease,
+  heartbeat,
+  abortController,
+  phase,
+  tolerateUnreachable = false,
+}) {
+  const renewal = heartbeat?.renewNow
+    ? await heartbeat.renewNow()
+    : await renewClaudeCredentialLeaseWithinDeadline(lease);
+  if (
+    tolerateUnreachable
+    && renewal === CLAUDE_LEASE_UNREACHABLE
+    && !heartbeat?.lost
+  ) {
+    return false;
+  }
+  if (heartbeat?.lost || renewal !== CLAUDE_LEASE_RENEWED) {
     abortController?.abort();
     throw new Error(`Claude credential lease was lost ${phase}.`);
   }
+  return true;
 }
 
 function buildClaudeRecoveryStorageId({ installationId, configDir }) {
@@ -245,7 +311,10 @@ function assertExplicitClaudeFenceReplacement({ state, label, fence }) {
   }
 }
 
-async function acquireClaudeCredentialLeaseGuard(runtime, label) {
+async function acquireClaudeCredentialLeaseGuard(runtime, label, {
+  pauseForUncertainOwnership = null,
+  resumeAfterOwnershipRecovered = null,
+} = {}) {
   const lease = await acquireRedisCredentialLease(runtime.store, {
     provider: ANTHROPIC_PROVIDER,
     label,
@@ -256,7 +325,12 @@ async function acquireClaudeCredentialLeaseGuard(runtime, label) {
     throw error;
   }
   const abortController = new AbortController();
-  const heartbeat = startClaudeCredentialLeaseHeartbeat({ lease, abortController });
+  const heartbeat = startClaudeCredentialLeaseHeartbeat({
+    lease,
+    abortController,
+    pauseForUncertainOwnership,
+    resumeAfterOwnershipRecovered,
+  });
   try {
     await assertClaudeCredentialLeaseOwned({
       lease,
@@ -393,10 +467,12 @@ function startClaudeActiveRotationPublisher({
       timer = null;
       inFlight = (async () => {
         try {
-          await assertClaudeCredentialLeaseOwned({
+          if (guard.heartbeat.paused) return;
+          if (!await assertClaudeCredentialLeaseOwned({
             ...guard,
             phase: "before active-run rotation reconciliation",
-          });
+            tolerateUnreachable: true,
+          })) return;
           const nowMs = Date.now();
           const result = await syncLiveClaudeRotationBackToLabelFromStorage({
             state: runtime.state,
@@ -414,10 +490,11 @@ function startClaudeActiveRotationPublisher({
             runtime.state?.credentials?.[ANTHROPIC_PROVIDER]?.[label],
           );
           if (candidateFingerprint && candidateFingerprint === currentFingerprint) return;
-          await assertClaudeCredentialLeaseOwned({
+          if (!await assertClaudeCredentialLeaseOwned({
             ...guard,
             phase: "before active-run rotation publication",
-          });
+            tolerateUnreachable: true,
+          })) return;
           const record = await publishRotationIfNeeded({
             runtime,
             result,
@@ -747,8 +824,18 @@ async function handleRedisClaudeRun(context, {
   let activeRotationPublisher = null;
   let activeRotationPublicationFailed = false;
   let stagedSessionFork = null;
+  let activeProcessControl = null;
   try {
-    guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
+    guard = await acquireClaudeCredentialLeaseGuard(runtime, label, maintenance
+      ? {}
+      : {
+          pauseForUncertainOwnership: async () => (
+            activeProcessControl?.pause ? activeProcessControl.pause() : false
+          ),
+          resumeAfterOwnershipRecovered: async () => (
+            activeProcessControl?.resume ? activeProcessControl.resume() : false
+          ),
+        });
     // A prior lease owner may have rotated this label between our initial read
     // and lease acquisition. Reload under the lease before inspecting local
     // projections or choosing the authoritative bundle.
@@ -918,11 +1005,17 @@ async function handleRedisClaudeRun(context, {
         args: maintenance ? CLAUDE_MAINTENANCE_ARGS : opts.afterDoubleDash,
         env,
         signal: guard.abortController.signal,
+        registerProcessControl: maintenance
+          ? null
+          : (processControl) => {
+              activeProcessControl = processControl;
+            },
         preparedLaunch,
       });
     } catch (error) {
       launchError = error;
     } finally {
+      activeProcessControl = null;
       if (maintenanceTimer) {
         clearMaintenanceTimer(maintenanceTimer);
         maintenanceTimer = null;

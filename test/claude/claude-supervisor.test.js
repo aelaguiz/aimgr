@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
-import { superviseClaudeProcess } from "../../src/targets/claude-supervisor.js";
+import {
+  CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
+  superviseClaudeProcess,
+} from "../../src/targets/claude-supervisor.js";
 
 const SUPERVISOR_PATH = fileURLToPath(new URL("../../src/targets/claude-supervisor.js", import.meta.url));
 
@@ -94,6 +97,41 @@ test("Claude supervisor forwards termination signals to Claude", async () => {
   assert.deepEqual(child.killedWith, ["SIGHUP"]);
   child.emit("close", null, "SIGHUP");
   assert.deepEqual(await resultPromise, { status: 1, signal: "SIGHUP" });
+});
+
+test("Claude supervisor pauses, resumes, and safely terminates a paused Claude process", async () => {
+  const parentProcess = new FakeParentProcess();
+  const child = new FakeChildProcess();
+  const resultPromise = superviseClaudeProcess({
+    command: process.execPath,
+    parentProcess,
+    spawnImpl: () => child,
+  });
+
+  parentProcess.emit("message", {
+    type: CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
+    action: "pause",
+  });
+  parentProcess.emit("message", {
+    type: CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
+    action: "resume",
+  });
+  parentProcess.emit("message", {
+    type: CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
+    action: "pause",
+  });
+  parentProcess.emit("SIGTERM");
+  assert.deepEqual(child.killedWith, [
+    "SIGSTOP",
+    "SIGCONT",
+    "SIGSTOP",
+    "SIGCONT",
+    "SIGTERM",
+  ]);
+
+  child.emit("close", null, "SIGTERM");
+  assert.deepEqual(await resultPromise, { status: 1, signal: "SIGTERM" });
+  assert.equal(parentProcess.listenerCount("message"), 0);
 });
 
 test("Claude supervisor refuses to launch after its AIM IPC channel is gone", async () => {

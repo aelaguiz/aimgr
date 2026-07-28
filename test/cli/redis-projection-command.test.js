@@ -486,7 +486,7 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
-test("managed Claude heartbeat reclaims an expired unowned lease after timer suspension", async () => {
+test("managed Claude pauses through transient lease loss but aborts for a replacement owner", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const credential = buildAnthropicClaudeCredential({
@@ -519,8 +519,12 @@ test("managed Claude heartbeat reclaims an expired unowned lease after timer sus
   const realSetTimeout = globalThis.setTimeout;
   const realClearTimeout = globalThis.clearTimeout;
   const heartbeatTimers = [];
+  const rotationTimers = [];
   let resolveLaunch = null;
   let launchSignal = null;
+  let pauseCount = 0;
+  let resumeCount = 0;
+  let exitCode = null;
   let markLaunchStarted;
   const launchStarted = new Promise((resolve) => {
     markLaunchStarted = resolve;
@@ -546,19 +550,38 @@ test("managed Claude heartbeat reclaims an expired unowned lease after timer sus
       homeDir: home,
       env: {},
       stdout: { write() {} },
-      setExitCode: () => {
-        throw new Error("the recovered run must not set an exit code");
+      setExitCode: (value) => {
+        exitCode = value;
       },
       connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
       resolveExecutableOnPathImpl: buildTestClaudeResolver(),
       nowMs: Date.now(),
-      setTimeoutImpl: () => ({ unref() {} }),
-      clearTimeoutImpl() {},
-      runClaudeCliImpl: ({ signal }) => {
+      setTimeoutImpl: (callback, delay) => {
+        const timer = { callback, delay, cleared: false, unref() {} };
+        rotationTimers.push(timer);
+        return timer;
+      },
+      clearTimeoutImpl(timer) {
+        timer.cleared = true;
+      },
+      runClaudeCliImpl: ({ signal, registerProcessControl }) => {
         launchSignal = signal;
+        registerProcessControl({
+          async pause() {
+            pauseCount += 1;
+            return true;
+          },
+          async resume() {
+            resumeCount += 1;
+            return true;
+          },
+        });
         markLaunchStarted();
         return new Promise((resolve) => {
           resolveLaunch = resolve;
+          signal.addEventListener("abort", () => {
+            resolve({ status: 1, signal: null });
+          }, { once: true });
         });
       },
     });
@@ -568,19 +591,78 @@ test("managed Claude heartbeat reclaims an expired unowned lease after timer sus
       (timer) => timer.delay === 10_000 && timer.cleared === false,
     );
     assert.ok(heartbeatTimer);
-    client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    const originalEval = client.eval.bind(client);
+    let rejectNextRecovery = true;
+    let recoveryEvalCount = 0;
+    client.eval = async (script, options) => {
+      if (script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
+        recoveryEvalCount += 1;
+        if (rejectNextRecovery) {
+          rejectNextRecovery = false;
+          throw new Error("temporary Redis transport failure");
+        }
+      }
+      return originalEval(script, options);
+    };
     heartbeatTimer.callback();
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
+    assert.equal(pauseCount, 1);
+    assert.equal(resumeCount, 0);
     assert.equal(launchSignal.aborted, false);
+    const recoveryCountWhilePaused = recoveryEvalCount;
+    const rotationTimer = rotationTimers.find(
+      (timer) => timer.delay === 30_000 && timer.cleared === false,
+    );
+    assert.ok(rotationTimer);
+    await rotationTimer.callback();
+    assert.equal(recoveryEvalCount, recoveryCountWhilePaused);
+    assert.equal(launchSignal.aborted, false);
+
+    const retryTimer = heartbeatTimers.find(
+      (timer) => timer !== heartbeatTimer && timer.delay === 10_000 && timer.cleared === false,
+    );
+    assert.ok(retryTimer);
+    client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    retryTimer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(launchSignal.aborted, false);
+    assert.equal(pauseCount, 1);
+    assert.equal(resumeCount, 1);
     assert.equal(
       [...client.values.keys()].some((key) => key.includes(":lease:credential:anthropic:claude")),
       true,
     );
 
-    resolveLaunch({ status: 0, signal: null });
+    const contentionTimer = heartbeatTimers.find(
+      (timer) => (
+        timer !== heartbeatTimer
+        && timer !== retryTimer
+        && timer.delay === 10_000
+        && timer.cleared === false
+      ),
+    );
+    assert.ok(contentionTimer);
+    client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    const replacement = await acquireRedisCredentialLease(store, {
+      provider: "anthropic",
+      label: "claude",
+    });
+    assert.ok(replacement);
+    contentionTimer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(launchSignal.aborted, true);
+    assert.equal(pauseCount, 1);
+    assert.equal(resumeCount, 1);
+    assert.equal(await replacement.renew(), true);
     await command;
+    assert.equal(exitCode, 1);
+    assert.equal(await replacement.release(), true);
   } finally {
     resolveLaunch?.({ status: 1, signal: null });
     globalThis.setTimeout = realSetTimeout;

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import {
   CLAUDE_MANAGED_FILE_STORAGE_MODE,
@@ -991,6 +992,45 @@ test("runner preserves the user home while pinning Claude config and exact launc
     calls[0].options.env.PATH,
     `${preparedLaunch.adapterDir}:/custom/bin:/usr/bin:/bin`,
   );
+});
+
+test("runner sends pause and resume controls to the Claude supervisor", async () => {
+  const home = mkTempHome();
+  const preparedLaunch = buildPreparedLaunch(home);
+  const child = new EventEmitter();
+  child.connected = true;
+  child.kill = () => true;
+  const messages = [];
+  child.send = (message, callback) => {
+    messages.push(message);
+    callback(null);
+  };
+  let processControl = null;
+
+  const resultPromise = runClaudeCli({
+    command: preparedLaunch.command,
+    userHomeDir: home,
+    homeDir: preparedLaunch.homeDir,
+    configDir: preparedLaunch.configDir,
+    cwd: home,
+    preparedLaunch,
+    spawnImpl: () => child,
+    registerProcessControl: (control) => {
+      processControl = control;
+    },
+  });
+
+  assert.ok(processControl);
+  assert.equal(await processControl.pause(), true);
+  assert.equal(await processControl.resume(), true);
+  assert.deepEqual(messages, [
+    { type: "aimgr:claude-process-control-v1", action: "pause" },
+    { type: "aimgr:claude-process-control-v1", action: "resume" },
+  ]);
+
+  child.emit("close", 0, null);
+  assert.deepEqual(await resultPromise, { status: 0, signal: null });
+  assert.equal(processControl, null);
 });
 
 test("Darwin runner permits ps and a nested build sandbox", {

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 const MODULE_PATH = fileURLToPath(import.meta.url);
 const TERMINATION_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
 const DEFAULT_CHILD_KILL_GRACE_MS = 4_000;
+export const CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE = "aimgr:claude-process-control-v1";
 
 function normalizedResult(code, signal, requestedSignal = null) {
   const childSignal = typeof signal === "string" ? signal : null;
@@ -56,6 +57,7 @@ export async function superviseClaudeProcess({
   let settled = false;
   let forcedKillTimer = null;
   let requestedSignal = null;
+  let childPaused = false;
 
   const clearForcedKillTimer = () => {
     if (!forcedKillTimer) return;
@@ -64,6 +66,7 @@ export async function superviseClaudeProcess({
   };
   const removeParentListeners = () => {
     parentProcess.removeListener?.("disconnect", onDisconnect);
+    parentProcess.removeListener?.("message", onMessage);
     for (const signal of TERMINATION_SIGNALS) {
       parentProcess.removeListener?.(signal, signalHandlers.get(signal));
     }
@@ -79,11 +82,33 @@ export async function superviseClaudeProcess({
   const requestTermination = (signal = "SIGTERM") => {
     requestedSignal ??= signal;
     if (!child || settled) return;
+    if (childPaused) {
+      killChild("SIGCONT");
+      childPaused = false;
+    }
     killChild(requestedSignal);
     if (!forcedKillTimer) {
       forcedKillTimer = setTimeoutImpl(() => {
         if (!settled) killChild("SIGKILL");
       }, boundedKillGraceMs);
+    }
+  };
+  const onMessage = (message) => {
+    if (
+      !message
+      || message.type !== CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE
+      || !["pause", "resume"].includes(message.action)
+      || !child
+      || settled
+    ) {
+      return;
+    }
+    if (message.action === "pause" && !childPaused) {
+      killChild("SIGSTOP");
+      childPaused = true;
+    } else if (message.action === "resume" && childPaused) {
+      killChild("SIGCONT");
+      childPaused = false;
     }
   };
   const onDisconnect = () => requestTermination("SIGTERM");
@@ -92,6 +117,7 @@ export async function superviseClaudeProcess({
   );
 
   parentProcess.once("disconnect", onDisconnect);
+  parentProcess.on("message", onMessage);
   for (const [signal, handler] of signalHandlers) {
     parentProcess.once(signal, handler);
   }

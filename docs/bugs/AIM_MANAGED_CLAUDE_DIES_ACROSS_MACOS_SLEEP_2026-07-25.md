@@ -1,7 +1,7 @@
 ---
 title: "AIM managed Claude dies across ordinary macOS sleep"
 date: 2026-07-25
-status: resolved
+status: fixed
 owners:
   - aelaguiz
 reviewers: []
@@ -37,10 +37,17 @@ related:
   eight days—and no Codex session file was touched during the wake window.
   Codex workers launched inside the killed Claude sessions can die with their
   owner, but there is no evidence of a separate AIM Codex sleep bug.
-- **Status:** Resolved. The Claude heartbeat can atomically reclaim its same
-  opaque lease after sleep only when the label is still unowned. A replacement
-  owner, Redis failure, and ordinary short operations retain fail-closed
-  behavior.
+- **2026-07-28 recurrence:** The original expired-and-unowned sleep case remains
+  fixed, but AIM still converts one Redis renewal error or five-second timeout
+  into permanent lease loss and immediately aborts Claude.
+- **Fresh decisive reproduction:** With Amphetamine off, Amir M5 entered
+  clamshell sleep at `09:26:26` on 2026-07-28. DarkWake began at `09:26:46`;
+  the managed `boss` session closed at `09:26:51`, exactly AIM's five-second
+  Redis renewal deadline. All four AIM Claude wrappers observed immediately
+  before sleep were gone afterward and their local account leases were free.
+- **Status:** Fixed on 2026-07-28. Temporary Redis unreachability pauses the
+  managed Claude process; renewal/reacquisition resumes it, while confirmed
+  contention still terminates it.
 
 <!-- bugs:block:tldr:end -->
 
@@ -77,6 +84,88 @@ produced the failure.
 <!-- bugs:block:analysis:start -->
 
 ## Analysis
+
+### Fresh Amphetamine-off reproduction confirms a DarkWake reconnect failure
+
+The operator explicitly confirmed Amphetamine was off for this reproduction
+and enabled it only after the failure. Historical power and session evidence
+aligns with that report:
+
+| Local time, 2026-07-28 | Evidence | Meaning |
+|---|---|---|
+| `09:20` | Four live AIM Claude wrappers | Pre-sleep baseline |
+| `09:26:26` | `pmset`: clamshell sleep begins | Node timers and network are suspended |
+| `09:26:46` | `pmset`: DarkWake begins | Timers can resume before full interactive wake/network readiness |
+| `09:26:51` | Managed `boss` JSONL mtime | Exact five-second renewal-deadline signature |
+| `09:27:31` onward | Repeated maintenance sleep/DarkWake cycles | The machine does not reach full wake until `09:33:35` |
+| `09:35` | Zero AIM Claude wrappers; all affected local labels unlocked | Every pre-sleep managed run has exited |
+
+This falsifies the incident-specific claim that the lid event did not sleep the
+machine. That claim described the earlier `07:47` cluster only; it does not
+apply to this controlled reproduction.
+
+The active code makes the failure deterministic:
+
+1. A resumed heartbeat gets five seconds to complete
+   `renewOrReacquireRedisCredentialLease`.
+2. A Redis transport rejection and a deadline timeout are both collapsed to
+   the same boolean `false` used for confirmed ownership loss.
+3. The heartbeat immediately calls `abortController.abort()`.
+4. The supervisor terminates Claude before networking finishes restoring
+   during the longer DarkWake/maintenance-sleep sequence.
+
+The atomic sleep recovery is therefore necessary but incomplete. It correctly
+handles an expired Redis key once Redis is reachable. It does not handle the
+period where ownership is unknown because Redis cannot yet be reached.
+
+### Scope disposition for the recurrence
+
+Handling temporary Redis unreachability was `new-scope-needs-human` relative
+to the completed 2026-07-25 fix, whose frozen contract explicitly retained
+fail-closed behavior for Redis failure. Amir authorized that expansion on
+2026-07-28.
+
+The follow-up scope is now frozen:
+
+- distinguish `renewed`, `contended`, and `unreachable` lease outcomes;
+- pause the managed Claude process while ownership is unreachable;
+- retry ownership resolution without letting Claude run;
+- resume only after renewal or safe absent-key reacquisition;
+- retain immediate termination for confirmed replacement ownership.
+
+No daemon, Redis schema change, lock removal, configurable retry framework,
+unfenced grace period, or unrelated selection/credential behavior is in scope.
+
+### Recurrence on 2026-07-28 is not the original sleep-expiry case
+
+Fresh evidence from Amir M5:
+
+- `pmset -g log` records no sleep or wake after `2026-07-27 14:55:57`.
+  Amphetamine, BrowserOS, and repeated `caffeinate` assertions were active, so
+  closing the lid did not produce the original suspended-process event.
+- AIM-managed files under `boss` and `pro6` closed in one cluster at
+  `07:47:22` through `07:47:27`. No kernel, jetsam, memorystatus, or
+  RunningBoard kill matched that window.
+- An AIM Claude wrapper started at `2026-07-27 21:13:06` remains alive after
+  the incident. The machine did not reboot, and macOS did not kill every AIM
+  process.
+- The installed AIM checkout is `849f9c7` and contains the original
+  `renewOrReacquireRedisCredentialLease` sleep recovery.
+- `renewClaudeCredentialLeaseWithinDeadline` still maps every Redis rejection
+  and every five-second timeout to `false`; the heartbeat treats that single
+  result as permanent loss and calls `abortController.abort()` immediately.
+
+The measured facts disprove a repeat of macOS suspending Node past the lease
+TTL in this incident. The leading explanation is a transient loss of Redis
+reachability or an ownership check racing network restoration while the
+laptop moved between networks. Direct wrapper stderr was not persisted, so
+the exact Redis error is unavailable after the foreground terminal closed.
+
+The original recovery operation only helps after Redis is reachable: it can
+renew the same owner or atomically reclaim an absent key. It cannot distinguish
+a temporary transport failure from a real replacement owner while Redis is
+unreachable. The current caller resolves that uncertainty by killing Claude
+after the first failed heartbeat.
 
 ### Incident timeline on Amir M5
 
@@ -213,8 +302,8 @@ post-suspension reacquisition state.
   the same Claude child remains alive after atomic reacquisition.
 - A competitor acquires the label during the simulated sleep; the original
   child is terminated and cannot publish rotation state.
-- Redis is temporarily unavailable at wake; the existing fail-closed
-  termination behavior remains unchanged.
+- Redis is temporarily unavailable at wake; Claude pauses, rotation publishing
+  stays idle, and Claude resumes only after ownership is recovered.
 - Existing Ctrl-C, AIM parent-death, IPC-disconnect, lease-contention, and
   rotation-publication tests retain their current behavior.
 - One local process-only smoke uses a stub child and a controlled Redis test
@@ -222,7 +311,7 @@ post-suspension reacquisition state.
 
 <!-- bugs:block:fix_plan:start -->
 
-## Candidate fix plan
+## Initial 2026-07-25 fix plan
 
 1. Add a capability-guarded Redis Lua operation for the existing opaque lease:
    renew when the token still owns the key; atomically restore the same token
@@ -234,10 +323,23 @@ post-suspension reacquisition state.
 4. Run the focused Claude coordination/CLI tests and full suite; do not touch
    Codex, the supervisor, or unrelated auth maintenance.
 
-This preserves the existing five-second fail-closed behavior for Redis
-unavailability and real contention. Simply increasing the TTL is not
-sufficient: it only changes which sleep durations fail and leaves crashed
-processes locked longer.
+That initial fix preserved five-second fail-closed behavior for Redis
+unavailability. The 2026-07-28 recurrence proved that behavior was incomplete;
+the authorized follow-up below supersedes it only for a running interactive
+managed Claude process. Real contention remains fail-closed.
+
+### Authorized recurrence follow-up
+
+1. Preserve the lease operation's distinction between a Redis transport error
+   and a successful Redis response reporting a different owner.
+2. Expose pause/resume control for the already-owned managed Claude process
+   group without changing its terminal relay or ordinary exit semantics.
+3. On transport uncertainty, pause once and retry the existing atomic
+   renew-or-reacquire operation on the existing heartbeat cadence.
+4. Resume once ownership is renewed/reacquired; abort through the existing path
+   if Redis confirms another owner.
+5. Prove pause, retry, resume, contention termination, and unchanged normal
+   renewal with focused deterministic tests.
 
 <!-- bugs:block:fix_plan:end -->
 
@@ -254,6 +356,16 @@ processes locked longer.
 - Focused tests cover expired-and-unowned recovery, replacement-owner
   rejection, sanitized Redis failure, and a managed Claude child surviving a
   simulated timer suspension beyond the original TTL.
+- The 2026-07-28 follow-up preserves three renewal outcomes: renewed,
+  contended, and unreachable. Only unreachable pauses the running Claude
+  process and schedules another atomic ownership check.
+- `src/targets/claude-runner.js` sends bounded pause/resume IPC controls to the
+  existing supervisor. `src/targets/claude-supervisor.js` maps them to
+  `SIGSTOP`/`SIGCONT` for the exact Claude child and resumes a stopped child
+  before ordinary termination.
+- Active rotation publication stays idle while ownership is uncertain.
+  Preflight, maintenance, confirmed contention, and failed process control
+  remain fail-closed.
 
 <!-- bugs:block:implementation:end -->
 
@@ -281,13 +393,16 @@ Not run. A reviewer cannot improve the evidence until a fix exists.
 
 ### Current verdict
 
-`PASS` for AIM-managed Claude sleep recovery.
+`PASS` for AIM-managed Claude sleep and temporary-network recovery.
 
-- Focused Claude lifecycle, lease, and macOS boundary suites: `62/62`.
-- Full AIM suite: `365/365`.
+- Focused Claude lifecycle, lease, runner, and supervisor suites: `70/70`.
+- Full AIM suite: `372/372`.
 - Lint and `git diff --check`: clean.
-- The replacement-owner test proves the waking session cannot steal a label
-  acquired while it slept.
+- The lifecycle test proves temporary Redis loss pauses Claude, prevents the
+  rotation publisher from touching Redis, reacquires an expired unowned lease,
+  resumes Claude, and later aborts when a replacement owner is confirmed.
+- Runner and supervisor tests prove exact pause/resume IPC, `SIGSTOP`/
+  `SIGCONT`, and safe `SIGCONT` before terminating a paused child.
 - No provider request, model turn, live credential write, process kill, or
   synthetic machine sleep was used for verification.
 

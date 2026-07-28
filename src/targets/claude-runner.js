@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE } from "./claude-supervisor.js";
 
 const SUPERVISOR_PATH = fileURLToPath(new URL("./claude-supervisor.js", import.meta.url));
 const SECURITY_SHIM_SOURCE_PATH = fileURLToPath(
@@ -888,6 +889,7 @@ export async function runClaudeCli({
   args = [],
   env = process.env,
   signal = null,
+  registerProcessControl = null,
   preparedLaunch = null,
   prepareClaudeCliLaunchImpl = prepareClaudeCliLaunch,
   spawnImpl = spawn,
@@ -957,12 +959,32 @@ export async function runClaudeCli({
     throw new Error("Claude launch did not return a process handle.");
   }
 
+  const sendProcessControl = (action) => new Promise((resolve) => {
+    if (typeof child.send !== "function" || child.connected === false) {
+      resolve(false);
+      return;
+    }
+    try {
+      child.send({
+        type: CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
+        action,
+      }, (error) => resolve(!error));
+    } catch {
+      resolve(false);
+    }
+  });
+  registerProcessControl?.({
+    pause: () => sendProcessControl("pause"),
+    resume: () => sendProcessControl("resume"),
+  });
+
   return await new Promise((resolve, reject) => {
     let settled = false;
     let forcedKillTimer = null;
     const cleanup = () => {
       signal?.removeEventListener?.("abort", onAbort);
       if (forcedKillTimer) clearTimeout(forcedKillTimer);
+      registerProcessControl?.(null);
     };
     const finish = (fn, value) => {
       if (settled) return;
