@@ -857,7 +857,7 @@ test("claude resume reuses the exact recorded Fable model and effort", async () 
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
 });
 
-test("claude resume explicitly switches to the least-used unlocked Fable account", async () => {
+test("claude resume skips rotation-pending accounts and switches to the least-used usable Fable account", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -922,6 +922,18 @@ test("claude resume explicitly switches to the least-used unlocked Fable account
   writeAimgrConfig({
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  writeJson(resolveAimgrLocalStatePath({ homeDir: home }), {
+    targets: {
+      claudeCli: {
+        rotationPublicationPendingByLabel: {
+          fablelow: {
+            pending: true,
+            observedAt: "2026-07-24T17:00:00.000Z",
+          },
+        },
+      },
+    },
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
   await importCredentialsSnapshot(store, {
@@ -1000,10 +1012,10 @@ test("claude resume explicitly switches to the least-used unlocked Fable account
 
   assert.equal(
     out,
-    "Switching session from boss to fablelow using fable as "
+    "Switching session from boss to opuslow using fable as "
       + "\"[fork from boss/66666666] Continue rate-limited work\".\n",
   );
-  assert.equal(launchedLabel, "fablelow");
+  assert.equal(launchedLabel, "opuslow");
   assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
   assert.equal(
     fs.existsSync(path.join(

@@ -378,7 +378,9 @@ async function selectAutomaticClaudeAccount(context, {
   });
   return selectLeastUsedUnlockedClaudeAccount({
     ...usageStatus,
-    accounts: usageStatus.accounts.filter((account) => !excluded.has(account.label)),
+    accounts: usageStatus.accounts.filter(
+      (account) => !excluded.has(account.label) && account.rotationPending !== true,
+    ),
   }, { preset });
 }
 

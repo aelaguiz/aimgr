@@ -27,8 +27,8 @@ related:
 - **Current state:** The `pro9` marker is stale: it predates an authoritative
   Redis rotation from base version 14 to version 15; no shared fence or managed
   credential projection remains.
-- **Status:** Resolved locally. Automatic selection and marker reconciliation
-  remain unchanged until separately authorized.
+- **Status:** Resolved. Status exposes the marker and automatic selection skips
+  marked accounts. Marker reconciliation remains unchanged.
 
 <!-- bugs:block:tldr:end -->
 
@@ -110,8 +110,8 @@ repair is real but separate from the authorized visibility change.
   `rotationPending` field to every account.
 - Both `aim claude status` and top-level `aim status` render a `rotation`
   column with `pending` or `--`.
-- Status remains read-only. Automatic selection, local marker lifecycle, Redis
-  data, leases, and provider probing are unchanged.
+- Status remains read-only. Automatic selection skips marked accounts; local
+  marker lifecycle, Redis data, leases, and provider probing are unchanged.
 - Focused status suites: `23/23` pass.
 - Full AIM suite: `372/372` pass.
 - Lint and `git diff --check`: pass.
