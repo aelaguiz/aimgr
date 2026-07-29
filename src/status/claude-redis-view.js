@@ -22,6 +22,7 @@ import {
   formatStatusDeltaMsCell,
   formatStatusTable,
 } from "./table.js";
+import { loadLocalState } from "../state/local-state.js";
 import {
   acquireRedisCacheLock,
   readCachedProviderUsage,
@@ -688,6 +689,20 @@ function buildStatusResult({
   };
 }
 
+function readLocalRotationPendingLabels(homeDir) {
+  if (typeof homeDir !== "string" || !homeDir.trim()) return new Set();
+  const pending = loadLocalState({ homeDir })?.targets?.claudeCli?.rotationPublicationPendingByLabel;
+  if (!isObject(pending)) return new Set();
+  return new Set(Object.entries(pending).flatMap(([label, marker]) => {
+    if (!isObject(marker) || marker.pending !== true) return [];
+    try {
+      return [normalizeLabel(label)];
+    } catch {
+      return [];
+    }
+  }));
+}
+
 export async function collectClaudeRedisAccountInventory({
   homeDir,
   nowMs = Date.now(),
@@ -772,6 +787,7 @@ export async function collectClaudeRedisAccountUsageStatus({
   writeCachedProviderUsageImpl = writeCachedProviderUsage,
 } = {}) {
   const normalizedLabels = normalizeSelectedLabels(selectedLabels);
+  const rotationPendingLabels = readLocalRotationPendingLabels(homeDir);
   let authoritativeRecords;
   let lockedLabels;
   if (Array.isArray(records)) {
@@ -799,6 +815,7 @@ export async function collectClaudeRedisAccountUsageStatus({
     accounts: options.accounts.map((account) => ({
       ...account,
       locked: lockedLabels.has(account.label),
+      rotationPending: rotationPendingLabels.has(account.label),
     })),
   });
   let cacheRead = readCachedProviderUsage({ homeDir, cachePath, provider: ANTHROPIC_PROVIDER });
@@ -1081,13 +1098,14 @@ export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
-  const rows = [["account", "plan", "state", "lock", ...columns.headers, "source"]];
+  const rows = [["account", "plan", "state", "lock", "rotation", ...columns.headers, "source"]];
   for (const account of accounts) {
     rows.push([
       account.label,
       formatPlan(account),
       account.authState,
       account.locked === true ? "yes" : "--",
+      account.rotationPending === true ? "pending" : "--",
       ...columns.values(account),
       account.source,
     ]);
@@ -1095,6 +1113,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics
   if (accounts.length > 0) {
     rows.push([
       "average",
+      "--",
       "--",
       "--",
       "--",

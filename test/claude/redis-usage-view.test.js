@@ -10,7 +10,7 @@ import {
 } from "../../src/coordination/redis-store.js";
 import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../src/core/constants.js";
-import { resolveAimgrRedisCachePath } from "../../src/io/paths.js";
+import { resolveAimgrLocalStatePath, resolveAimgrRedisCachePath } from "../../src/io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../../src/pool/usage.js";
 import {
   collectClaudeRedisAccountInventory,
@@ -28,7 +28,7 @@ import {
 } from "../../src/status/redis-cache.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
-import { mkTempHome } from "../helpers/files.js";
+import { mkTempHome, writeJson } from "../helpers/files.js";
 
 const NOW_MS = Date.parse("2026-07-22T18:00:00.000Z");
 const KEY_PREFIX = "aimgr:claude-redis-view";
@@ -241,6 +241,18 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
       policy: { expect: { email: "candidate@private.example.test" }, pool: { enabled: true } },
     },
   ]);
+  writeJson(resolveAimgrLocalStatePath({ homeDir }), {
+    targets: {
+      claudeCli: {
+        rotationPublicationPendingByLabel: {
+          ready: {
+            pending: true,
+            observedAt: "2026-07-22T17:00:00.000Z",
+          },
+        },
+      },
+    },
+  });
   const cachePath = resolveAimgrRedisCachePath({ homeDir });
   writeCachedRedisStatusView({
     homeDir,
@@ -276,12 +288,14 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   assert.deepEqual(calls[0].env, {});
   assert.equal(first.accounts[0].authState, "credential_missing");
   assert.equal(first.accounts[0].locked, false);
+  assert.equal(first.accounts[0].rotationPending, false);
   assert.equal(first.accounts[1].authState, "usage_readable");
   assert.equal(first.accounts[1].locked, true);
+  assert.equal(first.accounts[1].rotationPending, true);
   assert.deepEqual(first.missingAccounts, ["candidate"]);
   assert.deepEqual(Object.keys(first.accounts[1]).sort(), [
-    "ageMs", "authState", "errorKind", "label", "lastAttemptAtMs", "locked", "rateLimitTier", "source", "stale",
-    "subscriptionType", "usage", "usageObservedAtMs",
+    "ageMs", "authState", "errorKind", "label", "lastAttemptAtMs", "locked", "rateLimitTier", "rotationPending",
+    "source", "stale", "subscriptionType", "usage", "usageObservedAtMs",
   ]);
 
   const second = await collectClaudeRedisAccountUsageStatus({
@@ -304,7 +318,10 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   assert.doesNotMatch(serializedCache, /ACCESS_SECRET|REFRESH_SECRET|private\.example|acct-private|org-private/i);
   assert.match(renderClaudeRedisAccountUsageStatus(first), /candidate/);
   assert.match(renderClaudeRedisAccountUsageStatus(first), /ready/);
-  assert.match(renderClaudeRedisAccountUsageStatus(first), /ready\s+max\/max_20x\s+usage_readable\s+yes/);
+  assert.match(
+    renderClaudeRedisAccountUsageStatus(first),
+    /ready\s+max\/max_20x\s+usage_readable\s+yes\s+pending/,
+  );
   assert.ok(client.values.size > 0);
 });
 
@@ -348,7 +365,7 @@ test("Claude usage status renders one fleet average across every readable window
 
   assert.match(
     rendered,
-    /average\s+--\s+--\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+--\s+60%\s+6\.0d\s+all/,
+    /average\s+--\s+--\s+--\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+--\s+60%\s+6\.0d\s+all/,
   );
   assert.equal(rendered.match(/^average\s/gm)?.length, 1);
 });
