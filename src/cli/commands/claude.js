@@ -1238,7 +1238,7 @@ export async function handleClaude(context) {
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
     throw new Error(
-      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume <row-or-thread-id> | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
+      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus] | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
     );
   }
   if (subcmd === "list") {
@@ -1279,7 +1279,7 @@ export async function handleClaude(context) {
   if (subcmd === "resume") {
     if (positional.length !== 3) {
       throw new Error(
-        "Usage: aim claude resume <row-or-thread-id> [--switch-account fable|opus]",
+        "Usage: aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus]",
       );
     }
     const session = resolveManagedClaudeSession({
@@ -1290,6 +1290,14 @@ export async function handleClaude(context) {
       throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     const requestedSwitchPreset = opts.claudeResumeSwitchAccountPreset;
+    const requestedAccountLabel = opts.claudeResumeAccountLabel
+      ? normalizeLabel(opts.claudeResumeAccountLabel)
+      : null;
+    if (requestedAccountLabel === session.account) {
+      throw new Error(
+        `Claude session already belongs to label=${session.account}; omit --account to resume it directly.`,
+      );
+    }
     const preservedResumeArgs = session.model && session.effort
       ? [
         "--dangerously-skip-permissions",
@@ -1304,7 +1312,7 @@ export async function handleClaude(context) {
         `Claude session ${session.threadId} does not record an exact model and effort; refusing to guess.`,
       );
     }
-    if (!requestedSwitchPreset) {
+    if (!requestedSwitchPreset && !requestedAccountLabel) {
       const directContext = {
         ...context,
         positional: ["claude", "run", session.account],
@@ -1336,10 +1344,12 @@ export async function handleClaude(context) {
           : CLAUDE_OPUS_RUN_PRESET_ARGS
       )
       : preservedResumeArgs;
-    const selected = await selectAutomaticClaudeAccount(context, {
-      preset: forkPreset,
-      excludeLabels: [session.account],
-    });
+    const selected = requestedAccountLabel
+      ? { label: requestedAccountLabel }
+      : await selectAutomaticClaudeAccount(context, {
+          preset: forkPreset,
+          excludeLabels: [session.account],
+        });
     if (!selected) {
       if (requestedSwitchPreset) {
         const usage = forkPreset === "fable" ? "Fable" : "five-hour";
@@ -1352,9 +1362,12 @@ export async function handleClaude(context) {
       );
     }
     const forkName = buildManagedClaudeSessionForkName(session);
-    const forkReason = requestedSwitchPreset
-      ? `Switching session from ${session.account} to ${selected.label} using ${forkPreset}`
-      : `${session.account} is busy; forking session onto ${selected.label}`;
+    const forkReason = requestedAccountLabel
+      ? `Switching session from ${session.account} to ${selected.label}`
+        + (requestedSwitchPreset ? ` using ${forkPreset}` : "")
+      : requestedSwitchPreset
+        ? `Switching session from ${session.account} to ${selected.label} using ${forkPreset}`
+        : `${session.account} is busy; forking session onto ${selected.label}`;
     stdout.write(`${forkReason} as "${forkName}".\n`);
     await handleRedisClaudeRun({
       ...context,

@@ -127,7 +127,7 @@ aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--json]
 aim claude usage [account...] [--fresh] [--json]
 aim claude list [count] [--json]
-aim claude resume <row-or-thread-id> [--switch-account fable|opus]
+aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus]
 aim claude run (opus|fable) [--resume]
 aim claude run <label> (opus|fable) [--resume]
 aim claude run <label> [-- <claude args...>]
@@ -140,6 +140,12 @@ aim pi use
 The label-free Claude presets select only unlocked readable accounts. `fable`
 ranks by Fable/Sonnet usage and uses five-hour usage as its tie-break;
 `opus` ranks by the shared five-hour usage.
+
+Claude resume uses the session's recorded account by default. Add
+`--account <label>` to fork onto an exact account; combine it with
+`--switch-account fable|opus` to override the resumed model preset. Session
+names are exact, case-insensitive matches and must be quoted when they contain
+spaces; ambiguous names require a row number or thread ID.
 
 `aim claude inventory` is the instant account-coverage view for Redis-backed Claude labels. It reads
 the configured AIM Redis credential records once and makes zero Anthropic, BrowserOS, Keychain,

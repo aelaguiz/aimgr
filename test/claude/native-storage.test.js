@@ -293,6 +293,36 @@ test("managed descriptors isolate two labels and read only their private files",
   );
 });
 
+test("managed reader treats only Claude's exact empty-token tombstone as empty storage", () => {
+  const home = mkTempHome();
+  const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
+  const descriptor = buildManagedClaudeNativeStorageDescriptor({
+    configDir,
+    defaultConfigDir: path.join(home, ".claude"),
+    expectedEmail: "alpha@example.com",
+    managedRootDir: path.join(home, ".aimgr"),
+  });
+  const value = credential();
+  value.nativeClaudeBundle.claudeAiOauth.accessToken = "";
+  value.nativeClaudeBundle.claudeAiOauth.refreshToken = "";
+  writeExactManagedBundle(configDir, value);
+
+  assert.deepEqual(
+    readManagedClaudeNativeBundleFromFiles({ descriptor }),
+    { ok: false, errorKind: "native_storage_empty" },
+  );
+
+  for (const [accessToken, refreshToken] of [["", REFRESH], [ACCESS, ""]]) {
+    value.nativeClaudeBundle.claudeAiOauth.accessToken = accessToken;
+    value.nativeClaudeBundle.claudeAiOauth.refreshToken = refreshToken;
+    writeExactManagedBundle(configDir, value);
+    assert.deepEqual(
+      readManagedClaudeNativeBundleFromFiles({ descriptor }),
+      { ok: false, errorKind: "file_bundle_incomplete" },
+    );
+  }
+});
+
 test("strict replacement planning rejects stale, ambiguous, and different identities without mutation", () => {
   const current = credential({ access: "ACCESS_CURRENT", refresh: "REFRESH_CURRENT", expiresAtMs: NOW_MS + 120_000 });
   const stale = credential({ access: "ACCESS_STALE", refresh: "REFRESH_STALE", expiresAtMs: NOW_MS + 90_000 });

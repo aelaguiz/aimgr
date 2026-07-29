@@ -707,8 +707,20 @@ test("automatic Fable run skips a locked account and launches the lowest Fable u
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  const records = [record("locked"), record("low"), record("high")];
   await importCredentialsSnapshot(store, {
-    credentials: [record("locked"), record("low"), record("high")],
+    credentials: records,
+  });
+  const selectedConfigDir = path.join(
+    resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "high" }),
+    ".claude",
+  );
+  const emptyTokens = structuredClone(records[2].credential.nativeClaudeBundle.claudeAiOauth);
+  emptyTokens.accessToken = "";
+  emptyTokens.refreshToken = "";
+  writeJson(path.join(selectedConfigDir, ".credentials.json"), { claudeAiOauth: emptyTokens });
+  writeJson(path.join(selectedConfigDir, ".claude.json"), {
+    oauthAccount: records[2].credential.nativeClaudeBundle.oauthAccount,
   });
   const lockedLease = await acquireRedisCredentialLease(store, {
     provider: "anthropic",
@@ -749,6 +761,11 @@ test("automatic Fable run skips a locked account and launches the lowest Fable u
     resolveExecutableOnPathImpl: buildTestClaudeResolver(),
     runClaudeCliImpl: ({ homeDir: launchHome, args }) => {
       launchedLabel = path.basename(launchHome);
+      const projected = JSON.parse(
+        fs.readFileSync(path.join(selectedConfigDir, ".credentials.json"), "utf8"),
+      );
+      assert.equal(projected.claudeAiOauth.accessToken, "ACCESS_HIGH");
+      assert.equal(projected.claudeAiOauth.refreshToken, "REFRESH_HIGH");
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
@@ -857,7 +874,7 @@ test("claude resume reuses the exact recorded Fable model and effort", async () 
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
 });
 
-test("claude resume skips rotation-pending accounts and switches to the least-used usable Fable account", async () => {
+test("claude resume by name skips rotation-pending accounts and honors an exact destination account", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -937,25 +954,18 @@ test("claude resume skips rotation-pending accounts and switches to the least-us
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
   await importCredentialsSnapshot(store, {
-    credentials: [record("boss"), record("fablelow"), record("opuslow")],
+    credentials: [record("boss"), record("fablelow"), record("opuslow"), record("specific")],
   });
 
   const usageByAccessToken = {
     ACCESS_BOSS: { fiveHour: 1, fable: 1 },
     ACCESS_FABLELOW: { fiveHour: 80, fable: 5 },
     ACCESS_OPUSLOW: { fiveHour: 10, fable: 60 },
+    ACCESS_SPECIFIC: { fiveHour: 90, fable: 95 },
   };
   let launchedLabel = null;
   let targetConfigDir = null;
-  const out = await runCli([
-    "claude",
-    "resume",
-    threadId,
-    "--switch-account",
-    "fable",
-    "--home",
-    home,
-  ], {
+  const cliDeps = {
     env: { HOME: home },
     nowImpl: () => nowMs,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
@@ -1008,7 +1018,16 @@ test("claude resume skips rotation-pending accounts and switches to the least-us
       ]);
       return { status: 0, signal: null };
     },
-  });
+  };
+  const out = await runCli([
+    "claude",
+    "resume",
+    "Continue rate-limited work",
+    "--switch-account",
+    "fable",
+    "--home",
+    home,
+  ], cliDeps);
 
   assert.equal(
     out,
@@ -1016,6 +1035,34 @@ test("claude resume skips rotation-pending accounts and switches to the least-us
       + "\"[fork from boss/66666666] Continue rate-limited work\".\n",
   );
   assert.equal(launchedLabel, "opuslow");
+  assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+  assert.equal(
+    fs.existsSync(path.join(
+      targetConfigDir,
+      "projects",
+      "selected-project",
+      `${threadId}.jsonl`,
+    )),
+    false,
+  );
+
+  const explicitOut = await runCli([
+    "claude",
+    "resume",
+    "Continue rate-limited work",
+    "--account",
+    "specific",
+    "--switch-account",
+    "fable",
+    "--home",
+    home,
+  ], cliDeps);
+  assert.equal(
+    explicitOut,
+    "Switching session from boss to specific using fable as "
+      + "\"[fork from boss/66666666] Continue rate-limited work\".\n",
+  );
+  assert.equal(launchedLabel, "specific");
   assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
   assert.equal(
     fs.existsSync(path.join(

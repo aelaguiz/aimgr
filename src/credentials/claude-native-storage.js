@@ -702,6 +702,22 @@ export function readClaudeNativeBundleFromConfigFiles({ descriptor, fsImpl = fs 
     oauthAccount: identity.oauthAccount,
   });
   if (!hasCompleteClaudeNativeBundle(nativeClaudeBundle)) {
+    const oauth = nativeClaudeBundle?.claudeAiOauth;
+    const emptyTokenTombstone = (
+      oauth?.accessToken === ""
+      && oauth?.refreshToken === ""
+      && hasCompleteClaudeNativeBundle({
+        ...nativeClaudeBundle,
+        claudeAiOauth: {
+          ...oauth,
+          accessToken: "empty-token-tombstone",
+          refreshToken: "empty-token-tombstone",
+        },
+      })
+    );
+    if (emptyTokenTombstone) {
+      return { ok: false, errorKind: "file_bundle_empty" };
+    }
     return { ok: false, errorKind: "file_bundle_incomplete" };
   }
   return {
@@ -725,7 +741,10 @@ export function readManagedClaudeNativeBundleFromFiles({
     return { ok: false, errorKind: "managed_storage_unsafe" };
   }
   const result = readClaudeNativeBundleFromConfigFiles({ descriptor, fsImpl });
-  if (result.ok !== true && result.errorKind === "file_bundle_missing") {
+  if (
+    result.ok !== true
+    && ["file_bundle_missing", "file_bundle_empty"].includes(result.errorKind)
+  ) {
     return { ok: false, errorKind: "native_storage_empty" };
   }
   return result;

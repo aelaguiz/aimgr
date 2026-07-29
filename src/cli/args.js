@@ -92,6 +92,7 @@ export function parseArgs(argv) {
     workdir: undefined,
     claudeAutoSelect: expandedClaudeRun.autoSelect,
     claudeAutoSelectPreset: expandedClaudeRun.autoSelectPreset,
+    claudeResumeAccountLabel: undefined,
     claudeResumeSwitchAccountPreset: undefined,
     afterDoubleDash: [],
   };
@@ -263,6 +264,18 @@ export function parseArgs(argv) {
     }
     if (arg === "--fresh") {
       opts.fresh = true;
+      continue;
+    }
+    if (arg === "--account") {
+      if (argv[0] !== "claude" || argv[1] !== "resume") {
+        throw new Error("Unknown option: --account");
+      }
+      const label = argv[i + 1];
+      if (!label || label.startsWith("--")) {
+        throw new Error("--account requires a Claude account label.");
+      }
+      opts.claudeResumeAccountLabel = label;
+      i += 1;
       continue;
     }
     if (arg === "--switch-account") {

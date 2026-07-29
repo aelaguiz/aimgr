@@ -143,7 +143,10 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   const out = await runCli([]);
   assert.match(out, /aim redis configure --url <redis-url>/);
   assert.match(out, /aim auth maintain\s+# refresh due Redis-backed Claude and Codex OAuth credentials once/);
-  assert.match(out, /aim claude resume <row-or-thread-id> \[--switch-account fable\|opus\]/);
+  assert.match(
+    out,
+    /aim claude resume <row-or-thread-id-or-name> \[--account <label>\] \[--switch-account fable\|opus\]/,
+  );
   assert.match(out, /aim claude run \(opus\|fable\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \(opus\|fable\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
@@ -211,15 +214,18 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
   assert.equal(explicit.opts.claudeAutoSelectPreset, null);
 });
 
-test("Claude resume switch-account accepts only the fable and opus presets", () => {
+test("Claude resume accepts an exact destination account and only supported model presets", () => {
   const fable = parseArgs([
     "claude",
     "resume",
     "36",
+    "--account",
+    "pro2",
     "--switch-account",
     "fable",
   ]);
   assert.deepEqual(fable.positional, ["claude", "resume", "36"]);
+  assert.equal(fable.opts.claudeResumeAccountLabel, "pro2");
   assert.equal(fable.opts.claudeResumeSwitchAccountPreset, "fable");
 
   const opus = parseArgs([
@@ -242,6 +248,14 @@ test("Claude resume switch-account accepts only the fable and opus presets", () 
   assert.throws(
     () => parseArgs(["claude", "run", "pro7", "--switch-account", "fable"]),
     /Unknown option: --switch-account/,
+  );
+  assert.throws(
+    () => parseArgs(["claude", "resume", "36", "--account"]),
+    /--account requires a Claude account label/,
+  );
+  assert.throws(
+    () => parseArgs(["claude", "run", "pro7", "--account", "pro2"]),
+    /Unknown option: --account/,
   );
 });
 

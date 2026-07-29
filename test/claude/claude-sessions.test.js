@@ -197,7 +197,7 @@ test("managed Claude sessions list the newest 50 with persisted name and ID fall
   );
 });
 
-test("managed Claude sessions resolve a current row or any exact thread ID and reject missing directories", () => {
+test("managed Claude sessions resolve a row, thread ID, or unique exact name", () => {
   const home = mkTempHome();
   seedFiftyOneSessions(home);
 
@@ -213,13 +213,34 @@ test("managed Claude sessions resolve a current row or any exact thread ID and r
     resolveManagedClaudeSession({ homeDir: home, selector: "51" }).threadId,
     THREAD_IDS[50],
   );
+  assert.equal(
+    resolveManagedClaudeSession({ homeDir: home, selector: " current RELEASE " }).threadId,
+    THREAD_IDS[0],
+  );
   assert.throws(
     () => resolveManagedClaudeSession({ homeDir: home, selector: "52" }),
     /was not found/,
   );
   assert.throws(
     () => resolveManagedClaudeSession({ homeDir: home, selector: "not-a-thread" }),
-    /Invalid Claude session selector/,
+    /was not found/,
+  );
+
+  writeManagedSession({
+    home,
+    account: "pro7",
+    threadId: "99999999-9999-4999-8999-999999999999",
+    cwd: path.join(home, "workspace", "duplicate-name"),
+    timestamp: new Date(NOW_MS - 100_000_000).toISOString(),
+    events: [{
+      type: "custom-title",
+      customTitle: "Current release",
+      timestamp: new Date(NOW_MS - 100_000_000).toISOString(),
+    }],
+  });
+  assert.throws(
+    () => resolveManagedClaudeSession({ homeDir: home, selector: "Current release" }),
+    /session name "Current release" is ambiguous; use a row number or thread ID/,
   );
 
   fs.rmdirSync(path.join(home, "workspace", "project-2"));
@@ -239,6 +260,11 @@ test("managed Claude resume refuses to guess when exact runtime metadata is abse
     threadId,
     cwd: path.join(home, "workspace", "project"),
     timestamp: new Date(NOW_MS).toISOString(),
+    events: [{
+      type: "custom-title",
+      customTitle: "Missing runtime metadata",
+      timestamp: new Date(NOW_MS).toISOString(),
+    }],
   });
   writeAimgrConfig({
     homeDir: home,
@@ -246,7 +272,7 @@ test("managed Claude resume refuses to guess when exact runtime metadata is abse
   });
   let redisCalls = 0;
   await assert.rejects(
-    runCli(["claude", "resume", threadId, "--home", home], {
+    runCli(["claude", "resume", "Missing runtime metadata", "--home", home], {
       connectRedisStoreImpl: () => {
         redisCalls += 1;
         throw new Error("resume must fail before Redis I/O");

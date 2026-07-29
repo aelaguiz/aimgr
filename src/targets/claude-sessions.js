@@ -160,7 +160,7 @@ export function listRecentManagedClaudeSessions({
 export function resolveManagedClaudeSession({ homeDir, selector }) {
   const value = String(selector ?? "").trim();
   if (!value) {
-    throw new Error("Missing Claude session selector. Use a row number or thread ID.");
+    throw new Error("Missing Claude session selector. Use a row number, thread ID, or exact name.");
   }
   const sessions = readManagedClaudeSessions({ homeDir });
   let selected;
@@ -175,8 +175,18 @@ export function resolveManagedClaudeSession({ homeDir, selector }) {
       throw new Error(`Claude thread ID ${value} exists under more than one managed account.`);
     }
     selected = matches[0] ?? null;
-  } else {
-    throw new Error("Invalid Claude session selector. Use a row number or thread ID.");
+  }
+  if (!selected && !/^\d+$/.test(value)) {
+    const normalizedName = normalizeThreadName(value)?.toLowerCase();
+    const matches = normalizedName
+      ? sessions.filter((session) => session.threadName?.toLowerCase() === normalizedName)
+      : [];
+    if (matches.length > 1) {
+      throw new Error(
+        `Claude session name "${normalizeThreadName(value)}" is ambiguous; use a row number or thread ID.`,
+      );
+    }
+    selected = matches[0] ?? null;
   }
   if (!selected) {
     throw new Error(`Claude session ${value} was not found in managed account homes.`);
