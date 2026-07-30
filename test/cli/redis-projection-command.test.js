@@ -783,6 +783,93 @@ test("automatic Fable run skips a locked account and launches the lowest Fable u
   await lockedLease.release();
 });
 
+test("explicit Claude run repairs an orphaned local rotation marker from Redis", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const nowMs = Date.now();
+  const credential = buildAnthropicClaudeCredential({
+    access: "ACCESS_PRO4",
+    refresh: "REFRESH_PRO4",
+    expiresAtMs: nowMs + 3_600_000,
+    emailAddress: "pro4@example.com",
+    organizationName: "Pro4 Org",
+    organizationUuid: "org_pro4",
+  });
+  credential.nativeClaudeBundle.oauthAccount.accountUuid = "acct_pro4";
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "pro4",
+      credential,
+      identity: {
+        accountUuid: "acct_pro4",
+        emailAddress: "pro4@example.com",
+        organizationUuid: "org_pro4",
+      },
+      policy: {
+        expect: { email: "pro4@example.com" },
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  const configDir = path.join(
+    resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "pro4" }),
+    ".claude",
+  );
+  const emptyOauth = structuredClone(credential.nativeClaudeBundle.claudeAiOauth);
+  emptyOauth.accessToken = "";
+  emptyOauth.refreshToken = "";
+  writeJson(path.join(configDir, ".credentials.json"), { claudeAiOauth: emptyOauth });
+  writeJson(path.join(configDir, ".claude.json"), {
+    oauthAccount: credential.nativeClaudeBundle.oauthAccount,
+  });
+  writeJson(resolveAimgrLocalStatePath({ homeDir: home }), {
+    targets: {
+      claudeCli: {
+        rotationPublicationPendingByLabel: {
+          pro4: {
+            pending: true,
+            observedAt: "2026-07-30T21:51:15.212Z",
+          },
+        },
+      },
+    },
+  });
+
+  let launched = false;
+  const out = await runCli(["claude", "run", "pro4", "--home", home], {
+    env: { HOME: home },
+    nowImpl: () => nowMs,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: ({ configDir: launchConfigDir }) => {
+      const projected = JSON.parse(
+        fs.readFileSync(path.join(launchConfigDir, ".credentials.json"), "utf8"),
+      );
+      assert.equal(projected.claudeAiOauth.accessToken, "ACCESS_PRO4");
+      assert.equal(projected.claudeAiOauth.refreshToken, "REFRESH_PRO4");
+      launched = true;
+      return { status: 0, signal: null };
+    },
+  });
+
+  assert.equal(out, "");
+  assert.equal(launched, true);
+  const local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
+  assert.equal(local.targets.claudeCli.rotationPublicationPendingByLabel, undefined);
+  assert.equal(fs.existsSync(path.join(configDir, ".credentials.json")), false);
+  assert.equal(
+    [...client.values.keys()].some((key) => key.includes(":fence:claude-rotation:pro4")),
+    false,
+  );
+});
+
 test("claude resume reuses the exact recorded Fable model and effort", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();

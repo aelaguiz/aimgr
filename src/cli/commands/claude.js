@@ -934,9 +934,13 @@ async function handleRedisClaudeRun(context, {
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
       throw new Error("Claude rotation publication is pending; rerun this label before launching Claude again.");
     }
+    const orphanedPendingMarker = hadPendingRotation
+      && retainedRunFence === null
+      && preRunSync.reason === "native_storage_empty";
     const preRunRecovered = preRunSync.synced === true
       || preRunSync.reason === "tokens_unchanged"
-      || preRunSync.reason === "stale_candidate";
+      || preRunSync.reason === "stale_candidate"
+      || orphanedPendingMarker;
     if ((hadPendingRotation && !preRunRecovered) || (!hadPendingRotation && !preRunRecovered && !SAFE_PRE_RUN_STORAGE_REASONS.has(preRunSync.reason))) {
       throw new Error(
         hadPendingRotation
