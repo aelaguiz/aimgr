@@ -1136,6 +1136,53 @@ test("Darwin qualification trusts the Anthropic signing identity without a relea
   assert.equal(signatureChecked, true);
 });
 
+test("Darwin qualification accepts only the official two-link app bundle topology", async () => {
+  const command = "/Users/test/.local/share/claude/versions/2.1.220";
+  const appCommand = "/Users/test/.local/share/claude/ClaudeCode.app/Contents/MacOS/claude";
+  const executableStat = {
+    isFile: () => true,
+    isSymbolicLink: () => false,
+    nlink: 2,
+    uid: typeof process.getuid === "function" ? process.getuid() : 0,
+    dev: 42,
+    ino: 220,
+  };
+  const result = await verifyInstalledClaudeExecutable({
+    command,
+    platform: "darwin",
+    arch: "arm64",
+    fsImpl: {
+      realpathSync: () => command,
+      lstatSync: (filePath) => {
+        assert.ok(filePath === command || filePath === appCommand);
+        return executableStat;
+      },
+      accessSync: () => {},
+    },
+    verifyCodeSignatureImpl: () => {},
+  });
+  assert.equal(result, command);
+
+  await assert.rejects(
+    verifyInstalledClaudeExecutable({
+      command,
+      platform: "darwin",
+      arch: "arm64",
+      fsImpl: {
+        realpathSync: () => command,
+        lstatSync: (filePath) => (
+          filePath === command
+            ? executableStat
+            : { ...executableStat, ino: executableStat.ino + 1 }
+        ),
+        accessSync: () => {},
+      },
+      verifyCodeSignatureImpl: () => {},
+    }),
+    /Refusing an unsafe installed Claude executable/,
+  );
+});
+
 test("Linux qualification accepts only the pinned native x64 artifact without Darwin signing", async () => {
   const command = "/home/test/.local/share/claude/versions/2.1.218";
   let signatureChecked = false;

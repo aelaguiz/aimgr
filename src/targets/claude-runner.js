@@ -291,6 +291,41 @@ function verifyCodeSignature(command, {
   }
 }
 
+function hasSafeClaudeLinkTopology(resolvedCommand, stat, {
+  fsImpl = fs,
+  platform = process.platform,
+} = {}) {
+  if (stat.nlink === 1) return true;
+  if (platform !== "darwin" || stat.nlink !== 2) return false;
+
+  const versionsDir = path.dirname(resolvedCommand);
+  if (path.basename(versionsDir) !== "versions") return false;
+  const installRoot = path.dirname(versionsDir);
+  const appCommand = path.join(
+    installRoot,
+    "ClaudeCode.app",
+    "Contents",
+    "MacOS",
+    "claude",
+  );
+  let appStat;
+  try {
+    appStat = fsImpl.lstatSync(appCommand);
+  } catch {
+    return false;
+  }
+  return (
+    appStat.isFile()
+    && !appStat.isSymbolicLink()
+    && appStat.nlink === 2
+    && appStat.uid === stat.uid
+    && Number.isInteger(stat.dev)
+    && Number.isInteger(stat.ino)
+    && appStat.dev === stat.dev
+    && appStat.ino === stat.ino
+  );
+}
+
 export async function verifyInstalledClaudeExecutable({
   command,
   fsImpl = fs,
@@ -319,7 +354,7 @@ export async function verifyInstalledClaudeExecutable({
   if (
     !stat.isFile()
     || stat.isSymbolicLink()
-    || stat.nlink !== 1
+    || !hasSafeClaudeLinkTopology(resolvedCommand, stat, { fsImpl, platform })
     || (typeof process.getuid === "function" && Number.isInteger(stat.uid) && stat.uid !== process.getuid())
   ) {
     throw new Error("Refusing an unsafe installed Claude executable.");
