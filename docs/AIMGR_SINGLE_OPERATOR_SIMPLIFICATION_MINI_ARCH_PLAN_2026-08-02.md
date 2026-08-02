@@ -413,7 +413,7 @@ already named in the convergence table above.
 
 <!-- arch_skill:block:phase_plan:start -->
 
-Status: IMPLEMENTED AND REVIEWED — DEPLOYMENT IN PROGRESS
+Status: IMPLEMENTED, REVIEWED, AND DEPLOYED — LIVE RECORD CUTOVER PARTIAL
 
 ## Phase 1 — Make Claude runtime state singular and non-blocking
 
@@ -541,7 +541,7 @@ and degrade predictably.
 
 ## Phase 3 — Hard cutover, delete dead architecture, verify, and deploy
 
-Status: IN PROGRESS
+Status: BLOCKED ON NINE ACTIVE OR FENCED LIVE RECORDS
 
 ### Goal
 
