@@ -1061,7 +1061,7 @@ export async function handleClaude(context) {
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
     throw new Error(
-      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus] | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
+      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus] | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
     );
   }
   if (subcmd === "list") {
@@ -1255,7 +1255,11 @@ export async function handleClaude(context) {
       fetchJsonWithTimeoutImpl,
       connectRedisStoreImpl,
     });
-    stdout.write(opts.json ? `${JSON.stringify(result, null, 2)}\n` : renderClaudeRedisAccountUsageStatus(result));
+    stdout.write(
+      opts.json
+        ? `${JSON.stringify(result, null, 2)}\n`
+        : renderClaudeRedisAccountUsageStatus(result, { verbose: opts.verbose === true }),
+    );
     if (result.ok !== true) {
       setExitCode(1);
     }

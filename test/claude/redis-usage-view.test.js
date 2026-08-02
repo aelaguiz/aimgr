@@ -227,7 +227,14 @@ test("Claude Redis views expose reauth_required without probing and preserve ord
   assert.equal(statusByLabel.get("expired").authState, "credential_expired");
   assert.equal(status.requestCount, 0);
   assert.equal(providerRequests, 0);
-  assert.match(renderClaudeRedisAccountUsageStatus(status), /reauth_required/);
+  const rendered = renderClaudeRedisAccountUsageStatus(status);
+  assert.match(rendered, /marked\s+NEEDS YOU.*aim login marked/);
+  assert.match(rendered, /expired\s+AIM FIXING.*AIM will retry/);
+  assert.match(rendered, /^expired\s+AIM FIXING.*\s--\s+AIM will retry$/m);
+  assert.doesNotMatch(rendered, /reauth_required|credential_expired/);
+  const verbose = renderClaudeRedisAccountUsageStatus(status, { verbose: true });
+  assert.match(verbose, /reauth_required/);
+  assert.match(verbose, /credential_expired/);
 });
 
 test("Redis Claude status skips candidates, shows live locks, disables web fallback, and reuses the shared cache", async () => {
@@ -313,13 +320,62 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   assert.equal(fs.statSync(cachePath).mode & 0o777, 0o600);
   const serializedCache = fs.readFileSync(cachePath, "utf8");
   assert.doesNotMatch(serializedCache, /ACCESS_SECRET|REFRESH_SECRET|private\.example|acct-private|org-private/i);
-  assert.match(renderClaudeRedisAccountUsageStatus(first), /candidate/);
-  assert.match(renderClaudeRedisAccountUsageStatus(first), /ready/);
+  const rendered = renderClaudeRedisAccountUsageStatus(first);
+  assert.match(rendered, /^CLAUDE: 0 ready · 1 in use · 0 AIM fixing · 1 needs you · 0 unknown/m);
+  assert.match(rendered, /candidate\s+NEEDS YOU.*aim login candidate/);
+  assert.match(rendered, /ready\s+IN USE.*session active/);
+  assert.doesNotMatch(rendered, /max\/max_20x|usage_readable|pending/);
   assert.match(
-    renderClaudeRedisAccountUsageStatus(first),
+    renderClaudeRedisAccountUsageStatus(first, { verbose: true }),
     /ready\s+max\/max_20x\s+usage_readable\s+yes\s+pending/,
   );
   assert.ok(client.values.size > 0);
+});
+
+test("Claude human status renders the five operator states with frozen precedence", () => {
+  const account = (label, overrides = {}) => ({
+    label,
+    authState: "usage_readable",
+    credentialState: "credential_ready",
+    credentialReady: true,
+    locked: false,
+    rotationPending: false,
+    source: "cache",
+    ageMs: 120_000,
+    usage: { provider: ANTHROPIC_PROVIDER, ok: false, windows: [] },
+    ...overrides,
+  });
+  const rendered = renderClaudeRedisAccountUsageStatus({
+    checkedAtMs: NOW_MS,
+    accounts: [
+      account("ready"),
+      account("active", {
+        locked: true,
+        authState: "reauth_required",
+        credentialState: "reauth_required",
+        rotationPending: true,
+      }),
+      account("fixing", {
+        authState: "credential_expired",
+        credentialState: "credential_expired",
+        credentialReady: false,
+      }),
+      account("needs", {
+        authState: "reauth_required",
+        credentialState: "reauth_required",
+        credentialReady: false,
+        rotationPending: true,
+      }),
+      account("unknown", { locked: null, rotationPending: null }),
+    ],
+  });
+
+  assert.match(rendered, /^CLAUDE: 1 ready · 1 in use · 1 AIM fixing · 1 needs you · 1 unknown/m);
+  assert.match(rendered, /ready\s+READY.*2m\s+use now/);
+  assert.match(rendered, /active\s+IN USE.*session active/);
+  assert.match(rendered, /fixing\s+AIM FIXING.*AIM will retry/);
+  assert.match(rendered, /needs\s+NEEDS YOU.*aim login needs/);
+  assert.match(rendered, /unknown\s+UNKNOWN.*retry status/);
 });
 
 test("Claude usage status renders one fleet average across every readable window column", () => {
@@ -331,7 +387,12 @@ test("Claude usage status renders one fleet average across every readable window
         subscriptionType: "max",
         rateLimitTier: "max_20x",
         authState: "usage_readable",
+        credentialState: "credential_ready",
+        credentialReady: true,
+        locked: false,
+        rotationPending: false,
         source: "live",
+        ageMs: 0,
         usage: {
           ok: true,
           windows: [
@@ -347,7 +408,12 @@ test("Claude usage status renders one fleet average across every readable window
         subscriptionType: "max",
         rateLimitTier: "max_20x",
         authState: "usage_readable",
+        credentialState: "credential_ready",
+        credentialReady: true,
+        locked: false,
+        rotationPending: false,
         source: "cache",
+        ageMs: 120_000,
         usage: {
           ok: true,
           windows: [
@@ -362,7 +428,7 @@ test("Claude usage status renders one fleet average across every readable window
 
   assert.match(
     rendered,
-    /average\s+--\s+--\s+--\s+--\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+--\s+60%\s+6\.0d\s+all/,
+    /average\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+--\s+60%\s+6\.0d\s+--\s+--/,
   );
   assert.equal(rendered.match(/^average\s/gm)?.length, 1);
 });
@@ -864,7 +930,7 @@ test("cache write failures are explicit after a single live provider attempt", a
   assert.equal(result.cacheWriteFailed, true);
   assert.equal(result.cacheState, "write_failed");
   assert.doesNotMatch(JSON.stringify(result), /RAW_CACHE_WRITE_ERROR/);
-  assert.match(renderClaudeRedisAccountUsageStatus(result), /cache_write=failed/);
+  assert.match(renderClaudeRedisAccountUsageStatus(result, { verbose: true }), /cache_write=failed/);
 });
 
 test("Redis cache envelope writers preserve each other's sections in both orders", () => {

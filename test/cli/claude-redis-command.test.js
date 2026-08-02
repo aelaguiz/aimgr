@@ -69,6 +69,22 @@ test("Claude inventory and status use Redis candidates without Keychain or provi
   assert.equal(status.requestCount, 0);
   assert.equal(status.accounts[0].authState, "credential_missing");
 
+  const humanStatus = await runCliWithExitCode(
+    ["claude", "status", "coder", "--home", homeDir],
+    deps,
+  );
+  assert.equal(humanStatus.exitCode, 1);
+  assert.match(humanStatus.stdout, /coder\s+NEEDS YOU.*aim login coder/);
+  assert.doesNotMatch(humanStatus.stdout, /credential_missing/);
+
+  const verboseStatus = await runCliWithExitCode(
+    ["claude", "status", "coder", "--verbose", "--home", homeDir],
+    deps,
+  );
+  assert.equal(verboseStatus.exitCode, 1);
+  assert.match(verboseStatus.stdout, /CLAUDE ACCOUNT USAGE/);
+  assert.match(verboseStatus.stdout, /credential_missing/);
+
   const publicOutput = `${JSON.stringify(inventory)}\n${statusResult.stdout}`;
   assert.doesNotMatch(publicOutput, /private-account|example\.test|default|puzzledb/i);
 });

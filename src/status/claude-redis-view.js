@@ -62,6 +62,16 @@ const EVIDENCE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_CLAUDE_REDIS_ACCOUNTS = 256;
 const MAX_CLAUDE_USAGE_WINDOWS = 16;
 const HEALTHY_USAGE_STATES = new Set(["usage_readable", "usage_limited"]);
+const HUMAN_ACTION_CREDENTIAL_STATES = new Set([
+  "credential_missing",
+  "credential_candidate",
+  "credential_incomplete",
+  "identity_unverified",
+  "identity_mismatch",
+  "credential_generation_invalid",
+  "scope_blocked",
+  "duplicate_account",
+]);
 const CACHEABLE_AUTH_STATES = new Set([
   ...HEALTHY_USAGE_STATES,
   "scope_blocked",
@@ -1176,7 +1186,51 @@ function usageColumns(accounts, nowMs) {
   return { headers, values, averageValues };
 }
 
-export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics = true } = {}) {
+function describeClaudeOperatorState(account) {
+  const authState = typeof account?.authState === "string" ? account.authState : "";
+  const credentialState = typeof account?.credentialState === "string" ? account.credentialState : "";
+  const label = typeof account?.label === "string" ? account.label : "account";
+
+  if (account?.locked === true) return { status: "IN USE", next: "session active" };
+  if (
+    authState === "reauth_required"
+    || credentialState === "reauth_required"
+    || authState === "auth_invalid"
+    || authState === "scope_blocked"
+    || HUMAN_ACTION_CREDENTIAL_STATES.has(credentialState)
+  ) {
+    return { status: "NEEDS YOU", next: `aim login ${label}` };
+  }
+  if (
+    account?.rotationPending === true
+    || authState === "refresh_in_progress"
+    || authState === "stale_auth"
+    || credentialState === "credential_expired"
+  ) {
+    return { status: "AIM FIXING", next: "AIM will retry" };
+  }
+  if (
+    account?.locked === false
+    && account?.rotationPending === false
+    && account?.credentialReady === true
+    && HEALTHY_USAGE_STATES.has(authState)
+  ) {
+    return { status: "READY", next: "use now" };
+  }
+  return { status: "UNKNOWN", next: "retry status" };
+}
+
+function formatClaudeUsageAge(account) {
+  if (account?.source === "live") return "now";
+  if (account?.ageMs === null || account?.ageMs === undefined || account?.ageMs === "") return "--";
+  const ageMs = Number(account?.ageMs);
+  if (Number.isFinite(ageMs) && ageMs < 60_000) return "now";
+  if (!Number.isFinite(ageMs) || ageMs < 0) return "--";
+  if (ageMs < 3_600_000) return `${Math.max(1, Math.round(ageMs / 60_000))}m`;
+  return formatStatusDeltaMsCell(ageMs);
+}
+
+function renderVerboseClaudeRedisAccountUsageStatus(result) {
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
@@ -1211,16 +1265,50 @@ export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics
     `CLAUDE ACCOUNT USAGE (${accounts.length})`,
     ...formatStatusTable(rows),
   ];
-  if (includeDiagnostics) {
-    lines.push(
-      `requests=${Number(result?.requestCount ?? 0)}  cache_ttl=${Number(result?.cacheTtlSeconds ?? 0)}s  stale_max=${Number(result?.staleMaxSeconds ?? 0)}s`,
-      `cache_state=${formatCacheState(result?.cacheState)}  cache_write=${result?.cacheWriteFailed === true ? "failed" : "ok"}`,
-    );
-    if (Array.isArray(result?.missingAccounts) && result.missingAccounts.length > 0) {
-      lines.push(`missing_accounts=${result.missingAccounts.join(",")}`);
-    }
+  lines.push(
+    `requests=${Number(result?.requestCount ?? 0)}  cache_ttl=${Number(result?.cacheTtlSeconds ?? 0)}s  stale_max=${Number(result?.staleMaxSeconds ?? 0)}s`,
+    `cache_state=${formatCacheState(result?.cacheState)}  cache_write=${result?.cacheWriteFailed === true ? "failed" : "ok"}`,
+  );
+  if (Array.isArray(result?.missingAccounts) && result.missingAccounts.length > 0) {
+    lines.push(`missing_accounts=${result.missingAccounts.join(",")}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } = {}) {
+  if (verbose) return renderVerboseClaudeRedisAccountUsageStatus(result);
+
+  const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
+  const nowMs = Number(result?.checkedAtMs) || Date.now();
+  const columns = usageColumns(accounts, nowMs);
+  const describedAccounts = accounts.map((account) => ({
+    account,
+    operator: describeClaudeOperatorState(account),
+  }));
+  const countStatus = (status) => describedAccounts.filter((entry) => entry.operator.status === status).length;
+  const rows = [["account", "status", ...columns.headers, "updated", "next"]];
+  for (const { account, operator } of describedAccounts) {
+    rows.push([
+      account.label,
+      operator.status,
+      ...columns.values(account),
+      formatClaudeUsageAge(account),
+      operator.next,
+    ]);
+  }
+  if (accounts.length > 0) {
+    rows.push([
+      "average",
+      "--",
+      ...columns.averageValues(),
+      "--",
+      "--",
+    ]);
+  }
+  return `${[
+    `CLAUDE: ${countStatus("READY")} ready · ${countStatus("IN USE")} in use · ${countStatus("AIM FIXING")} AIM fixing · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
+    ...formatStatusTable(rows),
+  ].join("\n")}\n`;
 }
 
 export function renderClaudeRedisAccountInventory(result) {

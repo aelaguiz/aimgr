@@ -34,6 +34,7 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   );
   assert.match(out, /aim claude run \(opus\|fable\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \(opus\|fable\) \[--resume\]/);
+  assert.match(out, /aim claude status \[account\.\.\.\] \[--fresh\] \[--verbose\] \[--json\]/);
   assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
   assert.match(out, /--primary-host <host>\s+Human-readable Redis primary host, e\.g\. agents@amirs-mac-studio/);

@@ -51,10 +51,7 @@ export function renderStatusText(view, {
     lines.push("");
     if (claudeUsageStatus) {
       lines.push(
-        ...renderClaudeRedisAccountUsageStatus(
-          claudeUsageStatus,
-          { includeDiagnostics: false },
-        ).trimEnd().split("\n"),
+        ...renderClaudeRedisAccountUsageStatus(claudeUsageStatus).trimEnd().split("\n"),
       );
     } else {
       pushStatusAccountTable(lines, { heading: "CLAUDE ACCOUNTS", accounts: claudeAccounts, now });

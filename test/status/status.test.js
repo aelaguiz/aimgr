@@ -80,6 +80,9 @@ test("plain status shows coordination provenance, canonical account facts, and l
         ],
       },
       source: "cache",
+      ageMs: 120_000,
+      credentialReady: true,
+      credentialState: "credential_ready",
       locked: true,
       rotationPending: false,
       localProjection: { state: "unpublished" },
@@ -90,7 +93,9 @@ test("plain status shows coordination provenance, canonical account facts, and l
 
   assert.match(text, /^COORDINATION redis=live\n\nCODEX ACCOUNTS \(1\)/);
   assert.match(text, /boss\s+ready\s+free\s+--\s+8d\s+12%\s+2\.0h\s+34%\s+5\.0d\s+openai-codex\s+cache/);
-  assert.match(text, /pro7\s+max\/max_20x\s+usage_readable\s+yes\s+--\s+unpublished/);
+  assert.match(text, /CLAUDE: 0 ready · 1 in use · 0 AIM fixing · 0 needs you · 0 unknown/);
+  assert.match(text, /pro7\s+IN USE\s+23%\s+3\.0h\s+45%\s+6\.0d\s+67%\s+6\.0d\s+--\s+--\s+2m\s+session active/);
+  assert.doesNotMatch(text, /usage_readable|unpublished/);
   assert.match(text, /\nCODEX ACTIVE\nlabel=boss .*\n\nCLAUDE LAST RUN\nlabel=pro7\n$/);
   assert.doesNotMatch(text, /POOL NOW|PRESSURE|PROJECTION|NEXT BEST|WARNINGS|requests=|cache_state=/);
 });

@@ -70,6 +70,7 @@ export function parseArgs(argv) {
     help: false,
     once: false,
     fresh: false,
+    verbose: false,
     confirm: false,
     intervalSeconds: undefined,
     rotateBelow5hRemainingPct: undefined,
@@ -224,6 +225,13 @@ export function parseArgs(argv) {
     }
     if (arg === "--fresh") {
       opts.fresh = true;
+      continue;
+    }
+    if (arg === "--verbose") {
+      if (argv[0] !== "claude" || (argv[1] !== "status" && argv[1] !== "usage")) {
+        throw new Error("Unknown option: --verbose");
+      }
+      opts.verbose = true;
       continue;
     }
     if (arg === "--account") {

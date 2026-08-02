@@ -35,6 +35,12 @@ test("AIM rejects unknown options outside native Claude passthrough, including -
   assert.throws(() => parseArgs(["status", "--state", "/tmp/secrets.json"]), /Unknown option: --state/);
 });
 
+test("--verbose is scoped to Claude status and its usage alias", () => {
+  assert.equal(parseArgs(["claude", "status", "--verbose"]).opts.verbose, true);
+  assert.equal(parseArgs(["claude", "usage", "--verbose"]).opts.verbose, true);
+  assert.throws(() => parseArgs(["status", "--verbose"]), /Unknown option: --verbose/);
+});
+
 test("auth lazy defaults expose only executable resolution for maintenance", async () => {
   const deps = await loadCommandDefaultDeps("auth");
 
