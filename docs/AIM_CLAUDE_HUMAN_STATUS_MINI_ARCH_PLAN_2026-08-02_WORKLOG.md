@@ -25,3 +25,20 @@ Plan doc: `docs/AIM_CLAUDE_HUMAN_STATUS_MINI_ARCH_PLAN_2026-08-02.md`
 - Scope check: on track. Production changes remain limited to the renderer,
   scoped flag, two existing call sites, and command documentation. Fleet
   deployment is the only remaining item.
+
+## 2026-08-02T23:11:53Z — Exact runtime deployment complete
+
+- Fast-forwarded and installed runtime commit
+  `b8b97564790433423fdcb4e9d3cdabdae437ea97` locally and in the canonical M3,
+  home, Studio, and Claw checkouts. All tracked worktrees remained clean; each
+  host's unrelated untracked files were preserved.
+- Read-only installed `aim claude status boss` passed on M3, home, and Studio:
+  each showed one `AIM FIXING` account with `AIM will retry`, and none exposed
+  `credential_expired` in the default view.
+- Claw is intentionally Redis-unconfigured; its installed help smoke passed
+  and advertised the scoped `--verbose` status option.
+- The Studio's noninteractive shell did not expose npm on `PATH`; installation
+  completed through its existing absolute Node/npm paths without changing its
+  environment or installer.
+- Final scope check: complete and on scope. No auth, refresh, Redis, rotation,
+  selection, cache, maintainer, or launch behavior changed.

@@ -1,7 +1,7 @@
 ---
 title: "AIM Claude Human Status - Mini Architecture Plan"
 date: 2026-08-02
-status: active
+status: complete
 fallback_policy: forbidden
 owners: [aelaguiz]
 reviewers: [kimi-code/k3]
@@ -28,7 +28,7 @@ launches.
 # Implementation Audit (authoritative)
 Date: 2026-08-02
 Verdict (code): COMPLETE
-Manual Verification: pending
+Manual Verification: complete
 
 ## Code blockers (why code is not done)
 - None.
@@ -40,8 +40,7 @@ Manual Verification: pending
 - None.
 
 ## Manual verification pending (screenshots / human validation)
-- Deploy the committed revision through the existing fleet checkouts and run
-  one read-only installed status smoke per reachable target.
+- None.
 
 The shared renderer owns both default text entry points
 (`src/status/claude-redis-view.js:1278`, `src/status/render.js:54`); the scoped
@@ -49,7 +48,10 @@ flag only selects its retained technical mode (`src/cli/args.js:230`,
 `src/cli/commands/claude.js:1261`). The focused state, command, parser, help,
 README, and top-level render tests pass 41/41, along with lint and
 `git diff --check`. No runtime, credential, Redis, recovery, selection, cache,
-or maintainer path changed.
+or maintainer path changed. Runtime commit `b8b9756` was installed locally and
+on M3, home, Studio, and Claw. The three Redis-connected remotes rendered the
+expired `boss` access token as `AIM FIXING` with no raw expiry label; Claw's
+intentionally Redis-unconfigured install passed the installed help smoke.
 <!-- arch_skill:block:implementation_audit:end -->
 
 <!-- arch_skill:block:planning_passes:start -->
@@ -61,7 +63,7 @@ planning_passes:
   independent_kimi_review: pass
   review_reconciliation: complete_no_changes
   scope_freeze: complete
-  implementation: code_complete_deployment_pending
+  implementation: complete
 
 <!-- arch_skill:block:planning_passes:end -->
 
@@ -259,7 +261,7 @@ contract.
 
 ## Phase 1 — Human status cutover and deployment
 
-**Status: IN PROGRESS**
+**Status: COMPLETE**
 
 **Goal:** Replace the misleading default Claude table without changing any
 credential or runtime behavior.
@@ -273,7 +275,7 @@ credential or runtime behavior.
 - [x] Wire `--verbose` only through `aim claude status|usage`; leave JSON,
   collection, probing, selection, auth, recovery, and maintenance untouched.
 - [x] Update the existing focused tests, CLI help, and README command examples.
-- [ ] Run the verification and rollout sequence in Section 6.
+- [x] Run the verification and rollout sequence in Section 6.
 
 **Exit criteria (all required):**
 
