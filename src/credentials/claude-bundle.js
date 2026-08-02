@@ -211,20 +211,34 @@ export function deriveAnthropicCredentialFromClaudeBundle({ existingCredential, 
   if (!bundle || !hasCompleteClaudeNativeBundle(bundle) || !summary) {
     throw new Error("Refusing to store an incomplete native Claude bundle.");
   }
-  const next = {
-    ...(isObject(existingCredential) ? existingCredential : {}),
-    nativeClaudeBundle: bundle,
-    access: summary.access,
-    refresh: summary.refresh,
-    expiresAt: summary.expiresAt,
-    subscriptionType: summary.subscriptionType,
-    rateLimitTier: summary.rateLimitTier,
-    scopes: summary.scopes,
-    emailAddress: summary.emailAddress,
-    organizationName: summary.organizationName,
-    organizationUuid: summary.organizationUuid,
-  };
+  const next = isObject(existingCredential) ? { ...existingCredential } : {};
+  for (const field of [
+    "access",
+    "refresh",
+    "expiresAt",
+    "subscriptionType",
+    "rateLimitTier",
+    "scopes",
+    "emailAddress",
+    "organizationName",
+    "organizationUuid",
+  ]) {
+    delete next[field];
+  }
+  next.nativeClaudeBundle = bundle;
   return next;
+}
+
+export function deriveAnthropicCredentialView(credential) {
+  if (!isObject(credential)) return null;
+  const nativeClaudeBundle = buildClaudeNativeBundle(getClaudeNativeBundle(credential));
+  const summary = buildClaudeCredentialSummaryFromBundle(nativeClaudeBundle);
+  if (!nativeClaudeBundle || !summary) return null;
+  return {
+    ...structuredClone(credential),
+    nativeClaudeBundle,
+    ...summary,
+  };
 }
 
 export function updateClaudeBundleTokenFields({ nativeClaudeBundle, access, refresh, expiresAt }) {

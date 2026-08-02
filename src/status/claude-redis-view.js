@@ -1,21 +1,32 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import { getRedisConfig } from "../config/aimgr-config.js";
 import {
-  buildRedisStatusClientOptions,
   closeRedisStore,
   connectRedisStore,
   readCredentialRecordsByProvider,
+  REDIS_CONNECTION_POLICY_OBSERVE,
 } from "../coordination/redis-store.js";
 import { readHeldRedisCredentialLeaseLabels } from "../coordination/redis-credential-lease.js";
+import { readRedisClaudeRotationFence } from "../coordination/redis-claude-rotation-fence.js";
 import { buildStableIdentityForCredential } from "../coordination/login-publish.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import {
   buildClaudeCredentialSummaryFromBundle,
+  buildClaudeNativeBundle,
   hasCompleteClaudeNativeBundle,
+  readClaudeAppStateFile,
+  readClaudeAuthFile,
 } from "../credentials/claude-bundle.js";
-import { resolveAimgrRedisCachePath } from "../io/paths.js";
+import { buildAnthropicTokenLineageFingerprint, getAnthropicCredentialView } from "../credentials/anthropic.js";
+import {
+  resolveAimgrClaudeLabelHomeDir,
+  resolveAimgrRedisCachePath,
+  resolveClaudeAuthFilePath,
+  resolveManagedClaudeDir,
+} from "../io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../pool/usage.js";
 import {
   averageStatusNumbers,
@@ -23,6 +34,7 @@ import {
   formatStatusTable,
 } from "./table.js";
 import { loadLocalState } from "../state/local-state.js";
+import { readClaudeProjectionReceipt } from "../targets/claude-cli.js";
 import {
   acquireRedisCacheLock,
   readCachedProviderUsage,
@@ -85,10 +97,6 @@ function emptyUsage() {
 function normalizePlan(value) {
   const plan = typeof value === "string" ? value.trim().toLowerCase() : "";
   return PLAN_TOKEN_MAP.get(plan) ?? null;
-}
-
-function normalizeCredentialMetadataToken(value) {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
 function normalizeBillingEvidence(record, nowMs) {
@@ -294,7 +302,8 @@ function buildIdentityBinding(record, accountIdentityKey, credentialGeneration) 
 }
 
 function buildCredentialFacts(record, nowMs) {
-  const credential = isObject(record?.credential) ? record.credential : {};
+  const storedCredential = isObject(record?.credential) ? record.credential : {};
+  const credential = getAnthropicCredentialView(storedCredential);
   const candidateRecord = record?.health?.status === "candidate";
   const summary = buildClaudeCredentialSummaryFromBundle(credential);
   const derivedIdentity = buildStableIdentityForCredential(ANTHROPIC_PROVIDER, credential);
@@ -310,57 +319,21 @@ function buildCredentialFacts(record, nowMs) {
     ? record.policy.expect.email.trim().toLowerCase()
     : "";
   const actualEmail = typeof summary?.emailAddress === "string" ? summary.emailAddress.trim().toLowerCase() : "";
-  const expiresMs = parseExpiresAtToMs(credential.expiresAt);
-  const subscriptionType = normalizePlan(credential.subscriptionType ?? summary?.subscriptionType);
-  const rateLimitTier = normalizePlan(credential.rateLimitTier ?? summary?.rateLimitTier);
+  const expiresMs = parseExpiresAtToMs(summary?.expiresAt);
+  const subscriptionType = normalizePlan(summary?.subscriptionType);
+  const rateLimitTier = normalizePlan(summary?.rateLimitTier);
   const evidence = normalizeBillingEvidence(record, nowMs);
   const reauthRequired = record?.policy?.reauth?.blockedReason === "oauth_reauth_required";
-  const scopes = Array.isArray(credential.scopes)
-    ? credential.scopes.map((scope) => String(scope ?? "").trim()).filter(Boolean)
-    : Array.isArray(summary?.scopes)
-      ? summary.scopes
-      : [];
-  const nativeExpiresMs = parseExpiresAtToMs(summary?.expiresAt);
-  const normalizedTopScopes = Array.isArray(credential.scopes)
-    ? [...new Set(credential.scopes.map((scope) => String(scope ?? "").trim()).filter(Boolean))].sort()
-    : [];
-  const normalizedNativeScopes = Array.isArray(summary?.scopes)
-    ? [...new Set(summary.scopes.map((scope) => String(scope ?? "").trim()).filter(Boolean))].sort()
-    : [];
-  const topLevelMatchesNative = Boolean(
-    summary
-    && typeof credential.access === "string"
-    && credential.access === summary.access
-    && typeof credential.refresh === "string"
-    && credential.refresh === summary.refresh
-    && expiresMs !== null
-    && nativeExpiresMs !== null
-    && expiresMs === nativeExpiresMs
-    && typeof credential.emailAddress === "string"
-    && credential.emailAddress.trim().toLowerCase() === summary.emailAddress
-    && typeof credential.organizationUuid === "string"
-    && credential.organizationUuid.trim() === summary.organizationUuid
-    && typeof credential.organizationName === "string"
-    && credential.organizationName.trim() === summary.organizationName
-    && normalizeCredentialMetadataToken(credential.subscriptionType)
-    && normalizeCredentialMetadataToken(credential.subscriptionType)
-      === normalizeCredentialMetadataToken(summary.subscriptionType)
-    && normalizeCredentialMetadataToken(credential.rateLimitTier)
-    && normalizeCredentialMetadataToken(credential.rateLimitTier)
-      === normalizeCredentialMetadataToken(summary.rateLimitTier)
-    && JSON.stringify(normalizedTopScopes) === JSON.stringify(normalizedNativeScopes)
-  );
+  const scopes = Array.isArray(summary?.scopes) ? summary.scopes : [];
 
   let state;
   if (reauthRequired) {
     state = "reauth_required";
-  } else if (Object.keys(credential).length === 0) {
+  } else if (Object.keys(storedCredential).length === 0) {
     state = "credential_missing";
   } else if (candidateRecord) {
     state = "credential_candidate";
-  } else if (!hasCompleteClaudeNativeBundle(credential)) {
-    state = "credential_incomplete";
-  } else if (!topLevelMatchesNative) {
+  } else if (!credential || !hasCompleteClaudeNativeBundle(credential)) {
     state = "credential_incomplete";
   } else if (!expectedEmail) {
     state = "identity_unverified";
@@ -391,6 +364,7 @@ function buildCredentialFacts(record, nowMs) {
     identityBinding,
     subscriptionType,
     rateLimitTier,
+    expiresAt: typeof summary?.expiresAt === "string" ? summary.expiresAt : null,
     evidenceGrade: evidence.evidenceGrade,
     evidenceAsOf: evidence.evidenceAsOf,
   };
@@ -422,22 +396,41 @@ async function readAnthropicRedisData({
   connectRedisStoreImpl = connectRedisStore,
   readCredentialRecordsByProviderImpl = readCredentialRecordsByProvider,
   readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
+  readRedisClaudeRotationFenceImpl = readRedisClaudeRotationFence,
 } = {}) {
   let store = null;
   try {
     const { redis } = getRedisConfig({ homeDir });
     store = await connectRedisStoreImpl({
       ...redis,
-      clientOptions: buildRedisStatusClientOptions({ timeoutMs: CLAUDE_REDIS_READ_TIMEOUT_MS }),
+      connectionPolicy: REDIS_CONNECTION_POLICY_OBSERVE,
+      initialConnectTimeoutMs: CLAUDE_REDIS_READ_TIMEOUT_MS,
     });
     const records = await readCredentialRecordsByProviderImpl(store, ANTHROPIC_PROVIDER);
-    const lockedLabels = includeLeaseState
-      ? await readHeldRedisCredentialLeaseLabelsImpl(store, {
+    let lockedLabels = new Set();
+    let lockSource = includeLeaseState ? "redis" : "not-requested";
+    if (includeLeaseState) {
+      try {
+        lockedLabels = await readHeldRedisCredentialLeaseLabelsImpl(store, {
           provider: ANTHROPIC_PROVIDER,
           labels: records.map((record) => record.label),
-        })
-      : new Set();
-    return { records, lockedLabels };
+        });
+      } catch {
+        lockSource = "unavailable";
+      }
+    }
+    let rotationFences = new Set();
+    let rotationSource = includeLeaseState ? "redis" : "not-requested";
+    if (includeLeaseState) {
+      try {
+        rotationFences = new Set((await Promise.all(records.map(async (record) => (
+          await readRedisClaudeRotationFenceImpl(store, { label: record.label }) ? record.label : null
+        )))).filter(Boolean));
+      } catch {
+        rotationSource = "unavailable";
+      }
+    }
+    return { records, lockedLabels, lockSource, rotationFences, rotationSource };
   } catch {
     throw new Error("Claude Redis account inventory is unavailable.");
   } finally {
@@ -689,17 +682,59 @@ function buildStatusResult({
   };
 }
 
-function readLocalRotationPendingLabels(homeDir) {
-  if (typeof homeDir !== "string" || !homeDir.trim()) return new Set();
-  const pending = loadLocalState({ homeDir })?.targets?.claudeCli?.rotationPublicationPendingByLabel;
-  if (!isObject(pending)) return new Set();
-  return new Set(Object.entries(pending).flatMap(([label, marker]) => {
-    if (!isObject(marker) || marker.pending !== true) return [];
-    try {
-      return [normalizeLabel(label)];
-    } catch {
-      return [];
+function readLocalProjectionStates(homeDir, records, nowMs) {
+  if (typeof homeDir !== "string" || !homeDir.trim()) return new Map();
+  const target = loadLocalState({ homeDir })?.targets?.claudeCli;
+  return new Map(records.map((record) => {
+    const label = record.label;
+    const receipt = readClaudeProjectionReceipt(target, label);
+    if (!receipt) return [label, { state: "missing", receiptAgeMs: null }];
+    const expectedCredentialsPath = resolveClaudeAuthFilePath(resolveManagedClaudeDir({
+      homeDir: resolveAimgrClaudeLabelHomeDir({ homeDir, label }),
+    }));
+    if (receipt.credentialsPath !== expectedCredentialsPath) {
+      return [label, { state: "invalid_receipt", receiptAgeMs: null }];
     }
+    const claudeDir = path.dirname(receipt.credentialsPath);
+    const credentials = readClaudeAuthFile({ claudeDir });
+    const appState = readClaudeAppStateFile({ homeDir: claudeDir });
+    const bundle = credentials.ok === true && appState.ok === true
+      ? buildClaudeNativeBundle({
+          claudeAiOauth: credentials.claudeAiOauth,
+          oauthAccount: appState.oauthAccount,
+        })
+      : null;
+    const fingerprint = buildAnthropicTokenLineageFingerprint({ nativeClaudeBundle: bundle });
+    const redisFingerprint = buildAnthropicTokenLineageFingerprint(record.credential);
+    let state;
+    if (!bundle || !hasCompleteClaudeNativeBundle(bundle) || !fingerprint || !redisFingerprint) {
+      state = "unreadable";
+    } else if (
+      fingerprint === redisFingerprint
+      && receipt.redisCredentialVersion === record.version
+      && receipt.committedLineageFingerprint === redisFingerprint
+    ) {
+      state = "clean";
+    } else if (
+      fingerprint === receipt.committedLineageFingerprint
+      && receipt.redisCredentialVersion < record.version
+    ) {
+      state = "clean_older";
+    } else if (
+      receipt.redisCredentialVersion === record.version
+      && receipt.committedLineageFingerprint === redisFingerprint
+      && fingerprint !== redisFingerprint
+    ) {
+      state = "unpublished";
+    } else {
+      state = "lineage_conflict";
+    }
+    return [label, {
+      state,
+      redisCredentialVersion: receipt.redisCredentialVersion,
+      receiptAgeMs: Math.max(0, nowMs - Date.parse(receipt.reconciledAt)),
+      credentialsPath: receipt.credentialsPath,
+    }];
   }));
 }
 
@@ -781,23 +816,43 @@ export async function collectClaudeRedisAccountUsageStatus({
   connectRedisStoreImpl = connectRedisStore,
   readCredentialRecordsByProviderImpl = readCredentialRecordsByProvider,
   readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
+  readRedisClaudeRotationFenceImpl = readRedisClaudeRotationFence,
   fetchClaudeUsageSnapshotImpl = fetchClaudeUsageSnapshot,
   fetchJsonWithTimeoutImpl,
   acquireRedisCacheLockImpl = acquireRedisCacheLock,
   writeCachedProviderUsageImpl = writeCachedProviderUsage,
 } = {}) {
   const normalizedLabels = normalizeSelectedLabels(selectedLabels);
-  const rotationPendingLabels = readLocalRotationPendingLabels(homeDir);
   let authoritativeRecords;
   let lockedLabels;
+  let lockSource;
+  let rotationFences;
+  let rotationSource;
   if (Array.isArray(records)) {
     authoritativeRecords = records.filter((record) => record?.provider === ANTHROPIC_PROVIDER);
-    lockedLabels = redisStore
-      ? await readHeldRedisCredentialLeaseLabelsImpl(redisStore, {
+    lockedLabels = new Set();
+    lockSource = redisStore ? "redis" : "unavailable";
+    if (redisStore) {
+      try {
+        lockedLabels = await readHeldRedisCredentialLeaseLabelsImpl(redisStore, {
           provider: ANTHROPIC_PROVIDER,
           labels: authoritativeRecords.map((record) => record.label),
-        })
-      : new Set();
+        });
+      } catch {
+        lockSource = "unavailable";
+      }
+    }
+    rotationFences = new Set();
+    rotationSource = redisStore ? "redis" : "unavailable";
+    if (redisStore) {
+      try {
+        rotationFences = new Set((await Promise.all(authoritativeRecords.map(async (record) => (
+          await readRedisClaudeRotationFenceImpl(redisStore, { label: record.label }) ? record.label : null
+        )))).filter(Boolean));
+      } catch {
+        rotationSource = "unavailable";
+      }
+    }
   } else {
     const redisData = await readAnthropicRedisData({
       homeDir,
@@ -805,18 +860,45 @@ export async function collectClaudeRedisAccountUsageStatus({
       connectRedisStoreImpl,
       readCredentialRecordsByProviderImpl,
       readHeldRedisCredentialLeaseLabelsImpl,
+      readRedisClaudeRotationFenceImpl,
     });
     authoritativeRecords = redisData.records;
     lockedLabels = redisData.lockedLabels;
+    lockSource = redisData.lockSource;
+    rotationFences = redisData.rotationFences;
+    rotationSource = redisData.rotationSource;
   }
+  const localProjectionStates = readLocalProjectionStates(
+    homeDir,
+    authoritativeRecords,
+    nowMs,
+  );
   const facts = selectFacts(authoritativeRecords, normalizedLabels, nowMs);
+  const factsByLabel = new Map(facts.map((entry) => [entry.record.label, entry]));
   const buildResult = (options) => buildStatusResult({
     ...options,
-    accounts: options.accounts.map((account) => ({
-      ...account,
-      locked: lockedLabels.has(account.label),
-      rotationPending: rotationPendingLabels.has(account.label),
-    })),
+    accounts: options.accounts.map((account) => {
+      const accountFacts = factsByLabel.get(account.label);
+      const locked = lockSource === "redis" ? lockedLabels.has(account.label) : null;
+      const rotationPending = rotationSource === "redis" ? rotationFences.has(account.label) : null;
+      return {
+        ...account,
+        credentialReady: accountFacts?.credentialReady === true,
+        credentialState: accountFacts?.state ?? "unknown",
+        credentialExpiresAt: accountFacts?.expiresAt ?? null,
+        locked,
+        lock: {
+          status: locked === null ? "unknown" : locked ? "held" : "free",
+          source: lockSource,
+        },
+        rotationPending,
+        rotation: {
+          status: rotationPending === null ? "unknown" : rotationPending ? "pending" : "clear",
+          source: rotationSource,
+        },
+        localProjection: localProjectionStates.get(account.label) ?? { state: "missing", receiptAgeMs: null },
+      };
+    }),
   });
   let cacheRead = readCachedProviderUsage({ homeDir, cachePath, provider: ANTHROPIC_PROVIDER });
   let cacheEntries = normalizeCacheEntries(cacheRead.entries, nowMs);
@@ -1098,14 +1180,17 @@ export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
-  const rows = [["account", "plan", "state", "lock", "rotation", ...columns.headers, "source"]];
+  const rows = [["account", "plan", "state", "lock", "rotation", "local", ...columns.headers, "source"]];
   for (const account of accounts) {
     rows.push([
       account.label,
       formatPlan(account),
       account.authState,
-      account.locked === true ? "yes" : "--",
-      account.rotationPending === true ? "pending" : "--",
+      account.locked === null ? "unknown" : account.locked === true ? "yes" : "--",
+      account.rotationPending === null ? "unknown" : account.rotationPending === true ? "pending" : "--",
+      new Set(["clean", "unpublished", "unreadable", "missing"]).has(account.localProjection?.state)
+        ? account.localProjection.state
+        : "unknown",
       ...columns.values(account),
       account.source,
     ]);
@@ -1113,6 +1198,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { includeDiagnostics
   if (accounts.length > 0) {
     rows.push([
       "average",
+      "--",
       "--",
       "--",
       "--",

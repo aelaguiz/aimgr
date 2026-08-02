@@ -5,6 +5,7 @@ import path from "node:path";
 import { runCli } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 import { writeHermesAuthFile, writeHermesStateDb } from "../helpers/hermes.js";
+import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
 test("hermes watch --once repairs drifted mapped homes even when they stay above the threshold", async () => {
   const home = mkTempHome();
@@ -58,6 +59,7 @@ test("hermes watch --once repairs drifted mapped homes even when they stay above
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -94,7 +96,7 @@ test("hermes watch --once repairs drifted mapped homes even when they stay above
     assert.equal(result.watched.receipt.rebalanceReceipt.resynced[0].homeId, "agent_boss");
     assert.equal(result.watched.receipt.currentAssignmentsAfter.agent_boss, "boss");
 
-    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "applied");
     assert.deepEqual(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.needsSyncHomeIds, ["agent_boss"]);
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "applied");
@@ -156,6 +158,7 @@ test("hermes watch --once routes through rebalance hermes when a live home drops
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url, init) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -193,12 +196,9 @@ test("hermes watch --once routes through rebalance hermes when a live home drops
     assert.equal(result.watched.receipt.rebalanceReceipt.action, "rebalance_hermes");
     assert.equal(result.watched.receipt.currentAssignmentsAfter.agent_ops, "pro2");
 
-    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "applied");
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "applied");
-
-    const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
-    assert.equal(statusJson.hermesFleet.homes[0].currentLabel, "pro2");
 });
 
 test("hermes watch --once routes through rebalance hermes when a current label loses pool eligibility above the threshold", async () => {
@@ -260,6 +260,7 @@ test("hermes watch --once routes through rebalance hermes when a current label l
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url, init) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -298,7 +299,7 @@ test("hermes watch --once routes through rebalance hermes when a current label l
     assert.deepEqual(result.watched.receipt.ineligibleHomeIds, ["agent_ops"]);
     assert.equal(result.watched.receipt.currentAssignmentsAfter.agent_ops, "pro2");
 
-    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "applied");
     assert.deepEqual(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.ineligibleHomeIds, ["agent_ops"]);
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "applied");

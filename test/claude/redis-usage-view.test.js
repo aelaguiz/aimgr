@@ -9,6 +9,7 @@ import {
   readCredentialRecordsByProvider,
 } from "../../src/coordination/redis-store.js";
 import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
+import { createRedisClaudeRotationFence } from "../../src/coordination/redis-claude-rotation-fence.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../src/core/constants.js";
 import { resolveAimgrLocalStatePath, resolveAimgrRedisCachePath } from "../../src/io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../../src/pool/usage.js";
@@ -196,7 +197,6 @@ test("Claude Redis views expose reauth_required without probing and preserve ord
   const marked = anthropicRecord("marked");
   marked.policy.reauth.blockedReason = "oauth_reauth_required";
   const expiredCredential = buildCredential("expired");
-  expiredCredential.expiresAt = new Date(NOW_MS - 1).toISOString();
   expiredCredential.nativeClaudeBundle.claudeAiOauth.expiresAt = NOW_MS - 1;
   const expired = anthropicRecord("expired", { credential: expiredCredential });
   const { homeDir, connectRedisStoreImpl } = await setup([marked, expired]);
@@ -241,18 +241,7 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
       policy: { expect: { email: "candidate@private.example.test" }, pool: { enabled: true } },
     },
   ]);
-  writeJson(resolveAimgrLocalStatePath({ homeDir }), {
-    targets: {
-      claudeCli: {
-        rotationPublicationPendingByLabel: {
-          ready: {
-            pending: true,
-            observedAt: "2026-07-22T17:00:00.000Z",
-          },
-        },
-      },
-    },
-  });
+  writeJson(resolveAimgrLocalStatePath({ homeDir }), { targets: { claudeCli: {} } });
   const cachePath = resolveAimgrRedisCachePath({ homeDir });
   writeCachedRedisStatusView({
     homeDir,
@@ -263,6 +252,13 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   await acquireRedisCredentialLease(leaseStore, {
     provider: ANTHROPIC_PROVIDER,
     label: "ready",
+  });
+  await createRedisClaudeRotationFence(leaseStore, {
+    label: "ready",
+    recoveryStorageId: `sha256:${"a".repeat(64)}`,
+    baseTokenLineageFingerprint: `sha256:${"b".repeat(64)}`,
+    baseCredentialVersion: 1,
+    observedAt: "2026-07-22T17:00:00.000Z",
   });
 
   const calls = [];
@@ -294,7 +290,8 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   assert.equal(first.accounts[1].rotationPending, true);
   assert.deepEqual(first.missingAccounts, ["candidate"]);
   assert.deepEqual(Object.keys(first.accounts[1]).sort(), [
-    "ageMs", "authState", "errorKind", "label", "lastAttemptAtMs", "locked", "rateLimitTier", "rotationPending",
+    "ageMs", "authState", "credentialExpiresAt", "credentialReady", "credentialState", "errorKind", "label",
+    "lastAttemptAtMs", "localProjection", "lock", "locked", "rateLimitTier", "rotation", "rotationPending",
     "source", "stale", "subscriptionType", "usage", "usageObservedAtMs",
   ]);
 
@@ -365,7 +362,7 @@ test("Claude usage status renders one fleet average across every readable window
 
   assert.match(
     rendered,
-    /average\s+--\s+--\s+--\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+--\s+60%\s+6\.0d\s+all/,
+    /average\s+--\s+--\s+--\s+--\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+--\s+60%\s+6\.0d\s+all/,
   );
   assert.equal(rendered.match(/^average\s/gm)?.length, 1);
 });
@@ -574,9 +571,8 @@ test("invalid selections fail before Redis I/O and Redis availability errors are
       return true;
     },
   );
-  assert.equal(connectOptions.clientOptions.socket.reconnectStrategy, false);
-  assert.equal(connectOptions.clientOptions.socket.connectTimeout, 2_000);
-  assert.equal(connectOptions.clientOptions.socket.socketTimeout, 2_000);
+  assert.equal(connectOptions.connectionPolicy, "observe");
+  assert.equal(connectOptions.initialConnectTimeoutMs, 2_000);
 });
 
 test("uncached Redis Claude status caps concurrency at three and performs one request per account", async () => {
@@ -608,16 +604,14 @@ test("uncached Redis Claude status caps concurrency at three and performs one re
   assert.ok(result.accounts.every((account) => account.authState === "usage_readable"));
 });
 
-test("credential lineage, complete identity, expected email, plan, and Redis generation gate provider work", async () => {
+test("canonical credential lineage, identity, and generation gate provider work", async () => {
   const mixedCredential = buildCredential("mixed");
-  mixedCredential.access = "DIFFERENT_TOP_LEVEL_ACCESS";
   const mixed = anthropicRecord("mixed", { credential: mixedCredential });
   const partial = anthropicRecord("partial");
   partial.identity = { emailAddress: "partial@private.example.test" };
   const noExpectedEmail = anthropicRecord("no-expected-email");
   noExpectedEmail.policy.expect = {};
   const mixedPlanCredential = buildCredential("mixed-plan");
-  mixedPlanCredential.rateLimitTier = "pro";
   const mixedPlan = anthropicRecord("mixed-plan", { credential: mixedPlanCredential });
   const invalidGeneration = anthropicRecord("invalid-generation");
   const { homeDir, client, connectRedisStoreImpl } = await setup([
@@ -648,14 +642,14 @@ test("credential lineage, complete identity, expected email, plan, and Redis gen
     },
   });
 
-  assert.equal(providerCalls, 0);
-  assert.equal(result.requestCount, 0);
+  assert.equal(providerCalls, 2);
+  assert.equal(result.requestCount, 2);
   assert.deepEqual(
     Object.fromEntries(result.accounts.map((account) => [account.label, account.authState])),
     {
       "invalid-generation": "credential_generation_invalid",
-      mixed: "credential_incomplete",
-      "mixed-plan": "credential_incomplete",
+      mixed: "usage_readable",
+      "mixed-plan": "usage_readable",
       "no-expected-email": "identity_unverified",
       partial: "identity_unverified",
     },
@@ -679,10 +673,8 @@ test("credential generation invalidates cached auth status after an authoritativ
   const before = readRedisCacheEnvelope({ homeDir }).envelope.providerUsage.providers.anthropic.ready.identityBinding;
 
   const rotatedCredential = buildCredential("ready");
-  rotatedCredential.access = "ROTATED_ACCESS_SECRET";
-  rotatedCredential.refresh = "ROTATED_REFRESH_SECRET";
-  rotatedCredential.nativeClaudeBundle.claudeAiOauth.accessToken = rotatedCredential.access;
-  rotatedCredential.nativeClaudeBundle.claudeAiOauth.refreshToken = rotatedCredential.refresh;
+  rotatedCredential.nativeClaudeBundle.claudeAiOauth.accessToken = "ROTATED_ACCESS_SECRET";
+  rotatedCredential.nativeClaudeBundle.claudeAiOauth.refreshToken = "ROTATED_REFRESH_SECRET";
   const store = await connectRedisStore({ client, keyPrefix: KEY_PREFIX });
   const update = await importCredentialsSnapshot(
     store,
@@ -714,7 +706,6 @@ test("duplicate stable identities fail closed even when only one alias is select
   const sharedCredential = buildCredential("shared");
   const one = anthropicRecord("one", { credential: sharedCredential });
   const expiredDuplicateCredential = structuredClone(sharedCredential);
-  expiredDuplicateCredential.expiresAt = new Date(NOW_MS - 1_000).toISOString();
   expiredDuplicateCredential.nativeClaudeBundle.claudeAiOauth.expiresAt = NOW_MS - 1_000;
   const two = anthropicRecord("two", { credential: expiredDuplicateCredential });
   one.policy.expect.email = "shared@private.example.test";

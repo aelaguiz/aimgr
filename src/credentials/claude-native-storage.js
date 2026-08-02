@@ -750,33 +750,6 @@ export function readManagedClaudeNativeBundleFromFiles({
   return result;
 }
 
-export function retireManagedClaudeCredentialProjection({
-  descriptor,
-  fsImpl = fs,
-} = {}) {
-  if (
-    descriptor?.storageMode !== CLAUDE_MANAGED_FILE_STORAGE_MODE
-    || !isValidClaudeNativeStorageDescriptor(descriptor)
-  ) {
-    throw new Error("Managed Claude credential retirement requires a file-only descriptor.");
-  }
-  let stat;
-  try {
-    stat = fsImpl.lstatSync(descriptor.credentialsPath);
-  } catch (error) {
-    if (error?.code === "ENOENT") return { removed: false };
-    throw new Error("Could not inspect the managed Claude credential projection.");
-  }
-  if (!assertOwnedRegularFile(stat) || (stat.mode & 0o077) !== 0) {
-    throw new Error("Refusing to remove an unsafe managed Claude credential projection.");
-  }
-  fsImpl.unlinkSync(descriptor.credentialsPath);
-  if (fsImpl.existsSync(descriptor.credentialsPath)) {
-    throw new Error("Managed Claude credential projection could not be retired.");
-  }
-  return { removed: true };
-}
-
 function strictIdentity(bundle) {
   const account = bundle?.oauthAccount;
   const accountUuid = normalizeRequiredString(account?.accountUuid);

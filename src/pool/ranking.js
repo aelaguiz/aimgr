@@ -35,6 +35,7 @@ export function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
   const labels = getCodexPoolLabels(state);
   const byLabel = {};
   const eligibleLabels = [];
+  const credentialEligibleLabels = [];
 
   for (const label of labels) {
     const account = state.accounts[label];
@@ -50,6 +51,9 @@ export function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
     const usageOk = usage?.ok === true && Array.isArray(usage.windows) && usage.windows.length > 0;
     const usageExhausted = usageOk && isUsageSnapshotExhausted(usage);
     const eligible = status.eligible && usageOk && !usageExhausted;
+    if (status.eligible) {
+      credentialEligibleLabels.push(label);
+    }
     byLabel[label] = {
       ...status,
       label,
@@ -64,7 +68,7 @@ export function collectCodexPoolStatus({ state, homeDir, usageByLabel, now }) {
     }
   }
 
-  return { labels, byLabel, eligibleLabels };
+  return { labels, byLabel, eligibleLabels, credentialEligibleLabels };
 }
 
 export function collectAnthropicPoolStatus({ state, homeDir, usageByLabel, now }) {

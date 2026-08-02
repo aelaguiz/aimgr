@@ -71,10 +71,6 @@ export function resolveAimgrLocalStatePath({ homeDir }) {
   return path.join(resolveAimgrStateDir({ homeDir }), "local-state.json");
 }
 
-export function resolveAimgrRedisMigrationDir({ homeDir }) {
-  return path.join(resolveAimgrStateDir({ homeDir }), "redis-migration");
-}
-
 export function resolveAimgrClaudeLabelHomeDir({ homeDir, label }) {
   const safeLabel = String(label ?? "").trim().replace(/[^A-Za-z0-9_.-]/g, "_");
   if (!safeLabel) {

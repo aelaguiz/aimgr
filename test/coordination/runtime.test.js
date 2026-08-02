@@ -15,6 +15,7 @@ import {
   publishRedisStateCredential,
 } from "../../src/coordination/runtime.js";
 import { buildCoordinationView } from "../../src/coordination/snapshot.js";
+import { getAnthropicCredentialView } from "../../src/credentials/anthropic.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 
@@ -33,6 +34,10 @@ function anthropicCredential({
     organizationName: "Writer Org",
     organizationUuid: "org_writer",
   });
+}
+
+function anthropicRefresh(record) {
+  return getAnthropicCredentialView(record?.credential)?.refresh;
 }
 
 async function createRuntimeWithRecord(credentialRecord) {
@@ -131,7 +136,7 @@ test("two Anthropic rotations publish through one runtime and stale lineages are
     refresh: "REFRESH_3",
     expiresAtMs: INITIAL_EXPIRY + 2 * 60 * 60_000,
   }));
-  assert.equal(runtime.snapshot.credentials[0].credential.refresh, "REFRESH_2");
+  assert.equal(anthropicRefresh(runtime.snapshot.credentials[0]), "REFRESH_2");
   const second = await publishRedisStateCredential({
     runtime,
     state,
@@ -141,14 +146,14 @@ test("two Anthropic rotations publish through one runtime and stale lineages are
   });
   assert.equal(second.version, 3);
   assert.equal(runtime.snapshot.credentials[0].version, 3);
-  assert.equal(runtime.snapshot.credentials[0].credential.refresh, "REFRESH_3");
+  assert.equal(anthropicRefresh(runtime.snapshot.credentials[0]), "REFRESH_3");
 
   Object.assign(state.credentials.anthropic.writer, anthropicCredential({
     access: "ACCESS_OLDER",
     refresh: "REFRESH_OLDER",
     expiresAtMs: INITIAL_EXPIRY + 90 * 60_000,
   }));
-  assert.equal(runtime.snapshot.credentials[0].credential.refresh, "REFRESH_3");
+  assert.equal(anthropicRefresh(runtime.snapshot.credentials[0]), "REFRESH_3");
   await assert.rejects(
     () => publishRedisStateCredential({
       runtime,
@@ -178,7 +183,7 @@ test("two Anthropic rotations publish through one runtime and stale lineages are
 
   const snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials[0].version, 3);
-  assert.equal(snapshot.credentials[0].credential.refresh, "REFRESH_3");
+  assert.equal(anthropicRefresh(snapshot.credentials[0]), "REFRESH_3");
 });
 
 test("login-maintenance publication uses the same Anthropic rollback guard", async () => {
@@ -214,7 +219,7 @@ test("login-maintenance publication uses the same Anthropic rollback guard", asy
 
   const snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials[0].version, 1);
-  assert.equal(snapshot.credentials[0].credential.refresh, "REFRESH_CURRENT");
+  assert.equal(anthropicRefresh(snapshot.credentials[0]), "REFRESH_CURRENT");
 });
 
 test("successful credential publication clears only oauth_reauth_required and only after CAS", async () => {

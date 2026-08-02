@@ -1,8 +1,16 @@
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { getAnthropicCredentialView } from "../credentials/anthropic.js";
+import { buildCodexCredentialFingerprint } from "../credentials/codex.js";
 import { clampPercent } from "../core/numbers.js";
 import { isObject } from "../core/normalize.js";
 import { fetchJsonWithTimeout } from "../io/fetch.js";
 import { ensureStateShape } from "../state/schema.js";
+import {
+  acquireRedisCacheLock,
+  readCachedProviderUsage,
+  releaseRedisCacheLock,
+  writeCachedProviderUsage,
+} from "../status/redis-cache.js";
 
 export async function fetchCodexUsageSnapshot({
   accessToken,
@@ -333,7 +341,8 @@ export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeou
     );
   }
 
-  for (const [label, cred] of Object.entries(state.credentials[ANTHROPIC_PROVIDER])) {
+  for (const [label, storedCredential] of Object.entries(state.credentials[ANTHROPIC_PROVIDER])) {
+    const cred = getAnthropicCredentialView(storedCredential);
     if (!isObject(cred) || typeof cred.access !== "string") continue;
     probes.push(
       (async () => {
@@ -358,4 +367,159 @@ export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeou
 
   await Promise.all(probes);
   return usageByProvider;
+}
+
+function hasUsableUsage(value) {
+  return value?.ok === true && Array.isArray(value.windows) && value.windows.length > 0;
+}
+
+function codexUsageUnavailable() {
+  return {
+    provider: OPENAI_CODEX_PROVIDER,
+    ok: false,
+    status: "unavailable",
+    source: "unavailable",
+    stale: false,
+  };
+}
+
+export const CODEX_USAGE_FRESH_MS = 5 * 60_000;
+
+/**
+ * Build the shared provider-usage snapshot consumed by status and automatic
+ * Codex selection. Live values win. A cache entry is usable only for the exact
+ * credential fingerprint that produced it, and its age stays visible.
+ */
+export async function collectCodexUsageSnapshots({
+  state,
+  homeDir,
+  env = {},
+  nowMs = Date.now(),
+  probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
+} = {}) {
+  ensureStateShape(state);
+  const canUseCache = typeof homeDir === "string" && homeDir.trim().length > 0;
+  const cached = canUseCache
+    ? readCachedProviderUsage({ homeDir, provider: OPENAI_CODEX_PROVIDER }).entries
+    : {};
+  const resolvedCodex = {};
+  const nextCacheEntries = {};
+  const credentialsToProbe = {};
+  const credentialFacts = new Map();
+
+  for (const [label, credential] of Object.entries(state.credentials[OPENAI_CODEX_PROVIDER])) {
+    let identityBinding;
+    try {
+      identityBinding = buildCodexCredentialFingerprint(credential);
+    } catch {
+      resolvedCodex[label] = codexUsageUnavailable();
+      continue;
+    }
+    const cachedEntry = cached[label];
+    const cacheMatches = cachedEntry?.identityBinding === identityBinding && hasUsableUsage(cachedEntry.usage);
+    const lastAttemptAtMs = Number(cachedEntry?.lastAttemptAtMs);
+    const attemptAgeMs = Number.isFinite(lastAttemptAtMs) ? nowMs - lastAttemptAtMs : null;
+    const usageObservedAtMs = Number(cachedEntry?.usageObservedAtMs);
+    const usageAgeMs = Number.isFinite(usageObservedAtMs) ? Math.max(0, nowMs - usageObservedAtMs) : null;
+    if (
+      cacheMatches
+      && Number.isFinite(attemptAgeMs)
+      && attemptAgeMs >= 0
+      && attemptAgeMs <= CODEX_USAGE_FRESH_MS
+    ) {
+      resolvedCodex[label] = {
+        ...cachedEntry.usage,
+        source: "cache",
+        stale: usageAgeMs === null || usageAgeMs > CODEX_USAGE_FRESH_MS,
+        observedAtMs: Number.isFinite(usageObservedAtMs) ? usageObservedAtMs : null,
+        ageMs: usageAgeMs,
+      };
+      nextCacheEntries[label] = cachedEntry;
+      continue;
+    }
+    credentialsToProbe[label] = credential;
+    credentialFacts.set(label, { identityBinding, cachedEntry, cacheMatches });
+  }
+
+  let liveByProvider = {};
+  if (Object.keys(credentialsToProbe).length > 0) {
+    const reducedState = structuredClone(state);
+    reducedState.credentials[OPENAI_CODEX_PROVIDER] = credentialsToProbe;
+    reducedState.credentials[ANTHROPIC_PROVIDER] = {};
+    try {
+      liveByProvider = await probeUsageSnapshotsByProviderImpl(reducedState, { env });
+    } catch {
+      liveByProvider = {};
+    }
+  }
+  const liveCodex = isObject(liveByProvider?.[OPENAI_CODEX_PROVIDER])
+    ? liveByProvider[OPENAI_CODEX_PROVIDER]
+    : {};
+
+  for (const [label, { identityBinding, cachedEntry, cacheMatches }] of credentialFacts) {
+    const live = liveCodex[label] ?? codexUsageUnavailable();
+    if (hasUsableUsage(live)) {
+      resolvedCodex[label] = {
+        ...live,
+        source: "live",
+        stale: false,
+        observedAtMs: nowMs,
+        ageMs: 0,
+      };
+      nextCacheEntries[label] = {
+        identityBinding,
+        usageObservedAtMs: nowMs,
+        lastAttemptAtMs: nowMs,
+        usage: live,
+      };
+      continue;
+    }
+    if (cacheMatches) {
+      const observedAtMs = Number(cachedEntry.usageObservedAtMs);
+      resolvedCodex[label] = {
+        ...cachedEntry.usage,
+        source: "cache",
+        stale: true,
+        observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : null,
+        ageMs: Number.isFinite(observedAtMs) ? Math.max(0, nowMs - observedAtMs) : null,
+        liveStatus: live?.status ?? "unavailable",
+      };
+      nextCacheEntries[label] = {
+        ...cachedEntry,
+        lastAttemptAtMs: nowMs,
+      };
+      continue;
+    }
+    resolvedCodex[label] = {
+      ...codexUsageUnavailable(),
+      ...(typeof live?.status === "string" || Number.isFinite(Number(live?.status))
+        ? { status: live.status }
+        : {}),
+      ...(live?.tokenExpired === true ? { tokenExpired: true } : {}),
+      ...(live?.missingScope === true ? { missingScope: true } : {}),
+    };
+  }
+
+  if (canUseCache) {
+    const lock = acquireRedisCacheLock({ homeDir, nowMs });
+    if (lock) {
+      try {
+        writeCachedProviderUsage({
+          homeDir,
+          provider: OPENAI_CODEX_PROVIDER,
+          entries: nextCacheEntries,
+        });
+      } catch {
+        // Selection/status remain usable when this non-authoritative cache is
+        // missing, unsafe, or temporarily unwritable.
+      } finally {
+        releaseRedisCacheLock(lock);
+      }
+    }
+  }
+
+  return {
+    [OPENAI_CODEX_PROVIDER]: resolvedCodex,
+    [ANTHROPIC_PROVIDER]: {},
+  };
 }

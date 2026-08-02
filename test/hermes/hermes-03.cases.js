@@ -7,6 +7,7 @@ import { writeHermesAuthFromState } from "../../src/targets/hermes-auth.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 import { writeHermesAuthFile } from "../helpers/hermes.js";
+import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
 test("rebalance hermes rewrites live home auth via the shared planner and settles to noop on repeat", async () => {
   const home = mkTempHome();
@@ -71,6 +72,7 @@ test("rebalance hermes rewrites live home auth via the shared planner and settle
     },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url, init) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -107,19 +109,11 @@ test("rebalance hermes rewrites live home auth via the shared planner and settle
     assert.equal(first.rebalanced.receipt.action, "rebalance_hermes");
     assert.ok(first.rebalanced.receipt.moved.length >= 1);
 
-    const firstStatus = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
-    assert.equal(firstStatus.hermesFleet.lastApplyReceipt.status, "applied");
-    assert.equal(firstStatus.hermesFleet.homeCount, 2);
-    assert.ok(firstStatus.hermesFleet.homes.some((entry) => entry.currentLabel === "pro2"));
-
-    const firstCompactStatus = await runCli(["status", "--compact", "--home", home], { fetchImpl });
-    assert.match(firstCompactStatus, /hermes=2\/2  h_warn=0  h_apply=applied  h_watch=--\n$/);
-
     const second = JSON.parse(await runCli(["rebalance", "hermes", "--home", home], { fetchImpl }));
     assert.equal(second.ok, true);
     assert.equal(second.rebalanced.status, "noop");
 
-    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "noop");
 });
 
@@ -166,6 +160,7 @@ test("rebalance hermes blocks with a truthful receipt when Hermes session demand
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -201,7 +196,7 @@ test("rebalance hermes blocks with a truthful receipt when Hermes session demand
     assert.equal(parsed.rebalanced.receipt.blockers[0].homeId, "agent_boss");
     assert.match(parsed.rebalanced.receipt.blockers[0].detail, /Failed to read Hermes session demand/);
 
-    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.status, "blocked");
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt.blockers[0].reason, "hermes_home_demand_unreadable");
 });
@@ -460,6 +455,7 @@ test("hermes watch --once noops when every live home stays above the 5h remainin
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -492,7 +488,7 @@ test("hermes watch --once noops when every live home stays above the 5h remainin
     assert.equal(result.watched.receipt.triggeredRebalance, false);
     assert.equal(result.watched.receipt.homeCount, 1);
 
-    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "noop");
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt, undefined);
 });

@@ -173,7 +173,7 @@ test("auth maintain refreshes only due records serially and marks missing refres
       nowImpl: () => NOW_MS,
       connectRedisStoreImpl: runtime.connectRedisStoreImpl,
       resolveExecutableOnPathImpl: buildTestClaudeResolver(),
-      runClaudeCliImpl: ({ configDir, args, env, signal }) => {
+      runClaudeCliNoninteractiveImpl: ({ configDir, args, env, timeoutMs }) => {
         providerOrder.push("anthropic:claude-due");
         claudeRuns += 1;
         assert.deepEqual(args, [
@@ -186,13 +186,13 @@ test("auth maintain refreshes only due records serially and marks missing refres
           "/usage",
         ]);
         assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, undefined);
-        assert.ok(signal instanceof AbortSignal);
+        assert.equal(timeoutMs, 30_000);
         rotateProjectedClaudeCredential(configDir, {
           accessToken: "ACCESS_CLAUDE_ROTATED",
           refreshToken: "REFRESH_CLAUDE_ROTATED",
           expiresAt: NOW_MS + 2 * 60 * 60_000,
         });
-        return { status: 0, signal: null };
+        return { status: 0, signal: null, timedOut: false };
       },
       fetchJsonWithTimeoutImpl: async (url, init, timeoutMs) => {
         providerOrder.push("openai-codex:codex-due");
@@ -215,7 +215,14 @@ test("auth maintain refreshes only due records serially and marks missing refres
   );
 
   assert.deepEqual(result, {
-    stdout: "refreshed=2 unchanged=0 reauth_required=1 failed=0 skipped=3\n",
+    stdout:
+      "provider=anthropic label=claude-candidate outcome=skipped reason=credential_missing\n"
+      + "provider=anthropic label=claude-incomplete outcome=reauth_required reason=refresh_material_missing\n"
+      + "provider=anthropic label=claude-due outcome=refreshed reason=credential_rotated\n"
+      + "provider=openai-codex label=codex-terminal outcome=skipped reason=reauth_already_required\n"
+      + "provider=openai-codex label=codex-due outcome=refreshed reason=credential_rotated\n"
+      + "provider=openai-codex label=codex-fresh outcome=skipped reason=not_due\n"
+      + "refreshed=2 unchanged=0 reauth_required=1 retryable=0 skipped=3\n",
     exitCode: 0,
   });
   assert.deepEqual(providerOrder, [
@@ -227,7 +234,10 @@ test("auth maintain refreshes only due records serially and marks missing refres
 
   const snapshot = await readSnapshot(runtime.store);
   const byLabel = new Map(snapshot.credentials.map((record) => [record.label, record]));
-  assert.equal(byLabel.get("claude-due").credential.refresh, "REFRESH_CLAUDE_ROTATED");
+  assert.equal(
+    byLabel.get("claude-due").credential.nativeClaudeBundle.claudeAiOauth.refreshToken,
+    "REFRESH_CLAUDE_ROTATED",
+  );
   assert.equal(byLabel.get("codex-due").credential.refresh, "REFRESH_CODEX_ROTATED");
   assert.equal(
     byLabel.get("claude-incomplete").policy.reauth.blockedReason,
@@ -243,7 +253,7 @@ test("auth maintain refreshes only due records serially and marks missing refres
         label: "claude-due",
       }), ".claude"),
     )),
-    false,
+    true,
   );
 });
 
@@ -318,7 +328,13 @@ test("auth maintain continues after transient and stale-CAS failures while a bus
   assert.equal(await busyLease.release(), true);
 
   assert.deepEqual(result, {
-    stdout: "refreshed=1 unchanged=0 reauth_required=1 failed=2 skipped=1\n",
+    stdout:
+      "provider=openai-codex label=network outcome=retryable reason=maintenance_failed\n"
+      + "provider=openai-codex label=cas outcome=retryable reason=maintenance_failed\n"
+      + "provider=openai-codex label=busy outcome=skipped reason=not_actionable\n"
+      + "provider=openai-codex label=invalid outcome=reauth_required reason=refresh_rejected\n"
+      + "provider=openai-codex label=later outcome=refreshed reason=credential_rotated\n"
+      + "refreshed=1 unchanged=0 reauth_required=1 retryable=2 skipped=1\n",
     exitCode: 1,
   });
   assert.deepEqual(attempted, ["network", "cas", "invalid", "later"]);

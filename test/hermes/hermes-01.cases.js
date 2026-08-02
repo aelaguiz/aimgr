@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { runCli } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
+import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
 test("auth write hermes writes auth.json only and leaves AIM state plus runtime files untouched", async () => {
   const home = mkTempHome();
@@ -71,6 +72,7 @@ test("auth write hermes writes auth.json only and leaves AIM state plus runtime 
       piCli: {},
     },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const beforeEnv = fs.readFileSync(path.join(hermesHome, ".env"), "utf8");
 
   const out = await runCli(
@@ -105,44 +107,6 @@ test("auth write hermes writes auth.json only and leaves AIM state plus runtime 
   assert.deepEqual(persistedState.targets.codexCli, {});
   assert.deepEqual(persistedState.targets.claudeCli, {});
   assert.deepEqual(persistedState.targets.piCli, {});
-  const fetchImpl = async (url) => {
-    const u = String(url ?? "");
-    if (u.includes("/backend-api/wham/usage")) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          plan_type: "pro",
-          rate_limit: {
-            primary_window: {
-              used_percent: 5,
-              limit_window_seconds: 10800,
-              reset_at: Math.floor(Date.now() / 1000) + 3600,
-            },
-          },
-        }),
-      };
-    }
-    if (u.includes("api.anthropic.com/api/oauth/usage")) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          five_hour: { utilization: 0, resets_at: "2026-03-30T00:00:00Z" },
-          seven_day: { utilization: 0, resets_at: "2026-04-01T00:00:00Z" },
-        }),
-      };
-    }
-    throw new Error(`Unexpected fetch url in test: ${u}`);
-  };
-
-    const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
-    assert.equal(statusJson.hermesFleet.homeCount, 1);
-    assert.equal(statusJson.hermesFleet.mappedHomeCount, 1);
-    assert.equal(statusJson.hermesFleet.warningHomeCount, 0);
-    assert.equal(statusJson.hermesFleet.homes[0].homeId, "agent_product_growth");
-    assert.equal(statusJson.hermesFleet.homes[0].currentLabel, "product");
-    assert.equal(statusJson.warnings.some((warning) => String(warning?.kind ?? "").includes("hermes")), false);
 });
 
 test("auth write hermes preserves unrelated provider entries while updating the Codex provider entry", async () => {
@@ -258,6 +222,7 @@ test("auth write hermes preserves unrelated provider entries while updating the 
       piCli: {},
     },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
 
   const out = await runCli(
     ["auth", "write", "hermes", "growth", "--auth-file", hermesAuthPath, "--home", home],

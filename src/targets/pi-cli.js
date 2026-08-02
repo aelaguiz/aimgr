@@ -207,7 +207,7 @@ export function applyPiCliFromState({ label, homeDir, env = {} }, state) {
   if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
     throw new Error(
       "No Redis-backed Codex pool is available on this machine yet. " +
-        `Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then complete \`aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover\`.`,
+        `Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then import a reviewed snapshot or enroll a Codex label.`,
     );
   }
 
@@ -283,7 +283,7 @@ export async function activatePiPoolSelection({
   if (poolStatus.labels.length === 0) {
     throw new Error(
       "No Redis-backed Codex pool labels are available on this machine yet. " +
-        "Complete `aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover` before using Pi targets.",
+        "Import a reviewed Redis snapshot or enroll a Codex label before using Pi targets.",
     );
   }
 

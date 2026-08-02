@@ -9,7 +9,6 @@ import { resolveAimgrRedisCachePath } from "../../src/io/paths.js";
 import { writeLocalState } from "../../src/state/local-state.js";
 import {
   AIMGR_REDIS_STATUS_CACHE_KIND,
-  AIMGR_REDIS_STATUS_CACHE_MAX_AGE_MS,
   buildRedisStatusView,
 } from "../../src/status/redis-view.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
@@ -147,21 +146,16 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
   assert.equal(cached.view.redis.error, "unavailable");
   assert.equal(cached.view.warnings.at(-1).kind, "redis_status_cache_used");
 
-  await assert.rejects(
-    buildRedisStatusView({
-      homeDir: home,
-      nowMs: observedAtMs + AIMGR_REDIS_STATUS_CACHE_MAX_AGE_MS + 1,
-      connectRedisStoreImpl: async () => {
-        throw new Error("RAW_STALE_CACHE_ERROR");
-      },
-      probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }),
-    }),
-    (error) => {
-      assert.equal(error.message, "Redis status is unavailable.");
-      assert.doesNotMatch(error.message, /RAW_STALE_CACHE_ERROR/);
-      return true;
+  const oldCached = await buildRedisStatusView({
+    homeDir: home,
+    nowMs: observedAtMs + 24 * 60 * 60_000,
+    connectRedisStoreImpl: async () => {
+      throw new Error("RAW_STALE_CACHE_ERROR");
     },
-  );
+    probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }),
+  });
+  assert.equal(oldCached.view.redis.status, "cache");
+  assert.equal(oldCached.view.redis.cacheAgeMs, 24 * 60 * 60_000);
 });
 
 test("ordinary Redis status routes Claude through the bounded canonical cache", async () => {
@@ -223,12 +217,65 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
 
   assert.equal(first.view.accounts[0].usage.ok, true);
   assert.equal(first.view.accounts[0].usage.status, "usage_readable");
-  assert.equal(first.view.accounts[0].usage.locked, true);
+  assert.equal(first.view.accounts[0].lock.status, "held");
   assert.equal(first.claudeUsageStatus.accounts[0].label, "claude");
   assert.equal(first.claudeUsageStatus.accounts[0].locked, true);
   assert.equal(first.claudeUsageStatus.accounts[0].usage.ok, true);
   assert.equal(second.view.accounts[0].usage.ok, true);
   assert.equal(second.claudeUsageStatus.accounts[0].source, "cache");
-  assert.equal(directProbeCalls, 2);
+  assert.equal(directProbeCalls, 0);
   assert.equal(claudeRequests, 1);
+});
+
+test("unconfigured status returns local active facts without reading legacy credentials", async () => {
+  const home = mkTempHome();
+  writeLocalState({
+    homeDir: home,
+    localState: {
+      targets: {
+        codexCli: { activeLabel: "boss" },
+        claudeCli: { lastRunLabel: "writer" },
+      },
+    },
+  });
+
+  const result = await buildRedisStatusView({ homeDir: home, nowMs: Date.now() });
+
+  assert.equal(result.used, true);
+  assert.equal(result.view.redis.status, "unconfigured");
+  assert.equal(result.view.codexCli.activeLabel, "boss");
+  assert.equal(result.view.claudeCli.lastRunLabel, "writer");
+  assert.deepEqual(result.view.accounts, []);
+});
+
+test("lock observation failure degrades independently from Redis credentials and usage", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-test" } },
+  });
+  await seedRedis(client);
+
+  const result = await buildRedisStatusView({
+    homeDir: home,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
+    probeUsageSnapshotsByProviderImpl: async () => ({
+      [OPENAI_CODEX_PROVIDER]: {
+        boss: {
+          provider: OPENAI_CODEX_PROVIDER,
+          ok: true,
+          windows: [{ label: "5h", usedPercent: 10 }],
+        },
+      },
+    }),
+    readHeldRedisCredentialLeaseLabelsImpl: async () => {
+      throw new Error("lease backend unavailable");
+    },
+  });
+
+  assert.equal(result.view.redis.status, "live");
+  assert.equal(result.view.accounts[0].credentials.status, "ok");
+  assert.equal(result.view.accounts[0].usage.ok, true);
+  assert.deepEqual(result.view.accounts[0].lock, { status: "unknown", source: "unavailable" });
 });

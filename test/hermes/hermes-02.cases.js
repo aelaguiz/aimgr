@@ -5,6 +5,9 @@ import path from "node:path";
 import { runCli } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 import { writeHermesAuthFile } from "../helpers/hermes.js";
+import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
+import { buildWarningsFromHermesHomeStatus, readHermesHomeStatus } from "../../src/pool/token-usage.js";
+import { loadAimgrState } from "../../src/state/schema.js";
 
 function writeSingleCodexHermesState(statePath, { label = "product", jwt, refresh = "refresh-product", accountId = "acct_product" }) {
   writeJson(statePath, {
@@ -93,6 +96,7 @@ test("auth write hermes fails loud when the Hermes auth parent directory is miss
       piCli: {},
     },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
 
   await assert.rejects(
     () => runCli(
@@ -127,6 +131,7 @@ test("auth write hermes refuses non-auth.json target paths without touching the 
   fs.mkdirSync(hermesHome, { recursive: true });
   fs.writeFileSync(unsafePath, "sentinel", "utf8");
   writeSingleCodexHermesState(statePath, { jwt: fakeJwt });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
 
   await assert.rejects(
     () => runCli(["auth", "write", "hermes", "product", "--auth-file", unsafePath, "--home", home]),
@@ -155,6 +160,7 @@ test("auth write hermes refuses malformed current auth without replacing it", as
   fs.mkdirSync(hermesHome, { recursive: true });
   fs.writeFileSync(authPath, "{not-json", "utf8");
   writeSingleCodexHermesState(statePath, { jwt: fakeJwt });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
 
   await assert.rejects(
     () => runCli(["auth", "write", "hermes", "product", "--auth-file", authPath, "--home", home]),
@@ -166,7 +172,7 @@ test("auth write hermes refuses malformed current auth without replacing it", as
   assert.equal(fs.readFileSync(authPath, "utf8"), "{not-json");
 });
 
-test("status --json maps drifted Hermes homes by account id and marks them for sync", async () => {
+test("Hermes local status maps drifted homes by account id and marks them for sync", () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const staleJwt = makeFakeJwt({
@@ -211,44 +217,19 @@ test("status --json maps drifted Hermes homes by account id and marks them for s
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
-  const fetchImpl = async (url) => {
-    const u = String(url ?? "");
-    if (u.includes("/backend-api/wham/usage")) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          plan_type: "pro",
-          rate_limit: {
-            primary_window: {
-              used_percent: 5,
-              limit_window_seconds: 10800,
-              reset_at: Math.floor(Date.now() / 1000) + 3600,
-            },
-            secondary_window: {
-              used_percent: 5,
-              limit_window_seconds: 7 * 24 * 3600,
-              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
-            },
-          },
-        }),
-      };
-    }
-    throw new Error(`Unexpected fetch url in test: ${u}`);
-  };
-
-    const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
-    assert.equal(statusJson.hermesFleet.homeCount, 1);
-    assert.equal(statusJson.hermesFleet.mappedHomeCount, 1);
-    assert.equal(statusJson.hermesFleet.warningHomeCount, 1);
-    assert.equal(statusJson.hermesFleet.homes[0].currentLabel, "ads");
-    assert.equal(statusJson.hermesFleet.homes[0].matchMode, "account_id");
-    assert.equal(statusJson.hermesFleet.homes[0].authDrifted, true);
-    assert.equal(statusJson.hermesFleet.homes[0].needsSync, true);
-    assert.equal(statusJson.hermesFleet.homes[0].warnings[0].kind, "hermes_home_auth_drifted");
+  const status = readHermesHomeStatus({
+    state: loadAimgrState(statePath),
+    homeDir: home,
+    homeId: "agent_ads",
+  });
+  assert.equal(status.currentLabel, "ads");
+  assert.equal(status.matchMode, "account_id");
+  assert.equal(status.authDrifted, true);
+  assert.equal(status.needsSync, true);
+  assert.equal(buildWarningsFromHermesHomeStatus(status)[0].kind, "hermes_home_auth_drifted");
 });
 
-test("status --json marks Hermes homes missing credential_pool for sync", async () => {
+test("Hermes local status marks homes missing credential_pool for sync", () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeJwt = makeFakeJwt({
@@ -266,82 +247,18 @@ test("status --json marks Hermes homes missing credential_pool for sync", async 
   });
   writeSingleCodexHermesState(statePath, { jwt: fakeJwt });
 
-  const fetchImpl = async (url) => {
-    const u = String(url ?? "");
-    if (u.includes("/backend-api/wham/usage")) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          plan_type: "pro",
-          rate_limit: {
-            primary_window: {
-              used_percent: 5,
-              limit_window_seconds: 10800,
-              reset_at: Math.floor(Date.now() / 1000) + 3600,
-            },
-            secondary_window: {
-              used_percent: 5,
-              limit_window_seconds: 7 * 24 * 3600,
-              reset_at: Math.floor(Date.now() / 1000) + 24 * 3600,
-            },
-          },
-        }),
-      };
-    }
-    throw new Error(`Unexpected fetch url in test: ${u}`);
-  };
-
-  const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
+  const status = readHermesHomeStatus({
+    state: loadAimgrState(statePath),
+    homeDir: home,
+    homeId: "agent_product_growth",
+  });
 
   // Hermes auth writes require one coherent device-code pool entry. A home with
   // matching provider tokens but no pool entry still needs sync so watch/rebalance can repair runtime auth.
-  assert.equal(statusJson.hermesFleet.homes[0].currentLabel, "product");
-  assert.equal(statusJson.hermesFleet.homes[0].authDrifted, false);
-  assert.equal(statusJson.hermesFleet.homes[0].needsSync, true);
-  assert.equal(statusJson.hermesFleet.homes[0].warnings[0].kind, "hermes_home_auth_needs_sync");
-  assert.equal(statusJson.hermesFleet.warningHomeCount, 1);
-});
-
-test("sync hermes fails loud with migration guidance to the auth-only Hermes command", async () => {
-  const home = mkTempHome();
-  const statePath = path.join(home, ".aimgr", "secrets.json");
-  writeJson(statePath, {
-    schemaVersion: "0.2",
-    accounts: {},
-    credentials: {
-      "openai-codex": {},
-      anthropic: {},
-    },
-    imports: {
-      authority: {
-        codex: {},
-      },
-    },
-    pool: {
-      openaiCodex: {
-        history: [],
-        agentDemand: {},
-      },
-      anthropic: {
-        history: [],
-      },
-    },
-    targets: {
-      openclaw: {
-        assignments: {},
-        exclusions: {},
-      },
-      codexCli: {},
-      claudeCli: {},
-      piCli: {},
-    },
-  });
-
-  await assert.rejects(
-    () => runCli(["sync", "hermes", "product-growth", "product", "--home", home]),
-    /`aim sync hermes` was removed/,
-  );
+  assert.equal(status.currentLabel, "product");
+  assert.equal(status.authDrifted, false);
+  assert.equal(status.needsSync, true);
+  assert.equal(buildWarningsFromHermesHomeStatus(status)[0].kind, "hermes_home_auth_needs_sync");
 });
 
 test("rebalance hermes resyncs same-label drifted homes instead of treating them as unchanged", async () => {
@@ -408,6 +325,7 @@ test("rebalance hermes resyncs same-label drifted homes instead of treating them
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -449,9 +367,4 @@ test("rebalance hermes resyncs same-label drifted homes instead of treating them
     assert.equal(authJson.credential_pool["openai-codex"][0].last_error_code, null);
     assert.equal(authJson.credential_pool["openai-codex"][0].request_count, 0);
 
-    const statusJson = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
-    assert.equal(statusJson.hermesFleet.homes[0].matchMode, "token_pair");
-    assert.equal(statusJson.hermesFleet.homes[0].authDrifted, false);
-    assert.equal(statusJson.hermesFleet.homes[0].needsSync, false);
-    assert.equal(statusJson.hermesFleet.warningHomeCount, 0);
 });

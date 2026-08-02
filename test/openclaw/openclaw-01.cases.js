@@ -5,13 +5,7 @@ import path from "node:path";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { installFakeOpenclaw, readFakeOpenclawRestarts, readFakeOpenclawSessionPatches } from "../helpers/fakes.js";
 import { makeFakeJwt, mkTempHome, withEnv, writeJson, writeOpenclawAuthStore, writeOpenclawSessionsStore } from "../helpers/files.js";
-
-test("apply is removed after the Redis cutover", async () => {
-  await assert.rejects(
-    () => runCli(["apply", "--home", mkTempHome()]),
-    /aim apply.*removed in the Redis cutover/s,
-  );
-});
+import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
 test("rebalance openclaw applies the weekly-share target at the real CLI boundary", async () => {
   const home = mkTempHome();
@@ -83,6 +77,7 @@ test("rebalance openclaw applies the weekly-share target at the real CLI boundar
   writeOpenclawSessionsStore(home, "agent_idle", {
     s1: { updatedAt: now, inputTokens: 10, outputTokens: 10, totalTokens: 20 },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url, options) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -125,7 +120,7 @@ test("rebalance openclaw applies the weekly-share target at the real CLI boundar
           { agentId: "agent_idle", from: "qa", to: "boss" },
         ]);
 
-        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
         assert.equal(updatedState.targets.openclaw.lastApplyReceipt.status, "applied");
         assert.equal(updatedState.targets.openclaw.lastApplyReceipt.allocationMode, "demand_weighted");
         assert.deepEqual(updatedState.targets.openclaw.lastApplyReceipt.skipped, []);
@@ -206,6 +201,7 @@ test("rebalance openclaw persists a blocked receipt when live sync fails after w
       authProfileOverride: "openai-codex:qa",
     },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
 
   const fetchImpl = async (url, options) => {
     const u = String(url ?? "");
@@ -250,7 +246,7 @@ test("rebalance openclaw persists a blocked receipt when live sync fails after w
       assert.deepEqual(parsed.rebalanced.receipt.assignments, { agent_boss: "boss" });
       assert.equal(readFakeOpenclawRestarts(home).length, 1);
 
-      const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
       assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
       assert.equal(updatedState.targets.openclaw.lastApplyReceipt.status, "blocked");
       assert.equal(updatedState.targets.openclaw.lastApplyReceipt.blockers[0].reason, "openclaw_sync_failed");
@@ -308,6 +304,7 @@ test("rebalance openclaw records a blocked receipt when session demand cannot be
   const sessionsPath = path.join(home, ".openclaw", "agents", "agent_boss", "sessions", "sessions.json");
   fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
   fs.writeFileSync(sessionsPath, "{not-json", "utf8");
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
 
   const fetchImpl = async (url) => {
     const u = String(url ?? "");
@@ -354,7 +351,7 @@ test("rebalance openclaw records a blocked receipt when session demand cannot be
       assert.match(parsed.rebalanced.receipt.blockers[0].detail, /Failed to read OpenClaw session demand/);
       assert.equal(readFakeOpenclawRestarts(home).length, 0);
 
-      const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
       assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
       assert.equal(updatedState.targets.openclaw.lastApplyReceipt.status, "blocked");
       assert.equal(updatedState.targets.openclaw.lastRebalancedAt, updatedState.targets.openclaw.lastApplyReceipt.observedAt);

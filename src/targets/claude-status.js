@@ -3,7 +3,8 @@ import fs from "node:fs";
 import { getAnthropicCredential } from "../browser/seed.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject } from "../core/normalize.js";
-import { buildClaudeCredentialSummaryFromBundle, readClaudeAppStateFile, readClaudeNativeBundle } from "../credentials/claude-bundle.js";
+import { readClaudeAppStateFile, readClaudeNativeBundle } from "../credentials/claude-bundle.js";
+import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
 import { resolveClaudeAppStatePath, resolveClaudeAuthFilePath, resolveManagedClaudeDir } from "../io/paths.js";
 import { getClaudeTargetState } from "../state/accounts.js";
@@ -122,9 +123,9 @@ export function getAnthropicCredentialMatchLabel(state, { accessToken, refreshTo
 
   for (const [label, credential] of Object.entries(state.credentials[ANTHROPIC_PROVIDER])) {
     if (!isObject(credential)) continue;
-    const summary = buildClaudeCredentialSummaryFromBundle(credential);
-    const credentialRefresh = summary?.refresh || String(credential.refresh ?? "").trim();
-    const credentialAccess = summary?.access || String(credential.access ?? "").trim();
+    const view = getAnthropicCredentialView(credential);
+    const credentialRefresh = typeof view?.refresh === "string" ? view.refresh.trim() : "";
+    const credentialAccess = typeof view?.access === "string" ? view.access.trim() : "";
     if (refresh && credentialRefresh === refresh) {
       refreshMatches.push(label);
     }
@@ -176,7 +177,7 @@ export function clearManagedClaudeCliTargetState(state) {
   delete target.authPath;
   delete target.credentialsPath;
   delete target.appStatePath;
-  delete target.activeLabel;
+  delete target.lastRunLabel;
   delete target.expectedSubscriptionType;
   delete target.lastAppliedAt;
 }
@@ -192,9 +193,9 @@ export function readClaudeCliTargetStatus({ state, homeDir, env = {} }) {
   const target = getClaudeTargetState(state);
   const claudeDir = resolveManagedClaudeDir({ homeDir });
   const readback = readClaudeNativeBundle({ homeDir });
-  const activeLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
-  const activeCredential = activeLabel ? getAnthropicCredential(state, activeLabel) : null;
-  const expected = buildClaudeCredentialSummaryFromBundle(activeCredential);
+  const lastRunLabel = typeof target.lastRunLabel === "string" ? target.lastRunLabel.trim() : "";
+  const lastRunCredential = lastRunLabel ? getAnthropicCredential(state, lastRunLabel) : null;
+  const expected = getAnthropicCredentialView(lastRunCredential);
   const inferredLabel =
     readback.summary
       ? getAnthropicCredentialMatchLabel(state, {
@@ -203,7 +204,7 @@ export function readClaudeCliTargetStatus({ state, homeDir, env = {} }) {
         })
       : null;
   const authStatus =
-    activeLabel || readback.exists
+    lastRunLabel || readback.exists
       ? readClaudeAuthStatus({ homeDir, env })
       : {
           available: false,
@@ -241,9 +242,9 @@ export function readClaudeCliTargetStatus({ state, homeDir, env = {} }) {
     claudeDir,
     credentialsPath: readback.credentialsPath,
     appStatePath: readback.appStatePath,
-    activeLabel: activeLabel || null,
-    activeAccountPresent: activeLabel ? isObject(state.accounts[activeLabel]) : false,
-    activeCredentialPresent: activeLabel ? isObject(activeCredential) : false,
+    lastRunLabel: lastRunLabel || null,
+    lastRunAccountPresent: lastRunLabel ? isObject(state.accounts[lastRunLabel]) : false,
+    lastRunCredentialPresent: lastRunLabel ? isObject(lastRunCredential) : false,
     expectedSubscriptionType: expected?.subscriptionType || null,
     expectedEmailAddress: expected?.emailAddress || null,
     expectedOrganizationName: expected?.organizationName || null,
@@ -264,28 +265,29 @@ export function readClaudeCliTargetStatus({ state, homeDir, env = {} }) {
 export function buildWarningsFromClaudeTargetStatus(status) {
   const warnings = [];
   if (!status) return warnings;
+  const label = status.lastRunLabel;
 
-  if (status.activeLabel && !status.activeAccountPresent) {
+  if (label && !status.lastRunAccountPresent) {
     warnings.push({
       kind: "claude_target_label_missing",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
     });
   }
 
-  if (status.activeLabel && !status.activeCredentialPresent) {
+  if (label && !status.lastRunCredentialPresent) {
     warnings.push({
       kind: "claude_target_credentials_missing",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
     });
   }
 
-  if (status.activeLabel && status.readback?.credentials?.exists !== true) {
+  if (label && status.readback?.credentials?.exists !== true) {
     warnings.push({
       kind: "claude_target_missing_auth_file",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
     });
   }
 
@@ -297,19 +299,19 @@ export function buildWarningsFromClaudeTargetStatus(status) {
     });
   }
 
-  if (status.activeLabel && status.readback?.credentials?.ok === true && !status.readback.credentials.claudeAiOauthPresent) {
+  if (label && status.readback?.credentials?.ok === true && !status.readback.credentials.claudeAiOauthPresent) {
     warnings.push({
       kind: "claude_target_missing_provider_entry",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
     });
   }
 
-  if (status.activeLabel && status.readback?.appState?.exists !== true) {
+  if (label && status.readback?.appState?.exists !== true) {
     warnings.push({
       kind: "claude_target_missing_app_state",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
     });
   }
 
@@ -321,16 +323,16 @@ export function buildWarningsFromClaudeTargetStatus(status) {
     });
   }
 
-  if (status.activeLabel && status.readback?.appState?.ok === true && !status.readback.appState.oauthAccountPresent) {
+  if (label && status.readback?.appState?.ok === true && !status.readback.appState.oauthAccountPresent) {
     warnings.push({
       kind: "claude_target_missing_oauth_account",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
     });
   }
 
   if (
-    status.activeLabel
+    label
     && status.expectedSubscriptionType
     && status.actualSubscriptionType
     && status.expectedSubscriptionType !== status.actualSubscriptionType
@@ -338,13 +340,13 @@ export function buildWarningsFromClaudeTargetStatus(status) {
     warnings.push({
       kind: "claude_target_subscription_mismatch",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
       status: status.actualSubscriptionType,
     });
   }
 
   if (
-    status.activeLabel
+    label
     && status.expectedEmailAddress
     && status.actualEmailAddress
     && status.expectedEmailAddress !== status.actualEmailAddress
@@ -352,13 +354,13 @@ export function buildWarningsFromClaudeTargetStatus(status) {
     warnings.push({
       kind: "claude_target_email_mismatch",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
       status: status.actualEmailAddress,
     });
   }
 
   if (
-    status.activeLabel
+    label
     && status.expectedOrganizationName
     && status.actualOrganizationName
     && status.expectedOrganizationName !== status.actualOrganizationName
@@ -366,39 +368,39 @@ export function buildWarningsFromClaudeTargetStatus(status) {
     warnings.push({
       kind: "claude_target_organization_mismatch",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
       status: status.actualOrganizationName,
     });
   }
 
-  if (status.activeLabel && status.inferredLabel && status.inferredLabel !== status.activeLabel) {
+  if (label && status.inferredLabel && status.inferredLabel !== label) {
     warnings.push({
       kind: "claude_target_label_mismatch",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
       actualLabel: status.inferredLabel,
     });
   }
 
-  if (status.activeLabel && status.authStatus?.available === true && status.authStatus.ok !== true) {
+  if (label && status.authStatus?.available === true && status.authStatus.ok !== true) {
     warnings.push({
       kind: "claude_target_status_unreadable",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
       status: status.authStatus.error || status.authStatus.status || "unknown",
     });
   }
 
-  if (status.activeLabel && status.authStatus?.ok === true && status.authStatus.loggedIn !== true) {
+  if (label && status.authStatus?.ok === true && status.authStatus.loggedIn !== true) {
     warnings.push({
       kind: "claude_target_not_logged_in",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
     });
   }
 
   if (
-    status.activeLabel
+    label
     && status.authStatus?.ok === true
     && typeof status.authStatus.authMethod === "string"
     && status.authStatus.authMethod
@@ -410,7 +412,7 @@ export function buildWarningsFromClaudeTargetStatus(status) {
           ? "claude_target_env_override"
           : "claude_target_auth_method_mismatch",
       system: "claude-cli",
-      label: status.activeLabel,
+      label,
       authMethod: status.authStatus.authMethod,
       ...(Array.isArray(status.authOverrideEnv) && status.authOverrideEnv.length > 0
         ? { env: status.authOverrideEnv }

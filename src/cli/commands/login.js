@@ -14,6 +14,7 @@ import { readSnapshot } from "../../coordination/redis-store.js";
 import { publishMaintainedCredential } from "../../coordination/login-publish.js";
 import { closeRedisRuntime, isRedisConfigured, loadRedisRuntime, publishRedisCredentialPolicyFromState, refreshRedisRuntimeSnapshot, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { persistAnthropicNativeBundleForLabel } from "../../credentials/claude-native.js";
+import { buildAnthropicTokenLineageFingerprint } from "../../credentials/anthropic.js";
 import { ensureProviderConfiguredForLabel } from "../../credentials/oauth.js";
 import {
   CLAUDE_MANAGED_FILE_STORAGE_MODE,
@@ -45,13 +46,8 @@ const CLAUDE_EMPTY_LINEAGE_FINGERPRINT = `sha256:${createHash("sha256")
   .digest("hex")}`;
 
 function buildClaudeLoginLineageFingerprint(credential) {
-  const access = typeof credential?.access === "string" ? credential.access.trim() : "";
-  const refresh = typeof credential?.refresh === "string" ? credential.refresh.trim() : "";
-  if (access && refresh) {
-    return `sha256:${createHash("sha256")
-      .update(JSON.stringify({ access, refresh }))
-      .digest("hex")}`;
-  }
+  const fingerprint = buildAnthropicTokenLineageFingerprint(credential);
+  if (fingerprint) return fingerprint;
   return credential
     && typeof credential === "object"
     && !Array.isArray(credential)
@@ -64,16 +60,6 @@ function currentAnthropicRecord(snapshot, label) {
   return (snapshot?.credentials ?? []).find(
     (record) => record.provider === ANTHROPIC_PROVIDER && record.label === label,
   ) ?? null;
-}
-
-function clearClaudeRotationPublicationPending(state, label) {
-  const target = state?.targets?.claudeCli;
-  const pending = target?.rotationPublicationPendingByLabel;
-  if (!pending || typeof pending !== "object" || Array.isArray(pending)) return;
-  delete pending[label];
-  if (Object.keys(pending).length === 0) {
-    delete target.rotationPublicationPendingByLabel;
-  }
 }
 
 function buildClaudeLoginRecoveryStorageId({ installationId, configDir }) {
@@ -366,7 +352,6 @@ async function performRedisClaudeLogin(context, {
         nowMs,
       });
       if (recovered.recovered) {
-        clearClaudeRotationPublicationPending(preparationState, label);
         writeRedisLocalStateFromView({ homeDir, state: preparationState, localState });
         return {
           result: {
@@ -470,7 +455,6 @@ async function performRedisClaudeLogin(context, {
         });
         await clearClaudeLoginFence({ store, label, fence, lease });
         removeClaudeLoginStaging({ homeDir, label, stagingHome });
-        clearClaudeRotationPublicationPending(completionState, label);
         writeRedisLocalStateFromView({ homeDir, state: completionState, localState });
         return {
           ok: true,
@@ -580,7 +564,6 @@ async function performRedisClaudeLogin(context, {
     });
     await clearClaudeLoginFence({ store, label, fence, lease });
     removeClaudeLoginStaging({ homeDir, label, stagingHome });
-    clearClaudeRotationPublicationPending(completionState, label);
     writeRedisLocalStateFromView({ homeDir, state: completionState, localState });
     return {
       ok: true,

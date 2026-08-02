@@ -1,11 +1,28 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { getAnthropicCredential } from "../browser/seed.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
-import { assertAnthropicCredentialShape } from "../credentials/anthropic.js";
+import {
+  clearRedisClaudeRotationFence,
+  createRedisClaudeRotationFence,
+  isRedisClaudeRotationFenceSuccessor,
+} from "../coordination/redis-claude-rotation-fence.js";
+import {
+  publishRedisStateCredential,
+  writeRedisLocalStateFromView,
+} from "../coordination/runtime.js";
+import {
+  assertAnthropicCredentialShape,
+  buildAnthropicTokenLineageFingerprint,
+} from "../credentials/anthropic.js";
 import { cloneJsonObject, getClaudeNativeBundle, hasCompleteClaudeNativeBundle, normalizeNonEmptyStringArray, readClaudeAppStateFile, readClaudeNativeBundle } from "../credentials/claude-bundle.js";
-import { planClaudeNativeBundleReplacement, syncLiveClaudeRotationBackToLabel } from "../credentials/claude-native.js";
+import {
+  planClaudeNativeBundleReplacement,
+  syncLiveClaudeRotationBackToLabel,
+  syncLiveClaudeRotationBackToLabelFromStorage,
+} from "../credentials/claude-native.js";
 import {
   CLAUDE_MANAGED_FILE_STORAGE_MODE,
   ensureSafeManagedClaudeStorage,
@@ -22,6 +39,326 @@ import { ensureStateShape } from "../state/schema.js";
 import { buildWarningsFromClaudeTargetStatus, clearManagedClaudeCliActivation, getAnthropicCredentialMatchLabel, readClaudeCliTargetStatus } from "./claude-status.js";
 
 const MANAGED_CLAUDE_JSON_MAX_BYTES = 256 * 1024;
+const CLAUDE_LINEAGE_FINGERPRINT_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const CLAUDE_RECOVERY_STORAGE_CONTRACT = CLAUDE_MANAGED_FILE_STORAGE_MODE;
+
+export function readClaudeProjectionReceipt(target, label) {
+  const normalizedLabel = normalizeLabel(label);
+  const value = target?.projectionReceiptsByLabel?.[normalizedLabel];
+  const redisCredentialVersion = Number(value?.redisCredentialVersion);
+  const credentialsPath = typeof value?.credentialsPath === "string" ? value.credentialsPath.trim() : "";
+  const reconciledAtMs = Date.parse(String(value?.reconciledAt ?? ""));
+  if (
+    !isObject(value)
+    || value.label !== normalizedLabel
+    || !Number.isSafeInteger(redisCredentialVersion)
+    || redisCredentialVersion < 1
+    || !CLAUDE_LINEAGE_FINGERPRINT_PATTERN.test(String(value.committedLineageFingerprint ?? ""))
+    || !path.isAbsolute(credentialsPath)
+    || !Number.isFinite(reconciledAtMs)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    label: normalizedLabel,
+    redisCredentialVersion,
+    committedLineageFingerprint: value.committedLineageFingerprint,
+    credentialsPath: path.resolve(credentialsPath),
+    reconciledAt: new Date(reconciledAtMs).toISOString(),
+  });
+}
+
+export function recordClaudeProjectionReceipt({
+  state,
+  label,
+  redisCredentialVersion,
+  committedLineageFingerprint,
+  credentialsPath,
+  reconciledAt = new Date().toISOString(),
+}) {
+  const normalizedLabel = normalizeLabel(label);
+  const target = getClaudeTargetState(state);
+  const receipt = readClaudeProjectionReceipt({
+    projectionReceiptsByLabel: {
+      [normalizedLabel]: {
+        label: normalizedLabel,
+        redisCredentialVersion,
+        committedLineageFingerprint,
+        credentialsPath,
+        reconciledAt,
+      },
+    },
+  }, normalizedLabel);
+  if (!receipt) throw new Error("Claude projection receipt is invalid.");
+  target.projectionReceiptsByLabel = isObject(target.projectionReceiptsByLabel)
+    ? target.projectionReceiptsByLabel
+    : {};
+  target.projectionReceiptsByLabel[normalizedLabel] = receipt;
+  return receipt;
+}
+
+export function clearClaudeProjectionReceipt({ state, label }) {
+  const target = getClaudeTargetState(state);
+  if (!isObject(target.projectionReceiptsByLabel)) return;
+  delete target.projectionReceiptsByLabel[normalizeLabel(label)];
+  if (Object.keys(target.projectionReceiptsByLabel).length === 0) {
+    delete target.projectionReceiptsByLabel;
+  }
+}
+
+export function buildClaudeRecoveryStorageId({ installationId, configDir }) {
+  return `sha256:${createHash("sha256")
+    .update(
+      `${CLAUDE_RECOVERY_STORAGE_CONTRACT}\0${installationId}\0${path.resolve(configDir).normalize("NFC")}`,
+    )
+    .digest("hex")}`;
+}
+
+export function currentRedisClaudeRecord(runtime, label) {
+  return (runtime?.snapshot?.credentials ?? []).find(
+    (record) => record.provider === ANTHROPIC_PROVIDER && record.label === label,
+  ) ?? null;
+}
+
+export function buildClaudeTokenLineageFingerprint(credential) {
+  return buildAnthropicTokenLineageFingerprint(credential);
+}
+
+function requireClaudeFenceBaseline(runtime, label) {
+  const record = currentRedisClaudeRecord(runtime, label);
+  const fingerprint = buildClaudeTokenLineageFingerprint(record?.credential);
+  if (!record || !Number.isInteger(record.version) || !fingerprint) {
+    throw new Error(`Claude label=${label} has no valid Redis credential lineage for rotation fencing.`);
+  }
+  return { record, fingerprint };
+}
+
+export function assertUnfencedClaudeProjectionIsRecoverable({
+  runtime,
+  label,
+  descriptor,
+  reconciliation,
+}) {
+  const local = readManagedClaudeNativeBundleFromFiles({ descriptor });
+  if (local.errorKind === "native_storage_empty") return;
+  if (local.ok !== true) {
+    throw new Error(
+      `Claude label=${label} local credential cache is unreadable; repair or remove that exact per-label cache before retrying.`,
+    );
+  }
+  const baseline = requireClaudeFenceBaseline(runtime, label);
+  const localFingerprint = buildClaudeTokenLineageFingerprint({
+    nativeClaudeBundle: local.nativeClaudeBundle,
+  });
+  if (!localFingerprint) {
+    throw new Error(`Claude label=${label} local credential cache has no complete token lineage.`);
+  }
+  if (localFingerprint === baseline.fingerprint) return;
+
+  const receipt = readClaudeProjectionReceipt(runtime.state.targets?.claudeCli, label);
+  const receiptPathMatches = receipt?.credentialsPath === descriptor.credentialsPath;
+  const localMatchesReceipt = receiptPathMatches
+    && localFingerprint === receipt.committedLineageFingerprint;
+  const receiptMatchesRedis = receiptPathMatches
+    && receipt.redisCredentialVersion === baseline.record.version
+    && receipt.committedLineageFingerprint === baseline.fingerprint;
+  if (localMatchesReceipt && receipt.redisCredentialVersion < baseline.record.version) return;
+  if (receiptMatchesRedis && reconciliation?.status === "candidate") return;
+
+  throw new Error(
+    `Claude label=${label} local credential lineage is not proven by its current Redis projection receipt. `
+      + "Preserve the native file and recover with `aim claude capture-native` or `aim claude import-native` after verifying the account.",
+  );
+}
+
+export async function createClaudeRotationFenceForCurrentCredential({
+  runtime,
+  label,
+  recoveryStorageId,
+  observedAt,
+}) {
+  const baseline = requireClaudeFenceBaseline(runtime, label);
+  const fence = await createRedisClaudeRotationFence(runtime.store, {
+    label,
+    recoveryStorageId,
+    baseTokenLineageFingerprint: baseline.fingerprint,
+    baseCredentialVersion: baseline.record.version,
+    observedAt,
+  });
+  if (!fence) {
+    throw new Error(`Claude label=${label} has an unresolved shared rotation fence.`);
+  }
+  return fence;
+}
+
+export async function clearClaudeRotationFenceOrThrow({ runtime, label, fence, lease }) {
+  if (!fence) return;
+  if (await clearRedisClaudeRotationFence(runtime.store, {
+    label,
+    fenceId: fence.fenceId,
+    lease,
+  }) !== true) {
+    throw new Error(`Claude label=${label} shared rotation fence could not be cleared safely.`);
+  }
+}
+
+export function assertRedisClaudeFenceSuccessor({ record, fence }) {
+  if (!fence) return;
+  const fingerprint = buildClaudeTokenLineageFingerprint(record?.credential);
+  if (!isRedisClaudeRotationFenceSuccessor(record, {
+    fence,
+    tokenLineageFingerprint: fingerprint,
+  })) {
+    throw new Error(`Claude label=${fence.label} rotation successor is not linked to its shared fence.`);
+  }
+}
+
+export function recordCommittedClaudeProjection({
+  runtime,
+  label,
+  record,
+  descriptor,
+  homeDir,
+  reconciledAt,
+}) {
+  const committedLineageFingerprint = buildClaudeTokenLineageFingerprint(record?.credential);
+  if (!Number.isSafeInteger(record?.version) || !committedLineageFingerprint) {
+    throw new Error(`Claude label=${label} published credential cannot produce a projection receipt.`);
+  }
+  const receipt = recordClaudeProjectionReceipt({
+    state: runtime.state,
+    label,
+    redisCredentialVersion: record.version,
+    committedLineageFingerprint,
+    credentialsPath: descriptor.credentialsPath,
+    reconciledAt,
+  });
+  writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+  return receipt;
+}
+
+export async function publishClaudeRotationIfNeeded({
+  runtime,
+  reconciliation,
+  label,
+  observedAt,
+  fence,
+  descriptor,
+  homeDir,
+}) {
+  if (reconciliation?.status !== "candidate") return null;
+  if (reconciliation.label !== label) {
+    throw new Error("Claude managed-storage rotation resolved to an unexpected account label.");
+  }
+  if (!fence) {
+    throw new Error(`Claude label=${label} rotation publication requires a shared fence.`);
+  }
+  const successorFingerprint = buildClaudeTokenLineageFingerprint(
+    reconciliation.candidateCredential,
+  );
+  if (!successorFingerprint || successorFingerprint === fence.baseTokenLineageFingerprint) {
+    throw new Error(`Claude label=${label} rotation did not produce a new access/refresh token pair.`);
+  }
+  const candidateState = {
+    ...runtime.state,
+    credentials: {
+      ...runtime.state.credentials,
+      [ANTHROPIC_PROVIDER]: {
+        ...runtime.state.credentials[ANTHROPIC_PROVIDER],
+        [label]: reconciliation.candidateCredential,
+      },
+    },
+  };
+  const record = await publishRedisStateCredential({
+    runtime,
+    state: candidateState,
+    provider: ANTHROPIC_PROVIDER,
+    label,
+    observedAt,
+    lineageMode: "native-claude-rotation",
+    rotationFence: fence,
+  });
+  runtime.state.credentials[ANTHROPIC_PROVIDER][label] = reconciliation.candidateCredential;
+  if (descriptor && homeDir) {
+    recordCommittedClaudeProjection({
+      runtime,
+      label,
+      record,
+      descriptor,
+      homeDir,
+      reconciledAt: observedAt,
+    });
+  }
+  return record;
+}
+
+export async function recoverSharedClaudeRotationFence({
+  runtime,
+  label,
+  fence,
+  recoveryStorageId,
+  descriptor,
+  lease,
+  assertLeaseOwned,
+  homeDir,
+  nowMs,
+}) {
+  if (!fence) return null;
+  if (typeof assertLeaseOwned !== "function") {
+    throw new Error("Claude rotation fence recovery requires a lease ownership assertion.");
+  }
+  const baseline = requireClaudeFenceBaseline(runtime, label);
+  if (baseline.fingerprint !== fence.baseTokenLineageFingerprint) {
+    if (!isRedisClaudeRotationFenceSuccessor(baseline.record, {
+      fence,
+      tokenLineageFingerprint: baseline.fingerprint,
+    })) {
+      throw new Error(
+        `Claude label=${label} has changed Redis credentials that are not a proven successor to its shared rotation fence.`,
+      );
+    }
+    await assertLeaseOwned("before clearing a published rotation fence");
+    await clearClaudeRotationFenceOrThrow({ runtime, label, fence, lease });
+    return { status: "unchanged", reason: "already_published", record: baseline.record };
+  }
+  if (fence.recoveryStorageId !== recoveryStorageId) {
+    throw new Error(
+      `Claude label=${label} has an unresolved rotation on another machine; recover there or replace it with `
+        + "`aim claude capture-native` / `aim claude import-native`.",
+    );
+  }
+
+  const recovered = await syncLiveClaudeRotationBackToLabelFromStorage({
+    state: runtime.state,
+    label,
+    descriptor,
+    nowMs,
+  });
+  await assertLeaseOwned("before publishing recovered Claude rotation");
+  let record = null;
+  if (recovered.status === "candidate") {
+    record = await publishClaudeRotationIfNeeded({
+      runtime,
+      reconciliation: recovered,
+      label,
+      observedAt: new Date(nowMs).toISOString(),
+      fence,
+      descriptor,
+      homeDir,
+    });
+    assertRedisClaudeFenceSuccessor({ record, fence });
+  } else if (recovered.status === "unchanged" && recovered.reason === "tokens_unchanged") {
+    return { ...recovered, retainedFence: fence };
+  } else {
+    throw new Error(
+      `Claude label=${label} shared rotation fence recovery blocked: ${recovered.status}:${recovered.reason}.`,
+    );
+  }
+  await assertLeaseOwned("before clearing a recovered rotation fence");
+  await clearClaudeRotationFenceOrThrow({ runtime, label, fence, lease });
+  writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+  return { ...recovered, record };
+}
 
 export function buildClaudeAuthDotJson({ credential }) {
   const bundle = getClaudeNativeBundle(credential);
@@ -302,12 +639,12 @@ export function applyClaudeCliFromState({ label, homeDir }, state) {
   }
 
   const target = getClaudeTargetState(state);
-  target.claudeDir = claudeDir;
+  delete target.claudeDir;
   delete target.authPath;
   delete target.expectedSubscriptionType;
-  target.credentialsPath = readback.credentialsPath;
-  target.appStatePath = readback.appStatePath;
-  target.activeLabel = normalizedLabel;
+  delete target.credentialsPath;
+  delete target.appStatePath;
+  target.lastRunLabel = normalizedLabel;
   target.lastAppliedAt = new Date().toISOString();
 
   return {
@@ -375,7 +712,7 @@ export async function activateClaudePoolSelection({
       action: "claude_use",
       status: "blocked",
       observedAt,
-      previousLabel: currentTarget.activeLabel ?? currentTarget.inferredLabel ?? undefined,
+      previousLabel: currentTarget.lastRunLabel ?? currentTarget.inferredLabel ?? undefined,
       warnings: [],
       blockers: blockerDetails.length > 0 ? blockerDetails : [{ reason: "no_eligible_pool_account" }],
       reasons: [],
@@ -391,7 +728,7 @@ export async function activateClaudePoolSelection({
   const rankedCandidates = rankPoolCandidates({
     labels: poolStatus.eligibleLabels,
     usage: usageByLabel,
-    currentLabel: currentTarget.activeLabel,
+    currentLabel: currentTarget.lastRunLabel,
     currentAssignments: {},
     configuredAgents: [],
     agentDemand: {},
@@ -412,7 +749,7 @@ export async function activateClaudePoolSelection({
   const wroteAny = Boolean(activated.wrote?.credentials || activated.wrote?.appState);
   const status =
     !wroteAny
-    && currentTarget.activeLabel === selection.label
+    && currentTarget.lastRunLabel === selection.label
       ? "noop"
       : warnings.length > 0
         ? "activated_with_warnings"
@@ -422,7 +759,7 @@ export async function activateClaudePoolSelection({
     action: "claude_use",
     status,
     observedAt,
-    previousLabel: currentTarget.activeLabel ?? undefined,
+    previousLabel: currentTarget.lastRunLabel ?? undefined,
     label: selection.label,
     subscriptionType: activated.subscriptionType,
     keptCurrent: Boolean(selection.keptCurrent),
@@ -479,7 +816,7 @@ export function activateClaudeLabelSelection({ state, homeDir, env = {}, label }
     const warnings = buildWarningsFromClaudeTargetStatus(postStatus);
     const wroteAny = Boolean(activated.wrote?.credentials || activated.wrote?.appState);
     const status =
-      !wroteAny && currentTarget.activeLabel === normalizedLabel
+      !wroteAny && currentTarget.lastRunLabel === normalizedLabel
         ? "noop"
         : warnings.length > 0
           ? "activated_with_warnings"
@@ -488,7 +825,7 @@ export function activateClaudeLabelSelection({ state, homeDir, env = {}, label }
       action: "claude_use",
       status,
       observedAt,
-      previousLabel: currentTarget.activeLabel ?? undefined,
+      previousLabel: currentTarget.lastRunLabel ?? undefined,
       label: normalizedLabel,
       explicit: true,
       subscriptionType: activated.subscriptionType,
@@ -519,7 +856,7 @@ export function activateClaudeLabelSelection({ state, homeDir, env = {}, label }
       action: "claude_use",
       status: "blocked",
       observedAt,
-      previousLabel: currentTarget.activeLabel ?? currentTarget.inferredLabel ?? undefined,
+      previousLabel: currentTarget.lastRunLabel ?? currentTarget.inferredLabel ?? undefined,
       label: normalizedLabel,
       explicit: true,
       reasons: ["explicit_label"],

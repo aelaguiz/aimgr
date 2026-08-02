@@ -12,14 +12,14 @@ import { findCredentialRecord } from "../../coordination/snapshot.js";
 import { isObject, normalizeLabel } from "../../core/normalize.js";
 import { parseExpiresAtToMs } from "../../core/time.js";
 import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.js";
+import { getAnthropicCredentialView } from "../../credentials/anthropic.js";
+import { maintainRedisClaudeCredential } from "../../credentials/claude-maintenance.js";
 import {
   CodexRefreshInvalidGrantError,
   refreshCodexWithoutBrowser,
 } from "../../credentials/codex-login.js";
-import { loadAimgrState } from "../../state/schema.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { writeHermesAuthFromState } from "../../targets/hermes-auth.js";
-import { maintainRedisClaudeCredential } from "./claude.js";
 
 const OAUTH_REAUTH_REQUIRED = "oauth_reauth_required";
 const CLAUDE_DUE_WINDOW_MS = 5 * 60_000;
@@ -54,12 +54,18 @@ function dueWindowMs(provider) {
 }
 
 function recordExpiryMs(record) {
-  return parseExpiresAtToMs(record?.credential?.expiresAt);
+  const credential = record?.provider === ANTHROPIC_PROVIDER
+    ? getAnthropicCredentialView(record?.credential)
+    : record?.credential;
+  return parseExpiresAtToMs(credential?.expiresAt);
 }
 
 function isDue(record, nowMs) {
   const expiresAtMs = recordExpiryMs(record);
-  const access = typeof record?.credential?.access === "string" ? record.credential.access.trim() : "";
+  const credential = record?.provider === ANTHROPIC_PROVIDER
+    ? getAnthropicCredentialView(record?.credential)
+    : record?.credential;
+  const access = typeof credential?.access === "string" ? credential.access.trim() : "";
   return !access || expiresAtMs === null || expiresAtMs <= nowMs + dueWindowMs(record.provider);
 }
 
@@ -186,73 +192,108 @@ async function handleOAuthMaintain(context) {
     refreshed: 0,
     unchanged: 0,
     reauth_required: 0,
-    failed: 0,
+    retryable: 0,
     skipped: 0,
   };
   try {
     for (const record of sortedMaintenanceRecords(runtime.snapshot)) {
+      let maintenanceResult = null;
       if (
         !hasLoadedCredential(record)
         || isTerminallyMarked(record)
         || (hasRequiredRefreshMaterial(record) && !isDue(record, nowMs))
       ) {
-        counts.skipped += 1;
-        continue;
-      }
-      try {
-        let outcome;
-        if (!hasRequiredRefreshMaterial(record)) {
-          await refreshRedisRuntimeState(runtime);
-          const current = findCredentialRecord(runtime.snapshot, {
-            provider: record.provider,
-            label: record.label,
-          });
-          if (!current || !hasLoadedCredential(current) || isTerminallyMarked(current)) {
-            outcome = "skipped";
-          } else if (record.provider === OPENAI_CODEX_PROVIDER) {
+        maintenanceResult = {
+          outcome: "skipped",
+          reason: !hasLoadedCredential(record)
+            ? "credential_missing"
+            : isTerminallyMarked(record)
+              ? "reauth_already_required"
+              : "not_due",
+        };
+      } else {
+        try {
+          let outcome;
+          let reason = null;
+          if (!hasRequiredRefreshMaterial(record)) {
+            await refreshRedisRuntimeState(runtime);
+            const current = findCredentialRecord(runtime.snapshot, {
+              provider: record.provider,
+              label: record.label,
+            });
+            if (!current || !hasLoadedCredential(current) || isTerminallyMarked(current)) {
+              outcome = "skipped";
+              reason = !current || !hasLoadedCredential(current)
+                ? "credential_missing"
+                : "reauth_already_required";
+            } else if (record.provider === OPENAI_CODEX_PROVIDER) {
+              outcome = await maintainCodexRecord({
+                runtime,
+                record: current,
+                nowMs,
+                fetchJsonWithTimeoutImpl,
+              });
+              reason = outcome === "skipped" ? "not_actionable" : null;
+            } else {
+              await markReauthRequired(runtime, current, new Date(nowMs).toISOString());
+              outcome = "reauth_required";
+              reason = "refresh_material_missing";
+            }
+          } else if (record.provider === ANTHROPIC_PROVIDER) {
+            const result = await maintainRedisClaudeCredential(context, {
+              runtime,
+              label: record.label,
+            });
+            outcome = result.outcome;
+            reason = result.reason;
+          } else {
             outcome = await maintainCodexRecord({
               runtime,
-              record: current,
+              record,
               nowMs,
               fetchJsonWithTimeoutImpl,
             });
-          } else {
-            await markReauthRequired(runtime, current, new Date(nowMs).toISOString());
-            outcome = "reauth_required";
+            reason = outcome === "refreshed"
+              ? "credential_rotated"
+              : outcome === "reauth_required"
+                ? "refresh_rejected"
+                : "not_actionable";
           }
-        } else if (record.provider === ANTHROPIC_PROVIDER) {
-          const result = await maintainRedisClaudeCredential(context, { label: record.label });
-          outcome = result.outcome;
-        } else {
-          outcome = await maintainCodexRecord({
-            runtime,
-            record,
-            nowMs,
-            fetchJsonWithTimeoutImpl,
-          });
+          maintenanceResult = {
+            outcome: Object.hasOwn(counts, outcome) ? outcome : "retryable",
+            reason: reason
+              ?? (outcome === "refreshed"
+                ? "credential_rotated"
+                : outcome === "reauth_required"
+                  ? "refresh_rejected"
+                  : outcome === "unchanged"
+                    ? "tokens_unchanged"
+                    : "not_actionable"),
+          };
+        } catch {
+          maintenanceResult = { outcome: "retryable", reason: "maintenance_failed" };
         }
-        if (Object.hasOwn(counts, outcome)) {
-          counts[outcome] += 1;
-        } else {
-          counts.failed += 1;
-        }
-      } catch {
-        counts.failed += 1;
       }
+
+      counts[maintenanceResult.outcome] += 1;
+      stdout.write(
+        `provider=${record.provider} label=${record.label} `
+          + `outcome=${maintenanceResult.outcome} reason=${maintenanceResult.reason}\n`,
+      );
     }
   } finally {
     await closeRedisRuntime(runtime);
   }
   stdout.write(
     `refreshed=${counts.refreshed} unchanged=${counts.unchanged} `
-      + `reauth_required=${counts.reauth_required} failed=${counts.failed} skipped=${counts.skipped}\n`,
+      + `reauth_required=${counts.reauth_required} retryable=${counts.retryable} skipped=${counts.skipped}\n`,
   );
-  if (counts.failed > 0) setExitCode(1);
+  if (counts.retryable > 0) setExitCode(1);
   return counts;
 }
 
 export async function handleAuth(context) {
-  const { opts, positional, statePath, homeDir, stdout, connectRedisStoreImpl } = context;
+  const { opts, positional, homeDir, stdout, connectRedisStoreImpl } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
     throw new Error("Missing auth subcommand. Usage: aim auth maintain | aim auth write hermes <label> --auth-file <abs-path>");
@@ -275,18 +316,11 @@ export async function handleAuth(context) {
     throw new Error(`Unsupported auth target: ${system} (supported: hermes).`);
   }
   const label = normalizeLabel(positional[3]);
-  if (isRedisConfigured({ homeDir })) {
-    const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
-    try {
-      const written = writeHermesAuthFromState({ label, authPath: opts.authFile }, runtime.state);
-      stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, written }), null, 2)}\n`);
-      return;
-    } finally {
-      await closeRedisRuntime(runtime);
-    }
+  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
+  try {
+    const written = writeHermesAuthFromState({ label, authPath: opts.authFile }, runtime.state);
+    stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, written }), null, 2)}\n`);
+  } finally {
+    await closeRedisRuntime(runtime);
   }
-  const state = loadAimgrState(statePath);
-  const written = writeHermesAuthFromState({ label, authPath: opts.authFile }, state);
-  stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, written }), null, 2)}\n`);
-  return;
 }

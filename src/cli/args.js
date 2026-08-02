@@ -30,8 +30,10 @@ function expandClaudeRunPreset(argv) {
   if (!presetArgs) return { argv, autoSelect: false, autoSelectPreset: null };
   const prefixLength = autoPresetArgs ? 2 : 3;
   const tailIndex = autoPresetArgs ? 3 : 4;
+  const tail = argv.slice(tailIndex);
+  const passthroughTail = tail[0] === "--" ? tail.slice(1) : tail;
   return {
-    argv: [...argv.slice(0, prefixLength), "--", ...presetArgs, ...argv.slice(tailIndex)],
+    argv: [...argv.slice(0, prefixLength), "--", ...presetArgs, ...passthroughTail],
     autoSelect: Boolean(autoPresetArgs),
     autoSelectPreset: autoPresetArgs ? argv[2] : null,
   };
@@ -42,14 +44,11 @@ export function parseArgs(argv) {
   argv = expandedClaudeRun.argv;
   const opts = {
     home: undefined,
-    state: undefined,
     url: undefined,
     keyPrefix: undefined,
     primaryHost: undefined,
     transport: undefined,
     provider: undefined,
-    from: undefined,
-    to: undefined,
     mode: undefined,
     seedFromOpenclaw: undefined,
     userDataDir: undefined,
@@ -58,14 +57,12 @@ export function parseArgs(argv) {
     authFile: undefined,
     inFile: undefined,
     outFile: undefined,
-    planFile: undefined,
     sourceHome: undefined,
     sourceConfigDir: undefined,
     key: undefined,
     tier: undefined,
     subscription: undefined,
     notes: undefined,
-    discardDirty: false,
     manualCallbackStdio: false,
     json: false,
     compact: false,
@@ -73,23 +70,10 @@ export function parseArgs(argv) {
     help: false,
     once: false,
     fresh: false,
-    tend: false,
-    noAttach: false,
-    confirmBreakingCutover: false,
-    allowNonEmpty: false,
     confirm: false,
     intervalSeconds: undefined,
     rotateBelow5hRemainingPct: undefined,
     pool: undefined,
-    tmuxSession: undefined,
-    codexBin: undefined,
-    codexProfile: undefined,
-    resumeSessionId: undefined,
-    maxRestarts: undefined,
-    pollSeconds: undefined,
-    promptTimeoutSeconds: undefined,
-    bindTimeoutSeconds: undefined,
-    workdir: undefined,
     claudeAutoSelect: expandedClaudeRun.autoSelect,
     claudeAutoSelectPreset: expandedClaudeRun.autoSelectPreset,
     claudeResumeAccountLabel: undefined,
@@ -106,11 +90,6 @@ export function parseArgs(argv) {
     }
     if (arg === "--home") {
       opts.home = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--state") {
-      opts.state = argv[i + 1];
       i += 1;
       continue;
     }
@@ -136,16 +115,6 @@ export function parseArgs(argv) {
     }
     if (arg === "--provider") {
       opts.provider = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--from") {
-      opts.from = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--to") {
-      opts.to = argv[i + 1];
       i += 1;
       continue;
     }
@@ -194,11 +163,6 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg === "--plan") {
-      opts.planFile = argv[i + 1];
-      i += 1;
-      continue;
-    }
     if (arg === "--source-home") {
       opts.sourceHome = argv[i + 1];
       i += 1;
@@ -227,10 +191,6 @@ export function parseArgs(argv) {
     if (arg === "--notes") {
       opts.notes = argv[i + 1];
       i += 1;
-      continue;
-    }
-    if (arg === "--discard-dirty") {
-      opts.discardDirty = true;
       continue;
     }
     if (arg === "--manual-callback-stdio") {
@@ -290,24 +250,8 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg === "--tend") {
-      opts.tend = true;
-      continue;
-    }
-    if (arg === "--no-attach") {
-      opts.noAttach = true;
-      continue;
-    }
-    if (arg === "--confirm-breaking-cutover") {
-      opts.confirmBreakingCutover = true;
-      continue;
-    }
     if (arg === "--confirm") {
       opts.confirm = true;
-      continue;
-    }
-    if (arg === "--allow-non-empty") {
-      opts.allowNonEmpty = true;
       continue;
     }
     if (arg === "--interval-seconds") {
@@ -320,57 +264,17 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg === "--tmux-session") {
-      opts.tmuxSession = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--codex-bin") {
-      opts.codexBin = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "-p" || arg === "--codex-profile") {
-      opts.codexProfile = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--resume" || arg === "--session-id") {
-      if (i + 1 >= argv.length) {
-        throw new Error(`${arg} requires a Codex session UUID.`);
-      }
-      opts.resumeSessionId = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--max-restarts") {
-      opts.maxRestarts = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--poll-seconds") {
-      opts.pollSeconds = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--prompt-timeout-seconds") {
-      opts.promptTimeoutSeconds = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--bind-timeout-seconds") {
-      opts.bindTimeoutSeconds = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--workdir") {
-      opts.workdir = argv[i + 1];
-      i += 1;
-      continue;
-    }
     if (arg === "--help" || arg === "-h") {
       opts.help = true;
       continue;
+    }
+    if (
+      arg.startsWith("-")
+      && argv[0] === "claude"
+      && (argv[1] === "run" || argv[1] === "resume")
+    ) {
+      opts.afterDoubleDash = argv.slice(i);
+      break;
     }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown option: ${arg}`);

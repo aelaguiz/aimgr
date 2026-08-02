@@ -1,12 +1,10 @@
-import { toIsoFromExpiresMs } from "../core/time.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { assertAnthropicCredentialShape, tryBuildAnthropicCredentialFingerprint } from "./anthropic.js";
-import { buildClaudeNativeBundle, normalizeNonEmptyStringArray } from "./claude-bundle.js";
+import { buildClaudeNativeBundle, deriveAnthropicCredentialFromClaudeBundle } from "./claude-bundle.js";
 import { tryBuildCodexCredentialFingerprint } from "./codex.js";
 import { getImportedCodexLabels } from "../state/accounts.js";
 import { getAuthorityAnthropicImportLabelStatus, getImportedAnthropicLabels } from "../state/authority-anthropic.js";
 import { getAuthorityCodexImportLabelStatus } from "../state/authority-codex.js";
-import { parseTimestampLikeToMs } from "../state/demand.js";
 
 export function clonePortableAnthropicCredential(credential) {
   const cred = isObject(credential) ? structuredClone(credential) : null;
@@ -14,32 +12,9 @@ export function clonePortableAnthropicCredential(credential) {
     return null;
   }
   const bundle = buildClaudeNativeBundle(cred.nativeClaudeBundle);
-  if (bundle) {
-    cred.nativeClaudeBundle = bundle;
-  }
-  const expiresAt = toIsoFromExpiresMs(parseTimestampLikeToMs(cred.expiresAt));
-  if (expiresAt) {
-    cred.expiresAt = expiresAt;
-  }
-  if (Array.isArray(cred.scopes)) {
-    cred.scopes = normalizeNonEmptyStringArray(cred.scopes);
-  }
-  if (typeof cred.emailAddress === "string" && cred.emailAddress.trim()) {
-    cred.emailAddress = cred.emailAddress.trim().toLowerCase();
-  }
-  if (typeof cred.organizationName === "string" && cred.organizationName.trim()) {
-    cred.organizationName = cred.organizationName.trim();
-  }
-  if (typeof cred.organizationUuid === "string" && cred.organizationUuid.trim()) {
-    cred.organizationUuid = cred.organizationUuid.trim();
-  }
-  if (typeof cred.subscriptionType === "string" && cred.subscriptionType.trim()) {
-    cred.subscriptionType = cred.subscriptionType.trim();
-  }
-  if (typeof cred.rateLimitTier === "string" && cred.rateLimitTier.trim()) {
-    cred.rateLimitTier = cred.rateLimitTier.trim();
-  }
-  return cred;
+  return bundle
+    ? deriveAnthropicCredentialFromClaudeBundle({ existingCredential: cred, nativeClaudeBundle: bundle })
+    : null;
 }
 
 export function buildPortableAnthropicCredential({ label, credential }) {

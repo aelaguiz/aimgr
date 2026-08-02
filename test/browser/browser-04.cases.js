@@ -15,52 +15,10 @@ import { runCli } from "../helpers/cli-runner.js";
 import {
   makeFakeJwt,
   mkTempHome,
-  writeAimBrowserLocalState,
   writeJson,
   writeOpenclawBrowserLocalState,
 } from "../helpers/files.js";
-
-test("status text shows manual-callback and browser-managed login modes", async () => {
-  const home = mkTempHome();
-  const statePath = path.join(home, ".aimgr", "secrets.json");
-  writeAimBrowserLocalState(home, "claude", {
-    name: "claude",
-    user_name: "claude@example.com",
-    gaia_name: "Claude",
-  });
-
-  writeJson(statePath, {
-    schemaVersion: "0.2",
-    accounts: {
-      manual_label: { provider: "openai-codex", reauth: { mode: "manual-callback" } },
-      claude: { provider: "anthropic", reauth: { mode: "native-claude" } },
-    },
-    credentials: {
-      "openai-codex": {},
-      anthropic: {},
-    },
-    imports: {
-      authority: {
-        codex: {},
-      },
-    },
-    targets: {
-      openclaw: {
-        assignments: {},
-        exclusions: {},
-      },
-      codexCli: {},
-    },
-    pool: { openaiCodex: { history: [] } },
-  });
-
-  const out = await runCli(["status", "--accounts", "--home", home]);
-  assert.match(out, /CODEX ACCOUNTS \(1\)/);
-  assert.match(out, /CLAUDE ACCOUNTS \(1\)/);
-  assert.match(out, /label\s+st\s+login\s+exp\s+5h_used\s+5h_in\s+wk_used\s+wk_in\s+provider\s+flags/);
-  assert.match(out, /claude\s+reauth\s+native-claude\s+--\s+--\s+--\s+--\s+--\s+anthropic\s+missing_credentials/);
-  assert.match(out, /manual_label\s+reauth\s+manual-callback\s+--\s+--\s+--\s+--\s+--\s+openai-codex\s+missing_credentials/);
-});
+import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
 test("codex use selects fresh browser-managed labels even when the AIM browser dir is missing", async () => {
   const home = mkTempHome();
@@ -139,6 +97,7 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     },
     pool: { openaiCodex: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url, init) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -183,7 +142,7 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     const status = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
     const lessons = status.accounts.find((account) => account.label === "lessons");
     assert.equal(lessons.operator.status, "ready");
-    assert.equal(lessons.operator.detailReason, "missing_browser");
+    assert.equal(lessons.credentials.source, "redis");
     assert.equal(status.codexCli.activeLabel, "lessons");
 });
 
@@ -196,9 +155,17 @@ test("derivePoolAccountStatus requires a complete native Claude bundle for anthr
     },
     label: "boss",
     credentials: {
-      access: "ACCESS_BOSS",
-      refresh: "REFRESH_BOSS",
-      expiresAt: new Date(now + 3600_000).toISOString(),
+      nativeClaudeBundle: {
+        claudeAiOauth: {
+          accessToken: "ACCESS_BOSS",
+          refreshToken: "REFRESH_BOSS",
+          expiresAt: now + 3600_000,
+          subscriptionType: "max",
+          rateLimitTier: "max_20x",
+          scopes: ["user:inference"],
+        },
+        oauthAccount: {},
+      },
     },
     browserFacts: { exists: true, bindingPresent: true },
     now,

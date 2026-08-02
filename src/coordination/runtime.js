@@ -11,7 +11,13 @@ import {
 } from "./login-publish.js";
 import { hasCredentialMaterial } from "./records.js";
 import { buildCoordinationView, findCredentialRecord } from "./snapshot.js";
-import { closeRedisStore, connectRedisStore, publishCredential, readSnapshot } from "./redis-store.js";
+import {
+  closeRedisStore,
+  connectRedisStore,
+  publishCredential,
+  readSnapshot,
+  REDIS_CONNECTION_POLICY_ONE_SHOT,
+} from "./redis-store.js";
 
 const REDIS_UPDATED_BY = "aimgr-cli";
 
@@ -24,9 +30,10 @@ export async function loadRedisRuntime({
   connectRedisStoreImpl = connectRedisStore,
   provider = null,
   now = new Date(),
+  connectionPolicy = REDIS_CONNECTION_POLICY_ONE_SHOT,
 }) {
   const { redis } = getRedisConfig({ homeDir });
-  const store = await connectRedisStoreImpl(redis);
+  const store = await connectRedisStoreImpl({ ...redis, connectionPolicy });
   const snapshot = await readSnapshot(store);
   const localState = loadLocalState({ homeDir });
   const state = buildCoordinationView(snapshot, {
@@ -49,15 +56,20 @@ export async function closeRedisRuntime(runtime) {
 }
 
 export function writeRedisLocalStateFromView({ homeDir, state, localState }) {
-  return writeLocalState({
+  const nextLocalState = {
+    ...localState,
+    targets: state.targets,
+    pool: state.pool,
+    browserBindings: buildLocalBrowserBindingsFromState(state),
+  };
+  const written = writeLocalState({
     homeDir,
-    localState: {
-      ...localState,
-      targets: state.targets,
-      pool: state.pool,
-      browserBindings: buildLocalBrowserBindingsFromState(state),
-    },
+    localState: nextLocalState,
   });
+  if (isObject(localState)) {
+    Object.assign(localState, structuredClone(nextLocalState));
+  }
+  return written;
 }
 
 function findConflictingCredential(snapshot, { provider, label }) {
@@ -215,15 +227,15 @@ export async function publishRedisStateCredential({
   return result.record;
 }
 
-export async function publishCodexPreserveResult({ runtime, state, preserved }) {
-  if (preserved?.status !== "updated" || !preserved.label) {
+export async function publishCodexReconciliation({ runtime, state, reconciliation }) {
+  if (reconciliation?.status !== "local_newer" || !reconciliation.label) {
     return null;
   }
   return publishRedisStateCredential({
     runtime,
     state,
     provider: OPENAI_CODEX_PROVIDER,
-    label: preserved.label,
+    label: reconciliation.label,
     observedAt: new Date().toISOString(),
     lineageMode: "local-rotation",
   });

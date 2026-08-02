@@ -2,6 +2,7 @@ import { resolveOpenclawProfileIdForProviderLabel } from "../browser/seed.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeAgentId, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
+import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { readJsonFile, writeJsonFileWithBackupIfChanged } from "../io/json-store.js";
 import { resolveHomeDir, resolveOpenclawAuthStorePath } from "../io/paths.js";
 import { discoverOpenclawAgentIdsWithAuthStores } from "./stores.js";
@@ -63,7 +64,10 @@ export function applyOpenclawFromState(params, state, { pinsOverride, managedAge
     const labels = Array.from(assignedLabelsByProvider.get(provider)).toSorted((a, b) => a.localeCompare(b));
     const credsByLabel = state.credentials[provider];
     for (const label of labels) {
-      const cred = credsByLabel[label];
+      const storedCredential = credsByLabel[label];
+      const cred = provider === ANTHROPIC_PROVIDER
+        ? getAnthropicCredentialView(storedCredential)
+        : storedCredential;
       const expiresMs = parseExpiresAtToMs(cred.expiresAt);
       if (!expiresMs) {
         throw new Error(`credentials.${provider}.${label}.expiresAt is missing/invalid.`);

@@ -91,7 +91,7 @@ test("aim browser set and show manage explicit chrome-profile bindings", async (
   });
 });
 
-test("malformed mapped browser bindings are projected as missing bindings", async () => {
+test("malformed mapped browser bindings are rejected by browser show", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   writeJson(statePath, {
@@ -134,37 +134,9 @@ test("malformed mapped browser bindings are projected as missing bindings", asyn
   assert.equal(chromeShow.binding, null);
   assert.deepEqual(chromeShow.warnings, [{ reason: "binding_missing_for_future_reauth" }]);
 
-  const fetchImpl = async (url) => {
-    if (String(url).includes("/backend-api/wham/usage")) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          plan_type: "pro",
-          rate_limit: {
-            primary_window: {
-              used_percent: 4,
-              limit_window_seconds: 10800,
-              reset_at: Math.floor(Date.now() / 1000) + 3600,
-            },
-          },
-        }),
-      };
-    }
-    throw new Error(`Unexpected fetch url in test: ${url}`);
-  };
-
-  const status = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
-  for (const label of ["chrome_missing", "agent_missing"]) {
-    const account = status.accounts.find((entry) => entry.label === label);
-    // Malformed mapped bindings are repair work, not usable browser identities.
-    // Status/login must agree so operators are sent to `aim browser set` instead of a dead launch path.
-    assert.equal(account.login.bindingPresent, false);
-    assert.equal(account.login.binding, undefined);
-    assert.equal(account.browser.bindingPresent, false);
-    assert.equal(account.operator.detailReason, "binding_missing_for_future_reauth");
-    assert.equal(account.operator.actionRequired, "run_aim_browser_set");
-  }
+  const agentShow = JSON.parse(await runCli(["browser", "show", "agent_missing", "--home", home]));
+  assert.equal(agentShow.binding, null);
+  assert.deepEqual(agentShow.warnings, [{ reason: "binding_missing_for_future_reauth" }]);
 });
 
 test("aim browser set fails loud when agent-browser session is missing", async () => {

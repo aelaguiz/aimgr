@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildRedisConnectionPolicy,
   connectRedisStore,
   importCredentialsSnapshot,
-  deleteLegacyRedisCredentialKeys,
   publishCredential,
-  readLegacyRedisSnapshot,
   readSnapshot,
+  REDIS_CONNECTION_POLICY_LEASED,
+  REDIS_CONNECTION_POLICY_OBSERVE,
+  REDIS_CONNECTION_POLICY_ONE_SHOT,
 } from "../../src/coordination/redis-store.js";
 
 class FakeRedisClient {
@@ -93,6 +95,39 @@ class FakeRedisClient {
     return tx;
   }
 }
+
+test("Redis connection policies bound observations and initial leased acquisition", async () => {
+  const observe = buildRedisConnectionPolicy(REDIS_CONNECTION_POLICY_OBSERVE);
+  const oneShot = buildRedisConnectionPolicy(REDIS_CONNECTION_POLICY_ONE_SHOT);
+  const leased = buildRedisConnectionPolicy(REDIS_CONNECTION_POLICY_LEASED);
+
+  assert.equal(observe.clientOptions.socket.reconnectStrategy, false);
+  assert.equal(observe.initialConnectTimeoutMs, 2_000);
+  assert.equal(oneShot.clientOptions.socket.reconnectStrategy, false);
+  assert.equal(oneShot.initialConnectTimeoutMs, 5_000);
+  assert.equal(typeof leased.clientOptions.socket.reconnectStrategy, "function");
+  assert.equal(leased.clientOptions.socket.socketTimeout, undefined);
+  assert.equal(leased.clientOptions.disableOfflineQueue, true);
+  assert.equal(leased.initialConnectTimeoutMs, 5_000);
+
+  let destroyed = false;
+  const stalledClient = {
+    on() {},
+    connect: () => new Promise(() => {}),
+    destroy() { destroyed = true; },
+  };
+  await assert.rejects(
+    () => connectRedisStore({
+      url: "redis://example.invalid:6379",
+      keyPrefix: "aimgr:timeout-test",
+      connectionPolicy: REDIS_CONNECTION_POLICY_LEASED,
+      initialConnectTimeoutMs: 5,
+      createClientImpl: () => stalledClient,
+    }),
+    /initial connection timed out/,
+  );
+  assert.equal(destroyed, true);
+});
 
 test("Redis store publishes one indexed credential record per provider and label", async () => {
   const store = await connectRedisStore({ client: new FakeRedisClient(), keyPrefix: "aimgr:test" });
@@ -192,35 +227,4 @@ test("Redis store imports credential snapshots into an empty namespace", async (
   assert.equal(snapshot.meta.migration.id, "import-1");
   assert.equal(snapshot.credentials[0].label, "boss");
   assert.deepEqual(snapshot.credentials[0].credential, { ok: true });
-});
-
-test("Redis store can read and delete legacy machine session keys for hard cutover cleanup", async () => {
-  const client = new FakeRedisClient();
-  const store = await connectRedisStore({ client, keyPrefix: "aimgr:legacy-test" });
-  await client.set("aimgr:legacy-test:machine:studio", JSON.stringify({ machineId: "studio" }));
-  await client.set("aimgr:legacy-test:label:openai-codex:boss", JSON.stringify({ provider: "openai-codex", label: "boss" }));
-  await client.set(
-    "aimgr:legacy-test:session:openai-codex:boss:studio",
-    JSON.stringify({ provider: "openai-codex", label: "boss", machineId: "studio", credential: { refresh: "OLD" } }),
-  );
-  await client.sAdd("aimgr:legacy-test:machines", "aimgr:legacy-test:machine:studio");
-  await client.sAdd("aimgr:legacy-test:labels", "aimgr:legacy-test:label:openai-codex:boss");
-  await client.sAdd("aimgr:legacy-test:sessions", "aimgr:legacy-test:session:openai-codex:boss:studio");
-
-  const legacy = await readLegacyRedisSnapshot(store);
-  assert.equal(legacy.machines.length, 1);
-  assert.equal(legacy.labels.length, 1);
-  assert.equal(legacy.sessions.length, 1);
-
-  const cleanup = await deleteLegacyRedisCredentialKeys(store);
-  assert.equal(cleanup.ok, true);
-  assert.deepEqual(cleanup.legacyCounts, { machines: 1, labels: 1, sessions: 1 });
-  const after = await readLegacyRedisSnapshot(store);
-  assert.deepEqual(after, {
-    machines: [],
-    labels: [],
-    sessions: [],
-    observedAt: after.observedAt,
-    keyPrefix: "aimgr:legacy-test:",
-  });
 });

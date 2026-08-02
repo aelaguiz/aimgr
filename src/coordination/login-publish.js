@@ -3,6 +3,8 @@ import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, SAKANA_PROVIDER } from "../c
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import { getClaudeNativeBundleIdentity } from "../credentials/claude-native.js";
+import { getAnthropicCredentialView } from "../credentials/anthropic.js";
+import { deriveAnthropicCredentialFromClaudeBundle, getClaudeNativeBundle } from "../credentials/claude-bundle.js";
 import { buildSakanaKeyFingerprint } from "../providers/sakana.js";
 import { buildSharedBrowserPolicy } from "./browser-policy.js";
 import { buildRedisClaudeRotationFenceProvenance } from "./redis-claude-rotation-fence.js";
@@ -17,14 +19,15 @@ export function buildStableIdentityForCredential(provider, credential) {
       : {};
   }
   if (provider === ANTHROPIC_PROVIDER) {
-    const nativeIdentity = getClaudeNativeBundleIdentity(credential);
+    const anthropicCredential = getAnthropicCredentialView(credential);
+    const nativeIdentity = getClaudeNativeBundleIdentity(anthropicCredential);
     return {
       ...(nativeIdentity.accountUuid ? { accountUuid: nativeIdentity.accountUuid } : {}),
-      ...(typeof credential?.emailAddress === "string" && credential.emailAddress.trim()
-        ? { emailAddress: credential.emailAddress.trim().toLowerCase() }
+      ...(typeof anthropicCredential?.emailAddress === "string" && anthropicCredential.emailAddress.trim()
+        ? { emailAddress: anthropicCredential.emailAddress.trim().toLowerCase() }
         : {}),
-      ...(typeof credential?.organizationUuid === "string" && credential.organizationUuid.trim()
-        ? { organizationUuid: credential.organizationUuid.trim() }
+      ...(typeof anthropicCredential?.organizationUuid === "string" && anthropicCredential.organizationUuid.trim()
+        ? { organizationUuid: anthropicCredential.organizationUuid.trim() }
         : {}),
     };
   }
@@ -60,11 +63,12 @@ export function identitiesAreCompatible(currentIdentity, nextIdentity) {
 }
 
 function anthropicTokenLineage(credential) {
+  const view = getAnthropicCredentialView(credential);
   return {
-    access: typeof credential?.access === "string" ? credential.access.trim() : "",
-    refresh: typeof credential?.refresh === "string" ? credential.refresh.trim() : "",
-    expiresAt: typeof credential?.expiresAt === "string" ? credential.expiresAt.trim() : "",
-    expiresAtMs: parseExpiresAtToMs(credential?.expiresAt),
+    access: typeof view?.access === "string" ? view.access.trim() : "",
+    refresh: typeof view?.refresh === "string" ? view.refresh.trim() : "",
+    expiresAt: typeof view?.expiresAt === "string" ? view.expiresAt.trim() : "",
+    expiresAtMs: parseExpiresAtToMs(view?.expiresAt),
   };
 }
 
@@ -150,7 +154,13 @@ export async function publishMaintainedCredential({
   if (!credential) {
     throw new Error(`Cannot publish Redis credential without ${normalizedProvider}.${normalizedLabel} credentials.`);
   }
-  const stableIdentity = buildStableIdentityForCredential(normalizedProvider, credential);
+  const storedCredential = normalizedProvider === ANTHROPIC_PROVIDER
+    ? deriveAnthropicCredentialFromClaudeBundle({
+        existingCredential: credential,
+        nativeClaudeBundle: getClaudeNativeBundle(credential),
+      })
+    : credential;
+  const stableIdentity = buildStableIdentityForCredential(normalizedProvider, storedCredential);
   const currentCredential = findCredentialRecord(snapshot, { provider: normalizedProvider, label: normalizedLabel });
   if (!identitiesAreCompatible(currentCredential?.identity, stableIdentity)) {
     throw new Error(
@@ -162,7 +172,7 @@ export async function publishMaintainedCredential({
     provider: normalizedProvider,
     label: normalizedLabel,
     currentRecord: currentCredential,
-    nextCredential: credential,
+    nextCredential: storedCredential,
     nextIdentity: stableIdentity,
   });
   const currentProvenance = isObject(currentCredential?.provenance) ? currentCredential.provenance : {};
@@ -178,7 +188,7 @@ export async function publishMaintainedCredential({
       ...(currentCredential ?? {}),
       provider: normalizedProvider,
       label: normalizedLabel,
-      credential,
+      credential: storedCredential,
       identity: stableIdentity,
       policy: {
         expect: isObject(account.expect) ? account.expect : {},

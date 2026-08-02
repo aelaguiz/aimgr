@@ -1,137 +1,79 @@
 import { parseArgs } from "./args.js";
-import { createDefaultDeps } from "./deps.js";
+import { createDefaultDeps, loadCommandDefaultDeps } from "./deps.js";
 import { printHelp } from "./help.js";
 import { createFetchJsonWithTimeout } from "../io/fetch.js";
 import { resolveAimgrStatePath, resolveHomeDir } from "../io/paths.js";
-import { handleApply } from "./commands/apply.js";
-import { handleAuth } from "./commands/auth.js";
-import { handleBrowser } from "./commands/browser.js";
-import { handleClaude } from "./commands/claude.js";
-import { handleCodex } from "./commands/codex.js";
-import { handleHermes } from "./commands/hermes.js";
-import { handleInternal } from "./commands/internal.js";
-import { handleLogin } from "./commands/login.js";
-import { handlePi } from "./commands/pi.js";
-import { handlePromote } from "./commands/promote.js";
-import { handleRedis } from "./commands/redis.js";
-import { handleSakana } from "./commands/sakana.js";
-import { handleLabel, handleSession } from "./commands/repair.js";
-import { handleAutopin, handlePin } from "./commands/removed.js";
-import { handleRebalance } from "./commands/rebalance.js";
-import { handleStatus } from "./commands/status.js";
-import { handleSync } from "./commands/sync.js";
 
-const COMMAND_HANDLERS = new Map([
-  ["status", handleStatus],
-  ["login", handleLogin],
-  ["redis", handleRedis],
-  ["label", handleLabel],
-  ["session", handleSession],
-  ["pin", handlePin],
-  ["autopin", handleAutopin],
-  ["rebalance", handleRebalance],
-  ["apply", handleApply],
-  ["sync", handleSync],
-  ["promote", handlePromote],
-  ["auth", handleAuth],
-  ["codex", handleCodex],
-  ["hermes", handleHermes],
-  ["claude", handleClaude],
-  ["pi", handlePi],
-  ["sakana", handleSakana],
-  ["browser", handleBrowser],
-  ["internal", handleInternal],
+const COMMAND_LOADERS = new Map([
+  ["status", async () => (await import("./commands/status.js")).handleStatus],
+  ["login", async () => (await import("./commands/login.js")).handleLogin],
+  ["redis", async () => (await import("./commands/redis.js")).handleRedis],
+  ["label", async () => (await import("./commands/repair.js")).handleLabel],
+  ["rebalance", async () => (await import("./commands/rebalance.js")).handleRebalance],
+  ["auth", async () => (await import("./commands/auth.js")).handleAuth],
+  ["codex", async () => (await import("./commands/codex.js")).handleCodex],
+  ["hermes", async () => (await import("./commands/hermes.js")).handleHermes],
+  ["claude", async () => (await import("./commands/claude.js")).handleClaude],
+  ["pi", async () => (await import("./commands/pi.js")).handlePi],
+  ["sakana", async () => (await import("./commands/sakana.js")).handleSakana],
+  ["browser", async () => (await import("./commands/browser.js")).handleBrowser],
 ]);
 
-export async function main(argv, deps = createDefaultDeps()) {
-  const defaultDeps = createDefaultDeps();
-  const {
-    stdin = defaultDeps.stdin,
-    stdout = defaultDeps.stdout,
-    env = defaultDeps.env,
-    setExitCode = defaultDeps.setExitCode,
-    nowImpl = defaultDeps.nowImpl,
-    fetchImpl = defaultDeps.fetchImpl,
-    setTimeoutImpl = defaultDeps.setTimeoutImpl,
-    clearTimeoutImpl = defaultDeps.clearTimeoutImpl,
-    fetchJsonWithTimeoutImpl = createFetchJsonWithTimeout({ fetchImpl, setTimeoutImpl, clearTimeoutImpl }),
-    repoRoot,
-    promptLineImpl = defaultDeps.promptLineImpl,
-    promptImpl = defaultDeps.promptImpl,
-    openUrlImpl = defaultDeps.openUrlImpl,
-    readOpenclawBindingsFromConfigImpl = defaultDeps.readOpenclawBindingsFromConfigImpl,
-    readOpenclawAgentsListFromConfigImpl = defaultDeps.readOpenclawAgentsListFromConfigImpl,
-    runLabelControlPanelImpl = defaultDeps.runLabelControlPanelImpl,
-    loginOpenAICodexImpl = defaultDeps.loginOpenAICodexImpl,
-    refreshOpenAICodexImpl = defaultDeps.refreshOpenAICodexImpl,
-    probeUsageSnapshotsByProviderImpl = (state, options = {}) =>
-      defaultDeps.probeUsageSnapshotsByProviderImpl(state, {
-        ...options,
-        fetchJsonWithTimeoutImpl,
-        env: options.env ?? env,
-      }),
-    activateCodexPoolSelectionImpl = defaultDeps.activateCodexPoolSelectionImpl,
-    runCodexTenderImpl = defaultDeps.runCodexTenderImpl,
-    runClaudeCliImpl = defaultDeps.runClaudeCliImpl,
-    readClaudeNativeKeychainOauthImpl = defaultDeps.readClaudeNativeKeychainOauthImpl,
-    writeClaudeNativeKeychainOauthImpl = defaultDeps.writeClaudeNativeKeychainOauthImpl,
-    deleteClaudeNativeKeychainOauthImpl = defaultDeps.deleteClaudeNativeKeychainOauthImpl,
-    resolveExecutableOnPathImpl = defaultDeps.resolveExecutableOnPathImpl,
-    rebalanceHermesPoolImpl = defaultDeps.rebalanceHermesPoolImpl,
-    connectRedisStoreImpl = defaultDeps.connectRedisStoreImpl,
-    sleepImpl = defaultDeps.sleepImpl,
-    watchLoopMaxIterations = defaultDeps.watchLoopMaxIterations,
-  } = deps ?? {};
+const RETIRED_COMMANDS = new Set(["apply", "autopin", "internal", "pin", "promote", "session", "sync"]);
+
+export async function main(argv, injectedDeps = {}) {
+  const baseDeps = createDefaultDeps();
+  const parseEnv = injectedDeps?.env ?? baseDeps.env;
+  const parseStdout = injectedDeps?.stdout ?? baseDeps.stdout;
   const { opts, positional } = parseArgs(argv);
   let cmd = positional[0];
   let shorthandLabel = null;
 
   if (opts.help || !cmd) {
-    printHelp({ stdout });
+    printHelp({ stdout: parseStdout });
     return;
   }
-  if (!COMMAND_HANDLERS.has(cmd)) {
+  if (RETIRED_COMMANDS.has(cmd)) {
+    throw new Error(`Unknown command: ${cmd}`);
+  }
+  if (!COMMAND_LOADERS.has(cmd)) {
     shorthandLabel = cmd;
     cmd = "login";
   }
 
-  const handler = COMMAND_HANDLERS.get(cmd);
-  if (!handler) {
-    throw new Error(`Unknown command: ${cmd}`);
-  }
+  const [handler, commandDefaults] = await Promise.all([
+    COMMAND_LOADERS.get(cmd)(),
+    loadCommandDefaultDeps(cmd),
+  ]);
+  const deps = { ...baseDeps, ...commandDefaults, ...(injectedDeps ?? {}) };
+  const fetchJsonWithTimeoutImpl = injectedDeps?.fetchJsonWithTimeoutImpl
+    ?? createFetchJsonWithTimeout({
+      fetchImpl: deps.fetchImpl,
+      setTimeoutImpl: deps.setTimeoutImpl,
+      clearTimeoutImpl: deps.clearTimeoutImpl,
+    });
+  const probeUsageSnapshotsByProviderImpl = injectedDeps?.probeUsageSnapshotsByProviderImpl
+    ?? (typeof deps.probeUsageSnapshotsByProviderImpl === "function"
+      ? (state, options = {}) => deps.probeUsageSnapshotsByProviderImpl(state, {
+          ...options,
+          fetchJsonWithTimeoutImpl,
+          env: options.env ?? deps.env,
+        })
+      : undefined);
+  const homeDir = resolveHomeDir(opts.home, { env: parseEnv });
 
   return handler({
+    ...deps,
     opts,
     positional,
-    statePath: resolveAimgrStatePath(opts, { env }),
-    homeDir: resolveHomeDir(opts.home, { env }),
+    // Recovery-only handlers still need the canonical legacy path. It is not
+    // operator-selectable: the retired state-file override is intentionally
+    // absent from parsing and help.
+    statePath: resolveAimgrStatePath({ home: homeDir }, { env: parseEnv }),
+    homeDir,
     shorthandLabel,
-    stdin,
-    stdout,
-    env,
-    setExitCode,
-    nowMs: nowImpl(),
+    nowMs: deps.nowImpl(),
     fetchJsonWithTimeoutImpl,
-    repoRoot,
-    promptLineImpl,
-    promptImpl,
-    openUrlImpl,
-    readOpenclawBindingsFromConfigImpl,
-    readOpenclawAgentsListFromConfigImpl,
-    runLabelControlPanelImpl,
-    loginOpenAICodexImpl,
-    refreshOpenAICodexImpl,
     probeUsageSnapshotsByProviderImpl,
-    activateCodexPoolSelectionImpl,
-    runCodexTenderImpl,
-    runClaudeCliImpl,
-    readClaudeNativeKeychainOauthImpl,
-    writeClaudeNativeKeychainOauthImpl,
-    deleteClaudeNativeKeychainOauthImpl,
-    resolveExecutableOnPathImpl,
-    rebalanceHermesPoolImpl,
-    connectRedisStoreImpl,
-    sleepImpl,
-    watchLoopMaxIterations,
   });
 }

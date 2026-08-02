@@ -5,6 +5,7 @@ import { parseExpiresAtToMs } from "../core/time.js";
 import { ANTHROPIC_PROVIDER, BROWSER_MODE_AIM_PROFILE, OPENAI_CODEX_PROVIDER, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { buildClaudeCredentialSummaryFromBundle, hasCompleteClaudeNativeBundle } from "../credentials/claude-bundle.js";
+import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { resolveAnthropicBlockedReasonForStatus } from "../credentials/claude-native.js";
 import { getCodexUsagePercents } from "./usage.js";
 
@@ -22,7 +23,10 @@ export function derivePoolAccountStatus({ account, label, credentials, browserFa
     typeof normalizedAccount.expect?.email === "string" ? normalizedAccount.expect.email.trim().toLowerCase() : "";
   const browserEmail =
     typeof browserFacts?.userName === "string" ? browserFacts.userName.trim().toLowerCase() : "";
-  const credential = isObject(credentials) ? credentials : null;
+  const rawCredential = isObject(credentials) ? credentials : null;
+  const credential = provider === ANTHROPIC_PROVIDER
+    ? getAnthropicCredentialView(rawCredential)
+    : rawCredential;
   const expiresMs = parseExpiresAtToMs(credential?.expiresAt);
   const storedEmail =
     provider === ANTHROPIC_PROVIDER

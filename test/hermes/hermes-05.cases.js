@@ -5,6 +5,7 @@ import path from "node:path";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 import { writeHermesAuthFile } from "../helpers/hermes.js";
+import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
 test("hermes watch --once fails loud when a discovered Hermes home is missing auth.json", async () => {
   const home = mkTempHome();
@@ -48,6 +49,7 @@ test("hermes watch --once fails loud when a discovered Hermes home is missing au
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -76,7 +78,7 @@ test("hermes watch --once fails loud when a discovered Hermes home is missing au
   assert.equal(parsed.watched.status, "blocked");
   assert.equal(parsed.watched.receipt.blockers[0].reason, "hermes_home_missing_auth_file");
 
-  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
   assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "blocked");
 });
 
@@ -122,6 +124,7 @@ test("hermes watch --once blocks usage-token failures without rebalancing or rew
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -148,7 +151,7 @@ test("hermes watch --once blocks usage-token failures without rebalancing or rew
   assert.equal(parsed.watched.receipt.blockers[0].status, 401);
   assert.equal(parsed.watched.receipt.blockers[0].tokenExpired, true);
 
-  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
   assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "blocked");
   assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.triggeredRebalance, false);
   assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastApplyReceipt, undefined);
@@ -196,6 +199,7 @@ test("hermes watch loop reuses the one-shot path on every interval", async () =>
     targets: { openclaw: { assignments: {}, exclusions: {} }, codexCli: {}, claudeCli: {}, piCli: {} },
     pool: { openaiCodex: { history: [], agentDemand: {}, hermesFleet: { demandByHome: {} } }, anthropic: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -233,7 +237,7 @@ test("hermes watch loop reuses the one-shot path on every interval", async () =>
     assert.equal((stdout.match(/"action": "hermes_watch"/g) ?? []).length, 2);
     assert.equal((stdout.match(/"triggeredRebalance": false/g) ?? []).length, 2);
 
-    const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.lastWatchReceipt.status, "noop");
     assert.equal(updatedState.pool.openaiCodex.hermesFleet.homes, undefined);
 });

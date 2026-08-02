@@ -1,5 +1,19 @@
 import { main } from "../../src/cli.js";
 
+const redisFixtureDepsByHome = new Map();
+
+export function registerCliRedisFixture(homeDir, deps) {
+  redisFixtureDepsByHome.set(String(homeDir), deps);
+}
+
+function fixtureDepsForArgv(argv, deps) {
+  const homeIndex = argv.indexOf("--home");
+  const homeDir = homeIndex >= 0
+    ? argv[homeIndex + 1]
+    : deps?.env?.HOME ?? process.env.HOME;
+  return redisFixtureDepsByHome.get(String(homeDir)) ?? {};
+}
+
 function createCaptureStdout(chunks, stdout = {}) {
   return {
     ...(stdout && typeof stdout === "object" ? stdout : {}),
@@ -12,6 +26,7 @@ function createCaptureStdout(chunks, stdout = {}) {
 }
 
 export async function runCli(argv, deps = {}) {
+  deps = { ...fixtureDepsForArgv(argv, deps), ...deps };
   const chunks = [];
   const stdout = createCaptureStdout(chunks, deps.stdout);
   const wrappedDeps =
@@ -32,6 +47,7 @@ export async function runCli(argv, deps = {}) {
 }
 
 export async function runCliWithExitCode(argv, deps = {}) {
+  deps = { ...fixtureDepsForArgv(argv, deps), ...deps };
   const chunks = [];
   let exitCode = 0;
   const stdout = createCaptureStdout(chunks, deps.stdout);

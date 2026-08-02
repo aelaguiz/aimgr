@@ -61,13 +61,6 @@ test("label rebind repairs identity on the single shared credential", async () =
   assert.deepEqual(snapshot.credentials[0].identity, { accountId: "acct_new" });
 });
 
-test("session handoff is removed", async () => {
-  await assert.rejects(
-    () => runCli(["session", "handoff", "boss", "--home", mkTempHome(), "--confirm"]),
-    /`aim session` was removed/,
-  );
-});
-
 test("repair commands require confirmation and provider", async () => {
   await assert.rejects(
     () => runCli(["label", "rebind", "boss", "--home", mkTempHome(), "--provider", "openai-codex"]),

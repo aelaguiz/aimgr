@@ -7,14 +7,14 @@ import {
 } from "../core/constants.js";
 import { clampPercent } from "../core/numbers.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
-import { toIsoFromExpiresMs } from "../core/time.js";
+import { parseExpiresAtToMs, toIsoFromExpiresMs } from "../core/time.js";
 import { assertCodexCredentialShape, buildCodexCredentialFingerprint, findCodexLabelByAccountId } from "../credentials/codex.js";
 import { decodeJwtPayload } from "../credentials/jwt.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
 import { resolveCodexAuthFilePath, resolveCodexConfigPath, resolveManagedCodexHomeDir } from "../io/paths.js";
 import { appendOpenaiCodexHistory, collectCodexPoolStatusWithExhaustionHistory, recordOpenaiCodexBlockedSelectionHistory } from "../pool/history.js";
 import { getCodexPoolLabels, pickLeastUsedCodexPoolLabel, pickNextBestLocalCliPoolLabel, rankPoolCandidates } from "../pool/ranking.js";
-import { probeUsageSnapshotsByProvider } from "../pool/usage.js";
+import { collectCodexUsageSnapshots, probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { discoverStatusConfiguredOpenclawCodexAgents, getCodexTargetState, getImportedCodexLabels, getOpenclawAssignments, getOpenclawTargetState, hasImportedCodexReplica } from "../state/accounts.js";
 import { markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
 import { getAuthorityCodexImport } from "../state/authority-codex.js";
@@ -26,7 +26,7 @@ export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
   if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
     throw new Error(
       "No Redis-backed Codex pool is available on this machine yet. " +
-        `Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then complete \`aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover\`.`,
+        `Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then import a reviewed snapshot or enroll a Codex label.`,
     );
   }
 
@@ -49,7 +49,17 @@ export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
   const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
   const store = ensureFileBackedCodexHome({ codexHome });
   const appliedAt = new Date().toISOString();
-  const authPayload = buildCodexAuthDotJson({ credential, lastRefreshAt: appliedAt });
+  const existingReadback = readCodexAuthFile({ codexHome });
+  const candidatePayload = buildCodexAuthDotJson({ credential, lastRefreshAt: appliedAt });
+  const existingTokens = isObject(existingReadback.json?.tokens) ? existingReadback.json.tokens : null;
+  const tokensUnchanged = existingReadback.ok === true
+    && existingTokens?.id_token === candidatePayload.tokens.id_token
+    && existingTokens?.access_token === candidatePayload.tokens.access_token
+    && existingTokens?.refresh_token === candidatePayload.tokens.refresh_token
+    && existingTokens?.account_id === candidatePayload.tokens.account_id;
+  const authPayload = tokensUnchanged && typeof existingReadback.json?.last_refresh === "string"
+    ? { ...candidatePayload, last_refresh: existingReadback.json.last_refresh }
+    : candidatePayload;
   const writeResult = writeJsonFileIfChanged(resolveCodexAuthFilePath(codexHome), authPayload, { mode: 0o600 });
   const readback = readCodexAuthFile({ codexHome });
   if (readback.ok !== true) {
@@ -218,7 +228,20 @@ function jwtExpiresAt(token) {
   return toIsoFromExpiresMs(exp * 1000);
 }
 
-export function preserveLiveCodexAuthForActiveLabel({ state, homeDir, env = {}, observedAt = new Date().toISOString() }) {
+function newestCodexTokenExpiry(...tokens) {
+  const expiries = tokens
+    .map((token) => jwtExpiresAt(token))
+    .map((expiresAt) => parseExpiresAtToMs(expiresAt))
+    .filter((expiresAtMs) => Number.isFinite(expiresAtMs));
+  return expiries.length > 0 ? toIsoFromExpiresMs(Math.max(...expiries)) : null;
+}
+
+/**
+ * Reconcile the one managed Codex auth file with the credential currently
+ * loaded from Redis. Identity must agree before freshness is considered.
+ * The fresher side wins; equal-expiry token conflicts are left untouched.
+ */
+export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = new Date().toISOString() }) {
   ensureStateShape(state);
   const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
   const readback = readCodexAuthFile({ codexHome });
@@ -247,6 +270,15 @@ export function preserveLiveCodexAuthForActiveLabel({ state, homeDir, env = {}, 
   const target = getCodexTargetState(state);
   const targetLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
   const inferredLabel = findCodexLabelByAccountId(state, accountId);
+  if (targetLabel && inferredLabel && targetLabel !== inferredLabel) {
+    return {
+      status: "conflict",
+      reason: "target_identity_mismatch",
+      label: targetLabel,
+      actualLabel: inferredLabel,
+      accountId,
+    };
+  }
   const label = targetLabel || inferredLabel;
   if (!label) {
     return {
@@ -276,7 +308,7 @@ export function preserveLiveCodexAuthForActiveLabel({ state, homeDir, env = {}, 
     };
   }
 
-  const expiresAt = jwtExpiresAt(idToken) || jwtExpiresAt(access) || existing.expiresAt;
+  const expiresAt = newestCodexTokenExpiry(idToken, access) || existing.expiresAt;
   const credential = {
     access,
     refresh,
@@ -285,7 +317,7 @@ export function preserveLiveCodexAuthForActiveLabel({ state, homeDir, env = {}, 
     accountId,
   };
   try {
-    assertCodexCredentialShape({ label, credential, requireFresh: true });
+    assertCodexCredentialShape({ label, credential, requireFresh: false });
   } catch (err) {
     return {
       status: "skipped",
@@ -300,7 +332,35 @@ export function preserveLiveCodexAuthForActiveLabel({ state, homeDir, env = {}, 
   const newFingerprint = buildCodexCredentialFingerprint(credential);
   if (oldFingerprint === newFingerprint) {
     return {
-      status: "unchanged",
+      status: "identical",
+      label,
+      accountId,
+    };
+  }
+
+  const storedExpiresAtMs = parseExpiresAtToMs(existing.expiresAt);
+  const localExpiresAtMs = parseExpiresAtToMs(credential.expiresAt);
+  if (!Number.isFinite(storedExpiresAtMs) || !Number.isFinite(localExpiresAtMs)) {
+    return {
+      status: "conflict",
+      reason: "freshness_unavailable",
+      label,
+      accountId,
+    };
+  }
+  if (localExpiresAtMs < storedExpiresAtMs) {
+    const projected = applyCodexCliFromState({ label, homeDir, env }, state);
+    return {
+      status: "redis_newer",
+      label,
+      accountId,
+      wroteAuthJson: Boolean(projected.wrote),
+    };
+  }
+  if (localExpiresAtMs === storedExpiresAtMs) {
+    return {
+      status: "conflict",
+      reason: "token_conflict_at_equal_expiry",
       label,
       accountId,
     };
@@ -309,7 +369,7 @@ export function preserveLiveCodexAuthForActiveLabel({ state, homeDir, env = {}, 
   state.credentials[OPENAI_CODEX_PROVIDER][label] = credential;
   const authorityPromotion = markImportedCodexLabelDirtyState(state, label, { observedAt });
   return {
-    status: "updated",
+    status: "local_newer",
     label,
     accountId,
     authorityPromotion,
@@ -388,7 +448,7 @@ export function activateCodexLabelSelection({ state, homeDir, env = {}, label })
   const observedAt = new Date().toISOString();
   const target = getCodexTargetState(state);
   const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
-  const currentLabel = currentTarget.activeLabel ?? currentTarget.inferredLabel ?? null;
+  const currentLabel = currentTarget.inferredLabel ?? currentTarget.activeLabel ?? null;
 
   try {
     const activated = applyCodexCliFromState({ label: normalizedLabel, homeDir, env }, state);
@@ -482,7 +542,13 @@ export async function activateCodexPoolSelection({
       : new Date().toISOString();
   const usageByProvider = isObject(usageByProviderOverride)
     ? usageByProviderOverride
-    : await probeUsageSnapshotsByProviderImpl(state, { env });
+    : await collectCodexUsageSnapshots({
+        state,
+        homeDir,
+        env,
+        nowMs: Date.parse(observedAt),
+        probeUsageSnapshotsByProviderImpl,
+      });
   const usageByLabel = isObject(usageByProvider?.[OPENAI_CODEX_PROVIDER]) ? usageByProvider[OPENAI_CODEX_PROVIDER] : {};
   const poolStatus = collectCodexPoolStatusWithExhaustionHistory({
     state,
@@ -491,7 +557,7 @@ export async function activateCodexPoolSelection({
     observedAt,
   });
   const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
-  const currentLabel = currentTarget.activeLabel ?? currentTarget.inferredLabel ?? null;
+  const currentLabel = currentTarget.inferredLabel ?? currentTarget.activeLabel ?? null;
   const selectionEligibleLabels =
     avoidCurrentLabel && currentLabel
       ? poolStatus.eligibleLabels.filter((label) => label !== currentLabel)
@@ -500,7 +566,7 @@ export async function activateCodexPoolSelection({
   if (poolStatus.labels.length === 0) {
     throw new Error(
       "No Redis-backed Codex pool labels are available on this machine yet. " +
-        "Complete `aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover` before using Codex targets.",
+        "Import a reviewed Redis snapshot or enroll a Codex label before using Codex targets.",
     );
   }
 
@@ -522,12 +588,63 @@ export async function activateCodexPoolSelection({
   }
 
   if (poolStatus.eligibleLabels.length === 0) {
+    const currentAccount = currentLabel ? poolStatus.byLabel[currentLabel] : null;
+    const currentCredential = currentLabel ? getCodexCredential(state, currentLabel) : null;
+    const currentAuthMatches = Boolean(
+      currentLabel
+      && currentTarget.readback?.ok === true
+      && currentTarget.actualAccountId
+      && currentTarget.actualAccountId === currentCredential?.accountId
+    );
+    const keepCurrentForTelemetry = Boolean(
+      currentLabel
+      && poolStatus.credentialEligibleLabels.includes(currentLabel)
+      && currentAccount?.usageReason === "usage_unavailable"
+      && (
+        currentAuthMatches
+        || currentTarget.expectedAccountId === currentTarget.actualAccountId
+        || currentTarget.inferredLabel === currentLabel
+      )
+    );
+    if (keepCurrentForTelemetry) {
+      const receipt = {
+        action: "codex_use",
+        status: "noop",
+        observedAt,
+        previousLabel: currentLabel,
+        label: currentLabel,
+        warnings: [{ reason: "usage_unavailable", source: "telemetry" }],
+        blockers: [],
+        reasons: ["kept_current_usage_unavailable"],
+        wroteAuthJson: false,
+      };
+      target.lastSelectionReceipt = receipt;
+      return { status: "noop", receipt, wrote: false };
+    }
+    const telemetryOnlyFailure = poolStatus.credentialEligibleLabels.some(
+      (label) => poolStatus.byLabel[label]?.usageReason === "usage_unavailable",
+    );
+    if (telemetryOnlyFailure) {
+      const receipt = {
+        action: "codex_use",
+        status: "blocked",
+        observedAt,
+        previousLabel: currentLabel ?? undefined,
+        warnings: [],
+        blockers: [{ reason: "usage_unavailable" }],
+        reasons: [],
+        wroteAuthJson: false,
+      };
+      target.lastSelectionReceipt = receipt;
+      recordOpenaiCodexBlockedSelectionHistory(state, { observedAt, reason: "usage_unavailable" });
+      return { status: "blocked", receipt, wrote: false };
+    }
     clearManagedCodexCliActivation({ state, homeDir, env });
     const receipt = {
       action: "codex_use",
       status: "blocked",
       observedAt,
-      previousLabel: currentTarget.activeLabel ?? currentTarget.inferredLabel ?? undefined,
+      previousLabel: currentLabel ?? undefined,
       warnings: [],
       blockers: [{ reason: "no_eligible_pool_account" }],
       reasons: [],

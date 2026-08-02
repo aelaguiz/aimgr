@@ -1,10 +1,8 @@
 import fs from "node:fs";
-import path from "node:path";
 import { normalizeAimgrConfig, readAimgrConfig, writeAimgrConfig } from "../../config/aimgr-config.js";
 import {
   closeRedisStore,
   connectRedisStore,
-  deleteLegacyRedisCredentialKeys,
   importCredentialsSnapshot,
   readSnapshot,
 } from "../../coordination/redis-store.js";
@@ -17,14 +15,6 @@ import {
 import { isObject, normalizeProviderId } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { resolveCliPath } from "../../io/paths.js";
-import {
-  applyRedisMigrationPlan,
-  buildRedisMigrationPlan,
-  collectRedisMigrationBundle,
-  createMigrationRefreshCandidateImpl,
-  defaultMigrationDir,
-  readMigrationBundlesFromDir,
-} from "../../migration/redis-migration.js";
 
 function requireRedisUrl(opts) {
   const url = String(opts.url ?? "").trim();
@@ -34,16 +24,6 @@ function requireRedisUrl(opts) {
 
 function printJson(stdout, value) {
   stdout.write(`${JSON.stringify(sanitizeForStatus(value), null, 2)}\n`);
-}
-
-function writeJsonOutput(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    // Best effort on non-POSIX filesystems.
-  }
 }
 
 function assertGenericRedisImportHasNoClaudeCredential(snapshot) {
@@ -78,10 +58,10 @@ async function withRedisStore({ homeDir, opts }, fn) {
 }
 
 export async function handleRedis(context) {
-  const { opts, positional, homeDir, stdout, nowMs, refreshOpenAICodexImpl } = context;
+  const { opts, positional, homeDir, stdout, nowMs } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
-    throw new Error("Missing redis subcommand. Usage: aim redis configure|config|ping|snapshot|export|import|migrate ...");
+    throw new Error("Missing redis subcommand. Usage: aim redis configure|config|ping|snapshot|export|import ...");
   }
 
   if (subcmd === "configure") {
@@ -157,76 +137,6 @@ export async function handleRedis(context) {
       });
     });
     return;
-  }
-
-  if (subcmd === "migrate") {
-    const action = String(positional[2] ?? "").trim().toLowerCase();
-    if (action === "collect") {
-      const bundle = collectRedisMigrationBundle({
-        homeDir,
-        aimVersion: "0.0.0",
-        now: new Date(nowMs),
-      });
-      const outPath = opts.outFile
-        ? resolveCliPath(opts.outFile, { homeDir, optionName: "--out" })
-        : `${defaultMigrationDir({ homeDir })}/${bundle.bundleId}.json`;
-      writeJsonOutput(outPath, bundle);
-      printJson(stdout, { ok: true, outFile: outPath, bundleId: bundle.bundleId, source: bundle.source, summary: bundle.summary });
-      return;
-    }
-
-    if (action === "cleanup-legacy") {
-      if (!opts.confirmBreakingCutover) {
-        throw new Error("Legacy Redis cleanup requires --confirm-breaking-cutover.");
-      }
-      await withRedisStore({ homeDir, opts }, async (store) => {
-        const result = await deleteLegacyRedisCredentialKeys(store);
-        printJson(stdout, result);
-      });
-      return;
-    }
-
-    if (action === "plan") {
-      const fromDir = opts.from
-        ? resolveCliPath(opts.from, { homeDir, optionName: "--from" })
-        : defaultMigrationDir({ homeDir });
-      const bundles = readMigrationBundlesFromDir(fromDir);
-      if (bundles.length === 0) {
-        throw new Error(`No migration bundles found in ${fromDir}.`);
-      }
-      const plan = await buildRedisMigrationPlan({
-        bundles,
-        now: new Date(nowMs),
-        refreshCandidateImpl: createMigrationRefreshCandidateImpl({
-          refreshOpenAICodexImpl,
-        }),
-      });
-      const outPath = opts.outFile
-        ? resolveCliPath(opts.outFile, { homeDir, optionName: "--out" })
-        : `${fromDir}/plan.json`;
-      writeJsonOutput(outPath, plan);
-      printJson(stdout, { ok: plan.blocked.length === 0 && plan.reloginRequired.length === 0, outFile: outPath, planId: plan.planId, summary: plan.summary, blocked: plan.blocked, reloginRequired: plan.reloginRequired });
-      return;
-    }
-
-    if (action === "apply") {
-      if (!opts.confirmBreakingCutover) {
-        throw new Error("Migration apply requires --confirm-breaking-cutover.");
-      }
-      const planPath = resolveCliPath(opts.planFile, { homeDir, optionName: "--plan" });
-      const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
-      await withRedisStore({ homeDir, opts }, async (store) => {
-        const result = await applyRedisMigrationPlan(store, plan, {
-          updatedBy: "aimgr-cli",
-          observedAt: new Date(nowMs).toISOString(),
-          requireEmpty: !opts.allowNonEmpty,
-        });
-        printJson(stdout, { ok: result.ok, planFile: planPath, counts: result.counts });
-      });
-      return;
-    }
-
-    throw new Error("Missing redis migrate subcommand. Usage: aim redis migrate collect|plan|apply|cleanup-legacy ...");
   }
 
   throw new Error(`Unsupported redis subcommand: ${subcmd}.`);

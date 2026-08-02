@@ -1,18 +1,16 @@
-import { DEFAULT_CODEX_WATCH_INTERVAL_SECONDS, DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
-import { resolveCodexWatchIntervalSeconds, resolveCodexWatchThresholdPct } from "../core/watch-options.js";
+import { DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { resolveCodexWatchThresholdPct } from "../core/watch-options.js";
 import { activateCodexPoolSelection, buildCodexWatchNonfatalWarnings, buildCodexWatchTargetBlockers, getPrimaryRemainingPctFromUsageSnapshot, readCodexCliTargetStatus } from "../targets/codex-cli.js";
 import { buildHermesAssignmentsByHome, rebalanceHermesPool } from "./hermes-rebalance.js";
 import { buildHermesHomeBlockers, buildWarningsFromHermesHomeStatus, discoverHermesHomes, readHermesHomeStatus } from "./token-usage.js";
 import { collectCodexPoolStatus, getCodexPoolLabels } from "./ranking.js";
 import { ensureFileBackedCodexHome } from "../targets/codex-store.js";
-import { ensureStateShape, loadAimgrState } from "../state/schema.js";
+import { ensureStateShape } from "../state/schema.js";
 import { getCodexTargetState, getHermesFleetState } from "../state/accounts.js";
 import { isObject } from "../core/normalize.js";
-import { probeUsageSnapshotsByProvider } from "./usage.js";
+import { collectCodexUsageSnapshots, probeUsageSnapshotsByProvider } from "./usage.js";
 import { resolveManagedCodexHomeDir } from "../io/paths.js";
 import { sanitizeForStatus } from "../core/sanitize.js";
-import { sleep } from "../io/streams.js";
-import { writeJsonFileWithBackup } from "../io/json-store.js";
 
 function buildUsageUnavailableBlocker({ reason, label, homeId, usage }) {
   const blocker = {
@@ -61,11 +59,17 @@ export async function watchCodexPoolSelectionOnce(
   ensureFileBackedCodexHome({ codexHome: resolveManagedCodexHomeDir({ homeDir, env }) });
   const effectiveThresholdPct = resolveCodexWatchThresholdPct(thresholdPct);
   const observedAt = new Date().toISOString();
-  const usageByProvider = await probeUsageSnapshotsByProviderImpl(state, { env });
+  const usageByProvider = await collectCodexUsageSnapshots({
+    state,
+    homeDir,
+    env,
+    nowMs: Date.parse(observedAt),
+    probeUsageSnapshotsByProviderImpl,
+  });
   const usageByLabel = isObject(usageByProvider?.[OPENAI_CODEX_PROVIDER]) ? usageByProvider[OPENAI_CODEX_PROVIDER] : {};
   const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
   const target = getCodexTargetState(state);
-  const currentLabelBefore = currentTarget.activeLabel || null;
+  const currentLabelBefore = currentTarget.inferredLabel || currentTarget.activeLabel || null;
   const warnings = buildCodexWatchNonfatalWarnings(currentTarget);
 
   if (!currentLabelBefore) {
@@ -101,7 +105,7 @@ export async function watchCodexPoolSelectionOnce(
       observedAt,
       thresholdPct: effectiveThresholdPct,
       currentLabelBefore: null,
-      currentLabelAfter: postTarget.activeLabel || postTarget.inferredLabel || null,
+      currentLabelAfter: postTarget.inferredLabel || postTarget.activeLabel || null,
       primaryRemainingPctBefore: null,
       triggeredSelection: true,
       selectionReceipt: selection.receipt,
@@ -187,7 +191,7 @@ export async function watchCodexPoolSelectionOnce(
     observedAt,
     thresholdPct: effectiveThresholdPct,
     currentLabelBefore,
-    currentLabelAfter: postTarget.activeLabel || postTarget.inferredLabel || null,
+    currentLabelAfter: postTarget.inferredLabel || postTarget.activeLabel || null,
     primaryRemainingPctBefore,
     triggeredSelection: true,
     selectionReceipt: selection.receipt,
@@ -196,56 +200,6 @@ export async function watchCodexPoolSelectionOnce(
   };
   target.lastWatchReceipt = receipt;
   return { status: selection.status, receipt, wrote: Boolean(selection.wrote) };
-}
-
-export async function watchCodexPoolSelectionLoop(
-  {
-    statePath,
-    homeDir,
-    env = {},
-    intervalSeconds = DEFAULT_CODEX_WATCH_INTERVAL_SECONDS,
-    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
-    maxIterations = Number.POSITIVE_INFINITY,
-  },
-  {
-    emitResultImpl = null,
-    sleepImpl = sleep,
-    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
-    activateCodexPoolSelectionImpl = activateCodexPoolSelection,
-  } = {},
-) {
-  const effectiveIntervalSeconds = resolveCodexWatchIntervalSeconds(intervalSeconds);
-  const effectiveMaxIterations =
-    Number.isFinite(Number(maxIterations)) && Number(maxIterations) > 0
-      ? Math.floor(Number(maxIterations))
-      : Number.POSITIVE_INFINITY;
-  let lastResult = null;
-
-  for (let iteration = 0; iteration < effectiveMaxIterations; iteration += 1) {
-    const state = loadAimgrState(statePath);
-    lastResult = await watchCodexPoolSelectionOnce(
-      {
-        state,
-        homeDir,
-        env,
-        thresholdPct,
-      },
-      {
-        probeUsageSnapshotsByProviderImpl,
-        activateCodexPoolSelectionImpl,
-      },
-    );
-    writeJsonFileWithBackup(statePath, state);
-    if (typeof emitResultImpl === "function") {
-      await emitResultImpl(lastResult, { iteration });
-    }
-    if (iteration + 1 >= effectiveMaxIterations) {
-      break;
-    }
-    await sleepImpl(effectiveIntervalSeconds * 1000);
-  }
-
-  return lastResult;
 }
 
 export async function watchHermesPoolSelectionOnce(
@@ -429,54 +383,4 @@ export async function watchHermesPoolSelectionOnce(
   };
   fleet.lastWatchReceipt = receipt;
   return { status: rebalanced.status, receipt, wrote: Array.isArray(rebalanced.writes) && rebalanced.writes.some((entry) => entry?.wrote?.auth === true) };
-}
-
-export async function watchHermesPoolSelectionLoop(
-  {
-    statePath,
-    homeDir,
-    env = {},
-    intervalSeconds = DEFAULT_CODEX_WATCH_INTERVAL_SECONDS,
-    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
-    maxIterations = Number.POSITIVE_INFINITY,
-  },
-  {
-    emitResultImpl = null,
-    sleepImpl = sleep,
-    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
-    rebalanceHermesPoolImpl = rebalanceHermesPool,
-  } = {},
-) {
-  const effectiveIntervalSeconds = resolveCodexWatchIntervalSeconds(intervalSeconds);
-  const effectiveMaxIterations =
-    Number.isFinite(Number(maxIterations)) && Number(maxIterations) > 0
-      ? Math.floor(Number(maxIterations))
-      : Number.POSITIVE_INFINITY;
-  let lastResult = null;
-
-  for (let iteration = 0; iteration < effectiveMaxIterations; iteration += 1) {
-    const state = loadAimgrState(statePath);
-    lastResult = await watchHermesPoolSelectionOnce(
-      {
-        state,
-        homeDir,
-        env,
-        thresholdPct,
-      },
-      {
-        probeUsageSnapshotsByProviderImpl,
-        rebalanceHermesPoolImpl,
-      },
-    );
-    writeJsonFileWithBackup(statePath, state);
-    if (typeof emitResultImpl === "function") {
-      await emitResultImpl(lastResult, { iteration });
-    }
-    if (iteration + 1 >= effectiveMaxIterations) {
-      break;
-    }
-    await sleepImpl(effectiveIntervalSeconds * 1000);
-  }
-
-  return lastResult;
 }

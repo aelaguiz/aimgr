@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { Readable } from "node:stream";
 import fs from "node:fs";
 import path from "node:path";
@@ -8,6 +7,7 @@ import { refreshOrLoginCodex } from "../../src/credentials/codex-login.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { installFakeOpenclaw, readFakeOpenclawRestarts, readFakeOpenclawSessionPatches } from "../helpers/fakes.js";
 import { mkTempHome, withEnv, writeJson, writeOpenclawAuthStore, writeOpenclawSessionsStore } from "../helpers/files.js";
+import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
 test("refreshOrLoginCodex manual-callback prompts for callback URL and skips browser launch", async () => {
   const state = {
@@ -263,14 +263,7 @@ test("login --manual-callback-stdio rejects Claude labels as JSONL errors", asyn
   assert.match(lines[0].error, /only supports openai-codex labels/);
 });
 
-test("apply is removed after the Redis cutover", async () => {
-  await assert.rejects(
-    () => runCli(["apply", "--home", mkTempHome()]),
-    /aim apply.*removed in the Redis cutover/s,
-  );
-});
-
-test("rebalance openclaw runs the real sync path and then settles to noop on repeat", async () => {
+test("Redis-backed rebalance openclaw runs the real sync path and then settles to noop on repeat", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeBinDir = installFakeOpenclaw({
@@ -336,6 +329,7 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
       updatedAt: 1,
     },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url, options) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -373,7 +367,7 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
         assert.equal(readFakeOpenclawRestarts(home).length, 1);
         assert.equal(readFakeOpenclawSessionPatches(home).length, 0);
 
-        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
         assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
         assert.equal(updatedState.targets.openclaw.lastApplyReceipt.cleanupMode, "disk");
 
@@ -401,7 +395,7 @@ test("rebalance openclaw runs the real sync path and then settles to noop on rep
     );
 });
 
-test("rebalance openclaw reports blocked at the real CLI boundary when no pool account is eligible", async () => {
+test("Redis-backed rebalance openclaw reports blocked when no pool account is eligible", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const fakeBinDir = installFakeOpenclaw({
@@ -444,25 +438,24 @@ test("rebalance openclaw reports blocked at the real CLI boundary when no pool a
     },
     pool: { openaiCodex: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
 
-  const result = spawnSync(process.execPath, [path.join(process.cwd(), "bin", "aimgr.js"), "rebalance", "openclaw"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: {
-      ...process.env,
+  const result = await withEnv(
+    {
       HOME: home,
       PATH: `${fakeBinDir}:${process.env.PATH}`,
     },
-  });
+    () => runCliWithExitCode(["rebalance", "openclaw"]),
+  );
 
-  assert.equal(result.status, 1);
+  assert.equal(result.exitCode, 1);
   assert.equal(readFakeOpenclawRestarts(home).length, 0);
   const parsed = JSON.parse(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.rebalanced.status, "blocked");
   assert.deepEqual(parsed.rebalanced.receipt.blockers, [{ reason: "no_eligible_pool_account" }]);
 
-  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
   assert.equal(updatedState.targets.openclaw.lastApplyReceipt.status, "blocked");
   assert.deepEqual(updatedState.targets.openclaw.lastApplyReceipt.blockers, [{ reason: "no_eligible_pool_account" }]);
 });

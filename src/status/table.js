@@ -2,7 +2,6 @@ import { normalizeBrowserBindingMode, normalizeInteractiveOAuthMode } from "../b
 import { BROWSER_MODE_AGENT_BROWSER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHROME_PROFILE, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK, REAUTH_MODE_NATIVE_CLAUDE } from "../core/constants.js";
 import { normalizeLabel } from "../core/normalize.js";
 import { formatDurationRough, parseExpiresAtToMs } from "../core/time.js";
-import { formatMetricValue } from "./metrics.js";
 
 export function formatInteractiveLoginSummary(login) {
   const mode = normalizeInteractiveOAuthMode(login?.mode);
@@ -110,12 +109,14 @@ export function buildStatusAverageAccountTableRow(accounts, now = Date.now()) {
     "average",
     "--",
     "--",
+    "--",
     Number.isFinite(averageExpiryDeltaMs) ? formatDurationRough(averageExpiryDeltaMs) : "--",
     Number.isFinite(averageFiveHourUsedPct) ? `${Math.round(averageFiveHourUsedPct)}%` : "--",
     formatStatusDeltaMsCell(averageFiveHourResetDeltaMs),
     Number.isFinite(averageWeekUsedPct) ? `${Math.round(averageWeekUsedPct)}%` : "--",
     formatStatusDeltaMsCell(averageWeekResetDeltaMs),
     "all",
+    "--",
     "-",
   ];
 }
@@ -160,32 +161,25 @@ export function formatStatusTable(rows) {
 }
 
 export function renderStatusCompactText(view) {
-  const load = formatMetricValue(view.pool_now?.pool_load_pct, { decimals: 1, suffix: "%" });
-  const spare = formatMetricValue(view.pool_now?.spare_w, { integer: true, suffix: "w" });
-  const floor5 = formatMetricValue(view.windows?.floor_5h_pct, { decimals: 1, suffix: "%" });
-  const floor7 = formatMetricValue(view.windows?.floor_7d_pct, { decimals: 1, suffix: "%" });
-  const eta = formatMetricValue(view.projection?.overflow_eta_h, { decimals: 1, suffix: "h" });
-  const floor5Label = typeof view.windows?.floor_5h_label === "string" && view.windows.floor_5h_label.trim() ? view.windows.floor_5h_label.trim() : "none";
-  const floor7Label = typeof view.windows?.floor_7d_label === "string" && view.windows.floor_7d_label.trim() ? view.windows.floor_7d_label.trim() : "none";
-  const hermesHomeCount = Math.max(0, Math.round(Number(view.hermesFleet?.homeCount ?? 0)));
-  const hermesMappedHomeCount = Math.max(0, Math.round(Number(view.hermesFleet?.mappedHomeCount ?? 0)));
-  const hermesWarningHomeCount = Math.max(0, Math.round(Number(view.hermesFleet?.warningHomeCount ?? 0)));
-  const showHermesCompact =
-    hermesHomeCount > 0
-    || hermesMappedHomeCount > 0
-    || typeof view.hermesFleet?.lastApplyReceipt?.status === "string"
-    || typeof view.hermesFleet?.lastWatchReceipt?.status === "string";
-  const hermesCompact = showHermesCompact
-    ? `  hermes=${hermesMappedHomeCount}/${hermesHomeCount}  h_warn=${hermesWarningHomeCount}  h_apply=${view.hermesFleet?.lastApplyReceipt?.status || "--"}  h_watch=${view.hermesFleet?.lastWatchReceipt?.status || "--"}`
-    : "";
-  return `load=${load}  spare=${spare}  5h_floor=${floor5}(${floor5Label})  7d_floor=${floor7}(${floor7Label})  eta=${eta}${hermesCompact}\n`;
+  const redis = typeof view?.redis?.status === "string" ? view.redis.status : "unknown";
+  const codex = resolveCurrentConfiguredCodexLabel(view) || "none";
+  const claude = typeof view?.claudeCli?.lastRunLabel === "string" && view.claudeCli.lastRunLabel.trim()
+    ? view.claudeCli.lastRunLabel.trim()
+    : typeof view?.claudeCli?.inferredLabel === "string" && view.claudeCli.inferredLabel.trim()
+      ? view.claudeCli.inferredLabel.trim()
+      : "none";
+  const accounts = Array.isArray(view?.accounts) ? view.accounts.length : 0;
+  const cacheAgeMs = Number(view?.redis?.cacheAgeMs);
+  return `redis=${redis}  accounts=${accounts}  codex=${codex}  claude_last=${claude}`
+    + (Number.isFinite(cacheAgeMs) ? `  cache_age=${Math.floor(cacheAgeMs / 1000)}s` : "")
+    + "\n";
 }
 
 export function resolveCurrentConfiguredCodexLabel(view) {
-  const activeLabel = typeof view.codexCli?.activeLabel === "string" ? normalizeLabel(view.codexCli.activeLabel) : "";
-  if (activeLabel) return activeLabel;
   const inferredLabel = typeof view.codexCli?.inferredLabel === "string" ? normalizeLabel(view.codexCli.inferredLabel) : "";
-  return inferredLabel || "";
+  if (inferredLabel) return inferredLabel;
+  const activeLabel = typeof view.codexCli?.activeLabel === "string" ? normalizeLabel(view.codexCli.activeLabel) : "";
+  return activeLabel || "";
 }
 
 export function renderCurrentCodexUsageText(view, { now = view?.nowMs ?? Date.now() } = {}) {

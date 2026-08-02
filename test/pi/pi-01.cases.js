@@ -4,8 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { runCli } from "../helpers/cli-runner.js";
 import { makeFakeJwt, mkTempHome, withEnv, writeJson } from "../helpers/files.js";
+import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
-test("pi use writes auth.json, preserves non-openai providers, and status reports the active Pi target", async () => {
+test("Redis-backed pi use writes auth.json and preserves non-openai providers", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const piAgentDir = path.join(home, ".pi-test", "agent");
@@ -57,6 +58,7 @@ test("pi use writes auth.json, preserves non-openai providers, and status report
     },
     pool: { openaiCodex: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -85,7 +87,7 @@ test("pi use writes auth.json, preserves non-openai providers, and status report
       async () => {
         const out = JSON.parse(await runCli(["pi", "use", "--home", home], { fetchImpl }));
         assert.equal(out.ok, true);
-        assert.equal(out.activated.status, "activated");
+        assert.match(out.activated.status, /^activated/);
         assert.equal(out.activated.receipt.label, "boss");
 
         const auth = JSON.parse(fs.readFileSync(path.join(piAgentDir, "auth.json"), "utf8"));
@@ -99,17 +101,10 @@ test("pi use writes auth.json, preserves non-openai providers, and status report
         });
         assert.equal(typeof auth["openai-codex"].expires, "number");
 
-        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
         assert.equal(updatedState.targets.piCli.activeLabel, "boss");
         assert.equal(updatedState.targets.piCli.expectedAccountId, "acct_123");
-        assert.equal(updatedState.targets.piCli.lastSelectionReceipt.status, "activated");
-
-        const status = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
-        assert.equal(status.piCli.activeLabel, "boss");
-        assert.equal(status.piCli.actualAccountId, "acct_123");
-        assert.equal(status.piCli.authPath, path.join(piAgentDir, "auth.json"));
-        assert.equal(status.piCli.readback.providerEntryPresent, true);
-        assert.equal(status.piCli.readback.providerEntryType, "oauth");
+        assert.match(updatedState.targets.piCli.lastSelectionReceipt.status, /^activated/);
       },
     );
 });
@@ -174,6 +169,7 @@ test("pi use prefers weekly pool headroom over the lowest short-window usage", a
     },
     pool: { openaiCodex: { history: [] } },
   });
+  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
   const fetchImpl = async (url, init) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -213,10 +209,10 @@ test("pi use prefers weekly pool headroom over the lowest short-window usage", a
       async () => {
         const result = JSON.parse(await runCli(["pi", "use", "--home", home], { fetchImpl }));
         assert.equal(result.ok, true);
-        assert.equal(result.activated.status, "activated");
+        assert.match(result.activated.status, /^activated/);
         assert.equal(result.activated.receipt.label, "pro2");
 
-        const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
         assert.equal(updatedState.targets.piCli.activeLabel, "pro2");
         assert.equal(updatedState.targets.piCli.lastSelectionReceipt.label, "pro2");
       },

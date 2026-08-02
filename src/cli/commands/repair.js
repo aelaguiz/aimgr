@@ -66,7 +66,3 @@ export async function handleLabel(context) {
     stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: result.ok, rebind: { label: credential.label, provider: credential.provider, identity, result } }), null, 2)}\n`);
   });
 }
-
-export async function handleSession(context) {
-  throw new Error("`aim session` was removed. Redis credentials are shared globally; use `aim label rebind <label> --provider <provider> --confirm` only for identity repair.");
-}

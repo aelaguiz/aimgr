@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import { parseExpiresAtToMs } from "../core/time.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
-import { isObject } from "../core/normalize.js";
-import { buildClaudeNativeBundle, cloneJsonObject, hasCompleteClaudeNativeBundle, normalizeNonEmptyStringArray } from "./claude-bundle.js";
+import { buildClaudeNativeBundle, deriveAnthropicCredentialView, getClaudeNativeBundle, hasCompleteClaudeNativeBundle } from "./claude-bundle.js";
 
 export function buildAnthropicCredentialFingerprint(credential) {
   const cred = assertAnthropicCredentialShape({
@@ -11,35 +10,22 @@ export function buildAnthropicCredentialFingerprint(credential) {
     requireFresh: false,
     requireClaudeNativeBundle: false,
   });
-  const normalized = {
-    access: String(cred.access).trim(),
-    refresh: String(cred.refresh).trim(),
-    expiresAt: String(cred.expiresAt).trim(),
-    ...(typeof cred.subscriptionType === "string" && cred.subscriptionType.trim()
-      ? { subscriptionType: cred.subscriptionType.trim() }
-      : {}),
-    ...(typeof cred.rateLimitTier === "string" && cred.rateLimitTier.trim()
-      ? { rateLimitTier: cred.rateLimitTier.trim() }
-      : {}),
-    ...(Array.isArray(cred.scopes) && normalizeNonEmptyStringArray(cred.scopes).length > 0
-      ? { scopes: normalizeNonEmptyStringArray(cred.scopes) }
-      : {}),
-    ...(typeof cred.emailAddress === "string" && cred.emailAddress.trim()
-      ? { emailAddress: cred.emailAddress.trim().toLowerCase() }
-      : {}),
-    ...(typeof cred.organizationName === "string" && cred.organizationName.trim()
-      ? { organizationName: cred.organizationName.trim() }
-      : {}),
-    ...(typeof cred.organizationUuid === "string" && cred.organizationUuid.trim()
-      ? { organizationUuid: cred.organizationUuid.trim() }
-      : {}),
-    ...(isObject(cred.nativeClaudeBundle)
-      ? {
-          nativeClaudeBundle: buildClaudeNativeBundle(cred.nativeClaudeBundle) ?? cloneJsonObject(cred.nativeClaudeBundle),
-        }
-      : {}),
-  };
+  const normalized = { nativeClaudeBundle: buildClaudeNativeBundle(getClaudeNativeBundle(cred)) };
   return `sha256:${createHash("sha256").update(JSON.stringify(normalized)).digest("hex")}`;
+}
+
+export function getAnthropicCredentialView(credential) {
+  return deriveAnthropicCredentialView(credential);
+}
+
+export function buildAnthropicTokenLineageFingerprint(credential) {
+  const view = deriveAnthropicCredentialView(credential);
+  const access = typeof view?.access === "string" ? view.access.trim() : "";
+  const refresh = typeof view?.refresh === "string" ? view.refresh.trim() : "";
+  if (!access || !refresh) return null;
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify({ access, refresh }))
+    .digest("hex")}`;
 }
 
 export function tryBuildAnthropicCredentialFingerprint(credential) {
@@ -51,7 +37,7 @@ export function tryBuildAnthropicCredentialFingerprint(credential) {
 }
 
 export function assertAnthropicCredentialShape({ label, credential, requireFresh, requireClaudeNativeBundle = false }) {
-  const cred = isObject(credential) ? credential : null;
+  const cred = deriveAnthropicCredentialView(credential);
   if (!cred) {
     throw new Error(`Missing anthropic credentials for label=${label}.`);
   }

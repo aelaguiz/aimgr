@@ -1,39 +1,26 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE } from "./claude-supervisor.js";
 
 const SUPERVISOR_PATH = fileURLToPath(new URL("./claude-supervisor.js", import.meta.url));
-const SECURITY_SHIM_SOURCE_PATH = fileURLToPath(
-  new URL("../../native/claude/security_shim.c", import.meta.url),
-);
-const CODESIGN_PATH = "/usr/bin/codesign";
-const CLANG_PATH = "/usr/bin/clang";
-const DARWIN_DIRECT_LAUNCH_MODE = "darwin-direct";
-const LINUX_DIRECT_LAUNCH_MODE = "linux-direct";
-const ADHD_PLUGIN_ID = "i-have-adhd@i-have-adhd";
-const ADHD_ALWAYS_ON_FILE = ".i-have-adhd-always";
 const USER_HOOKS_OVERLAY_FILE = ".aimgr-user-hooks.json";
 const USER_MCP_OVERLAY_FILE = ".aimgr-user-mcp.json";
-const SUPPORTED_CLAUDE_BUILDS = Object.freeze({
-  "darwin-arm64": Object.freeze({
-    identifier: "com.anthropic.claude-code",
-    teamIdentifier: "Q6L2SF6YDW",
-    launchMode: DARWIN_DIRECT_LAUNCH_MODE,
-  }),
-  "linux-x64": Object.freeze({
-    version: "2.1.218",
-    sha256: "e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2",
-    launchMode: LINUX_DIRECT_LAUNCH_MODE,
-  }),
-});
-const AUTH_ENV_KEYS = Object.freeze([
+const SECURITY_ADAPTER_RELATIVE_PATH = path.join(
+  ".aimgr",
+  "runtime",
+  "claude-file-store",
+  "security",
+);
+
+// These values can select credentials or a provider backend instead of the
+// projected Claude account. Every other developer/operator variable survives.
+const COMPETING_CLAUDE_ENV_KEYS = Object.freeze([
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_BASE_URL",
-  "ANTHROPIC_CUSTOM_HEADERS",
+  "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+  "CLAUDE_CODE_HOST_CREDS_FILE",
   "CLAUDE_CODE_OAUTH_CLIENT_ID",
   "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
   "CLAUDE_CODE_OAUTH_TOKEN",
@@ -41,336 +28,22 @@ const AUTH_ENV_KEYS = Object.freeze([
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_FOUNDRY",
   "CLAUDE_CODE_USE_VERTEX",
-  "CLAUDE_CONFIG_DIR",
-  "CLAUDE_SECURESTORAGE_CONFIG_DIR",
-  "DYLD_FRAMEWORK_PATH",
-  "DYLD_INSERT_LIBRARIES",
-  "DYLD_LIBRARY_PATH",
-  "LD_AUDIT",
-  "LD_DEBUG",
-  "LD_LIBRARY_PATH",
-  "LD_PRELOAD",
-  "LD_PROFILE",
 ]);
-const SHIM_SEMANTIC_CASES = Object.freeze([
-  {
-    args: ["find-generic-password", "-a", "aim-test-user", "-w", "-s", "aim-test-service"],
-    status: 44,
-  },
-  { args: ["show-keychain-info"], status: 36 },
-  { args: ["-i"], input: "aim-test-input\n", status: 1 },
-  {
-    args: ["add-generic-password", "-U", "-a", "aim-test-user", "-s", "aim-test-service", "-X", "00"],
-    status: 1,
-  },
-  {
-    args: ["delete-generic-password", "-a", "aim-test-user", "-s", "aim-test-service"],
-    status: 44,
-  },
-  { args: ["verify-cert", "-c", "aim-test-certificate"], status: 65 },
-  { args: ["unknown-operation"], status: 64 },
-]);
+
+const SAFE_MARKER_NAME = /^\.[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const FORBIDDEN_MARKER_NAME = /(?:^\.claude\.json$|account|auth|cache|credential|history|log|oauth|project|session|token|trust)/i;
 
 function normalizedAbsolute(value) {
   const raw = typeof value === "string" ? value.trim() : "";
   return raw && path.isAbsolute(raw) ? path.resolve(raw).normalize("NFC") : null;
 }
 
-function assertOwnedDirectory(filePath, { fsImpl = fs, requirePrivate = false } = {}) {
-  let stat;
-  try {
-    stat = fsImpl.lstatSync(filePath);
-  } catch {
-    throw new Error("Could not inspect the managed Claude runtime directory.");
+function ensureDirectory(filePath, { fsImpl = fs } = {}) {
+  fsImpl.mkdirSync(filePath, { recursive: true, mode: 0o700 });
+  const stat = fsImpl.statSync(filePath);
+  if (!stat.isDirectory()) {
+    throw new Error("Managed Claude requires a directory for its selected config root.");
   }
-  if (
-    !stat.isDirectory()
-    || stat.isSymbolicLink()
-    || (typeof process.getuid === "function" && Number.isInteger(stat.uid) && stat.uid !== process.getuid())
-    || (requirePrivate && Number.isInteger(stat.mode) && (stat.mode & 0o077) !== 0)
-  ) {
-    throw new Error("Refusing an unsafe managed Claude runtime directory.");
-  }
-}
-
-function ensureOwnedDirectory(filePath, {
-  fsImpl = fs,
-  mode = 0o700,
-  requirePrivate = true,
-} = {}) {
-  try {
-    fsImpl.mkdirSync(filePath, { mode });
-  } catch (error) {
-    if (error?.code !== "EEXIST") {
-      throw new Error("Could not create the managed Claude runtime directory.");
-    }
-  }
-  assertOwnedDirectory(filePath, { fsImpl, requirePrivate: false });
-  if (requirePrivate) {
-    fsImpl.chmodSync(filePath, mode);
-  }
-  assertOwnedDirectory(filePath, { fsImpl, requirePrivate });
-}
-
-function assertOwnedExecutable(filePath, { fsImpl = fs } = {}) {
-  let stat;
-  try {
-    stat = fsImpl.lstatSync(filePath);
-  } catch {
-    throw new Error("Could not inspect the managed Claude compatibility executable.");
-  }
-  if (
-    !stat.isFile()
-    || stat.isSymbolicLink()
-    || stat.nlink !== 1
-    || (typeof process.getuid === "function" && Number.isInteger(stat.uid) && stat.uid !== process.getuid())
-    || (stat.mode & 0o777) !== 0o500
-  ) {
-    throw new Error("Refusing an unsafe managed Claude compatibility executable.");
-  }
-}
-
-function hashBuffer(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-async function hashFile(filePath, { fsImpl = fs } = {}) {
-  return await new Promise((resolve, reject) => {
-    const hash = createHash("sha256");
-    const stream = fsImpl.createReadStream(filePath);
-    stream.once("error", reject);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.once("end", () => resolve(hash.digest("hex")));
-  });
-}
-
-function validateSecurityShimSemantics(shimPath, { spawnSyncImpl = spawnSync } = {}) {
-  for (const testCase of SHIM_SEMANTIC_CASES) {
-    const result = spawnSyncImpl(shimPath, testCase.args, {
-      encoding: "utf8",
-      input: testCase.input,
-      shell: false,
-      timeout: 5_000,
-      maxBuffer: 4_096,
-      env: {
-        LANG: "C",
-        LC_ALL: "C",
-        PATH: "/usr/bin:/bin",
-      },
-    });
-    if (
-      result?.status !== testCase.status
-      || result?.signal
-      || String(result?.stdout ?? "") !== ""
-      || String(result?.stderr ?? "") !== ""
-    ) {
-      throw new Error("Managed Claude compatibility executable failed its fixed semantic check.");
-    }
-  }
-}
-
-export function materializeClaudeSecurityShim({
-  homeDir,
-  fsImpl = fs,
-  spawnSyncImpl = spawnSync,
-} = {}) {
-  const resolvedHome = normalizedAbsolute(homeDir);
-  if (!resolvedHome) {
-    throw new Error("Managed Claude compatibility setup requires an absolute home directory.");
-  }
-  assertOwnedDirectory(resolvedHome, { fsImpl });
-  const source = fsImpl.readFileSync(SECURITY_SHIM_SOURCE_PATH);
-  const sourceSha = hashBuffer(source);
-  const aimgrRoot = path.join(resolvedHome, ".aimgr");
-  const runtimeDir = path.join(aimgrRoot, "runtime");
-  const runtimeRoot = path.join(runtimeDir, "claude-file-store");
-  ensureOwnedDirectory(aimgrRoot, { fsImpl, requirePrivate: false });
-  ensureOwnedDirectory(runtimeDir, { fsImpl });
-  ensureOwnedDirectory(runtimeRoot, { fsImpl });
-  const targetDir = path.join(runtimeRoot, sourceSha);
-  const shimPath = path.join(targetDir, "security");
-
-  if (!fsImpl.existsSync(targetDir)) {
-    const buildDir = fsImpl.mkdtempSync(path.join(runtimeRoot, ".build-"));
-    let installed = false;
-    try {
-      fsImpl.chmodSync(buildDir, 0o700);
-      const buildPath = path.join(buildDir, "security");
-      const compiled = spawnSyncImpl(CLANG_PATH, [
-        "-std=c11",
-        "-O2",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        SECURITY_SHIM_SOURCE_PATH,
-        "-o",
-        buildPath,
-      ], {
-        encoding: "utf8",
-        shell: false,
-        timeout: 30_000,
-        maxBuffer: 64 * 1024,
-        env: {
-          LANG: "C",
-          LC_ALL: "C",
-          PATH: "/usr/bin:/bin",
-        },
-      });
-      if (compiled?.status !== 0 || compiled?.signal) {
-        throw new Error("Could not compile the managed Claude compatibility executable.");
-      }
-      fsImpl.chmodSync(buildPath, 0o500);
-      assertOwnedExecutable(buildPath, { fsImpl });
-      validateSecurityShimSemantics(buildPath, { spawnSyncImpl });
-      try {
-        fsImpl.renameSync(buildDir, targetDir);
-        installed = true;
-      } catch (error) {
-        if (error?.code !== "EEXIST") throw error;
-      }
-    } finally {
-      if (!installed && fsImpl.existsSync(buildDir)) {
-        fsImpl.rmSync(buildDir, { recursive: true, force: true });
-      }
-    }
-  }
-
-  assertOwnedDirectory(targetDir, { fsImpl, requirePrivate: true });
-  assertOwnedExecutable(shimPath, { fsImpl });
-  validateSecurityShimSemantics(shimPath, { spawnSyncImpl });
-  return Object.freeze({
-    sourceSha256: sourceSha,
-    runtimeRoot,
-    adapterDir: targetDir,
-    shimPath,
-  });
-}
-
-function resolveSupportedClaudeBuild({ platform = process.platform, arch = process.arch } = {}) {
-  return SUPPORTED_CLAUDE_BUILDS[`${platform}-${arch}`] ?? null;
-}
-
-function verifyCodeSignature(command, {
-  build = SUPPORTED_CLAUDE_BUILDS["darwin-arm64"],
-  spawnSyncImpl = spawnSync,
-} = {}) {
-  const verified = spawnSyncImpl(CODESIGN_PATH, ["--verify", "--strict", command], {
-    encoding: "utf8",
-    shell: false,
-    timeout: 10_000,
-    maxBuffer: 64 * 1024,
-    env: {
-      LANG: "C",
-      LC_ALL: "C",
-      PATH: "/usr/bin:/bin",
-    },
-  });
-  if (verified?.status !== 0 || verified?.signal) {
-    throw new Error("Installed Claude signature verification failed.");
-  }
-  const details = spawnSyncImpl(CODESIGN_PATH, ["-dv", "--verbose=4", command], {
-    encoding: "utf8",
-    shell: false,
-    timeout: 10_000,
-    maxBuffer: 64 * 1024,
-    env: {
-      LANG: "C",
-      LC_ALL: "C",
-      PATH: "/usr/bin:/bin",
-    },
-  });
-  const output = `${details?.stdout ?? ""}\n${details?.stderr ?? ""}`;
-  if (
-    details?.status !== 0
-    || details?.signal
-    || !output.includes(`Identifier=${build.identifier}`)
-    || !output.includes(`TeamIdentifier=${build.teamIdentifier}`)
-    || !output.includes(`Anthropic PBC (${build.teamIdentifier})`)
-  ) {
-    throw new Error("Installed Claude signing identity is not the qualified Anthropic identity.");
-  }
-}
-
-function hasSafeClaudeLinkTopology(resolvedCommand, stat, {
-  fsImpl = fs,
-  platform = process.platform,
-} = {}) {
-  if (stat.nlink === 1) return true;
-  if (platform !== "darwin" || stat.nlink !== 2) return false;
-
-  const versionsDir = path.dirname(resolvedCommand);
-  if (path.basename(versionsDir) !== "versions") return false;
-  const installRoot = path.dirname(versionsDir);
-  const appCommand = path.join(
-    installRoot,
-    "ClaudeCode.app",
-    "Contents",
-    "MacOS",
-    "claude",
-  );
-  let appStat;
-  try {
-    appStat = fsImpl.lstatSync(appCommand);
-  } catch {
-    return false;
-  }
-  return (
-    appStat.isFile()
-    && !appStat.isSymbolicLink()
-    && appStat.nlink === 2
-    && appStat.uid === stat.uid
-    && Number.isInteger(stat.dev)
-    && Number.isInteger(stat.ino)
-    && appStat.dev === stat.dev
-    && appStat.ino === stat.ino
-  );
-}
-
-export async function verifyInstalledClaudeExecutable({
-  command,
-  fsImpl = fs,
-  spawnSyncImpl = spawnSync,
-  platform = process.platform,
-  arch = process.arch,
-  hashFileImpl = hashFile,
-  verifyCodeSignatureImpl = verifyCodeSignature,
-} = {}) {
-  const build = resolveSupportedClaudeBuild({ platform, arch });
-  if (!build) {
-    throw new Error("Managed Claude supports only qualified native Darwin arm64 and Linux x64 builds.");
-  }
-  const rawCommand = normalizedAbsolute(command);
-  if (!rawCommand) {
-    throw new Error("Managed Claude requires an absolute installed Claude executable.");
-  }
-  let resolvedCommand;
-  let stat;
-  try {
-    resolvedCommand = fsImpl.realpathSync(rawCommand);
-    stat = fsImpl.lstatSync(resolvedCommand);
-  } catch {
-    throw new Error("Could not inspect the installed Claude executable.");
-  }
-  if (
-    !stat.isFile()
-    || stat.isSymbolicLink()
-    || !hasSafeClaudeLinkTopology(resolvedCommand, stat, { fsImpl, platform })
-    || (typeof process.getuid === "function" && Number.isInteger(stat.uid) && stat.uid !== process.getuid())
-  ) {
-    throw new Error("Refusing an unsafe installed Claude executable.");
-  }
-  fsImpl.accessSync(resolvedCommand, fs.constants.X_OK);
-  if (platform === "darwin") {
-    verifyCodeSignatureImpl(resolvedCommand, { build, spawnSyncImpl });
-  } else {
-    if (path.basename(resolvedCommand) !== build.version) {
-      throw new Error(`Installed Claude version is not the qualified ${build.version} build.`);
-    }
-    if (await hashFileImpl(resolvedCommand, { fsImpl }) !== build.sha256) {
-      throw new Error("Installed Claude digest is not the qualified native build.");
-    }
-  }
-  return resolvedCommand;
 }
 
 function readOptionalJson(filePath, { fsImpl = fs, description } = {}) {
@@ -388,28 +61,6 @@ function readOptionalJson(filePath, { fsImpl = fs, description } = {}) {
   }
 }
 
-function ownedRegularFileExists(filePath, { fsImpl = fs, description } = {}) {
-  let stat;
-  try {
-    stat = fsImpl.lstatSync(filePath);
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    throw new Error(`Could not inspect the ${description}.`);
-  }
-  if (
-    !stat.isFile()
-    || stat.isSymbolicLink()
-    || (
-      typeof process.getuid === "function"
-      && Number.isInteger(stat.uid)
-      && stat.uid !== process.getuid()
-    )
-  ) {
-    throw new Error(`Refusing an unsafe ${description}.`);
-  }
-  return true;
-}
-
 function requireOptionalObjectField(source, field, description) {
   if (source === null || source[field] === undefined) return null;
   const value = source[field];
@@ -423,30 +74,26 @@ function syncPrivateJsonOverlay(filePath, payload, {
   fsImpl = fs,
   description,
 } = {}) {
-  const exists = ownedRegularFileExists(filePath, { fsImpl, description });
-  if (payload === null) {
-    if (exists) {
-      try {
-        fsImpl.unlinkSync(filePath);
-      } catch {
-        throw new Error(`Could not remove the stale ${description}.`);
-      }
+  let exists = false;
+  try {
+    const stat = fsImpl.lstatSync(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Refusing an unsafe ${description}.`);
     }
+    exists = true;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+
+  if (payload === null) {
+    if (exists) fsImpl.unlinkSync(filePath);
     return null;
   }
 
   const next = `${JSON.stringify(payload, null, 2)}\n`;
-  if (exists) {
-    let current;
-    try {
-      current = fsImpl.readFileSync(filePath, "utf8");
-    } catch {
-      throw new Error(`Could not read the ${description}.`);
-    }
-    if (current === next) {
-      fsImpl.chmodSync(filePath, 0o600);
-      return filePath;
-    }
+  if (exists && fsImpl.readFileSync(filePath, "utf8") === next) {
+    fsImpl.chmodSync(filePath, 0o600);
+    return filePath;
   }
 
   const tempPath = path.join(
@@ -455,32 +102,71 @@ function syncPrivateJsonOverlay(filePath, payload, {
   );
   let renamed = false;
   try {
-    fsImpl.writeFileSync(tempPath, next, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
+    fsImpl.writeFileSync(tempPath, next, { encoding: "utf8", flag: "wx", mode: 0o600 });
     fsImpl.renameSync(tempPath, filePath);
     renamed = true;
-  } catch {
-    throw new Error(`Could not write the ${description}.`);
   } finally {
     if (!renamed) {
       try {
         fsImpl.unlinkSync(tempPath);
       } catch (error) {
-        if (error?.code !== "ENOENT") {
-          throw new Error(`Could not clean up the ${description}.`);
-        }
+        if (error?.code !== "ENOENT") throw error;
       }
     }
   }
   fsImpl.chmodSync(filePath, 0o600);
-  ownedRegularFileExists(filePath, { fsImpl, description });
   return filePath;
 }
 
-export function syncManagedClaudeUserCustomizations({
+export async function verifyInstalledClaudeExecutable({
+  command,
+  fsImpl = fs,
+} = {}) {
+  const selectedCommand = normalizedAbsolute(command);
+  if (!selectedCommand) {
+    throw new Error("Managed Claude requires the absolute PATH-selected executable.");
+  }
+
+  let resolvedCommand;
+  let stat;
+  try {
+    resolvedCommand = fsImpl.realpathSync(selectedCommand);
+    stat = fsImpl.statSync(resolvedCommand);
+    fsImpl.accessSync(resolvedCommand, fs.constants.X_OK);
+  } catch {
+    throw new Error("The PATH-selected Claude executable is unavailable or not executable.");
+  }
+  if (!stat.isFile()) {
+    throw new Error("The PATH-selected Claude executable is not a file.");
+  }
+  return resolvedCommand;
+}
+
+export function resolveInstalledClaudeSecurityAdapter({
+  userHomeDir,
+  fsImpl = fs,
+} = {}) {
+  const resolvedHome = normalizedAbsolute(userHomeDir);
+  if (!resolvedHome) {
+    throw new Error("Managed Claude security adapter lookup requires an absolute user home.");
+  }
+  const installedPath = path.join(resolvedHome, SECURITY_ADAPTER_RELATIVE_PATH);
+  let shimPath;
+  let stat;
+  try {
+    shimPath = fsImpl.realpathSync(installedPath);
+    stat = fsImpl.statSync(shimPath);
+    fsImpl.accessSync(shimPath, fs.constants.X_OK);
+  } catch {
+    throw new Error("Managed Claude requires the installed security adapter; run the local installer.");
+  }
+  if (!stat.isFile() || path.basename(shimPath) !== "security") {
+    throw new Error("Managed Claude found an invalid installed security adapter.");
+  }
+  return Object.freeze({ shimPath, adapterDir: path.dirname(shimPath) });
+}
+
+export function ensureManagedClaudePersonalSkillsLink({
   userHomeDir,
   configDir,
   fsImpl = fs,
@@ -488,48 +174,94 @@ export function syncManagedClaudeUserCustomizations({
   const resolvedUserHome = normalizedAbsolute(userHomeDir);
   const resolvedConfigDir = normalizedAbsolute(configDir);
   if (!resolvedUserHome || !resolvedConfigDir) {
-    throw new Error("Managed Claude customization setup requires absolute user and config directories.");
+    throw new Error("Managed Claude skills setup requires absolute user and config directories.");
   }
-  assertOwnedDirectory(resolvedConfigDir, { fsImpl });
+  const source = path.join(resolvedUserHome, ".claude", "skills");
+  const destination = path.join(resolvedConfigDir, "skills");
+  let sourceStat;
+  try {
+    sourceStat = fsImpl.statSync(source);
+  } catch (error) {
+    if (error?.code === "ENOENT") return { linked: false, reason: "source_missing" };
+    throw error;
+  }
+  if (!sourceStat.isDirectory()) {
+    throw new Error("The normal Claude skills path is not a directory.");
+  }
+
+  let destinationStat = null;
+  try {
+    destinationStat = fsImpl.lstatSync(destination);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  if (destinationStat) {
+    const target = destinationStat.isSymbolicLink()
+      ? path.resolve(path.dirname(destination), fsImpl.readlinkSync(destination)).normalize("NFC")
+      : null;
+    if (target !== source) {
+      throw new Error("Refusing a conflicting managed Claude skills path.");
+    }
+    return { linked: true, path: destination };
+  }
+
+  fsImpl.symlinkSync(source, destination, "dir");
+  return { linked: true, path: destination };
+}
+
+export function syncManagedClaudeUserSettings({
+  userHomeDir,
+  configDir,
+  fsImpl = fs,
+} = {}) {
+  const resolvedUserHome = normalizedAbsolute(userHomeDir);
+  const resolvedConfigDir = normalizedAbsolute(configDir);
+  if (!resolvedUserHome || !resolvedConfigDir) {
+    throw new Error("Managed Claude user settings require absolute user and config directories.");
+  }
   const settings = readOptionalJson(path.join(resolvedUserHome, ".claude", "settings.json"), {
     fsImpl,
     description: "user settings",
   });
+  if (settings !== null && (typeof settings !== "object" || Array.isArray(settings))) {
+    throw new Error("The normal Claude user settings are malformed.");
+  }
+  const hooks = requireOptionalObjectField(settings, "hooks", "user hooks");
+  const statusLine = requireOptionalObjectField(settings, "statusLine", "user status-line settings");
+  const payload = {
+    ...(hooks === null ? {} : { hooks }),
+    ...(statusLine === null ? {} : { statusLine }),
+  };
+  return syncPrivateJsonOverlay(
+    path.join(resolvedConfigDir, USER_HOOKS_OVERLAY_FILE),
+    Object.keys(payload).length === 0 ? null : payload,
+    { fsImpl, description: "managed Claude user-settings overlay" },
+  );
+}
+
+export function syncManagedClaudeUserMcp({
+  userHomeDir,
+  configDir,
+  fsImpl = fs,
+} = {}) {
+  const resolvedUserHome = normalizedAbsolute(userHomeDir);
+  const resolvedConfigDir = normalizedAbsolute(configDir);
+  if (!resolvedUserHome || !resolvedConfigDir) {
+    throw new Error("Managed Claude user MCP setup requires absolute user and config directories.");
+  }
   const appState = readOptionalJson(path.join(resolvedUserHome, ".claude.json"), {
     fsImpl,
     description: "user app state",
   });
-  if (settings !== null && (typeof settings !== "object" || Array.isArray(settings))) {
-    throw new Error("The normal Claude user settings are malformed.");
-  }
   if (appState !== null && (typeof appState !== "object" || Array.isArray(appState))) {
     throw new Error("The normal Claude user app state is malformed.");
   }
-  const hooks = requireOptionalObjectField(settings, "hooks", "user hooks");
-  const statusLine = requireOptionalObjectField(
-    settings,
-    "statusLine",
-    "user status-line settings",
-  );
   const mcpServers = requireOptionalObjectField(appState, "mcpServers", "user MCP servers");
-  const userSettings = {
-    ...(hooks === null ? {} : { hooks }),
-    ...(statusLine === null ? {} : { statusLine }),
-  };
-  const hooksPath = syncPrivateJsonOverlay(
-    path.join(resolvedConfigDir, USER_HOOKS_OVERLAY_FILE),
-    Object.keys(userSettings).length === 0 ? null : userSettings,
-    { fsImpl, description: "managed Claude user-settings overlay" },
-  );
-  const mcpConfigPath = syncPrivateJsonOverlay(
+  return syncPrivateJsonOverlay(
     path.join(resolvedConfigDir, USER_MCP_OVERLAY_FILE),
     mcpServers === null ? null : { mcpServers },
     { fsImpl, description: "managed Claude user-MCP overlay" },
   );
-  return Object.freeze({
-    hooksPath,
-    mcpConfigPath,
-  });
 }
 
 export function resolveEnabledClaudeUserPlugins({
@@ -545,13 +277,11 @@ export function resolveEnabledClaudeUserPlugins({
     fsImpl,
     description: "plugin settings",
   });
-  if (settings === null) return [];
-  if (typeof settings !== "object" || Array.isArray(settings)) {
-    throw new Error("The normal Claude plugin settings are malformed.");
-  }
-  if (settings.enabledPlugins === undefined) return [];
+  if (settings === null || settings.enabledPlugins === undefined) return [];
   if (
-    settings.enabledPlugins === null
+    typeof settings !== "object"
+    || Array.isArray(settings)
+    || settings.enabledPlugins === null
     || typeof settings.enabledPlugins !== "object"
     || Array.isArray(settings.enabledPlugins)
   ) {
@@ -567,186 +297,91 @@ export function resolveEnabledClaudeUserPlugins({
     fsImpl,
     description: "installed plugin registry",
   });
-  if (
-    registry === null
-    || registry.plugins === null
-    || typeof registry.plugins !== "object"
-    || Array.isArray(registry.plugins)
-  ) {
+  if (!registry || typeof registry.plugins !== "object" || Array.isArray(registry.plugins)) {
     throw new Error("The normal Claude installed plugin registry is unavailable or malformed.");
   }
 
-  const cacheRoot = path.join(claudeDir, "plugins", "cache");
-  let resolvedCacheRoot;
-  try {
-    assertOwnedDirectory(cacheRoot, { fsImpl });
-    resolvedCacheRoot = fsImpl.realpathSync(cacheRoot);
-  } catch {
-    throw new Error("Refusing an unsafe normal Claude plugin cache.");
-  }
-
   return enabledIds.map((id) => {
-    const records = registry.plugins[id];
-    const userRecords = Array.isArray(records)
-      ? records.filter((record) => record?.scope === "user")
-      : [];
-    if (userRecords.length !== 1) {
-      throw new Error("An enabled normal Claude plugin has no unambiguous user installation.");
+    const records = Array.isArray(registry.plugins[id]) ? registry.plugins[id] : [];
+    const record = records.find((candidate) => (
+      candidate?.scope === "user" && normalizedAbsolute(candidate.installPath)
+    ));
+    if (!record) {
+      throw new Error("An enabled normal Claude plugin has no usable user installation.");
     }
-    const installPath = normalizedAbsolute(userRecords[0].installPath);
-    if (!installPath) {
-      throw new Error("An enabled normal Claude plugin has an unsafe installation path.");
+    const installPath = fsImpl.realpathSync(record.installPath);
+    if (!fsImpl.statSync(installPath).isDirectory()) {
+      throw new Error("An enabled normal Claude plugin path is not a directory.");
     }
-    let resolvedInstallPath;
-    try {
-      assertOwnedDirectory(installPath, { fsImpl });
-      resolvedInstallPath = fsImpl.realpathSync(installPath);
-    } catch {
-      throw new Error("An enabled normal Claude plugin has an unsafe installation path.");
-    }
-    const relative = path.relative(resolvedCacheRoot, resolvedInstallPath);
-    if (
-      !relative
-      || relative === ".."
-      || relative.startsWith(`..${path.sep}`)
-      || path.isAbsolute(relative)
-    ) {
-      throw new Error("An enabled normal Claude plugin escapes the user plugin cache.");
-    }
-    return Object.freeze({ id, installPath: resolvedInstallPath });
+    return Object.freeze({ id, installPath });
   });
 }
 
-export function syncManagedClaudePluginPreferences({
-  userHomeDir,
-  configDir,
-  enabledPluginIds = [],
-  fsImpl = fs,
-} = {}) {
-  const resolvedUserHome = normalizedAbsolute(userHomeDir);
-  const resolvedConfigDir = normalizedAbsolute(configDir);
-  if (!resolvedUserHome || !resolvedConfigDir) {
-    throw new Error("Managed Claude plugin preferences require absolute user and config directories.");
-  }
-  assertOwnedDirectory(resolvedConfigDir, { fsImpl });
-  const destination = path.join(resolvedConfigDir, ADHD_ALWAYS_ON_FILE);
-  const pluginEnabled = enabledPluginIds.includes(ADHD_PLUGIN_ID);
-  let preferenceEnabled = false;
-  if (pluginEnabled) {
-    const source = path.join(resolvedUserHome, ".claude", ADHD_ALWAYS_ON_FILE);
-    preferenceEnabled = ownedRegularFileExists(source, {
-      fsImpl,
-      description: "normal Claude ADHD preference",
-    });
-  }
-
-  const destinationExists = ownedRegularFileExists(destination, {
-    fsImpl,
-    description: "managed Claude ADHD preference",
-  });
-
-  if (preferenceEnabled && !destinationExists) {
-    try {
-      fsImpl.writeFileSync(destination, "", { flag: "wx", mode: 0o600 });
-    } catch {
-      throw new Error("Could not create the managed Claude ADHD preference.");
-    }
-    ownedRegularFileExists(destination, {
-      fsImpl,
-      description: "managed Claude ADHD preference",
-    });
-    return { enabled: true, path: destination };
-  }
-  if (!preferenceEnabled && destinationExists) {
-    try {
-      fsImpl.unlinkSync(destination);
-    } catch {
-      throw new Error("Could not remove the managed Claude ADHD preference.");
-    }
-  }
-  return {
-    enabled: preferenceEnabled,
-    path: preferenceEnabled ? destination : null,
-  };
-}
-
-export function ensureManagedClaudePersonalSkillsLink({
-  userHomeDir,
-  configDir,
-  fsImpl = fs,
-} = {}) {
-  const resolvedUserHome = normalizedAbsolute(userHomeDir);
-  const resolvedConfigDir = normalizedAbsolute(configDir);
-  if (!resolvedUserHome || !resolvedConfigDir) {
-    throw new Error("Managed Claude skills setup requires absolute user and config directories.");
-  }
-  const source = path.join(resolvedUserHome, ".claude", "skills");
-  const destination = path.join(resolvedConfigDir, "skills");
-  let destinationStat = null;
+function safeMarkerSource(sourcePath, markerName, { fsImpl = fs } = {}) {
+  if (!SAFE_MARKER_NAME.test(markerName) || FORBIDDEN_MARKER_NAME.test(markerName)) return false;
   try {
-    destinationStat = fsImpl.lstatSync(destination);
+    const stat = fsImpl.lstatSync(sourcePath);
+    return stat.isFile() && !stat.isSymbolicLink() && stat.size === 0;
   } catch (error) {
-    if (error?.code !== "ENOENT") {
-      throw new Error("Could not inspect the managed Claude skills path.");
-    }
+    if (error?.code === "ENOENT") return false;
+    throw error;
   }
-  if (destinationStat) {
-    let target = null;
+}
+
+export function syncManagedClaudeConfigMarkers({
+  userHomeDir,
+  configDir,
+  fsImpl = fs,
+} = {}) {
+  const resolvedUserHome = normalizedAbsolute(userHomeDir);
+  const resolvedConfigDir = normalizedAbsolute(configDir);
+  if (!resolvedUserHome || !resolvedConfigDir) {
+    throw new Error("Managed Claude marker setup requires absolute user and config directories.");
+  }
+  const sourceDir = path.join(resolvedUserHome, ".claude");
+  let sourceEntries;
+  try {
+    sourceEntries = fsImpl.readdirSync(sourceDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return Object.freeze({ linked: Object.freeze([]) });
+    throw error;
+  }
+
+  const markerNames = sourceEntries
+    .map(({ name }) => name)
+    .filter((name) => safeMarkerSource(path.join(sourceDir, name), name, { fsImpl }))
+    .sort();
+
+  for (const entry of fsImpl.readdirSync(resolvedConfigDir, { withFileTypes: true })) {
+    if (!entry.isSymbolicLink() || !SAFE_MARKER_NAME.test(entry.name)) continue;
+    const destination = path.join(resolvedConfigDir, entry.name);
+    const target = path.resolve(resolvedConfigDir, fsImpl.readlinkSync(destination)).normalize("NFC");
+    if (target !== path.join(sourceDir, entry.name) || markerNames.includes(entry.name)) continue;
+    fsImpl.unlinkSync(destination);
+  }
+
+  for (const markerName of markerNames) {
+    const source = path.join(sourceDir, markerName);
+    const destination = path.join(resolvedConfigDir, markerName);
+    let destinationStat = null;
     try {
-      if (destinationStat.isSymbolicLink()) {
-        target = fsImpl.readlinkSync(destination);
+      destinationStat = fsImpl.lstatSync(destination);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (destinationStat) {
+      const exactLink = destinationStat.isSymbolicLink()
+        && path.resolve(resolvedConfigDir, fsImpl.readlinkSync(destination)).normalize("NFC") === source;
+      if (exactLink) continue;
+      if (destinationStat.isFile() && destinationStat.size === 0) {
+        fsImpl.unlinkSync(destination);
+      } else {
+        throw new Error("Refusing a conflicting managed Claude config marker.");
       }
-    } catch {
-      throw new Error("Could not inspect the managed Claude skills path.");
     }
-    if (
-      !target
-      || path.resolve(path.dirname(destination), target).normalize("NFC") !== source
-    ) {
-      throw new Error("Refusing a conflicting managed Claude skills path.");
-    }
+    fsImpl.symlinkSync(source, destination);
   }
-
-  let sourceStat;
-  try {
-    sourceStat = fsImpl.lstatSync(source);
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return { linked: false, reason: "source_missing" };
-    }
-    throw new Error("Could not inspect the personal Claude skills directory.");
-  }
-  if (
-    !sourceStat.isDirectory()
-    || sourceStat.isSymbolicLink()
-    || (
-      typeof process.getuid === "function"
-      && Number.isInteger(sourceStat.uid)
-      && sourceStat.uid !== process.getuid()
-    )
-  ) {
-    throw new Error("Refusing an unsafe personal Claude skills directory.");
-  }
-  if (destinationStat) {
-    return { linked: true, path: destination };
-  }
-
-  assertOwnedDirectory(resolvedConfigDir, { fsImpl });
-  try {
-    fsImpl.symlinkSync(source, destination, "dir");
-  } catch {
-    throw new Error("Could not create the managed Claude skills link.");
-  }
-  let createdTarget = null;
-  try {
-    createdTarget = fsImpl.readlinkSync(destination);
-  } catch {
-    // The generic error below keeps filesystem details out of the CLI.
-  }
-  if (path.resolve(path.dirname(destination), createdTarget ?? "").normalize("NFC") !== source) {
-    throw new Error("Could not verify the managed Claude skills link.");
-  }
-  return { linked: true, path: destination };
+  return Object.freeze({ linked: Object.freeze(markerNames) });
 }
 
 function assertContainedLaunchTopology({ userHomeDir, launchHome, configDir }) {
@@ -781,18 +416,25 @@ function assertContainedLaunchTopology({ userHomeDir, launchHome, configDir }) {
   };
 }
 
-export async function prepareClaudeCliLaunch({
+function optionalCustomization(description, operation, fallback, warn) {
+  try {
+    return operation();
+  } catch {
+    warn?.(`Managed Claude skipped optional ${description}.`);
+    return fallback;
+  }
+}
+
+async function prepareContainedClaudeCliLaunch({
   command,
   userHomeDir,
   homeDir,
   configDir,
   fsImpl = fs,
-  spawnSyncImpl = spawnSync,
   platform = process.platform,
-  arch = process.arch,
+  warn = (message) => console.warn(message),
   verifyInstalledClaudeExecutableImpl = verifyInstalledClaudeExecutable,
-  materializeClaudeSecurityShimImpl = materializeClaudeSecurityShim,
-  syncManagedClaudeUserCustomizationsImpl = syncManagedClaudeUserCustomizations,
+  resolveInstalledClaudeSecurityAdapterImpl = resolveInstalledClaudeSecurityAdapter,
 } = {}) {
   const resolvedUserHome = normalizedAbsolute(userHomeDir);
   const resolvedLaunchHome = normalizedAbsolute(homeDir);
@@ -800,119 +442,190 @@ export async function prepareClaudeCliLaunch({
   if (!resolvedUserHome || !resolvedLaunchHome || !resolvedConfigDir) {
     throw new Error("Managed Claude preflight requires absolute user, label, and config directories.");
   }
-  const {
-    loginStaging,
-    ...topology
-  } = assertContainedLaunchTopology({
+  const { loginStaging, ...topology } = assertContainedLaunchTopology({
     userHomeDir: resolvedUserHome,
     launchHome: resolvedLaunchHome,
     configDir: resolvedConfigDir,
   });
-  const build = resolveSupportedClaudeBuild({ platform, arch });
-  if (!build) {
-    throw new Error("Managed Claude supports only qualified native Darwin arm64 and Linux x64 builds.");
-  }
-  const resolvedCommand = await verifyInstalledClaudeExecutableImpl({
-    command,
-    fsImpl,
-    spawnSyncImpl,
-    platform,
-    arch,
-  });
-  let userPlugins = [];
-  let userCustomizations = {
-    hooksPath: null,
-    mcpConfigPath: null,
-  };
-  if (!loginStaging) {
-    ensureManagedClaudePersonalSkillsLink({
-      userHomeDir: resolvedUserHome,
-      configDir: resolvedConfigDir,
-      fsImpl,
-    });
-    userPlugins = resolveEnabledClaudeUserPlugins({
-      userHomeDir: resolvedUserHome,
-      fsImpl,
-    });
-    syncManagedClaudePluginPreferences({
-      userHomeDir: resolvedUserHome,
-      configDir: resolvedConfigDir,
-      enabledPluginIds: userPlugins.map(({ id }) => id),
-      fsImpl,
-    });
-    userCustomizations = syncManagedClaudeUserCustomizationsImpl({
-      userHomeDir: resolvedUserHome,
-      configDir: resolvedConfigDir,
-      fsImpl,
-    });
-  }
-  const common = {
+  const resolvedCommand = await verifyInstalledClaudeExecutableImpl({ command, fsImpl });
+  ensureDirectory(resolvedConfigDir, { fsImpl });
+
+  const adapter = platform === "darwin"
+    ? resolveInstalledClaudeSecurityAdapterImpl({ userHomeDir: resolvedUserHome, fsImpl })
+    : {};
+  return Object.freeze({
     command: resolvedCommand,
     userHomeDir: resolvedUserHome,
     homeDir: resolvedLaunchHome,
     configDir: resolvedConfigDir,
-    launchMode: build.launchMode,
-    userPluginDirs: Object.freeze(userPlugins.map(({ installPath }) => installPath)),
-    userHooksPath: userCustomizations.hooksPath,
-    userMcpConfigPath: userCustomizations.mcpConfigPath,
+    loginStaging,
     ...topology,
-  };
-  if (build.launchMode === LINUX_DIRECT_LAUNCH_MODE) {
-    return Object.freeze(common);
-  }
-  const adapter = materializeClaudeSecurityShimImpl({
-    homeDir: resolvedUserHome,
-    fsImpl,
-    spawnSyncImpl,
-  });
-  return Object.freeze({
-    ...common,
     ...adapter,
+  });
+}
+
+export async function prepareClaudeCliLaunch({
+  command,
+  userHomeDir,
+  homeDir,
+  configDir,
+  fsImpl = fs,
+  platform = process.platform,
+  warn = (message) => console.warn(message),
+  verifyInstalledClaudeExecutableImpl = verifyInstalledClaudeExecutable,
+  resolveInstalledClaudeSecurityAdapterImpl = resolveInstalledClaudeSecurityAdapter,
+} = {}) {
+  const contained = await prepareContainedClaudeCliLaunch({
+    command,
+    userHomeDir,
+    homeDir,
+    configDir,
+    fsImpl,
+    platform,
+    verifyInstalledClaudeExecutableImpl,
+    resolveInstalledClaudeSecurityAdapterImpl,
+  });
+  const {
+    loginStaging,
+    userHomeDir: resolvedUserHome,
+    configDir: resolvedConfigDir,
+  } = contained;
+
+  let userPlugins = [];
+  let userHooksPath = null;
+  let userMcpConfigPath = null;
+  if (!loginStaging) {
+    optionalCustomization("personal skills", () => ensureManagedClaudePersonalSkillsLink({
+      userHomeDir: resolvedUserHome,
+      configDir: resolvedConfigDir,
+      fsImpl,
+    }), null, warn);
+    userHooksPath = optionalCustomization("user hooks and status line", () => (
+      syncManagedClaudeUserSettings({
+        userHomeDir: resolvedUserHome,
+        configDir: resolvedConfigDir,
+        fsImpl,
+      })
+    ), null, warn);
+    userMcpConfigPath = optionalCustomization("user MCP servers", () => (
+      syncManagedClaudeUserMcp({
+        userHomeDir: resolvedUserHome,
+        configDir: resolvedConfigDir,
+        fsImpl,
+      })
+    ), null, warn);
+    userPlugins = optionalCustomization("user plugins", () => (
+      resolveEnabledClaudeUserPlugins({ userHomeDir: resolvedUserHome, fsImpl })
+    ), [], warn);
+    optionalCustomization("config-root markers", () => syncManagedClaudeConfigMarkers({
+      userHomeDir: resolvedUserHome,
+      configDir: resolvedConfigDir,
+      fsImpl,
+    }), null, warn);
+  }
+
+  return Object.freeze({
+    ...contained,
+    userPluginDirs: Object.freeze(userPlugins.map(({ installPath }) => installPath)),
+    userHooksPath,
+    userMcpConfigPath,
   });
 }
 
 function buildContainedLaunchEnvironment({ preparedLaunch, env }) {
   const launchEnv = { ...(env ?? {}) };
-  for (const key of AUTH_ENV_KEYS) delete launchEnv[key];
-  // Claude's supported config roots isolate its profile. Keep the actual user
-  // home for descendant developer tools such as git, gh, Codex, and rustup.
+  for (const key of COMPETING_CLAUDE_ENV_KEYS) delete launchEnv[key];
   launchEnv.HOME = preparedLaunch.userHomeDir;
   launchEnv.CLAUDE_CONFIG_DIR = preparedLaunch.configDir;
   launchEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR = preparedLaunch.configDir;
-  const inheritedPath = String(env?.PATH ?? "/usr/bin:/bin");
-  launchEnv.PATH = preparedLaunch.launchMode === DARWIN_DIRECT_LAUNCH_MODE
-    ? `${preparedLaunch.adapterDir}:${inheritedPath}`
-    : inheritedPath;
-  launchEnv.DISABLE_AUTOUPDATER = "1";
-  launchEnv.DISABLE_UPDATES = "1";
+  if (preparedLaunch.adapterDir) {
+    const inheritedPath = typeof launchEnv.PATH === "string" ? launchEnv.PATH : "";
+    launchEnv.PATH = inheritedPath
+      ? `${preparedLaunch.adapterDir}${path.delimiter}${inheritedPath}`
+      : preparedLaunch.adapterDir;
+  }
   return launchEnv;
 }
 
 function buildClaudeArgs(preparedLaunch, args) {
-  const customizationArgs = [
+  return [
     ...(preparedLaunch.userHooksPath
       ? ["--settings", preparedLaunch.userHooksPath]
       : []),
     ...(preparedLaunch.userMcpConfigPath
       ? ["--mcp-config", preparedLaunch.userMcpConfigPath]
       : []),
-  ];
-  const pluginArgs = (preparedLaunch.userPluginDirs ?? [])
-    .flatMap((pluginDir) => ["--plugin-dir", pluginDir]);
-  return [
-    ...customizationArgs,
-    ...pluginArgs,
+    ...(preparedLaunch.userPluginDirs ?? [])
+      .flatMap((pluginDir) => ["--plugin-dir", pluginDir]),
     ...(Array.isArray(args) ? args : []),
   ];
 }
 
 function buildSupervisorArgs(preparedLaunch, args) {
-  const claudeArgs = buildClaudeArgs(preparedLaunch, args);
-  return [
-    SUPERVISOR_PATH,
-    preparedLaunch.command,
-    ...claudeArgs,
-  ];
+  return [SUPERVISOR_PATH, preparedLaunch.command, ...buildClaudeArgs(preparedLaunch, args)];
+}
+
+export async function runClaudeCliNoninteractive({
+  command,
+  userHomeDir,
+  homeDir,
+  configDir,
+  cwd = process.cwd(),
+  args = [],
+  env = process.env,
+  timeoutMs = 30_000,
+  fsImpl = fs,
+  platform = process.platform,
+  verifyInstalledClaudeExecutableImpl = verifyInstalledClaudeExecutable,
+  resolveInstalledClaudeSecurityAdapterImpl = resolveInstalledClaudeSecurityAdapter,
+  spawnSyncImpl = spawnSync,
+} = {}) {
+  const resolvedCwd = normalizedAbsolute(cwd);
+  if (!resolvedCwd) {
+    throw new Error("Claude noninteractive launch requires an absolute working directory.");
+  }
+  if (
+    !Array.isArray(args)
+    || !args.every((arg) => typeof arg === "string")
+    || !Number.isInteger(timeoutMs)
+    || timeoutMs < 1
+    || timeoutMs > 300_000
+  ) {
+    throw new Error("Claude noninteractive launch requires string arguments and a bounded timeout.");
+  }
+
+  const prepared = await prepareContainedClaudeCliLaunch({
+    command,
+    userHomeDir,
+    homeDir,
+    configDir,
+    fsImpl,
+    platform,
+    verifyInstalledClaudeExecutableImpl,
+    resolveInstalledClaudeSecurityAdapterImpl,
+  });
+  const result = spawnSyncImpl(prepared.command, args, {
+    stdio: "inherit",
+    env: buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
+    cwd: resolvedCwd,
+    timeout: timeoutMs,
+    killSignal: "SIGTERM",
+    shell: false,
+  });
+  if (result?.error?.code === "ETIMEDOUT") {
+    return Object.freeze({
+      status: null,
+      signal: typeof result.signal === "string" ? result.signal : null,
+      timedOut: true,
+    });
+  }
+  if (result?.error) throw result.error;
+  const childSignal = typeof result?.signal === "string" ? result.signal : null;
+  return Object.freeze({
+    status: childSignal ? null : Number.isInteger(result?.status) ? result.status : 1,
+    signal: childSignal,
+    timedOut: false,
+  });
 }
 
 export async function runClaudeCli({
@@ -924,7 +637,6 @@ export async function runClaudeCli({
   args = [],
   env = process.env,
   signal = null,
-  registerProcessControl = null,
   preparedLaunch = null,
   prepareClaudeCliLaunchImpl = prepareClaudeCliLaunch,
   spawnImpl = spawn,
@@ -939,50 +651,27 @@ export async function runClaudeCli({
     homeDir,
     configDir,
   });
-  const validCommon = (
-    prepared
-    && normalizedAbsolute(prepared.command)
-    && normalizedAbsolute(prepared.homeDir)
-    && normalizedAbsolute(prepared.configDir)
-    && (
-      prepared.userHooksPath === undefined
-      || prepared.userHooksPath === null
-      || normalizedAbsolute(prepared.userHooksPath)
-    )
-    && (
-      prepared.userMcpConfigPath === undefined
-      || prepared.userMcpConfigPath === null
-      || normalizedAbsolute(prepared.userMcpConfigPath)
-    )
-    && (
-      prepared.userPluginDirs === undefined
-      || (
-        Array.isArray(prepared.userPluginDirs)
-        && prepared.userPluginDirs.every((pluginDir) => normalizedAbsolute(pluginDir))
-      )
-    )
-  );
-  const validPlatformBoundary = prepared?.launchMode === LINUX_DIRECT_LAUNCH_MODE
-    || (
-      prepared?.launchMode === DARWIN_DIRECT_LAUNCH_MODE
-      && normalizedAbsolute(prepared.adapterDir)
-      && normalizedAbsolute(prepared.shimPath)
-    );
   if (
-    !validCommon
-    || !validPlatformBoundary
+    !prepared
+    || !normalizedAbsolute(prepared.command)
+    || !normalizedAbsolute(prepared.userHomeDir)
+    || !normalizedAbsolute(prepared.homeDir)
+    || !normalizedAbsolute(prepared.configDir)
+    || (prepared.adapterDir && !normalizedAbsolute(prepared.adapterDir))
+    || (prepared.userHooksPath && !normalizedAbsolute(prepared.userHooksPath))
+    || (prepared.userMcpConfigPath && !normalizedAbsolute(prepared.userMcpConfigPath))
+    || !Array.isArray(prepared.userPluginDirs ?? [])
+    || !(prepared.userPluginDirs ?? []).every((pluginDir) => normalizedAbsolute(pluginDir))
   ) {
     throw new Error("Claude launch requires a completed managed preflight.");
   }
-  const launchEnv = buildContainedLaunchEnvironment({ preparedLaunch: prepared, env });
+
   const child = spawnImpl(process.execPath, buildSupervisorArgs(prepared, args), {
     stdio: ["inherit", "inherit", "inherit", "ipc"],
-    env: launchEnv,
+    env: buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
     cwd: resolvedCwd,
   });
-  if (child?.error) {
-    throw child.error;
-  }
+  if (child?.error) throw child.error;
   if (Number.isInteger(child?.status) || typeof child?.signal === "string") {
     const childSignal = typeof child?.signal === "string" ? child.signal : null;
     return {
@@ -994,32 +683,12 @@ export async function runClaudeCli({
     throw new Error("Claude launch did not return a process handle.");
   }
 
-  const sendProcessControl = (action) => new Promise((resolve) => {
-    if (typeof child.send !== "function" || child.connected === false) {
-      resolve(false);
-      return;
-    }
-    try {
-      child.send({
-        type: CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
-        action,
-      }, (error) => resolve(!error));
-    } catch {
-      resolve(false);
-    }
-  });
-  registerProcessControl?.({
-    pause: () => sendProcessControl("pause"),
-    resume: () => sendProcessControl("resume"),
-  });
-
   return await new Promise((resolve, reject) => {
     let settled = false;
     let forcedKillTimer = null;
     const cleanup = () => {
       signal?.removeEventListener?.("abort", onAbort);
       if (forcedKillTimer) clearTimeout(forcedKillTimer);
-      registerProcessControl?.(null);
     };
     const finish = (fn, value) => {
       if (settled) return;
@@ -1051,10 +720,7 @@ export async function runClaudeCli({
         signal: normalizedSignal,
       });
     });
-    if (signal?.aborted) {
-      onAbort();
-    } else {
-      signal?.addEventListener?.("abort", onAbort, { once: true });
-    }
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener?.("abort", onAbort, { once: true });
   });
 }

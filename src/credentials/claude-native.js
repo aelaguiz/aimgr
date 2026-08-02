@@ -147,6 +147,12 @@ function hasSameNativeTokenSet(left, right) {
   );
 }
 
+function freezeReconciliationValue(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeReconciliationValue(child);
+  return Object.freeze(value);
+}
+
 export function planClaudeNativeBundleReplacement({
   currentBundle,
   candidateBundle,
@@ -271,6 +277,7 @@ export function findAnthropicLabelByNativeClaudeBundle(state, { nativeClaudeBund
 export function syncClaudeNativeBundleBackToLabel({
   state,
   nativeClaudeBundle,
+  label = null,
   source = "file",
   credentialsPath = null,
   nowMs = Date.now(),
@@ -278,28 +285,33 @@ export function syncClaudeNativeBundleBackToLabel({
   ensureStateShape(state);
   const liveBundle = buildClaudeNativeBundle(nativeClaudeBundle);
   if (!hasCompleteClaudeNativeBundle(liveBundle) || !getStrictClaudeNativeBundleIdentity(liveBundle)) {
-    return { synced: false, reason: "no_live_bundle" };
+    return Object.freeze({ status: "unreadable", reason: "no_live_bundle" });
   }
   const target = state.targets?.claudeCli;
-  const activeLabel = isObject(target) && typeof target.activeLabel === "string" ? normalizeLabel(target.activeLabel) : null;
-  let matchedLabel = null;
-  if (activeLabel) {
-    const activeCredential = getAnthropicCredential(state, activeLabel);
+  const lastRunLabel = isObject(target) && typeof target.lastRunLabel === "string"
+    ? normalizeLabel(target.lastRunLabel)
+    : null;
+  let matchedLabel = label ? normalizeLabel(label) : null;
+  if (!matchedLabel && lastRunLabel) {
+    const activeCredential = getAnthropicCredential(state, lastRunLabel);
     if (
       activeCredential
       && hasCompleteClaudeNativeBundle(activeCredential)
       && doClaudeNativeBundleIdentitiesMatch(activeCredential, liveBundle)
     ) {
-      matchedLabel = activeLabel;
+      matchedLabel = lastRunLabel;
     }
   }
   if (!matchedLabel) {
     matchedLabel = findAnthropicLabelByNativeClaudeBundle(state, { nativeClaudeBundle: liveBundle });
   }
   if (!matchedLabel) {
-    return { synced: false, reason: "no_label_for_identity" };
+    return Object.freeze({ status: "lineage_conflict", reason: "no_label_for_identity" });
   }
   const stored = getAnthropicCredential(state, matchedLabel);
+  if (!stored || !doClaudeNativeBundleIdentitiesMatch(stored, liveBundle)) {
+    return Object.freeze({ status: "lineage_conflict", reason: "identity_conflict", label: matchedLabel });
+  }
   const storedBundle = getClaudeNativeBundle(stored);
   const storedOauth = isObject(storedBundle?.claudeAiOauth) ? storedBundle.claudeAiOauth : {};
   const liveOauth = liveBundle.claudeAiOauth;
@@ -308,7 +320,7 @@ export function syncClaudeNativeBundleBackToLabel({
   if (storedOauth.refreshToken !== liveOauth.refreshToken) rotatedFields.push("refreshToken");
   if (storedOauth.expiresAt !== liveOauth.expiresAt) rotatedFields.push("expiresAt");
   if (rotatedFields.length === 0) {
-    return { synced: false, reason: "tokens_unchanged", label: matchedLabel };
+    return Object.freeze({ status: "unchanged", reason: "tokens_unchanged", label: matchedLabel });
   }
   const importMeta = getAuthorityAnthropicImportLabelMeta(state, matchedLabel);
   if (
@@ -331,7 +343,7 @@ export function syncClaudeNativeBundleBackToLabel({
       && liveMtimeMs !== null
       && liveMtimeMs <= importedAtMs + 5_000
     ) {
-      return { synced: false, reason: "authority_import_newer", label: matchedLabel };
+      return Object.freeze({ status: "unchanged", reason: "authority_import_newer", label: matchedLabel });
     }
   }
   const replacement = planClaudeNativeBundleReplacement({
@@ -344,23 +356,33 @@ export function syncClaudeNativeBundleBackToLabel({
     allowExpiredCandidate: true,
   });
   if (replacement.ok !== true) {
-    return { synced: false, reason: replacement.reason, label: matchedLabel };
+    const status = ["identity_conflict", "ambiguous_equal_expiry", "current_incomplete"].includes(replacement.reason)
+      ? "lineage_conflict"
+      : replacement.reason === "candidate_incomplete"
+        ? "unreadable"
+        : "unchanged";
+    return Object.freeze({ status, reason: replacement.reason, label: matchedLabel });
   }
   if (replacement.action === "noop") {
-    return { synced: false, reason: "tokens_unchanged", label: matchedLabel };
+    return Object.freeze({ status: "unchanged", reason: "tokens_unchanged", label: matchedLabel });
   }
-  const nextCredential = deriveAnthropicCredentialFromClaudeBundle({
+  const candidateCredential = deriveAnthropicCredentialFromClaudeBundle({
     existingCredential: stored,
     nativeClaudeBundle: liveBundle,
   });
-  state.credentials[ANTHROPIC_PROVIDER][matchedLabel] = nextCredential;
-  return { synced: true, label: matchedLabel, rotatedFields, source };
+  return freezeReconciliationValue({
+    status: "candidate",
+    label: matchedLabel,
+    rotatedFields,
+    source,
+    candidateCredential,
+  });
 }
 
 export function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
   const live = readClaudeNativeBundle({ homeDir });
   if (!live.exists || live.ok !== true || !hasCompleteClaudeNativeBundle(live.nativeClaudeBundle) || !live.summary) {
-    return { synced: false, reason: "no_live_bundle" };
+    return Object.freeze({ status: "unreadable", reason: "no_live_bundle" });
   }
   return syncClaudeNativeBundleBackToLabel({
     state,
@@ -373,6 +395,7 @@ export function syncLiveClaudeRotationBackToLabel({ state, homeDir }) {
 
 export async function syncLiveClaudeRotationBackToLabelFromStorage({
   state,
+  label = null,
   descriptor,
   nowMs = Date.now(),
   readClaudeNativeKeychainOauthImpl,
@@ -385,10 +408,14 @@ export async function syncLiveClaudeRotationBackToLabelFromStorage({
         readClaudeNativeKeychainOauthImpl,
       });
   if (live.ok !== true) {
-    return { synced: false, reason: live.errorKind || "no_live_bundle" };
+    if (live.errorKind === "native_storage_empty") {
+      return Object.freeze({ status: "unchanged", reason: "native_storage_empty" });
+    }
+    return Object.freeze({ status: "unreadable", reason: live.errorKind || "no_live_bundle" });
   }
   return syncClaudeNativeBundleBackToLabel({
     state,
+    label,
     nativeClaudeBundle: live.nativeClaudeBundle,
     source: live.source,
     credentialsPath: live.source === "file"

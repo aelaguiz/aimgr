@@ -49,15 +49,6 @@ export function buildAnthropicClaudeCredential({
   organizationUuid = "org_boss",
 } = {}) {
   return {
-    access,
-    refresh,
-    expiresAt: new Date(expiresAtMs).toISOString(),
-    subscriptionType,
-    rateLimitTier,
-    scopes,
-    emailAddress,
-    organizationName,
-    organizationUuid,
     nativeClaudeBundle: {
       claudeAiOauth: {
         accessToken: access,

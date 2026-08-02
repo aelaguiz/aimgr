@@ -7,6 +7,7 @@ import { promptRequiredLine } from "../io/prompts.js";
 import { ANTHROPIC_PROVIDER, BROWSER_MODE_AGENT_BROWSER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHROME_PROFILE, OPENAI_CODEX_PROVIDER, SUPPORTED_OAUTH_PROVIDERS } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { parseExpiresAtToMs, toIsoFromExpiresMs } from "../core/time.js";
+import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { getAccountBrowserState } from "../state/accounts.js";
 import { ensureStateShape } from "../state/schema.js";
 
@@ -19,7 +20,7 @@ export function getCodexCredential(state, label) {
 export function getAnthropicCredential(state, label) {
   ensureStateShape(state);
   const byLabel = state.credentials[ANTHROPIC_PROVIDER];
-  return isObject(byLabel?.[label]) ? byLabel[label] : null;
+  return isObject(byLabel?.[label]) ? getAnthropicCredentialView(byLabel[label]) : null;
 }
 
 export function assertNoCodexAccountIdCollisions(state, label, accountId) {

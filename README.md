@@ -9,7 +9,7 @@ The shared source of truth is Redis on `agents` at Amir's Mac Studio over Tailsc
 - fallback Tailnet IP: `redis://100.96.80.106:6380`
 - local config: `~/.aimgr/config.yaml`
 - local-only adjunct state: `~/.aimgr/local-state.json`
-- legacy `~/.aimgr/secrets.json`: migration input or backup artifact only
+- legacy `~/.aimgr/secrets.json`: backup artifact only; runtime commands ignore it
 
 The Redis cutover is intentionally breaking and non-reverse-compatible. Runtime credential coordination no longer has file ownership, SSH authority pulls, or promote-back flows.
 
@@ -45,32 +45,13 @@ aim redis ping
 aim redis snapshot
 ```
 
-## Migration
+## Redis snapshots
 
-Migration is the only path that reads old credential stores. It is read-only until the reviewed apply step.
-
-For the hard cutover, this machine's current local Codex auth files and archived AIM snapshots are the bootstrap authority. Do not merge old Redis `session:*`, `label:*`, or `machine:*` rows back into the new store; those rows are backup-and-cleanup material only.
-
-Collect the local bootstrap bundle on this machine:
-
-```bash
-aim redis migrate collect --out <bundle.json>
-```
-
-Plan and apply once from the reviewed bootstrap bundle directory:
-
-```bash
-aim redis migrate plan --from <bundle-dir> --out <plan.json>
-aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover
-aim redis migrate cleanup-legacy --confirm-breaking-cutover
-aim redis export --out <post-cutover-export.json>
-```
-
-The migration planner preserves currently usable Codex credentials. Generic Redis import may seed
-Claude policy-only candidate records, but generic import and migration apply reject Claude credential
-and identity material. A complete Claude credential enters Redis through contained
-`aim login <label>`, or through the per-label leased `aim claude capture-native` and
-`aim claude import-native` boundaries for legacy ingestion.
+Use `aim redis export --out <snapshot.json>` for a reviewable backup. A reviewed snapshot can seed a
+new Redis prefix with `aim redis import --in <snapshot.json>`. Generic import accepts Claude policy-only
+candidate records, but rejects Claude credential and identity material. Complete Claude credentials
+enter Redis through contained `aim login <label>`, or through the per-label leased
+`aim claude capture-native` and `aim claude import-native` boundaries.
 
 ## Runtime Commands
 
@@ -98,10 +79,8 @@ aim redis configure --url <redis-url> [--key-prefix <prefix>] [--primary-host <h
 aim redis config
 aim redis ping
 aim redis snapshot
-aim redis migrate collect --out <bundle.json>
-aim redis migrate plan --from <bundle-dir> --out <plan.json>
-aim redis migrate apply --plan <plan.json> --confirm-breaking-cutover
-aim redis migrate cleanup-legacy --confirm-breaking-cutover
+aim redis export --out <snapshot.json>
+aim redis import --in <snapshot.json>
 aim label rebind <label> --provider <provider> --confirm
 ```
 
@@ -121,7 +100,6 @@ aim rebalance hermes
 aim auth write hermes <label> --auth-file <abs-path>
 aim codex use [label]
 aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
-aim codex run --tend [-p <profile>] [--resume <session-id>] [-- <codex args...>]
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
 aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--json]
@@ -206,14 +184,6 @@ interactively when prompted. The raw key is never echoed back and never written 
 `aim sakana use <account-name>` preserves unrelated `~/.codex/.env` lines, updates only
 `SAKANA_API_KEY`, writes the file as `0600`, and records only a redacted local receipt.
 
-`aim codex run --tend` runs attached Codex sessions through an AIMGR-owned low-latency foreground
-relay. It does not use tmux, a private Codex app-server, or Codex `--remote`. Tended runs require
-Python 3 for the small repo-owned PTY helpers; set `AIMGR_PYTHON_BIN` if `python3` is not the desired
-interpreter. `--no-attach` keeps the non-attached automation PTY helper path instead of the human
-foreground relay.
-`--tmux-session` is obsolete and fails loudly. Codex pass-through args after `--` must not include
-`--remote` or `--remote-auth-token-env`.
-
 Browser binding policy:
 
 ```bash
@@ -224,30 +194,12 @@ aim browser set <label> --mode agent-browser --profile <abs-path> --session <nam
 aim browser set <label> --mode manual-callback
 ```
 
-## Removed Commands
-
-These commands were removed as live coordination surfaces:
-
-```bash
-aim apply
-aim sync openclaw
-aim sync codex --from <authority>
-aim sync claude --from <authority>
-aim promote codex --to <authority> <label> [<label>...]
-aim promote claude --to <authority> <label> [<label>...]
-aim internal apply-codex-promotion
-aim internal apply-claude-promotion
-aim claude use [label]
-```
-
-Use Redis migration once, then use the Redis-backed runtime commands above. Refreshes, native Claude captures/imports/runs, Codex watch/tend rotations, and explicit repair commands publish to Redis directly.
-
 ## State Model
 
 Redis records own shared credential truth:
 
 - credentials: provider, label, credential, identity, shared browser/reauth/pool policy, health, and audit provenance
-- meta: migration and cutover metadata
+- meta: Redis coordination schema metadata
 
 `~/.aimgr/local-state.json` owns local-only facts:
 

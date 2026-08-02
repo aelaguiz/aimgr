@@ -17,25 +17,113 @@ export function buildRedisKeys(keyPrefix) {
   };
 }
 
-export function buildRedisStatusClientOptions({ timeoutMs = 2_000 } = {}) {
-  const boundedTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.round(timeoutMs) : 2_000;
+export const REDIS_CONNECTION_POLICY_OBSERVE = "observe";
+export const REDIS_CONNECTION_POLICY_ONE_SHOT = "one-shot";
+export const REDIS_CONNECTION_POLICY_LEASED = "leased";
+
+const REDIS_CONNECTION_POLICIES = new Set([
+  REDIS_CONNECTION_POLICY_OBSERVE,
+  REDIS_CONNECTION_POLICY_ONE_SHOT,
+  REDIS_CONNECTION_POLICY_LEASED,
+]);
+
+function normalizeTimeoutMs(value, fallback) {
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
+}
+
+export function buildRedisConnectionPolicy(connectionPolicy = REDIS_CONNECTION_POLICY_ONE_SHOT, {
+  timeoutMs,
+} = {}) {
+  if (!REDIS_CONNECTION_POLICIES.has(connectionPolicy)) {
+    throw new Error(`Unsupported Redis connection policy: ${String(connectionPolicy)}.`);
+  }
+  const fallbackTimeoutMs = connectionPolicy === REDIS_CONNECTION_POLICY_OBSERVE ? 2_000 : 5_000;
+  const boundedTimeoutMs = normalizeTimeoutMs(timeoutMs, fallbackTimeoutMs);
+  if (connectionPolicy === REDIS_CONNECTION_POLICY_LEASED) {
+    return {
+      initialConnectTimeoutMs: boundedTimeoutMs,
+      clientOptions: {
+        disableOfflineQueue: true,
+        socket: {
+          connectTimeout: boundedTimeoutMs,
+          reconnectStrategy: (retries) => Math.min(100 * (2 ** Math.min(retries, 4)), 1_000),
+        },
+      },
+    };
+  }
   return {
-    socket: {
-      connectTimeout: boundedTimeoutMs,
-      socketTimeout: boundedTimeoutMs,
-      reconnectStrategy: false,
+    initialConnectTimeoutMs: boundedTimeoutMs,
+    clientOptions: {
+      socket: {
+        connectTimeout: boundedTimeoutMs,
+        socketTimeout: boundedTimeoutMs,
+        reconnectStrategy: false,
+      },
     },
   };
 }
 
-export async function connectRedisStore({ url, keyPrefix, client = null, clientOptions = {} } = {}) {
+// Compatibility name for read-only callers; the policy remains centralized.
+export function buildRedisStatusClientOptions({ timeoutMs = 2_000 } = {}) {
+  return buildRedisConnectionPolicy(REDIS_CONNECTION_POLICY_OBSERVE, { timeoutMs }).clientOptions;
+}
+
+async function connectWithInitialDeadline(client, timeoutMs) {
+  let timeoutId = null;
+  const connectPromise = Promise.resolve().then(() => client.connect());
+  // Retain a rejection handler even when the deadline wins, so a late connect
+  // rejection cannot become an unhandled process error.
+  connectPromise.catch(() => {});
+  try {
+    await Promise.race([
+      connectPromise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error("Redis initial connection timed out.")), timeoutMs);
+        timeoutId.unref?.();
+      }),
+    ]);
+  } catch (error) {
+    try {
+      client.destroy?.();
+    } catch {
+      // Preserve the fixed, value-free connection error.
+    }
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+export async function connectRedisStore({
+  url,
+  keyPrefix,
+  client = null,
+  clientOptions = {},
+  connectionPolicy = REDIS_CONNECTION_POLICY_ONE_SHOT,
+  initialConnectTimeoutMs,
+  createClientImpl = createClient,
+} = {}) {
   if (!url && !client) {
     throw new Error("Missing Redis URL.");
   }
-  const redisClient = client ?? createClient({ ...clientOptions, url });
+  const policy = buildRedisConnectionPolicy(connectionPolicy, {
+    timeoutMs: initialConnectTimeoutMs,
+  });
+  const redisClient = client ?? createClientImpl({
+    ...policy.clientOptions,
+    ...clientOptions,
+    socket: {
+      ...policy.clientOptions.socket,
+      ...(clientOptions.socket ?? {}),
+    },
+    url,
+  });
   if (!client) {
     redisClient.on("error", () => {});
-    await redisClient.connect();
+    await connectWithInitialDeadline(
+      redisClient,
+      normalizeTimeoutMs(initialConnectTimeoutMs, policy.initialConnectTimeoutMs),
+    );
   }
   return {
     client: redisClient,
@@ -233,64 +321,4 @@ export async function importCredentialsSnapshot(store, snapshot, {
     }));
   }
   return results;
-}
-
-export async function importSnapshot(store, snapshot, options = {}) {
-  return importCredentialsSnapshot(store, snapshot, options);
-}
-
-function legacyKeys(store) {
-  const prefix = store.keyPrefix;
-  return {
-    machines: `${prefix}machines`,
-    labels: `${prefix}labels`,
-    sessions: `${prefix}sessions`,
-  };
-}
-
-export async function readLegacyRedisSnapshot(store) {
-  const keys = legacyKeys(store);
-  const [machines, labels, sessions] = await Promise.all([
-    readIndexedRecords(store, keys.machines),
-    readIndexedRecords(store, keys.labels),
-    readIndexedRecords(store, keys.sessions),
-  ]);
-  return {
-    machines,
-    labels,
-    sessions,
-    observedAt: new Date().toISOString(),
-    keyPrefix: store.keyPrefix,
-  };
-}
-
-async function deleteKeys(store, keys) {
-  const uniqueKeys = [...new Set(keys.filter(Boolean))];
-  if (uniqueKeys.length === 0) return 0;
-  if (typeof store.client.del !== "function") {
-    throw new Error("Redis client does not support DEL.");
-  }
-  return store.client.del(uniqueKeys);
-}
-
-export async function deleteLegacyRedisCredentialKeys(store) {
-  const keys = legacyKeys(store);
-  const snapshot = await readLegacyRedisSnapshot(store);
-  const recordKeys = [
-    ...snapshot.machines.map((record) => `${store.keyPrefix}machine:${record.machineId}`),
-    ...snapshot.labels.map((record) => `${store.keyPrefix}label:${record.provider}:${record.label}`),
-    ...snapshot.sessions.map((record) => `${store.keyPrefix}session:${record.provider}:${record.label}:${record.machineId}`),
-    ...snapshot.sessions.map((record) => `${store.keyPrefix}sessionsByLabel:${record.provider}:${record.label}`),
-    ...snapshot.sessions.map((record) => `${store.keyPrefix}sessionsByMachine:${record.machineId}`),
-  ];
-  const deleted = await deleteKeys(store, [keys.machines, keys.labels, keys.sessions, ...recordKeys]);
-  return {
-    ok: true,
-    deleted,
-    legacyCounts: {
-      machines: snapshot.machines.length,
-      labels: snapshot.labels.length,
-      sessions: snapshot.sessions.length,
-    },
-  };
 }

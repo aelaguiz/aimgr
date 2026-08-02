@@ -7,10 +7,11 @@ function pushStatusAccountTable(lines, { heading, accounts, now }) {
   lines.push(`${heading} (${accounts.length})`);
   const averageAccountRow = accounts.length > 0 ? buildStatusAverageAccountTableRow(accounts, now) : null;
   const accountRows = [
-    ["label", "st", "login", "exp", "5h_used", "5h_in", "wk_used", "wk_in", "provider", "flags"],
+    ["label", "st", "lock", "login", "exp", "5h_used", "5h_in", "wk_used", "wk_in", "provider", "usage_src", "flags"],
     ...accounts.map((account) => [
       account.label,
       account.operator?.status || "unknown",
+      account.lock?.status || "unknown",
       formatInteractiveLoginSummary(account.login) || "--",
       formatStatusAccountExpiryCell(account.credentials?.expiresIn),
       formatStatusAccountUsedCell(account.usage, 0),
@@ -18,6 +19,7 @@ function pushStatusAccountTable(lines, { heading, accounts, now }) {
       formatStatusAccountUsedCell(account.usage, 1),
       formatStatusAccountResetCell(account.usage, 1, now),
       account.provider || "unknown",
+      account.usage?.source || "unavailable",
       buildStatusAccountFlags(account),
     ]),
     ...(averageAccountRow ? [averageAccountRow] : []),
@@ -35,6 +37,14 @@ export function renderStatusText(view, {
   const accounts = Array.isArray(view?.accounts) ? view.accounts : [];
   const codexAccounts = accounts.filter((account) => account?.provider === OPENAI_CODEX_PROVIDER);
   const claudeAccounts = accounts.filter((account) => account?.provider === ANTHROPIC_PROVIDER);
+
+  const redisStatus = typeof view?.redis?.status === "string" ? view.redis.status : "unknown";
+  const cacheAgeMs = Number(view?.redis?.cacheAgeMs);
+  lines.push(
+    `COORDINATION redis=${redisStatus}`
+      + (Number.isFinite(cacheAgeMs) ? ` cache_age_seconds=${Math.floor(cacheAgeMs / 1000)}` : ""),
+    "",
+  );
 
   if (showAccounts) {
     pushStatusAccountTable(lines, { heading: "CODEX ACCOUNTS", accounts: codexAccounts, now });
@@ -74,12 +84,16 @@ export function renderStatusText(view, {
   lines.push("CODEX ACTIVE");
   lines.push(renderCurrentCodexUsageText(view, { now }).trimEnd());
   lines.push("");
-  lines.push("CLAUDE ACTIVE");
-  const activeClaudeLabel =
-    typeof view?.claudeCli?.activeLabel === "string" && view.claudeCli.activeLabel.trim()
-      ? view.claudeCli.activeLabel.trim()
-      : "none";
-  lines.push(`label=${activeClaudeLabel}`);
+  lines.push("CLAUDE LAST RUN");
+  const lastRunClaudeLabel =
+    typeof view?.claudeCli?.lastRunLabel === "string" && view.claudeCli.lastRunLabel.trim()
+      ? view.claudeCli.lastRunLabel.trim()
+      : typeof view?.claudeCli?.inferredLabel === "string" && view.claudeCli.inferredLabel.trim()
+        ? view.claudeCli.inferredLabel.trim()
+        : view?.claudeCli?.status === "unreadable"
+          ? "unknown"
+          : "none";
+  lines.push(`label=${lastRunClaudeLabel}`);
 
   return `${lines.join("\n")}\n`;
 }

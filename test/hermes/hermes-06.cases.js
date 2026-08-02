@@ -3,16 +3,8 @@ import assert from "node:assert/strict";
 import { refreshHermesHomeDemandLedger } from "../../src/pool/demand-ledger.js";
 import { readHermesHomeTokenUsage } from "../../src/pool/token-usage.js";
 import { planWeightedHermesRebalance } from "../../src/pool/weighted-planner.js";
-import { runCli } from "../helpers/cli-runner.js";
 import { mkTempHome } from "../helpers/files.js";
 import { writeHermesStateDb } from "../helpers/hermes.js";
-
-test("sync codex is removed after the Redis cutover", async () => {
-  await assert.rejects(
-    () => runCli(["sync", "codex", "--from", "/tmp/authority.json", "--home", mkTempHome()]),
-    /sync codex.*removed in the Redis cutover/s,
-  );
-});
 
 test("readHermesHomeTokenUsage and refreshHermesHomeDemandLedger import Hermes state.db session counters", () => {
   const home = mkTempHome();
