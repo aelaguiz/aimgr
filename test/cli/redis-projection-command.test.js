@@ -486,7 +486,7 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
-test("managed Claude pauses through transient lease loss but aborts for a replacement owner", async () => {
+test("managed Claude retries transient lease loss without pausing but aborts for a replacement owner", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const credential = buildAnthropicClaudeCredential({
@@ -522,8 +522,6 @@ test("managed Claude pauses through transient lease loss but aborts for a replac
   const rotationTimers = [];
   let resolveLaunch = null;
   let launchSignal = null;
-  let pauseCount = 0;
-  let resumeCount = 0;
   let exitCode = null;
   let markLaunchStarted;
   const launchStarted = new Promise((resolve) => {
@@ -566,16 +564,7 @@ test("managed Claude pauses through transient lease loss but aborts for a replac
       },
       runClaudeCliImpl: ({ signal, registerProcessControl }) => {
         launchSignal = signal;
-        registerProcessControl({
-          async pause() {
-            pauseCount += 1;
-            return true;
-          },
-          async resume() {
-            resumeCount += 1;
-            return true;
-          },
-        });
+        assert.equal(registerProcessControl, undefined);
         markLaunchStarted();
         return new Promise((resolve) => {
           resolveLaunch = resolve;
@@ -608,18 +597,8 @@ test("managed Claude pauses through transient lease loss but aborts for a replac
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.equal(pauseCount, 1);
-    assert.equal(resumeCount, 0);
     assert.equal(launchSignal.aborted, false);
-    const recoveryCountWhilePaused = recoveryEvalCount;
-    const rotationTimer = rotationTimers.find(
-      (timer) => timer.delay === 30_000 && timer.cleared === false,
-    );
-    assert.ok(rotationTimer);
-    await rotationTimer.callback();
-    assert.equal(recoveryEvalCount, recoveryCountWhilePaused);
-    assert.equal(launchSignal.aborted, false);
-
+    const recoveryCountAfterFailure = recoveryEvalCount;
     const retryTimer = heartbeatTimers.find(
       (timer) => timer !== heartbeatTimer && timer.delay === 10_000 && timer.cleared === false,
     );
@@ -630,8 +609,7 @@ test("managed Claude pauses through transient lease loss but aborts for a replac
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(launchSignal.aborted, false);
-    assert.equal(pauseCount, 1);
-    assert.equal(resumeCount, 1);
+    assert.ok(recoveryEvalCount > recoveryCountAfterFailure);
     assert.equal(
       [...client.values.keys()].some((key) => key.includes(":lease:credential:anthropic:claude")),
       true,
@@ -657,8 +635,6 @@ test("managed Claude pauses through transient lease loss but aborts for a replac
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(launchSignal.aborted, true);
-    assert.equal(pauseCount, 1);
-    assert.equal(resumeCount, 1);
     assert.equal(await replacement.renew(), true);
     await command;
     assert.equal(exitCode, 1);

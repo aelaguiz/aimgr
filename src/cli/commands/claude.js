@@ -127,14 +127,11 @@ async function renewClaudeCredentialLeaseWithinDeadline(lease) {
 function startClaudeCredentialLeaseHeartbeat({
   lease,
   abortController,
-  pauseForUncertainOwnership = null,
-  resumeAfterOwnershipRecovered = null,
 }) {
   let stopped = false;
   let timer = null;
   let inFlight = null;
   let lost = false;
-  let paused = false;
 
   const loseOwnership = () => {
     lost = true;
@@ -144,30 +141,6 @@ function startClaudeCredentialLeaseHeartbeat({
     if (stopped) return result;
     if (result === CLAUDE_LEASE_CONTENDED) {
       loseOwnership();
-      return result;
-    }
-    if (result === CLAUDE_LEASE_UNREACHABLE) {
-      if (paused) return result;
-      paused = true;
-      try {
-        if (await pauseForUncertainOwnership?.() === true) return result;
-      } catch {
-        // Failure to pause cannot preserve safe ownership uncertainty.
-      }
-      loseOwnership();
-      return result;
-    }
-    if (paused) {
-      try {
-        if (await resumeAfterOwnershipRecovered?.() !== true) {
-          loseOwnership();
-          return CLAUDE_LEASE_UNREACHABLE;
-        }
-      } catch {
-        loseOwnership();
-        return CLAUDE_LEASE_UNREACHABLE;
-      }
-      paused = false;
     }
     return result;
   };
@@ -193,9 +166,6 @@ function startClaudeCredentialLeaseHeartbeat({
   return {
     get lost() {
       return lost;
-    },
-    get paused() {
-      return paused;
     },
     renewNow,
     async stop() {
@@ -311,10 +281,7 @@ function assertExplicitClaudeFenceReplacement({ state, label, fence }) {
   }
 }
 
-async function acquireClaudeCredentialLeaseGuard(runtime, label, {
-  pauseForUncertainOwnership = null,
-  resumeAfterOwnershipRecovered = null,
-} = {}) {
+async function acquireClaudeCredentialLeaseGuard(runtime, label) {
   const lease = await acquireRedisCredentialLease(runtime.store, {
     provider: ANTHROPIC_PROVIDER,
     label,
@@ -328,8 +295,6 @@ async function acquireClaudeCredentialLeaseGuard(runtime, label, {
   const heartbeat = startClaudeCredentialLeaseHeartbeat({
     lease,
     abortController,
-    pauseForUncertainOwnership,
-    resumeAfterOwnershipRecovered,
   });
   try {
     await assertClaudeCredentialLeaseOwned({
@@ -469,7 +434,6 @@ function startClaudeActiveRotationPublisher({
       timer = null;
       inFlight = (async () => {
         try {
-          if (guard.heartbeat.paused) return;
           if (!await assertClaudeCredentialLeaseOwned({
             ...guard,
             phase: "before active-run rotation reconciliation",
@@ -826,18 +790,8 @@ async function handleRedisClaudeRun(context, {
   let activeRotationPublisher = null;
   let activeRotationPublicationFailed = false;
   let stagedSessionFork = null;
-  let activeProcessControl = null;
   try {
-    guard = await acquireClaudeCredentialLeaseGuard(runtime, label, maintenance
-      ? {}
-      : {
-          pauseForUncertainOwnership: async () => (
-            activeProcessControl?.pause ? activeProcessControl.pause() : false
-          ),
-          resumeAfterOwnershipRecovered: async () => (
-            activeProcessControl?.resume ? activeProcessControl.resume() : false
-          ),
-        });
+    guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
     // A prior lease owner may have rotated this label between our initial read
     // and lease acquisition. Reload under the lease before inspecting local
     // projections or choosing the authoritative bundle.
@@ -1011,17 +965,11 @@ async function handleRedisClaudeRun(context, {
         args: maintenance ? CLAUDE_MAINTENANCE_ARGS : opts.afterDoubleDash,
         env,
         signal: guard.abortController.signal,
-        registerProcessControl: maintenance
-          ? null
-          : (processControl) => {
-              activeProcessControl = processControl;
-            },
         preparedLaunch,
       });
     } catch (error) {
       launchError = error;
     } finally {
-      activeProcessControl = null;
       if (maintenanceTimer) {
         clearMaintenanceTimer(maintenanceTimer);
         maintenanceTimer = null;
