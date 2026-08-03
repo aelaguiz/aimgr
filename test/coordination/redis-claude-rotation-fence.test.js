@@ -9,6 +9,7 @@ import {
   clearRedisClaudeRotationFence,
   createRedisClaudeRotationFence,
   isRedisClaudeRotationFenceSuccessor,
+  isRedisClaudeRotationSuccessorOfFingerprint,
   readRedisClaudeRotationFence,
 } from "../../src/coordination/redis-claude-rotation-fence.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
@@ -92,8 +93,11 @@ test("Claude rotation successor requires exact fence provenance and a later vers
     baseTokenLineageFingerprint: HASH_B,
     baseCredentialVersion: 7,
   });
-  const provenance = buildRedisClaudeRotationFenceProvenance({ retained: true }, fence);
-  const candidate = { label: "claude", version: 8, provenance };
+  const provenance = buildRedisClaudeRotationFenceProvenance({
+    retained: true,
+    lastSourceType: "native-claude-rotation",
+  }, fence);
+  const candidate = { provider: "anthropic", label: "claude", version: 8, provenance };
 
   assert.equal(isRedisClaudeRotationFenceSuccessor(candidate, {
     fence,
@@ -111,7 +115,33 @@ test("Claude rotation successor requires exact fence provenance and a later vers
     fence,
     tokenLineageFingerprint: HASH_B,
   }), false);
-  assert.deepEqual(buildRedisClaudeRotationFenceProvenance(provenance, null), { retained: true });
+  assert.equal(isRedisClaudeRotationSuccessorOfFingerprint(candidate, {
+    label: "claude",
+    baseTokenLineageFingerprint: HASH_B,
+    tokenLineageFingerprint: HASH_A,
+  }), true);
+  assert.equal(isRedisClaudeRotationSuccessorOfFingerprint({ ...candidate, provider: "openai-codex" }, {
+    label: "claude",
+    baseTokenLineageFingerprint: HASH_B,
+    tokenLineageFingerprint: HASH_A,
+  }), false);
+  assert.equal(isRedisClaudeRotationSuccessorOfFingerprint({
+    ...candidate,
+    provenance: { ...candidate.provenance, lastSourceType: "oauth-login" },
+  }, {
+    label: "claude",
+    baseTokenLineageFingerprint: HASH_B,
+    tokenLineageFingerprint: HASH_A,
+  }), false);
+  assert.equal(isRedisClaudeRotationSuccessorOfFingerprint(candidate, {
+    label: "claude",
+    baseTokenLineageFingerprint: HASH_A,
+    tokenLineageFingerprint: HASH_B,
+  }), false);
+  assert.deepEqual(buildRedisClaudeRotationFenceProvenance(provenance, null), {
+    retained: true,
+    lastSourceType: "native-claude-rotation",
+  });
 });
 
 test("Claude rotation fence rejects malformed shared state without replacing it", async () => {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { normalizeLabel } from "../core/normalize.js";
+import { ANTHROPIC_PROVIDER } from "../core/constants.js";
+import { normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { guardedDeleteWithRedisCredentialLease } from "./redis-credential-lease.js";
 import { normalizeKeyPrefix } from "./records.js";
 
@@ -14,6 +15,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 const PROVENANCE_FENCE_ID = "claudeRotationFenceId";
 const PROVENANCE_BASE_FINGERPRINT = "claudeRotationBaseTokenLineageFingerprint";
 const PROVENANCE_BASE_VERSION = "claudeRotationBaseCredentialVersion";
+const PROVEN_ROTATION_SOURCE_TYPES = new Set([
+  "login-maintenance",
+  "native-claude-rotation",
+]);
 
 function requireStore(store) {
   const rawPrefix = typeof store?.keyPrefix === "string" ? store.keyPrefix.trim() : "";
@@ -153,6 +158,31 @@ export function isRedisClaudeRotationFenceSuccessor(record, {
     && provenance[PROVENANCE_FENCE_ID] === normalized.fenceId
     && provenance[PROVENANCE_BASE_FINGERPRINT] === normalized.baseTokenLineageFingerprint
     && provenance[PROVENANCE_BASE_VERSION] === normalized.baseCredentialVersion
+  );
+}
+
+export function isRedisClaudeRotationSuccessorOfFingerprint(record, {
+  label,
+  baseTokenLineageFingerprint,
+  tokenLineageFingerprint,
+} = {}) {
+  const provenance = record?.provenance && typeof record.provenance === "object" && !Array.isArray(record.provenance)
+    ? record.provenance
+    : {};
+  const baseCredentialVersion = provenance[PROVENANCE_BASE_VERSION];
+  return (
+    normalizeProviderId(record?.provider) === ANTHROPIC_PROVIDER
+    && normalizeLabel(record?.label) === normalizeLabel(label)
+    && Number.isInteger(record?.version)
+    && Number.isInteger(baseCredentialVersion)
+    && baseCredentialVersion >= 1
+    && record.version > baseCredentialVersion
+    && UUID_PATTERN.test(String(provenance[PROVENANCE_FENCE_ID] ?? ""))
+    && SHA256_PATTERN.test(String(baseTokenLineageFingerprint ?? ""))
+    && provenance[PROVENANCE_BASE_FINGERPRINT] === baseTokenLineageFingerprint
+    && PROVEN_ROTATION_SOURCE_TYPES.has(provenance.lastSourceType)
+    && SHA256_PATTERN.test(String(tokenLineageFingerprint ?? ""))
+    && tokenLineageFingerprint !== baseTokenLineageFingerprint
   );
 }
 

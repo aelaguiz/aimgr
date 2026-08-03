@@ -15,6 +15,7 @@ import {
 } from "../../src/coordination/redis-credential-lease.js";
 import {
   buildRedisClaudeRotationFenceProvenance,
+  clearRedisClaudeRotationFence,
   createRedisClaudeRotationFence,
   readRedisClaudeRotationFence,
 } from "../../src/coordination/redis-claude-rotation-fence.js";
@@ -22,6 +23,7 @@ import {
   closeRedisRuntime,
   loadRedisRuntime,
 } from "../../src/coordination/runtime.js";
+import { publishMaintainedCredential } from "../../src/coordination/login-publish.js";
 import {
   resolveAimgrLocalStatePath,
   resolveAimgrClaudeLabelHomeDir,
@@ -680,11 +682,9 @@ test("explicit Claude run enforces the offline cache and online receipt recovery
   const assertHumanReadableAccountConflict = (error) => {
     assert.equal(
       error.message,
-      "Claude account \"claude\" could not start. "
-        + "This machine's saved login differs from AIM's shared copy, and AIM cannot safely tell which one is newer. "
-        + "Your local login was left unchanged. "
-        + "After confirming it belongs to \"claude\", run `aim claude capture-native claude` "
-        + "or `aim claude import-native claude --in <file>`.",
+      "Claude account \"claude\" could not start because this machine's saved copy and AIM's shared copy changed separately. "
+        + "AIM changed neither copy. "
+        + `To use the shared login from amirs-m3-max-new, back up and remove this machine's cache at "${resolveClaudeAuthFilePath(configDir)}", then retry.`,
     );
     assert.doesNotMatch(error.message, /lineage|projection receipt/i);
     return true;
@@ -723,6 +723,131 @@ test("explicit Claude run enforces the offline cache and online receipt recovery
     assertHumanReadableAccountConflict,
   );
   assert.equal(conflictedLaunches, 0);
+});
+
+test("M5 accepts an M3-published Claude rotation when Redis proves its unreceipted cache is the exact base", async () => {
+  const m5Home = mkTempHome();
+  const m3Home = mkTempHome();
+  const client = new FakeRedisClient();
+  const firstNowMs = Date.now();
+  for (const homeDir of [m5Home, m3Home]) {
+    writeAimgrConfig({
+      homeDir,
+      config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+    });
+  }
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "qa",
+      credential: buildAnthropicClaudeCredential({
+        access: "QA_M5_OLD_ACCESS",
+        refresh: "QA_M5_OLD_REFRESH",
+        expiresAtMs: firstNowMs + 7_200_000,
+        emailAddress: "qa@example.com",
+        organizationUuid: "org_qa",
+      }),
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "qa@example.com",
+        organizationUuid: "org_qa",
+      },
+      policy: { expect: { email: "qa@example.com" }, pool: { enabled: true } },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  const deps = {
+    env: {},
+    nowImpl: () => firstNowMs,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: () => ({ status: 0, signal: null }),
+  };
+  assert.equal(await runCli(["claude", "run", "qa", "--home", m5Home], deps), "");
+
+  const localStatePath = resolveAimgrLocalStatePath({ homeDir: m5Home });
+  const localState = JSON.parse(fs.readFileSync(localStatePath, "utf8"));
+  delete localState.targets.claudeCli.projectionReceiptsByLabel.qa;
+  writeJson(localStatePath, localState);
+
+  let snapshot = await readSnapshot(store);
+  const baseRecord = snapshot.credentials.find(
+    (record) => record.provider === "anthropic" && record.label === "qa",
+  );
+  const fence = await createRedisClaudeRotationFence(store, {
+    label: "qa",
+    recoveryStorageId: buildClaudeRecoveryStorageId({
+      installationId: "m3-login-host",
+      configDir: path.join(m3Home, "m3-qa"),
+    }),
+    baseTokenLineageFingerprint: buildClaudeTokenLineageFingerprint(baseRecord.credential),
+    baseCredentialVersion: baseRecord.version,
+    observedAt: new Date(firstNowMs + 60_000).toISOString(),
+  });
+  const m3Runtime = await loadRedisRuntime({
+    homeDir: m3Home,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    provider: "anthropic",
+  });
+  m3Runtime.state.credentials.anthropic.qa = buildAnthropicClaudeCredential({
+    access: "QA_M3_NEW_ACCESS",
+    refresh: "QA_M3_NEW_REFRESH",
+    expiresAtMs: firstNowMs + 14_400_000,
+    emailAddress: "qa@example.com",
+    organizationUuid: "org_qa",
+  });
+  const successor = await publishMaintainedCredential({
+    store: m3Runtime.store,
+    snapshot: m3Runtime.snapshot,
+    state: m3Runtime.state,
+    label: "qa",
+    provider: "anthropic",
+    updatedBy: "m3-login",
+    observedAt: new Date(firstNowMs + 60_000).toISOString(),
+    rotationFence: fence,
+  });
+  assert.equal(successor.ok, true);
+  assert.equal(successor.credential.record.provenance.lastSourceType, "login-maintenance");
+  const cleanupLease = await acquireRedisCredentialLease(m3Runtime.store, {
+    provider: "anthropic",
+    label: "qa",
+  });
+  assert.equal(await clearRedisClaudeRotationFence(m3Runtime.store, {
+    label: "qa",
+    fenceId: fence.fenceId,
+    lease: cleanupLease,
+  }), true);
+  assert.equal(await cleanupLease.release(), true);
+
+  let launches = 0;
+  assert.equal(await runCli(["claude", "run", "qa", "--home", m5Home], {
+    ...deps,
+    nowImpl: () => firstNowMs + 60_000,
+    runClaudeCliImpl: () => {
+      launches += 1;
+      return { status: 0, signal: null };
+    },
+  }), "");
+  assert.equal(launches, 1);
+
+  snapshot = await readSnapshot(store);
+  const currentRecord = snapshot.credentials.find(
+    (record) => record.provider === "anthropic" && record.label === "qa",
+  );
+  assert.equal(currentRecord.version, 2);
+  assertCanonicalAnthropicCredential(currentRecord, "QA_M3_NEW_REFRESH");
+  const configDir = path.join(
+    resolveAimgrClaudeLabelHomeDir({ homeDir: m5Home, label: "qa" }),
+    ".claude",
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(resolveClaudeAuthFilePath(configDir), "utf8")).claudeAiOauth.refreshToken,
+    "QA_M3_NEW_REFRESH",
+  );
+  const refreshedLocalState = JSON.parse(fs.readFileSync(localStatePath, "utf8"));
+  assert.equal(refreshedLocalState.targets.claudeCli.projectionReceiptsByLabel.qa.redisCredentialVersion, 2);
+  await closeRedisRuntime(m3Runtime);
 });
 
 test("managed Claude retries transient lease loss without pausing but aborts for a replacement owner", async () => {
@@ -2199,19 +2324,28 @@ test("all Redis Claude credential writers refuse work while the rotating credent
     provider: "anthropic",
     label: "claude",
   });
+  const assertAccountBusy = (error) => {
+    assert.equal(error.code, "AIMGR_CREDENTIAL_BUSY");
+    assert.equal(
+      error.message,
+      "Claude account \"claude\" is busy: another AIM process or machine is using or refreshing it. "
+        + "Nothing started here. Wait up to one minute, then try again.",
+    );
+    return true;
+  };
   await assert.rejects(
     runCli(["claude", "run", "claude", "--home", home], {
       env: {},
       connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
     }),
-    /busy on another AIM process or machine/,
+    assertAccountBusy,
   );
   await assert.rejects(
     runCli(["claude", "import-native", "claude", "--in", path.join(home, "must-not-be-read.json"), "--home", home], {
       env: {},
       connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
     }),
-    /busy on another AIM process or machine/,
+    assertAccountBusy,
   );
   let keychainReads = 0;
   await assert.rejects(
@@ -2223,7 +2357,7 @@ test("all Redis Claude credential writers refuse work while the rotating credent
         return { ok: false, errorKind: "must_not_run" };
       },
     }),
-    /busy on another AIM process or machine/,
+    assertAccountBusy,
   );
   assert.equal(keychainReads, 0);
   assert.equal(await lease.release(), true);

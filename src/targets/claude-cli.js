@@ -9,6 +9,7 @@ import {
   clearRedisClaudeRotationFence,
   createRedisClaudeRotationFence,
   isRedisClaudeRotationFenceSuccessor,
+  isRedisClaudeRotationSuccessorOfFingerprint,
 } from "../coordination/redis-claude-rotation-fence.js";
 import {
   publishRedisStateCredential,
@@ -165,13 +166,26 @@ export function assertUnfencedClaudeProjectionIsRecoverable({
     && receipt.committedLineageFingerprint === baseline.fingerprint;
   if (localMatchesReceipt && receipt.redisCredentialVersion < baseline.record.version) return;
   if (receiptMatchesRedis && reconciliation?.status === "candidate") return;
+  if (
+    !receipt
+    && reconciliation?.status === "unchanged"
+    && reconciliation.reason === "stale_candidate"
+    && reconciliation.label === label
+    && isRedisClaudeRotationSuccessorOfFingerprint(baseline.record, {
+      label,
+      baseTokenLineageFingerprint: localFingerprint,
+      tokenLineageFingerprint: baseline.fingerprint,
+    })
+  ) {
+    // A central refresh published this exact local token lineage's successor.
+    // Redis can safely replace the older unreceipted consumer cache.
+    return;
+  }
 
   throw new Error(
-    `Claude account "${label}" could not start. `
-      + "This machine's saved login differs from AIM's shared copy, and AIM cannot safely tell which one is newer. "
-      + "Your local login was left unchanged. "
-      + `After confirming it belongs to "${label}", run \`aim claude capture-native ${label}\` `
-      + `or \`aim claude import-native ${label} --in <file>\`.`,
+    `Claude account "${label}" could not start because this machine's saved copy and AIM's shared copy changed separately. `
+      + "AIM changed neither copy. "
+      + `To use the shared login from amirs-m3-max-new, back up and remove this machine's cache at "${descriptor.credentialsPath}", then retry.`,
   );
 }
 

@@ -203,7 +203,10 @@ async function acquireClaudeCredentialLeaseGuard(runtime, label) {
     label,
   });
   if (!lease) {
-    const error = new Error(`Claude label=${label} is busy on another AIM process or machine; retry shortly.`);
+    const error = new Error(
+      `Claude account "${label}" is busy: another AIM process or machine is using or refreshing it. `
+        + "Nothing started here. Wait up to one minute, then try again.",
+    );
     error.code = "AIMGR_CREDENTIAL_BUSY";
     throw error;
   }
