@@ -362,16 +362,54 @@ with one preflight owner.
 
 **Status: IN PROGRESS**
 
+**Completed work:**
+- Verbose surface: fence age/owner (`rotation` cell, e.g. `pending 2.5d@host`)
+  and a per-account `maintenance …` diagnostics line; JSON strictly additive
+  (`rotation.fenceCreatedAt/fenceAgeMs/fenceCreatedByHost`, top-level
+  `maintenance`). Default table/labels/precedence unchanged.
+- help.js note + README paragraph on bounded-retry semantics.
+- Gates: 312/312 full suite, lint, `git diff --check`. Committed `8d37558`,
+  pushed, installed locally and on M3, home, Studio, Claw (all at `8d37558`).
+- Live verification so far: maintainer exit code is now 0 with per-account
+  retryables present (exit-code repair confirmed); the new maintainer
+  refreshed healthy due accounts (pro8, pro9, pro10); qa self-resolved via a
+  scoped run lane (record v31, fresh token).
+
+**Discovered during execution (blocks the remaining exit criteria):**
+- boss, growth, pro2, pro4, pro5 still fail every pass as
+  `retryable/local_state_conflict` with no `detail=`, their fences never
+  cleared; pro3 (previously READY, same defect class) newly fails since the
+  pre-filter change exposed it. Root cause verified against live Redis and
+  code: `buildCoordinationView` (`src/coordination/snapshot.js:25-41`) keys
+  `state.accounts` by bare label across providers, so a same-label Codex
+  record with empty `policy.expect` shadows the Anthropic account view.
+  `requireExpectedEmail` (`src/credentials/claude-maintenance.js:149`) throws
+  a cause-less `local_state_conflict` for every collided label *before* fence
+  recovery, and the reauth policy publish
+  (`src/coordination/runtime.js:93-142`) resolves the collided account's
+  provider to Codex and dies on its own conflict guard. Only the unscoped
+  maintainer lane is affected; run/capture/import/login lanes are
+  provider-scoped and healthy.
+- Repair in flight (authorized by the frozen North Star and done bars; see
+  Decision Log): record-based `requireExpectedEmail` plus a
+  `publishClaudeReauthPolicy` overlay helper in `claude-maintenance.js`, with
+  collision regression tests. Then: gates, commit, redeploy, and finish the
+  live acceptance matrix (boss/growth/pro2/pro4/pro5 must clear fences via
+  portable recovery and reach `READY` or an accurate `NEEDS YOU`; pro3
+  returns to normal).
+
 **Goal:** Ship the mechanism fleet-wide and resolve the six stuck accounts.
 
 **Checklist (must all be done):**
 
-- [ ] `--verbose` gains fence age/owner and failure-streak fields; help and
+- [x] `--verbose` gains fence age/owner and failure-streak fields; help and
       README describe the bounded-retry semantics in one paragraph.
-- [ ] Install locally and on M3, then the fleet; verify installed commits.
+- [x] Install locally and on M3, then the fleet; verify installed commits.
 - [ ] Run the Section 6 live acceptance matrix over boss, pro2, pro4, pro5,
-      growth, qa; `aim login <label>` for any escalated account.
-- [ ] Confirm exit-code behavior and zero stale `AIM FIXING` rows.
+      growth, qa; `aim login <label>` for any escalated account. (Blocked on
+      the provider-collision repair above.)
+- [ ] Confirm exit-code behavior and zero stale `AIM FIXING` rows. (Exit-code
+      half confirmed live; zero-stale half blocked on the same repair.)
 
 **Exit criteria (all required):**
 
@@ -403,6 +441,7 @@ with one preflight owner.
 | 2026-08-02 | Merge the duplicate preflight pipelines as the frozen convergence closure. | Both lanes define the same fence/recovery contract; changing it in one would guarantee re-divergence. |
 | 2026-08-02 | No pool-module, receipt, selection, or CLI-surface work. | Human constraint: same commands, same workflow; those cuts are separate future decisions. |
 | 2026-08-02 | Intent-derived: the escalation streak rides the Redis reauth policy fact (`reauth.maintenance`), not maintainer-local state. | Blocker: §1.3 said maintainer-local state, but §0.2.4/§5 promise `--verbose` streak fields from collected facts and §0.4 requires re-enrollment to clear the streak — both impossible with machine-local state under a single maintainer. Consulted: §0.2.2, §0.4, §1.3, §5, Phase 1 checklist. Decision: store the streak as additive fields on the existing policy fact (one small CAS write per failing label per pass), with the single reset point in `login-publish.js`; the 2026-08-02 "zero new Redis writes" rationale is superseded by this entry. Consequences: §1.3 and §0.6 residual-risk text repaired to match; no new key family, no new write path. |
+| 2026-08-02 | Intent-derived: repair the provider-collision defect inside the Claude maintenance lane as required execution work. | Blocker: live verification showed the frozen done bars unreachable — the maintainer fails every collided label (codex twin shadows the anthropic account in `state.accounts`) at `requireExpectedEmail` before fence recovery, and its reauth publishes die on the provider-conflict guard. Consulted: §0.1 claim ("the single central refresher can resolve every Claude credential failure it meets"), §0.4 done bars (no account permanently off; honest terminal state reachable), Phase 2 exit criteria. Decision: fix the collided reads/writes at the exact boundary the plan already changes (`claude-maintenance.js`): record-based `requireExpectedEmail` and a record-overlay `publishClaudeReauthPolicy` that preserves the anthropic policy. Deliberately not in this repair: the provider-scoped run/capture/import/login lanes (healthy), and a provider-scoped rework of the shared `state.accounts` map (broader refactor; recorded here as a follow-up candidate, not execution work). Consequences: Phase 2 annotations record the discovery; a correction is owed to `docs/AIM_CLAUDE_STUCK_AIM_FIXING_ANALYSIS_2026-08-02.md`, whose "the fence gate is the M3 wedge" framing is now known to be only latent — the collision sat in front of it (the fence analysis remains correct for quarantine/selection and for what the maintainer would have hit next). |
 
 # 10) Readiness Verdict
 
