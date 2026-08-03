@@ -1,6 +1,6 @@
 # AIM Claude Redis Authority Simplification
 
-Status: implementation verified; deployment in progress
+Status: complete
 Owner: Amir
 Created: 2026-08-03
 Supersedes: only the Claude projection-receipt and durable rotation-fence decisions in `docs/AIMGR_SINGLE_OPERATOR_SIMPLIFICATION_MINI_ARCH_PLAN_2026-08-02.md`

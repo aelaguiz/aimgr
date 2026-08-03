@@ -31,4 +31,7 @@
 ## Deployment
 
 - Local canonical AIM installation: PASS.
-- Commit, push, and remote fleet rollout: pending.
+- Implementation commit `2d9fe9e` pushed to `origin/main`.
+- Fast-forwarded and installed the implementation on `amirs-m3-max-new`, `agents@amirs-mac-studio`, `home`, and `claw`; Amir-M5 is the verified local canonical installation.
+- Verified every checkout at `2d9fe9e` and every installed wrapper with `aim --help` (using the absolute wrapper path where noninteractive SSH omitted user PATH entries).
+- Preserved pre-existing untracked files on the Mac Studio, home, and claw checkouts; local `.antigravitycli/` and `.tmp/` were also untouched.
