@@ -11,6 +11,18 @@ const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 const SESSION_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SESSION_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const STAGED_FORK_MARKER_SUFFIX = ".aimgr-staged-fork";
+const RECENT_SESSION_CANDIDATE_MARGIN = 3;
+const INVALID_JSON_LINE = Symbol("invalid-json-line");
+const JSON_LINE_BREAK = 10;
+// Search raw bytes first so listing does not decode or parse transcript message bodies.
+// Every hit is still validated by parsing its complete containing JSONL record.
+const SESSION_JSON_MARKERS = Object.freeze({
+  cwd: Buffer.from('"cwd"'),
+  timestamp: Buffer.from('"timestamp"'),
+  customTitle: Buffer.from('"customTitle"'),
+  aiTitle: Buffer.from('"aiTitle"'),
+  effort: Buffer.from('"effort"'),
+});
 
 function readDirectory(directory, { missingIsEmpty = false } = {}) {
   try {
@@ -28,60 +40,95 @@ function normalizeThreadName(value) {
   return name || null;
 }
 
+function parseJsonLineAt(content, markerIndex, cache) {
+  const start = content.lastIndexOf(JSON_LINE_BREAK, markerIndex - 1) + 1;
+  if (cache.has(start)) return { start, entry: cache.get(start) };
+  const newlineIndex = content.indexOf(JSON_LINE_BREAK, markerIndex);
+  const end = newlineIndex < 0 ? content.length : newlineIndex;
+  let entry;
+  try {
+    entry = JSON.parse(content.toString("utf8", start, end));
+  } catch {
+    entry = INVALID_JSON_LINE;
+  }
+  cache.set(start, entry);
+  return { start, entry };
+}
+
+function findLatestSessionValue(content, marker, cache, selectValue) {
+  let searchBefore = content.length;
+  while (searchBefore > 0) {
+    const markerIndex = content.lastIndexOf(marker, searchBefore - 1);
+    if (markerIndex < 0) return null;
+    const { start, entry } = parseJsonLineAt(content, markerIndex, cache);
+    if (entry !== INVALID_JSON_LINE) {
+      const value = selectValue(entry);
+      if (value !== undefined) return value;
+    }
+    searchBefore = start;
+  }
+  return null;
+}
+
 function parseSessionFile({ filePath, account, threadId, fallbackTimestampMs }) {
   let content;
   try {
-    content = fs.readFileSync(filePath, "utf8");
+    content = fs.readFileSync(filePath);
   } catch {
     throw new Error("Could not read managed Claude sessions.");
   }
 
-  let cwd = null;
-  let customTitle = null;
-  let aiTitle = null;
-  let lastUsedMs = null;
-  let model = null;
-  let effort = null;
-  for (const line of content.split("\n")) {
-    if (!line.trim()) continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      // Claude may be appending the final JSONL line while AIM reads it.
-      continue;
-    }
-    if (typeof entry?.cwd === "string" && path.isAbsolute(entry.cwd)) {
-      cwd = path.normalize(entry.cwd);
-    }
-    const timestampMs = Date.parse(String(entry?.timestamp ?? ""));
-    if (Number.isFinite(timestampMs)) {
-      lastUsedMs = lastUsedMs === null ? timestampMs : Math.max(lastUsedMs, timestampMs);
-    }
-    if (entry?.type === "custom-title" && Object.hasOwn(entry, "customTitle")) {
-      const title = normalizeThreadName(entry.customTitle);
-      if (title) customTitle = title;
-    }
-    if (entry?.type === "ai-title" && Object.hasOwn(entry, "aiTitle")) {
-      const title = normalizeThreadName(entry.aiTitle);
-      if (title) aiTitle = title;
-    }
+  const parsedLines = new Map();
+  const cwd = findLatestSessionValue(content, SESSION_JSON_MARKERS.cwd, parsedLines, (entry) => (
+    typeof entry?.cwd === "string" && path.isAbsolute(entry.cwd)
+      ? path.normalize(entry.cwd)
+      : undefined
+  ));
+  const lastUsedMs = findLatestSessionValue(
+    content,
+    SESSION_JSON_MARKERS.timestamp,
+    parsedLines,
+    (entry) => {
+      const timestampMs = Date.parse(String(entry?.timestamp ?? ""));
+      return Number.isFinite(timestampMs) ? timestampMs : undefined;
+    },
+  );
+  const customTitle = findLatestSessionValue(
+    content,
+    SESSION_JSON_MARKERS.customTitle,
+    parsedLines,
+    (entry) => {
+      if (entry?.type !== "custom-title" || !Object.hasOwn(entry, "customTitle")) {
+        return undefined;
+      }
+      return normalizeThreadName(entry.customTitle) ?? undefined;
+    },
+  );
+  const aiTitle = customTitle ? null : findLatestSessionValue(
+    content,
+    SESSION_JSON_MARKERS.aiTitle,
+    parsedLines,
+    (entry) => {
+      if (entry?.type !== "ai-title" || !Object.hasOwn(entry, "aiTitle")) {
+        return undefined;
+      }
+      return normalizeThreadName(entry.aiTitle) ?? undefined;
+    },
+  );
+  const runtime = findLatestSessionValue(content, SESSION_JSON_MARKERS.effort, parsedLines, (entry) => {
     const observedModel = typeof entry?.message?.model === "string"
       ? entry.message.model.trim()
       : "";
     const observedEffort = typeof entry?.effort === "string"
       ? entry.effort.trim().toLowerCase()
       : "";
-    if (
-      entry?.type === "assistant"
+    return entry?.type === "assistant"
       && entry?.isSidechain !== true
       && SESSION_MODEL_PATTERN.test(observedModel)
       && SESSION_EFFORT_LEVELS.has(observedEffort)
-    ) {
-      model = observedModel;
-      effort = observedEffort;
-    }
-  }
+      ? { model: observedModel, effort: observedEffort }
+      : undefined;
+  });
   if (!cwd) return null;
   const observedAtMs = lastUsedMs ?? fallbackTimestampMs;
   if (!Number.isFinite(observedAtMs)) return null;
@@ -92,17 +139,22 @@ function parseSessionFile({ filePath, account, threadId, fallbackTimestampMs }) 
     threadName,
     thread: threadName ?? threadId,
     cwd,
-    model,
-    effort,
+    model: runtime?.model ?? null,
+    effort: runtime?.effort ?? null,
     transcriptPath: filePath,
     lastUsedAt: new Date(observedAtMs).toISOString(),
     lastUsedMs: observedAtMs,
   };
 }
 
-export function readManagedClaudeSessions({ homeDir }) {
+function compareSessions(left, right) {
+  return right.lastUsedMs - left.lastUsedMs
+    || left.threadId.localeCompare(right.threadId);
+}
+
+function discoverManagedClaudeSessionCandidates({ homeDir }) {
   const homesRoot = path.join(resolveAimgrStateDir({ homeDir }), "claude-homes");
-  const sessions = [];
+  const candidates = [];
   for (const labelEntry of readDirectory(homesRoot, { missingIsEmpty: true })) {
     if (!labelEntry.isDirectory() || labelEntry.isSymbolicLink()) continue;
     let account;
@@ -129,20 +181,57 @@ export function readManagedClaudeSessions({ homeDir }) {
         } catch {
           throw new Error("Could not read managed Claude sessions.");
         }
-        const session = parseSessionFile({
+        candidates.push({
           filePath,
           account,
           threadId: threadId.toLowerCase(),
           fallbackTimestampMs,
         });
-        if (session) sessions.push(session);
       }
     }
   }
-  return sessions.sort((left, right) => (
-    right.lastUsedMs - left.lastUsedMs
+  return candidates.sort((left, right) => (
+    right.fallbackTimestampMs - left.fallbackTimestampMs
     || left.threadId.localeCompare(right.threadId)
   ));
+}
+
+function parseSessionCandidate(candidate) {
+  return parseSessionFile(candidate);
+}
+
+function readRecentManagedClaudeSessions({ homeDir, limit }) {
+  const candidates = discoverManagedClaudeSessionCandidates({ homeDir });
+  const sessions = [];
+  let cursor = 0;
+  while (cursor < candidates.length) {
+    const needed = Math.max(1, limit - sessions.length);
+    const roundEnd = Math.min(
+      candidates.length,
+      cursor + needed + RECENT_SESSION_CANDIDATE_MARGIN,
+    );
+    for (; cursor < roundEnd; cursor += 1) {
+      const session = parseSessionCandidate(candidates[cursor]);
+      if (session) sessions.push(session);
+    }
+    sessions.sort(compareSessions);
+    if (sessions.length < limit) continue;
+    const nextCandidate = candidates[cursor];
+    if (
+      !nextCandidate
+      || nextCandidate.fallbackTimestampMs < sessions[limit - 1].lastUsedMs
+    ) {
+      break;
+    }
+  }
+  return sessions.slice(0, limit);
+}
+
+export function readManagedClaudeSessions({ homeDir }) {
+  return discoverManagedClaudeSessionCandidates({ homeDir })
+    .map(parseSessionCandidate)
+    .filter(Boolean)
+    .sort(compareSessions);
 }
 
 export function listRecentManagedClaudeSessions({
@@ -152,8 +241,7 @@ export function listRecentManagedClaudeSessions({
   if (!Number.isSafeInteger(limit) || limit < 1) {
     throw new Error("Claude session list count must be a positive integer.");
   }
-  return readManagedClaudeSessions({ homeDir })
-    .slice(0, limit)
+  return readRecentManagedClaudeSessions({ homeDir, limit })
     .map((session, index) => ({ ...session, rank: index + 1 }));
 }
 
@@ -162,21 +250,24 @@ export function resolveManagedClaudeSession({ homeDir, selector }) {
   if (!value) {
     throw new Error("Missing Claude session selector. Use a row number, thread ID, or exact name.");
   }
-  const sessions = readManagedClaudeSessions({ homeDir });
   let selected;
   if (/^\d+$/.test(value)) {
     const rank = Number(value);
     selected = Number.isSafeInteger(rank) && rank >= 1
-      ? sessions[rank - 1]
+      ? readRecentManagedClaudeSessions({ homeDir, limit: rank })[rank - 1]
       : null;
   } else if (SESSION_ID_PATTERN.test(value)) {
-    const matches = sessions.filter((session) => session.threadId === value.toLowerCase());
+    const matches = discoverManagedClaudeSessionCandidates({ homeDir })
+      .filter((candidate) => candidate.threadId === value.toLowerCase())
+      .map(parseSessionCandidate)
+      .filter(Boolean);
     if (matches.length > 1) {
       throw new Error(`Claude thread ID ${value} exists under more than one managed account.`);
     }
     selected = matches[0] ?? null;
   }
   if (!selected && !/^\d+$/.test(value)) {
+    const sessions = readManagedClaudeSessions({ homeDir });
     const normalizedName = normalizeThreadName(value)?.toLowerCase();
     const matches = normalizedName
       ? sessions.filter((session) => session.threadName?.toLowerCase() === normalizedName)

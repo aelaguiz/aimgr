@@ -197,6 +197,73 @@ test("managed Claude sessions list the newest 50 with persisted name and ID fall
   );
 });
 
+test("managed Claude session listing stops reading after the recent bound closes", () => {
+  const home = mkTempHome();
+  for (let index = 0; index < 10; index += 1) {
+    const timestampMs = NOW_MS - (index * 3_600_000);
+    writeManagedSession({
+      home,
+      account: "pro5",
+      threadId: THREAD_IDS[index],
+      cwd: path.join(home, "workspace", `bounded-${index}`),
+      timestamp: new Date(timestampMs).toISOString(),
+      mtimeMs: timestampMs,
+    });
+  }
+
+  const originalReadFileSync = fs.readFileSync;
+  const reads = [];
+  fs.readFileSync = (...args) => {
+    reads.push(String(args[0]));
+    return originalReadFileSync(...args);
+  };
+  let sessions;
+  try {
+    sessions = listRecentManagedClaudeSessions({ homeDir: home, limit: 1 });
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
+
+  assert.equal(sessions[0].threadId, THREAD_IDS[0]);
+  assert.equal(reads.length, 4);
+  assert.equal(reads.some((filePath) => filePath.endsWith(`${THREAD_IDS[9]}.jsonl`)), false);
+});
+
+test("managed Claude recent ordering continues across equal mtime boundaries", () => {
+  const home = mkTempHome();
+  const tiedTimestamp = new Date(NOW_MS).toISOString();
+  const laterCandidateIds = [
+    "90000000-0000-4000-8000-000000000001",
+    "90000000-0000-4000-8000-000000000002",
+    "90000000-0000-4000-8000-000000000003",
+    "90000000-0000-4000-8000-000000000004",
+  ];
+  for (let index = 0; index < laterCandidateIds.length; index += 1) {
+    writeManagedSession({
+      home,
+      account: "pro5",
+      threadId: laterCandidateIds[index],
+      cwd: path.join(home, "workspace", `mtime-${index}`),
+      timestamp: tiedTimestamp,
+      mtimeMs: NOW_MS + ((laterCandidateIds.length - index) * 1_000),
+    });
+  }
+  const winningThreadId = "10000000-0000-4000-8000-000000000001";
+  writeManagedSession({
+    home,
+    account: "qa",
+    threadId: winningThreadId,
+    cwd: path.join(home, "workspace", "mtime-winner"),
+    timestamp: tiedTimestamp,
+    mtimeMs: NOW_MS,
+  });
+
+  assert.equal(
+    listRecentManagedClaudeSessions({ homeDir: home, limit: 1 })[0].threadId,
+    winningThreadId,
+  );
+});
+
 test("managed Claude sessions resolve a row, thread ID, or unique exact name", () => {
   const home = mkTempHome();
   seedFiftyOneSessions(home);
@@ -249,6 +316,35 @@ test("managed Claude sessions resolve a row, thread ID, or unique exact name", (
     /working directory is unavailable/,
   );
   assert.deepEqual(listRecentManagedClaudeSessions({ homeDir: mkTempHome() }), []);
+});
+
+test("managed Claude thread ID resolution ignores an invalid duplicate transcript", () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  writeManagedSession({
+    home,
+    account: "pro5",
+    threadId,
+    cwd: path.join(home, "workspace", "valid-duplicate"),
+    timestamp: new Date(NOW_MS).toISOString(),
+  });
+  const invalidPath = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "qa",
+    ".claude",
+    "projects",
+    "project",
+    `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(invalidPath), { recursive: true });
+  fs.writeFileSync(invalidPath, "{still-being-written\n", "utf8");
+
+  assert.equal(
+    resolveManagedClaudeSession({ homeDir: home, selector: threadId }).account,
+    "pro5",
+  );
 });
 
 test("managed Claude resume refuses to guess when exact runtime metadata is absent", async () => {
