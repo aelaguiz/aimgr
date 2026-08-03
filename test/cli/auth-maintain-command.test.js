@@ -262,6 +262,50 @@ test("auth maintain refreshes only due records serially and marks missing refres
   );
 });
 
+test("auth maintain marks incomplete Anthropic material under a same-label Codex collision", async () => {
+  const incompleteClaude = claudeRecord("shared");
+  incompleteClaude.credential = { access: "INCOMPLETE" };
+  incompleteClaude.identity = {};
+  const codexTwin = codexRecord("shared", {
+    accountId: "acct_codex_shared",
+    expiresAtMs: NOW_MS + 3 * 24 * 60 * 60_000,
+  });
+  const runtime = await setup([incompleteClaude, codexTwin]);
+  const before = await readSnapshot(runtime.store);
+  const beforeCodex = before.credentials.find(
+    (record) => record.provider === "openai-codex" && record.label === "shared",
+  );
+
+  const result = await runCliWithExitCode(
+    ["auth", "maintain", "--home", runtime.home],
+    {
+      env: {},
+      nowImpl: () => NOW_MS,
+      connectRedisStoreImpl: runtime.connectRedisStoreImpl,
+    },
+  );
+  assert.deepEqual(result, {
+    stdout:
+      "provider=anthropic label=shared outcome=reauth_required reason=refresh_material_missing\n"
+      + "provider=openai-codex label=shared outcome=skipped reason=not_due\n"
+      + "refreshed=0 unchanged=0 reauth_required=1 retryable=0 skipped=1\n",
+    exitCode: 0,
+  });
+
+  const after = await readSnapshot(runtime.store);
+  const afterAnthropic = after.credentials.find(
+    (record) => record.provider === "anthropic" && record.label === "shared",
+  );
+  const afterCodex = after.credentials.find(
+    (record) => record.provider === "openai-codex" && record.label === "shared",
+  );
+  assert.equal(afterAnthropic.version, 2);
+  assert.deepEqual(afterAnthropic.policy.expect, incompleteClaude.policy.expect);
+  assert.equal(afterAnthropic.policy.reauth.mode, "native-claude");
+  assert.equal(afterAnthropic.policy.reauth.blockedReason, "oauth_reauth_required");
+  assert.deepEqual(afterCodex, beforeCodex);
+});
+
 test("auth maintain continues after transient and stale-CAS failures while a busy lease skips", async () => {
   const records = [
     codexRecord("network", { expiresAtMs: NOW_MS + 60_000 }),

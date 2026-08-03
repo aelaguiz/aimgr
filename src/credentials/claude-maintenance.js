@@ -3,10 +3,12 @@ import { isObject, normalizeLabel } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import { acquireRedisCredentialLease } from "../coordination/redis-credential-lease.js";
 import {
-  publishRedisCredentialPolicyFromState,
+  refreshRedisRuntimeSnapshot,
   refreshRedisRuntimeState,
   writeRedisLocalStateFromView,
 } from "../coordination/runtime.js";
+import { buildLocalBrowserBinding } from "../coordination/browser-policy.js";
+import { publishCredential } from "../coordination/redis-store.js";
 import { getAnthropicCredentialView } from "./anthropic.js";
 import { hasCompleteClaudeNativeBundle } from "./claude-bundle.js";
 import { syncLiveClaudeRotationBackToLabelFromStorage } from "./claude-native.js";
@@ -146,12 +148,105 @@ function requireCredential(runtime, label) {
   return credential;
 }
 
-function requireExpectedEmail(state, label) {
-  const expectedEmail = typeof state?.accounts?.[label]?.expect?.email === "string"
-    ? state.accounts[label].expect.email.trim().toLowerCase()
+// The auth maintainer intentionally loads an unscoped coordination view. A
+// same-label Codex record can therefore shadow the Anthropic account entry;
+// rebuild only this pass's account from the provider-scoped Redis record. The
+// overlay also keeps the shared rotation publisher from copying Codex policy
+// onto the Anthropic record when Claude rotates its tokens.
+function overlayClaudeAccountFromRecord(runtime, label, record, localBrowserBinding) {
+  const policy = isObject(record?.policy) ? record.policy : {};
+  const account = {
+    provider: ANTHROPIC_PROVIDER,
+    expect: structuredClone(isObject(policy.expect) ? policy.expect : {}),
+    reauth: structuredClone(isObject(policy.reauth) ? policy.reauth : {}),
+    browser: {
+      ...structuredClone(isObject(policy.browser) ? policy.browser : {}),
+      ...structuredClone(localBrowserBinding ?? {}),
+    },
+    pool: structuredClone(isObject(policy.pool) ? policy.pool : { enabled: true }),
+  };
+  runtime.state.accounts[label] = account;
+  return account;
+}
+
+// Anthropic account normalization deliberately clears browser state. During a
+// same-label collision, however, the local binding belongs to the shadowed
+// Codex view and must survive writes made by this Claude-only pass.
+function writeClaudeMaintenanceLocalState({
+  homeDir,
+  runtime,
+  label,
+  localBrowserBinding = null,
+}) {
+  if (!localBrowserBinding) {
+    return writeRedisLocalStateFromView({
+      homeDir,
+      state: runtime.state,
+      localState: runtime.localState,
+    });
+  }
+  const account = isObject(runtime.state.accounts?.[label])
+    ? runtime.state.accounts[label]
+    : {};
+  return writeRedisLocalStateFromView({
+    homeDir,
+    state: {
+      ...runtime.state,
+      accounts: {
+        ...runtime.state.accounts,
+        [label]: {
+          ...account,
+          browser: {
+            ...(isObject(account.browser) ? account.browser : {}),
+            ...localBrowserBinding,
+          },
+        },
+      },
+    },
+    localState: runtime.localState,
+  });
+}
+
+function requireExpectedEmail(record, label) {
+  const expectedEmail = typeof record?.policy?.expect?.email === "string"
+    ? record.policy.expect.email.trim().toLowerCase()
     : "";
-  if (!expectedEmail) throw maintenanceFailure("local_state_conflict");
+  if (!expectedEmail) {
+    throw maintenanceFailure(
+      "local_state_conflict",
+      new Error(`Claude label=${label} has no expected email in its Anthropic policy.`),
+    );
+  }
   return expectedEmail;
+}
+
+// Reauth is the only policy field maintenance changes. Publish it by CAS over
+// the current Anthropic record so a same-label provider collision cannot
+// redirect the write or replace the rest of the Anthropic policy.
+async function publishClaudeReauthPolicy({ runtime, label, reauth, observedAt }) {
+  const current = currentRedisClaudeRecord(runtime, label);
+  if (!current) {
+    throw new Error(`Cannot publish Claude reauth policy without anthropic:${label}.`);
+  }
+  const result = await publishCredential(runtime.store, {
+    expectedVersion: current.version,
+    updatedBy: runtime.updatedBy,
+    observedAt,
+    credentialRecord: {
+      ...current,
+      policy: {
+        ...(isObject(current.policy) ? current.policy : {}),
+        reauth: structuredClone(isObject(reauth) ? reauth : {}),
+      },
+    },
+  });
+  if (!result.ok) {
+    throw new Error(
+      `Redis stale_version while publishing Claude reauth policy for anthropic:${label}; reload and retry.`,
+    );
+  }
+  await refreshRedisRuntimeSnapshot(runtime);
+  return result.record;
 }
 
 /**
@@ -161,7 +256,15 @@ function requireExpectedEmail(state, label) {
  * (the status renderer's existing NEEDS YOU fact) instead of retrying forever.
  * Infrastructure-class results and skips never touch the streak.
  */
-async function applyMaintenanceEscalation({ runtime, label, homeDir, nowMs, lease, result }) {
+async function applyMaintenanceEscalation({
+  runtime,
+  label,
+  homeDir,
+  nowMs,
+  lease,
+  result,
+  localBrowserBinding,
+}) {
   const account = runtime.state.accounts?.[label];
   if (!isObject(account)) return result;
   const reauth = isObject(account.reauth) ? account.reauth : {};
@@ -174,13 +277,18 @@ async function applyMaintenanceEscalation({ runtime, label, homeDir, nowMs, leas
     delete reauth.maintenance;
     try {
       await assertLeaseOwned(lease);
-      await publishRedisCredentialPolicyFromState({
+      await publishClaudeReauthPolicy({
         runtime,
-        state: runtime.state,
         label,
+        reauth,
         observedAt,
       });
-      writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+      writeClaudeMaintenanceLocalState({
+        homeDir,
+        runtime,
+        label,
+        localBrowserBinding,
+      });
     } catch {
       // The pass already succeeded; clearing the stale streak is retried later.
     }
@@ -204,10 +312,10 @@ async function applyMaintenanceEscalation({ runtime, label, homeDir, nowMs, leas
   }
   try {
     await assertLeaseOwned(lease);
-    await publishRedisCredentialPolicyFromState({
+    await publishClaudeReauthPolicy({
       runtime,
-      state: runtime.state,
       label,
+      reauth,
       observedAt,
     });
   } catch {
@@ -215,7 +323,12 @@ async function applyMaintenanceEscalation({ runtime, label, homeDir, nowMs, leas
     // retried on the next pass.
     return result;
   }
-  writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+  writeClaudeMaintenanceLocalState({
+    homeDir,
+    runtime,
+    label,
+    localBrowserBinding,
+  });
   if (!escalated) return result;
   return maintenanceResult(
     "reauth_required",
@@ -244,7 +357,11 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
   const runNoninteractiveImpl = context.runClaudeCliNoninteractiveImpl
     ?? runClaudeCliNoninteractive;
   let lease = null;
+  let record = null;
   let result = null;
+  let shadowedAccount = null;
+  let accountOverlayActive = false;
+  let localBrowserBinding = null;
 
   try {
     try {
@@ -265,7 +382,23 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
         throw maintenanceFailure("coordination_unavailable", error);
       }
       await assertLeaseOwned(lease);
-      const record = currentRedisClaudeRecord(runtime, normalizedLabel);
+      record = currentRedisClaudeRecord(runtime, normalizedLabel);
+      if (
+        record
+        && runtime.state.accounts?.[normalizedLabel]?.provider !== ANTHROPIC_PROVIDER
+      ) {
+        shadowedAccount = runtime.state.accounts?.[normalizedLabel] ?? null;
+        localBrowserBinding = buildLocalBrowserBinding(
+          runtime.localState?.browserBindings?.[normalizedLabel],
+        );
+        overlayClaudeAccountFromRecord(
+          runtime,
+          normalizedLabel,
+          record,
+          localBrowserBinding,
+        );
+        accountOverlayActive = true;
+      }
       const credentialLoaded = isObject(record?.credential)
         && Object.keys(record.credential).length > 0;
       if (!record) {
@@ -285,16 +418,21 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
           };
           await assertLeaseOwned(lease);
           try {
-            await publishRedisCredentialPolicyFromState({
+            await publishClaudeReauthPolicy({
               runtime,
-              state: runtime.state,
               label: normalizedLabel,
+              reauth: account.reauth,
               observedAt: new Date(nowMs).toISOString(),
             });
           } catch (error) {
             throw maintenanceFailure("publication_failed", error);
           }
-          writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+          writeClaudeMaintenanceLocalState({
+            homeDir,
+            runtime,
+            label: normalizedLabel,
+            localBrowserBinding,
+          });
           result = maintenanceResult("reauth_required", "refresh_material_missing");
         }
       }
@@ -311,7 +449,7 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
           label: normalizedLabel,
           homeDir,
           configDir,
-          expectedEmail: requireExpectedEmail(runtime.state, normalizedLabel),
+          expectedEmail: requireExpectedEmail(record, normalizedLabel),
           nowMs,
           resolveCommandImpl: context.resolveExecutableOnPathImpl,
           lease,
@@ -413,7 +551,12 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
                 ? "client_failed"
                 : null;
         if (launchRetryReason) {
-          writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+          writeClaudeMaintenanceLocalState({
+            homeDir,
+            runtime,
+            label: normalizedLabel,
+            localBrowserBinding,
+          });
           result = maintenanceResult(
             "retryable",
             launchRetryReason,
@@ -445,16 +588,22 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
             blockedReason: "oauth_reauth_required",
           };
           try {
-            await publishRedisCredentialPolicyFromState({
+            await assertLeaseOwned(lease);
+            await publishClaudeReauthPolicy({
               runtime,
-              state: runtime.state,
               label: normalizedLabel,
+              reauth: runtime.state.accounts[normalizedLabel].reauth,
               observedAt,
             });
           } catch (error) {
             throw maintenanceFailure("publication_failed", error);
           }
-          writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+          writeClaudeMaintenanceLocalState({
+            homeDir,
+            runtime,
+            label: normalizedLabel,
+            localBrowserBinding,
+          });
           result = maintenanceResult("reauth_required", "native_session_expired");
         } else if (
           postRunSync.status === "candidate"
@@ -467,13 +616,23 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
             fence: runFence,
             lease,
           });
-          writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+          writeClaudeMaintenanceLocalState({
+            homeDir,
+            runtime,
+            label: normalizedLabel,
+            localBrowserBinding,
+          });
           result = maintenanceResult(
             postRunSync.status === "candidate" ? "refreshed" : "unchanged",
             postRunSync.status === "candidate" ? "credential_rotated" : "tokens_unchanged",
           );
         } else {
-          writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+          writeClaudeMaintenanceLocalState({
+            homeDir,
+            runtime,
+            label: normalizedLabel,
+            localBrowserBinding,
+          });
           result = maintenanceResult(
             "retryable",
             postRunSync.status === "unreadable"
@@ -486,7 +645,12 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
     }
   } catch (error) {
     try {
-      writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+      writeClaudeMaintenanceLocalState({
+        homeDir,
+        runtime,
+        label: normalizedLabel,
+        localBrowserBinding,
+      });
     } catch {
       // The bounded result is the caller-facing diagnostic.
     }
@@ -507,12 +671,17 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
         nowMs,
         lease,
         result,
+        localBrowserBinding,
       });
     }
   } finally {
     if (lease) {
       const released = await lease.release().catch(() => false);
       if (released !== true) result = maintenanceResult("retryable", "lease_release_failed");
+    }
+    if (accountOverlayActive) {
+      if (shadowedAccount) runtime.state.accounts[normalizedLabel] = shadowedAccount;
+      else delete runtime.state.accounts[normalizedLabel];
     }
   }
 

@@ -2466,6 +2466,43 @@ async function setupClaudeMaintenanceLane({
   };
 }
 
+async function addSameLabelCodexTwin(lane) {
+  const twin = codexRecord(lane.label, "acct_codex_twin");
+  twin.policy = {
+    expect: {},
+    reauth: { mode: "codex-oauth" },
+    browser: { mode: "isolated" },
+    pool: { enabled: false },
+  };
+  await importCredentialsSnapshot(lane.store, {
+    credentials: [twin],
+  }, {
+    updatedBy: "test",
+    observedAt: new Date(MAINTENANCE_NOW_MS - 30_000).toISOString(),
+  });
+}
+
+function findSnapshotCredential(snapshot, provider, label = "claude") {
+  return snapshot.credentials.find(
+    (record) => record.provider === provider && record.label === label,
+  ) ?? null;
+}
+
+async function assertSameLabelCodexShadowsUnscopedView(lane) {
+  const runtime = await loadRedisRuntime({
+    homeDir: lane.home,
+    connectRedisStoreImpl: lane.connectRedisStoreImpl,
+  });
+  try {
+    assert.equal(runtime.state.accounts[lane.label].provider, "openai-codex");
+    assert.deepEqual(runtime.state.accounts[lane.label].expect, {});
+    assert.ok(findSnapshotCredential(runtime.snapshot, "anthropic", lane.label));
+    assert.ok(findSnapshotCredential(runtime.snapshot, "openai-codex", lane.label));
+  } finally {
+    await closeRedisRuntime(runtime);
+  }
+}
+
 function buildMaintenanceContext(lane, overrides = {}) {
   return {
     homeDir: lane.home,
@@ -2539,6 +2576,176 @@ async function runMaintenancePass(lane, context, label = "claude") {
     await closeRedisRuntime(runtime);
   }
 }
+
+test("Claude maintenance uses Anthropic policy under a same-label Codex shadow", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  const browserBinding = {
+    userDataDir: path.join(lane.home, "browser-profile"),
+    profileDirectory: "Default",
+  };
+  writeLocalState({
+    homeDir: lane.home,
+    localState: {
+      installationId: LANE_INSTALLATION_ID,
+      browserBindings: { [lane.label]: browserBinding },
+    },
+  });
+  await addSameLabelCodexTwin(lane);
+  const runtime = await loadRedisRuntime({
+    homeDir: lane.home,
+    connectRedisStoreImpl: lane.connectRedisStoreImpl,
+  });
+  const shadowedAccount = structuredClone(runtime.state.accounts[lane.label]);
+  assert.equal(shadowedAccount.provider, "openai-codex");
+  assert.deepEqual(shadowedAccount.expect, {});
+  assert.deepEqual(runtime.localState.browserBindings[lane.label], browserBinding);
+  let launches = 0;
+
+  try {
+    assert.deepEqual(await maintainRedisClaudeCredential(buildMaintenanceContext(lane, {
+      runClaudeCliNoninteractiveImpl: () => {
+        launches += 1;
+        return { status: 0, signal: null, timedOut: false };
+      },
+    }), { runtime, label: lane.label }), {
+      outcome: "unchanged",
+      reason: "tokens_unchanged",
+    });
+    assert.deepEqual(runtime.state.accounts[lane.label], shadowedAccount);
+  } finally {
+    await closeRedisRuntime(runtime);
+  }
+  assert.equal(launches, 1);
+  const localState = JSON.parse(fs.readFileSync(
+    resolveAimgrLocalStatePath({ homeDir: lane.home }),
+    "utf8",
+  ));
+  assert.deepEqual(localState.browserBindings[lane.label], browserBinding);
+});
+
+test("Claude maintenance publishes reauth under a same-label Codex collision", async () => {
+  const firstFailedAt = new Date(MAINTENANCE_NOW_MS - 3 * 60 * 60_000).toISOString();
+  const lane = await setupClaudeMaintenanceLane({
+    reauthPolicy: {
+      mode: "native-claude",
+      maintenance: { firstFailedAt, reason: "client_failed", count: 12 },
+    },
+  });
+  await addSameLabelCodexTwin(lane);
+  await assertSameLabelCodexShadowsUnscopedView(lane);
+  const before = await readSnapshot(lane.store);
+  const beforeAnthropic = findSnapshotCredential(before, "anthropic");
+  const beforeCodex = findSnapshotCredential(before, "openai-codex");
+
+  const result = await runMaintenancePass(lane, buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => ({ status: 2, signal: null, timedOut: false }),
+  }));
+  assert.equal(result.outcome, "reauth_required");
+  assert.equal(result.reason, "escalated_persistent_failure");
+  assert.match(result.detail, /client_failed/);
+
+  const after = await readSnapshot(lane.store);
+  const afterAnthropic = findSnapshotCredential(after, "anthropic");
+  const afterCodex = findSnapshotCredential(after, "openai-codex");
+  assert.equal(afterAnthropic.version, beforeAnthropic.version + 1);
+  assert.deepEqual(afterAnthropic.credential, beforeAnthropic.credential);
+  assert.deepEqual(afterAnthropic.identity, beforeAnthropic.identity);
+  assert.deepEqual(afterAnthropic.provenance, beforeAnthropic.provenance);
+  assert.deepEqual(afterAnthropic.policy.expect, beforeAnthropic.policy.expect);
+  assert.deepEqual(afterAnthropic.policy.browser, beforeAnthropic.policy.browser);
+  assert.deepEqual(afterAnthropic.policy.pool, beforeAnthropic.policy.pool);
+  assert.equal(afterAnthropic.policy.reauth.mode, "native-claude");
+  assert.equal(afterAnthropic.policy.reauth.blockedReason, "oauth_reauth_required");
+  assert.deepEqual(afterAnthropic.policy.reauth.maintenance, {
+    firstFailedAt,
+    reason: "client_failed",
+    count: 13,
+  });
+  assert.deepEqual(afterCodex, beforeCodex);
+});
+
+test("Claude maintenance preserves Anthropic policy on rotation under a same-label Codex collision", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  await addSameLabelCodexTwin(lane);
+  await assertSameLabelCodexShadowsUnscopedView(lane);
+  const before = await readSnapshot(lane.store);
+  const beforeAnthropic = findSnapshotCredential(before, "anthropic");
+  const beforeCodex = findSnapshotCredential(before, "openai-codex");
+
+  assert.deepEqual(await runMaintenancePass(lane, buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: ({ configDir }) => {
+      rotateProjectedClaudeCredential(configDir, {
+        accessToken: "CLAUDE_ACCESS_ROTATED",
+        refreshToken: "CLAUDE_REFRESH_ROTATED",
+        expiresAt: MAINTENANCE_NOW_MS + 2 * 60 * 60_000,
+      });
+      return { status: 0, signal: null, timedOut: false };
+    },
+  })), {
+    outcome: "refreshed",
+    reason: "credential_rotated",
+  });
+
+  const after = await readSnapshot(lane.store);
+  const afterAnthropic = findSnapshotCredential(after, "anthropic");
+  const afterCodex = findSnapshotCredential(after, "openai-codex");
+  assert.equal(afterAnthropic.version, beforeAnthropic.version + 1);
+  assert.deepEqual(afterAnthropic.policy, beforeAnthropic.policy);
+  assertCanonicalAnthropicCredential(afterAnthropic, "CLAUDE_REFRESH_ROTATED");
+  assert.deepEqual(afterCodex, beforeCodex);
+});
+
+test("Claude maintenance rejects stale reauth CAS under a same-label Codex collision", async () => {
+  const firstFailedAt = new Date(MAINTENANCE_NOW_MS - 3 * 60 * 60_000).toISOString();
+  const lane = await setupClaudeMaintenanceLane({
+    reauthPolicy: {
+      mode: "native-claude",
+      maintenance: { firstFailedAt, reason: "client_failed", count: 12 },
+    },
+  });
+  await addSameLabelCodexTwin(lane);
+  const before = await readSnapshot(lane.store);
+  const beforeCodex = findSnapshotCredential(before, "openai-codex");
+
+  const result = await runMaintenancePass(lane, buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: async () => {
+      const snapshot = await readSnapshot(lane.store);
+      const current = findSnapshotCredential(snapshot, "anthropic");
+      const concurrent = await publishCredential(lane.store, {
+        expectedVersion: current.version,
+        updatedBy: "concurrent-test",
+        observedAt: new Date(MAINTENANCE_NOW_MS).toISOString(),
+        credentialRecord: {
+          ...current,
+          policy: {
+            ...current.policy,
+            reauth: { ...current.policy.reauth, concurrentMarker: "preserved" },
+          },
+        },
+      });
+      assert.equal(concurrent.ok, true);
+      return { status: 2, signal: null, timedOut: false };
+    },
+  }));
+  assert.deepEqual(result, {
+    outcome: "retryable",
+    reason: "client_failed",
+    detail: "claude /usage exited with status 2",
+  });
+
+  const after = await readSnapshot(lane.store);
+  const afterAnthropic = findSnapshotCredential(after, "anthropic");
+  const afterCodex = findSnapshotCredential(after, "openai-codex");
+  assert.equal(afterAnthropic.version, 2);
+  assert.equal(afterAnthropic.policy.reauth.concurrentMarker, "preserved");
+  assert.equal(afterAnthropic.policy.reauth.blockedReason, undefined);
+  assert.deepEqual(afterAnthropic.policy.reauth.maintenance, {
+    firstFailedAt,
+    reason: "client_failed",
+    count: 12,
+  });
+  assert.deepEqual(afterCodex, beforeCodex);
+});
 
 test("Claude maintenance defers to a young foreign rotation fence without probing or escalating", async () => {
   const lane = await setupClaudeMaintenanceLane();

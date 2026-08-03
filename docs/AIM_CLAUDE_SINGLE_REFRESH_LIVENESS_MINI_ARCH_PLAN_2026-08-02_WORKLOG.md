@@ -63,3 +63,53 @@ Plan doc: `docs/AIM_CLAUDE_SINGLE_REFRESH_LIVENESS_MINI_ARCH_PLAN_2026-08-02.md`
     regression tests; gates; commit/push; redeploy fleet; finish the live
     acceptance matrix (fences clear, accounts reach READY or NEEDS YOU; pro3
     recovers); final record commit.
+
+## 2026-08-03 Codex Handoff Checkpoint
+
+- Current checkpoint: `bab2b2a` plus Kimi's uncommitted import-only start in
+  `src/credentials/claude-maintenance.js`; unrelated untracked `.tmp/` and
+  `.antigravitycli/` artifacts are preserved and out of scope.
+- Active frozen slice: only the Phase 2 provider-collision repair already
+  authorized in the Decision Log — record-based Anthropic expected-email
+  lookup, Claude-maintenance-owned reauth policy publication, collision
+  regressions, gates, fleet redeploy, and the named live acceptance matrix.
+- Code read: `claude-maintenance.js`, `coordination/runtime.js`,
+  `coordination/snapshot.js`, `coordination/redis-store.js`,
+  `targets/claude-cli.js`, `targets/claude-preflight.js`, and the maintenance
+  fixtures in `test/cli/redis-projection-command.test.js`.
+- Do not redo unless invalidated: Phase 1 and the Phase 2 verbose/help surface
+  remain proven by the 312/312 gate recorded above and deployed at `8d37558`.
+- Next useful move: complete the interrupted collision helper and focused
+  regressions without changing the shared `state.accounts` representation or
+  the provider-scoped run/capture/import/login lanes.
+
+## 2026-08-03 Provider-Collision Repair Slice
+
+- Work completed:
+  - Claude maintenance now reads expected identity from the exact Anthropic
+    record and publishes reauth changes by CAS over that record only.
+  - A pass-local Anthropic account overlay keeps rotation policy correct, then
+    restores the shadowed Codex account view. The collided label's pre-existing
+    local browser binding is retained across maintenance-owned state writes.
+  - The unscoped `auth maintain` dispatcher routes Anthropic records through
+    the same owner even when refresh material is incomplete; Codex behavior is
+    unchanged. The terminal reauth mutation renews its lease immediately
+    before publication.
+- Focused collision proofs:
+  - Same-label Codex shadow still reaches the Claude probe; incomplete
+    Anthropic material reaches accurate `reauth_required`; rotation preserves
+    Anthropic policy; reauth publication leaves the Codex twin unchanged;
+    stale CAS cannot clobber a concurrent Anthropic update; local browser
+    binding and the caller's shadowed account view survive the pass.
+- Gates:
+  - Collision slice 5/5; command + projection subsystem 48/48; full suite
+    317/317; `npm run lint` clean; `git diff --check` clean.
+  - Fresh clean-room recheck: APPROVE with no findings against implementation
+    and test diff `ab196fe980ae430da7d558dc420bc50fcc69431b5f287b98b8ddc1ba215cfb17`.
+- Scope:
+  - No shared `state.accounts` redesign and no provider-scoped
+    run/capture/import/login changes. Unrelated `.tmp/` and `.antigravitycli/`
+    artifacts remain untouched.
+- Next step:
+  - Commit/push, exact-SHA fleet deploy, and the frozen M3 live acceptance
+    matrix.

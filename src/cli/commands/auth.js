@@ -225,7 +225,15 @@ async function handleOAuthMaintain(context) {
           let outcome;
           let reason = null;
           let detail = null;
-          if (!hasRequiredRefreshMaterial(record)) {
+          if (record.provider === ANTHROPIC_PROVIDER) {
+            const result = await maintainRedisClaudeCredential(context, {
+              runtime,
+              label: record.label,
+            });
+            outcome = result.outcome;
+            reason = result.reason;
+            detail = result.detail ?? null;
+          } else if (!hasRequiredRefreshMaterial(record)) {
             await refreshRedisRuntimeState(runtime);
             const current = findCredentialRecord(runtime.snapshot, {
               provider: record.provider,
@@ -249,14 +257,6 @@ async function handleOAuthMaintain(context) {
               outcome = "reauth_required";
               reason = "refresh_material_missing";
             }
-          } else if (record.provider === ANTHROPIC_PROVIDER) {
-            const result = await maintainRedisClaudeCredential(context, {
-              runtime,
-              label: record.label,
-            });
-            outcome = result.outcome;
-            reason = result.reason;
-            detail = result.detail ?? null;
           } else {
             outcome = await maintainCodexRecord({
               runtime,
