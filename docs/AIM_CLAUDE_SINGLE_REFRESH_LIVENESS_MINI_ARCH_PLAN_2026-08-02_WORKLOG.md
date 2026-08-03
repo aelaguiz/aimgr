@@ -137,3 +137,29 @@ Plan doc: `docs/AIM_CLAUDE_SINGLE_REFRESH_LIVENESS_MINI_ARCH_PLAN_2026-08-02.md`
   was real but latent; the provider collision was the active blocker in front
   of it. Phase 2 and the plan are complete without shared-map or workflow
   expansion.
+
+## 2026-08-03 M3-Login/M5-Consumer Follow-up
+
+- Operator workflow clarified after rollout: Claude login and maintenance run
+  on `amirs-m3-max-new`; local M5 consumes the resulting shared Redis
+  credential through `aim claude run <label>`.
+- Read-only live `qa` metadata isolated the defect without exposing token
+  values: Redis v32 was credential-ready; no live fence or local receipt
+  existed; M5 and Redis had the same stable account identity; M5 reconciled as
+  `unchanged:stale_candidate`; and Redis v32 named M5's exact fingerprint as
+  its v31 rotation base. The guard rejected that proven successor before the
+  existing safe Redis projection could run.
+- Commit `f9fa31a` admits only that exact proof: Anthropic label match,
+  same-identity stale candidate, valid rotation fence provenance, a base
+  version below the current record, exact local-base fingerprint match, and a
+  supported `login-maintenance` or `native-claude-rotation` publisher. Missing
+  receipts without proof and independently changed branches still fail closed.
+- The two reported errors now lead with `Claude account "<label>"`. Busy work
+  explains that another AIM process is using or refreshing the account. A
+  genuine two-branch conflict no longer recommends capturing M5's cache; it
+  explains how to preserve it while choosing the shared M3 login.
+- Proof: focused projection/fence subsystem 48/48; full suite 318/318; lint and
+  diff check clean. Independent review found and repaired the initial omission
+  of the real `login-maintenance` publisher, then returned PASS. The exact
+  commit was pushed and fast-forwarded onto local M5, M3, home, Studio, and
+  Claw with tracked-clean worktrees; unrelated untracked files were preserved.
