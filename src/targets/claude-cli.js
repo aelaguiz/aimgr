@@ -167,8 +167,11 @@ export function assertUnfencedClaudeProjectionIsRecoverable({
   if (receiptMatchesRedis && reconciliation?.status === "candidate") return;
 
   throw new Error(
-    `Claude label=${label} local credential lineage is not proven by its current Redis projection receipt. `
-      + "Preserve the native file and recover with `aim claude capture-native` or `aim claude import-native` after verifying the account.",
+    `Claude account "${label}" could not start. `
+      + "This machine's saved login differs from AIM's shared copy, and AIM cannot safely tell which one is newer. "
+      + "Your local login was left unchanged. "
+      + `After confirming it belongs to "${label}", run \`aim claude capture-native ${label}\` `
+      + `or \`aim claude import-native ${label} --in <file>\`.`,
   );
 }
 

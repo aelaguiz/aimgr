@@ -677,6 +677,18 @@ test("explicit Claude run enforces the offline cache and online receipt recovery
   });
   assert.equal(conflictingRedis.ok, true);
   let conflictedLaunches = 0;
+  const assertHumanReadableAccountConflict = (error) => {
+    assert.equal(
+      error.message,
+      "Claude account \"claude\" could not start. "
+        + "This machine's saved login differs from AIM's shared copy, and AIM cannot safely tell which one is newer. "
+        + "Your local login was left unchanged. "
+        + "After confirming it belongs to \"claude\", run `aim claude capture-native claude` "
+        + "or `aim claude import-native claude --in <file>`.",
+    );
+    assert.doesNotMatch(error.message, /lineage|projection receipt/i);
+    return true;
+  };
   await assert.rejects(
     runCli(["claude", "run", "claude", "--home", home], {
       ...onlineDeps,
@@ -686,7 +698,7 @@ test("explicit Claude run enforces the offline cache and online receipt recovery
         return { status: 0, signal: null };
       },
     }),
-    /local credential lineage is not proven by its current Redis projection receipt/,
+    assertHumanReadableAccountConflict,
   );
   assert.equal(conflictedLaunches, 0);
   assert.equal(
@@ -708,7 +720,7 @@ test("explicit Claude run enforces the offline cache and online receipt recovery
         return { status: 0, signal: null };
       },
     }),
-    /local credential lineage is not proven by its current Redis projection receipt/,
+    assertHumanReadableAccountConflict,
   );
   assert.equal(conflictedLaunches, 0);
 });
