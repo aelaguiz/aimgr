@@ -113,3 +113,27 @@ Plan doc: `docs/AIM_CLAUDE_SINGLE_REFRESH_LIVENESS_MINI_ARCH_PLAN_2026-08-02.md`
 - Next step:
   - Commit/push, exact-SHA fleet deploy, and the frozen M3 live acceptance
     matrix.
+
+## 2026-08-03 Final Rollout and Live Acceptance
+
+- Implementation commit `296a8a0` pushed to `origin/main`; exact SHA installed
+  and wrapper-smoke-tested on local M5, M3, home, Studio, and Claw. Existing
+  unrelated untracked files on local, home, Studio, and Claw were preserved.
+- Per the repository security rule, M3 maintainer bootstrap was delegated only
+  for that sensitive step to Claude Opus 5. Receipt:
+  `/tmp/agent-delegate/m3-maintainer-bootstrap-20260803T000000Z-fqrsHe`
+  (session `ad8504ce-06f6-4ade-aecf-1f46d9a3bebc`). Installer exit 0; plist
+  mode 600; first RunAtLoad exit 0.
+- First repaired M3 pass refreshed boss, growth, pro2, pro3, pro4, pro5, and
+  qa (`credential_rotated`). The following pass skipped each as `not_due` and
+  exited 0. Its only retryable was the pre-existing out-of-scope Codex label
+  `amir_personal` (`HTTP 401`); Claude maintenance remained stable.
+- Live human acceptance: 6 READY (boss, growth, pro3, pro4, pro5, qa), pro2
+  accurately NEEDS YOU with `aim login pro2`, 0 AIM FIXING, 0 unknown. Verbose
+  state showed clean local projections and no rotation fence for every named
+  label.
+- Analysis correction added to
+  `docs/AIM_CLAUDE_STUCK_AIM_FIXING_ANALYSIS_2026-08-02.md`: the fence defect
+  was real but latent; the provider collision was the active blocker in front
+  of it. Phase 2 and the plan are complete without shared-map or workflow
+  expansion.

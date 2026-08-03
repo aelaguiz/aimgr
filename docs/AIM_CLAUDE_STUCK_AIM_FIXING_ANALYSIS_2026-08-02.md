@@ -15,6 +15,22 @@ related:
 
 # TL;DR
 
+> **Correction — 2026-08-03:** The evidence below correctly identified the
+> fence-liveness defect and the recovery failure the maintainer would reach,
+> but later live verification found an earlier active blocker. The unscoped
+> maintainer's bare-label `state.accounts` view let same-label Codex records
+> shadow Anthropic policy. It therefore failed at `requireExpectedEmail`
+> before fence recovery and could not publish Claude reauth policy through the
+> collided provider view. The fence diagnosis was real but latent behind that
+> collision. Commit `296a8a0` repaired the collision inside the Claude
+> maintenance lane without redesigning the shared map. After deployment, the
+> first M3 pass refreshed boss, growth, pro2, pro3, pro4, pro5, and qa; the
+> next pass skipped them as not due. Live status then showed boss, growth,
+> pro3, pro4, pro5, and qa `READY`, pro2 accurately `NEEDS YOU`, zero
+> `AIM FIXING`, and no remaining rotation fences on those labels. Treat the
+> original root-cause ranking and machine-specific runbook as the 2026-08-02
+> incident snapshot, not the final active-blocker diagnosis.
+
 The six `AIM FIXING` rows are not being fixed. Nothing is retrying in any
 sense that can succeed, and for five of the six the displayed promise "AIM
 will retry" is structurally impossible to fulfill. Each account is

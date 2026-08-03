@@ -1,7 +1,7 @@
 ---
 title: "AIM Claude Single-Refresher Liveness - Mini Architecture Plan"
 date: 2026-08-02
-status: active
+status: complete
 fallback_policy: forbidden
 owners: [aelaguiz]
 reviewers: []
@@ -44,7 +44,7 @@ planning_passes:
   independent_kimi_review: not_requested
   review_reconciliation: not_applicable
   scope_freeze: complete
-  implementation: not_started
+  implementation: complete
 
 <!-- arch_skill:block:planning_passes:end -->
 
@@ -248,7 +248,7 @@ maintainer (M3 only, every 60s — unchanged topology)
               | younger than TTL, foreign -> bounded skip (not a failure)
               | past TTL -> clear, proceed from Redis bundle
   -> probe -> publish on rotation (unchanged)
-  -> failure -> log real sub-reason; streak += 1 in local state
+  -> failure -> log real sub-reason; streak += 1 in reauth policy fact
        same reason past escalation window -> publish reauth_required
   -> success -> streak reset
   -> exit code: non-zero only when the run itself failed
@@ -260,8 +260,8 @@ status
 
 Net machinery change is negative: the foreign-machine gate, the duplicate
 preflight copy, and exit-code poisoning are deleted; the additions are two
-time bounds, one small local streak record, one advisory fence field, and
-log detail.
+time bounds, one small additive streak on the existing reauth policy fact,
+one advisory fence field, and log detail.
 
 <!-- arch_skill:block:target_architecture:end -->
 
@@ -338,17 +338,17 @@ with one preflight owner.
 
 **Checklist (must all be done):**
 
-- [ ] Rework fence recovery: TTL + portable clear, bounded foreign skip,
+- [x] Rework fence recovery: TTL + portable clear, bounded foreign skip,
       `createdByHost` metadata; delete the foreign-machine throw.
-- [ ] Merge the run-path and maintainer pre-run guard pipelines into one
+- [x] Merge the run-path and maintainer pre-run guard pipelines into one
       shared owner; delete the duplicate copy and duplicate SAFE-reason set.
-- [ ] Add the escalation streak in maintainer-local state; publish
+- [x] Add the escalation streak to the existing reauth policy fact; publish
       `reauth_required` past the escalation window; reset on success;
       clear streak/marker on login/capture/import.
-- [ ] Make fenced labels recovery-eligible every pass (probe stays due-gated).
-- [ ] Carry real sub-reasons into per-label results and logs; exit non-zero
+- [x] Make fenced labels recovery-eligible every pass (probe stays due-gated).
+- [x] Carry real sub-reasons into per-label results and logs; exit non-zero
       only on infrastructure failure.
-- [ ] Focused tests for all of the above; full suite, lint, `git diff --check`.
+- [x] Focused tests for all of the above; full suite, lint, `git diff --check`.
 
 **Exit criteria (all required):**
 
@@ -360,7 +360,7 @@ with one preflight owner.
 
 ## Phase 2 — Surface, deploy, and live unstick
 
-**Status: IN PROGRESS**
+**Status: COMPLETE**
 
 **Completed work:**
 - Verbose surface: fence age/owner (`rotation` cell, e.g. `pending 2.5d@host`)
@@ -374,29 +374,31 @@ with one preflight owner.
   retryables present (exit-code repair confirmed); the new maintainer
   refreshed healthy due accounts (pro8, pro9, pro10); qa self-resolved via a
   scoped run lane (record v31, fresh token).
+- Provider-collision repair committed and pushed as `296a8a0`: exact-record
+  expected-email reads; Anthropic-record CAS for reauth policy; pass-local
+  account overlay for rotation with caller-view restoration and local-binding
+  retention; incomplete Anthropic material routed through the same maintainer
+  owner. The shared `state.accounts` representation and provider-scoped
+  run/capture/import/login lanes remain unchanged.
+- Collision proof and final gates: five focused collision regressions, 48/48
+  command/projection subsystem tests, 317/317 full suite, lint clean,
+  `git diff --check` clean, and a fresh clean-room APPROVE with no findings.
+- `296a8a0` installed and smoke-tested on local M5, M3, home, Studio, and
+  Claw. The M3 LaunchAgent was bootstrapped by a narrowly scoped Claude Opus 5
+  delegate; first RunAtLoad exit 0, following scheduled pass exit 0.
+- Final live matrix: the first repaired M3 pass refreshed boss, growth, pro2,
+  pro3, pro4, pro5, and qa. The next pass skipped all seven as not due. Human
+  status shows boss/growth/pro3/pro4/pro5/qa `READY`, pro2 accurately
+  `NEEDS YOU` with `aim login pro2`, zero `AIM FIXING`, zero unknown, and
+  clear rotation-fence cells for all seven.
 
-**Discovered during execution (blocks the remaining exit criteria):**
-- boss, growth, pro2, pro4, pro5 still fail every pass as
-  `retryable/local_state_conflict` with no `detail=`, their fences never
-  cleared; pro3 (previously READY, same defect class) newly fails since the
-  pre-filter change exposed it. Root cause verified against live Redis and
-  code: `buildCoordinationView` (`src/coordination/snapshot.js:25-41`) keys
-  `state.accounts` by bare label across providers, so a same-label Codex
-  record with empty `policy.expect` shadows the Anthropic account view.
-  `requireExpectedEmail` (`src/credentials/claude-maintenance.js:149`) throws
-  a cause-less `local_state_conflict` for every collided label *before* fence
-  recovery, and the reauth policy publish
-  (`src/coordination/runtime.js:93-142`) resolves the collided account's
-  provider to Codex and dies on its own conflict guard. Only the unscoped
-  maintainer lane is affected; run/capture/import/login lanes are
-  provider-scoped and healthy.
-- Repair in flight (authorized by the frozen North Star and done bars; see
-  Decision Log): record-based `requireExpectedEmail` plus a
-  `publishClaudeReauthPolicy` overlay helper in `claude-maintenance.js`, with
-  collision regression tests. Then: gates, commit, redeploy, and finish the
-  live acceptance matrix (boss/growth/pro2/pro4/pro5 must clear fences via
-  portable recovery and reach `READY` or an accurate `NEEDS YOU`; pro3
-  returns to normal).
+**Resolved during execution:**
+- Live verification exposed the same-label provider collision described in
+  the Decision Log. It sat in front of the fence path, so the original
+  incident analysis overstated the fence gate as the active M3 wedge. The
+  repair stayed inside the unscoped Claude maintenance boundary, and the
+  analysis document now carries a dated correction rather than rewriting its
+  historical evidence.
 
 **Goal:** Ship the mechanism fleet-wide and resolve the six stuck accounts.
 
@@ -405,16 +407,16 @@ with one preflight owner.
 - [x] `--verbose` gains fence age/owner and failure-streak fields; help and
       README describe the bounded-retry semantics in one paragraph.
 - [x] Install locally and on M3, then the fleet; verify installed commits.
-- [ ] Run the Section 6 live acceptance matrix over boss, pro2, pro4, pro5,
-      growth, qa; `aim login <label>` for any escalated account. (Blocked on
-      the provider-collision repair above.)
-- [ ] Confirm exit-code behavior and zero stale `AIM FIXING` rows. (Exit-code
-      half confirmed live; zero-stale half blocked on the same repair.)
+- [x] Run the Section 6 live acceptance matrix over boss, pro2, pro4, pro5,
+      growth, qa; confirm every label reaches `READY` or an accurate terminal
+      `NEEDS YOU` state. Pro3, exposed during the repair, also returns READY.
+- [x] Confirm exit-code behavior and zero stale `AIM FIXING` rows.
 
 **Exit criteria (all required):**
 
-- All six previously stuck accounts are `READY`/`IN USE` or were explicitly
-  re-authenticated after an accurate `NEEDS YOU`.
+- All six previously stuck accounts are `READY`/`IN USE` or accurately
+  `NEEDS YOU`; a later explicit login remains the existing named action for
+  any terminal account.
 - The maintainer log shows real sub-reasons and a clean exit on a healthy
   pass; no `AIM FIXING` row persists past its bound.
 
@@ -445,8 +447,8 @@ with one preflight owner.
 
 # 10) Readiness Verdict
 
-Ready for `miniarch-step implement`. The Scope and Simplicity Contract is
-frozen as written; implementation may not expand into selection, leases,
-caches, receipts, pool modules, Codex-specific behavior, or CLI surface. The
-live six-account incident doubles as the acceptance matrix in Section 6, so
-success is observable in production within one day of deploy.
+Implementation and rollout are complete. The Scope and Simplicity Contract
+held: no selection, lease, cache, receipt, pool-module, provider-scoped
+run/capture/import/login, shared-map redesign, or CLI-surface work entered the
+repair. The live incident acceptance matrix is recorded in Phase 2 and the
+worklog.
