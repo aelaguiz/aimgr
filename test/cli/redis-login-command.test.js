@@ -109,10 +109,6 @@ function writeStagedClaudeLogin(configDir, {
   fs.chmodSync(path.join(configDir, ".claude.json"), 0o600);
 }
 
-function hasClaudeRotationFence(client) {
-  return [...client.values.keys()].some((key) => key.includes(":fence:claude-rotation:"));
-}
-
 function assertCanonicalAnthropicCredential(record, expectedRefreshToken) {
   const credential = record?.credential;
   assert.equal(credential?.nativeClaudeBundle?.claudeAiOauth?.refreshToken, expectedRefreshToken);
@@ -366,7 +362,6 @@ test("Redis generic Anthropic login uses contained file staging and publishes wi
   assert.equal(preflightCalls, 1);
   assert.equal(keychainCalls, 0);
   assert.equal(fs.existsSync(stagingHome), false);
-  assert.equal(hasClaudeRotationFence(client), false);
   assert.equal(fs.existsSync(path.join(home, ".claude", ".credentials.json")), false);
   const snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials[0].version, 2);
@@ -417,7 +412,6 @@ test("Redis generic Anthropic login enrolls an exact-empty policy candidate", as
   assert.equal(result.redis.credentialVersion, 2);
   assert.equal(keychainCalls, 0);
   assert.equal(fs.existsSync(stagingHome), false);
-  assert.equal(hasClaudeRotationFence(client), false);
   const snapshot = await readSnapshot(store);
   assertCanonicalAnthropicCredential(snapshot.credentials[0], "CANDIDATE_REFRESH");
   assert.equal(snapshot.credentials[0].health.status, "ready");
@@ -471,11 +465,10 @@ test("Redis generic login enrolls an unknown Anthropic label in one flow", async
   assert.equal(snapshot.credentials[0].policy.expect.email, "new@example.com");
   assertCanonicalAnthropicCredential(snapshot.credentials[0], "UNKNOWN_REFRESH");
   assert.equal(fs.existsSync(resolveClaudeLoginStagingHome(home, "fresh")), false);
-  assert.equal(hasClaudeRotationFence(client), false);
   assert.doesNotMatch(stdout, /UNKNOWN_(?:ACCESS|REFRESH)|new@example\.com/i);
 });
 
-test("Redis generic Anthropic login rejects partial candidate credentials before launch", async () => {
+test("Redis generic Anthropic login repairs a partial candidate with a fresh login", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedLoginRedis({
@@ -486,31 +479,28 @@ test("Redis generic Anthropic login rejects partial candidate credentials before
       credential: { access: "PARTIAL_ACCESS" },
     }),
   });
-  let launchCalls = 0;
-
-  await assert.rejects(
-    runCli(["login", "pro7", "--home", home], {
-      connectRedisStoreImpl: () => connectRedisStore({
-        client,
-        keyPrefix: "aimgr:claude-partial-login-test",
-      }),
-      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
-      runClaudeCliImpl: () => {
-        launchCalls += 1;
-        return { status: 0, signal: null };
-      },
+  const stdout = await runCli(["login", "pro7", "--home", home], {
+    connectRedisStoreImpl: () => connectRedisStore({
+      client,
+      keyPrefix: "aimgr:claude-partial-login-test",
     }),
-    /no valid Redis lineage/,
-  );
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: ({ configDir }) => {
+      writeStagedClaudeLogin(configDir, {
+        accessToken: "REPAIRED_ACCESS",
+        refreshToken: "REPAIRED_REFRESH",
+      });
+      return { status: 0, signal: null };
+    },
+  });
 
-  assert.equal(launchCalls, 0);
-  assert.equal(hasClaudeRotationFence(client), false);
+  assert.equal(JSON.parse(stdout).ok, true);
   assert.equal(fs.existsSync(resolveClaudeLoginStagingHome(home, "pro7")), false);
   const snapshot = await readSnapshot(store);
-  assert.deepEqual(snapshot.credentials[0].credential, { access: "PARTIAL_ACCESS" });
+  assertCanonicalAnthropicCredential(snapshot.credentials[0], "REPAIRED_REFRESH");
 });
 
-test("Redis generic Anthropic enrollment cleans its fence and staging on candidate drift", async () => {
+test("Redis generic Anthropic enrollment rejects identity policy drift and cleans staging", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedLoginRedis({
@@ -542,18 +532,17 @@ test("Redis generic Anthropic enrollment cleans its fence and staging on candida
         return { status: 0, signal: null };
       },
     }),
-    /changed outside its login fence/,
+    /identity_mismatch/,
   );
 
   assert.equal(fs.existsSync(stagingHome), false);
-  assert.equal(hasClaudeRotationFence(client), false);
   const snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials[0].version, 2);
   assert.equal(snapshot.credentials[0].policy.expect.email, "changed@example.com");
   assert.deepEqual(snapshot.credentials[0].credential, {});
 });
 
-test("Redis generic Anthropic enrollment recovers candidate staging after publish uncertainty", async () => {
+test("Redis generic Anthropic enrollment cleans staging after publish uncertainty", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedLoginRedis({
@@ -596,24 +585,10 @@ test("Redis generic Anthropic enrollment recovers candidate staging after publis
     runCli(["login", "pro7", "--home", home], deps),
     /Redis publish failed/,
   );
-  assert.equal(fs.existsSync(path.join(stagingHome, ".claude", ".credentials.json")), true);
-  assert.equal(hasClaudeRotationFence(client), true);
-
-  const stdout = await runCli(["login", "pro7", "--home", home], {
-    ...deps,
-    runClaudeCliImpl: () => {
-      launchCalls += 1;
-      throw new Error("recovery must not start a second Claude login");
-    },
-  });
-  const result = JSON.parse(stdout);
-  assert.equal(result.maintenance.action, "recovered-native-login");
-  assert.equal(result.redis.credentialVersion, 2);
   assert.equal(launchCalls, 1);
   assert.equal(fs.existsSync(stagingHome), false);
-  assert.equal(hasClaudeRotationFence(client), false);
   const snapshot = await readSnapshot(store);
-  assertCanonicalAnthropicCredential(snapshot.credentials[0], "RECOVERY_REFRESH");
+  assert.deepEqual(snapshot.credentials[0].credential, {});
 });
 
 test("Redis generic Anthropic login rejects wrong identity and removes staging", async () => {
@@ -667,10 +642,9 @@ test("Redis generic Anthropic login rejects wrong identity and removes staging",
     credential.nativeClaudeBundle.claudeAiOauth.refreshToken,
   );
   assert.equal(fs.existsSync(stagingHome), false);
-  assert.equal(hasClaudeRotationFence(client), false);
 });
 
-test("Redis generic Anthropic login cancellation clears its fence and staging", async () => {
+test("Redis generic Anthropic login cancellation cleans staging", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const credential = buildAnthropicClaudeCredential();
@@ -712,7 +686,6 @@ test("Redis generic Anthropic login cancellation clears its fence and staging", 
     credential.nativeClaudeBundle.claudeAiOauth.refreshToken,
   );
   assert.equal(fs.existsSync(stagingHome), false);
-  assert.equal(hasClaudeRotationFence(client), false);
 });
 
 test("Redis generic Anthropic login reacquires its lease after a long browser wait", async () => {
@@ -758,64 +731,8 @@ test("Redis generic Anthropic login reacquires its lease after a long browser wa
   assert.equal(result.ok, true);
   assert.equal(result.redis.credentialVersion, 2);
   assert.equal(fs.existsSync(stagingHome), false);
-  assert.equal(hasClaudeRotationFence(client), false);
   const snapshot = await readSnapshot(store);
   assertCanonicalAnthropicCredential(snapshot.credentials[0], "LONG_WAIT_REFRESH");
-});
-
-test("Redis generic Anthropic login retains fenced staging on publish uncertainty", async () => {
-  const home = mkTempHome();
-  const client = new FakeRedisClient();
-  const credential = buildAnthropicClaudeCredential();
-  const store = await seedLoginRedis({
-    home,
-    client,
-    keyPrefix: "aimgr:claude-login-publish-failure-test",
-    credentialRecord: {
-      provider: "anthropic",
-      label: "pro7",
-      identity: {
-        accountUuid: "acct_boss",
-        emailAddress: "boss@example.com",
-        organizationUuid: "org_boss",
-      },
-      credential,
-      policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } },
-      health: { status: "ready", reason: null },
-    },
-  });
-  const stagingHome = resolveClaudeLoginStagingHome(home, "pro7");
-
-  await assert.rejects(
-    runCli(["login", "pro7", "--home", home], {
-      connectRedisStoreImpl: () => connectRedisStore({
-        client,
-        keyPrefix: "aimgr:claude-login-publish-failure-test",
-      }),
-      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
-      runClaudeCliImpl: ({ configDir }) => {
-        writeStagedClaudeLogin(configDir, {
-          accessToken: "UNCERTAIN_ACCESS",
-          refreshToken: "UNCERTAIN_REFRESH",
-        });
-        const credentialKey = [...client.values.keys()].find((key) =>
-          key.includes(":credential:anthropic:pro7"));
-        const current = JSON.parse(client.values.get(credentialKey));
-        current.version += 1;
-        client.values.set(credentialKey, JSON.stringify(current));
-        return { status: 0, signal: null };
-      },
-    }),
-    /changed outside its login fence/,
-  );
-
-  assert.equal(fs.existsSync(path.join(stagingHome, ".claude", ".credentials.json")), true);
-  assert.equal(hasClaudeRotationFence(client), true);
-  const snapshot = await readSnapshot(store);
-  assertCanonicalAnthropicCredential(
-    snapshot.credentials[0],
-    credential.nativeClaudeBundle.claudeAiOauth.refreshToken,
-  );
 });
 
 test("Redis shorthand panel remains closed for Anthropic labels", async () => {

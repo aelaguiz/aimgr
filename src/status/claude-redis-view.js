@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import path from "node:path";
 import { getRedisConfig } from "../config/aimgr-config.js";
 import {
   closeRedisStore,
@@ -8,33 +7,22 @@ import {
   REDIS_CONNECTION_POLICY_OBSERVE,
 } from "../coordination/redis-store.js";
 import { readHeldRedisCredentialLeaseLabels } from "../coordination/redis-credential-lease.js";
-import { readRedisClaudeRotationFence } from "../coordination/redis-claude-rotation-fence.js";
 import { buildStableIdentityForCredential } from "../coordination/login-publish.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import {
-  buildClaudeCredentialSummaryFromBundle,
-  buildClaudeNativeBundle,
   hasCompleteClaudeNativeBundle,
-  readClaudeAppStateFile,
-  readClaudeAuthFile,
+  buildClaudeCredentialSummaryFromBundle,
 } from "../credentials/claude-bundle.js";
-import { buildAnthropicTokenLineageFingerprint, getAnthropicCredentialView } from "../credentials/anthropic.js";
-import {
-  resolveAimgrClaudeLabelHomeDir,
-  resolveAimgrRedisCachePath,
-  resolveClaudeAuthFilePath,
-  resolveManagedClaudeDir,
-} from "../io/paths.js";
+import { getAnthropicCredentialView } from "../credentials/anthropic.js";
+import { resolveAimgrRedisCachePath } from "../io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../pool/usage.js";
 import {
   averageStatusNumbers,
   formatStatusDeltaMsCell,
   formatStatusTable,
 } from "./table.js";
-import { loadLocalState } from "../state/local-state.js";
-import { readClaudeProjectionReceipt } from "../targets/claude-cli.js";
 import {
   acquireRedisCacheLock,
   readCachedProviderUsage,
@@ -406,7 +394,6 @@ async function readAnthropicRedisData({
   connectRedisStoreImpl = connectRedisStore,
   readCredentialRecordsByProviderImpl = readCredentialRecordsByProvider,
   readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
-  readRedisClaudeRotationFenceImpl = readRedisClaudeRotationFence,
 } = {}) {
   let store = null;
   try {
@@ -429,21 +416,7 @@ async function readAnthropicRedisData({
         lockSource = "unavailable";
       }
     }
-    let rotationFences = new Map();
-    let rotationSource = includeLeaseState ? "redis" : "not-requested";
-    if (includeLeaseState) {
-      try {
-        rotationFences = new Map(
-          (await Promise.all(records.map(async (record) => {
-            const fence = await readRedisClaudeRotationFenceImpl(store, { label: record.label });
-            return fence ? [record.label, fence] : null;
-          }))).filter(Boolean),
-        );
-      } catch {
-        rotationSource = "unavailable";
-      }
-    }
-    return { records, lockedLabels, lockSource, rotationFences, rotationSource };
+    return { records, lockedLabels, lockSource };
   } catch {
     throw new Error("Claude Redis account inventory is unavailable.");
   } finally {
@@ -453,18 +426,6 @@ async function readAnthropicRedisData({
       // Status reads report one fixed value-free availability error.
     }
   }
-}
-
-function buildRotationDiagnostics(fence, nowMs) {
-  if (!fence) return {};
-  const createdAtMs = Date.parse(fence.createdAt);
-  return {
-    fenceCreatedAt: fence.createdAt,
-    fenceAgeMs: Number.isFinite(createdAtMs) ? Math.max(0, nowMs - createdAtMs) : null,
-    ...(typeof fence.createdByHost === "string" && fence.createdByHost
-      ? { fenceCreatedByHost: fence.createdByHost }
-      : {}),
-  };
 }
 
 // The maintainer's Phase 1 escalation facts, surfaced additively from the
@@ -737,62 +698,6 @@ function buildStatusResult({
   };
 }
 
-function readLocalProjectionStates(homeDir, records, nowMs) {
-  if (typeof homeDir !== "string" || !homeDir.trim()) return new Map();
-  const target = loadLocalState({ homeDir })?.targets?.claudeCli;
-  return new Map(records.map((record) => {
-    const label = record.label;
-    const receipt = readClaudeProjectionReceipt(target, label);
-    if (!receipt) return [label, { state: "missing", receiptAgeMs: null }];
-    const expectedCredentialsPath = resolveClaudeAuthFilePath(resolveManagedClaudeDir({
-      homeDir: resolveAimgrClaudeLabelHomeDir({ homeDir, label }),
-    }));
-    if (receipt.credentialsPath !== expectedCredentialsPath) {
-      return [label, { state: "invalid_receipt", receiptAgeMs: null }];
-    }
-    const claudeDir = path.dirname(receipt.credentialsPath);
-    const credentials = readClaudeAuthFile({ claudeDir });
-    const appState = readClaudeAppStateFile({ homeDir: claudeDir });
-    const bundle = credentials.ok === true && appState.ok === true
-      ? buildClaudeNativeBundle({
-          claudeAiOauth: credentials.claudeAiOauth,
-          oauthAccount: appState.oauthAccount,
-        })
-      : null;
-    const fingerprint = buildAnthropicTokenLineageFingerprint({ nativeClaudeBundle: bundle });
-    const redisFingerprint = buildAnthropicTokenLineageFingerprint(record.credential);
-    let state;
-    if (!bundle || !hasCompleteClaudeNativeBundle(bundle) || !fingerprint || !redisFingerprint) {
-      state = "unreadable";
-    } else if (
-      fingerprint === redisFingerprint
-      && receipt.redisCredentialVersion === record.version
-      && receipt.committedLineageFingerprint === redisFingerprint
-    ) {
-      state = "clean";
-    } else if (
-      fingerprint === receipt.committedLineageFingerprint
-      && receipt.redisCredentialVersion < record.version
-    ) {
-      state = "clean_older";
-    } else if (
-      receipt.redisCredentialVersion === record.version
-      && receipt.committedLineageFingerprint === redisFingerprint
-      && fingerprint !== redisFingerprint
-    ) {
-      state = "unpublished";
-    } else {
-      state = "lineage_conflict";
-    }
-    return [label, {
-      state,
-      redisCredentialVersion: receipt.redisCredentialVersion,
-      receiptAgeMs: Math.max(0, nowMs - Date.parse(receipt.reconciledAt)),
-      credentialsPath: receipt.credentialsPath,
-    }];
-  }));
-}
-
 export async function collectClaudeRedisAccountInventory({
   homeDir,
   nowMs = Date.now(),
@@ -809,7 +714,9 @@ export async function collectClaudeRedisAccountInventory({
   const cached = readCachedProviderUsage({ homeDir, cachePath, provider: ANTHROPIC_PROVIDER });
   const cacheEntries = normalizeCacheEntries(cached.entries, nowMs);
   const accounts = facts.map((entry) => {
-    const cachedEntry = entry.credentialReady ? cacheEntryForFacts(cacheEntries, entry) : null;
+    const cachedEntry = entry.credentialReady || entry.state === "credential_expired"
+      ? cacheEntryForFacts(cacheEntries, entry)
+      : null;
     const staleUsage = cachedEntry ? usableStaleUsage(cachedEntry, nowMs) : { usage: emptyUsage(), observedAtMs: null };
     const ageMs = staleUsage.observedAtMs === null ? null : ageFrom(nowMs, staleUsage.observedAtMs);
     return {
@@ -871,7 +778,6 @@ export async function collectClaudeRedisAccountUsageStatus({
   connectRedisStoreImpl = connectRedisStore,
   readCredentialRecordsByProviderImpl = readCredentialRecordsByProvider,
   readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
-  readRedisClaudeRotationFenceImpl = readRedisClaudeRotationFence,
   fetchClaudeUsageSnapshotImpl = fetchClaudeUsageSnapshot,
   fetchJsonWithTimeoutImpl,
   acquireRedisCacheLockImpl = acquireRedisCacheLock,
@@ -881,8 +787,6 @@ export async function collectClaudeRedisAccountUsageStatus({
   let authoritativeRecords;
   let lockedLabels;
   let lockSource;
-  let rotationFences;
-  let rotationSource;
   if (Array.isArray(records)) {
     authoritativeRecords = records.filter((record) => record?.provider === ANTHROPIC_PROVIDER);
     lockedLabels = new Set();
@@ -897,20 +801,6 @@ export async function collectClaudeRedisAccountUsageStatus({
         lockSource = "unavailable";
       }
     }
-    rotationFences = new Map();
-    rotationSource = redisStore ? "redis" : "unavailable";
-    if (redisStore) {
-      try {
-        rotationFences = new Map(
-          (await Promise.all(authoritativeRecords.map(async (record) => {
-            const fence = await readRedisClaudeRotationFenceImpl(redisStore, { label: record.label });
-            return fence ? [record.label, fence] : null;
-          }))).filter(Boolean),
-        );
-      } catch {
-        rotationSource = "unavailable";
-      }
-    }
   } else {
     const redisData = await readAnthropicRedisData({
       homeDir,
@@ -918,19 +808,11 @@ export async function collectClaudeRedisAccountUsageStatus({
       connectRedisStoreImpl,
       readCredentialRecordsByProviderImpl,
       readHeldRedisCredentialLeaseLabelsImpl,
-      readRedisClaudeRotationFenceImpl,
     });
     authoritativeRecords = redisData.records;
     lockedLabels = redisData.lockedLabels;
     lockSource = redisData.lockSource;
-    rotationFences = redisData.rotationFences;
-    rotationSource = redisData.rotationSource;
   }
-  const localProjectionStates = readLocalProjectionStates(
-    homeDir,
-    authoritativeRecords,
-    nowMs,
-  );
   const facts = selectFacts(authoritativeRecords, normalizedLabels, nowMs);
   const factsByLabel = new Map(facts.map((entry) => [entry.record.label, entry]));
   const buildResult = (options) => buildStatusResult({
@@ -938,8 +820,6 @@ export async function collectClaudeRedisAccountUsageStatus({
     accounts: options.accounts.map((account) => {
       const accountFacts = factsByLabel.get(account.label);
       const locked = lockSource === "redis" ? lockedLabels.has(account.label) : null;
-      const rotationPending = rotationSource === "redis" ? rotationFences.has(account.label) : null;
-      const fence = rotationPending === true ? rotationFences.get(account.label) ?? null : null;
       return {
         ...account,
         credentialReady: accountFacts?.credentialReady === true,
@@ -950,14 +830,7 @@ export async function collectClaudeRedisAccountUsageStatus({
           status: locked === null ? "unknown" : locked ? "held" : "free",
           source: lockSource,
         },
-        rotationPending,
-        rotation: {
-          status: rotationPending === null ? "unknown" : rotationPending ? "pending" : "clear",
-          source: rotationSource,
-          ...buildRotationDiagnostics(fence, options.nowMs),
-        },
         ...buildMaintenanceDiagnostics(accountFacts?.record),
-        localProjection: localProjectionStates.get(account.label) ?? { state: "missing", receiptAgeMs: null },
       };
     }),
   });
@@ -979,7 +852,16 @@ export async function collectClaudeRedisAccountUsageStatus({
 
   for (const entry of facts) {
     if (!entry.credentialReady) {
-      accountsByLabel.set(entry.record.label, buildStaticAccount(entry));
+      const cachedEntry = entry.state === "credential_expired"
+        ? cacheEntryForFacts(cacheEntries, entry)
+        : null;
+      const cachedUsage = cachedEntry ? usableStaleUsage(cachedEntry, nowMs) : null;
+      accountsByLabel.set(
+        entry.record.label,
+        cachedUsage?.usage?.ok === true
+          ? buildCachedAccount(entry, cachedEntry, nowMs)
+          : buildStaticAccount(entry),
+      );
       continue;
     }
     const cachedEntry = cacheEntryForFacts(cacheEntries, entry);
@@ -1132,7 +1014,7 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
     throw new Error("Claude automatic selection requires the fable or opus preset.");
   }
   const candidates = (Array.isArray(result?.accounts) ? result.accounts : [])
-    .filter((account) => account?.authState === "usage_readable" && account?.locked !== true)
+    .filter((account) => account?.authState === "usage_readable" && account?.locked === false)
     .map((account) => {
       const fiveHourWindow = findFiveHourWindow(account?.usage);
       const rankingWindow = preset === "fable"
@@ -1253,18 +1135,11 @@ function describeClaudeOperatorState(account) {
     return { status: "NEEDS YOU", next: `aim login ${label}` };
   }
   if (
-    account?.rotationPending === true
-    || authState === "refresh_in_progress"
-    || authState === "stale_auth"
-    || credentialState === "credential_expired"
-  ) {
-    return { status: "AIM FIXING", next: "AIM will retry" };
-  }
-  if (
     account?.locked === false
-    && account?.rotationPending === false
-    && account?.credentialReady === true
-    && HEALTHY_USAGE_STATES.has(authState)
+    && (
+      account?.credentialReady === true
+      || credentialState === "credential_expired"
+    )
   ) {
     return { status: "READY", next: "use now" };
   }
@@ -1279,18 +1154,6 @@ function formatClaudeUsageAge(account) {
   if (!Number.isFinite(ageMs) || ageMs < 0) return "--";
   if (ageMs < 3_600_000) return `${Math.max(1, Math.round(ageMs / 60_000))}m`;
   return formatStatusDeltaMsCell(ageMs);
-}
-
-function formatRotationCell(account) {
-  if (account?.rotationPending === null) return "unknown";
-  if (account?.rotationPending !== true) return "--";
-  const ageMs = Number(account.rotation?.fenceAgeMs);
-  const age = Number.isFinite(ageMs) ? formatStatusDeltaMsCell(ageMs) : null;
-  const host = typeof account.rotation?.fenceCreatedByHost === "string" && account.rotation.fenceCreatedByHost
-    ? account.rotation.fenceCreatedByHost
-    : null;
-  if (age && age !== "--") return `pending ${age}${host ? `@${host}` : ""}`;
-  return "pending";
 }
 
 function formatMaintenanceDiagnosticLine(account, nowMs) {
@@ -1315,17 +1178,13 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
-  const rows = [["account", "plan", "state", "lock", "rotation", "local", ...columns.headers, "source"]];
+  const rows = [["account", "plan", "state", "lock", ...columns.headers, "source"]];
   for (const account of accounts) {
     rows.push([
       account.label,
       formatPlan(account),
       account.authState,
       account.locked === null ? "unknown" : account.locked === true ? "yes" : "--",
-      formatRotationCell(account),
-      new Set(["clean", "unpublished", "unreadable", "missing"]).has(account.localProjection?.state)
-        ? account.localProjection.state
-        : "unknown",
       ...columns.values(account),
       account.source,
     ]);
@@ -1333,8 +1192,6 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
   if (accounts.length > 0) {
     rows.push([
       "average",
-      "--",
-      "--",
       "--",
       "--",
       "--",
@@ -1391,7 +1248,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
     ]);
   }
   return `${[
-    `CLAUDE: ${countStatus("READY")} ready · ${countStatus("IN USE")} in use · ${countStatus("AIM FIXING")} AIM fixing · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
+    `CLAUDE: ${countStatus("READY")} ready · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
     ...formatStatusTable(rows),
   ].join("\n")}\n`;
 }

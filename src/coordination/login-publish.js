@@ -7,10 +7,17 @@ import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { deriveAnthropicCredentialFromClaudeBundle, getClaudeNativeBundle } from "../credentials/claude-bundle.js";
 import { buildSakanaKeyFingerprint } from "../providers/sakana.js";
 import { buildSharedBrowserPolicy } from "./browser-policy.js";
-import { buildRedisClaudeRotationFenceProvenance } from "./redis-claude-rotation-fence.js";
 import { hasCredentialMaterial } from "./records.js";
 import { findCredentialRecord } from "./snapshot.js";
 import { publishCredential } from "./redis-store.js";
+
+export function withoutClaudeRotationProvenance(value) {
+  const provenance = isObject(value) ? { ...value } : {};
+  delete provenance.claudeRotationFenceId;
+  delete provenance.claudeRotationBaseTokenLineageFingerprint;
+  delete provenance.claudeRotationBaseCredentialVersion;
+  return provenance;
+}
 
 export function buildStableIdentityForCredential(provider, credential) {
   if (provider === OPENAI_CODEX_PROVIDER) {
@@ -145,7 +152,6 @@ export async function publishMaintainedCredential({
   provider,
   updatedBy = "aimgr-cli",
   observedAt = new Date().toISOString(),
-  rotationFence = null,
 }) {
   const normalizedLabel = normalizeLabel(label);
   const normalizedProvider = normalizeProviderId(provider);
@@ -175,7 +181,7 @@ export async function publishMaintainedCredential({
     nextCredential: storedCredential,
     nextIdentity: stableIdentity,
   });
-  const currentProvenance = isObject(currentCredential?.provenance) ? currentCredential.provenance : {};
+  const currentProvenance = withoutClaudeRotationProvenance(currentCredential?.provenance);
   const reauth = isObject(account.reauth) ? { ...account.reauth } : {};
   if (reauth.blockedReason === "oauth_reauth_required") {
     delete reauth.blockedReason;
@@ -205,9 +211,7 @@ export async function publishMaintainedCredential({
         reason: null,
       },
       provenance: {
-        ...(normalizedProvider === ANTHROPIC_PROVIDER
-          ? buildRedisClaudeRotationFenceProvenance(currentProvenance, rotationFence)
-          : currentProvenance),
+        ...currentProvenance,
         lastSourceType: "login-maintenance",
       },
     },

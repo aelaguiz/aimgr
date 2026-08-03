@@ -17,14 +17,9 @@ import {
   resolveManagedClaudeDir,
 } from "../io/paths.js";
 import {
-  assertRedisClaudeFenceSuccessor,
-  clearClaudeRotationFenceOrThrow,
-  clearClaudeProjectionReceipt,
-  createClaudeRotationFenceForCurrentCredential,
   currentRedisClaudeRecord,
   projectClaudeNativeBundleToManagedConfig,
   publishClaudeRotationIfNeeded,
-  recordCommittedClaudeProjection,
 } from "../targets/claude-cli.js";
 import {
   classifyClaudePreRunFailure,
@@ -116,27 +111,9 @@ async function assertLeaseOwned(lease) {
   if (renewed !== true) throw maintenanceFailure("lease_lost");
 }
 
-async function createMaintenanceFence(options) {
-  try {
-    return await createClaudeRotationFenceForCurrentCredential(options);
-  } catch (error) {
-    throw maintenanceFailure(classifyClaudePreRunFailure(error, "local_state_conflict"), error);
-  }
-}
-
-async function clearMaintenanceFence(options) {
-  try {
-    await clearClaudeRotationFenceOrThrow(options);
-  } catch (error) {
-    throw maintenanceFailure(classifyClaudePreRunFailure(error, "coordination_unavailable"), error);
-  }
-}
-
 async function publishMaintenanceCandidate(options) {
   try {
-    const record = await publishClaudeRotationIfNeeded(options);
-    assertRedisClaudeFenceSuccessor({ record, fence: options.fence });
-    return record;
+    return await publishClaudeRotationIfNeeded(options);
   } catch (error) {
     throw maintenanceFailure(classifyClaudePreRunFailure(error, "publication_failed"), error);
   }
@@ -439,9 +416,6 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
     }
 
     if (!result) {
-      // Fence recovery is eligible on every pass; only the /usage probe stays
-      // due-gated (the not-due check runs inside the shared preflight, after
-      // fence read/recovery).
       let preflight;
       try {
         preflight = await runSharedClaudePreRunPreflight({
@@ -452,9 +426,8 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
           expectedEmail: requireExpectedEmail(record, normalizedLabel),
           nowMs,
           resolveCommandImpl: context.resolveExecutableOnPathImpl,
-          lease,
           assertLeaseOwned: () => assertLeaseOwned(lease),
-          stopAfterFenceRecovery: () => {
+          stopBeforeReconciliation: () => {
             const current = currentRedisClaudeRecord(runtime, normalizedLabel);
             const expiresAtMs = parseExpiresAtToMs(
               getAnthropicCredentialView(current?.credential)?.expiresAt,
@@ -466,15 +439,10 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
         if (error?.code === "AIMGR_CLAUDE_MAINTENANCE_RETRY") throw error;
         throw maintenanceFailure(classifyClaudePreRunFailure(error, "local_state_conflict"), error);
       }
-      if (preflight.deferred) {
-        // A young foreign fence is a bounded skip, not a failure; it is not
-        // retryable and never counts toward escalation.
-        result = maintenanceResult("skipped", "fence_owned_elsewhere");
-      } else if (preflight.paused) {
+      if (preflight.paused) {
         result = maintenanceResult("skipped", "not_due");
       } else {
-        const { descriptor, command, recoveryStorageId, observedAt } = preflight;
-        let retainedFence = preflight.retainedFence;
+        const { descriptor, command, observedAt } = preflight;
 
         const credential = requireCredential(runtime, normalizedLabel);
         const preRunCredentialComplete = hasCompleteClaudeNativeBundle(credential);
@@ -485,23 +453,11 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
         delete target.credentialsPath;
         delete target.appStatePath;
         target.lastAppliedAt = observedAt;
-        try {
-          recordCommittedClaudeProjection({
-            runtime,
-            label: normalizedLabel,
-            record: currentRedisClaudeRecord(runtime, normalizedLabel),
-            descriptor,
-            homeDir,
-            reconciledAt: observedAt,
-          });
-        } catch (error) {
-          throw maintenanceFailure("local_state_conflict", error);
-        }
-        const runFence = retainedFence ?? await createMaintenanceFence({
+        writeClaudeMaintenanceLocalState({
+          homeDir,
           runtime,
           label: normalizedLabel,
-          recoveryStorageId,
-          observedAt,
+          localBrowserBinding,
         });
         await assertLeaseOwned(lease);
 
@@ -535,9 +491,6 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
             reconciliation: postRunSync,
             label: normalizedLabel,
             observedAt,
-            fence: runFence,
-            descriptor,
-            homeDir,
           });
         }
 
@@ -573,14 +526,6 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
           && postRunSync.status === "unchanged"
           && postRunSync.reason === "native_storage_empty"
         ) {
-          await assertLeaseOwned(lease);
-          await clearMaintenanceFence({
-            runtime,
-            label: normalizedLabel,
-            fence: runFence,
-            lease,
-          });
-          clearClaudeProjectionReceipt({ state: runtime.state, label: normalizedLabel });
           runtime.state.accounts[normalizedLabel].reauth = {
             ...(isObject(runtime.state.accounts[normalizedLabel].reauth)
               ? runtime.state.accounts[normalizedLabel].reauth
@@ -609,13 +554,6 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
           postRunSync.status === "candidate"
           || (postRunSync.status === "unchanged" && postRunSync.reason === "tokens_unchanged")
         ) {
-          await assertLeaseOwned(lease);
-          await clearMaintenanceFence({
-            runtime,
-            label: normalizedLabel,
-            fence: runFence,
-            lease,
-          });
           writeClaudeMaintenanceLocalState({
             homeDir,
             runtime,

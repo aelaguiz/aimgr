@@ -14,12 +14,6 @@ import {
   DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
 } from "../../src/coordination/redis-credential-lease.js";
 import {
-  buildRedisClaudeRotationFenceProvenance,
-  clearRedisClaudeRotationFence,
-  createRedisClaudeRotationFence,
-  readRedisClaudeRotationFence,
-} from "../../src/coordination/redis-claude-rotation-fence.js";
-import {
   closeRedisRuntime,
   loadRedisRuntime,
 } from "../../src/coordination/runtime.js";
@@ -36,10 +30,7 @@ import {
 import { writeClaudeNativeBundleExportFile } from "../../src/credentials/claude-native.js";
 import { handleClaude } from "../../src/cli/commands/claude.js";
 import { maintainRedisClaudeCredential } from "../../src/credentials/claude-maintenance.js";
-import {
-  buildClaudeRecoveryStorageId,
-  buildClaudeTokenLineageFingerprint,
-} from "../../src/targets/claude-cli.js";
+import { buildClaudeTokenLineageFingerprint } from "../../src/targets/claude-cli.js";
 import { writeLocalState } from "../../src/state/local-state.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
@@ -530,27 +521,12 @@ test("redis-configured claude run projects into a per-label home and publishes p
   const local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
   assert.equal(local.targets.claudeCli.lastRunLabel, "claude");
   assert.equal(local.targets.claudeCli.credentialsPath, undefined);
-  assert.deepEqual(
-    {
-      label: local.targets.claudeCli.projectionReceiptsByLabel.claude.label,
-      redisCredentialVersion: local.targets.claudeCli.projectionReceiptsByLabel.claude.redisCredentialVersion,
-      credentialsPath: local.targets.claudeCli.projectionReceiptsByLabel.claude.credentialsPath,
-    },
-    {
-      label: "claude",
-      redisCredentialVersion: credentialRecord.version,
-      credentialsPath: resolveClaudeAuthFilePath(configDir),
-    },
-  );
-  assert.match(
-    local.targets.claudeCli.projectionReceiptsByLabel.claude.committedLineageFingerprint,
-    /^sha256:[a-f0-9]{64}$/,
-  );
+  assert.equal(local.targets.claudeCli.projectionReceiptsByLabel, undefined);
   assert.doesNotMatch(JSON.stringify(local), /CLAUDE_REFRESH_ROTATED/);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
-test("explicit Claude run enforces the offline cache and online receipt recovery matrix", async () => {
+test("explicit Claude run uses a complete offline cache and treats Redis as online authority", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const firstNowMs = Date.parse("2026-08-02T18:00:00.000Z");
@@ -602,7 +578,7 @@ test("explicit Claude run enforces the offline cache and online receipt recovery
   const offlineOut = await runCli(["claude", "run", "claude", "--home", home], offlineDeps);
   assert.equal(
     offlineOut,
-    "AIM coordination=offline label=claude receipt_age_seconds=90 cache=clean\n",
+    "AIM coordination=offline label=claude cache=complete\n",
   );
   assert.equal(offlineLaunches, 1);
 
@@ -615,22 +591,21 @@ test("explicit Claude run enforces the offline cache and online receipt recovery
     refreshToken: "CLAUDE_REFRESH_UNPUBLISHED",
     expiresAt: firstNowMs + 10_800_000,
   });
-  await assert.rejects(
-    runCli(["claude", "run", "claude", "--home", home], offlineDeps),
-    /no safe clean-cache launch: Claude label=claude local cache is unpublished, unreadable, or identity-ambiguous/,
+  assert.equal(
+    await runCli(["claude", "run", "claude", "--home", home], offlineDeps),
+    "AIM coordination=offline label=claude cache=complete\n",
   );
-  assert.equal(offlineLaunches, 1);
+  assert.equal(offlineLaunches, 2);
 
-  // The unchanged receipt still proves that this local successor branched
-  // from the exact current Redis base, so the next online run may publish it.
+  // A strictly newer same-account local rotation is published before Redis is
+  // projected back into the managed cache.
   assert.equal(await runCli(["claude", "run", "claude", "--home", home], onlineDeps), "");
   let snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials[0].version, 2);
   assertCanonicalAnthropicCredential(snapshot.credentials[0], "CLAUDE_REFRESH_UNPUBLISHED");
 
-  // A file that still matches an older receipt is a clean stale cache. A newer
-  // Redis version replaces it and advances the receipt without publishing the
-  // old local lineage back over Redis.
+  // A newer Redis version replaces an older local cache without another
+  // publication.
   const redisNewerCredential = buildAnthropicClaudeCredential({
     access: "CLAUDE_ACCESS_REDIS_NEWER",
     refresh: "CLAUDE_REFRESH_REDIS_NEWER",
@@ -653,11 +628,9 @@ test("explicit Claude run enforces the offline cache and online receipt recovery
   snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials[0].version, 3);
   assertCanonicalAnthropicCredential(snapshot.credentials[0], "CLAUDE_REFRESH_REDIS_NEWER");
-  let localState = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
-  assert.equal(localState.targets.claudeCli.projectionReceiptsByLabel.claude.redisCredentialVersion, 3);
 
-  // If both Redis and the local file branch away from the receipt, neither
-  // branch may overwrite the other even when one has a later expiry.
+  // If Redis and the local cache differ, Redis wins unless the local cache is
+  // the strictly newer same-account credential already handled above.
   rotateProjectedClaudeCredential(configDir, {
     accessToken: "CLAUDE_ACCESS_LOCAL_BRANCH",
     refreshToken: "CLAUDE_REFRESH_LOCAL_BRANCH",
@@ -679,53 +652,144 @@ test("explicit Claude run enforces the offline cache and online receipt recovery
   });
   assert.equal(conflictingRedis.ok, true);
   let conflictedLaunches = 0;
-  const assertHumanReadableAccountConflict = (error) => {
-    assert.equal(
-      error.message,
-      "Claude account \"claude\" could not start because this machine's saved copy and AIM's shared copy changed separately. "
-        + "AIM changed neither copy. "
-        + `To use the shared login from amirs-m3-max-new, back up and remove this machine's cache at "${resolveClaudeAuthFilePath(configDir)}", then retry.`,
-    );
-    assert.doesNotMatch(error.message, /lineage|projection receipt/i);
-    return true;
-  };
-  await assert.rejects(
-    runCli(["claude", "run", "claude", "--home", home], {
-      ...onlineDeps,
-      nowImpl: () => firstNowMs + 180_000,
-      runClaudeCliImpl: () => {
-        conflictedLaunches += 1;
-        return { status: 0, signal: null };
-      },
-    }),
-    assertHumanReadableAccountConflict,
-  );
-  assert.equal(conflictedLaunches, 0);
+  assert.equal(await runCli(["claude", "run", "claude", "--home", home], {
+    ...onlineDeps,
+    nowImpl: () => firstNowMs + 180_000,
+    runClaudeCliImpl: () => {
+      conflictedLaunches += 1;
+      return { status: 0, signal: null };
+    },
+  }), "");
+  assert.equal(conflictedLaunches, 1);
   assert.equal(
     JSON.parse(fs.readFileSync(resolveClaudeAuthFilePath(configDir), "utf8")).claudeAiOauth.refreshToken,
-    "CLAUDE_REFRESH_LOCAL_BRANCH",
+    "CLAUDE_REFRESH_REDIS_BRANCH",
   );
-
-  // Missing receipt produces the same deterministic refusal; it is never
-  // reconstructed by trusting a different local token lineage.
-  localState = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
-  delete localState.targets.claudeCli.projectionReceiptsByLabel.claude;
-  writeJson(resolveAimgrLocalStatePath({ homeDir: home }), localState);
-  await assert.rejects(
-    runCli(["claude", "run", "claude", "--home", home], {
-      ...onlineDeps,
-      nowImpl: () => firstNowMs + 240_000,
-      runClaudeCliImpl: () => {
-        conflictedLaunches += 1;
-        return { status: 0, signal: null };
-      },
-    }),
-    assertHumanReadableAccountConflict,
-  );
-  assert.equal(conflictedLaunches, 0);
 });
 
-test("M5 accepts an M3-published Claude rotation when Redis proves its unreceipted cache is the exact base", async () => {
+test("online Claude run ignores a stale legacy receipt and replaces its predecessor cache from Redis", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const nowMs = Date.parse("2026-08-03T12:00:00.000Z");
+  const legacyReceiptCredential = buildAnthropicClaudeCredential({
+    access: "PRO11_LEGACY_V31_ACCESS",
+    refresh: "PRO11_LEGACY_V31_REFRESH",
+    expiresAtMs: nowMs + 1_800_000,
+    emailAddress: "pro11@example.com",
+    organizationUuid: "org_pro11",
+  });
+  legacyReceiptCredential.nativeClaudeBundle.oauthAccount.accountUuid = "acct_pro11";
+  const localPredecessor = buildAnthropicClaudeCredential({
+    access: "PRO11_LOCAL_V32_ACCESS",
+    refresh: "PRO11_LOCAL_V32_REFRESH",
+    expiresAtMs: nowMs + 3_600_000,
+    emailAddress: "pro11@example.com",
+    organizationUuid: "org_pro11",
+  });
+  localPredecessor.nativeClaudeBundle.oauthAccount.accountUuid = "acct_pro11";
+  const redisCanonical = buildAnthropicClaudeCredential({
+    access: "PRO11_REDIS_V33_ACCESS",
+    refresh: "PRO11_REDIS_V33_REFRESH",
+    expiresAtMs: nowMs + 7_200_000,
+    emailAddress: "pro11@example.com",
+    organizationUuid: "org_pro11",
+  });
+  redisCanonical.nativeClaudeBundle.oauthAccount.accountUuid = "acct_pro11";
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "pro11",
+      credential: legacyReceiptCredential,
+      identity: {
+        accountUuid: "acct_pro11",
+        emailAddress: "pro11@example.com",
+        organizationUuid: "org_pro11",
+      },
+      policy: { expect: { email: "pro11@example.com" }, pool: { enabled: true } },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  let snapshot = await readSnapshot(store);
+  const version2 = await publishCredential(store, {
+    expectedVersion: 1,
+    updatedBy: "test",
+    observedAt: "2026-08-03T10:30:00.000Z",
+    credentialRecord: { ...snapshot.credentials[0], credential: localPredecessor },
+  });
+  assert.equal(version2.ok, true);
+  const version3 = await publishCredential(store, {
+    expectedVersion: 2,
+    updatedBy: "test",
+    observedAt: "2026-08-03T11:00:00.000Z",
+    credentialRecord: {
+      ...version2.record,
+      credential: redisCanonical,
+      provenance: {
+        lastSourceType: "native-claude-rotation",
+        claudeRotationBaseCredentialVersion: 2,
+      },
+    },
+  });
+  assert.equal(version3.ok, true);
+  const configDir = path.join(
+    resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "pro11" }),
+    ".claude",
+  );
+  writeJson(path.join(configDir, ".credentials.json"), {
+    claudeAiOauth: localPredecessor.nativeClaudeBundle.claudeAiOauth,
+  });
+  writeJson(path.join(configDir, ".claude.json"), {
+    oauthAccount: localPredecessor.nativeClaudeBundle.oauthAccount,
+  });
+  writeLocalState({
+    homeDir: home,
+    localState: {
+      targets: {
+        claudeCli: {
+          projectionReceiptsByLabel: {
+            pro11: {
+              label: "pro11",
+              redisCredentialVersion: 1,
+              committedLineageFingerprint: buildClaudeTokenLineageFingerprint(legacyReceiptCredential),
+              credentialsPath: resolveClaudeAuthFilePath(configDir),
+              reconciledAt: "2026-08-03T10:00:00.000Z",
+            },
+          },
+        },
+      },
+    },
+  });
+
+  let launches = 0;
+  assert.equal(await runCli(["claude", "run", "pro11", "--home", home], {
+    env: {},
+    nowImpl: () => nowMs,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: ({ configDir: launchConfigDir }) => {
+      launches += 1;
+      const projected = JSON.parse(fs.readFileSync(resolveClaudeAuthFilePath(launchConfigDir), "utf8"));
+      assert.equal(projected.claudeAiOauth.refreshToken, "PRO11_REDIS_V33_REFRESH");
+      return { status: 0, signal: null };
+    },
+  }), "");
+  assert.equal(launches, 1);
+  snapshot = await readSnapshot(store);
+  assert.equal(findSnapshotCredential(snapshot, "anthropic", "pro11").version, 3);
+  assertCanonicalAnthropicCredential(
+    findSnapshotCredential(snapshot, "anthropic", "pro11"),
+    "PRO11_REDIS_V33_REFRESH",
+  );
+  const localState = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
+  assert.equal(localState.targets.claudeCli.projectionReceiptsByLabel, undefined);
+});
+
+test("another machine accepts a centrally published Claude rotation from Redis", async () => {
   const m5Home = mkTempHome();
   const m3Home = mkTempHome();
   const client = new FakeRedisClient();
@@ -766,25 +830,7 @@ test("M5 accepts an M3-published Claude rotation when Redis proves its unreceipt
   };
   assert.equal(await runCli(["claude", "run", "qa", "--home", m5Home], deps), "");
 
-  const localStatePath = resolveAimgrLocalStatePath({ homeDir: m5Home });
-  const localState = JSON.parse(fs.readFileSync(localStatePath, "utf8"));
-  delete localState.targets.claudeCli.projectionReceiptsByLabel.qa;
-  writeJson(localStatePath, localState);
-
   let snapshot = await readSnapshot(store);
-  const baseRecord = snapshot.credentials.find(
-    (record) => record.provider === "anthropic" && record.label === "qa",
-  );
-  const fence = await createRedisClaudeRotationFence(store, {
-    label: "qa",
-    recoveryStorageId: buildClaudeRecoveryStorageId({
-      installationId: "m3-login-host",
-      configDir: path.join(m3Home, "m3-qa"),
-    }),
-    baseTokenLineageFingerprint: buildClaudeTokenLineageFingerprint(baseRecord.credential),
-    baseCredentialVersion: baseRecord.version,
-    observedAt: new Date(firstNowMs + 60_000).toISOString(),
-  });
   const m3Runtime = await loadRedisRuntime({
     homeDir: m3Home,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
@@ -805,20 +851,9 @@ test("M5 accepts an M3-published Claude rotation when Redis proves its unreceipt
     provider: "anthropic",
     updatedBy: "m3-login",
     observedAt: new Date(firstNowMs + 60_000).toISOString(),
-    rotationFence: fence,
   });
   assert.equal(successor.ok, true);
   assert.equal(successor.credential.record.provenance.lastSourceType, "login-maintenance");
-  const cleanupLease = await acquireRedisCredentialLease(m3Runtime.store, {
-    provider: "anthropic",
-    label: "qa",
-  });
-  assert.equal(await clearRedisClaudeRotationFence(m3Runtime.store, {
-    label: "qa",
-    fenceId: fence.fenceId,
-    lease: cleanupLease,
-  }), true);
-  assert.equal(await cleanupLease.release(), true);
 
   let launches = 0;
   assert.equal(await runCli(["claude", "run", "qa", "--home", m5Home], {
@@ -845,8 +880,6 @@ test("M5 accepts an M3-published Claude rotation when Redis proves its unreceipt
     JSON.parse(fs.readFileSync(resolveClaudeAuthFilePath(configDir), "utf8")).claudeAiOauth.refreshToken,
     "QA_M3_NEW_REFRESH",
   );
-  const refreshedLocalState = JSON.parse(fs.readFileSync(localStatePath, "utf8"));
-  assert.equal(refreshedLocalState.targets.claudeCli.projectionReceiptsByLabel.qa.redisCredentialVersion, 2);
   await closeRedisRuntime(m3Runtime);
 });
 
@@ -1123,7 +1156,7 @@ test("automatic Fable run skips a locked account and launches the lowest Fable u
   await lockedLease.release();
 });
 
-test("explicit Claude run repairs an empty local cache from Redis and records its receipt", async () => {
+test("explicit Claude run replaces incomplete credentials and malformed app state from Redis", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -1166,9 +1199,8 @@ test("explicit Claude run repairs an empty local cache from Redis and records it
   emptyOauth.accessToken = "";
   emptyOauth.refreshToken = "";
   writeJson(path.join(configDir, ".credentials.json"), { claudeAiOauth: emptyOauth });
-  writeJson(path.join(configDir, ".claude.json"), {
-    oauthAccount: credential.nativeClaudeBundle.oauthAccount,
-  });
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, ".claude.json"), "{malformed\n", { mode: 0o600 });
   let launched = false;
   const out = await runCli(["claude", "run", "pro4", "--home", home], {
     env: { HOME: home },
@@ -1181,6 +1213,8 @@ test("explicit Claude run repairs an empty local cache from Redis and records it
       );
       assert.equal(projected.claudeAiOauth.accessToken, "ACCESS_PRO4");
       assert.equal(projected.claudeAiOauth.refreshToken, "REFRESH_PRO4");
+      const appState = JSON.parse(fs.readFileSync(path.join(launchConfigDir, ".claude.json"), "utf8"));
+      assert.equal(appState.oauthAccount.emailAddress, "pro4@example.com");
       launched = true;
       return { status: 0, signal: null };
     },
@@ -1190,12 +1224,8 @@ test("explicit Claude run repairs an empty local cache from Redis and records it
   assert.equal(launched, true);
   const local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
   assert.equal(local.targets.claudeCli.lastRunLabel, "pro4");
-  assert.equal(local.targets.claudeCli.projectionReceiptsByLabel.pro4.redisCredentialVersion, 1);
+  assert.equal(local.targets.claudeCli.projectionReceiptsByLabel, undefined);
   assert.equal(fs.existsSync(path.join(configDir, ".credentials.json")), true);
-  assert.equal(
-    [...client.values.keys()].some((key) => key.includes(":fence:claude-rotation:pro4")),
-    false,
-  );
 });
 
 test("claude resume reuses the exact recorded Fable model and effort", async () => {
@@ -1289,7 +1319,7 @@ test("claude resume reuses the exact recorded Fable model and effort", async () 
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
 });
 
-test("claude resume by name skips recovery-fenced accounts and honors an exact destination account", async () => {
+test("claude resume by name selects the lowest Fable account and honors an exact destination account", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -1359,14 +1389,6 @@ test("claude resume by name skips recovery-fenced accounts and honors an exact d
   await importCredentialsSnapshot(store, {
     credentials: [record("boss"), record("fablelow"), record("opuslow"), record("specific")],
   });
-  await createRedisClaudeRotationFence(store, {
-    label: "fablelow",
-    recoveryStorageId: `sha256:${"a".repeat(64)}`,
-    baseTokenLineageFingerprint: `sha256:${"b".repeat(64)}`,
-    baseCredentialVersion: 1,
-    observedAt: "2026-07-24T17:00:00.000Z",
-  });
-
   const usageByAccessToken = {
     ACCESS_BOSS: { fiveHour: 1, fable: 1 },
     ACCESS_FABLELOW: { fiveHour: 80, fable: 5 },
@@ -1441,10 +1463,10 @@ test("claude resume by name skips recovery-fenced accounts and honors an exact d
 
   assert.equal(
     out,
-    "Switching session from boss to opuslow using fable as "
+    "Switching session from boss to fablelow using fable as "
       + "\"[fork from boss/66666666] Continue rate-limited work\".\n",
   );
-  assert.equal(launchedLabel, "opuslow");
+  assert.equal(launchedLabel, "fablelow");
   assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
   assert.equal(
     fs.existsSync(path.join(
@@ -1982,10 +2004,6 @@ test("redis-configured claude run publishes each token rotation before exit with
 
   resolveLaunch();
   await command;
-  assert.equal(
-    [...client.values.keys()].some((key) => key.includes(":fence:claude-rotation:claude")),
-    false,
-  );
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
   assert.equal(clearedTimers.length, 1);
 });
@@ -2154,10 +2172,6 @@ test("Claude maintenance marks only a clean exact missing-token result as reauth
     terminal.snapshot.credentials[0].policy.reauth.blockedReason,
     "oauth_reauth_required",
   );
-  assert.equal(
-    [...terminal.client.values.keys()].some((key) => key.includes(":fence:claude-rotation:claude")),
-    false,
-  );
 
   const transient = await runCase({ clean: false });
   assert.deepEqual(transient.result, {
@@ -2166,13 +2180,9 @@ test("Claude maintenance marks only a clean exact missing-token result as reauth
     detail: "claude /usage exited with status 2",
   });
   assert.equal(transient.snapshot.credentials[0].policy.reauth.blockedReason, undefined);
-  assert.equal(
-    [...transient.client.values.keys()].some((key) => key.includes(":fence:claude-rotation:claude")),
-    true,
-  );
 });
 
-test("redis-configured claude run preserves a terminating signal and resumes its exact fence", async () => {
+test("redis-configured claude run preserves a terminating signal and can relaunch", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   writeAimgrConfig({
@@ -2207,7 +2217,7 @@ test("redis-configured claude run preserves a terminating signal and resumes its
       resolveExecutableOnPathImpl: buildTestClaudeResolver(),
       runClaudeCliImpl: () => ({ status: null, signal: "SIGTERM" }),
     });
-    assert.equal(out, "AIM coordination=degraded label=claude fence=retained retry=next_run\n");
+    assert.equal(out, "");
   } finally {
     process.kill = originalKill;
   }
@@ -2217,9 +2227,6 @@ test("redis-configured claude run preserves a terminating signal and resumes its
     ".claude",
   );
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
-  const fenceKey = [...client.values.keys()].find((key) => key.includes(":fence:claude-rotation:claude"));
-  assert.ok(fenceKey);
-  const interruptedFence = client.values.get(fenceKey);
   let resumedLaunches = 0;
   const resumedOut = await runCli(["claude", "run", "claude", "--home", home], {
     env: {},
@@ -2227,13 +2234,11 @@ test("redis-configured claude run preserves a terminating signal and resumes its
     resolveExecutableOnPathImpl: buildTestClaudeResolver(),
     runClaudeCliImpl: () => {
       resumedLaunches += 1;
-      assert.equal(client.values.get(fenceKey), interruptedFence);
       return { status: 0, signal: null };
     },
   });
   assert.equal(resumedOut, "");
   assert.equal(resumedLaunches, 1);
-  assert.equal(client.values.has(fenceKey), false);
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
 });
 
@@ -2364,7 +2369,7 @@ test("all Redis Claude credential writers refuse work while the rotating credent
   assert.equal(fs.existsSync(resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" })), false);
 });
 
-test("failed post-run publication fences other machines until the originating home repairs Redis", async () => {
+test("failed post-run publication retains the newer local candidate for the next run", async () => {
   const home = mkTempHome();
   const otherHome = mkTempHome();
   const client = new FakeRedisClient();
@@ -2372,14 +2377,12 @@ test("failed post-run publication fences other machines until the originating ho
     access: "CLAUDE_ACCESS",
     refresh: "CLAUDE_REFRESH",
   });
-  writeAimgrConfig({
-    homeDir: home,
-    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
-  });
-  writeAimgrConfig({
-    homeDir: otherHome,
-    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
-  });
+  for (const homeDir of [home, otherHome]) {
+    writeAimgrConfig({
+      homeDir,
+      config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+    });
+  }
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
   await importCredentialsSnapshot(store, {
     credentials: [{
@@ -2430,124 +2433,49 @@ test("failed post-run publication fences other machines until the originating ho
     degradedOut,
     "AIM coordination=degraded label=claude publication=retryable local_candidate=retained\n",
   );
-  let local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
-  assert.equal(local.targets.claudeCli.projectionReceiptsByLabel.claude.redisCredentialVersion, 1);
-  const sharedFenceKey = [...client.values.keys()].find((key) => key.includes(":fence:claude-rotation:claude"));
-  assert.ok(sharedFenceKey);
-  assert.doesNotMatch(client.values.get(sharedFenceKey), /CLAUDE_(?:ACCESS|REFRESH)/);
-
-  const staleBundleFile = path.join(otherHome, "stale-bundle.json");
-  writeClaudeNativeBundleExportFile({
-    filePath: staleBundleFile,
-    nativeClaudeBundle: credential.nativeClaudeBundle,
-    labelHint: "claude",
-  });
-  await assert.rejects(
-    runCli(["claude", "import-native", "claude", "--in", staleBundleFile, "--home", otherHome], deps),
-    /did not replace the unresolved rotating-token lineage/,
+  let snapshot = await readSnapshot(store);
+  assertCanonicalAnthropicCredential(
+    findSnapshotCredential(snapshot, "anthropic"),
+    "CLAUDE_REFRESH",
   );
-  assert.ok(client.values.has(sharedFenceKey));
 
   let otherHomeLaunches = 0;
-  await assert.rejects(
-    runCli(["claude", "run", "claude", "--home", otherHome], {
-      ...deps,
-      runClaudeCliImpl: () => {
-        otherHomeLaunches += 1;
-        return { status: 0, signal: null };
-      },
-    }),
-    /recently rotated on another machine \(fence age \d+\.\dh\)/,
-  );
-  assert.equal(otherHomeLaunches, 0);
-  assert.ok(client.values.has(sharedFenceKey));
-  const otherLocal = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: otherHome }), "utf8"));
-  assert.match(local.installationId, /^[0-9a-f-]{36}$/);
-  assert.match(otherLocal.installationId, /^[0-9a-f-]{36}$/);
-  assert.notEqual(otherLocal.installationId, local.installationId);
-
-  const repairedOut = await runCli(["claude", "run", "claude", "--home", home], {
+  assert.equal(await runCli(["claude", "run", "claude", "--home", otherHome], {
     ...deps,
-    runClaudeCliImpl: () => ({ status: 0, signal: null }),
-  });
-  assert.equal(repairedOut, "");
-  local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
-  const snapshot = await readSnapshot(store);
-  const record = snapshot.credentials.find((entry) => entry.provider === "anthropic" && entry.label === "claude");
-  assertCanonicalAnthropicCredential(record, "CLAUDE_REFRESH_ROTATED");
-  assert.equal(local.targets.claudeCli.projectionReceiptsByLabel.claude.redisCredentialVersion, record.version);
-  assert.equal(client.values.has(sharedFenceKey), false);
+    runClaudeCliImpl: ({ configDir }) => {
+      otherHomeLaunches += 1;
+      const projected = JSON.parse(fs.readFileSync(resolveClaudeAuthFilePath(configDir), "utf8"));
+      assert.equal(projected.claudeAiOauth.refreshToken, "CLAUDE_REFRESH");
+      return { status: 0, signal: null };
+    },
+  }), "");
+  assert.equal(otherHomeLaunches, 1);
 
-  const failedRun = await runCliWithExitCode(
-    ["claude", "run", "claude", "--home", home],
-    {
+  let repairedLaunches = 0;
+  assert.equal(await runCli(["claude", "run", "claude", "--home", home], {
+    ...deps,
+    runClaudeCliImpl: ({ configDir }) => {
+      repairedLaunches += 1;
+      const projected = JSON.parse(fs.readFileSync(resolveClaudeAuthFilePath(configDir), "utf8"));
+      assert.equal(projected.claudeAiOauth.refreshToken, "CLAUDE_REFRESH_ROTATED");
+      return { status: 0, signal: null };
+    },
+  }), "");
+  assert.equal(repairedLaunches, 1);
+  snapshot = await readSnapshot(store);
+  assertCanonicalAnthropicCredential(
+    findSnapshotCredential(snapshot, "anthropic"),
+    "CLAUDE_REFRESH_ROTATED",
+  );
+
+  assert.deepEqual(
+    await runCliWithExitCode(["claude", "run", "claude", "--home", home], {
       ...deps,
       runClaudeCliImpl: () => ({ status: 2, signal: null }),
-    },
-  );
-  assert.deepEqual(failedRun, {
-    stdout: "AIM coordination=degraded label=claude fence=retained retry=next_run\n",
-    exitCode: 2,
-  });
-  const failedRunFenceKey = [...client.values.keys()].find((key) => key.includes(":fence:claude-rotation:claude"));
-  assert.ok(failedRunFenceKey, "a nonclean exit with unchanged tokens must retain the uncertainty fence");
-  let sameHomeRelaunches = 0;
-  const interruptedAgain = await runCliWithExitCode(
-    ["claude", "run", "claude", "--home", home],
-    {
-      ...deps,
-      runClaudeCliImpl: () => {
-        sameHomeRelaunches += 1;
-        assert.ok(client.values.has(failedRunFenceKey));
-        return { status: 2, signal: null };
-      },
-    },
-  );
-  assert.deepEqual(interruptedAgain, {
-    stdout: "AIM coordination=degraded label=claude fence=retained retry=next_run\n",
-    exitCode: 2,
-  });
-  assert.equal(sameHomeRelaunches, 1);
-  assert.ok(client.values.has(failedRunFenceKey));
-
-  const expiryOnlyBundle = structuredClone(record.credential.nativeClaudeBundle);
-  expiryOnlyBundle.claudeAiOauth.expiresAt += 3_600_000;
-  const expiryOnlyFile = path.join(home, "expiry-only-bundle.json");
-  writeClaudeNativeBundleExportFile({
-    filePath: expiryOnlyFile,
-    nativeClaudeBundle: expiryOnlyBundle,
-    labelHint: "claude",
-  });
-  await assert.rejects(
-    runCli(["claude", "import-native", "claude", "--in", expiryOnlyFile, "--home", home], deps),
-    /did not replace the unresolved rotating-token lineage/,
-  );
-  assert.ok(client.values.has(failedRunFenceKey));
-
-  for (const [key, raw] of client.values) {
-    if (!key.includes(":credential:anthropic:claude")) continue;
-    const arbitrary = JSON.parse(raw);
-    arbitrary.version += 1;
-    arbitrary.credential.nativeClaudeBundle.claudeAiOauth.accessToken = "ARBITRARY_ACCESS";
-    arbitrary.credential.nativeClaudeBundle.claudeAiOauth.refreshToken = "ARBITRARY_REFRESH";
-    arbitrary.credential.nativeClaudeBundle.claudeAiOauth.expiresAt = Date.now() + 10_800_000;
-    client.values.set(key, JSON.stringify(arbitrary));
-  }
-  let unsafeRelaunches = 0;
-  await assert.rejects(
-    runCli(["claude", "run", "claude", "--home", home], {
-      ...deps,
-      runClaudeCliImpl: () => {
-        unsafeRelaunches += 1;
-        return { status: 0, signal: null };
-      },
     }),
-    /not a proven successor to its shared rotation fence/,
+    { stdout: "", exitCode: 2 },
   );
-  assert.equal(unsafeRelaunches, 0);
-  assert.ok(client.values.has(failedRunFenceKey));
 });
-
 test("redis-configured claude use is retired in favor of claude run", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
@@ -2565,7 +2493,6 @@ test("redis-configured claude use is retired in favor of claude run", async () =
 });
 
 const MAINTENANCE_NOW_MS = Date.parse("2026-08-02T12:00:00.000Z");
-const FOREIGN_RECOVERY_STORAGE_ID = `sha256:${"f".repeat(64)}`;
 const LANE_INSTALLATION_ID = "3f6b2a90-1234-4cde-8abc-0123456789ab";
 
 async function setupClaudeMaintenanceLane({
@@ -2665,51 +2592,6 @@ function maintenanceConfigDir(home, label = "claude") {
   return path.join(resolveAimgrClaudeLabelHomeDir({ homeDir: home, label }), ".claude");
 }
 
-function claudeFenceKey(client, label = "claude") {
-  return [...client.values.keys()].find((key) => key.includes(`:fence:claude-rotation:${label}`)) ?? null;
-}
-
-async function createMaintenanceLaneFence(lane, {
-  credential = lane.credential,
-  recoveryStorageId = FOREIGN_RECOVERY_STORAGE_ID,
-  observedAt,
-} = {}) {
-  return createRedisClaudeRotationFence(lane.store, {
-    label: lane.label,
-    recoveryStorageId,
-    baseTokenLineageFingerprint: buildClaudeTokenLineageFingerprint(credential),
-    baseCredentialVersion: 1,
-    observedAt,
-  });
-}
-
-function writeManagedClaudeBundle(configDir, {
-  accessToken,
-  refreshToken,
-  expiresAtMs,
-}) {
-  writeJson(path.join(configDir, ".credentials.json"), {
-    claudeAiOauth: {
-      accessToken,
-      refreshToken,
-      expiresAt: expiresAtMs,
-      subscriptionType: "max",
-      rateLimitTier: "max_20x",
-      scopes: ["user:profile", "user:inference", "user:sessions:claude_code"],
-    },
-  });
-  writeJson(path.join(configDir, ".claude.json"), {
-    oauthAccount: {
-      accountUuid: "acct_boss",
-      displayName: "Boss",
-      emailAddress: "boss@example.com",
-      organizationName: "Boss Org",
-      organizationUuid: "org_boss",
-    },
-    hasCompletedOnboarding: true,
-    hasAvailableSubscription: true,
-  });
-}
 
 async function runMaintenancePass(lane, context, label = "claude") {
   const runtime = await loadRedisRuntime({
@@ -2891,249 +2773,6 @@ test("Claude maintenance rejects stale reauth CAS under a same-label Codex colli
     count: 12,
   });
   assert.deepEqual(afterCodex, beforeCodex);
-});
-
-test("Claude maintenance defers to a young foreign rotation fence without probing or escalating", async () => {
-  const lane = await setupClaudeMaintenanceLane();
-  const fence = await createMaintenanceLaneFence(lane, {
-    observedAt: new Date(MAINTENANCE_NOW_MS - 60 * 60_000).toISOString(),
-  });
-  let launches = 0;
-  const context = buildMaintenanceContext(lane, {
-    runClaudeCliNoninteractiveImpl: () => {
-      launches += 1;
-      return { status: 0, signal: null, timedOut: false };
-    },
-  });
-
-  assert.deepEqual(await runMaintenancePass(lane, context), {
-    outcome: "skipped",
-    reason: "fence_owned_elsewhere",
-  });
-  assert.equal(launches, 0, "a deferred fence must not reach the /usage probe");
-  assert.deepEqual(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), fence);
-  const snapshot = await readSnapshot(lane.store);
-  assert.equal(snapshot.credentials[0].version, 1, "a deferred skip writes no policy fact");
-  assert.equal(snapshot.credentials[0].policy.reauth.maintenance, undefined);
-});
-
-test("Claude maintenance clears an expired foreign fence and repairs empty local storage from Redis", async () => {
-  const lane = await setupClaudeMaintenanceLane();
-  await createMaintenanceLaneFence(lane, {
-    observedAt: new Date(MAINTENANCE_NOW_MS - 25 * 60 * 60_000).toISOString(),
-  });
-  let launches = 0;
-  const context = buildMaintenanceContext(lane, {
-    runClaudeCliNoninteractiveImpl: () => {
-      launches += 1;
-      return { status: 0, signal: null, timedOut: false };
-    },
-  });
-
-  assert.deepEqual(await runMaintenancePass(lane, context), {
-    outcome: "unchanged",
-    reason: "tokens_unchanged",
-  });
-  assert.equal(launches, 1);
-  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
-  const projected = JSON.parse(fs.readFileSync(
-    resolveClaudeAuthFilePath(maintenanceConfigDir(lane.home)),
-    "utf8",
-  ));
-  assert.equal(projected.claudeAiOauth.refreshToken, "CLAUDE_REFRESH");
-});
-
-test("Claude maintenance clears an expired foreign fence when local tokens already match Redis", async () => {
-  const lane = await setupClaudeMaintenanceLane();
-  await createMaintenanceLaneFence(lane, {
-    observedAt: new Date(MAINTENANCE_NOW_MS - 25 * 60 * 60_000).toISOString(),
-  });
-  writeManagedClaudeBundle(maintenanceConfigDir(lane.home), {
-    accessToken: "CLAUDE_ACCESS",
-    refreshToken: "CLAUDE_REFRESH",
-    expiresAtMs: MAINTENANCE_NOW_MS + 4 * 60_000,
-  });
-  let launches = 0;
-  const context = buildMaintenanceContext(lane, {
-    runClaudeCliNoninteractiveImpl: () => {
-      launches += 1;
-      return { status: 0, signal: null, timedOut: false };
-    },
-  });
-
-  assert.deepEqual(await runMaintenancePass(lane, context), {
-    outcome: "unchanged",
-    reason: "tokens_unchanged",
-  });
-  assert.equal(launches, 1);
-  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
-});
-
-test("Claude maintenance retains its own unchanged-tokens fence through the probe and clears it after", async () => {
-  const lane = await setupClaudeMaintenanceLane();
-  writeLocalState({ homeDir: lane.home, localState: { installationId: LANE_INSTALLATION_ID } });
-  const configDir = maintenanceConfigDir(lane.home);
-  const fence = await createMaintenanceLaneFence(lane, {
-    recoveryStorageId: buildClaudeRecoveryStorageId({
-      installationId: LANE_INSTALLATION_ID,
-      configDir,
-    }),
-    observedAt: new Date(MAINTENANCE_NOW_MS - 60_000).toISOString(),
-  });
-  writeManagedClaudeBundle(configDir, {
-    accessToken: "CLAUDE_ACCESS",
-    refreshToken: "CLAUDE_REFRESH",
-    expiresAtMs: MAINTENANCE_NOW_MS + 4 * 60_000,
-  });
-  let launches = 0;
-  const context = buildMaintenanceContext(lane, {
-    runClaudeCliNoninteractiveImpl: () => {
-      launches += 1;
-      const raw = lane.client.values.get(claudeFenceKey(lane.client));
-      assert.ok(raw, "the exact retained fence must guard the probe");
-      assert.equal(JSON.parse(raw).fenceId, fence.fenceId);
-      return { status: 0, signal: null, timedOut: false };
-    },
-  });
-
-  assert.deepEqual(await runMaintenancePass(lane, context), {
-    outcome: "unchanged",
-    reason: "tokens_unchanged",
-  });
-  assert.equal(launches, 1);
-  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
-});
-
-test("Claude maintenance publishes a proven local rotation candidate, clears its fence, and stays due-gated", async () => {
-  const lane = await setupClaudeMaintenanceLane();
-  writeLocalState({ homeDir: lane.home, localState: { installationId: LANE_INSTALLATION_ID } });
-  const configDir = maintenanceConfigDir(lane.home);
-  await createMaintenanceLaneFence(lane, {
-    recoveryStorageId: buildClaudeRecoveryStorageId({
-      installationId: LANE_INSTALLATION_ID,
-      configDir,
-    }),
-    observedAt: new Date(MAINTENANCE_NOW_MS - 60_000).toISOString(),
-  });
-  writeManagedClaudeBundle(configDir, {
-    accessToken: "CLAUDE_ACCESS_ROTATED",
-    refreshToken: "CLAUDE_REFRESH_ROTATED",
-    expiresAtMs: MAINTENANCE_NOW_MS + 2 * 60 * 60_000,
-  });
-  let launches = 0;
-  const context = buildMaintenanceContext(lane, {
-    runClaudeCliNoninteractiveImpl: () => {
-      launches += 1;
-      return { status: 0, signal: null, timedOut: false };
-    },
-  });
-
-  assert.deepEqual(await runMaintenancePass(lane, context), {
-    outcome: "skipped",
-    reason: "not_due",
-  });
-  assert.equal(launches, 0, "the recovered credential is fresh, so the probe stays due-gated");
-  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
-  const snapshot = await readSnapshot(lane.store);
-  assertCanonicalAnthropicCredential(snapshot.credentials[0], "CLAUDE_REFRESH_ROTATED");
-  assert.equal(snapshot.credentials[0].version, 2);
-});
-
-test("Claude maintenance clears a fence whose rotation was already published to Redis", async () => {
-  const lane = await setupClaudeMaintenanceLane();
-  const fence = await createMaintenanceLaneFence(lane, {
-    observedAt: new Date(MAINTENANCE_NOW_MS - 60_000).toISOString(),
-  });
-  const rotated = buildAnthropicClaudeCredential({
-    access: "CLAUDE_ACCESS_ROTATED",
-    refresh: "CLAUDE_REFRESH_ROTATED",
-    expiresAtMs: MAINTENANCE_NOW_MS + 4.5 * 60_000,
-  });
-  const published = await publishCredential(lane.store, {
-    expectedVersion: 1,
-    updatedBy: "test",
-    observedAt: new Date(MAINTENANCE_NOW_MS - 30_000).toISOString(),
-    credentialRecord: {
-      provider: "anthropic",
-      label: "claude",
-      credential: rotated,
-      identity: {
-        accountUuid: "acct_boss",
-        emailAddress: "boss@example.com",
-        organizationUuid: "org_boss",
-      },
-      policy: {
-        expect: { email: "boss@example.com" },
-        reauth: { mode: "native-claude" },
-        pool: { enabled: true },
-      },
-      provenance: buildRedisClaudeRotationFenceProvenance({}, fence),
-    },
-  });
-  assert.equal(published.ok, true);
-  let launches = 0;
-  const context = buildMaintenanceContext(lane, {
-    runClaudeCliNoninteractiveImpl: () => {
-      launches += 1;
-      return { status: 0, signal: null, timedOut: false };
-    },
-  });
-
-  assert.deepEqual(await runMaintenancePass(lane, context), {
-    outcome: "unchanged",
-    reason: "tokens_unchanged",
-  });
-  assert.equal(launches, 1);
-  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
-  const snapshot = await readSnapshot(lane.store);
-  assertCanonicalAnthropicCredential(snapshot.credentials[0], "CLAUDE_REFRESH_ROTATED");
-});
-
-test("Claude maintenance keeps a provenance-conflicted fence and reports the sub-reason", async () => {
-  const lane = await setupClaudeMaintenanceLane();
-  const fence = await createMaintenanceLaneFence(lane, {
-    observedAt: new Date(MAINTENANCE_NOW_MS - 25 * 60 * 60_000).toISOString(),
-  });
-  const arbitrary = buildAnthropicClaudeCredential({
-    access: "ARBITRARY_ACCESS",
-    refresh: "ARBITRARY_REFRESH",
-    expiresAtMs: MAINTENANCE_NOW_MS + 8 * 60_000,
-  });
-  const published = await publishCredential(lane.store, {
-    expectedVersion: 1,
-    updatedBy: "test",
-    observedAt: new Date(MAINTENANCE_NOW_MS - 30_000).toISOString(),
-    credentialRecord: {
-      provider: "anthropic",
-      label: "claude",
-      credential: arbitrary,
-      identity: {
-        accountUuid: "acct_boss",
-        emailAddress: "boss@example.com",
-        organizationUuid: "org_boss",
-      },
-      policy: {
-        expect: { email: "boss@example.com" },
-        reauth: { mode: "native-claude" },
-        pool: { enabled: true },
-      },
-    },
-  });
-  assert.equal(published.ok, true);
-  let launches = 0;
-  const context = buildMaintenanceContext(lane, {
-    runClaudeCliNoninteractiveImpl: () => {
-      launches += 1;
-      return { status: 0, signal: null, timedOut: false };
-    },
-  });
-
-  const result = await runMaintenancePass(lane, context);
-  assert.equal(result.outcome, "retryable");
-  assert.equal(result.reason, "local_state_conflict");
-  assert.match(result.detail, /not a proven successor to its shared rotation fence/);
-  assert.equal(launches, 0);
-  assert.deepEqual(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), fence);
 });
 
 test("Claude maintenance escalates a persistent identical failure to reauth_required past the window", async () => {

@@ -110,20 +110,6 @@ function projectStatusAccount(value) {
       status: safeToken(value?.lock?.status) ?? "unknown",
       source: safeToken(value?.lock?.source) ?? "unavailable",
     },
-    ...(value?.rotation ? {
-      rotation: {
-        status: safeToken(value.rotation.status) ?? "unknown",
-        source: safeToken(value.rotation.source) ?? "unavailable",
-      },
-    } : {}),
-    ...(value?.localProjection ? {
-      localProjection: {
-        state: safeToken(value.localProjection.state) ?? "unknown",
-        ...(Number.isFinite(Number(value.localProjection.receiptAgeMs))
-          ? { receiptAgeMs: Math.max(0, Number(value.localProjection.receiptAgeMs)) }
-          : {}),
-      },
-    } : {}),
   };
 }
 
@@ -307,34 +293,36 @@ function buildCodexAccounts({ snapshot, usageByLabel, lockedLabels, lockSource, 
 }
 
 function buildClaudeAccounts(claudeStatus) {
-  return (claudeStatus?.accounts ?? []).map((account) => ({
-    label: account.label,
-    provider: ANTHROPIC_PROVIDER,
-    operator: {
-      status: account.credentialReady ? "ready" : account.credentialState === "reauth_required" ? "reauth" : "blocked",
-      eligible: account.credentialReady === true && account.locked !== true && account.rotationPending !== true,
-    },
-    credentials: {
-      status: account.credentialState ?? "unknown",
-      source: "redis",
-      ...(typeof account.credentialExpiresAt === "string" ? {
-        expiresAt: account.credentialExpiresAt,
-        expiresIn: formatExpiresIn(account.credentialExpiresAt, claudeStatus.checkedAtMs),
-      } : {}),
-    },
-    usage: {
-      ...account.usage,
+  return (claudeStatus?.accounts ?? []).map((account) => {
+    const launchable = account.credentialReady === true
+      || account.credentialState === "credential_expired";
+    return {
+      label: account.label,
       provider: ANTHROPIC_PROVIDER,
-      status: account.authState,
-      source: account.source,
-      stale: account.stale === true,
-      ageMs: account.ageMs,
-      usageObservedAtMs: account.usageObservedAtMs,
-    },
-    lock: account.lock,
-    rotation: account.rotation,
-    localProjection: account.localProjection,
-  }));
+      operator: {
+        status: launchable ? "ready" : account.credentialState === "reauth_required" ? "reauth" : "blocked",
+        eligible: launchable && account.locked === false,
+      },
+      credentials: {
+        status: account.credentialState ?? "unknown",
+        source: "redis",
+        ...(typeof account.credentialExpiresAt === "string" ? {
+          expiresAt: account.credentialExpiresAt,
+          expiresIn: formatExpiresIn(account.credentialExpiresAt, claudeStatus.checkedAtMs),
+        } : {}),
+      },
+      usage: {
+        ...account.usage,
+        provider: ANTHROPIC_PROVIDER,
+        status: account.authState,
+        source: account.source,
+        stale: account.stale === true,
+        ageMs: account.ageMs,
+        usageObservedAtMs: account.usageObservedAtMs,
+      },
+      lock: account.lock,
+    };
+  });
 }
 
 function buildLocalOnlyView({ configRead, homeDir, env, nowMs, cachePath, status, error = null }) {

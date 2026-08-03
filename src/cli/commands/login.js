@@ -1,27 +1,22 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
-import { acquireRedisCredentialLease } from "../../coordination/redis-credential-lease.js";
 import {
-  clearRedisClaudeRotationFence,
-  createRedisClaudeRotationFence,
-  isRedisClaudeRotationFenceSuccessor,
-  readRedisClaudeRotationFence,
-} from "../../coordination/redis-claude-rotation-fence.js";
+  acquireRedisCredentialLease,
+  renewOrReacquireRedisCredentialLease,
+} from "../../coordination/redis-credential-lease.js";
 import { buildCoordinationView } from "../../coordination/snapshot.js";
 import { readSnapshot } from "../../coordination/redis-store.js";
 import { publishMaintainedCredential } from "../../coordination/login-publish.js";
 import { closeRedisRuntime, isRedisConfigured, loadRedisRuntime, publishRedisCredentialPolicyFromState, refreshRedisRuntimeSnapshot, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { persistAnthropicNativeBundleForLabel } from "../../credentials/claude-native.js";
-import { buildAnthropicTokenLineageFingerprint } from "../../credentials/anthropic.js";
+import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.js";
 import { ensureProviderConfiguredForLabel } from "../../credentials/oauth.js";
 import {
-  CLAUDE_MANAGED_FILE_STORAGE_MODE,
   buildManagedClaudeNativeStorageDescriptor,
   ensureSafeManagedClaudeStorage,
-  readManagedClaudeNativeBundleFromFiles,
   readClaudeNativeOauthAccountAtPath,
+  readManagedClaudeNativeBundleFromFiles,
 } from "../../credentials/claude-native-storage.js";
 import { isInteractiveTerminal } from "../tty.js";
 import { normalizeLabel, normalizeProviderId } from "../../core/normalize.js";
@@ -34,38 +29,18 @@ import {
 } from "../../io/paths.js";
 import { performLabelMaintenance } from "../../panels/maintenance.js";
 import { ensureStateShape, loadAimgrState } from "../../state/schema.js";
-import { ensureLocalInstallationId, loadLocalState } from "../../state/local-state.js";
+import { loadLocalState } from "../../state/local-state.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
 import { createManualCallbackStdioProtocol, writeJsonLine } from "../manual-callback-stdio.js";
 
 const CLAUDE_LOGIN_STAGING_DIRNAME = ".login-staging";
-const CLAUDE_LOGIN_RECOVERY_CONTRACT = `${CLAUDE_MANAGED_FILE_STORAGE_MODE}:login-staging-v1`;
-const CLAUDE_EMPTY_LINEAGE_FINGERPRINT = `sha256:${createHash("sha256")
-  .update("aimgr.claude-empty-lineage.v1")
-  .digest("hex")}`;
-
-function buildClaudeLoginLineageFingerprint(credential) {
-  const fingerprint = buildAnthropicTokenLineageFingerprint(credential);
-  if (fingerprint) return fingerprint;
-  return credential
-    && typeof credential === "object"
-    && !Array.isArray(credential)
-    && Object.keys(credential).length === 0
-    ? CLAUDE_EMPTY_LINEAGE_FINGERPRINT
-    : null;
-}
+const CLAUDE_LOGIN_LEASE_RENEW_INTERVAL_MS = 10_000;
 
 function currentAnthropicRecord(snapshot, label) {
   return (snapshot?.credentials ?? []).find(
     (record) => record.provider === ANTHROPIC_PROVIDER && record.label === label,
   ) ?? null;
-}
-
-function buildClaudeLoginRecoveryStorageId({ installationId, configDir }) {
-  return `sha256:${createHash("sha256")
-    .update(`${CLAUDE_LOGIN_RECOVERY_CONTRACT}\0${installationId}\0${path.resolve(configDir).normalize("NFC")}`)
-    .digest("hex")}`;
 }
 
 function resolveClaudeLoginStaging({ homeDir, label, expectedEmail }) {
@@ -112,7 +87,7 @@ function removeClaudeLoginStaging({ homeDir, label, stagingHome }) {
 }
 
 async function assertClaudeLoginLeaseOwned({ lease, phase }) {
-  if (await lease.renew() !== true) {
+  if (await renewOrReacquireRedisCredentialLease(lease) !== true) {
     throw new Error(`Claude credential lease was lost ${phase}.`);
   }
 }
@@ -125,12 +100,38 @@ async function withClaudeLoginLease({ store, label, phase }, operation) {
   if (!lease) {
     throw new Error(`Claude credential maintenance is already active for label=${label}.`);
   }
+  let renewalTimer = null;
+  let renewalInFlight = null;
+  let leaseLost = false;
+  let stopped = false;
+  const scheduleRenewal = () => {
+    if (stopped || leaseLost) return;
+    renewalTimer = setTimeout(() => {
+      renewalTimer = null;
+      renewalInFlight = Promise.resolve(renewOrReacquireRedisCredentialLease(lease))
+        .then((renewed) => {
+          if (renewed !== true) leaseLost = true;
+        }, () => {})
+        .finally(() => {
+          renewalInFlight = null;
+          scheduleRenewal();
+        });
+    }, CLAUDE_LOGIN_LEASE_RENEW_INTERVAL_MS);
+    renewalTimer.unref?.();
+  };
+  scheduleRenewal();
   let result;
   let failure = null;
   try {
     result = await operation(lease);
   } catch (error) {
     failure = error;
+  }
+  stopped = true;
+  if (renewalTimer) clearTimeout(renewalTimer);
+  if (renewalInFlight) await renewalInFlight;
+  if (!failure && leaseLost) {
+    failure = new Error(`Claude credential lease was lost ${phase}.`);
   }
   const released = await lease.release().catch(() => false);
   if (failure) throw failure;
@@ -140,26 +141,18 @@ async function withClaudeLoginLease({ store, label, phase }, operation) {
   return result;
 }
 
-async function clearClaudeLoginFence({ store, label, fence, lease }) {
-  const cleared = await clearRedisClaudeRotationFence(store, {
-    label,
-    fenceId: fence.fenceId,
-    lease,
-  });
-  if (!cleared) {
-    throw new Error(`Claude label=${label} login fence could not be cleared safely.`);
-  }
-}
-
 async function publishClaudeLoginBundle({
   store,
   snapshot,
   state,
   label,
   nativeClaudeBundle,
-  fence,
   observedAt,
 }) {
+  const current = state?.credentials?.[ANTHROPIC_PROVIDER]?.[label];
+  if (current && !hasCompleteClaudeNativeBundle(current)) {
+    state.credentials[ANTHROPIC_PROVIDER][label] = {};
+  }
   persistAnthropicNativeBundleForLabel({
     state,
     label,
@@ -172,7 +165,6 @@ async function publishClaudeLoginBundle({
     label,
     provider: ANTHROPIC_PROVIDER,
     observedAt,
-    rotationFence: fence,
   });
   if (!published.ok) {
     throw new Error(
@@ -180,105 +172,6 @@ async function publishClaudeLoginBundle({
     );
   }
   return published.credential.record;
-}
-
-async function recoverClaudeLoginFence({
-  store,
-  snapshot,
-  state,
-  homeDir,
-  label,
-  descriptor,
-  stagingHome,
-  recoveryStorageId,
-  fence,
-  lease,
-  nowMs,
-}) {
-  const current = currentAnthropicRecord(snapshot, label);
-  const currentFingerprint = buildClaudeLoginLineageFingerprint(current?.credential);
-  if (
-    currentFingerprint === CLAUDE_EMPTY_LINEAGE_FINGERPRINT
-    && fence.baseTokenLineageFingerprint === CLAUDE_EMPTY_LINEAGE_FINGERPRINT
-    && current.version !== fence.baseCredentialVersion
-  ) {
-    await assertClaudeLoginLeaseOwned({
-      lease,
-      phase: "before rejecting changed enrollment policy",
-    });
-    await clearClaudeLoginFence({ store, label, fence, lease });
-    removeClaudeLoginStaging({ homeDir, label, stagingHome });
-    throw new Error(`Claude label=${label} changed outside its login fence.`);
-  }
-  if (!current || !currentFingerprint) {
-    throw new Error(`Claude label=${label} has no valid Redis lineage for login recovery.`);
-  }
-  if (currentFingerprint !== fence.baseTokenLineageFingerprint) {
-    if (!isRedisClaudeRotationFenceSuccessor(current, {
-      fence,
-      tokenLineageFingerprint: currentFingerprint,
-    })) {
-      throw new Error(`Claude label=${label} changed outside its login fence.`);
-    }
-    await assertClaudeLoginLeaseOwned({
-      lease,
-      phase: "before clearing a published login fence",
-    });
-    await clearClaudeLoginFence({ store, label, fence, lease });
-    removeClaudeLoginStaging({ homeDir, label, stagingHome });
-    return { recovered: true, record: current };
-  }
-  if (fence.recoveryStorageId !== recoveryStorageId) {
-    throw new Error(`Claude label=${label} has an unresolved non-login rotation fence.`);
-  }
-
-  const staged = readManagedClaudeNativeBundleFromFiles({ descriptor });
-  if (staged.ok !== true) {
-    const identity = readClaudeNativeOauthAccountAtPath({
-      appStatePath: descriptor.appStatePath,
-      expectedEmail: descriptor.expectedEmail,
-    });
-    await assertClaudeLoginLeaseOwned({
-      lease,
-      phase: "before abandoning empty login staging",
-    });
-    await clearClaudeLoginFence({ store, label, fence, lease });
-    removeClaudeLoginStaging({ homeDir, label, stagingHome });
-    if (identity.errorKind === "identity_mismatch") {
-      throw new Error(`Claude login for label=${label} failed identity_mismatch validation.`);
-    }
-    return { recovered: false, record: null };
-  }
-
-  let record;
-  try {
-    record = await publishClaudeLoginBundle({
-      store,
-      snapshot,
-      state,
-      label,
-      nativeClaudeBundle: staged.nativeClaudeBundle,
-      fence,
-      observedAt: new Date(nowMs).toISOString(),
-    });
-  } catch (error) {
-    if (/identity_mismatch|already stored on label=/i.test(String(error?.message ?? error))) {
-      await assertClaudeLoginLeaseOwned({
-        lease,
-        phase: "before rejecting recovered login identity",
-      });
-      await clearClaudeLoginFence({ store, label, fence, lease });
-      removeClaudeLoginStaging({ homeDir, label, stagingHome });
-    }
-    throw error;
-  }
-  await assertClaudeLoginLeaseOwned({
-    lease,
-    phase: "before clearing a recovered login fence",
-  });
-  await clearClaudeLoginFence({ store, label, fence, lease });
-  removeClaudeLoginStaging({ homeDir, label, stagingHome });
-  return { recovered: true, record };
 }
 
 async function performRedisClaudeLogin(context, {
@@ -292,7 +185,6 @@ async function performRedisClaudeLogin(context, {
     env,
     runClaudeCliImpl = runClaudeCli,
     resolveExecutableOnPathImpl,
-    nowMs,
   } = context;
   const expectedEmail = typeof state?.accounts?.[label]?.expect?.email === "string"
     ? state.accounts[label].expect.email.trim().toLowerCase()
@@ -318,106 +210,58 @@ async function performRedisClaudeLogin(context, {
     homeDir: stagingHome,
     configDir,
   });
-  const installationId = ensureLocalInstallationId(localState);
-  writeRedisLocalStateFromView({ homeDir, state, localState });
-  const recoveryStorageId = buildClaudeLoginRecoveryStorageId({ installationId, configDir });
-
-  const preparation = await withClaudeLoginLease({
-    store,
-    label,
-    phase: "before browser login",
-  }, async (lease) => {
-    await assertClaudeLoginLeaseOwned({
-      lease,
-      phase: "before native login recovery",
-    });
-    const preparationSnapshot = await readSnapshot(store);
-    const preparationState = buildCoordinationView(preparationSnapshot, {
-      localState,
-      provider: ANTHROPIC_PROVIDER,
-    });
-    const existingFence = await readRedisClaudeRotationFence(store, { label });
-    if (existingFence) {
-      const recovered = await recoverClaudeLoginFence({
-        store,
-        snapshot: preparationSnapshot,
-        state: preparationState,
-        homeDir,
-        label,
-        descriptor,
-        stagingHome,
-        recoveryStorageId,
-        fence: existingFence,
-        lease,
-        nowMs,
-      });
-      if (recovered.recovered) {
-        writeRedisLocalStateFromView({ homeDir, state: preparationState, localState });
-        return {
-          result: {
-            ok: true,
-            label,
-            provider: ANTHROPIC_PROVIDER,
-            maintenance: {
-              action: "recovered-native-login",
-              observedAt: recovered.record.updatedAt,
-            },
-            redis: { credentialVersion: recovered.record.version },
-          },
-        };
-      }
-    }
-
-    removeClaudeLoginStaging({ homeDir, label, stagingHome });
-    ensureSafeManagedClaudeStorage({ descriptor });
-    const current = currentAnthropicRecord(preparationSnapshot, label);
-    const baseTokenLineageFingerprint = buildClaudeLoginLineageFingerprint(current?.credential);
-    if (!current || !Number.isInteger(current.version) || !baseTokenLineageFingerprint) {
-      removeClaudeLoginStaging({ homeDir, label, stagingHome });
-      throw new Error(`Claude label=${label} has no valid Redis lineage for fresh login.`);
-    }
-    const fence = await createRedisClaudeRotationFence(store, {
-      label,
-      recoveryStorageId,
-      baseTokenLineageFingerprint,
-      baseCredentialVersion: current.version,
-      observedAt: new Date(nowMs).toISOString(),
-    });
-    if (!fence) {
-      removeClaudeLoginStaging({ homeDir, label, stagingHome });
-      throw new Error(`Claude label=${label} has an unresolved shared rotation fence.`);
-    }
-    return { fence };
-  });
-  if (preparation.result) return preparation.result;
-  const fence = preparation.fence;
-
-  const loginEnv = { ...(env ?? {}) };
-  delete loginEnv.BROWSER;
-  delete loginEnv.DISPLAY;
-  delete loginEnv.WAYLAND_DISPLAY;
-  let launched = null;
-  let launchError = null;
-  try {
-    launched = await runClaudeCliImpl({
-      command: preparedLaunch.command,
-      userHomeDir: homeDir,
-      homeDir: stagingHome,
-      configDir,
-      cwd: process.cwd(),
-      args: ["auth", "login", "--claudeai"],
-      env: loginEnv,
-      preparedLaunch,
-    });
-  } catch (error) {
-    launchError = error;
-  }
-
   return await withClaudeLoginLease({
     store,
     label,
-    phase: "after browser login",
+    phase: "during browser login",
   }, async (lease) => {
+    await assertClaudeLoginLeaseOwned({
+      lease,
+      phase: "before browser login",
+    });
+    removeClaudeLoginStaging({ homeDir, label, stagingHome });
+    ensureSafeManagedClaudeStorage({ descriptor });
+
+    const loginEnv = { ...(env ?? {}) };
+    delete loginEnv.BROWSER;
+    delete loginEnv.DISPLAY;
+    delete loginEnv.WAYLAND_DISPLAY;
+    let launched = null;
+    let launchError = null;
+    try {
+      launched = await runClaudeCliImpl({
+        command: preparedLaunch.command,
+        userHomeDir: homeDir,
+        homeDir: stagingHome,
+        configDir,
+        cwd: process.cwd(),
+        args: ["auth", "login", "--claudeai"],
+        env: loginEnv,
+        preparedLaunch,
+      });
+    } catch (error) {
+      launchError = error;
+    }
+    const staged = readManagedClaudeNativeBundleFromFiles({ descriptor });
+    if (launchError) {
+      removeClaudeLoginStaging({ homeDir, label, stagingHome });
+      throw launchError;
+    }
+    if (launched?.status !== 0 || launched?.signal) {
+      removeClaudeLoginStaging({ homeDir, label, stagingHome });
+      throw new Error(`Claude login for label=${label} was cancelled or failed.`);
+    }
+    if (staged.ok !== true) {
+      const stagedIdentity = readClaudeNativeOauthAccountAtPath({
+        appStatePath: descriptor.appStatePath,
+        expectedEmail: descriptor.expectedEmail,
+      });
+      removeClaudeLoginStaging({ homeDir, label, stagingHome });
+      if (stagedIdentity.errorKind === "identity_mismatch") {
+        throw new Error(`Claude login for label=${label} failed identity_mismatch validation.`);
+      }
+      throw new Error(`Claude login for label=${label} did not produce a complete file-backed credential.`);
+    }
     await assertClaudeLoginLeaseOwned({
       lease,
       phase: "before reconciling browser login",
@@ -427,111 +271,6 @@ async function performRedisClaudeLogin(context, {
       localState,
       provider: ANTHROPIC_PROVIDER,
     });
-    const completionFence = await readRedisClaudeRotationFence(store, { label });
-    if (
-      !completionFence
-      || completionFence.fenceId !== fence.fenceId
-      || completionFence.recoveryStorageId !== fence.recoveryStorageId
-      || completionFence.baseCredentialVersion !== fence.baseCredentialVersion
-      || completionFence.baseTokenLineageFingerprint !== fence.baseTokenLineageFingerprint
-    ) {
-      throw new Error(`Claude label=${label} login coordination changed while the browser was open.`);
-    }
-    const current = currentAnthropicRecord(completionSnapshot, label);
-    const currentFingerprint = buildClaudeLoginLineageFingerprint(current?.credential);
-    if (
-      !current
-      || !currentFingerprint
-      || current.version !== fence.baseCredentialVersion
-      || currentFingerprint !== fence.baseTokenLineageFingerprint
-    ) {
-      if (isRedisClaudeRotationFenceSuccessor(current, {
-        fence,
-        tokenLineageFingerprint: currentFingerprint,
-      })) {
-        await assertClaudeLoginLeaseOwned({
-          lease,
-          phase: "before clearing an already-published login fence",
-        });
-        await clearClaudeLoginFence({ store, label, fence, lease });
-        removeClaudeLoginStaging({ homeDir, label, stagingHome });
-        writeRedisLocalStateFromView({ homeDir, state: completionState, localState });
-        return {
-          ok: true,
-          label,
-          provider: ANTHROPIC_PROVIDER,
-          maintenance: {
-            action: "recovered-native-login",
-            observedAt: current.updatedAt,
-          },
-          redis: { credentialVersion: current.version },
-        };
-      }
-      if (
-        currentFingerprint === CLAUDE_EMPTY_LINEAGE_FINGERPRINT
-        && fence.baseTokenLineageFingerprint === CLAUDE_EMPTY_LINEAGE_FINGERPRINT
-      ) {
-        await assertClaudeLoginLeaseOwned({
-          lease,
-          phase: "before rejecting changed enrollment policy",
-        });
-        await clearClaudeLoginFence({ store, label, fence, lease });
-        removeClaudeLoginStaging({ homeDir, label, stagingHome });
-      }
-      throw new Error(`Claude label=${label} changed outside its login fence.`);
-    }
-
-    const staged = readManagedClaudeNativeBundleFromFiles({ descriptor });
-    if (launchError) {
-      if (staged.ok !== true) {
-        await assertClaudeLoginLeaseOwned({
-          lease,
-          phase: "before cleaning failed login staging",
-        });
-        await clearClaudeLoginFence({ store, label, fence, lease });
-        removeClaudeLoginStaging({ homeDir, label, stagingHome });
-      }
-      if (staged.ok === true) {
-        throw new Error(
-          `Claude login for label=${label} failed after producing credentials; recovery is pending.`,
-        );
-      }
-      throw launchError;
-    }
-
-    const cleanExit = launched?.status === 0 && !launched?.signal;
-    if (!cleanExit) {
-      if (staged.ok !== true) {
-        await assertClaudeLoginLeaseOwned({
-          lease,
-          phase: "before cleaning cancelled login staging",
-        });
-        await clearClaudeLoginFence({ store, label, fence, lease });
-        removeClaudeLoginStaging({ homeDir, label, stagingHome });
-      }
-      throw new Error(
-        staged.ok === true
-          ? `Claude login for label=${label} ended noncleanly after producing credentials; recovery is pending.`
-          : `Claude login for label=${label} was cancelled or failed.`,
-      );
-    }
-    if (staged.ok !== true) {
-      const identity = readClaudeNativeOauthAccountAtPath({
-        appStatePath: descriptor.appStatePath,
-        expectedEmail: descriptor.expectedEmail,
-      });
-      await assertClaudeLoginLeaseOwned({
-        lease,
-        phase: "before cleaning incomplete login staging",
-      });
-      await clearClaudeLoginFence({ store, label, fence, lease });
-      removeClaudeLoginStaging({ homeDir, label, stagingHome });
-      if (identity.errorKind === "identity_mismatch") {
-        throw new Error(`Claude login for label=${label} failed identity_mismatch validation.`);
-      }
-      throw new Error(`Claude login for label=${label} did not produce a complete file-backed credential.`);
-    }
-
     await assertClaudeLoginLeaseOwned({
       lease,
       phase: "before publishing the fresh login",
@@ -544,26 +283,11 @@ async function performRedisClaudeLogin(context, {
         state: completionState,
         label,
         nativeClaudeBundle: staged.nativeClaudeBundle,
-        fence,
         observedAt: new Date().toISOString(),
       });
-    } catch (error) {
-      if (/identity_mismatch|already stored on label=/i.test(String(error?.message ?? error))) {
-        await assertClaudeLoginLeaseOwned({
-          lease,
-          phase: "before rejecting fresh login identity",
-        });
-        await clearClaudeLoginFence({ store, label, fence, lease });
-        removeClaudeLoginStaging({ homeDir, label, stagingHome });
-      }
-      throw error;
+    } finally {
+      removeClaudeLoginStaging({ homeDir, label, stagingHome });
     }
-    await assertClaudeLoginLeaseOwned({
-      lease,
-      phase: "before clearing the published login fence",
-    });
-    await clearClaudeLoginFence({ store, label, fence, lease });
-    removeClaudeLoginStaging({ homeDir, label, stagingHome });
     writeRedisLocalStateFromView({ homeDir, state: completionState, localState });
     return {
       ok: true,

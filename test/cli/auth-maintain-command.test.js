@@ -6,10 +6,6 @@ import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
 import { buildStableIdentityForCredential } from "../../src/coordination/login-publish.js";
 import {
-  createRedisClaudeRotationFence,
-  readRedisClaudeRotationFence,
-} from "../../src/coordination/redis-claude-rotation-fence.js";
-import {
   connectRedisStore,
   importCredentialsSnapshot,
   publishCredential,
@@ -19,7 +15,6 @@ import {
   resolveAimgrClaudeLabelHomeDir,
   resolveClaudeAuthFilePath,
 } from "../../src/io/paths.js";
-import { buildClaudeTokenLineageFingerprint } from "../../src/targets/claude-cli.js";
 import { runCliWithExitCode } from "../helpers/cli-runner.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
@@ -395,82 +390,6 @@ test("auth maintain continues after transient and stale-CAS failures while a bus
   assert.equal(byLabel.get("later").credential.refresh, "REFRESH_ROTATED_later");
   assert.equal(byLabel.get("later").version, 2);
   assert.equal(byLabel.get("busy").version, 1);
-});
-
-test("auth maintain recovers a fenced fresh-token Claude label every pass without probing", async () => {
-  const fenced = claudeRecord("claude-fenced", { expiresAtMs: NOW_MS + 4 * 60 * 60_000 });
-  const runtime = await setup([fenced]);
-  await createRedisClaudeRotationFence(runtime.store, {
-    label: "claude-fenced",
-    recoveryStorageId: `sha256:${"f".repeat(64)}`,
-    baseTokenLineageFingerprint: buildClaudeTokenLineageFingerprint(fenced.credential),
-    baseCredentialVersion: 1,
-    observedAt: new Date(NOW_MS - 25 * 60 * 60_000).toISOString(),
-  });
-  let claudeRuns = 0;
-
-  const result = await runCliWithExitCode(
-    ["auth", "maintain", "--home", runtime.home],
-    {
-      env: {},
-      nowImpl: () => NOW_MS,
-      connectRedisStoreImpl: runtime.connectRedisStoreImpl,
-      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
-      runClaudeCliNoninteractiveImpl: () => {
-        claudeRuns += 1;
-        return { status: 0, signal: null, timedOut: false };
-      },
-    },
-  );
-
-  assert.deepEqual(result, {
-    stdout:
-      "provider=anthropic label=claude-fenced outcome=skipped reason=not_due\n"
-      + "refreshed=0 unchanged=0 reauth_required=0 retryable=0 skipped=1\n",
-    exitCode: 0,
-  });
-  assert.equal(claudeRuns, 0, "the /usage probe stays due-gated");
-  assert.equal(
-    await readRedisClaudeRotationFence(runtime.store, { label: "claude-fenced" }),
-    null,
-    "the expired foreign fence is cleared even though the label is not token-due",
-  );
-});
-
-test("auth maintain keeps a young foreign fence as a bounded skip and exits zero", async () => {
-  const fenced = claudeRecord("claude-fenced");
-  const runtime = await setup([fenced]);
-  const fence = await createRedisClaudeRotationFence(runtime.store, {
-    label: "claude-fenced",
-    recoveryStorageId: `sha256:${"f".repeat(64)}`,
-    baseTokenLineageFingerprint: buildClaudeTokenLineageFingerprint(fenced.credential),
-    baseCredentialVersion: 1,
-    observedAt: new Date(NOW_MS - 60 * 60_000).toISOString(),
-  });
-  let claudeRuns = 0;
-
-  const result = await runCliWithExitCode(
-    ["auth", "maintain", "--home", runtime.home],
-    {
-      env: {},
-      nowImpl: () => NOW_MS,
-      connectRedisStoreImpl: runtime.connectRedisStoreImpl,
-      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
-      runClaudeCliNoninteractiveImpl: () => {
-        claudeRuns += 1;
-        return { status: 0, signal: null, timedOut: false };
-      },
-    },
-  );
-
-  assert.deepEqual(result, {
-    stdout:
-      "provider=anthropic label=claude-fenced outcome=skipped reason=fence_owned_elsewhere\n"
-      + "refreshed=0 unchanged=0 reauth_required=0 retryable=0 skipped=1\n",
-    exitCode: 0,
-  });
-  assert.equal(claudeRuns, 0);
-  assert.deepEqual(await readRedisClaudeRotationFence(runtime.store, { label: "claude-fenced" }), fence);
 });
 
 test("auth maintain still fails the run when the coordination store is unavailable", async () => {

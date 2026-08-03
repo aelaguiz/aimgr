@@ -531,7 +531,7 @@ test("legacy explicit storage still blocks equal-expiry file and Keychain ambigu
   assert.deepEqual(result, { ok: false, errorKind: "native_storage_freshness_ambiguous" });
 });
 
-test("managed projection blocks a different app-state identity before credential projection", async () => {
+test("managed projection replaces a different disposable app-state identity from Redis", async () => {
   const home = mkTempHome();
   const configDir = path.join(home, ".aimgr", "claude-homes", "alpha", ".claude");
   const descriptor = buildManagedClaudeNativeStorageDescriptor({
@@ -544,21 +544,21 @@ test("managed projection blocks a different app-state identity before credential
     oauthAccount: account({ emailAddress: "different@example.com" }),
   });
   fs.chmodSync(descriptor.appStatePath, 0o600);
-  let wroteCredential = false;
-  await assert.rejects(
-    () => projectClaudeNativeBundleToManagedConfig({
-      descriptor,
-      credential: credential(),
-      nowMs: NOW_MS,
-      writeJsonFileIfChangedImpl: () => {
-        wroteCredential = true;
-        throw new Error("must not write");
-      },
-    }),
-    /file_bundle_unavailable/,
+  const result = await projectClaudeNativeBundleToManagedConfig({
+    descriptor,
+    credential: credential(),
+    nowMs: NOW_MS,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.action, "projected");
+  assert.equal(
+    JSON.parse(fs.readFileSync(descriptor.appStatePath, "utf8")).oauthAccount.emailAddress,
+    "alpha@example.com",
   );
-  assert.equal(wroteCredential, false);
-  assert.equal(JSON.parse(fs.readFileSync(descriptor.appStatePath, "utf8")).oauthAccount.emailAddress, "different@example.com");
+  assert.equal(
+    JSON.parse(fs.readFileSync(descriptor.credentialsPath, "utf8")).claudeAiOauth.refreshToken,
+    REFRESH,
+  );
 });
 
 test("post-run sync captures a newer same-identity file rotation", async () => {

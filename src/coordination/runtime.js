@@ -3,11 +3,11 @@ import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js"
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { loadLocalState, writeLocalState } from "../state/local-state.js";
 import { buildLocalBrowserBindingsFromState, buildSharedBrowserPolicy } from "./browser-policy.js";
-import { buildRedisClaudeRotationFenceProvenance } from "./redis-claude-rotation-fence.js";
 import {
   assertCredentialPublicationFreshness,
   buildStableIdentityForCredential,
   identitiesAreCompatible,
+  withoutClaudeRotationProvenance,
 } from "./login-publish.js";
 import { hasCredentialMaterial } from "./records.js";
 import { buildCoordinationView, findCredentialRecord } from "./snapshot.js";
@@ -56,9 +56,13 @@ export async function closeRedisRuntime(runtime) {
 }
 
 export function writeRedisLocalStateFromView({ homeDir, state, localState }) {
+  const targets = structuredClone(state.targets);
+  if (isObject(targets?.claudeCli)) {
+    delete targets.claudeCli.projectionReceiptsByLabel;
+  }
   const nextLocalState = {
     ...localState,
-    targets: state.targets,
+    targets,
     pool: state.pool,
     browserBindings: buildLocalBrowserBindingsFromState(state),
   };
@@ -131,7 +135,7 @@ export async function publishRedisCredentialPolicyFromState({
         : hasCredentialMaterial(credential)
           ? { status: "ready", reason: null }
           : { status: "candidate", reason: "credential_missing" },
-      provenance: isObject(currentCredential?.provenance) ? currentCredential.provenance : {},
+      provenance: withoutClaudeRotationProvenance(currentCredential?.provenance),
     },
   });
   if (!result.ok) {
@@ -154,7 +158,6 @@ export async function publishRedisStateCredential({
   label,
   observedAt = new Date().toISOString(),
   lineageMode = "local-rotation",
-  rotationFence = null,
 }) {
   const normalizedProvider = normalizeProviderId(provider);
   const normalizedLabel = normalizeLabel(label);
@@ -178,7 +181,7 @@ export async function publishRedisStateCredential({
     nextIdentity: identity,
   });
   const account = isObject(state?.accounts?.[normalizedLabel]) ? state.accounts[normalizedLabel] : {};
-  const currentProvenance = isObject(currentCredential?.provenance) ? currentCredential.provenance : {};
+  const currentProvenance = withoutClaudeRotationProvenance(currentCredential?.provenance);
   const result = await publishCredential(runtime.store, {
     expectedVersion: currentCredential?.version ?? null,
     updatedBy: runtime.updatedBy,
@@ -200,9 +203,7 @@ export async function publishRedisStateCredential({
         reason: null,
       },
       provenance: {
-        ...(normalizedProvider === ANTHROPIC_PROVIDER
-          ? buildRedisClaudeRotationFenceProvenance(currentProvenance, rotationFence)
-          : currentProvenance),
+        ...currentProvenance,
         lastSourceType: lineageMode,
       },
     },

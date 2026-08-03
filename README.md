@@ -157,15 +157,10 @@ means the stored access credential needs maintenance; `stale_auth` means Anthrop
 Neither state by itself proves that billing was cancelled. Initial login or genuine reauthentication
 may use the approved BrowserOS/native protocol, but a complete identity-checked native bundle must
 then be captured into Redis. After capture, Redis is the authority and each managed Claude home is a
-derived per-label projection whose newer token rotations are published back with Redis CAS. Claude
-capture, import, and run share one per-label lease. Managed runs retain a durable uncertainty fence
-until the exact supervised Claude child exits cleanly without rotation or a genuinely new
-access/refresh token pair is published as that fence's explicit successor.
-Fence and retry liveness are bounded. A rotation fence can quarantine an account for at most 24h;
-past that bound any machine may clear it and recover the account from the Redis bundle. A
-per-account maintenance failure that persists unchanged past 2h is published as `reauth_required`,
-so status renders `NEEDS YOU` with `aim login <label>` instead of retrying forever. `AIM FIXING`
-is therefore always a temporary state.
+disposable per-label projection. Claude capture, import, login, and run share one per-label lease. A
+strictly newer, same-identity local rotation is published back with Redis compare-and-swap during
+managed runs and at exit. Stale or divergent local projections are overwritten from Redis and never
+quarantine an account. Genuine reauthentication is shown as `NEEDS YOU` with `aim login <label>`.
 Each normal managed launch also inherits the machine's complete user-level
 Claude MCP definitions, personal skills, enabled user plugins, and user hooks
 at launch time. AIM passes field-only MCP/hook overlays through Claude's native
@@ -208,7 +203,6 @@ Redis records own shared credential truth:
 
 `~/.aimgr/local-state.json` owns local-only facts:
 
-- target projection receipts
 - active target metadata
 - OpenClaw assignments and exclusions
 - Codex/Pi/Claude/Hermes local history

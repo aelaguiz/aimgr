@@ -207,9 +207,7 @@ async function handleOAuthMaintain(context) {
       if (
         !hasLoadedCredential(record)
         || isTerminallyMarked(record)
-        // Fenced Claude labels stay recovery-eligible on every pass; only the
-        // Codex lane due-skips here. The Claude probe stays due-gated inside
-        // maintainRedisClaudeCredential.
+        // Claude applies its own refresh due gate after the per-label lease is held.
         || (record.provider !== ANTHROPIC_PROVIDER && hasRequiredRefreshMaterial(record) && !isDue(record, nowMs))
       ) {
         maintenanceResult = {

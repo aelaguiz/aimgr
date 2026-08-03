@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { buildStableIdentityForCredential } from "../../src/coordination/login-publish.js";
 import {
@@ -10,7 +9,6 @@ import {
   readCredentialRecordsByProvider,
 } from "../../src/coordination/redis-store.js";
 import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
-import { createRedisClaudeRotationFence } from "../../src/coordination/redis-claude-rotation-fence.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../src/core/constants.js";
 import { resolveAimgrLocalStatePath, resolveAimgrRedisCachePath } from "../../src/io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../../src/pool/usage.js";
@@ -216,7 +214,7 @@ test("Claude Redis views expose reauth_required without probing and preserve ord
   let providerRequests = 0;
   const status = await collectClaudeRedisAccountUsageStatus({
     homeDir,
-    records: [marked, expired],
+    connectRedisStoreImpl,
     nowMs: NOW_MS,
     fetchClaudeUsageSnapshotImpl: async () => {
       providerRequests += 1;
@@ -230,8 +228,7 @@ test("Claude Redis views expose reauth_required without probing and preserve ord
   assert.equal(providerRequests, 0);
   const rendered = renderClaudeRedisAccountUsageStatus(status);
   assert.match(rendered, /marked\s+NEEDS YOU.*aim login marked/);
-  assert.match(rendered, /expired\s+AIM FIXING.*AIM will retry/);
-  assert.match(rendered, /^expired\s+AIM FIXING.*\s--\s+AIM will retry$/m);
+  assert.match(rendered, /expired\s+READY.*use now/);
   assert.doesNotMatch(rendered, /reauth_required|credential_expired/);
   const verbose = renderClaudeRedisAccountUsageStatus(status, { verbose: true });
   assert.match(verbose, /reauth_required/);
@@ -261,13 +258,6 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
     provider: ANTHROPIC_PROVIDER,
     label: "ready",
   });
-  await createRedisClaudeRotationFence(leaseStore, {
-    label: "ready",
-    recoveryStorageId: `sha256:${"a".repeat(64)}`,
-    baseTokenLineageFingerprint: `sha256:${"b".repeat(64)}`,
-    baseCredentialVersion: 1,
-    observedAt: "2026-07-22T17:00:00.000Z",
-  });
 
   const calls = [];
   const fetchClaudeUsageSnapshotImpl = async (options) => {
@@ -292,15 +282,13 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   assert.deepEqual(calls[0].env, {});
   assert.equal(first.accounts[0].authState, "credential_missing");
   assert.equal(first.accounts[0].locked, false);
-  assert.equal(first.accounts[0].rotationPending, false);
   assert.equal(first.accounts[1].authState, "usage_readable");
   assert.equal(first.accounts[1].locked, true);
-  assert.equal(first.accounts[1].rotationPending, true);
   assert.deepEqual(first.missingAccounts, ["candidate"]);
   assert.deepEqual(Object.keys(first.accounts[1]).sort(), [
     "ageMs", "authState", "credentialExpiresAt", "credentialReady", "credentialState", "errorKind", "label",
-    "lastAttemptAtMs", "localProjection", "lock", "locked", "rateLimitTier", "rotation", "rotationPending",
-    "source", "stale", "subscriptionType", "usage", "usageObservedAtMs",
+    "lastAttemptAtMs", "lock", "locked", "rateLimitTier", "source", "stale", "subscriptionType",
+    "usage", "usageObservedAtMs",
   ]);
 
   const second = await collectClaudeRedisAccountUsageStatus({
@@ -322,18 +310,18 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   const serializedCache = fs.readFileSync(cachePath, "utf8");
   assert.doesNotMatch(serializedCache, /ACCESS_SECRET|REFRESH_SECRET|private\.example|acct-private|org-private/i);
   const rendered = renderClaudeRedisAccountUsageStatus(first);
-  assert.match(rendered, /^CLAUDE: 0 ready · 1 in use · 0 AIM fixing · 1 needs you · 0 unknown/m);
+  assert.match(rendered, /^CLAUDE: 0 ready · 1 in use · 1 needs you · 0 unknown/m);
   assert.match(rendered, /candidate\s+NEEDS YOU.*aim login candidate/);
   assert.match(rendered, /ready\s+IN USE.*session active/);
-  assert.doesNotMatch(rendered, /max\/max_20x|usage_readable|pending/);
+  assert.doesNotMatch(rendered, /max\/max_20x|usage_readable/);
   assert.match(
     renderClaudeRedisAccountUsageStatus(first, { verbose: true }),
-    /ready\s+max\/max_20x\s+usage_readable\s+yes\s+pending/,
+    /ready\s+max\/max_20x\s+usage_readable\s+yes/,
   );
   assert.ok(client.values.size > 0);
 });
 
-test("Redis Claude status surfaces fence age/host and the maintenance streak additively", async () => {
+test("Redis Claude status surfaces the maintenance streak without local recovery state", async () => {
   const stuck = anthropicRecord("stuck");
   stuck.policy.reauth = {
     mode: "native-claude",
@@ -345,34 +333,10 @@ test("Redis Claude status surfaces fence age/host and the maintenance streak add
     },
   };
   const { homeDir, client, connectRedisStoreImpl } = await setup([
-    anthropicRecord("fenced"),
     stuck,
     anthropicRecord("plain"),
   ]);
   writeJson(resolveAimgrLocalStatePath({ homeDir }), { targets: { claudeCli: {} } });
-  const store = await connectRedisStoreImpl();
-  // New-style fence: createdByHost is stamped at creation time.
-  await createRedisClaudeRotationFence(store, {
-    label: "fenced",
-    recoveryStorageId: `sha256:${"a".repeat(64)}`,
-    baseTokenLineageFingerprint: `sha256:${"b".repeat(64)}`,
-    baseCredentialVersion: 1,
-    observedAt: "2026-07-22T17:00:00.000Z",
-  });
-  // Legacy fence written before createdByHost existed: age only, no owner.
-  await client.set(
-    "aimgr:claude-redis-view:fence:claude-rotation:stuck",
-    JSON.stringify({
-      kind: "aimgr.claude-rotation-fence.v1",
-      version: 1,
-      fenceId: "123e4567-e89b-42d3-a456-426614174000",
-      label: "stuck",
-      recoveryStorageId: `sha256:${"c".repeat(64)}`,
-      baseTokenLineageFingerprint: `sha256:${"d".repeat(64)}`,
-      baseCredentialVersion: 1,
-      createdAt: "2026-07-22T16:00:00.000Z",
-    }),
-  );
 
   const result = await collectClaudeRedisAccountUsageStatus({
     homeDir,
@@ -382,19 +346,7 @@ test("Redis Claude status surfaces fence age/host and the maintenance streak add
   });
   const byLabel = new Map(result.accounts.map((account) => [account.label, account]));
 
-  const fenced = byLabel.get("fenced");
-  assert.equal(fenced.rotationPending, true);
-  assert.equal(fenced.rotation.status, "pending");
-  assert.equal(fenced.rotation.fenceCreatedAt, "2026-07-22T17:00:00.000Z");
-  assert.equal(fenced.rotation.fenceAgeMs, 60 * 60_000);
-  assert.equal(fenced.rotation.fenceCreatedByHost, os.hostname());
-  assert.equal(Object.hasOwn(fenced, "maintenance"), false);
-
   const stuckAccount = byLabel.get("stuck");
-  assert.equal(stuckAccount.rotation.status, "pending");
-  assert.equal(stuckAccount.rotation.fenceCreatedAt, "2026-07-22T16:00:00.000Z");
-  assert.equal(stuckAccount.rotation.fenceAgeMs, 2 * 60 * 60_000);
-  assert.equal(Object.hasOwn(stuckAccount.rotation, "fenceCreatedByHost"), false);
   assert.deepEqual(stuckAccount.maintenance, {
     firstFailedAt: "2026-07-22T15:30:00.000Z",
     reason: "local_state_conflict",
@@ -403,33 +355,28 @@ test("Redis Claude status surfaces fence age/host and the maintenance streak add
   });
 
   const plain = byLabel.get("plain");
-  assert.deepEqual(plain.rotation, { status: "clear", source: "redis" });
   assert.equal(Object.hasOwn(plain, "maintenance"), false);
 
   const verbose = renderClaudeRedisAccountUsageStatus(result, { verbose: true });
-  assert.match(verbose, new RegExp(`fenced\\s+.*pending 1\\.0h@${os.hostname()}\\s`));
-  assert.match(verbose, /stuck\s+.*pending 2\.0h\s/);
-  assert.doesNotMatch(verbose, /pending 2\.0h@/);
   assert.match(
     verbose,
     /^maintenance stuck reason=local_state_conflict count=13 failing_for=2\.5h blocked=oauth_reauth_required$/m,
   );
-  assert.doesNotMatch(verbose, /maintenance (fenced|plain)/);
+  assert.doesNotMatch(verbose, /maintenance plain/);
 
   // The default table is untouched by the new diagnostics.
   const rendered = renderClaudeRedisAccountUsageStatus(result);
-  assert.doesNotMatch(rendered, /pending|failing_for|maintenance stuck/);
-  assert.match(rendered, /^CLAUDE: \d+ ready · \d+ in use · \d+ AIM fixing · \d+ needs you · \d+ unknown$/m);
+  assert.doesNotMatch(rendered, /failing_for|maintenance stuck/);
+  assert.match(rendered, /^CLAUDE: \d+ ready · \d+ in use · \d+ needs you · \d+ unknown$/m);
 });
 
-test("Claude human status renders the five operator states with frozen precedence", () => {
+test("Claude human status renders the four launch states with frozen precedence", () => {
   const account = (label, overrides = {}) => ({
     label,
     authState: "usage_readable",
     credentialState: "credential_ready",
     credentialReady: true,
     locked: false,
-    rotationPending: false,
     source: "cache",
     ageMs: 120_000,
     usage: { provider: ANTHROPIC_PROVIDER, ok: false, windows: [] },
@@ -443,7 +390,6 @@ test("Claude human status renders the five operator states with frozen precedenc
         locked: true,
         authState: "reauth_required",
         credentialState: "reauth_required",
-        rotationPending: true,
       }),
       account("fixing", {
         authState: "credential_expired",
@@ -454,16 +400,15 @@ test("Claude human status renders the five operator states with frozen precedenc
         authState: "reauth_required",
         credentialState: "reauth_required",
         credentialReady: false,
-        rotationPending: true,
       }),
-      account("unknown", { locked: null, rotationPending: null }),
+      account("unknown", { locked: null }),
     ],
   });
 
-  assert.match(rendered, /^CLAUDE: 1 ready · 1 in use · 1 AIM fixing · 1 needs you · 1 unknown/m);
+  assert.match(rendered, /^CLAUDE: 2 ready · 1 in use · 1 needs you · 1 unknown/m);
   assert.match(rendered, /ready\s+READY.*2m\s+use now/);
   assert.match(rendered, /active\s+IN USE.*session active/);
-  assert.match(rendered, /fixing\s+AIM FIXING.*AIM will retry/);
+  assert.match(rendered, /fixing\s+READY.*use now/);
   assert.match(rendered, /needs\s+NEEDS YOU.*aim login needs/);
   assert.match(rendered, /unknown\s+UNKNOWN.*retry status/);
 });
@@ -480,7 +425,6 @@ test("Claude usage status renders one fleet average across every readable window
         credentialState: "credential_ready",
         credentialReady: true,
         locked: false,
-        rotationPending: false,
         source: "live",
         ageMs: 0,
         usage: {
@@ -501,7 +445,6 @@ test("Claude usage status renders one fleet average across every readable window
         credentialState: "credential_ready",
         credentialReady: true,
         locked: false,
-        rotationPending: false,
         source: "cache",
         ageMs: 120_000,
         usage: {
