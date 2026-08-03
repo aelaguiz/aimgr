@@ -161,6 +161,11 @@ derived per-label projection whose newer token rotations are published back with
 capture, import, and run share one per-label lease. Managed runs retain a durable uncertainty fence
 until the exact supervised Claude child exits cleanly without rotation or a genuinely new
 access/refresh token pair is published as that fence's explicit successor.
+Fence and retry liveness are bounded. A rotation fence can quarantine an account for at most 24h;
+past that bound any machine may clear it and recover the account from the Redis bundle. A
+per-account maintenance failure that persists unchanged past 2h is published as `reauth_required`,
+so status renders `NEEDS YOU` with `aim login <label>` instead of retrying forever. `AIM FIXING`
+is therefore always a temporary state.
 Each normal managed launch also inherits the machine's complete user-level
 Claude MCP definitions, personal skills, enabled user plugins, and user hooks
 at launch time. AIM passes field-only MCP/hook overlays through Claude's native

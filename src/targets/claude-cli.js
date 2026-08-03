@@ -5,6 +5,7 @@ import { getAnthropicCredential } from "../browser/seed.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import {
+  CLAUDE_ROTATION_FENCE_TTL_MS,
   clearRedisClaudeRotationFence,
   createRedisClaudeRotationFence,
   isRedisClaudeRotationFenceSuccessor,
@@ -321,11 +322,12 @@ export async function recoverSharedClaudeRotationFence({
     await clearClaudeRotationFenceOrThrow({ runtime, label, fence, lease });
     return { status: "unchanged", reason: "already_published", record: baseline.record };
   }
-  if (fence.recoveryStorageId !== recoveryStorageId) {
-    throw new Error(
-      `Claude label=${label} has an unresolved rotation on another machine; recover there or replace it with `
-        + "`aim claude capture-native` / `aim claude import-native`.",
-    );
+  // The fence's machine binding is advisory: a young foreign fence defers to
+  // its owner's recovery window, and any fence past the TTL is portable.
+  const foreign = fence.recoveryStorageId !== recoveryStorageId;
+  const fenceAgeMs = Math.max(0, nowMs - Date.parse(fence.createdAt));
+  if (foreign && fenceAgeMs < CLAUDE_ROTATION_FENCE_TTL_MS) {
+    return { status: "deferred", reason: "fence_owned_elsewhere", fenceAgeMs };
   }
 
   const recovered = await syncLiveClaudeRotationBackToLabelFromStorage({
@@ -347,8 +349,15 @@ export async function recoverSharedClaudeRotationFence({
       homeDir,
     });
     assertRedisClaudeFenceSuccessor({ record, fence });
-  } else if (recovered.status === "unchanged" && recovered.reason === "tokens_unchanged") {
+  } else if (recovered.status === "unchanged" && recovered.reason === "tokens_unchanged" && !foreign) {
     return { ...recovered, retainedFence: fence };
+  } else if (recovered.status === "unchanged") {
+    // No reachable successor exists locally (files empty/older than Redis) or
+    // the expired foreign fence owns this machine's unchanged tokens; either
+    // way the fence protects nothing reachable, so clear it and proceed.
+    await assertLeaseOwned("before clearing an expired rotation fence");
+    await clearClaudeRotationFenceOrThrow({ runtime, label, fence, lease });
+    return { status: "unchanged", reason: recovered.reason, clearedExpiredFence: true };
   } else {
     throw new Error(
       `Claude label=${label} shared rotation fence recovery blocked: ${recovered.status}:${recovered.reason}.`,

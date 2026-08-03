@@ -47,7 +47,7 @@ import {
   resolveOptionalSourceHome,
 } from "../../io/paths.js";
 import { markImportedAnthropicLabelDirtyState } from "../../state/authority-anthropic.js";
-import { ensureLocalInstallationId, loadLocalState } from "../../state/local-state.js";
+import { loadLocalState } from "../../state/local-state.js";
 import { loadAimgrState } from "../../state/schema.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { hasCompleteClaudeNativeBundle, readClaudeAppStateFile } from "../../credentials/claude-bundle.js";
@@ -55,8 +55,6 @@ import {
   activateClaudeLabelSelection,
   activateClaudePoolSelection,
   assertRedisClaudeFenceSuccessor,
-  assertUnfencedClaudeProjectionIsRecoverable,
-  buildClaudeRecoveryStorageId,
   buildClaudeTokenLineageFingerprint,
   clearClaudeRotationFenceOrThrow,
   createClaudeRotationFenceForCurrentCredential,
@@ -65,8 +63,8 @@ import {
   publishClaudeRotationIfNeeded,
   readClaudeProjectionReceipt,
   recordCommittedClaudeProjection,
-  recoverSharedClaudeRotationFence,
 } from "../../targets/claude-cli.js";
+import { runSharedClaudePreRunPreflight } from "../../targets/claude-preflight.js";
 import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
 import {
   buildManagedClaudeSessionForkName,
@@ -86,12 +84,6 @@ import {
 const CLAUDE_LEASE_RENEW_INTERVAL_MS = Math.floor(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS / 3);
 const CLAUDE_LEASE_RENEW_DEADLINE_MS = 5_000;
 const CLAUDE_ACTIVE_ROTATION_SYNC_INTERVAL_MS = 30_000;
-const SAFE_PRE_RUN_STORAGE_REASONS = new Set([
-  "authority_import_newer",
-  "native_storage_empty",
-  "tokens_unchanged",
-  "stale_candidate",
-]);
 const CLAUDE_LEASE_RENEWED = "renewed";
 const CLAUDE_LEASE_CONTENDED = "contended";
 const CLAUDE_LEASE_UNREACHABLE = "unreachable";
@@ -747,17 +739,34 @@ async function handleRedisClaudeRun(context, {
     await refreshRedisRuntimeState(runtime);
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before managed Claude preflight" });
     const expectedEmail = requireExpectedClaudeEmail(runtime.state, label);
-    const descriptor = buildManagedClaudeNativeStorageDescriptor({
+    const preflight = await runSharedClaudePreRunPreflight({
+      runtime,
+      label,
+      homeDir,
       configDir,
-      defaultConfigDir: resolveManagedClaudeDir({ homeDir }),
       expectedEmail,
-      managedRootDir: resolveAimgrStateDir({ homeDir }),
+      nowMs,
+      resolveCommandImpl: resolveExecutableOnPathImpl,
+      lease: guard.lease,
+      assertLeaseOwned: (phase) => assertClaudeCredentialLeaseOwned({ ...guard, phase }),
     });
-    ensureSafeManagedClaudeStorage({ descriptor });
-    const discoveredCommand = resolveExecutableOnPathImpl?.("claude");
-    if (!discoveredCommand || !path.isAbsolute(discoveredCommand)) {
-      throw new Error("Could not resolve the installed Claude executable for managed launch.");
+    if (preflight.deferred) {
+      // An explicit run of a young foreign-fenced label remains unsafe: name
+      // the fence age and the recent rotation elsewhere instead of launching.
+      const fenceAgeHours = (Math.max(0, preflight.fenceRecovery?.fenceAgeMs ?? 0) / 3_600_000).toFixed(1);
+      throw new Error(
+        `Claude label=${label} was recently rotated on another machine (fence age ${fenceAgeHours}h); `
+          + "its shared rotation fence is still inside the recovery window. "
+          + "Run it on that machine or retry after the fence expires.",
+      );
     }
+    const {
+      descriptor,
+      command: discoveredCommand,
+      recoveryStorageId,
+      observedAt,
+    } = preflight;
+    let retainedRunFence = preflight.retainedFence;
     const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
       ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl
       : prepareClaudeCliLaunch;
@@ -767,85 +776,8 @@ async function handleRedisClaudeRun(context, {
       homeDir: claudeHome,
       configDir,
     });
-    const installationId = ensureLocalInstallationId(runtime.localState);
-    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-    const recoveryStorageId = buildClaudeRecoveryStorageId({ installationId, configDir });
 
-    const observedAt = new Date(nowMs).toISOString();
     const target = runtime.state.targets.claudeCli;
-    const existingFence = await readRedisClaudeRotationFence(runtime.store, { label });
-    const fenceRecovery = await recoverSharedClaudeRotationFence({
-      runtime,
-      label,
-      fence: existingFence,
-      recoveryStorageId,
-      descriptor,
-      lease: guard.lease,
-      assertLeaseOwned: (phase) => assertClaudeCredentialLeaseOwned({ ...guard, phase }),
-      homeDir,
-      nowMs,
-    });
-    let retainedRunFence = fenceRecovery?.retainedFence ?? null;
-    const preRunSync = await syncLiveClaudeRotationBackToLabelFromStorage({
-      state: runtime.state,
-      label,
-      descriptor,
-      nowMs,
-    });
-    if (!retainedRunFence) {
-      assertUnfencedClaudeProjectionIsRecoverable({
-        runtime,
-        label,
-        descriptor,
-        reconciliation: preRunSync,
-      });
-    }
-    await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before pre-run rotation reconciliation" });
-    let preRunRecord = null;
-    let preRunFence = null;
-    try {
-      if (preRunSync.status === "candidate") {
-        preRunFence = retainedRunFence ?? await createClaudeRotationFenceForCurrentCredential({
-          runtime,
-          label,
-          recoveryStorageId,
-          observedAt,
-        });
-      }
-      preRunRecord = await publishClaudeRotationIfNeeded({
-        runtime,
-        reconciliation: preRunSync,
-        label,
-        observedAt,
-        fence: preRunFence,
-        descriptor,
-        homeDir,
-      });
-      if (preRunFence) {
-        assertRedisClaudeFenceSuccessor({ record: preRunRecord, fence: preRunFence });
-        await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before clearing the pre-run rotation fence" });
-        await clearClaudeRotationFenceOrThrow({
-          runtime,
-          label,
-          fence: preRunFence,
-          lease: guard.lease,
-        });
-        if (preRunFence === retainedRunFence) retainedRunFence = null;
-      }
-    } catch (error) {
-      throw new Error(
-        `Claude label=${label} local credential publication failed before launch; retry when Redis is reachable.`,
-        { cause: error },
-      );
-    }
-    const preRunRecovered = preRunSync.status === "candidate"
-      || (preRunSync.status === "unchanged" && SAFE_PRE_RUN_STORAGE_REASONS.has(preRunSync.reason));
-    if (!preRunRecovered) {
-      throw new Error(
-        `Claude managed storage reconciliation blocked: ${preRunSync.status}:${preRunSync.reason}.`,
-      );
-    }
-
     if (sessionFork) {
       stagedSessionFork = stageManagedClaudeSessionFork({
         session: sessionFork,

@@ -129,6 +129,14 @@ export function ensureAccountShape(account, { providerHint } = {}) {
 
   const reauth = isObject(account.reauth) ? account.reauth : {};
   const normalizedReauthMode = normalizeInteractiveOAuthMode(reauth.mode);
+  const maintenance = isObject(reauth.maintenance) ? reauth.maintenance : {};
+  const maintenanceFirstFailedAt = typeof maintenance.firstFailedAt === "string"
+    && Number.isFinite(Date.parse(maintenance.firstFailedAt))
+    ? new Date(Date.parse(maintenance.firstFailedAt)).toISOString()
+    : null;
+  const maintenanceReason = typeof maintenance.reason === "string" && maintenance.reason.trim()
+    ? maintenance.reason.trim()
+    : null;
   account.reauth = {
     ...(normalizedReauthMode ? { mode: normalizedReauthMode } : {}),
     ...(typeof reauth.lastAttemptAt === "string" && reauth.lastAttemptAt.trim()
@@ -139,6 +147,19 @@ export function ensureAccountShape(account, { providerHint } = {}) {
       : {}),
     ...(typeof reauth.blockedReason === "string" && reauth.blockedReason.trim()
       ? { blockedReason: reauth.blockedReason.trim() }
+      : {}),
+    // The maintainer's failure streak is an additive policy fact; preserve it
+    // so it round-trips between the Redis policy and the state view.
+    ...(maintenanceFirstFailedAt && maintenanceReason
+      ? {
+          maintenance: {
+            firstFailedAt: maintenanceFirstFailedAt,
+            reason: maintenanceReason,
+            count: Number.isSafeInteger(maintenance.count) && maintenance.count >= 1
+              ? maintenance.count
+              : 1,
+          },
+        }
       : {}),
   };
 

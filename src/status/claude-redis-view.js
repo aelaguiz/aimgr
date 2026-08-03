@@ -429,13 +429,16 @@ async function readAnthropicRedisData({
         lockSource = "unavailable";
       }
     }
-    let rotationFences = new Set();
+    let rotationFences = new Map();
     let rotationSource = includeLeaseState ? "redis" : "not-requested";
     if (includeLeaseState) {
       try {
-        rotationFences = new Set((await Promise.all(records.map(async (record) => (
-          await readRedisClaudeRotationFenceImpl(store, { label: record.label }) ? record.label : null
-        )))).filter(Boolean));
+        rotationFences = new Map(
+          (await Promise.all(records.map(async (record) => {
+            const fence = await readRedisClaudeRotationFenceImpl(store, { label: record.label });
+            return fence ? [record.label, fence] : null;
+          }))).filter(Boolean),
+        );
       } catch {
         rotationSource = "unavailable";
       }
@@ -450,6 +453,48 @@ async function readAnthropicRedisData({
       // Status reads report one fixed value-free availability error.
     }
   }
+}
+
+function buildRotationDiagnostics(fence, nowMs) {
+  if (!fence) return {};
+  const createdAtMs = Date.parse(fence.createdAt);
+  return {
+    fenceCreatedAt: fence.createdAt,
+    fenceAgeMs: Number.isFinite(createdAtMs) ? Math.max(0, nowMs - createdAtMs) : null,
+    ...(typeof fence.createdByHost === "string" && fence.createdByHost
+      ? { fenceCreatedByHost: fence.createdByHost }
+      : {}),
+  };
+}
+
+// The maintainer's Phase 1 escalation facts, surfaced additively from the
+// reauth policy fact: the failure streak and any terminal blockedReason.
+function buildMaintenanceDiagnostics(record) {
+  const reauth = record?.policy?.reauth;
+  const streak = isObject(reauth?.maintenance) ? reauth.maintenance : null;
+  const firstFailedAt = typeof streak?.firstFailedAt === "string"
+    && Number.isFinite(Date.parse(streak.firstFailedAt))
+    ? streak.firstFailedAt
+    : null;
+  const reason = typeof streak?.reason === "string" && streak.reason.trim()
+    ? streak.reason.trim()
+    : null;
+  const blockedReason = typeof reauth?.blockedReason === "string" && reauth.blockedReason.trim()
+    ? reauth.blockedReason.trim()
+    : null;
+  if ((!firstFailedAt || !reason) && !blockedReason) return {};
+  return {
+    maintenance: {
+      ...(firstFailedAt && reason
+        ? {
+            firstFailedAt,
+            reason,
+            count: Number.isSafeInteger(streak.count) && streak.count >= 1 ? streak.count : 1,
+          }
+        : {}),
+      ...(blockedReason ? { blockedReason } : {}),
+    },
+  };
 }
 
 function selectFacts(records, selectedLabels, nowMs) {
@@ -852,13 +897,16 @@ export async function collectClaudeRedisAccountUsageStatus({
         lockSource = "unavailable";
       }
     }
-    rotationFences = new Set();
+    rotationFences = new Map();
     rotationSource = redisStore ? "redis" : "unavailable";
     if (redisStore) {
       try {
-        rotationFences = new Set((await Promise.all(authoritativeRecords.map(async (record) => (
-          await readRedisClaudeRotationFenceImpl(redisStore, { label: record.label }) ? record.label : null
-        )))).filter(Boolean));
+        rotationFences = new Map(
+          (await Promise.all(authoritativeRecords.map(async (record) => {
+            const fence = await readRedisClaudeRotationFenceImpl(redisStore, { label: record.label });
+            return fence ? [record.label, fence] : null;
+          }))).filter(Boolean),
+        );
       } catch {
         rotationSource = "unavailable";
       }
@@ -891,6 +939,7 @@ export async function collectClaudeRedisAccountUsageStatus({
       const accountFacts = factsByLabel.get(account.label);
       const locked = lockSource === "redis" ? lockedLabels.has(account.label) : null;
       const rotationPending = rotationSource === "redis" ? rotationFences.has(account.label) : null;
+      const fence = rotationPending === true ? rotationFences.get(account.label) ?? null : null;
       return {
         ...account,
         credentialReady: accountFacts?.credentialReady === true,
@@ -905,7 +954,9 @@ export async function collectClaudeRedisAccountUsageStatus({
         rotation: {
           status: rotationPending === null ? "unknown" : rotationPending ? "pending" : "clear",
           source: rotationSource,
+          ...buildRotationDiagnostics(fence, options.nowMs),
         },
+        ...buildMaintenanceDiagnostics(accountFacts?.record),
         localProjection: localProjectionStates.get(account.label) ?? { state: "missing", receiptAgeMs: null },
       };
     }),
@@ -1230,6 +1281,36 @@ function formatClaudeUsageAge(account) {
   return formatStatusDeltaMsCell(ageMs);
 }
 
+function formatRotationCell(account) {
+  if (account?.rotationPending === null) return "unknown";
+  if (account?.rotationPending !== true) return "--";
+  const ageMs = Number(account.rotation?.fenceAgeMs);
+  const age = Number.isFinite(ageMs) ? formatStatusDeltaMsCell(ageMs) : null;
+  const host = typeof account.rotation?.fenceCreatedByHost === "string" && account.rotation.fenceCreatedByHost
+    ? account.rotation.fenceCreatedByHost
+    : null;
+  if (age && age !== "--") return `pending ${age}${host ? `@${host}` : ""}`;
+  return "pending";
+}
+
+function formatMaintenanceDiagnosticLine(account, nowMs) {
+  const maintenance = account?.maintenance;
+  if (!isObject(maintenance)) return null;
+  const parts = [];
+  if (typeof maintenance.reason === "string" && maintenance.reason) {
+    parts.push(`reason=${maintenance.reason}`);
+    parts.push(`count=${Number.isSafeInteger(maintenance.count) ? maintenance.count : 1}`);
+    const firstFailedAtMs = Date.parse(maintenance.firstFailedAt ?? "");
+    if (Number.isFinite(firstFailedAtMs)) {
+      parts.push(`failing_for=${formatStatusDeltaMsCell(Math.max(0, nowMs - firstFailedAtMs))}`);
+    }
+  }
+  if (typeof maintenance.blockedReason === "string" && maintenance.blockedReason) {
+    parts.push(`blocked=${maintenance.blockedReason}`);
+  }
+  return parts.length > 0 ? `maintenance ${account.label} ${parts.join(" ")}` : null;
+}
+
 function renderVerboseClaudeRedisAccountUsageStatus(result) {
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
@@ -1241,7 +1322,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
       formatPlan(account),
       account.authState,
       account.locked === null ? "unknown" : account.locked === true ? "yes" : "--",
-      account.rotationPending === null ? "unknown" : account.rotationPending === true ? "pending" : "--",
+      formatRotationCell(account),
       new Set(["clean", "unpublished", "unreadable", "missing"]).has(account.localProjection?.state)
         ? account.localProjection.state
         : "unknown",
@@ -1269,6 +1350,10 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
     `requests=${Number(result?.requestCount ?? 0)}  cache_ttl=${Number(result?.cacheTtlSeconds ?? 0)}s  stale_max=${Number(result?.staleMaxSeconds ?? 0)}s`,
     `cache_state=${formatCacheState(result?.cacheState)}  cache_write=${result?.cacheWriteFailed === true ? "failed" : "ok"}`,
   );
+  for (const account of accounts) {
+    const diagnostic = formatMaintenanceDiagnosticLine(account, nowMs);
+    if (diagnostic) lines.push(diagnostic);
+  }
   if (Array.isArray(result?.missingAccounts) && result.missingAccounts.length > 0) {
     lines.push(`missing_accounts=${result.missingAccounts.join(",")}`);
   }

@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
 import { connectRedisStore } from "../../src/coordination/redis-store.js";
 import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
 import {
+  AIMGR_CLAUDE_ROTATION_FENCE_KIND,
   buildRedisClaudeRotationFenceProvenance,
   clearRedisClaudeRotationFence,
   createRedisClaudeRotationFence,
@@ -123,4 +125,37 @@ test("Claude rotation fence rejects malformed shared state without replacing it"
     (error) => error.message === "Redis Claude rotation fence is invalid.",
   );
   assert.match(await client.get(key), /PRIVATE/);
+});
+
+test("Claude rotation fence records the creating host and still parses pre-host fences", async () => {
+  const client = new FakeRedisClient();
+  const store = await connectRedisStore({ client, keyPrefix: "aimgr:fence-test" });
+  const fence = await createRedisClaudeRotationFence(store, {
+    label: "claude",
+    recoveryStorageId: HASH_A,
+    baseTokenLineageFingerprint: HASH_B,
+    baseCredentialVersion: 7,
+    observedAt: "2026-08-02T00:00:00.000Z",
+  });
+
+  assert.equal(fence.createdByHost, os.hostname());
+  const readBack = await readRedisClaudeRotationFence(store, { label: "claude" });
+  assert.equal(readBack.createdByHost, os.hostname());
+  assert.deepEqual(readBack, fence);
+
+  // Fences written before createdByHost existed remain valid and gain no key.
+  await client.set("aimgr:fence-test:fence:claude-rotation:legacy", JSON.stringify({
+    kind: AIMGR_CLAUDE_ROTATION_FENCE_KIND,
+    version: 1,
+    fenceId: "123e4567-e89b-42d3-a456-426614174000",
+    label: "legacy",
+    recoveryStorageId: HASH_A,
+    baseTokenLineageFingerprint: HASH_B,
+    baseCredentialVersion: 3,
+    createdAt: "2026-07-30T00:00:00.000Z",
+  }));
+  const legacy = await readRedisClaudeRotationFence(store, { label: "legacy" });
+  assert.equal(legacy.label, "legacy");
+  assert.equal(legacy.baseCredentialVersion, 3);
+  assert.equal(Object.hasOwn(legacy, "createdByHost"), false);
 });

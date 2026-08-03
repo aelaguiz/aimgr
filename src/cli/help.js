@@ -58,6 +58,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  - Managed Claude run/login requires an executable native Claude installation; managed macOS homes also require AIM's installed file-storage adapter.",
     "  - Browser-managed OAuth supports explicit per-label bindings: aim-profile, chrome-profile, or agent-browser.",
     "  - Generic Redis import never writes Claude credentials; use leased `aim claude capture-native` or `aim claude import-native`.",
+    "  - Claude maintenance is bounded: a rotation fence holds an account at most 24h before any machine may recover it from Redis, and a per-account failure persisting past 2h becomes NEEDS YOU (`aim login <label>`); AIM FIXING is always temporary.",
     "  - Codex target management is file-backed only in v1; keyring/auto homes fail loud.",
     `  - \`aim codex watch --once\` is the scheduler-safe one-shot; foreground watch loops default to ${DEFAULT_CODEX_WATCH_INTERVAL_SECONDS}s and rotate below ${DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT}% 5h remaining.`,
     `  - \`aim hermes watch --once\` is the Hermes scheduler-safe one-shot and always delegates writes through \`aim rebalance hermes\`.`,

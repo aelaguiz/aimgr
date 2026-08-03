@@ -73,6 +73,13 @@ function isTerminallyMarked(record) {
   return record?.policy?.reauth?.blockedReason === OAUTH_REAUTH_REQUIRED;
 }
 
+// Single-line, bounded rendering of a failure message for per-label log lines;
+// the maintenance messages are state names and guard reasons, not tokens.
+function maintenanceFailureDetail(error) {
+  const detail = String(error?.message ?? "").replace(/["\s]+/g, " ").trim().slice(0, 160);
+  return detail || null;
+}
+
 function sortedMaintenanceRecords(snapshot) {
   return (snapshot?.credentials ?? [])
     .filter((record) => MAINTAINED_PROVIDERS.has(record.provider))
@@ -179,7 +186,6 @@ async function handleOAuthMaintain(context) {
   const {
     homeDir,
     stdout,
-    setExitCode,
     connectRedisStoreImpl,
     fetchJsonWithTimeoutImpl,
     nowMs,
@@ -201,7 +207,10 @@ async function handleOAuthMaintain(context) {
       if (
         !hasLoadedCredential(record)
         || isTerminallyMarked(record)
-        || (hasRequiredRefreshMaterial(record) && !isDue(record, nowMs))
+        // Fenced Claude labels stay recovery-eligible on every pass; only the
+        // Codex lane due-skips here. The Claude probe stays due-gated inside
+        // maintainRedisClaudeCredential.
+        || (record.provider !== ANTHROPIC_PROVIDER && hasRequiredRefreshMaterial(record) && !isDue(record, nowMs))
       ) {
         maintenanceResult = {
           outcome: "skipped",
@@ -215,6 +224,7 @@ async function handleOAuthMaintain(context) {
         try {
           let outcome;
           let reason = null;
+          let detail = null;
           if (!hasRequiredRefreshMaterial(record)) {
             await refreshRedisRuntimeState(runtime);
             const current = findCredentialRecord(runtime.snapshot, {
@@ -246,6 +256,7 @@ async function handleOAuthMaintain(context) {
             });
             outcome = result.outcome;
             reason = result.reason;
+            detail = result.detail ?? null;
           } else {
             outcome = await maintainCodexRecord({
               runtime,
@@ -269,16 +280,23 @@ async function handleOAuthMaintain(context) {
                   : outcome === "unchanged"
                     ? "tokens_unchanged"
                     : "not_actionable"),
+            ...(detail ? { detail } : {}),
           };
-        } catch {
-          maintenanceResult = { outcome: "retryable", reason: "maintenance_failed" };
+        } catch (error) {
+          maintenanceResult = {
+            outcome: "retryable",
+            reason: "maintenance_failed",
+            ...(maintenanceFailureDetail(error) ? { detail: maintenanceFailureDetail(error) } : {}),
+          };
         }
       }
 
       counts[maintenanceResult.outcome] += 1;
       stdout.write(
         `provider=${record.provider} label=${record.label} `
-          + `outcome=${maintenanceResult.outcome} reason=${maintenanceResult.reason}\n`,
+          + `outcome=${maintenanceResult.outcome} reason=${maintenanceResult.reason}`
+          + (maintenanceResult.detail ? ` detail="${maintenanceResult.detail}"` : "")
+          + `\n`,
       );
     }
   } finally {
@@ -288,7 +306,8 @@ async function handleOAuthMaintain(context) {
     `refreshed=${counts.refreshed} unchanged=${counts.unchanged} `
       + `reauth_required=${counts.reauth_required} retryable=${counts.retryable} skipped=${counts.skipped}\n`,
   );
-  if (counts.retryable > 0) setExitCode(1);
+  // Per-account retryables are reported, not fatal: the exit code is reserved
+  // for the run itself failing (the thrown paths above).
   return counts;
 }
 

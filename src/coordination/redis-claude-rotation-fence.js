@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import { normalizeLabel } from "../core/normalize.js";
 import { guardedDeleteWithRedisCredentialLease } from "./redis-credential-lease.js";
 import { normalizeKeyPrefix } from "./records.js";
 
 export const AIMGR_CLAUDE_ROTATION_FENCE_KIND = "aimgr.claude-rotation-fence.v1";
+// Bounds how long a rotation fence can quarantine an account before any
+// machine may recover the label from the Redis bundle.
+export const CLAUDE_ROTATION_FENCE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -50,6 +54,9 @@ function normalizeFence(value, expectedLabel) {
   ) {
     throw new Error("Redis Claude rotation fence is invalid.");
   }
+  const createdByHost = typeof value?.createdByHost === "string" && value.createdByHost.trim()
+    ? value.createdByHost.trim()
+    : null;
   return Object.freeze({
     kind: AIMGR_CLAUDE_ROTATION_FENCE_KIND,
     version: 1,
@@ -59,6 +66,7 @@ function normalizeFence(value, expectedLabel) {
     baseTokenLineageFingerprint: value.baseTokenLineageFingerprint,
     baseCredentialVersion: value.baseCredentialVersion,
     createdAt,
+    ...(createdByHost ? { createdByHost } : {}),
   });
 }
 
@@ -96,6 +104,7 @@ export async function createRedisClaudeRotationFence(store, {
     baseTokenLineageFingerprint,
     baseCredentialVersion,
     createdAt: observedAt,
+    createdByHost: os.hostname(),
   }, normalizedLabel);
   const key = buildFenceKey(store, normalizedLabel);
   let written;

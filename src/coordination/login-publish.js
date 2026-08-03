@@ -180,6 +180,10 @@ export async function publishMaintainedCredential({
   if (reauth.blockedReason === "oauth_reauth_required") {
     delete reauth.blockedReason;
   }
+  // A successful re-enrollment supersedes the maintainer's failure streak.
+  if (isObject(reauth.maintenance)) {
+    delete reauth.maintenance;
+  }
   const result = await publishCredential(store, {
     expectedVersion: currentCredential?.version ?? null,
     updatedBy,
@@ -208,12 +212,13 @@ export async function publishMaintainedCredential({
       },
     },
   });
-  if (
-    result.ok
-    && isObject(account.reauth)
-    && account.reauth.blockedReason === "oauth_reauth_required"
-  ) {
-    delete account.reauth.blockedReason;
+  if (result.ok && isObject(account.reauth)) {
+    if (account.reauth.blockedReason === "oauth_reauth_required") {
+      delete account.reauth.blockedReason;
+    }
+    if (isObject(account.reauth.maintenance)) {
+      delete account.reauth.maintenance;
+    }
   }
   return {
     ok: result.ok,

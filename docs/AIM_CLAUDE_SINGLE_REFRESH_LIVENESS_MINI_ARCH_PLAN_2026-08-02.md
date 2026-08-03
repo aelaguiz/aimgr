@@ -129,7 +129,7 @@ guard pipeline, an unbounded retry taxonomy), not by adding any.
 | Scope freeze | Frozen at the ready verdict below. Any selection, lease, cache, receipt, pool-module, Codex-specific, or CLI-surface change requires new human approval. |
 | Enough proof | Focused fence-recovery TTL matrix tests, escalation trip/reset tests, logging and exit-code tests, both-preflight-caller tests, existing focused suites green, lint, `git diff --check`, installed smoke, and the live six-account resolution check in Phase 2. |
 | Do-not-build boundary | No extra maintainer, daemon, queue, backoff framework, machine registry, new status state, persisted operator state, receipt rework, pool-module deletion, or generic config system for the two time bounds (constants are fine). |
-| Accepted residual risk | TTL-clearing a fence can abandon an unpublished rotation stranded on an offline machine; the worst case is one `aim login <label>`, which is strictly better than the permanent silent quarantine observed this week. The escalation streak lives in the maintainer machine's local state; reinstalling that machine resets streaks, causing only a bounded extra retry window, never a wrong label. |
+| Accepted residual risk | TTL-clearing a fence can abandon an unpublished rotation stranded on an offline machine; the worst case is one `aim login <label>`, which is strictly better than the permanent silent quarantine observed this week. The streak rides the shared reauth policy fact, so a failing label costs one small CAS policy write per maintainer pass; that write is what makes the streak visible to every machine's status and clearable fleet-wide on re-enrollment. |
 
 # 1) Architecture Decisions
 
@@ -166,9 +166,10 @@ The status renderer already maps `reauth.blockedReason` to `NEEDS YOU` with
 wiped-file sessions (`src/credentials/claude-maintenance.js:411-441`).
 Escalation is the same publish, triggered by "same reason failing
 continuously past the escalation window" instead of an unbounded retry. The
-streak record (`firstFailedAt`, `reason`, `count`) lives in the maintainer
-machine's existing local state — legitimate because there is exactly one
-refresher by design.
+streak record (`firstFailedAt`, `reason`, `count`) rides that same reauth
+policy fact (`reauth.maintenance`, additive), so every machine's status can
+render it and a successful re-enrollment clears it fleet-wide at the existing
+single reset point.
 
 ## 1.4 Recovery is not due-gated
 
@@ -311,6 +312,27 @@ readers consume only the existing fence key and policy fact.
 
 ## Phase 1 — Liveness mechanism and preflight convergence
 
+**Status: COMPLETE**
+
+**Completed work:**
+- Fence TTL (`CLAUDE_ROTATION_FENCE_TTL_MS` = 24h) and portable recovery in
+  `recoverSharedClaudeRotationFence`; foreign-machine throw deleted; young
+  foreign fences return a bounded `deferred` skip; `createdByHost` stamped at
+  creation (additive, legacy fences parse).
+- Shared preflight owner `src/targets/claude-preflight.js`; run path and
+  maintainer both call it; duplicate spine and duplicate SAFE-reason set
+  deleted from `claude.js`/`claude-maintenance.js`.
+- Escalation: 2h identical per-account failure publishes the existing
+  `reauth.blockedReason` fact (`escalated_persistent_failure`); streak rides
+  the reauth policy fact (`reauth.maintenance`); success and
+  login/capture/import clear it (single reset point in `login-publish.js`).
+- Fenced labels are recovery-eligible every pass (Anthropic due-skip removed
+  from the pre-filter; probe stays due-gated inside the maintainer).
+- Per-label log lines carry `detail="..."`; maintainer exits non-zero only
+  when the run itself fails.
+- Proof: 311/311 full suite (294 baseline + 17 new), lint clean,
+  `git diff --check` clean.
+
 **Goal:** Make every maintainer failure class bounded and self-explaining,
 with one preflight owner.
 
@@ -337,6 +359,8 @@ with one preflight owner.
 - Log lines name the underlying guard/sync reason; a clean pass exits 0.
 
 ## Phase 2 — Surface, deploy, and live unstick
+
+**Status: IN PROGRESS**
 
 **Goal:** Ship the mechanism fleet-wide and resolve the six stuck accounts.
 
@@ -378,6 +402,7 @@ with one preflight owner.
 | 2026-08-02 | Escalation reuses `reauth.blockedReason`; streak kept in maintainer-local state. | Zero new status machinery and zero new Redis writes per failure; one refresher makes local streak state authoritative enough. |
 | 2026-08-02 | Merge the duplicate preflight pipelines as the frozen convergence closure. | Both lanes define the same fence/recovery contract; changing it in one would guarantee re-divergence. |
 | 2026-08-02 | No pool-module, receipt, selection, or CLI-surface work. | Human constraint: same commands, same workflow; those cuts are separate future decisions. |
+| 2026-08-02 | Intent-derived: the escalation streak rides the Redis reauth policy fact (`reauth.maintenance`), not maintainer-local state. | Blocker: §1.3 said maintainer-local state, but §0.2.4/§5 promise `--verbose` streak fields from collected facts and §0.4 requires re-enrollment to clear the streak — both impossible with machine-local state under a single maintainer. Consulted: §0.2.2, §0.4, §1.3, §5, Phase 1 checklist. Decision: store the streak as additive fields on the existing policy fact (one small CAS write per failing label per pass), with the single reset point in `login-publish.js`; the 2026-08-02 "zero new Redis writes" rationale is superseded by this entry. Consequences: §1.3 and §0.6 residual-risk text repaired to match; no new key family, no new write path. |
 
 # 10) Readiness Verdict
 

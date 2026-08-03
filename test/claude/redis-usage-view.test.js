@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { buildStableIdentityForCredential } from "../../src/coordination/login-publish.js";
 import {
@@ -330,6 +331,95 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
     /ready\s+max\/max_20x\s+usage_readable\s+yes\s+pending/,
   );
   assert.ok(client.values.size > 0);
+});
+
+test("Redis Claude status surfaces fence age/host and the maintenance streak additively", async () => {
+  const stuck = anthropicRecord("stuck");
+  stuck.policy.reauth = {
+    mode: "native-claude",
+    blockedReason: "oauth_reauth_required",
+    maintenance: {
+      firstFailedAt: "2026-07-22T15:30:00.000Z",
+      reason: "local_state_conflict",
+      count: 13,
+    },
+  };
+  const { homeDir, client, connectRedisStoreImpl } = await setup([
+    anthropicRecord("fenced"),
+    stuck,
+    anthropicRecord("plain"),
+  ]);
+  writeJson(resolveAimgrLocalStatePath({ homeDir }), { targets: { claudeCli: {} } });
+  const store = await connectRedisStoreImpl();
+  // New-style fence: createdByHost is stamped at creation time.
+  await createRedisClaudeRotationFence(store, {
+    label: "fenced",
+    recoveryStorageId: `sha256:${"a".repeat(64)}`,
+    baseTokenLineageFingerprint: `sha256:${"b".repeat(64)}`,
+    baseCredentialVersion: 1,
+    observedAt: "2026-07-22T17:00:00.000Z",
+  });
+  // Legacy fence written before createdByHost existed: age only, no owner.
+  await client.set(
+    "aimgr:claude-redis-view:fence:claude-rotation:stuck",
+    JSON.stringify({
+      kind: "aimgr.claude-rotation-fence.v1",
+      version: 1,
+      fenceId: "123e4567-e89b-42d3-a456-426614174000",
+      label: "stuck",
+      recoveryStorageId: `sha256:${"c".repeat(64)}`,
+      baseTokenLineageFingerprint: `sha256:${"d".repeat(64)}`,
+      baseCredentialVersion: 1,
+      createdAt: "2026-07-22T16:00:00.000Z",
+    }),
+  );
+
+  const result = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: NOW_MS,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: async () => successSnapshot(),
+  });
+  const byLabel = new Map(result.accounts.map((account) => [account.label, account]));
+
+  const fenced = byLabel.get("fenced");
+  assert.equal(fenced.rotationPending, true);
+  assert.equal(fenced.rotation.status, "pending");
+  assert.equal(fenced.rotation.fenceCreatedAt, "2026-07-22T17:00:00.000Z");
+  assert.equal(fenced.rotation.fenceAgeMs, 60 * 60_000);
+  assert.equal(fenced.rotation.fenceCreatedByHost, os.hostname());
+  assert.equal(Object.hasOwn(fenced, "maintenance"), false);
+
+  const stuckAccount = byLabel.get("stuck");
+  assert.equal(stuckAccount.rotation.status, "pending");
+  assert.equal(stuckAccount.rotation.fenceCreatedAt, "2026-07-22T16:00:00.000Z");
+  assert.equal(stuckAccount.rotation.fenceAgeMs, 2 * 60 * 60_000);
+  assert.equal(Object.hasOwn(stuckAccount.rotation, "fenceCreatedByHost"), false);
+  assert.deepEqual(stuckAccount.maintenance, {
+    firstFailedAt: "2026-07-22T15:30:00.000Z",
+    reason: "local_state_conflict",
+    count: 13,
+    blockedReason: "oauth_reauth_required",
+  });
+
+  const plain = byLabel.get("plain");
+  assert.deepEqual(plain.rotation, { status: "clear", source: "redis" });
+  assert.equal(Object.hasOwn(plain, "maintenance"), false);
+
+  const verbose = renderClaudeRedisAccountUsageStatus(result, { verbose: true });
+  assert.match(verbose, new RegExp(`fenced\\s+.*pending 1\\.0h@${os.hostname()}\\s`));
+  assert.match(verbose, /stuck\s+.*pending 2\.0h\s/);
+  assert.doesNotMatch(verbose, /pending 2\.0h@/);
+  assert.match(
+    verbose,
+    /^maintenance stuck reason=local_state_conflict count=13 failing_for=2\.5h blocked=oauth_reauth_required$/m,
+  );
+  assert.doesNotMatch(verbose, /maintenance (fenced|plain)/);
+
+  // The default table is untouched by the new diagnostics.
+  const rendered = renderClaudeRedisAccountUsageStatus(result);
+  assert.doesNotMatch(rendered, /pending|failing_for|maintenance stuck/);
+  assert.match(rendered, /^CLAUDE: \d+ ready · \d+ in use · \d+ AIM fixing · \d+ needs you · \d+ unknown$/m);
 });
 
 test("Claude human status renders the five operator states with frozen precedence", () => {

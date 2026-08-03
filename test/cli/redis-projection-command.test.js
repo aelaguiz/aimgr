@@ -13,7 +13,11 @@ import {
   acquireRedisCredentialLease,
   DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
 } from "../../src/coordination/redis-credential-lease.js";
-import { createRedisClaudeRotationFence } from "../../src/coordination/redis-claude-rotation-fence.js";
+import {
+  buildRedisClaudeRotationFenceProvenance,
+  createRedisClaudeRotationFence,
+  readRedisClaudeRotationFence,
+} from "../../src/coordination/redis-claude-rotation-fence.js";
 import {
   closeRedisRuntime,
   loadRedisRuntime,
@@ -30,6 +34,11 @@ import {
 import { writeClaudeNativeBundleExportFile } from "../../src/credentials/claude-native.js";
 import { handleClaude } from "../../src/cli/commands/claude.js";
 import { maintainRedisClaudeCredential } from "../../src/credentials/claude-maintenance.js";
+import {
+  buildClaudeRecoveryStorageId,
+  buildClaudeTokenLineageFingerprint,
+} from "../../src/targets/claude-cli.js";
+import { writeLocalState } from "../../src/state/local-state.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
@@ -2014,7 +2023,11 @@ test("Claude maintenance marks only a clean exact missing-token result as reauth
   );
 
   const transient = await runCase({ clean: false });
-  assert.deepEqual(transient.result, { outcome: "retryable", reason: "client_failed" });
+  assert.deepEqual(transient.result, {
+    outcome: "retryable",
+    reason: "client_failed",
+    detail: "claude /usage exited with status 2",
+  });
   assert.equal(transient.snapshot.credentials[0].policy.reauth.blockedReason, undefined);
   assert.equal(
     [...transient.client.values.keys()].some((key) => key.includes(":fence:claude-rotation:claude")),
@@ -2298,7 +2311,7 @@ test("failed post-run publication fences other machines until the originating ho
         return { status: 0, signal: null };
       },
     }),
-    /unresolved rotation on another machine/,
+    /recently rotated on another machine \(fence age \d+\.\dh\)/,
   );
   assert.equal(otherHomeLaunches, 0);
   assert.ok(client.values.has(sharedFenceKey));
@@ -2403,4 +2416,553 @@ test("redis-configured claude use is retired in favor of claude run", async () =
     }),
     /`aim claude use` was retired for Redis installs/,
   );
+});
+
+const MAINTENANCE_NOW_MS = Date.parse("2026-08-02T12:00:00.000Z");
+const FOREIGN_RECOVERY_STORAGE_ID = `sha256:${"f".repeat(64)}`;
+const LANE_INSTALLATION_ID = "3f6b2a90-1234-4cde-8abc-0123456789ab";
+
+async function setupClaudeMaintenanceLane({
+  label = "claude",
+  credential = buildAnthropicClaudeCredential({
+    access: "CLAUDE_ACCESS",
+    refresh: "CLAUDE_REFRESH",
+    expiresAtMs: MAINTENANCE_NOW_MS + 4 * 60_000,
+  }),
+  reauthPolicy = { mode: "native-claude" },
+} = {}) {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label,
+      credential,
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: {
+        expect: { email: "boss@example.com" },
+        reauth: reauthPolicy,
+        pool: { enabled: true },
+      },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  return {
+    home,
+    client,
+    store,
+    label,
+    credential,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+  };
+}
+
+function buildMaintenanceContext(lane, overrides = {}) {
+  return {
+    homeDir: lane.home,
+    env: {},
+    connectRedisStoreImpl: lane.connectRedisStoreImpl,
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    nowMs: MAINTENANCE_NOW_MS,
+    runClaudeCliNoninteractiveImpl: () => ({ status: 0, signal: null, timedOut: false }),
+    ...overrides,
+  };
+}
+
+function maintenanceConfigDir(home, label = "claude") {
+  return path.join(resolveAimgrClaudeLabelHomeDir({ homeDir: home, label }), ".claude");
+}
+
+function claudeFenceKey(client, label = "claude") {
+  return [...client.values.keys()].find((key) => key.includes(`:fence:claude-rotation:${label}`)) ?? null;
+}
+
+async function createMaintenanceLaneFence(lane, {
+  credential = lane.credential,
+  recoveryStorageId = FOREIGN_RECOVERY_STORAGE_ID,
+  observedAt,
+} = {}) {
+  return createRedisClaudeRotationFence(lane.store, {
+    label: lane.label,
+    recoveryStorageId,
+    baseTokenLineageFingerprint: buildClaudeTokenLineageFingerprint(credential),
+    baseCredentialVersion: 1,
+    observedAt,
+  });
+}
+
+function writeManagedClaudeBundle(configDir, {
+  accessToken,
+  refreshToken,
+  expiresAtMs,
+}) {
+  writeJson(path.join(configDir, ".credentials.json"), {
+    claudeAiOauth: {
+      accessToken,
+      refreshToken,
+      expiresAt: expiresAtMs,
+      subscriptionType: "max",
+      rateLimitTier: "max_20x",
+      scopes: ["user:profile", "user:inference", "user:sessions:claude_code"],
+    },
+  });
+  writeJson(path.join(configDir, ".claude.json"), {
+    oauthAccount: {
+      accountUuid: "acct_boss",
+      displayName: "Boss",
+      emailAddress: "boss@example.com",
+      organizationName: "Boss Org",
+      organizationUuid: "org_boss",
+    },
+    hasCompletedOnboarding: true,
+    hasAvailableSubscription: true,
+  });
+}
+
+async function runMaintenancePass(lane, context, label = "claude") {
+  const runtime = await loadRedisRuntime({
+    homeDir: lane.home,
+    connectRedisStoreImpl: lane.connectRedisStoreImpl,
+  });
+  try {
+    return await maintainRedisClaudeCredential(context, { runtime, label });
+  } finally {
+    await closeRedisRuntime(runtime);
+  }
+}
+
+test("Claude maintenance defers to a young foreign rotation fence without probing or escalating", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  const fence = await createMaintenanceLaneFence(lane, {
+    observedAt: new Date(MAINTENANCE_NOW_MS - 60 * 60_000).toISOString(),
+  });
+  let launches = 0;
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => {
+      launches += 1;
+      return { status: 0, signal: null, timedOut: false };
+    },
+  });
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "skipped",
+    reason: "fence_owned_elsewhere",
+  });
+  assert.equal(launches, 0, "a deferred fence must not reach the /usage probe");
+  assert.deepEqual(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), fence);
+  const snapshot = await readSnapshot(lane.store);
+  assert.equal(snapshot.credentials[0].version, 1, "a deferred skip writes no policy fact");
+  assert.equal(snapshot.credentials[0].policy.reauth.maintenance, undefined);
+});
+
+test("Claude maintenance clears an expired foreign fence and repairs empty local storage from Redis", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  await createMaintenanceLaneFence(lane, {
+    observedAt: new Date(MAINTENANCE_NOW_MS - 25 * 60 * 60_000).toISOString(),
+  });
+  let launches = 0;
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => {
+      launches += 1;
+      return { status: 0, signal: null, timedOut: false };
+    },
+  });
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "unchanged",
+    reason: "tokens_unchanged",
+  });
+  assert.equal(launches, 1);
+  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
+  const projected = JSON.parse(fs.readFileSync(
+    resolveClaudeAuthFilePath(maintenanceConfigDir(lane.home)),
+    "utf8",
+  ));
+  assert.equal(projected.claudeAiOauth.refreshToken, "CLAUDE_REFRESH");
+});
+
+test("Claude maintenance clears an expired foreign fence when local tokens already match Redis", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  await createMaintenanceLaneFence(lane, {
+    observedAt: new Date(MAINTENANCE_NOW_MS - 25 * 60 * 60_000).toISOString(),
+  });
+  writeManagedClaudeBundle(maintenanceConfigDir(lane.home), {
+    accessToken: "CLAUDE_ACCESS",
+    refreshToken: "CLAUDE_REFRESH",
+    expiresAtMs: MAINTENANCE_NOW_MS + 4 * 60_000,
+  });
+  let launches = 0;
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => {
+      launches += 1;
+      return { status: 0, signal: null, timedOut: false };
+    },
+  });
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "unchanged",
+    reason: "tokens_unchanged",
+  });
+  assert.equal(launches, 1);
+  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
+});
+
+test("Claude maintenance retains its own unchanged-tokens fence through the probe and clears it after", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  writeLocalState({ homeDir: lane.home, localState: { installationId: LANE_INSTALLATION_ID } });
+  const configDir = maintenanceConfigDir(lane.home);
+  const fence = await createMaintenanceLaneFence(lane, {
+    recoveryStorageId: buildClaudeRecoveryStorageId({
+      installationId: LANE_INSTALLATION_ID,
+      configDir,
+    }),
+    observedAt: new Date(MAINTENANCE_NOW_MS - 60_000).toISOString(),
+  });
+  writeManagedClaudeBundle(configDir, {
+    accessToken: "CLAUDE_ACCESS",
+    refreshToken: "CLAUDE_REFRESH",
+    expiresAtMs: MAINTENANCE_NOW_MS + 4 * 60_000,
+  });
+  let launches = 0;
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => {
+      launches += 1;
+      const raw = lane.client.values.get(claudeFenceKey(lane.client));
+      assert.ok(raw, "the exact retained fence must guard the probe");
+      assert.equal(JSON.parse(raw).fenceId, fence.fenceId);
+      return { status: 0, signal: null, timedOut: false };
+    },
+  });
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "unchanged",
+    reason: "tokens_unchanged",
+  });
+  assert.equal(launches, 1);
+  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
+});
+
+test("Claude maintenance publishes a proven local rotation candidate, clears its fence, and stays due-gated", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  writeLocalState({ homeDir: lane.home, localState: { installationId: LANE_INSTALLATION_ID } });
+  const configDir = maintenanceConfigDir(lane.home);
+  await createMaintenanceLaneFence(lane, {
+    recoveryStorageId: buildClaudeRecoveryStorageId({
+      installationId: LANE_INSTALLATION_ID,
+      configDir,
+    }),
+    observedAt: new Date(MAINTENANCE_NOW_MS - 60_000).toISOString(),
+  });
+  writeManagedClaudeBundle(configDir, {
+    accessToken: "CLAUDE_ACCESS_ROTATED",
+    refreshToken: "CLAUDE_REFRESH_ROTATED",
+    expiresAtMs: MAINTENANCE_NOW_MS + 2 * 60 * 60_000,
+  });
+  let launches = 0;
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => {
+      launches += 1;
+      return { status: 0, signal: null, timedOut: false };
+    },
+  });
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "skipped",
+    reason: "not_due",
+  });
+  assert.equal(launches, 0, "the recovered credential is fresh, so the probe stays due-gated");
+  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
+  const snapshot = await readSnapshot(lane.store);
+  assertCanonicalAnthropicCredential(snapshot.credentials[0], "CLAUDE_REFRESH_ROTATED");
+  assert.equal(snapshot.credentials[0].version, 2);
+});
+
+test("Claude maintenance clears a fence whose rotation was already published to Redis", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  const fence = await createMaintenanceLaneFence(lane, {
+    observedAt: new Date(MAINTENANCE_NOW_MS - 60_000).toISOString(),
+  });
+  const rotated = buildAnthropicClaudeCredential({
+    access: "CLAUDE_ACCESS_ROTATED",
+    refresh: "CLAUDE_REFRESH_ROTATED",
+    expiresAtMs: MAINTENANCE_NOW_MS + 4.5 * 60_000,
+  });
+  const published = await publishCredential(lane.store, {
+    expectedVersion: 1,
+    updatedBy: "test",
+    observedAt: new Date(MAINTENANCE_NOW_MS - 30_000).toISOString(),
+    credentialRecord: {
+      provider: "anthropic",
+      label: "claude",
+      credential: rotated,
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: {
+        expect: { email: "boss@example.com" },
+        reauth: { mode: "native-claude" },
+        pool: { enabled: true },
+      },
+      provenance: buildRedisClaudeRotationFenceProvenance({}, fence),
+    },
+  });
+  assert.equal(published.ok, true);
+  let launches = 0;
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => {
+      launches += 1;
+      return { status: 0, signal: null, timedOut: false };
+    },
+  });
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "unchanged",
+    reason: "tokens_unchanged",
+  });
+  assert.equal(launches, 1);
+  assert.equal(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), null);
+  const snapshot = await readSnapshot(lane.store);
+  assertCanonicalAnthropicCredential(snapshot.credentials[0], "CLAUDE_REFRESH_ROTATED");
+});
+
+test("Claude maintenance keeps a provenance-conflicted fence and reports the sub-reason", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  const fence = await createMaintenanceLaneFence(lane, {
+    observedAt: new Date(MAINTENANCE_NOW_MS - 25 * 60 * 60_000).toISOString(),
+  });
+  const arbitrary = buildAnthropicClaudeCredential({
+    access: "ARBITRARY_ACCESS",
+    refresh: "ARBITRARY_REFRESH",
+    expiresAtMs: MAINTENANCE_NOW_MS + 8 * 60_000,
+  });
+  const published = await publishCredential(lane.store, {
+    expectedVersion: 1,
+    updatedBy: "test",
+    observedAt: new Date(MAINTENANCE_NOW_MS - 30_000).toISOString(),
+    credentialRecord: {
+      provider: "anthropic",
+      label: "claude",
+      credential: arbitrary,
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: {
+        expect: { email: "boss@example.com" },
+        reauth: { mode: "native-claude" },
+        pool: { enabled: true },
+      },
+    },
+  });
+  assert.equal(published.ok, true);
+  let launches = 0;
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => {
+      launches += 1;
+      return { status: 0, signal: null, timedOut: false };
+    },
+  });
+
+  const result = await runMaintenancePass(lane, context);
+  assert.equal(result.outcome, "retryable");
+  assert.equal(result.reason, "local_state_conflict");
+  assert.match(result.detail, /not a proven successor to its shared rotation fence/);
+  assert.equal(launches, 0);
+  assert.deepEqual(await readRedisClaudeRotationFence(lane.store, { label: "claude" }), fence);
+});
+
+test("Claude maintenance escalates a persistent identical failure to reauth_required past the window", async () => {
+  const lane = await setupClaudeMaintenanceLane({
+    reauthPolicy: {
+      mode: "native-claude",
+      maintenance: {
+        firstFailedAt: new Date(MAINTENANCE_NOW_MS - 3 * 60 * 60_000).toISOString(),
+        reason: "client_failed",
+        count: 12,
+      },
+    },
+  });
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => ({ status: 2, signal: null, timedOut: false }),
+  });
+
+  const result = await runMaintenancePass(lane, context);
+  assert.equal(result.outcome, "reauth_required");
+  assert.equal(result.reason, "escalated_persistent_failure");
+  assert.match(result.detail, /client_failed/);
+  let snapshot = await readSnapshot(lane.store);
+  const reauth = snapshot.credentials[0].policy.reauth;
+  assert.equal(reauth.blockedReason, "oauth_reauth_required");
+  assert.equal(reauth.maintenance.reason, "client_failed");
+  assert.equal(reauth.maintenance.count, 13);
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "skipped",
+    reason: "reauth_already_required",
+  });
+  snapshot = await readSnapshot(lane.store);
+  assert.equal(snapshot.credentials[0].policy.reauth.blockedReason, "oauth_reauth_required");
+});
+
+test("Claude maintenance only advances the failure streak inside the escalation window", async () => {
+  const firstFailedAt = new Date(MAINTENANCE_NOW_MS - 30 * 60_000).toISOString();
+  const lane = await setupClaudeMaintenanceLane({
+    reauthPolicy: {
+      mode: "native-claude",
+      maintenance: { firstFailedAt, reason: "client_failed", count: 1 },
+    },
+  });
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => ({ status: 2, signal: null, timedOut: false }),
+  });
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "retryable",
+    reason: "client_failed",
+    detail: "claude /usage exited with status 2",
+  });
+  const snapshot = await readSnapshot(lane.store);
+  const reauth = snapshot.credentials[0].policy.reauth;
+  assert.equal(reauth.blockedReason, undefined);
+  assert.deepEqual(reauth.maintenance, { firstFailedAt, reason: "client_failed", count: 2 });
+});
+
+test("Claude maintenance resets the failure streak when the failure reason changes", async () => {
+  const lane = await setupClaudeMaintenanceLane({
+    reauthPolicy: {
+      mode: "native-claude",
+      maintenance: {
+        firstFailedAt: new Date(MAINTENANCE_NOW_MS - 3 * 60 * 60_000).toISOString(),
+        reason: "local_state_conflict",
+        count: 40,
+      },
+    },
+  });
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => ({ status: 2, signal: null, timedOut: false }),
+  });
+
+  const result = await runMaintenancePass(lane, context);
+  assert.equal(result.outcome, "retryable");
+  assert.equal(result.reason, "client_failed");
+  const snapshot = await readSnapshot(lane.store);
+  const reauth = snapshot.credentials[0].policy.reauth;
+  assert.equal(reauth.blockedReason, undefined);
+  assert.deepEqual(reauth.maintenance, {
+    firstFailedAt: new Date(MAINTENANCE_NOW_MS).toISOString(),
+    reason: "client_failed",
+    count: 1,
+  });
+});
+
+test("Claude maintenance clears the failure streak on a successful refresh", async () => {
+  const lane = await setupClaudeMaintenanceLane({
+    reauthPolicy: {
+      mode: "native-claude",
+      maintenance: {
+        firstFailedAt: new Date(MAINTENANCE_NOW_MS - 30 * 60_000).toISOString(),
+        reason: "client_failed",
+        count: 7,
+      },
+    },
+  });
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: ({ configDir }) => {
+      rotateProjectedClaudeCredential(configDir, {
+        accessToken: "CLAUDE_ACCESS_ROTATED",
+        refreshToken: "CLAUDE_REFRESH_ROTATED",
+        expiresAt: MAINTENANCE_NOW_MS + 2 * 60 * 60_000,
+      });
+      return { status: 0, signal: null, timedOut: false };
+    },
+  });
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "refreshed",
+    reason: "credential_rotated",
+  });
+  const snapshot = await readSnapshot(lane.store);
+  const reauth = snapshot.credentials[0].policy.reauth;
+  assert.equal(reauth.blockedReason, undefined);
+  assert.equal(reauth.maintenance, undefined);
+  assertCanonicalAnthropicCredential(snapshot.credentials[0], "CLAUDE_REFRESH_ROTATED");
+});
+
+test("Claude maintenance never escalates an infrastructure-class failure", async () => {
+  const streak = {
+    firstFailedAt: new Date(MAINTENANCE_NOW_MS - 3 * 60 * 60_000).toISOString(),
+    reason: "client_failed",
+    count: 50,
+  };
+  const lane = await setupClaudeMaintenanceLane({
+    reauthPolicy: { mode: "native-claude", maintenance: streak },
+  });
+  const context = buildMaintenanceContext(lane, {
+    runClaudeCliNoninteractiveImpl: () => ({ status: null, signal: null, timedOut: true }),
+  });
+
+  assert.deepEqual(await runMaintenancePass(lane, context), {
+    outcome: "retryable",
+    reason: "client_timeout",
+    detail: "claude /usage timed out after 30000ms",
+  });
+  const snapshot = await readSnapshot(lane.store);
+  const reauth = snapshot.credentials[0].policy.reauth;
+  assert.equal(reauth.blockedReason, undefined);
+  assert.deepEqual(reauth.maintenance, streak, "an infra failure must not touch the streak");
+});
+
+test("redis-configured claude import-native clears the escalation marker and failure streak", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "claude",
+      policy: {
+        expect: { email: "boss@example.com" },
+        reauth: {
+          blockedReason: "oauth_reauth_required",
+          maintenance: {
+            firstFailedAt: "2026-08-02T08:00:00.000Z",
+            reason: "local_state_conflict",
+            count: 200,
+          },
+        },
+        pool: { enabled: true },
+      },
+    }],
+  });
+  const bundleFile = path.join(home, "bundle.json");
+  writeClaudeNativeBundleExportFile({
+    filePath: bundleFile,
+    nativeClaudeBundle: buildAnthropicClaudeCredential().nativeClaudeBundle,
+  });
+
+  await runCli(["claude", "import-native", "claude", "--in", bundleFile, "--home", home], {
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+  });
+  const snapshot = await readSnapshot(store);
+  const reauth = snapshot.credentials.find((entry) => entry.label === "claude").policy.reauth;
+  assert.equal(reauth.blockedReason, undefined);
+  assert.equal(reauth.maintenance, undefined);
+  assert.equal(snapshot.credentials[0].health.status, "ready");
 });
