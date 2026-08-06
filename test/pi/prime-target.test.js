@@ -145,6 +145,53 @@ test("Pi use automatically migrates an exact recognized AIM legacy projection wi
 });
 
 
+test("Prime use codex and claude shorthands choose one provider and turn the other off", async () => {
+  const usage = {
+    "openai-codex": {
+      pro3: {
+        ok: true,
+        windows: [
+          { kind: "primary", usedPercent: 10 },
+          { kind: "secondary", usedPercent: 10 },
+        ],
+      },
+    },
+    anthropic: {
+      claude: {
+        ok: true,
+        windows: [
+          { label: "5h", kind: "session", usedPercent: 10 },
+          { label: "Fable", kind: "weekly_scoped", usedPercent: 10 },
+        ],
+      },
+    },
+  };
+
+  for (const provider of ["codex", "claude"]) {
+    const home = mkTempHome();
+    const statePath = path.join(home, ".aimgr", "secrets.json");
+    const agentDir = path.join(home, "prime-agent");
+    writeJson(statePath, fixtureState());
+    const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+    const output = JSON.parse(await runCli([
+      "prime", "use", provider, "--home", home,
+    ], {
+      env: { PRIME_AGENT_CODING_AGENT_DIR: agentDir },
+      connectRedisStoreImpl: redis.connectRedisStoreImpl,
+      probeUsageSnapshotsByProviderImpl: async () => usage,
+    }));
+    assert.equal(output.ok, true);
+    const auth = JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json")));
+    if (provider === "codex") {
+      assert.equal(auth["openai-codex"].binding, "pro3");
+      assert.equal(auth.anthropic, undefined);
+    } else {
+      assert.equal(auth.anthropic.binding, "claude");
+      assert.equal(auth["openai-codex"], undefined);
+    }
+  }
+});
+
 test("Prime auto selection never inherits Pi's current-label hysteresis", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");

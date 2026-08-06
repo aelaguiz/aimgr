@@ -43,6 +43,8 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim pi use            # activate the next-best pooled openai-codex label for local Pi CLI (external; new sessions)",
     "  aim pi use [--codex <auto|label|off>] [--claude <fable|opus|label|off>] [--replace-native-auth]",
     "  aim pi status | aim pi uninstall [--provider <openai-codex|anthropic>]",
+    "  aim prime use codex   # use the next-best Codex account and turn Claude off",
+    "  aim prime use claude  # use the least-used Claude account and turn Codex off",
     "  aim prime use [--codex <auto|label|off>] [--claude <fable|opus|label|off>] [--replace-native-auth]",
     "  aim prime status | aim prime uninstall [--provider <openai-codex|anthropic>]",
     "  aim credential-helper # machine-only bounded JSON stdin/stdout protocol; never invoke interactively",

@@ -146,10 +146,20 @@ async function resolveUseSelections({
 }
 
 async function handleUse(context, targetId) {
-  const { homeDir, env, stdout, setExitCode, connectRedisStoreImpl, opts } = context;
-  if (context.positional.length > 2) {
-    throw new Error(`\`aim ${targetId} use\` does not accept a label; use --codex or --claude.`);
+  const { homeDir, env, stdout, setExitCode, connectRedisStoreImpl } = context;
+  const shorthand = String(context.positional[2] ?? "").trim().toLowerCase();
+  if (context.positional.length > 3 || (shorthand && shorthand !== "codex" && shorthand !== "claude")) {
+    throw new Error(`Usage: aim ${targetId} use [codex|claude]`);
   }
+  if (shorthand && (context.opts.codex !== undefined || context.opts.claude !== undefined)) {
+    throw new Error(`Do not combine \`aim ${targetId} use ${shorthand}\` with --codex or --claude.`);
+  }
+  const opts = shorthand === "codex"
+    ? { ...context.opts, codex: "auto", claude: "off" }
+    : shorthand === "claude"
+      ? { ...context.opts, codex: "off", claude: "fable" }
+      : context.opts;
+  const effectiveContext = opts === context.opts ? context : { ...context, opts };
   if (opts.provider !== undefined) {
     throw new Error(`\`aim ${targetId} use\` does not accept --provider.`);
   }
@@ -163,7 +173,7 @@ async function handleUse(context, targetId) {
     });
     adapter.targetState.agentDir = adapter.agentDir;
     const resolved = await resolveUseSelections({
-      context,
+      context: effectiveContext,
       runtime,
       targetId,
       targetState: adapter.targetState,
