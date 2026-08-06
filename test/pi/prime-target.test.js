@@ -192,6 +192,65 @@ test("Prime use codex and claude shorthands choose one provider and turn the oth
   }
 });
 
+test("Prime run selects an account and launches the integrated bundle in the current directory", async () => {
+  const usage = {
+    "openai-codex": {
+      pro3: {
+        ok: true,
+        windows: [
+          { kind: "primary", usedPercent: 10 },
+          { kind: "secondary", usedPercent: 10 },
+        ],
+      },
+    },
+    anthropic: {
+      claude: {
+        ok: true,
+        windows: [
+          { label: "5h", kind: "session", usedPercent: 10 },
+          { label: "Fable", kind: "weekly_scoped", usedPercent: 10 },
+        ],
+      },
+    },
+  };
+
+  for (const run of [
+    { flavor: "codex", provider: "openai-codex", model: "gpt-5.6-sol", binding: "pro3" },
+    { flavor: "claude", provider: "anthropic", model: "claude-fable-5", binding: "claude" },
+  ]) {
+    const home = mkTempHome();
+    const statePath = path.join(home, ".aimgr", "secrets.json");
+    const agentDir = path.join(home, "prime-agent");
+    const launcher = path.join(home, "workspace", "prime-agent", "prime-agent.sh");
+    writeJson(statePath, fixtureState());
+    writeJson(path.join(agentDir, "auth.json"), {
+      [run.provider]: { type: "api_key", key: "NATIVE_BEFORE_EXPLICIT_RUN" },
+    });
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.writeFileSync(launcher, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+    let launched = null;
+    const output = await runCli([
+      "prime", "run", run.flavor, "--home", home,
+    ], {
+      cwd: "/tmp/prime-project",
+      env: { PRIME_AGENT_CODING_AGENT_DIR: agentDir },
+      connectRedisStoreImpl: redis.connectRedisStoreImpl,
+      probeUsageSnapshotsByProviderImpl: async () => usage,
+      launchPrimeAgentImpl: (options) => {
+        launched = options;
+        return { status: 0 };
+      },
+    });
+
+    assert.match(output, new RegExp(`AIM Prime: ${run.provider} · ${run.binding}`));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json")))[run.provider].binding, run.binding);
+    assert.equal(launched.command, fs.realpathSync(launcher));
+    assert.deepEqual(launched.args, ["--dist", "--provider", run.provider, "--model", run.model]);
+    assert.equal(launched.cwd, "/tmp/prime-project");
+  }
+});
+
 test("Prime auto selection never inherits Pi's current-label hysteresis", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");

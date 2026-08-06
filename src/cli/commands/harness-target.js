@@ -1,3 +1,6 @@
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
@@ -145,11 +148,16 @@ async function resolveUseSelections({
   return { blocked: false, selections };
 }
 
-async function handleUse(context, targetId) {
+async function handleUse(context, targetId, { emitReceipt = true } = {}) {
   const { homeDir, env, stdout, setExitCode, connectRedisStoreImpl } = context;
-  const shorthand = String(context.positional[2] ?? "").trim().toLowerCase();
+  if (targetId !== "prime" && context.positional.length > 2) {
+    throw new Error(`\`aim ${targetId} use\` does not accept a label; use --codex or --claude.`);
+  }
+  const shorthand = targetId === "prime"
+    ? String(context.positional[2] ?? "").trim().toLowerCase()
+    : "";
   if (context.positional.length > 3 || (shorthand && shorthand !== "codex" && shorthand !== "claude")) {
-    throw new Error(`Usage: aim ${targetId} use [codex|claude]`);
+    throw new Error("Usage: aim prime use codex | aim prime use claude");
   }
   if (shorthand && (context.opts.codex !== undefined || context.opts.claude !== undefined)) {
     throw new Error(`Do not combine \`aim ${targetId} use ${shorthand}\` with --codex or --claude.`);
@@ -191,9 +199,9 @@ async function handleUse(context, targetId) {
       };
       adapter.targetState.lastSelectionReceipt = receipt;
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-      stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: false, receipt }), null, 2)}\n`);
+      if (emitReceipt) stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: false, receipt }), null, 2)}\n`);
       setExitCode(1);
-      return;
+      return { ok: false, receipt };
     }
 
     const changes = [];
@@ -272,9 +280,76 @@ async function handleUse(context, targetId) {
     };
     adapter.targetState.lastSelectionReceipt = receipt;
     writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-    stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, receipt }), null, 2)}\n`);
+    if (emitReceipt) stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, receipt }), null, 2)}\n`);
+    return { ok: true, receipt };
   } finally {
     await closeRedisRuntime(runtime);
+  }
+}
+
+function resolvePrimeLauncher({ homeDir, fsImpl = fs } = {}) {
+  const launcher = path.join(homeDir, "workspace", "prime-agent", "prime-agent.sh");
+  try {
+    const resolved = fsImpl.realpathSync(launcher);
+    if (!fsImpl.statSync(resolved).isFile()) throw new Error("not a file");
+    fsImpl.accessSync(resolved, fs.constants.X_OK);
+    return resolved;
+  } catch {
+    throw new Error(`Prime Agent launcher is unavailable at ${launcher}.`);
+  }
+}
+
+function launchPrimeAgent({ command, args, cwd, env, spawnImpl = spawnSync } = {}) {
+  return spawnImpl(command, args, {
+    cwd,
+    env,
+    shell: false,
+    stdio: "inherit",
+  });
+}
+
+async function handleRun(context, targetId) {
+  if (targetId !== "prime") throw new Error("Only Prime supports the run command.");
+  if (context.positional.length !== 3) {
+    throw new Error("Usage: aim prime run codex | aim prime run claude");
+  }
+  if (context.opts.afterDoubleDash?.length) {
+    throw new Error("`aim prime run` does not accept additional Prime arguments.");
+  }
+  const flavor = String(context.positional[2] ?? "").trim().toLowerCase();
+  const profile = flavor === "codex"
+    ? { provider: OPENAI_CODEX_PROVIDER, model: "gpt-5.6-sol" }
+    : flavor === "claude"
+      ? { provider: ANTHROPIC_PROVIDER, model: "claude-fable-5" }
+      : null;
+  if (!profile) throw new Error("Usage: aim prime run codex | aim prime run claude");
+
+  const selected = await handleUse({
+    ...context,
+    opts: { ...context.opts, replaceNativeAuth: true },
+    positional: [targetId, "use", flavor],
+  }, targetId, { emitReceipt: false });
+  if (!selected?.ok) {
+    context.stdout.write(`AIM Prime could not select an account: ${selected?.receipt?.reason ?? "unknown"}\n`);
+    return;
+  }
+  const providerReceipt = selected.receipt.providers.find(
+    (provider) => provider.provider === profile.provider && provider.binding,
+  );
+  if (!providerReceipt) throw new Error(`AIM did not select a ${flavor} account.`);
+
+  context.stdout.write(`AIM Prime: ${profile.provider} · ${providerReceipt.binding}\n`);
+  const resolvePrimeLauncherImpl = context.resolvePrimeLauncherImpl ?? resolvePrimeLauncher;
+  const launchPrimeAgentImpl = context.launchPrimeAgentImpl ?? launchPrimeAgent;
+  const result = launchPrimeAgentImpl({
+    command: resolvePrimeLauncherImpl({ homeDir: context.homeDir }),
+    args: ["--dist", "--provider", profile.provider, "--model", profile.model],
+    cwd: context.cwd ?? process.cwd(),
+    env: context.env,
+  });
+  if (result?.error) throw new Error("Could not start the local Prime Agent launcher.");
+  if (result?.status !== 0) {
+    context.setExitCode(Number.isInteger(result?.status) ? result.status : 1);
   }
 }
 
@@ -383,11 +458,13 @@ async function handleTargetStatus(context, targetId) {
 
 export async function handleHarnessTarget(context, targetId) {
   const subcmd = String(context.positional[1] ?? "").trim().toLowerCase();
+  const supported = targetId === "prime" ? "use, run, status, uninstall" : "use, status, uninstall";
   if (!subcmd) {
-    throw new Error(`Missing ${targetId} subcommand. Usage: aim ${targetId} use | status | uninstall`);
+    throw new Error(`Missing ${targetId} subcommand. Supported: ${supported}.`);
   }
   if (subcmd === "use") return handleUse(context, targetId);
+  if (subcmd === "run" && targetId === "prime") return handleRun(context, targetId);
   if (subcmd === "status") return handleTargetStatus(context, targetId);
   if (subcmd === "uninstall") return handleUninstall(context, targetId);
-  throw new Error(`Unsupported ${targetId} subcommand: ${subcmd} (supported: use, status, uninstall).`);
+  throw new Error(`Unsupported ${targetId} subcommand: ${subcmd} (supported: ${supported}).`);
 }
