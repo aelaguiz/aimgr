@@ -6,7 +6,7 @@ import {
   renewOrReacquireRedisCredentialLease,
 } from "../../coordination/redis-credential-lease.js";
 import { buildCoordinationView } from "../../coordination/snapshot.js";
-import { readSnapshot } from "../../coordination/redis-store.js";
+import { readSnapshot, REDIS_CONNECTION_POLICY_LEASED } from "../../coordination/redis-store.js";
 import { publishMaintainedCredential } from "../../coordination/login-publish.js";
 import { closeRedisRuntime, isRedisConfigured, loadRedisRuntime, publishRedisCredentialPolicyFromState, refreshRedisRuntimeSnapshot, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { persistAnthropicNativeBundleForLabel } from "../../credentials/claude-native.js";
@@ -314,10 +314,16 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
   } = context;
   if (!isRedisConfigured({ homeDir })) return null;
 
+  // Login holds a credential lease across an interactive browser round-trip, so
+  // it needs the leased connection policy. The one-shot policy sets
+  // socketTimeout with reconnectStrategy:false, which closes the socket after a
+  // few seconds of idle and never reconnects — the lease renewal then throws
+  // "Redis credential lease recovery failed" and the grant is never published.
   const runtime = await loadRedisRuntime({
     homeDir,
     connectRedisStoreImpl: context.connectRedisStoreImpl,
     now: new Date(nowMs),
+    connectionPolicy: REDIS_CONNECTION_POLICY_LEASED,
   });
   try {
     const { store, snapshot, localState } = runtime;
