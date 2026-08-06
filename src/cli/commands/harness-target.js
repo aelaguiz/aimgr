@@ -115,6 +115,7 @@ async function resolveUseSelections({
           homeDir: context.homeDir,
           usageByProvider,
           currentLabel,
+          avoidCurrentLabel: context.avoidCurrentSelection === true,
         });
         if (!selected.selection) {
           return { blocked: true, selections: [], reason: "no_eligible_account" };
@@ -328,6 +329,7 @@ async function handleRun(context, targetId) {
     ...context,
     opts: { ...context.opts, replaceNativeAuth: true },
     positional: [targetId, "use", flavor],
+    avoidCurrentSelection: true,
   }, targetId, { emitReceipt: false });
   if (!selected?.ok) {
     context.stdout.write(`AIM Prime could not select an account: ${selected?.receipt?.reason ?? "unknown"}\n`);

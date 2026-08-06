@@ -70,6 +70,7 @@ export async function selectNextBestPiCodexLabel({
   homeDir,
   usageByProvider,
   currentLabel: currentLabelOverride,
+  avoidCurrentLabel = false,
   observedAt = new Date().toISOString(),
 }) {
   ensureStateShape(state);
@@ -107,7 +108,12 @@ export async function selectNextBestPiCodexLabel({
     lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
     now: Date.parse(observedAt),
   });
-  const selection = pickNextBestLocalCliPoolLabel({ rankedCandidates });
+  const selection = pickNextBestLocalCliPoolLabel({
+    rankedCandidates,
+    avoidLabel: avoidCurrentLabel ? currentLabel : undefined,
+  }) ?? (avoidCurrentLabel
+    ? pickNextBestLocalCliPoolLabel({ rankedCandidates })
+    : null);
   if (!selection) throw new Error("Failed to select a next-best Pi pool label.");
   return Object.freeze({ status: "selected", selection, poolStatus });
 }

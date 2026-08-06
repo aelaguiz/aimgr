@@ -251,6 +251,61 @@ test("Prime run selects an account and launches the integrated bundle in the cur
   }
 });
 
+test("Prime run codex rotates away from the current account when another is eligible", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, "prime-agent");
+  const launcher = path.join(home, "workspace", "prime-agent", "prime-agent.sh");
+  const state = fixtureState();
+  const betaAccess = makeFakeJwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_beta" },
+  });
+  state.accounts.beta = { provider: "openai-codex", reauth: {}, pool: { enabled: true } };
+  state.credentials["openai-codex"].beta = {
+    access: betaAccess,
+    refresh: "BETA_REFRESH",
+    idToken: betaAccess,
+    expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    accountId: "acct_beta",
+  };
+  writeJson(statePath, state);
+  fs.mkdirSync(path.dirname(launcher), { recursive: true });
+  fs.writeFileSync(launcher, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  const usage = {
+    "openai-codex": {
+      pro3: {
+        ok: true,
+        windows: [
+          { kind: "primary", usedPercent: 10 },
+          { kind: "secondary", usedPercent: 10 },
+        ],
+      },
+      beta: {
+        ok: true,
+        windows: [
+          { kind: "primary", usedPercent: 10 },
+          { kind: "secondary", usedPercent: 10 },
+        ],
+      },
+    },
+  };
+
+  const selected = [];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await runCli(["prime", "run", "codex", "--home", home], {
+      env: { PRIME_AGENT_CODING_AGENT_DIR: agentDir },
+      connectRedisStoreImpl: redis.connectRedisStoreImpl,
+      probeUsageSnapshotsByProviderImpl: async () => usage,
+      launchPrimeAgentImpl: () => ({ status: 0 }),
+    });
+    selected.push(JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json")))["openai-codex"].binding);
+  }
+
+  assert.equal(new Set(selected).size, 2);
+  assert.deepEqual(new Set(selected), new Set(["pro3", "beta"]));
+});
+
 test("Prime auto selection never inherits Pi's current-label hysteresis", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
