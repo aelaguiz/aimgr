@@ -330,9 +330,9 @@ export async function installHarnessProvider({
       let source = null;
       if (ownedCurrent) {
         source = "owned_descriptor";
-      } else if (isAimHarnessExternalDescriptor(current) && isDeepStrictEqual(current, descriptor)) {
-        // The target switch can land before the final local receipt. Re-adopt
-        // only the exact descriptor requested by this operation.
+      } else if (isAimHarnessExternalDescriptor(current)) {
+        // The descriptor identifies AIM ownership. Local state is a recovery
+        // aid, not a second authority that can block an explicit AIM switch.
         source = "recovered_descriptor";
         recoveredInstallReceipt = true;
         const orphanBackupPath = backupPathFor({ homeDir, targetId, provider });
@@ -349,9 +349,6 @@ export async function installHarnessProvider({
       } else {
         if (lastInstalled) {
           throw new Error(`Refusing to replace ${provider}: current auth conflicts with AIM's last installed descriptor.`);
-        }
-        if (isAimHarnessExternalDescriptor(current)) {
-          throw new Error(`Refusing to replace an AIM descriptor without its local ownership receipt for ${provider}.`);
         }
         if (!replaceNativeAuth) {
           throw new Error(`Refusing to replace native ${provider} auth without --replace-native-auth.`);
@@ -414,7 +411,9 @@ export async function installHarnessProvider({
       } else if (pending.source === "empty") {
         if (current) throw new Error(`Refusing ${provider} install recovery after native auth appeared.`);
       } else if (pending.source === "recovered_descriptor") {
-        throw new Error(`Refusing ${provider} descriptor recovery after target auth changed.`);
+        if (!isAimHarnessExternalDescriptor(current)) {
+          throw new Error(`Refusing ${provider} descriptor recovery after target auth changed.`);
+        }
       } else {
         throw new Error(`Invalid pending ${provider} install transition.`);
       }

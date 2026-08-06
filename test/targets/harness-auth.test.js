@@ -82,6 +82,23 @@ test("native replacement creates one private backup, switches without overwritin
   assert.deepEqual(finalAuth.unrelated, { type: "api_key", key: "UNCHANGED" });
 });
 
+test("an existing AIM descriptor switches labels without a separate ownership receipt", async () => {
+  const fixture = targetFixture("prime");
+  writeJson(fixture.authPath, { "openai-codex": descriptor("alpha") });
+
+  const installed = await installHarnessProvider({
+    ...fixture,
+    provider: "openai-codex",
+    descriptor: descriptor("beta", "B"),
+  });
+
+  assert.equal(installed.wrote, true);
+  assert.equal(installed.recoveredInstallReceipt, true);
+  assert.equal(installed.backupPath, null);
+  assert.equal(JSON.parse(fs.readFileSync(fixture.authPath))["openai-codex"].binding, "beta");
+  assert.equal(fixture.targetState.providers["openai-codex"].binding, "beta");
+});
+
 test("uninstall refuses any edit away from the exact last installed descriptor", async () => {
   const fixture = targetFixture("prime");
   const native = { type: "api_key", key: "NATIVE" };
