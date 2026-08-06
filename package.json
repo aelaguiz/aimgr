@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@mariozechner/pi-ai": "0.55.1",
+    "proper-lockfile": "^4.1.2",
     "redis": "^6.0.0",
     "yaml": "^2.8.3"
   }

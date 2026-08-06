@@ -334,7 +334,7 @@ test("direct noninteractive runner uses contained roots and adapter without cust
     },
     timeoutMs: 12_345,
     platform: "darwin",
-    spawnSyncImpl(file, args, options) {
+    spawnImpl(file, args, options) {
       calls.push({ file, args, options });
       return { status: 0, signal: null };
     },
@@ -344,7 +344,7 @@ test("direct noninteractive runner uses contained roots and adapter without cust
     file: fs.realpathSync(process.execPath),
     args: ["--version"],
     options: {
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "pipe"],
       env: {
         PATH: `${adapter.adapterDir}:/developer/bin:/usr/bin:/bin`,
         ANTHROPIC_CUSTOM_HEADERS: "preserve",
@@ -353,8 +353,7 @@ test("direct noninteractive runner uses contained roots and adapter without cust
         CLAUDE_SECURESTORAGE_CONFIG_DIR: configDir,
       },
       cwd: projectDir,
-      timeout: 12_345,
-      killSignal: "SIGTERM",
+      detached: true,
       shell: false,
     },
   }]);
@@ -364,7 +363,8 @@ test("direct noninteractive runner uses contained roots and adapter without cust
 test("direct noninteractive runner reports its bounded timeout without inventing a mode", async () => {
   const home = mkTempHome();
   const { homeDir, configDir } = launchPaths(home);
-  const error = Object.assign(new Error("timed out"), { code: "ETIMEDOUT" });
+  const controller = new AbortController();
+  controller.abort();
   const result = await runClaudeCliNoninteractive({
     command: process.execPath,
     userHomeDir: home,
@@ -373,9 +373,9 @@ test("direct noninteractive runner reports its bounded timeout without inventing
     cwd: home,
     platform: "linux",
     timeoutMs: 1,
-    spawnSyncImpl: () => ({ status: null, signal: "SIGTERM", error }),
+    signal: controller.signal,
   });
-  assert.deepEqual(result, { status: null, signal: "SIGTERM", timedOut: true });
+  assert.deepEqual(result, { status: null, signal: null, timedOut: true });
   await assert.rejects(
     runClaudeCliNoninteractive({
       command: process.execPath,
@@ -386,7 +386,7 @@ test("direct noninteractive runner reports its bounded timeout without inventing
       platform: "linux",
       timeoutMs: 300_001,
     }),
-    /bounded timeout/,
+    /bounded process limits/,
   );
 });
 
@@ -394,4 +394,48 @@ test("pause-resume IPC and build qualification policy are absent from the runtim
   const source = `${fs.readFileSync(RUNNER_SOURCE_PATH, "utf8")}\n${fs.readFileSync(SUPERVISOR_SOURCE_PATH, "utf8")}`;
   assert.doesNotMatch(source, /aimgr:claude-process-control|registerProcessControl|SIGSTOP|SIGCONT/);
   assert.doesNotMatch(source, /SUPPORTED_CLAUDE_BUILDS|codesign|sha256|sourceSha256|DISABLE_AUTOUPDATER/);
+});
+
+
+test("noninteractive timeout kills the detached Claude process group including a stubborn descendant", async () => {
+  if (process.platform === "win32") return;
+  const home = mkTempHome();
+  const { homeDir, configDir } = launchPaths(home);
+  const scriptPath = path.join(home, "stubborn-tree.mjs");
+  const pidPath = path.join(home, "tree-pids.json");
+  fs.writeFileSync(scriptPath, `
+    import fs from "node:fs";
+    import { spawn } from "node:child_process";
+    const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: "ignore" });
+    fs.writeFileSync(process.argv[2], JSON.stringify({ parent: process.pid, child: child.pid }));
+    process.on("SIGTERM", () => {});
+    setInterval(() => {}, 1000);
+  `);
+
+  const result = await runClaudeCliNoninteractive({
+    command: process.execPath,
+    userHomeDir: home,
+    homeDir,
+    configDir,
+    cwd: home,
+    args: [scriptPath, pidPath],
+    platform: "linux",
+    timeoutMs: 300,
+    terminationGraceMs: 100,
+  });
+  assert.equal(result.timedOut, true);
+  const pids = JSON.parse(fs.readFileSync(pidPath, "utf8"));
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error?.code !== "ESRCH";
+    }
+  };
+  for (let attempt = 0; attempt < 20 && (alive(pids.parent) || alive(pids.child)); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(alive(pids.parent), false);
+  assert.equal(alive(pids.child), false);
 });

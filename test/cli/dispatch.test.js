@@ -72,3 +72,17 @@ test("executable boundary prints one expected error line without a stack", () =>
   assert.equal(result.stderr, "aim: Unknown command: pin\n");
   assert.doesNotMatch(result.stderr, /\n\s+at /);
 });
+
+
+test("Pi and Prime target options are scoped and reject missing values", () => {
+  const pi = parseArgs(["pi", "use", "--codex", "auto", "--claude", "fable", "--replace-native-auth"]);
+  assert.equal(pi.opts.codex, "auto");
+  assert.equal(pi.opts.claude, "fable");
+  assert.equal(pi.opts.replaceNativeAuth, true);
+  const prime = parseArgs(["prime", "use", "--codex", "off", "--claude", "alpha"]);
+  assert.equal(prime.opts.codex, "off");
+  assert.equal(prime.opts.claude, "alpha");
+  assert.throws(() => parseArgs(["status", "--codex", "auto"]), /Unknown option/);
+  assert.throws(() => parseArgs(["pi", "status", "--replace-native-auth"]), /Unknown option/);
+  assert.throws(() => parseArgs(["prime", "use", "--claude"]), /--claude requires/);
+});

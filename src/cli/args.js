@@ -49,6 +49,9 @@ export function parseArgs(argv) {
     primaryHost: undefined,
     transport: undefined,
     provider: undefined,
+    codex: undefined,
+    claude: undefined,
+    replaceNativeAuth: false,
     mode: undefined,
     seedFromOpenclaw: undefined,
     userDataDir: undefined,
@@ -115,8 +118,36 @@ export function parseArgs(argv) {
       continue;
     }
     if (arg === "--provider") {
-      opts.provider = argv[i + 1];
+      const value = argv[i + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--provider requires a provider id.");
+      }
+      opts.provider = value;
       i += 1;
+      continue;
+    }
+    if (arg === "--codex" || arg === "--claude") {
+      if ((argv[0] !== "pi" && argv[0] !== "prime") || argv[1] !== "use") {
+        throw new Error(`Unknown option: ${arg}`);
+      }
+      const value = argv[i + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error(
+          arg === "--codex"
+            ? "--codex requires auto, an exact label, or off."
+            : "--claude requires fable, opus, an exact label, or off.",
+        );
+      }
+      if (arg === "--codex") opts.codex = value;
+      else opts.claude = value;
+      i += 1;
+      continue;
+    }
+    if (arg === "--replace-native-auth") {
+      if ((argv[0] !== "pi" && argv[0] !== "prime") || argv[1] !== "use") {
+        throw new Error("Unknown option: --replace-native-auth");
+      }
+      opts.replaceNativeAuth = true;
       continue;
     }
     if (arg === "--mode") {

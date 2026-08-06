@@ -374,8 +374,8 @@ test("auth maintain continues after transient and stale-CAS failures while a bus
   assert.deepEqual(result, {
     stdout:
       "provider=openai-codex label=network outcome=retryable reason=maintenance_failed detail=\"network unavailable\"\n"
-      + "provider=openai-codex label=cas outcome=retryable reason=maintenance_failed detail=\"Redis stale_version while publishing Codex credential for label=cas.\"\n"
-      + "provider=openai-codex label=busy outcome=skipped reason=not_actionable\n"
+      + "provider=openai-codex label=cas outcome=retryable reason=maintenance_failed detail=\"AIM credential coordination is unavailable.\"\n"
+      + "provider=openai-codex label=busy outcome=skipped reason=lease_busy\n"
       + "provider=openai-codex label=invalid outcome=reauth_required reason=refresh_rejected\n"
       + "provider=openai-codex label=later outcome=refreshed reason=credential_rotated\n"
       + "refreshed=1 unchanged=0 reauth_required=1 retryable=2 skipped=1\n",
@@ -412,4 +412,33 @@ test("auth maintain still fails the run when the coordination store is unavailab
     ),
     /redis unreachable/,
   );
+});
+
+
+test("auth maintain durably marks incomplete Codex refresh material under the shared leased owner", async () => {
+  const incomplete = codexRecord("codex-incomplete", { expiresAtMs: NOW_MS + 60 * 60_000 });
+  delete incomplete.credential.refresh;
+  const runtime = await setup([incomplete]);
+  let providerRequests = 0;
+  const result = await runCliWithExitCode(
+    ["auth", "maintain", "--home", runtime.home],
+    {
+      nowImpl: () => NOW_MS,
+      connectRedisStoreImpl: runtime.connectRedisStoreImpl,
+      fetchJsonWithTimeoutImpl: async () => {
+        providerRequests += 1;
+        throw new Error("provider should not be called");
+      },
+    },
+  );
+  assert.deepEqual(result, {
+    stdout:
+      "provider=openai-codex label=codex-incomplete outcome=reauth_required reason=refresh_material_missing\n"
+      + "refreshed=0 unchanged=0 reauth_required=1 retryable=0 skipped=0\n",
+    exitCode: 0,
+  });
+  assert.equal(providerRequests, 0);
+  const snapshot = await readSnapshot(runtime.store);
+  assert.equal(snapshot.credentials[0].policy.reauth.blockedReason, "oauth_reauth_required");
+  assert.equal(snapshot.credentials[0].version, 2);
 });

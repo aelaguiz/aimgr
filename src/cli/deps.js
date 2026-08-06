@@ -26,7 +26,7 @@ async function loadUsageDeps() {
 }
 
 export async function loadCommandDefaultDeps(command) {
-  if (command === "status" || command === "pi") {
+  if (command === "status" || command === "pi" || command === "prime") {
     return loadUsageDeps();
   }
 
@@ -76,6 +76,11 @@ export async function loadCommandDefaultDeps(command) {
   }
 
   if (command === "auth") {
+    const { resolveExecutableOnPath } = await import("../io/process.js");
+    return { resolveExecutableOnPathImpl: resolveExecutableOnPath };
+  }
+
+  if (command === "credential-helper") {
     const { resolveExecutableOnPath } = await import("../io/process.js");
     return { resolveExecutableOnPathImpl: resolveExecutableOnPath };
   }

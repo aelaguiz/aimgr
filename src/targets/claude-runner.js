@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -565,6 +565,42 @@ function buildSupervisorArgs(preparedLaunch, args) {
   return [SUPERVISOR_PATH, preparedLaunch.command, ...buildClaudeArgs(preparedLaunch, args)];
 }
 
+function signalNoninteractiveProcessGroup(child, signalName, {
+  detached,
+  killProcessGroupImpl = process.kill,
+} = {}) {
+  if (detached && Number.isInteger(child?.pid) && child.pid > 0 && process.platform !== "win32") {
+    try {
+      killProcessGroupImpl(-child.pid, signalName);
+      return;
+    } catch (error) {
+      if (error?.code !== "ESRCH") {
+        try {
+          child.kill?.(signalName);
+        } catch {
+          // The close/error event remains authoritative.
+        }
+      }
+      return;
+    }
+  }
+  try {
+    child?.kill?.(signalName);
+  } catch {
+    // The close/error event remains authoritative.
+  }
+}
+
+function drainBoundedChildOutput(stream, { maxBytes, onOverflow }) {
+  if (!stream || typeof stream.on !== "function") return;
+  let bytes = 0;
+  stream.on("data", (chunk) => {
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > maxBytes) onOverflow();
+  });
+  stream.resume?.();
+}
+
 export async function runClaudeCliNoninteractive({
   command,
   userHomeDir,
@@ -574,11 +610,16 @@ export async function runClaudeCliNoninteractive({
   args = [],
   env = process.env,
   timeoutMs = 30_000,
+  deadlineMs = null,
+  signal = null,
+  terminationGraceMs = 1_000,
+  maxOutputBytes = 64 * 1024,
   fsImpl = fs,
   platform = process.platform,
   verifyInstalledClaudeExecutableImpl = verifyInstalledClaudeExecutable,
   resolveInstalledClaudeSecurityAdapterImpl = resolveInstalledClaudeSecurityAdapter,
-  spawnSyncImpl = spawnSync,
+  spawnImpl = spawn,
+  killProcessGroupImpl = process.kill,
 } = {}) {
   const resolvedCwd = normalizedAbsolute(cwd);
   if (!resolvedCwd) {
@@ -590,8 +631,14 @@ export async function runClaudeCliNoninteractive({
     || !Number.isInteger(timeoutMs)
     || timeoutMs < 1
     || timeoutMs > 300_000
+    || !Number.isInteger(terminationGraceMs)
+    || terminationGraceMs < 1
+    || terminationGraceMs > 10_000
+    || !Number.isInteger(maxOutputBytes)
+    || maxOutputBytes < 1
+    || maxOutputBytes > 1024 * 1024
   ) {
-    throw new Error("Claude noninteractive launch requires string arguments and a bounded timeout.");
+    throw new Error("Claude noninteractive launch requires string arguments and bounded process limits.");
   }
 
   const prepared = await prepareContainedClaudeCliLaunch({
@@ -604,27 +651,103 @@ export async function runClaudeCliNoninteractive({
     verifyInstalledClaudeExecutableImpl,
     resolveInstalledClaudeSecurityAdapterImpl,
   });
-  const result = spawnSyncImpl(prepared.command, args, {
-    stdio: "inherit",
+  const remaining = Number.isFinite(deadlineMs) ? Math.floor(deadlineMs - Date.now()) : timeoutMs;
+  if (signal?.aborted || remaining <= 0) {
+    return Object.freeze({ status: null, signal: null, timedOut: true });
+  }
+  const effectiveTimeoutMs = Math.max(1, Math.min(timeoutMs, remaining));
+  const detached = platform !== "win32";
+  const child = spawnImpl(prepared.command, args, {
+    stdio: ["ignore", "pipe", "pipe"],
     env: buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
     cwd: resolvedCwd,
-    timeout: timeoutMs,
-    killSignal: "SIGTERM",
+    detached,
     shell: false,
   });
-  if (result?.error?.code === "ETIMEDOUT") {
+  if (child?.error) throw child.error;
+  if (Number.isInteger(child?.status) || typeof child?.signal === "string") {
+    const childSignal = typeof child.signal === "string" ? child.signal : null;
     return Object.freeze({
-      status: null,
-      signal: typeof result.signal === "string" ? result.signal : null,
-      timedOut: true,
+      status: childSignal ? null : Number.isInteger(child.status) ? child.status : 1,
+      signal: childSignal,
+      timedOut: false,
     });
   }
-  if (result?.error) throw result.error;
-  const childSignal = typeof result?.signal === "string" ? result.signal : null;
-  return Object.freeze({
-    status: childSignal ? null : Number.isInteger(result?.status) ? result.status : 1,
-    signal: childSignal,
-    timedOut: false,
+  if (!child || typeof child.once !== "function") {
+    throw new Error("Claude noninteractive launch did not return a process handle.");
+  }
+
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    let timedOut = false;
+    let overflowed = false;
+    let termSent = false;
+    let timeoutTimer = null;
+    let forcedKillTimer = null;
+    let closeResult = null;
+    let killEscalated = false;
+
+    const cleanup = () => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (forcedKillTimer) clearTimeout(forcedKillTimer);
+      signal?.removeEventListener?.("abort", onAbort);
+    };
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const terminate = () => {
+      if (termSent || settled) return;
+      termSent = true;
+      signalNoninteractiveProcessGroup(child, "SIGTERM", { detached, killProcessGroupImpl });
+      forcedKillTimer = setTimeout(() => {
+        if (settled) return;
+        killEscalated = true;
+        signalNoninteractiveProcessGroup(child, "SIGKILL", { detached, killProcessGroupImpl });
+        if (closeResult) {
+          if (overflowed) finish(reject, new Error("Claude noninteractive output exceeded the safe size limit."));
+          else finish(resolve, closeResult);
+        }
+      }, terminationGraceMs);
+      forcedKillTimer.unref?.();
+    };
+    const onAbort = () => terminate();
+    const onOverflow = () => {
+      if (overflowed) return;
+      overflowed = true;
+      terminate();
+    };
+
+    drainBoundedChildOutput(child.stdout, { maxBytes: maxOutputBytes, onOverflow });
+    drainBoundedChildOutput(child.stderr, { maxBytes: maxOutputBytes, onOverflow });
+    child.once("error", (error) => finish(reject, error));
+    child.once("close", (code, childSignal) => {
+      const normalizedSignal = typeof childSignal === "string" ? childSignal : null;
+      closeResult = Object.freeze({
+        status: normalizedSignal ? null : Number.isInteger(code) ? code : 1,
+        signal: normalizedSignal,
+        timedOut,
+      });
+      // A direct child can exit on TERM while a descendant in its detached
+      // process group ignores it. Keep the grace timer alive and KILL the
+      // group before reporting completion.
+      if (termSent && detached && forcedKillTimer && !killEscalated) return;
+      if (overflowed) {
+        finish(reject, new Error("Claude noninteractive output exceeded the safe size limit."));
+        return;
+      }
+      finish(resolve, closeResult);
+    });
+
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, effectiveTimeoutMs);
+    timeoutTimer.unref?.();
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener?.("abort", onAbort, { once: true });
   });
 }
 

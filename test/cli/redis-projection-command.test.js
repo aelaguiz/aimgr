@@ -339,7 +339,11 @@ test("redis-configured pi use and hermes auth write read shared Redis credential
   });
   assert.equal(JSON.parse(piOut).ok, true);
   const piAuth = JSON.parse(fs.readFileSync(resolvePiAuthFilePath(resolveManagedPiAgentDir({ homeDir: home, env: {} })), "utf8"));
-  assert.equal(piAuth["openai-codex"].accountId, "acct_boss");
+  assert.equal(piAuth["openai-codex"].type, "external");
+  assert.equal(piAuth["openai-codex"].binding, "boss");
+  assert.equal(piAuth["openai-codex"].source, "aimgr");
+  assert.equal("access" in piAuth["openai-codex"], false);
+  assert.equal("refresh" in piAuth["openai-codex"], false);
 
   const hermesPath = path.join(home, "hermes", "auth.json");
   fs.mkdirSync(path.dirname(hermesPath), { recursive: true });
@@ -2063,7 +2067,7 @@ test("Claude maintenance uses the exact bounded no-model run and returns a resul
       ]);
       assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, undefined);
       assert.equal(timeoutMs, 30_000);
-      assert.equal(Object.hasOwn(options, "signal"), false);
+      assert.equal(Object.hasOwn(options, "signal"), true);
       assert.equal(Object.hasOwn(options, "preparedLaunch"), false);
       rotateProjectedClaudeCredential(configDir, {
         accessToken: "CLAUDE_ACCESS_ROTATED",

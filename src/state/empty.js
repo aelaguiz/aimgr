@@ -38,6 +38,7 @@ export function createEmptyState() {
       sakanaCodex: {},
       claudeCli: {},
       piCli: {},
+      primeAgent: {},
     },
   };
 }

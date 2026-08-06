@@ -314,17 +314,35 @@ async function applyMaintenanceEscalation({
   );
 }
 
+function throwIfMaintenanceAborted(signal, deadlineMs) {
+  if (signal?.aborted || (Number.isFinite(deadlineMs) && deadlineMs <= Date.now())) {
+    throw maintenanceFailure("client_timeout");
+  }
+}
+
+function maintenanceTimeoutMs(deadlineMs) {
+  if (!Number.isFinite(deadlineMs)) return MAINTENANCE_TIMEOUT_MS;
+  return Math.max(1, Math.min(MAINTENANCE_TIMEOUT_MS, Math.floor(deadlineMs - Date.now())));
+}
+
 /**
  * Runs one due Claude OAuth refresh attempt inside an already-loaded, one-shot
  * Redis runtime. It does not resolve sessions, apply optional customization,
  * start the supervisor, or load another runtime.
  */
-export async function maintainRedisClaudeCredential(context, { runtime, label }) {
+export async function maintainRedisClaudeCredential(context, {
+  runtime,
+  label,
+  force = false,
+  signal = context?.signal,
+  deadlineMs = context?.deadlineMs,
+}) {
   if (!runtime?.store || !runtime?.state || !runtime?.localState) {
     throw new Error("Claude credential maintenance requires an already-loaded Redis runtime.");
   }
 
   const normalizedLabel = normalizeLabel(label);
+  throwIfMaintenanceAborted(signal, deadlineMs);
   const homeDir = context.homeDir;
   const nowMs = Number.isFinite(context.nowMs) ? context.nowMs : Date.now();
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label: normalizedLabel });
@@ -354,8 +372,12 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
 
     if (!result) {
       try {
+        throwIfMaintenanceAborted(signal, deadlineMs);
         await refreshRedisRuntimeState(runtime);
       } catch (error) {
+        if (signal?.aborted || (Number.isFinite(deadlineMs) && deadlineMs <= Date.now())) {
+          throw maintenanceFailure("client_timeout", error);
+        }
         throw maintenanceFailure("coordination_unavailable", error);
       }
       await assertLeaseOwned(lease);
@@ -428,6 +450,7 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
           resolveCommandImpl: context.resolveExecutableOnPathImpl,
           assertLeaseOwned: () => assertLeaseOwned(lease),
           stopBeforeReconciliation: () => {
+            if (force) return false;
             const current = currentRedisClaudeRecord(runtime, normalizedLabel);
             const expiresAtMs = parseExpiresAtToMs(
               getAnthropicCredentialView(current?.credential)?.expiresAt,
@@ -443,6 +466,7 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
         result = maintenanceResult("skipped", "not_due");
       } else {
         const { descriptor, command, observedAt } = preflight;
+        throwIfMaintenanceAborted(signal, deadlineMs);
 
         const credential = requireCredential(runtime, normalizedLabel);
         const preRunCredentialComplete = hasCompleteClaudeNativeBundle(credential);
@@ -472,10 +496,15 @@ export async function maintainRedisClaudeCredential(context, { runtime, label })
             cwd: context.cwd ?? process.cwd(),
             args: MAINTENANCE_ARGS,
             env: maintenanceEnv,
-            timeoutMs: MAINTENANCE_TIMEOUT_MS,
+            timeoutMs: maintenanceTimeoutMs(deadlineMs),
+            deadlineMs,
+            signal,
           });
         } catch (error) {
           launchError = error;
+        }
+        if (signal?.aborted || (Number.isFinite(deadlineMs) && deadlineMs <= Date.now())) {
+          throw maintenanceFailure("client_timeout", launchError);
         }
 
         const postRunSync = await syncLiveClaudeRotationBackToLabelFromStorage({

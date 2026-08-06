@@ -106,7 +106,12 @@ export async function fetchJsonWithTimeout(
     if (typeof fetchImpl !== "function") {
       throw new Error("fetch is not available in this runtime.");
     }
-    const response = await fetchImpl(url, { ...init, signal: controller.signal });
+    const inheritedSignal = init?.signal;
+    const signal = inheritedSignal && typeof AbortSignal.any === "function"
+      ? AbortSignal.any([controller.signal, inheritedSignal])
+      : controller.signal;
+    if (inheritedSignal?.aborted) controller.abort(inheritedSignal.reason);
+    const response = await fetchImpl(url, { ...init, signal });
     let jsonValue;
     let jsonError = null;
     try {

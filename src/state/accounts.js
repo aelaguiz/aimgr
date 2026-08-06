@@ -132,6 +132,11 @@ export function getPiTargetState(state) {
   return state.targets.piCli;
 }
 
+export function getPrimeTargetState(state) {
+  ensureStateShape(state);
+  return state.targets.primeAgent;
+}
+
 export function getImportedCodexLabels(state) {
   return getAuthorityImportedCodexLabels(state);
 }

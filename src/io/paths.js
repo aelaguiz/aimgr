@@ -122,6 +122,14 @@ export function resolveManagedPiAgentDir({ homeDir, env = {} }) {
   return path.join(homeDir, ".pi", "agent");
 }
 
+export function resolveManagedPrimeAgentDir({ homeDir, env = {} }) {
+  const override = String(env.PRIME_AGENT_CODING_AGENT_DIR ?? "").trim();
+  if (override) {
+    return path.resolve(override);
+  }
+  return path.join(homeDir, ".prime", "agent");
+}
+
 export function resolveManagedClaudeDir({ homeDir }) {
   return path.join(homeDir, ".claude");
 }
@@ -139,6 +147,10 @@ export function resolveClaudeAuthFilePath(claudeDir) {
 }
 
 export function resolvePiAuthFilePath(agentDir) {
+  return path.join(agentDir, "auth.json");
+}
+
+export function resolvePrimeAuthFilePath(agentDir) {
   return path.join(agentDir, "auth.json");
 }
 

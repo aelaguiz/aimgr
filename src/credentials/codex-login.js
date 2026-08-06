@@ -29,6 +29,8 @@ export async function refreshCodexWithoutBrowser({
   credential,
   fetchJsonWithTimeoutImpl,
   nowMs = Date.now(),
+  signal = null,
+  timeoutMs = CODEX_REFRESH_TIMEOUT_MS,
 }) {
   const refresh = typeof credential?.refresh === "string" ? credential.refresh.trim() : "";
   const expectedAccountId = typeof credential?.accountId === "string" ? credential.accountId.trim() : "";
@@ -49,8 +51,9 @@ export async function refreshCodexWithoutBrowser({
         refresh_token: refresh,
         client_id: OPENAI_CODEX_CLIENT_ID,
       }),
+      ...(signal ? { signal } : {}),
     },
-    CODEX_REFRESH_TIMEOUT_MS,
+    Math.min(CODEX_REFRESH_TIMEOUT_MS, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : CODEX_REFRESH_TIMEOUT_MS),
   );
   let body;
   try {

@@ -1,6 +1,4 @@
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
-import { acquireRedisCredentialLease } from "../../coordination/redis-credential-lease.js";
-import { publishMaintainedCredential } from "../../coordination/login-publish.js";
 import {
   closeRedisRuntime,
   isRedisConfigured,
@@ -14,10 +12,7 @@ import { parseExpiresAtToMs } from "../../core/time.js";
 import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.js";
 import { getAnthropicCredentialView } from "../../credentials/anthropic.js";
 import { maintainRedisClaudeCredential } from "../../credentials/claude-maintenance.js";
-import {
-  CodexRefreshInvalidGrantError,
-  refreshCodexWithoutBrowser,
-} from "../../credentials/codex-login.js";
+import { maintainRedisCodexCredential } from "../../credentials/harness-access.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { writeHermesAuthFromState } from "../../targets/hermes-auth.js";
 
@@ -114,72 +109,18 @@ async function maintainCodexRecord({
   nowMs,
   fetchJsonWithTimeoutImpl,
 }) {
-  const lease = await acquireRedisCredentialLease(runtime.store, {
-    provider: OPENAI_CODEX_PROVIDER,
+  const result = await maintainRedisCodexCredential({
+    runtime,
+    nowMs,
+    fetchJsonWithTimeoutImpl,
+  }, {
+    runtime,
     label: record.label,
+    force: true,
+    incompleteMeansReauth: true,
   });
-  if (!lease) return "skipped";
-
-  let outcome = null;
-  let failure = null;
-  try {
-    await refreshRedisRuntimeState(runtime);
-    const current = findCredentialRecord(runtime.snapshot, {
-      provider: OPENAI_CODEX_PROVIDER,
-      label: record.label,
-    });
-    if (!current || !hasLoadedCredential(current) || isTerminallyMarked(current)) {
-      outcome = "skipped";
-    } else if (!hasRequiredRefreshMaterial(current)) {
-      if (await lease.renew() !== true) {
-        throw new Error(`Codex credential lease was lost before publishing ${record.label}.`);
-      }
-      await markReauthRequired(runtime, current, new Date(nowMs).toISOString());
-      outcome = "reauth_required";
-    } else if (!isDue(current, nowMs)) {
-      outcome = "skipped";
-    } else {
-      try {
-        const nextCredential = await refreshCodexWithoutBrowser({
-          credential: current.credential,
-          fetchJsonWithTimeoutImpl,
-          nowMs,
-        });
-        runtime.state.credentials[OPENAI_CODEX_PROVIDER][record.label] = nextCredential;
-        if (await lease.renew() !== true) {
-          throw new Error(`Codex credential lease was lost before publishing ${record.label}.`);
-        }
-        const published = await publishMaintainedCredential({
-          store: runtime.store,
-          snapshot: runtime.snapshot,
-          state: runtime.state,
-          label: record.label,
-          provider: OPENAI_CODEX_PROVIDER,
-          observedAt: new Date(nowMs).toISOString(),
-        });
-        if (!published.ok) {
-          throw new Error(`Redis stale_version while publishing Codex credential for label=${record.label}.`);
-        }
-        outcome = "refreshed";
-      } catch (error) {
-        if (!(error instanceof CodexRefreshInvalidGrantError)) throw error;
-        if (await lease.renew() !== true) {
-          throw new Error(`Codex credential lease was lost before publishing ${record.label}.`);
-        }
-        await markReauthRequired(runtime, current, new Date(nowMs).toISOString());
-        outcome = "reauth_required";
-      }
-    }
-  } catch (error) {
-    failure = error;
-  }
-
-  const released = await lease.release().catch(() => false);
-  if (failure) throw failure;
-  if (!released) {
-    throw new Error(`Codex credential lease was lost before release for label=${record.label}.`);
-  }
-  return outcome;
+  if (result.outcome === "refreshed" || result.outcome === "reauth_required") return result;
+  return { outcome: "skipped", reason: result.reason ?? "not_actionable" };
 }
 
 async function handleOAuthMaintain(context) {
@@ -243,30 +184,28 @@ async function handleOAuthMaintain(context) {
                 ? "credential_missing"
                 : "reauth_already_required";
             } else if (record.provider === OPENAI_CODEX_PROVIDER) {
-              outcome = await maintainCodexRecord({
+              const codexResult = await maintainCodexRecord({
                 runtime,
                 record: current,
                 nowMs,
                 fetchJsonWithTimeoutImpl,
               });
-              reason = outcome === "skipped" ? "not_actionable" : null;
+              outcome = codexResult.outcome;
+              reason = codexResult.reason;
             } else {
               await markReauthRequired(runtime, current, new Date(nowMs).toISOString());
               outcome = "reauth_required";
               reason = "refresh_material_missing";
             }
           } else {
-            outcome = await maintainCodexRecord({
+            const codexResult = await maintainCodexRecord({
               runtime,
               record,
               nowMs,
               fetchJsonWithTimeoutImpl,
             });
-            reason = outcome === "refreshed"
-              ? "credential_rotated"
-              : outcome === "reauth_required"
-                ? "refresh_rejected"
-                : "not_actionable";
+            outcome = codexResult.outcome;
+            reason = codexResult.reason;
           }
           maintenanceResult = {
             outcome: Object.hasOwn(counts, outcome) ? outcome : "retryable",

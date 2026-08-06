@@ -34,21 +34,26 @@ export async function loadRedisRuntime({
 }) {
   const { redis } = getRedisConfig({ homeDir });
   const store = await connectRedisStoreImpl({ ...redis, connectionPolicy });
-  const snapshot = await readSnapshot(store);
-  const localState = loadLocalState({ homeDir });
-  const state = buildCoordinationView(snapshot, {
-    localState,
-    provider,
-  });
-  return {
-    redis,
-    store,
-    updatedBy: REDIS_UPDATED_BY,
-    snapshot,
-    localState,
-    state,
-    providerScope: normalizeProviderId(provider),
-  };
+  try {
+    const snapshot = await readSnapshot(store);
+    const localState = loadLocalState({ homeDir });
+    const state = buildCoordinationView(snapshot, {
+      localState,
+      provider,
+    });
+    return {
+      redis,
+      store,
+      updatedBy: REDIS_UPDATED_BY,
+      snapshot,
+      localState,
+      state,
+      providerScope: normalizeProviderId(provider),
+    };
+  } catch (error) {
+    await closeRedisStore(store).catch(() => {});
+    throw error;
+  }
 }
 
 export async function closeRedisRuntime(runtime) {

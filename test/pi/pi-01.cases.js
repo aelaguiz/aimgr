@@ -87,24 +87,23 @@ test("Redis-backed pi use writes auth.json and preserves non-openai providers", 
       async () => {
         const out = JSON.parse(await runCli(["pi", "use", "--home", home], { fetchImpl }));
         assert.equal(out.ok, true);
-        assert.match(out.activated.status, /^activated/);
-        assert.equal(out.activated.receipt.label, "boss");
+        assert.equal(out.receipt.status, "updated");
+        assert.equal(out.receipt.providers[0].binding, "boss");
 
         const auth = JSON.parse(fs.readFileSync(path.join(piAgentDir, "auth.json"), "utf8"));
         assert.deepEqual(auth.anthropic, { type: "api_key", key: "ANTHROPIC_KEY" });
-        assert.deepEqual(auth["openai-codex"], {
-          type: "oauth",
-          access: fakeJwt,
-          refresh: "REFRESH_TOKEN",
-          expires: auth["openai-codex"].expires,
-          accountId: "acct_123",
-        });
-        assert.equal(typeof auth["openai-codex"].expires, "number");
+        assert.equal(auth["openai-codex"].type, "external");
+        assert.equal(auth["openai-codex"].source, "aimgr");
+        assert.equal(auth["openai-codex"].protocol, "aimgr-credential-v1");
+        assert.deepEqual(auth["openai-codex"].args, ["credential-helper"]);
+        assert.equal(auth["openai-codex"].binding, "boss");
+        assert.equal("access" in auth["openai-codex"], false);
+        assert.equal("refresh" in auth["openai-codex"], false);
+        assert.doesNotMatch(JSON.stringify(auth["openai-codex"]), /REFRESH_TOKEN/);
 
         const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
-        assert.equal(updatedState.targets.piCli.activeLabel, "boss");
-        assert.equal(updatedState.targets.piCli.expectedAccountId, "acct_123");
-        assert.match(updatedState.targets.piCli.lastSelectionReceipt.status, /^activated/);
+        assert.equal(updatedState.targets.piCli.providers["openai-codex"].binding, "boss");
+        assert.equal(updatedState.targets.piCli.lastSelectionReceipt.status, "updated");
       },
     );
 });
@@ -209,12 +208,12 @@ test("pi use prefers weekly pool headroom over the lowest short-window usage", a
       async () => {
         const result = JSON.parse(await runCli(["pi", "use", "--home", home], { fetchImpl }));
         assert.equal(result.ok, true);
-        assert.match(result.activated.status, /^activated/);
-        assert.equal(result.activated.receipt.label, "pro2");
+        assert.equal(result.receipt.status, "updated");
+        assert.equal(result.receipt.providers[0].binding, "pro2");
 
         const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
-        assert.equal(updatedState.targets.piCli.activeLabel, "pro2");
-        assert.equal(updatedState.targets.piCli.lastSelectionReceipt.label, "pro2");
+        assert.equal(updatedState.targets.piCli.providers["openai-codex"].binding, "pro2");
+        assert.equal(updatedState.targets.piCli.lastSelectionReceipt.providers[0].binding, "pro2");
       },
     );
 });

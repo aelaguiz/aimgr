@@ -15,6 +15,8 @@ const COMMAND_LOADERS = new Map([
   ["hermes", async () => (await import("./commands/hermes.js")).handleHermes],
   ["claude", async () => (await import("./commands/claude.js")).handleClaude],
   ["pi", async () => (await import("./commands/pi.js")).handlePi],
+  ["prime", async () => (await import("./commands/prime.js")).handlePrime],
+  ["credential-helper", async () => (await import("./commands/credential-helper.js")).handleCredentialHelper],
   ["sakana", async () => (await import("./commands/sakana.js")).handleSakana],
   ["browser", async () => (await import("./commands/browser.js")).handleBrowser],
 ]);
@@ -60,16 +62,19 @@ export async function main(argv, injectedDeps = {}) {
           env: options.env ?? deps.env,
         })
       : undefined);
-  const homeDir = resolveHomeDir(opts.home, { env: parseEnv });
+  const homeDir = cmd === "credential-helper" && opts.home === undefined && !parseEnv.HOME
+    ? null
+    : resolveHomeDir(opts.home, { env: parseEnv });
 
   return handler({
     ...deps,
+    argv: [...argv],
     opts,
     positional,
     // Recovery-only handlers still need the canonical legacy path. It is not
     // operator-selectable: the retired state-file override is intentionally
     // absent from parsing and help.
-    statePath: resolveAimgrStatePath({ home: homeDir }, { env: parseEnv }),
+    statePath: homeDir ? resolveAimgrStatePath({ home: homeDir }, { env: parseEnv }) : null,
     homeDir,
     shorthandLabel,
     nowMs: deps.nowImpl(),

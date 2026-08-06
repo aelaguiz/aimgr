@@ -174,6 +174,7 @@ export function ensureStateShape(state) {
   state.targets.sakanaCodex = isObject(state.targets.sakanaCodex) ? state.targets.sakanaCodex : {};
   state.targets.claudeCli = isObject(state.targets.claudeCli) ? state.targets.claudeCli : {};
   state.targets.piCli = isObject(state.targets.piCli) ? state.targets.piCli : {};
+  state.targets.primeAgent = isObject(state.targets.primeAgent) ? state.targets.primeAgent : {};
   if (Object.hasOwn(state.targets, "hermes")) {
     delete state.targets.hermes;
   }

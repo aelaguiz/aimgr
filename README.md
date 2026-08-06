@@ -113,7 +113,54 @@ aim claude capture-native <label> [--source-home <dir>] [--source-config-dir <di
 aim claude export-live --out <file> [--source-home <dir>]
 aim claude import-native <label> --in <file>
 aim pi use
+# Explicit provider bindings; omitted providers remain unchanged
+aim pi use --codex <auto|label|off> --claude <fable|opus|label|off>
+aim pi status
+aim pi uninstall [--provider <openai-codex|anthropic>]
+aim prime use --codex <auto|label|off> --claude <fable|opus|label|off>
+aim prime status
+aim prime uninstall [--provider <openai-codex|anthropic>]
 ```
+
+
+### Pi and Prime managed credentials
+
+`aim pi use` keeps its bare behavior: it selects the next-best pooled Codex
+label, resolves it to one exact identity, and installs a non-secret external
+descriptor for **new root sessions**. `aim prime use` uses the same descriptor
+owner. Explicit `--codex` and `--claude` selections may name an exact label;
+Codex also accepts `auto`, Claude accepts the existing `fable`/`opus` ranking,
+and `off` performs the same guarded local removal as uninstall. An omitted
+provider is unchanged.
+
+AIM remains the only managed refresh-token authority. Pi and Prime invoke the
+machine-only `aim credential-helper` directly with bounded JSON over stdin and
+receive only an access token in memory. Target `auth.json`, AIM local receipts,
+status, backups, argv, and environment never receive an AIM-managed access or
+refresh token. The exact label and opaque AIM identity fingerprint are
+non-secret and may be persisted by a harness to keep a root session tree
+stable across resume and subagents. Account changes apply to a new root tree;
+loaded trees never hop labels.
+
+Unknown native provider entries are not replaced unless `--replace-native-auth`
+is explicit. AIM then keeps at most one private displaced-native backup per
+target/provider. `aim pi uninstall` and `aim prime uninstall` are local-only:
+they restore that backup (or remove the descriptor) only when the current entry
+exactly equals AIM's last installed descriptor. Stop active Pi/Prime workers
+before uninstall. A conflicting edit is left untouched and the backup path is
+reported.
+
+`status` always reports local ownership even when Redis is unavailable. A
+loaded harness may use an already cached, unexpired access token only until its
+five-minute freshness skew; new bindings and refresh-due calls fail closed
+until Redis returns. Managed providers never fall through to native stored
+auth, environment keys, or another label. Reauthenticate the exact AIM label
+for `reauth_required`; for `identity_conflict`, update the target and start a
+new root tree.
+
+This boundary prevents accidental persistent secret copies and competing
+refresh writers; it is not isolation from another process running as the same
+OS user, which can invoke the helper with the user's authority.
 
 The label-free Claude presets select only unlocked readable accounts. `fable`
 ranks by Fable/Sonnet usage and uses five-hour usage as its tie-break;
@@ -208,11 +255,13 @@ Redis records own shared credential truth:
 - Codex/Pi/Claude/Hermes local history
 - local concrete browser bindings
 
-Local target auth files are derived outputs:
+Local target files are derived outputs:
 
 - Codex: `~/.codex/auth.json`
 - Claude: `~/.claude/.credentials.json` and `~/.claude.json`
-- Pi: `~/.pi/agent/auth.json`
+- Pi: `~/.pi/agent/auth.json` (non-secret external descriptors for managed providers)
+- Prime: `~/.prime/agent/auth.json` (non-secret external descriptors for managed providers)
+- AIM rollback: `~/.aimgr/backups/harness-auth/` (one private displaced native entry per target/provider)
 - Hermes: explicit `auth.json` paths
 - OpenClaw: configured agent auth stores and session metadata
 

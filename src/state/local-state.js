@@ -19,6 +19,7 @@ export function createEmptyLocalState() {
       sakanaCodex: {},
       claudeCli: {},
       piCli: {},
+      primeAgent: {},
     },
     pool: {
       openaiCodex: {
@@ -51,6 +52,7 @@ export function ensureLocalStateShape(localState) {
   state.targets.sakanaCodex = isObject(state.targets.sakanaCodex) ? state.targets.sakanaCodex : {};
   state.targets.claudeCli = isObject(state.targets.claudeCli) ? state.targets.claudeCli : {};
   state.targets.piCli = isObject(state.targets.piCli) ? state.targets.piCli : {};
+  state.targets.primeAgent = isObject(state.targets.primeAgent) ? state.targets.primeAgent : {};
   state.pool = isObject(state.pool) ? state.pool : {};
   state.pool.openaiCodex = isObject(state.pool.openaiCodex) ? state.pool.openaiCodex : {};
   state.pool.openaiCodex.history = pruneOpenaiCodexHistory(state.pool.openaiCodex.history);
