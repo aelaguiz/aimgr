@@ -122,6 +122,11 @@ export function getCodexTargetState(state) {
   return state.targets.codexCli;
 }
 
+export function getCodexDesktopTargetState(state) {
+  ensureStateShape(state);
+  return state.targets.codexDesktop;
+}
+
 export function getClaudeTargetState(state) {
   ensureStateShape(state);
   return state.targets.claudeCli;

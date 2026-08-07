@@ -1,15 +1,13 @@
 import { DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { resolveCodexWatchThresholdPct } from "../core/watch-options.js";
-import { activateCodexPoolSelection, buildCodexWatchNonfatalWarnings, buildCodexWatchTargetBlockers, getPrimaryRemainingPctFromUsageSnapshot, readCodexCliTargetStatus } from "../targets/codex-cli.js";
 import { buildHermesAssignmentsByHome, rebalanceHermesPool } from "./hermes-rebalance.js";
 import { buildHermesHomeBlockers, buildWarningsFromHermesHomeStatus, discoverHermesHomes, readHermesHomeStatus } from "./token-usage.js";
-import { collectCodexPoolStatus, getCodexPoolLabels } from "./ranking.js";
-import { ensureFileBackedCodexHome } from "../targets/codex-store.js";
+import { getPrimaryRemainingPctFromUsageSnapshot } from "../targets/codex-cli.js";
+import { collectCodexPoolStatus } from "./ranking.js";
 import { ensureStateShape } from "../state/schema.js";
-import { getCodexTargetState, getHermesFleetState } from "../state/accounts.js";
+import { getHermesFleetState } from "../state/accounts.js";
 import { isObject } from "../core/normalize.js";
-import { collectCodexUsageSnapshots, probeUsageSnapshotsByProvider } from "./usage.js";
-import { resolveManagedCodexHomeDir } from "../io/paths.js";
+import { probeUsageSnapshotsByProvider } from "./usage.js";
 import { sanitizeForStatus } from "../core/sanitize.js";
 
 function buildUsageUnavailableBlocker({ reason, label, homeId, usage }) {
@@ -38,168 +36,6 @@ function buildUsageUnavailableBlocker({ reason, label, homeId, usage }) {
     blocker.missingScope = true;
   }
   return blocker;
-}
-
-export async function watchCodexPoolSelectionOnce(
-  {
-    state,
-    homeDir,
-    env = {},
-    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
-  },
-  {
-    probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
-    activateCodexPoolSelectionImpl = activateCodexPoolSelection,
-  } = {},
-) {
-  ensureStateShape(state);
-  // Watch mode owns the threshold decision and receipt, but it must never invent
-  // a second auth writer. Weighted selection and auth mutation still flow through
-  // activateCodexPoolSelection() -> applyCodexCliFromState().
-  ensureFileBackedCodexHome({ codexHome: resolveManagedCodexHomeDir({ homeDir, env }) });
-  const effectiveThresholdPct = resolveCodexWatchThresholdPct(thresholdPct);
-  const observedAt = new Date().toISOString();
-  const usageByProvider = await collectCodexUsageSnapshots({
-    state,
-    homeDir,
-    env,
-    nowMs: Date.parse(observedAt),
-    probeUsageSnapshotsByProviderImpl,
-  });
-  const usageByLabel = isObject(usageByProvider?.[OPENAI_CODEX_PROVIDER]) ? usageByProvider[OPENAI_CODEX_PROVIDER] : {};
-  const currentTarget = readCodexCliTargetStatus({ state, homeDir, env });
-  const target = getCodexTargetState(state);
-  const currentLabelBefore = currentTarget.inferredLabel || currentTarget.activeLabel || null;
-  const warnings = buildCodexWatchNonfatalWarnings(currentTarget);
-
-  if (!currentLabelBefore) {
-    const poolLabels = getCodexPoolLabels(state);
-    if (poolLabels.length === 0) {
-      const receipt = {
-        action: "codex_watch",
-        status: "blocked",
-        observedAt,
-        thresholdPct: effectiveThresholdPct,
-        currentLabelBefore: null,
-        currentLabelAfter: currentTarget.inferredLabel || null,
-        primaryRemainingPctBefore: null,
-        triggeredSelection: false,
-        warnings,
-        blockers: [{ reason: "no_pool_account_available" }],
-      };
-      target.lastWatchReceipt = receipt;
-      return { status: "blocked", receipt, wrote: false };
-    }
-
-    const selection = await activateCodexPoolSelectionImpl({
-      state,
-      homeDir,
-      env,
-      observedAt,
-      usageByProvider,
-    });
-    const postTarget = readCodexCliTargetStatus({ state, homeDir, env });
-    const receipt = {
-      action: "codex_watch",
-      status: selection.status,
-      observedAt,
-      thresholdPct: effectiveThresholdPct,
-      currentLabelBefore: null,
-      currentLabelAfter: postTarget.inferredLabel || postTarget.activeLabel || null,
-      primaryRemainingPctBefore: null,
-      triggeredSelection: true,
-      selectionReceipt: selection.receipt,
-      warnings: [...warnings, ...(Array.isArray(selection.receipt?.warnings) ? selection.receipt.warnings : [])],
-      blockers: Array.isArray(selection.receipt?.blockers) ? selection.receipt.blockers : [],
-    };
-    target.lastWatchReceipt = receipt;
-    return { status: selection.status, receipt, wrote: Boolean(selection.wrote) };
-  }
-
-  const targetBlockers = buildCodexWatchTargetBlockers(currentTarget);
-  if (targetBlockers.length > 0) {
-    const receipt = {
-      action: "codex_watch",
-      status: "blocked",
-      observedAt,
-      thresholdPct: effectiveThresholdPct,
-      currentLabelBefore,
-      currentLabelAfter: currentLabelBefore,
-      primaryRemainingPctBefore: null,
-      triggeredSelection: false,
-      warnings,
-      blockers: targetBlockers,
-    };
-    target.lastWatchReceipt = receipt;
-    return { status: "blocked", receipt, wrote: false };
-  }
-
-  const activeUsage = usageByLabel[currentLabelBefore] ?? null;
-  const primaryRemainingPctBefore = getPrimaryRemainingPctFromUsageSnapshot(activeUsage);
-  if (primaryRemainingPctBefore === null) {
-    const blockers = [
-      buildUsageUnavailableBlocker({
-        reason: "active_target_usage_unavailable",
-        label: currentLabelBefore,
-        usage: activeUsage,
-      }),
-    ];
-    const receipt = {
-      action: "codex_watch",
-      status: "blocked",
-      observedAt,
-      thresholdPct: effectiveThresholdPct,
-      currentLabelBefore,
-      currentLabelAfter: currentLabelBefore,
-      primaryRemainingPctBefore: null,
-      triggeredSelection: false,
-      warnings,
-      blockers,
-    };
-    target.lastWatchReceipt = receipt;
-    return { status: "blocked", receipt, wrote: false };
-  }
-
-  if (primaryRemainingPctBefore >= effectiveThresholdPct) {
-    const receipt = {
-      action: "codex_watch",
-      status: "noop",
-      observedAt,
-      thresholdPct: effectiveThresholdPct,
-      currentLabelBefore,
-      currentLabelAfter: currentLabelBefore,
-      primaryRemainingPctBefore,
-      triggeredSelection: false,
-      warnings,
-      blockers: [],
-    };
-    target.lastWatchReceipt = receipt;
-    return { status: "noop", receipt, wrote: false };
-  }
-
-  const selection = await activateCodexPoolSelectionImpl({
-    state,
-    homeDir,
-    env,
-    observedAt,
-    usageByProvider,
-  });
-  const postTarget = readCodexCliTargetStatus({ state, homeDir, env });
-  const receipt = {
-    action: "codex_watch",
-    status: selection.status,
-    observedAt,
-    thresholdPct: effectiveThresholdPct,
-    currentLabelBefore,
-    currentLabelAfter: postTarget.inferredLabel || postTarget.activeLabel || null,
-    primaryRemainingPctBefore,
-    triggeredSelection: true,
-    selectionReceipt: selection.receipt,
-    warnings: [...warnings, ...(Array.isArray(selection.receipt?.warnings) ? selection.receipt.warnings : [])],
-    blockers: Array.isArray(selection.receipt?.blockers) ? selection.receipt.blockers : [],
-  };
-  target.lastWatchReceipt = receipt;
-  return { status: selection.status, receipt, wrote: Boolean(selection.wrote) };
 }
 
 export async function watchHermesPoolSelectionOnce(

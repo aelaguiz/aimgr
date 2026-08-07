@@ -35,6 +35,7 @@ export function createEmptyState() {
         exclusions: {},
       },
       codexCli: {},
+      codexDesktop: {},
       sakanaCodex: {},
       claudeCli: {},
       piCli: {},

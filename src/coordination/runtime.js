@@ -9,6 +9,7 @@ import {
   identitiesAreCompatible,
   withoutClaudeRotationProvenance,
 } from "./login-publish.js";
+import { publishCodexCredentialRecordGuarded } from "./codex-identity.js";
 import { hasCredentialMaterial } from "./records.js";
 import { buildCoordinationView, findCredentialRecord } from "./snapshot.js";
 import {
@@ -119,7 +120,14 @@ export async function publishRedisCredentialPolicyFromState({
   }
   const currentCredential = findCredentialRecord(runtime.snapshot, { provider, label: normalizedLabel });
   const credential = isObject(currentCredential?.credential) ? currentCredential.credential : {};
-  const result = await publishCredential(runtime.store, {
+  const publishImpl = provider === OPENAI_CODEX_PROVIDER
+    ? (store, args) => publishCodexCredentialRecordGuarded(store, {
+        ...args,
+        operation: "codex label policy publication",
+        allowReservedPolicyRoundTrip: true,
+      })
+    : publishCredential;
+  const result = await publishImpl(runtime.store, {
     expectedVersion: currentCredential?.version ?? null,
     updatedBy: runtime.updatedBy,
     observedAt,
@@ -187,7 +195,13 @@ export async function publishRedisStateCredential({
   });
   const account = isObject(state?.accounts?.[normalizedLabel]) ? state.accounts[normalizedLabel] : {};
   const currentProvenance = withoutClaudeRotationProvenance(currentCredential?.provenance);
-  const result = await publishCredential(runtime.store, {
+  const publishImpl = normalizedProvider === OPENAI_CODEX_PROVIDER
+    ? (store, args) => publishCodexCredentialRecordGuarded(store, {
+        ...args,
+        operation: "codex credential publication",
+      })
+    : publishCredential;
+  const result = await publishImpl(runtime.store, {
     expectedVersion: currentCredential?.version ?? null,
     updatedBy: runtime.updatedBy,
     observedAt,

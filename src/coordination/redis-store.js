@@ -220,9 +220,23 @@ function buildWrittenRecord({ current, expectedVersion, nextRecord, updatedBy, o
 
 // This is the only shared mutation boundary for Redis-backed AIM state. Callers
 // pass record-shaped data; raw keys and WATCH/MULTI/EXEC stay here.
-export async function casPutJsonRecord(store, { key, indexKeys = [], expectedVersion, nextRecord, updatedBy, observedAt = new Date().toISOString() }) {
-  await store.client.watch(key);
+//
+// `fence` optionally names a live-token fence key (an identity-catalog lease).
+// When present the fence key is WATCHed together with the record key, the
+// commit verifies the live token before queueing, and any token change or key
+// expiry between the read and EXEC aborts the transaction. This is what makes
+// a stale scan unable to commit after its lease expired and was reacquired.
+export async function casPutJsonRecord(store, { key, indexKeys = [], expectedVersion, nextRecord, updatedBy, observedAt = new Date().toISOString(), fence = null }) {
+  const watchedKeys = fence ? [key, fence.key] : key;
+  await store.client.watch(watchedKeys);
   try {
+    if (fence) {
+      const liveToken = await store.client.get(fence.key);
+      if (typeof fence.token !== "string" || fence.token.length === 0 || liveToken !== fence.token) {
+        await store.client.unwatch();
+        return { ok: false, code: "fence_lost" };
+      }
+    }
     const currentRaw = await store.client.get(key);
     const current = parseJsonRecord(currentRaw, key);
     if (expectedVersion === null || expectedVersion === undefined) {
@@ -278,7 +292,7 @@ export async function publishMeta(store, { expectedVersion, metaRecord, updatedB
   });
 }
 
-export async function publishCredential(store, { expectedVersion, credentialRecord, updatedBy, observedAt } = {}) {
+export async function publishCredential(store, { expectedVersion, credentialRecord, updatedBy, observedAt, fence = null } = {}) {
   const record = normalizeCredentialRecord(credentialRecord, { now: observedAt });
   return casPutJsonRecord(store, {
     key: store.keys.credential(record),
@@ -290,6 +304,7 @@ export async function publishCredential(store, { expectedVersion, credentialReco
     nextRecord: record,
     updatedBy,
     observedAt,
+    fence,
   });
 }
 

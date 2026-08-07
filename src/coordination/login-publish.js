@@ -7,6 +7,7 @@ import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { deriveAnthropicCredentialFromClaudeBundle, getClaudeNativeBundle } from "../credentials/claude-bundle.js";
 import { buildSakanaKeyFingerprint } from "../providers/sakana.js";
 import { buildSharedBrowserPolicy } from "./browser-policy.js";
+import { publishCodexCredentialRecordGuarded } from "./codex-identity.js";
 import { hasCredentialMaterial } from "./records.js";
 import { findCredentialRecord } from "./snapshot.js";
 import { publishCredential } from "./redis-store.js";
@@ -190,7 +191,13 @@ export async function publishMaintainedCredential({
   if (isObject(reauth.maintenance)) {
     delete reauth.maintenance;
   }
-  const result = await publishCredential(store, {
+  const publishImpl = normalizedProvider === OPENAI_CODEX_PROVIDER
+    ? (targetStore, args) => publishCodexCredentialRecordGuarded(targetStore, {
+        ...args,
+        operation: "codex login/maintenance publication",
+      })
+    : publishCredential;
+  const result = await publishImpl(store, {
     expectedVersion: currentCredential?.version ?? null,
     updatedBy,
     observedAt,

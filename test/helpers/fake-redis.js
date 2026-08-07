@@ -5,10 +5,19 @@ export class FakeRedisClient {
     this.expirations = new Map();
     this.isOpen = true;
     this.nowMs = nowMs;
+    // WATCH/MULTI fidelity: every mutation (including expiry) bumps a per-key
+    // version so a fenced EXEC observes concurrent writes and key expiry the
+    // same way a real Redis server would.
+    this.keyVersions = new Map();
+    this.watchedVersions = null;
   }
 
   advanceTime(milliseconds) {
     this.nowMs += milliseconds;
+  }
+
+  bumpKeyVersion(key) {
+    this.keyVersions.set(key, (this.keyVersions.get(key) ?? 0) + 1);
   }
 
   expireIfNeeded(key) {
@@ -16,6 +25,7 @@ export class FakeRedisClient {
     if (expiresAt !== undefined && expiresAt <= this.nowMs) {
       this.values.delete(key);
       this.expirations.delete(key);
+      this.bumpKeyVersion(key);
     }
   }
 
@@ -30,6 +40,7 @@ export class FakeRedisClient {
     if (condition === "NX" && this.values.has(key)) return null;
     if (condition === "XX" && !this.values.has(key)) return null;
     this.values.set(key, value);
+    this.bumpKeyVersion(key);
     const expiration = options.expiration;
     const px = expiration?.type === "PX" ? expiration.value : options.PX;
     if (Number.isFinite(px)) {
@@ -60,8 +71,11 @@ export class FakeRedisClient {
     const list = Array.isArray(keys) ? keys : [keys];
     let deleted = 0;
     for (const key of list) {
-      if (this.values.delete(key)) deleted += 1;
-      if (this.sets.delete(key)) deleted += 1;
+      const removedValue = this.values.delete(key);
+      const removedSet = this.sets.delete(key);
+      if (removedValue) deleted += 1;
+      if (removedSet) deleted += 1;
+      if (removedValue || removedSet) this.bumpKeyVersion(key);
       this.expirations.delete(key);
     }
     return deleted;
@@ -95,11 +109,18 @@ export class FakeRedisClient {
     throw new Error("Unsupported fake Redis script.");
   }
 
-  async watch() {
+  async watch(keys) {
+    const list = Array.isArray(keys) ? keys : [keys];
+    if (this.watchedVersions === null) this.watchedVersions = new Map();
+    for (const key of list) {
+      this.expireIfNeeded(key);
+      this.watchedVersions.set(key, this.keyVersions.get(key) ?? 0);
+    }
     return "OK";
   }
 
   async unwatch() {
+    this.watchedVersions = null;
     return "OK";
   }
 
@@ -116,6 +137,17 @@ export class FakeRedisClient {
         return tx;
       },
       async exec() {
+        const watched = client.watchedVersions;
+        client.watchedVersions = null;
+        if (watched) {
+          for (const [key, version] of watched) {
+            client.expireIfNeeded(key);
+            if ((client.keyVersions.get(key) ?? 0) !== version) {
+              // Real Redis aborts the transaction when any watched key changed.
+              return null;
+            }
+          }
+        }
         const results = [];
         for (const [op, key, value] of ops) {
           results.push(op === "set" ? await client.set(key, value) : await client.sAdd(key, value));

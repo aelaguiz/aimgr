@@ -106,12 +106,38 @@ export function resolveExplicitHermesAuthFilePath(value) {
   return authPath;
 }
 
-export function resolveManagedCodexHomeDir({ homeDir, env = {} }) {
-  const override = String(env.CODEX_HOME ?? "").trim();
-  if (override) {
-    return path.resolve(override);
-  }
+/**
+ * Native Codex home. Owned exclusively by the installed Codex Desktop app and
+ * its own login/refresh; AIM only ever reads it. Never derived from ambient
+ * CODEX_HOME so no environment can redirect Desktop-identity checks.
+ */
+export function resolveNativeCodexHomeDir({ homeDir }) {
   return path.join(homeDir, ".codex");
+}
+
+function canonicalizeExistingPath(target) {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/**
+ * AIM's one rotating Codex CLI home. Deliberately ignores ambient CODEX_HOME:
+ * inheriting it would let an environment alias the managed home back onto the
+ * Desktop-owned native home. Fails closed if the two homes alias through
+ * symlinks or path tricks.
+ */
+export function resolveManagedCodexHomeDir({ homeDir }) {
+  const managed = path.join(homeDir, ".aimgr", "codex-cli");
+  const native = resolveNativeCodexHomeDir({ homeDir });
+  if (canonicalizeExistingPath(managed) === canonicalizeExistingPath(native)) {
+    throw new Error(
+      `Refusing to use managed Codex home ${managed}: it aliases the native Desktop home ${native}.`,
+    );
+  }
+  return managed;
 }
 
 export function resolveManagedPiAgentDir({ homeDir, env = {} }) {

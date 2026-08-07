@@ -4,8 +4,6 @@ import {
   AIMGR_REDIS_PRIMARY_HOST,
   AIMGR_REDIS_PRIMARY_URL,
   AIMGR_REDIS_TRANSPORT,
-  DEFAULT_CODEX_WATCH_INTERVAL_SECONDS,
-  DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
 } from "../core/constants.js";
 
 export function printHelp({ stdout = process.stdout } = {}) {
@@ -26,8 +24,9 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim rebalance hermes   # choose pooled Codex assignments for live Hermes homes",
     "  aim auth write hermes <label> --auth-file <abs-path>  # write Hermes auth.json only",
     "  aim auth maintain     # refresh due Redis-backed Claude and Codex OAuth credentials once",
-    "  aim codex use [label] # activate the eligible openai-codex label with the lowest current 5h usage, or explicitly switch a chosen label",
-    "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
+    "  aim codex run [label] [-- <codex args...>]  # the only supported terminal Codex lane: select into the locked AIM home and launch codex",
+    "  aim codex desktop pin <label>    # reserve the Desktop identity: retire its Redis credential; native ~/.codex is never written",
+    "  aim codex desktop unpin <label>  # release the Desktop reservation; the retired credential is never restored",
     "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
     "  aim claude list [count] [--json]  # show recent local managed Claude sessions (default: 50)",
     "  aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus]  # optionally fork onto an exact label or the least-used unlocked account",
@@ -72,7 +71,8 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  - Pi/Prime managed providers contain non-secret external descriptors; AIM/Redis alone owns refresh credentials.",
     "  - Harness target changes affect new root session trees. Uninstall is local-only and restores only an exact guarded backup.",
     "  - During Redis outages, status remains local; cached harness access may continue only until its freshness skew.",
-    `  - \`aim codex watch --once\` is the scheduler-safe one-shot; foreground watch loops default to ${DEFAULT_CODEX_WATCH_INTERVAL_SECONDS}s and rotate below ${DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT}% 5h remaining.`,
+    "  - All terminal Codex work goes through `aim codex run`; raw `codex` against native ~/.codex is outside the Desktop stability guarantee.",
+    "  - Native ~/.codex belongs to the Codex Desktop app; AIM rotates only ~/.aimgr/codex-cli under a run-scoped owner lock.",
     `  - \`aim hermes watch --once\` is the Hermes scheduler-safe one-shot and always delegates writes through \`aim rebalance hermes\`.`,
     "",
     "Developer options (rare):",

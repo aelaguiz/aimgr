@@ -31,15 +31,13 @@ export async function loadCommandDefaultDeps(command) {
   }
 
   if (command === "codex") {
-    const [{ probeUsageSnapshotsByProvider }, { activateCodexPoolSelection }, { sleep }] = await Promise.all([
+    const [{ probeUsageSnapshotsByProvider }, { activateCodexPoolSelection }] = await Promise.all([
       import("../pool/usage.js"),
       import("../targets/codex-cli.js"),
-      import("../io/streams.js"),
     ]);
     return {
       probeUsageSnapshotsByProviderImpl: probeUsageSnapshotsByProvider,
       activateCodexPoolSelectionImpl: activateCodexPoolSelection,
-      sleepImpl: sleep,
     };
   }
 

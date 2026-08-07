@@ -16,6 +16,7 @@ export function createEmptyLocalState() {
         exclusions: {},
       },
       codexCli: {},
+      codexDesktop: {},
       sakanaCodex: {},
       claudeCli: {},
       piCli: {},
@@ -49,6 +50,7 @@ export function ensureLocalStateShape(localState) {
     ? state.targets.openclaw.exclusions
     : {};
   state.targets.codexCli = isObject(state.targets.codexCli) ? state.targets.codexCli : {};
+  state.targets.codexDesktop = isObject(state.targets.codexDesktop) ? state.targets.codexDesktop : {};
   state.targets.sakanaCodex = isObject(state.targets.sakanaCodex) ? state.targets.sakanaCodex : {};
   state.targets.claudeCli = isObject(state.targets.claudeCli) ? state.targets.claudeCli : {};
   state.targets.piCli = isObject(state.targets.piCli) ? state.targets.piCli : {};

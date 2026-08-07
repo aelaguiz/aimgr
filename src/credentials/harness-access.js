@@ -2,9 +2,14 @@ import { createHash } from "node:crypto";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
+import {
+  assertCodexIdentityWriteAllowed,
+  buildReservedCodexIdentityIndex,
+  listRawCodexIdentityRecords,
+} from "../coordination/codex-identity.js";
 import { acquireRedisCredentialLease } from "../coordination/redis-credential-lease.js";
-import { buildStableIdentityForCredential } from "../coordination/login-publish.js";
 import { publishCredential } from "../coordination/redis-store.js";
+import { buildStableIdentityForCredential } from "../coordination/login-publish.js";
 import { refreshRedisRuntimeState } from "../coordination/runtime.js";
 import { findCredentialRecord } from "../coordination/snapshot.js";
 import { getAnthropicCredentialView } from "./anthropic.js";
@@ -67,6 +72,10 @@ export const HARNESS_CREDENTIAL_ERROR_DETAILS = Object.freeze({
   no_eligible_account: Object.freeze({
     message: "No eligible AIM account is available.",
     action: "Inspect AIM status or select an exact eligible label.",
+  }),
+  desktop_reserved: Object.freeze({
+    message: "The AIM account identity is reserved for the Codex Desktop app.",
+    action: "Choose a non-reserved label; only `aim codex desktop unpin` releases it.",
   }),
 });
 
@@ -207,7 +216,14 @@ async function publishCodexReauthRequired(runtime, record, observedAt) {
   if (!result.ok) fail("coordination_unavailable");
 }
 
-/** Refreshes one exact Codex record under the existing provider/label lease and CAS owner. */
+/**
+ * Refreshes one exact Codex record under the existing per-label credential
+ * lease and version CAS. This is a same-identity refresh, so it does not take
+ * the provider-wide identity catalog lease (different labels stay parallel);
+ * a Desktop-reserved record or same-immutable-account alias is rejected from
+ * a fresh raw scan before any refresh or publish side effect, and a pin that
+ * lands between scan and publish still fails this write via the version CAS.
+ */
 export async function maintainRedisCodexCredential(context, {
   runtime,
   label,
@@ -238,6 +254,19 @@ export async function maintainRedisCodexCredential(context, {
       provider: OPENAI_CODEX_PROVIDER,
       label: normalizedLabel,
     });
+    // Reservation gate before any refresh or publish side effect: a reserved
+    // record (or an alias of the reserved immutable account) never refreshes.
+    try {
+      const reservedIndex = buildReservedCodexIdentityIndex(await listRawCodexIdentityRecords(runtime.store));
+      assertCodexIdentityWriteAllowed({
+        index: reservedIndex,
+        label: normalizedLabel,
+        accountId: record?.identity?.accountId ?? record?.credential?.accountId ?? null,
+        operation: "codex credential maintenance",
+      });
+    } catch (error) {
+      fail("desktop_reserved", error);
+    }
     const missingRefreshMaterial = typeof record?.credential?.refresh !== "string"
       || !record.credential.refresh.trim()
       || typeof record?.credential?.accountId !== "string"
@@ -304,6 +333,29 @@ export async function maintainRedisCodexCredential(context, {
   return result ?? Object.freeze({ outcome: "retryable", reason: "maintenance_failed" });
 }
 
+/**
+ * Rejects a Desktop-reserved Codex record (or a same-immutable-account alias)
+ * at the helper's fresh-read boundary, before any token is returned or any
+ * refresh is attempted. Uses the raw record-level snapshot, which includes
+ * credential-empty identity records.
+ */
+function assertHarnessRecordNotDesktopReserved(runtime, record) {
+  if (record?.provider !== OPENAI_CODEX_PROVIDER) return;
+  const rawCodexRecords = (runtime.snapshot?.credentials ?? [])
+    .filter((candidate) => candidate.provider === OPENAI_CODEX_PROVIDER);
+  try {
+    const reservedIndex = buildReservedCodexIdentityIndex(rawCodexRecords);
+    assertCodexIdentityWriteAllowed({
+      index: reservedIndex,
+      label: record.label,
+      accountId: record?.identity?.accountId ?? record?.credential?.accountId ?? null,
+      operation: "harness credential access",
+    });
+  } catch (error) {
+    fail("desktop_reserved", error);
+  }
+}
+
 function mapClaudeMaintenanceResult(result) {
   if (result?.outcome === "refreshed" || result?.outcome === "unchanged") return;
   if (result?.outcome === "reauth_required") fail("reauth_required");
@@ -338,6 +390,7 @@ export async function resolveHarnessAccessCredential(context, {
     provider: normalizedProvider,
     label: normalizedLabel,
   });
+  assertHarnessRecordNotDesktopReserved(runtime, record);
   let validated = validateRecord(record, {
     nowMs: Number.isFinite(context?.nowMs) ? context.nowMs : Date.now(),
   });
@@ -377,6 +430,7 @@ export async function resolveHarnessAccessCredential(context, {
       provider: normalizedProvider,
       label: normalizedLabel,
     });
+    assertHarnessRecordNotDesktopReserved(runtime, record);
     validated = validateRecord(record, {
       nowMs: Number.isFinite(context?.nowMs) ? context.nowMs : Date.now(),
       requireFresh: true,
