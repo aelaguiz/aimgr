@@ -15,7 +15,7 @@ import { maintainRedisClaudeCredential } from "../../credentials/claude-maintena
 import { maintainRedisCodexCredential } from "../../credentials/harness-access.js";
 import {
   assertCodexCredentialWriteAllowedFresh,
-  assertCodexIdentityWriteAllowed,
+  assertCodexRecordUseAllowed,
   buildReservedCodexIdentityIndex,
   CODEX_DESKTOP_RESERVED_REASON,
   CodexDesktopReservedError,
@@ -161,10 +161,9 @@ async function handleOAuthMaintain(context) {
     const isDesktopReservedCodexRecord = (record) => {
       if (record.provider !== OPENAI_CODEX_PROVIDER || reservedCodexIndex.size === 0) return false;
       try {
-        assertCodexIdentityWriteAllowed({
+        assertCodexRecordUseAllowed({
           index: reservedCodexIndex,
-          label: record.label,
-          accountId: record.identity?.accountId ?? record.credential?.accountId ?? null,
+          record,
           operation: "codex credential maintenance scan",
         });
         return false;
@@ -312,7 +311,7 @@ export async function handleAuth(context) {
     const record = findCredentialRecord(runtime.snapshot, { provider: OPENAI_CODEX_PROVIDER, label });
     await assertCodexCredentialWriteAllowedFresh(runtime.store, {
       label,
-      accountId: record?.identity?.accountId ?? record?.credential?.accountId ?? null,
+      record,
       operation: "hermes auth write",
     });
     const written = writeHermesAuthFromState({ label, authPath: opts.authFile }, runtime.state);

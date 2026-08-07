@@ -11,6 +11,7 @@ import { readJsonFile, writeJsonFileIfChanged } from "../io/json-store.js";
 import {
   resolveAimgrStateDir,
   resolveHermesProfilesRoot,
+  resolveManagedCodexHomeDir,
   resolveOpenclawAuthStorePath,
 } from "../io/paths.js";
 import { discoverOpenclawAgentIdsWithAuthStores } from "../openclaw/stores.js";
@@ -328,6 +329,34 @@ export function drainCodexDesktopIdentityCopies({
     if (!dryRun) writeJsonFileIfChanged(authPath, sanitized.next, { mode: 0o600 });
   }
 
+  // The managed rotating home itself may hold the reserved account's raw
+  // tokens (a pre-pin selection or a raced projection). Deleting the one
+  // auth.json file removes the copy without rewriting secret material.
+  const managedCli = { scanned: 0, matched: 0, removed: 0, unreadable: 0 };
+  {
+    const managedAuthPath = path.join(resolveManagedCodexHomeDir({ homeDir }), "auth.json");
+    if (fsImpl.existsSync(managedAuthPath)) {
+      managedCli.scanned += 1;
+      let document;
+      try {
+        document = readJsonFile(managedAuthPath);
+      } catch {
+        managedCli.unreadable += 1;
+        document = null;
+      }
+      const managedAccountId = typeof document?.tokens?.account_id === "string"
+        ? document.tokens.account_id.trim()
+        : null;
+      if (managedAccountId && managedAccountId === targetAccountId) {
+        managedCli.matched += 1;
+        if (!dryRun) {
+          fsImpl.unlinkSync(managedAuthPath);
+          managedCli.removed += 1;
+        }
+      }
+    }
+  }
+
   const harnessBackups = { scanned: 0, matched: 0, removed: 0, unreadable: 0 };
   for (const targetId of HARNESS_BACKUP_TARGET_IDS) {
     const backupPath = path.join(
@@ -353,13 +382,14 @@ export function drainCodexDesktopIdentityCopies({
       // matching identity means deleting the file, never rewriting or
       // re-copying its secret material.
       fsImpl.unlinkSync(backupPath);
+      harnessBackups.removed += 1;
     }
-    harnessBackups.removed += 1;
   }
 
   const matched = openclaw.storesWithMatches > 0
     || openclaw.backupsWithMatches > 0
     || hermes.homesWithMatches > 0
+    || managedCli.matched > 0
     || harnessBackups.matched > 0;
   return Object.freeze({
     action: "codex_desktop_drain",
@@ -368,6 +398,7 @@ export function drainCodexDesktopIdentityCopies({
     wrote: dryRun !== true && matched,
     openclaw: Object.freeze(openclaw),
     hermes: Object.freeze(hermes),
+    managedCli: Object.freeze(managedCli),
     harnessBackups: Object.freeze(harnessBackups),
   });
 }

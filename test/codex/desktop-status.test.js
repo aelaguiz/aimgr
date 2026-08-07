@@ -125,10 +125,11 @@ test("missing native auth reports unreadable; missing reservation reports reserv
   assert.equal(unreserved.reserved, false);
   assert.equal(unreserved.reason, "reservation_missing");
 
-  // Without a raw record snapshot the reservation state is unknown, not guessed.
+  // Without a raw record snapshot the reservation state is unknown, not
+  // guessed — and the reason says so instead of implying full verification.
   const unknown = readCodexDesktopStatus({ state, homeDir: home });
   assert.equal(unknown.reserved, null);
-  assert.equal(unknown.reason, "ok");
+  assert.equal(unknown.reason, "reservation_unverified");
 });
 
 test("aim status reports safe codexDesktop and codexCli projections with no identity material", async () => {

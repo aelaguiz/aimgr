@@ -27,7 +27,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim codex run [label] [-- <codex args...>]  # the only supported terminal Codex lane: select into the locked AIM home and launch codex",
     "  aim codex desktop pin <label>    # reserve the Desktop identity: retire its Redis credential; native ~/.codex is never written",
     "  aim codex desktop unpin <label>  # release the Desktop reservation; the retired credential is never restored",
-    "  aim codex desktop drain <label> [--dry-run]  # remove local raw copies/backups of the reserved identity; never writes a new secret backup",
+    "  aim codex desktop drain <label> (--dry-run|--confirm)  # remove local raw copies/backups of the reserved identity; never writes a new secret backup",
     "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
     "  aim claude list [count] [--json]  # show recent local managed Claude sessions (default: 50)",
     "  aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus]  # optionally fork onto an exact label or the least-used unlocked account",

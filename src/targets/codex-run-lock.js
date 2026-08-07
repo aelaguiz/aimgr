@@ -116,7 +116,21 @@ export function acquireCodexRunLock({
       if (!existing.removable || attempt > 0) {
         throw new CodexRunLockHeldError({ lockDir, reason: existing.reason, owner: existing.owner });
       }
-      fs.rmSync(lockDir, { recursive: true, force: true });
+      // Reclamation must be single-winner: rename the proven-dead lock dir to
+      // a unique tombstone first. rename is atomic, so exactly one contender
+      // succeeds; the loser sees ENOENT (someone else reclaimed and possibly
+      // already re-acquired) and fails closed instead of rm-ing a directory
+      // that may by now be another live owner's fresh lock.
+      const tombstone = `${lockDir}.reclaim.${randomUUID()}`;
+      try {
+        fs.renameSync(lockDir, tombstone);
+      } catch (renameErr) {
+        if (renameErr?.code === "ENOENT") {
+          continue;
+        }
+        throw renameErr;
+      }
+      fs.rmSync(tombstone, { recursive: true, force: true });
     }
   }
 
@@ -128,6 +142,12 @@ export function acquireCodexRunLock({
     phase: CODEX_RUN_LOCK_PHASE_SELECTING,
   };
   writeOwnerFile(lockDir, owner);
+  // Paranoia re-read: if any interleaving replaced our lock between mkdir and
+  // the owner write landing, refuse to proceed rather than run un-serialized.
+  const settled = readOwnerMetadata(lockDir);
+  if (!settled || settled.nonce !== owner.nonce) {
+    throw new CodexRunLockHeldError({ lockDir, reason: "owner_metadata_contended", owner: settled });
+  }
 
   let released = false;
 

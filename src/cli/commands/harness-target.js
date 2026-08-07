@@ -236,7 +236,7 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
       if (selection.off || selection.provider !== OPENAI_CODEX_PROVIDER) continue;
       await assertCodexCredentialWriteAllowedFresh(runtime.store, {
         label: selection.record.label,
-        accountId: selection.record.identity?.accountId ?? selection.record.credential?.accountId ?? null,
+        record: selection.record,
         operation: `${targetId} codex binding`,
       });
     }

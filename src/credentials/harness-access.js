@@ -3,7 +3,7 @@ import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js"
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import {
-  assertCodexIdentityWriteAllowed,
+  assertCodexRecordUseAllowed,
   buildReservedCodexIdentityIndex,
   listRawCodexIdentityRecords,
 } from "../coordination/codex-identity.js";
@@ -258,10 +258,10 @@ export async function maintainRedisCodexCredential(context, {
     // record (or an alias of the reserved immutable account) never refreshes.
     try {
       const reservedIndex = buildReservedCodexIdentityIndex(await listRawCodexIdentityRecords(runtime.store));
-      assertCodexIdentityWriteAllowed({
+      assertCodexRecordUseAllowed({
         index: reservedIndex,
+        record,
         label: normalizedLabel,
-        accountId: record?.identity?.accountId ?? record?.credential?.accountId ?? null,
         operation: "codex credential maintenance",
       });
     } catch (error) {
@@ -345,10 +345,10 @@ function assertHarnessRecordNotDesktopReserved(runtime, record) {
     .filter((candidate) => candidate.provider === OPENAI_CODEX_PROVIDER);
   try {
     const reservedIndex = buildReservedCodexIdentityIndex(rawCodexRecords);
-    assertCodexIdentityWriteAllowed({
+    assertCodexRecordUseAllowed({
       index: reservedIndex,
+      record,
       label: record.label,
-      accountId: record?.identity?.accountId ?? record?.credential?.accountId ?? null,
       operation: "harness credential access",
     });
   } catch (error) {

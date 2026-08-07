@@ -101,6 +101,7 @@ aim auth write hermes <label> --auth-file <abs-path>
 aim codex run [label] [-- <codex args...>]
 aim codex desktop pin <label>
 aim codex desktop unpin <label>
+aim codex desktop drain <label> (--dry-run|--confirm)
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
 aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--verbose] [--json]
@@ -150,6 +151,13 @@ and restore path rejects that identity under any label. `aim codex desktop
 unpin <label>` releases the reservation without restoring the retired
 credential; a fresh `aim login <label>` is required before the account
 re-enters the pool.
+
+`aim codex desktop drain <label> (--dry-run|--confirm)` removes local raw
+copies of that identity — OpenClaw auth-profile stores and their timestamped
+backups, Hermes profile auth files, the managed rotating home's `auth.json`,
+and displaced Pi/Prime harness backups — without ever writing a new
+secret-bearing backup. Run it with `--dry-run` first; the mutating pass
+requires `--confirm`. Receipts carry counts and booleans only.
 
 `aim status` reports the two homes independently: rotating CLI label/lock state
 and Desktop expected-label/readable/match/reserved booleans with fixed reason

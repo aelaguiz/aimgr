@@ -1,11 +1,12 @@
 import os from "node:os";
+import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import {
   acquireCodexIdentityCatalogLease,
-  assertCodexIdentityWriteAllowed,
+  assertCodexRecordUseAllowed,
   buildCodexDesktopIdentityFingerprint,
   buildReservedCodexIdentityIndex,
   commitCodexIdentityRecordFenced,
@@ -15,16 +16,16 @@ import {
   listRawCodexIdentityRecords,
 } from "../../coordination/codex-identity.js";
 import { acquireRedisCredentialLease } from "../../coordination/redis-credential-lease.js";
-import { closeRedisRuntime, loadRedisRuntime, publishCodexReconciliation, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
+import { closeRedisRuntime, loadRedisRuntime, publishCodexReconciliation, refreshRedisRuntimeState, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { refreshCodexWithoutBrowser } from "../../credentials/codex-login.js";
-import { resolveManagedCodexHomeDir, resolveNativeCodexHomeDir } from "../../io/paths.js";
+import { resolveCodexAuthFilePath, resolveManagedCodexHomeDir, resolveNativeCodexHomeDir } from "../../io/paths.js";
 import { getCodexDesktopTargetState } from "../../state/accounts.js";
 import { readCodexAuthFile } from "../../targets/codex-store.js";
 import { activateCodexLabelSelection, reconcileCodexCliAuth } from "../../targets/codex-cli.js";
 import { drainCodexDesktopIdentityCopies } from "../../targets/codex-desktop-drain.js";
 import { acquireCodexRunLock } from "../../targets/codex-run-lock.js";
 
-const USAGE = "Usage: aim codex run [label] [-- codex-args...] | aim codex desktop pin <label> | aim codex desktop unpin <label> | aim codex desktop drain <label> [--dry-run]";
+const USAGE = "Usage: aim codex run [label] [-- codex-args...] | aim codex desktop pin <label> | aim codex desktop unpin <label> | aim codex desktop drain <label> (--dry-run|--confirm)";
 
 function emit(stdout, payload) {
   stdout.write(`${JSON.stringify(sanitizeForStatus(payload), null, 2)}\n`);
@@ -40,16 +41,21 @@ async function selectManagedCodexLabel(context, { runtime, explicitLabel }) {
   });
   await publishCodexReconciliation({ runtime, state: runtime.state, reconciliation });
 
-  // Fresh raw reservation scan: an explicit reserved label (or a reserved
-  // alias of the same immutable account) must fail closed with zero writes.
+  // Refresh the coordination view from a fresh snapshot so a reservation that
+  // landed after the initial load is visible to pool eligibility and to the
+  // pre-write projection gate inside applyCodexCliFromState. Then take a
+  // fresh raw reservation scan for the record-level gates; both the declared
+  // identity and the credential-embedded account are checked so a drifted
+  // alias record cannot rematerialize reserved material.
+  await refreshRedisRuntimeState(runtime);
   const rawRecords = await listRawCodexIdentityRecords(runtime.store);
   const reservedIndex = buildReservedCodexIdentityIndex(rawRecords);
   if (explicitLabel) {
     const targetRecord = rawRecords.find((record) => record.label === explicitLabel) ?? null;
-    assertCodexIdentityWriteAllowed({
+    assertCodexRecordUseAllowed({
       index: reservedIndex,
+      record: targetRecord,
       label: explicitLabel,
-      accountId: targetRecord?.identity?.accountId ?? targetRecord?.credential?.accountId ?? null,
       operation: "codex run selection",
     });
   }
@@ -67,12 +73,19 @@ async function selectManagedCodexLabel(context, { runtime, explicitLabel }) {
   if (activated.status !== "blocked") {
     const selectedLabel = activated.receipt?.label ?? null;
     const selectedRecord = rawRecords.find((record) => record.label === selectedLabel) ?? null;
-    assertCodexIdentityWriteAllowed({
-      index: reservedIndex,
-      label: selectedLabel,
-      accountId: selectedRecord?.identity?.accountId ?? null,
-      operation: "codex run selection",
-    });
+    try {
+      assertCodexRecordUseAllowed({
+        index: reservedIndex,
+        record: selectedRecord,
+        label: selectedLabel,
+        operation: "codex run selection",
+      });
+    } catch (err) {
+      // Defense in depth for a reservation that raced past the fresh scan:
+      // never leave just-projected reserved material in the managed home.
+      fs.rmSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir })), { force: true });
+      throw err;
+    }
   }
   writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
   return { reconciliation, activated };
@@ -128,7 +141,18 @@ async function handleCodexRun(context) {
         reject(err);
       });
       child.once("spawn", () => {
-        lock.recordChildPid(child.pid);
+        try {
+          lock.recordChildPid(child.pid);
+        } catch (err) {
+          // Lock contention discovered after spawn: stop the child rather
+          // than let it run against a home another owner may now rotate.
+          try {
+            child.kill("SIGTERM");
+          } catch {
+            // The child may already be gone; the rejection below still wins.
+          }
+          reject(err);
+        }
       });
       child.once("exit", (code, signal) => resolve({ code, signal }));
     });
@@ -215,6 +239,14 @@ async function handleCodexDesktopPin(context) {
 
       const existingReservation = getCodexDesktopReservation(record);
       if (existingReservation) {
+        // Reconcile host-local pin metadata even on noop: a crash between a
+        // successful fenced commit and the local-state write must not leave
+        // desktop status permanently unarmed on this host.
+        const desktopTarget = getCodexDesktopTargetState(runtime.state);
+        desktopTarget.expectedLabel = normalizedLabel;
+        desktopTarget.identityFingerprint = existingReservation.identityFingerprint;
+        desktopTarget.pinnedAt = existingReservation.reservedAt ?? observedAt;
+        writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
         emit(stdout, { ok: true, action: "codex_desktop_pin", status: "noop", label: normalizedLabel, reserved: true });
         return;
       }
@@ -243,7 +275,11 @@ async function handleCodexDesktopPin(context) {
 
       // Refresh the exact record to prove the Redis identity/lineage is live.
       // The refreshed material is deliberately discarded: pin retires the AIM
-      // credential rather than publishing one more secret copy.
+      // credential rather than publishing one more secret copy. Note the
+      // provider-side effect: the refresh may rotate the grant, so a pin that
+      // blocks AFTER this point can leave the stored (old) refresh token
+      // superseded; if that label later fails maintenance with
+      // reauth_required, run a fresh `aim login <label>`.
       let refreshedAccountId = accountId;
       if (Object.keys(record.credential ?? {}).length > 0) {
         let refreshed;
@@ -258,7 +294,9 @@ async function handleCodexDesktopPin(context) {
             action: "codex_desktop_pin",
             status: "blocked",
             label: normalizedLabel,
-            blockers: [{ reason: "credential_refresh_failed", detail: String(err?.message ?? err) }],
+            // Fixed reason only: an upstream refresh error message could echo
+            // identifiers, and receipts must stay value-free.
+            blockers: [{ reason: "credential_refresh_failed" }],
           });
           return;
         }
@@ -417,6 +455,8 @@ async function handleCodexDesktopUnpin(context) {
         emit(stdout, { ok: true, action: "codex_desktop_unpin", status: "noop", label: normalizedLabel, reserved: false });
         return;
       }
+      // Owner check is cooperative hostname equality: it prevents accidental
+      // cross-host unpins in a trusted fleet, not adversarial spoofing.
       const ownerHost = String(hostnameImpl() ?? "").trim() || "unknown-host";
       if (reservation.ownerHost !== ownerHost) {
         blocked(stdout, setExitCode, {
@@ -499,9 +539,15 @@ async function handleCodexDesktopUnpin(context) {
 async function handleCodexDesktopDrain(context) {
   const { opts, positional, homeDir, stdout, setExitCode, connectRedisStoreImpl } = context;
   const label = String(positional[3] ?? "").trim();
-  if (!label) throw new Error("Usage: aim codex desktop drain <label> [--dry-run]");
+  if (!label) throw new Error("Usage: aim codex desktop drain <label> [--dry-run|--confirm]");
   const normalizedLabel = normalizeLabel(label);
   const dryRun = opts.dryRun === true;
+  if (!dryRun && opts.confirm !== true) {
+    throw new Error(
+      "aim codex desktop drain mutates every local OpenClaw/Hermes/harness credential store for the "
+        + "named identity. Re-run with --dry-run to preview or --confirm to proceed.",
+    );
+  }
 
   const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
   let receipt;
@@ -518,6 +564,7 @@ async function handleCodexDesktopDrain(context) {
   }
   const unreadable = (receipt?.openclaw?.unreadable ?? 0)
     + (receipt?.hermes?.unreadable ?? 0)
+    + (receipt?.managedCli?.unreadable ?? 0)
     + (receipt?.harnessBackups?.unreadable ?? 0);
   emit(stdout, { ok: unreadable === 0, label: normalizedLabel, ...receipt });
   if (unreadable > 0) setExitCode(1);

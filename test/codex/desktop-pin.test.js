@@ -78,7 +78,12 @@ async function seedFixture({ records, nativeAccountId = null }) {
 }
 
 function redisDump(client) {
-  return JSON.stringify([...client.values.entries()].sort());
+  // Values AND index sets: an accidental index write must not slip past a
+  // "zero Redis writes" assertion.
+  return JSON.stringify([
+    [...client.values.entries()].sort(),
+    [...client.sets.entries()].map(([key, members]) => [key, [...members].sort()]).sort(),
+  ]);
 }
 
 test("happy pin reserves the identity, retires the credential, and never touches native auth", async () => {

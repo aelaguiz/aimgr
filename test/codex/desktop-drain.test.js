@@ -129,6 +129,17 @@ function seedDrainFixture() {
     provider: "openai-codex",
     entry: { type: "oauth", access: otherJwt, refresh: "PRIME_REFRESH", accountId: OTHER_ACCOUNT_ID, expires: 2 },
   });
+  // Managed rotating home holding the reserved account from a pre-pin selection.
+  writeJson(path.join(home, ".aimgr", "codex-cli", "auth.json"), {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: matchingJwt,
+      access_token: matchingJwt,
+      refresh_token: "REFRESH_MANAGED",
+      account_id: DESKTOP_ACCOUNT_ID,
+    },
+    last_refresh: "2026-08-07T00:00:00.000Z",
+  });
   return { home, matchingJwt, otherJwt };
 }
 
@@ -145,9 +156,12 @@ function assertExpectedCounts(receipt, { dryRun }) {
   assert.equal(receipt.hermes.homesWithMatches, 1);
   assert.equal(receipt.hermes.tokenSetsRemoved, 1);
   assert.equal(receipt.hermes.poolEntriesRemoved, 1);
+  assert.equal(receipt.managedCli.scanned, 1);
+  assert.equal(receipt.managedCli.matched, 1);
+  assert.equal(receipt.managedCli.removed, dryRun ? 0 : 1);
   assert.equal(receipt.harnessBackups.scanned, 2);
   assert.equal(receipt.harnessBackups.matched, 1);
-  assert.equal(receipt.harnessBackups.removed, dryRun ? 1 : 1);
+  assert.equal(receipt.harnessBackups.removed, dryRun ? 0 : 1);
 }
 
 test("dryRun scan reports exact counts and writes nothing", () => {

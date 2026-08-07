@@ -221,6 +221,11 @@ function buildWrittenRecord({ current, expectedVersion, nextRecord, updatedBy, o
 // This is the only shared mutation boundary for Redis-backed AIM state. Callers
 // pass record-shaped data; raw keys and WATCH/MULTI/EXEC stay here.
 //
+// WATCH is per-connection: never run two CAS operations concurrently on one
+// store client — one operation's EXEC/unwatch would silently clear the
+// other's WATCH set and turn its guarded commit into an unconditional write.
+// Every current caller serializes CAS calls per store; keep it that way.
+//
 // `fence` optionally names a live-token fence key (an identity-catalog lease).
 // When present the fence key is WATCHed together with the record key, the
 // commit verifies the live token before queueing, and any token change or key
@@ -268,6 +273,15 @@ export async function casPutJsonRecord(store, { key, indexKeys = [], expectedVer
       result = null;
     }
     if (result === null) {
+      // Diagnose the abort honestly: if the fence token no longer matches,
+      // the catalog lease was lost (expired/reacquired), which is a different
+      // operator condition than a concurrent record-version bump.
+      if (fence) {
+        const liveToken = await store.client.get(fence.key);
+        if (liveToken !== fence.token) {
+          return { ok: false, code: "fence_lost" };
+        }
+      }
       const latest = parseJsonRecord(await store.client.get(key), key);
       return { ok: false, code: "stale_version", currentVersion: latest?.version ?? null, current: latest };
     }

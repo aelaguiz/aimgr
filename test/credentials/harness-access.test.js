@@ -308,3 +308,90 @@ test("identity fingerprints use only provider-stable immutable identity bases", 
     (error) => error instanceof HarnessCredentialError && error.code === "credential_incomplete",
   );
 });
+
+
+test("credential helper rejects a Desktop-reserved binding and a drifted alias with zero writes", async () => {
+  const { buildCodexDesktopIdentityFingerprint } = await import("../../src/coordination/codex-identity.js");
+  const reservedAccess = makeFakeJwt({ "https://api.openai.com/auth": { chatgpt_account_id: "acct_reserved" } });
+  const reservedRecord = {
+    provider: "openai-codex",
+    label: "personal",
+    credential: {},
+    identity: { accountId: "acct_reserved" },
+    policy: {
+      reauth: {},
+      pool: { enabled: false, disabledReason: "codex_desktop_reserved" },
+      expect: {
+        codexDesktop: {
+          reserved: true,
+          ownerHost: "test-host",
+          identityFingerprint: buildCodexDesktopIdentityFingerprint("acct_reserved"),
+          reservedAt: "2026-08-07T00:00:00.000Z",
+        },
+      },
+    },
+    health: { status: "native_owned", reason: "codex_desktop_reserved" },
+  };
+  // Drifted alias: identity claims another account, credential material is the
+  // reserved account's. The gate must check both.
+  const drifted = {
+    provider: "openai-codex",
+    label: "drifter",
+    credential: {
+      access: reservedAccess,
+      refresh: "refresh_drifter",
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      accountId: "acct_reserved",
+      idToken: reservedAccess,
+    },
+    identity: { accountId: "acct_drift" },
+    policy: { reauth: {}, pool: { enabled: true } },
+    health: { status: "ready", reason: null },
+  };
+  const fixture = await runtimeFor([reservedRecord, drifted, codexRecord("alpha")]);
+  try {
+    const before = JSON.stringify([...fixture.client.values.entries()].sort());
+    for (const binding of ["personal", "drifter"]) {
+      const record = fixture.runtime.snapshot.credentials.find(
+        (entry) => entry.provider === "openai-codex" && entry.label === binding,
+      );
+      let fingerprint = null;
+      try {
+        fingerprint = buildHarnessIdentityFingerprint(record);
+      } catch {
+        fingerprint = "aimgr-id-v1:unavailable";
+      }
+      await assert.rejects(
+        () => resolveHarnessAccessCredential({
+          nowMs: Date.now(),
+          fetchJsonWithTimeoutImpl: async () => {
+            throw new Error("network must not be touched for a reserved binding");
+          },
+        }, {
+          runtime: fixture.runtime,
+          provider: "openai-codex",
+          binding,
+          expectedIdentityFingerprint: fingerprint,
+          // Force the maintenance path too: rejection must land before refresh.
+          rejectedCredentialVersion: record.version,
+        }),
+        (err) => err instanceof HarnessCredentialError && err.code === "desktop_reserved",
+      );
+    }
+    // Zero Redis writes across both rejections.
+    assert.equal(JSON.stringify([...fixture.client.values.entries()].sort()), before);
+    // A non-reserved sibling still resolves normally.
+    const alphaRecord = fixture.runtime.snapshot.credentials.find(
+      (entry) => entry.provider === "openai-codex" && entry.label === "alpha",
+    );
+    const ok = await resolveHarnessAccessCredential({ nowMs: Date.now() }, {
+      runtime: fixture.runtime,
+      provider: "openai-codex",
+      binding: "alpha",
+      expectedIdentityFingerprint: buildHarnessIdentityFingerprint(alphaRecord),
+    });
+    assert.equal(ok.ok, true);
+  } finally {
+    await closeRedisRuntime(fixture.runtime);
+  }
+});

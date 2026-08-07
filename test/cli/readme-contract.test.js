@@ -23,6 +23,7 @@ const PUBLIC_COMMAND_STEMS = [
   "aim codex run",
   "aim codex desktop pin",
   "aim codex desktop unpin",
+  "aim codex desktop drain",
   "aim hermes watch",
   "aim claude status",
   "aim claude usage",

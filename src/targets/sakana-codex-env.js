@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveManagedCodexHomeDir } from "../io/paths.js";
+import { acquireCodexRunLock } from "./codex-run-lock.js";
 import { buildSakanaKeyFingerprint, normalizeSakanaApiKey } from "../providers/sakana.js";
 
 export const SAKANA_CODEX_ENV_KEY = "SAKANA_API_KEY";
@@ -77,14 +78,22 @@ export function activateSakanaCodexEnvSelection({
   const normalizedApiKey = normalizeSakanaApiKey(apiKey);
   const expectedKeyFingerprint = buildSakanaKeyFingerprint(normalizedApiKey);
   const codexHome = resolveManagedCodexHomeDir({ homeDir });
+  // The managed home has exactly one writer contract: even this non-secret
+  // dotfile write serializes behind the same owner lock `aim codex run`
+  // holds, so it can never interleave with a live selection/launch.
   const envPath = resolveSakanaCodexEnvPath({ homeDir });
-  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-  const existingText = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
-  fs.writeFileSync(envPath, renderEnvWithSakanaKey(existingText, normalizedApiKey), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  fs.chmodSync(envPath, 0o600);
+  const lock = acquireCodexRunLock({ managedCodexHome: codexHome });
+  try {
+    fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    const existingText = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
+    fs.writeFileSync(envPath, renderEnvWithSakanaKey(existingText, normalizedApiKey), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    fs.chmodSync(envPath, 0o600);
+  } finally {
+    lock.release();
+  }
   const readback = readSakanaCodexTargetStatus({ homeDir });
   const receipt = {
     action: "sakana_use",

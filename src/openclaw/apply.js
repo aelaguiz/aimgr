@@ -194,6 +194,11 @@ export function applyOpenclawFromState(params, state, { pinsOverride, managedAge
       }
     }
 
+    // Cutover ordering note: this writer snapshots the PRE-change store into
+    // a timestamped .bak. During the quiescent migration, run
+    // `aim codex desktop drain` (step 2) BEFORE re-running apply; if an apply
+    // happens out of order, re-run drain so no .bak retains the reserved
+    // identity's raw material.
     if (writeJsonFileWithBackupIfChanged(storePath, next).wrote) {
       wrote.push(storePath);
     }

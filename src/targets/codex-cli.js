@@ -20,6 +20,7 @@ import { markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
 import { getAuthorityCodexImport } from "../state/authority-codex.js";
 import { ensureStateShape } from "../state/schema.js";
 import { buildCodexDesktopIdentityFingerprint, getCodexDesktopReservation } from "../coordination/codex-identity.js";
+import { assertCodexStateCredentialUseAllowed } from "./codex-desktop-drain.js";
 import { buildCodexAuthDotJson, clearManagedCodexCliActivation, ensureFileBackedCodexHome, readCodexAuthFile, readCodexCliStoreMode } from "./codex-store.js";
 
 export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
@@ -45,6 +46,15 @@ export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
     label: normalizedLabel,
     credential: getCodexCredential(state, normalizedLabel),
     requireFresh: true,
+  });
+
+  // Zero-write reservation gate before the managed home is touched: neither a
+  // reserved label nor credential material belonging to the Desktop-reserved
+  // immutable account may be projected, even through a drifted alias record.
+  assertCodexStateCredentialUseAllowed(state, {
+    label: normalizedLabel,
+    accountId: credential.accountId,
+    operation: "codex managed-home projection",
   });
 
   const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
@@ -271,7 +281,12 @@ export function readCodexDesktopStatus({ state, homeDir, rawRecords = null }) {
         ? "native_identity_mismatch"
         : reserved === false
           ? "reservation_missing"
-          : "ok";
+          : reserved === null
+            // Redis unavailable: the pin looks locally healthy but the
+            // reservation could not be verified this run — say so instead of
+            // implying a fully verified "ok".
+            ? "reservation_unverified"
+            : "ok";
 
   return { nativeHome, expectedLabel, pinned, pinnedAt, readable, match, reserved, reason };
 }

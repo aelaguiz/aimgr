@@ -84,16 +84,20 @@ export class FakeRedisClient {
   async eval(script, { keys = [], arguments: args = [] } = {}) {
     const [key, targetKey] = keys;
     this.expireIfNeeded(key);
+    // Real Redis reports script SET/PEXPIRE/DEL touches of a WATCHed key as
+    // modifications, so every mutating script branch bumps the key version.
     if (script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
       const owner = this.values.get(key);
       if (owner !== undefined && owner !== args[0]) return 0;
       this.values.set(key, args[0]);
       this.expirations.set(key, this.nowMs + Number(args[1]));
+      this.bumpKeyVersion(key);
       return 1;
     }
     if (script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_V1")) {
       if (this.values.get(key) !== args[0]) return 0;
       this.expirations.set(key, this.nowMs + Number(args[1]));
+      this.bumpKeyVersion(key);
       return 1;
     }
     if (script.includes("AIMGR_CREDENTIAL_LEASE_RELEASE_V1")) {
@@ -103,6 +107,7 @@ export class FakeRedisClient {
     if (script.includes("AIMGR_CODEX_IDENTITY_CATALOG_LEASE_RENEW_V1")) {
       if (this.values.get(key) !== args[0]) return 0;
       this.expirations.set(key, this.nowMs + Number(args[1]));
+      this.bumpKeyVersion(key);
       return 1;
     }
     if (script.includes("AIMGR_CODEX_IDENTITY_CATALOG_LEASE_RELEASE_V1")) {

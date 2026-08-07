@@ -110,10 +110,33 @@ export function assertCodexIdentityWriteAllowed({ index, label, accountId, opera
   }
 }
 
-/** Fresh-read convenience wrapper around the reservation gate. */
-export async function assertCodexCredentialWriteAllowedFresh(store, { label, accountId, operation } = {}) {
+/**
+ * Record-shaped gate that checks BOTH the declared identity accountId and the
+ * credential-embedded accountId. A drifted record (identity says one account,
+ * credential material actually belongs to another) must not slip past a gate
+ * that only consults the declared identity.
+ */
+export function assertCodexRecordUseAllowed({ index, record, label = record?.label ?? null, operation } = {}) {
+  const identityAccountId = typeof record?.identity?.accountId === "string" ? record.identity.accountId.trim() : "";
+  const credentialAccountId = typeof record?.credential?.accountId === "string" ? record.credential.accountId.trim() : "";
+  assertCodexIdentityWriteAllowed({ index, label, accountId: identityAccountId || null, operation });
+  if (credentialAccountId && credentialAccountId !== identityAccountId) {
+    assertCodexIdentityWriteAllowed({ index, label, accountId: credentialAccountId, operation });
+  }
+}
+
+/**
+ * Fresh-read convenience wrapper around the reservation gate. When a full
+ * record is provided, both its declared identity and credential-embedded
+ * account IDs are checked.
+ */
+export async function assertCodexCredentialWriteAllowedFresh(store, { label, accountId, record = null, operation } = {}) {
   const index = await readReservedCodexIdentityIndex(store);
-  assertCodexIdentityWriteAllowed({ index, label, accountId, operation });
+  if (record) {
+    assertCodexRecordUseAllowed({ index, record, label: label ?? record.label ?? null, operation });
+  } else {
+    assertCodexIdentityWriteAllowed({ index, label, accountId, operation });
+  }
   return index;
 }
 
@@ -146,7 +169,9 @@ return 0
 
 /**
  * Provider-wide Codex identity-catalog lease with a unique opaque token per
- * acquisition. Serializes every identity-changing Codex write. The lease
+ * acquisition. Requires Redis >= 6.0.9: the fenced commit relies on key
+ * expiry aborting a transaction that WATCHes the lease key; older servers do
+ * not signal expiry to WATCH and could let a stale scan commit. Serializes every identity-changing Codex write. The lease
  * exposes no key or token; identity commits go through
  * `commitCodexIdentityRecordFenced`, which fences the write on the live token
  * so an expired/reacquired lease can never commit a stale scan. Any failed or
