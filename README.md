@@ -98,8 +98,9 @@ Target projections:
 aim rebalance openclaw
 aim rebalance hermes
 aim auth write hermes <label> --auth-file <abs-path>
-aim codex use [label]
-aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
+aim codex run [label] [-- <codex args...>]
+aim codex desktop pin <label>
+aim codex desktop unpin <label>
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
 aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--verbose] [--json]
@@ -121,6 +122,38 @@ aim prime use --codex <auto|label|off> --claude <fable|opus|label|off>
 aim prime status
 aim prime uninstall [--provider <openai-codex|anthropic>]
 ```
+
+### Codex two-home ownership
+
+Codex has exactly two local homes with different owners:
+
+- Native `~/.codex` belongs to the Codex Desktop app and its own login/refresh.
+  AIM only ever reads it and never writes, creates, or repairs anything under it.
+- `~/.aimgr/codex-cli` is AIM's single rotating Codex CLI home. It is the only
+  home AIM mutates, and every mutation happens inside `aim codex run`.
+
+`aim codex use` and `aim codex watch` are removed: the managed home has exactly
+one writer, and `aim codex run [label] [-- <codex args...>]` is the only
+supported terminal Codex lane. It selects a pooled label (least-used when no
+label is given), projects it into the managed home under a run-scoped owner
+lock that is held until the launched `codex` child exits, and refuses
+concurrent runs. Raw `codex` against native `~/.codex` is outside the Desktop
+stability guarantee.
+
+`aim codex desktop pin <label>` reserves the Desktop identity for the native
+app: it verifies the Redis and native identities match, retires the label's
+Redis credential, and never touches native auth. Pin during a quiescent window
+— Desktop signed into the target account and no AIM maintainers, watchers, or
+raw Codex processes running — so no stale copy of the personal credential
+survives the transfer. After pin, every AIM publisher, helper, materializer,
+and restore path rejects that identity under any label. `aim codex desktop
+unpin <label>` releases the reservation without restoring the retired
+credential; a fresh `aim login <label>` is required before the account
+re-enters the pool.
+
+`aim status` reports the two homes independently: rotating CLI label/lock state
+and Desktop expected-label/readable/match/reserved booleans with fixed reason
+codes — never raw account IDs, tokens, or enrollment data.
 
 
 ### Pi and Prime managed credentials
@@ -228,7 +261,7 @@ aim sakana remove <account-name>
 
 Provide the key with `--key`, by piping it on stdin (`echo "$KEY" | aim sakana add pro1`), or
 interactively when prompted. The raw key is never echoed back and never written to `local-state.json`.
-`aim sakana use <account-name>` preserves unrelated `~/.codex/.env` lines, updates only
+`aim sakana use <account-name>` preserves unrelated `~/.aimgr/codex-cli/.env` lines, updates only
 `SAKANA_API_KEY`, writes the file as `0600`, and records only a redacted local receipt.
 
 Browser binding policy:
@@ -257,7 +290,7 @@ Redis records own shared credential truth:
 
 Local target files are derived outputs:
 
-- Codex: `~/.codex/auth.json`
+- Codex: `~/.aimgr/codex-cli/auth.json` (native `~/.codex` is Desktop-owned and never written by AIM)
 - Claude: `~/.claude/.credentials.json` and `~/.claude.json`
 - Pi: `~/.pi/agent/auth.json` (non-secret external descriptors for managed providers)
 - Prime: `~/.prime/agent/auth.json` (non-secret external descriptors for managed providers)

@@ -36,9 +36,11 @@ export function buildWarningsFromState(state) {
     list.push(label);
     byAccountId.set(accountId, list);
   }
-  for (const [accountId, labels] of byAccountId.entries()) {
+  // Collisions name only the aliased labels: the shared immutable account ID
+  // stays out of every operator-visible warning payload.
+  for (const labels of byAccountId.values()) {
     if (labels.length > 1) {
-      warnings.push({ kind: "account_id_collision", provider: OPENAI_CODEX_PROVIDER, accountId, labels });
+      warnings.push({ kind: "account_id_collision", provider: OPENAI_CODEX_PROVIDER, labels });
     }
   }
 

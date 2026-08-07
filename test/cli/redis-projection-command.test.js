@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
@@ -137,14 +138,31 @@ function assertCanonicalAnthropicCredential(record, expectedRefreshToken) {
   }
 }
 
-test("redis-configured codex use projects from Redis and writes only local adjunct state", async () => {
+function buildFakeCodexSpawn({ exitCode = 0 } = {}) {
+  const calls = [];
+  const spawnCodexImpl = (command, args, options) => {
+    calls.push({ command, args, options });
+    const child = new EventEmitter();
+    child.pid = 4242;
+    process.nextTick(() => {
+      child.emit("spawn");
+      process.nextTick(() => child.emit("exit", exitCode, null));
+    });
+    return child;
+  };
+  spawnCodexImpl.calls = calls;
+  return spawnCodexImpl;
+}
+
+test("redis-configured codex run projects from Redis and writes only local adjunct state", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   await seedOpenAiRedis({ home, client });
 
-  const out = await runCli(["codex", "use", "boss", "--home", home], {
+  const out = await runCli(["codex", "run", "boss", "--home", home], {
     env: {},
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    spawnCodexImpl: buildFakeCodexSpawn(),
   });
   const result = JSON.parse(out);
   assert.equal(result.ok, true);
@@ -156,9 +174,11 @@ test("redis-configured codex use projects from Redis and writes only local adjun
   const local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
   assert.equal(local.targets.codexCli.activeLabel, "boss");
   assert.doesNotMatch(JSON.stringify(local), /REFRESH_BOSS/);
+  // Run output stays label/reason/boolean only.
+  assert.doesNotMatch(out, /acct_boss|REFRESH_BOSS|wss:\/\//);
 });
 
-test("redis-configured automatic codex use selects the lowest current 5h usage", async () => {
+test("redis-configured automatic codex run selects the lowest current 5h usage", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   await seedOpenAiRedis({
@@ -170,9 +190,10 @@ test("redis-configured automatic codex use selects the lowest current 5h usage",
     ],
   });
 
-  const out = await runCli(["codex", "use", "--home", home], {
+  const out = await runCli(["codex", "run", "--home", home], {
     env: {},
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    spawnCodexImpl: buildFakeCodexSpawn(),
     probeUsageSnapshotsByProviderImpl: async () => ({
       "openai-codex": {
         qa: {
@@ -193,7 +214,7 @@ test("redis-configured automatic codex use selects the lowest current 5h usage",
   assert.deepEqual(result.activated.receipt.reasons, ["lowest_5h_used"]);
 });
 
-test("redis-configured codex use does not publish stale local auth before projection", async () => {
+test("redis-configured codex run does not publish stale local auth before projection", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedOpenAiRedis({ home, client });
@@ -216,9 +237,10 @@ test("redis-configured codex use does not publish stale local auth before projec
     },
   });
 
-  const out = await runCli(["codex", "use", "boss", "--home", home], {
+  const out = await runCli(["codex", "run", "boss", "--home", home], {
     env: {},
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    spawnCodexImpl: buildFakeCodexSpawn(),
   });
 
   const result = JSON.parse(out);
@@ -230,14 +252,15 @@ test("redis-configured codex use does not publish stale local auth before projec
   assert.equal(auth.tokens.refresh_token, "REFRESH_BOSS");
 });
 
-test("redis-configured codex watch publishes live auth rotation before exit", async () => {
+test("redis-configured codex run publishes a newer local auth rotation before selection", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedOpenAiRedis({ home, client });
 
-  await runCli(["codex", "use", "boss", "--home", home], {
+  await runCli(["codex", "run", "boss", "--home", home], {
     env: {},
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    spawnCodexImpl: buildFakeCodexSpawn(),
   });
   const rotated = codexCredential("acct_boss", "REFRESH_ROTATED", Date.now() + 2 * 3600_000);
   writeJson(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home, env: {} })), {
@@ -250,14 +273,10 @@ test("redis-configured codex watch publishes live auth rotation before exit", as
     last_refresh: new Date().toISOString(),
   });
 
-  const out = await runCli(["codex", "watch", "--once", "--home", home], {
+  const out = await runCli(["codex", "run", "boss", "--home", home], {
     env: {},
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
-    probeUsageSnapshotsByProviderImpl: async () => ({
-      "openai-codex": {
-        boss: { ok: true, windows: [{ usedPercent: 1 }] },
-      },
-    }),
+    spawnCodexImpl: buildFakeCodexSpawn(),
   });
   const result = JSON.parse(out);
   assert.equal(result.ok, true);
@@ -275,15 +294,14 @@ test("two Redis-configured AIM homes read and update the same shared credential"
     homeDir: homeB,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
   });
+  const depsFor = () => ({
+    env: {},
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    spawnCodexImpl: buildFakeCodexSpawn(),
+  });
 
-  await runCli(["codex", "use", "boss", "--home", homeA], {
-    env: {},
-    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
-  });
-  await runCli(["codex", "use", "boss", "--home", homeB], {
-    env: {},
-    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
-  });
+  await runCli(["codex", "run", "boss", "--home", homeA], depsFor());
+  await runCli(["codex", "run", "boss", "--home", homeB], depsFor());
 
   const rotated = codexCredential(
     "acct_boss",
@@ -300,21 +318,10 @@ test("two Redis-configured AIM homes read and update the same shared credential"
     last_refresh: new Date().toISOString(),
   });
 
-  const watchOut = await runCli(["codex", "watch", "--once", "--home", homeA], {
-    env: {},
-    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
-    probeUsageSnapshotsByProviderImpl: async () => ({
-      "openai-codex": {
-        boss: { ok: true, windows: [{ usedPercent: 1 }] },
-      },
-    }),
-  });
-  assert.equal(JSON.parse(watchOut).reconciliation.status, "local_newer");
+  const runAOut = await runCli(["codex", "run", "boss", "--home", homeA], depsFor());
+  assert.equal(JSON.parse(runAOut).reconciliation.status, "local_newer");
 
-  await runCli(["codex", "use", "boss", "--home", homeB], {
-    env: {},
-    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
-  });
+  await runCli(["codex", "run", "boss", "--home", homeB], depsFor());
   const homeBAuth = JSON.parse(fs.readFileSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: homeB, env: {} })), "utf8"));
   assert.equal(homeBAuth.tokens.refresh_token, "REFRESH_ROTATED_BY_HOME_A");
   const snapshot = await readSnapshot(store);

@@ -4,6 +4,7 @@ import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js"
 import { isObject, normalizeAgentId, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { readJsonFile, writeJsonFileWithBackupIfChanged } from "../io/json-store.js";
+import { assertCodexStateCredentialUseAllowed } from "../targets/codex-desktop-drain.js";
 import { resolveHomeDir, resolveOpenclawAuthStorePath } from "../io/paths.js";
 import { discoverOpenclawAgentIdsWithAuthStores } from "./stores.js";
 import { getOpenclawPins } from "../state/accounts.js";
@@ -49,6 +50,15 @@ export function applyOpenclawFromState(params, state, { pinsOverride, managedAge
     if (!supportedProviderSet.has(provider)) {
       throw new Error(`OpenClaw assignment references unsupported provider: agent=${agentId} label=${label} provider=${provider}`);
     }
+    if (provider === OPENAI_CODEX_PROVIDER) {
+      // Desktop-reserved identities must never rematerialize into consumer
+      // files; the reserved label fails with its fixed reason before the
+      // generic missing-credential error can mask it.
+      assertCodexStateCredentialUseAllowed(state, {
+        label,
+        operation: "OpenClaw codex materialization",
+      });
+    }
     const credsByLabel = state.credentials[provider];
     if (!isObject(credsByLabel?.[label])) {
       throw new Error(`OpenClaw assignment references label with missing credentials: agent=${agentId} label=${label} provider=${provider}`);
@@ -71,6 +81,15 @@ export function applyOpenclawFromState(params, state, { pinsOverride, managedAge
       const expiresMs = parseExpiresAtToMs(cred.expiresAt);
       if (!expiresMs) {
         throw new Error(`credentials.${provider}.${label}.expiresAt is missing/invalid.`);
+      }
+      if (provider === OPENAI_CODEX_PROVIDER) {
+        // Alias gate: a non-reserved label carrying the reserved immutable
+        // account must also be refused before any file write.
+        assertCodexStateCredentialUseAllowed(state, {
+          label,
+          accountId: typeof cred.accountId === "string" ? cred.accountId : null,
+          operation: "OpenClaw codex materialization",
+        });
       }
       const expectEmail = typeof accounts[label]?.expect?.email === "string" ? accounts[label].expect.email : null;
 

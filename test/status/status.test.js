@@ -36,6 +36,8 @@ test("unconfigured status ignores legacy secrets and reports local target facts"
 
   assert.equal(parsed.redis.status, "unconfigured");
   assert.equal(parsed.codexCli.activeLabel, "boss");
+  assert.equal(parsed.codexDesktop.reason, "not_pinned");
+  assert.equal(parsed.codexDesktop.reserved, null);
   assert.equal(parsed.claudeCli.lastRunLabel, "writer");
   assert.deepEqual(parsed.accounts, []);
   assert.doesNotMatch(out, /LEGACY_ACCESS_SECRET|LEGACY_REFRESH_SECRET|legacy-account|retired/);
@@ -62,6 +64,14 @@ test("plain status shows coordination provenance and canonical account facts", (
       },
     }],
     codexCli: { activeLabel: "boss" },
+    codexDesktop: {
+      expectedLabel: "personal",
+      pinned: true,
+      readable: true,
+      match: true,
+      reserved: true,
+      reason: "ok",
+    },
     claudeCli: { lastRunLabel: "pro7" },
   };
   const claudeUsageStatus = {
@@ -94,7 +104,10 @@ test("plain status shows coordination provenance and canonical account facts", (
   assert.match(text, /CLAUDE: 0 ready · 1 in use · 0 needs you · 0 unknown/);
   assert.match(text, /pro7\s+IN USE\s+23%\s+3\.0h\s+45%\s+6\.0d\s+67%\s+6\.0d\s+--\s+--\s+2m\s+session active/);
   assert.doesNotMatch(text, /usage_readable|unpublished/);
-  assert.match(text, /\nCODEX ACTIVE\nlabel=boss .*\n\nCLAUDE LAST RUN\nlabel=pro7\n$/);
+  assert.match(
+    text,
+    /\nCODEX DESKTOP\nlabel=personal  readable=yes  match=yes  reserved=yes  reason=ok\n\nCODEX ACTIVE\nlabel=boss .*\n\nCLAUDE LAST RUN\nlabel=pro7\n$/,
+  );
   assert.doesNotMatch(text, /POOL NOW|PRESSURE|PROJECTION|NEXT BEST|WARNINGS|requests=|cache_state=/);
 });
 
@@ -109,7 +122,7 @@ test("compact status is limited to coordination, account count, and local target
   assert.equal(text, "redis=cache  accounts=2  codex=boss  claude_last=writer  cache_age=65s\n");
 });
 
-test("status reports the Codex identity actually present in the native auth file", () => {
+test("compact status prefers the label inferred from the managed Codex auth file", () => {
   const text = renderStatusCompactText({
     redis: { status: "live" },
     accounts: [{}, {}],

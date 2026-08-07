@@ -21,9 +21,10 @@ import { resolveManagedCodexHomeDir, resolveNativeCodexHomeDir } from "../../io/
 import { getCodexDesktopTargetState } from "../../state/accounts.js";
 import { readCodexAuthFile } from "../../targets/codex-store.js";
 import { activateCodexLabelSelection, reconcileCodexCliAuth } from "../../targets/codex-cli.js";
+import { drainCodexDesktopIdentityCopies } from "../../targets/codex-desktop-drain.js";
 import { acquireCodexRunLock } from "../../targets/codex-run-lock.js";
 
-const USAGE = "Usage: aim codex run [label] [-- codex-args...] | aim codex desktop pin <label> | aim codex desktop unpin <label>";
+const USAGE = "Usage: aim codex run [label] [-- codex-args...] | aim codex desktop pin <label> | aim codex desktop unpin <label> | aim codex desktop drain <label> [--dry-run]";
 
 function emit(stdout, payload) {
   stdout.write(`${JSON.stringify(sanitizeForStatus(payload), null, 2)}\n`);
@@ -489,6 +490,39 @@ async function handleCodexDesktopUnpin(context) {
   }
 }
 
+/**
+ * Identity-targeted local cleanup for the quiescent migration: removes raw
+ * credential copies of the exact reserved account from OpenClaw/Hermes active
+ * stores, AIM-created backups, and displaced Pi/Prime harness backups on this
+ * host. Never creates a replacement secret backup; `--dry-run` scans only.
+ */
+async function handleCodexDesktopDrain(context) {
+  const { opts, positional, homeDir, stdout, setExitCode, connectRedisStoreImpl } = context;
+  const label = String(positional[3] ?? "").trim();
+  if (!label) throw new Error("Usage: aim codex desktop drain <label> [--dry-run]");
+  const normalizedLabel = normalizeLabel(label);
+  const dryRun = opts.dryRun === true;
+
+  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
+  let receipt;
+  try {
+    const rawRecords = await listRawCodexIdentityRecords(runtime.store);
+    receipt = drainCodexDesktopIdentityCopies({
+      homeDir,
+      label: normalizedLabel,
+      records: rawRecords,
+      dryRun,
+    });
+  } finally {
+    await closeRedisRuntime(runtime);
+  }
+  const unreadable = (receipt?.openclaw?.unreadable ?? 0)
+    + (receipt?.hermes?.unreadable ?? 0)
+    + (receipt?.harnessBackups?.unreadable ?? 0);
+  emit(stdout, { ok: unreadable === 0, label: normalizedLabel, ...receipt });
+  if (unreadable > 0) setExitCode(1);
+}
+
 export async function handleCodex(context) {
   const { positional } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
@@ -512,6 +546,10 @@ export async function handleCodex(context) {
     }
     if (desktopCmd === "unpin") {
       await handleCodexDesktopUnpin(context);
+      return;
+    }
+    if (desktopCmd === "drain") {
+      await handleCodexDesktopDrain(context);
       return;
     }
     throw new Error(`Unsupported codex desktop subcommand: ${desktopCmd || "(none)"}. ${USAGE}`);

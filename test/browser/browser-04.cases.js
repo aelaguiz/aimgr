@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,7 +21,7 @@ import {
 } from "../helpers/files.js";
 import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
-test("codex use selects fresh browser-managed labels even when the AIM browser dir is missing", async () => {
+test("codex run selects fresh browser-managed labels even when the AIM browser dir is missing", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const lessonsJwt = makeFakeJwt({
@@ -130,14 +131,29 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     throw new Error(`Unexpected fetch url in test: ${u}`);
   };
 
-    const result = JSON.parse(await runCli(["codex", "use", "--home", home], { fetchImpl }));
+    // `aim codex run` replaced `codex use`: same least-used selection, but the
+    // projection lands only in the managed home and native ~/.codex stays alone.
+    const spawnCodexImpl = (command, args, options) => {
+      const child = new EventEmitter();
+      child.pid = 4242;
+      process.nextTick(() => {
+        child.emit("spawn");
+        process.nextTick(() => child.emit("exit", 0, null));
+      });
+      return child;
+    };
+    const result = JSON.parse(await runCli(["codex", "run", "--home", home], { fetchImpl, spawnCodexImpl, env: {} }));
     assert.equal(result.ok, true);
     assert.equal(result.activated.status, "activated");
     assert.equal(result.activated.receipt.label, "lessons");
     assert.deepEqual(result.activated.receipt.reasons, ["lowest_5h_used"]);
 
-    const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
+    const auth = JSON.parse(fs.readFileSync(
+      path.join(home, ".aimgr", "codex-cli", "auth.json"),
+      "utf8",
+    ));
     assert.equal(auth.tokens.account_id, "acct_lessons");
+    assert.equal(fs.existsSync(path.join(home, ".codex", "auth.json")), false);
 
     const status = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
     const lessons = status.accounts.find((account) => account.label === "lessons");

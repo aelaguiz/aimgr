@@ -110,11 +110,11 @@ test("aim sakana list and show redact the key; remove deletes it", async () => {
   assert.equal(snapshot.credentials.filter((c) => c.provider === "sakana").length, 1);
 });
 
-test("aim sakana use projects the selected key to ~/.codex/.env and preserves unrelated lines", async () => {
+test("aim sakana use projects the selected key to ~/.aimgr/codex-cli/.env and preserves unrelated lines", async () => {
   const home = mkTempHome();
   configureRedis(home);
   const client = new FakeRedisClient();
-  const codexHome = path.join(home, ".codex");
+  const codexHome = path.join(home, ".aimgr", "codex-cli");
   const envPath = path.join(codexHome, ".env");
   const authPath = path.join(codexHome, "auth.json");
   fs.mkdirSync(codexHome, { recursive: true });
@@ -148,7 +148,7 @@ test("aim sakana use projects the selected key to ~/.codex/.env and preserves un
   assert.doesNotMatch(localStateText, /fish_key_one/);
 });
 
-test("aim sakana use can create ~/.codex/.env when it does not exist", async () => {
+test("aim sakana use can create ~/.aimgr/codex-cli/.env when it does not exist", async () => {
   const home = mkTempHome();
   configureRedis(home);
   const client = new FakeRedisClient();
@@ -158,7 +158,7 @@ test("aim sakana use can create ~/.codex/.env when it does not exist", async () 
   });
   await runCli(["sakana", "use", "pro1", "--home", home], { connectRedisStoreImpl: connect(client) });
 
-  assert.equal(fs.readFileSync(path.join(home, ".codex", ".env"), "utf8"), "SAKANA_API_KEY=fish_key_one\n");
+  assert.equal(fs.readFileSync(path.join(home, ".aimgr", "codex-cli", ".env"), "utf8"), "SAKANA_API_KEY=fish_key_one\n");
 });
 
 test("aim sakana add refuses to change the key of an existing account name", async () => {

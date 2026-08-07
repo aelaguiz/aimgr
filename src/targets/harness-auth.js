@@ -454,6 +454,11 @@ export async function uninstallHarnessProvider({
   authPath,
   provider,
   persistTargetState = async () => {},
+  // Reservation gate for restoring a displaced raw auth backup. Callers with
+  // coordination access must inject a fresh-read check (see the CLI's Codex
+  // Desktop gate); a thrown error aborts the transaction before any write and
+  // leaves the backup file untouched for operator inspection.
+  assertRestoredEntryAllowed = async () => {},
   fsImpl = fs,
   lockfileImpl = lockfile,
 }) {
@@ -503,6 +508,15 @@ export async function uninstallHarnessProvider({
     const current = isObject(auth[provider]) ? auth[provider] : null;
     if (currentPresent && !current) {
       throw new Error(`Refusing malformed current ${provider} auth.`);
+    }
+    if (backupPath && fsImpl.existsSync(backupPath) && pending?.phase !== "auth_restored") {
+      // Gate the displaced backup before any pending-transition receipt or
+      // auth write exists: a refused restoration leaves local state, the auth
+      // file, and the backup file exactly as they were.
+      await assertRestoredEntryAllowed({
+        provider,
+        entry: readDisplacedEntryBackup({ backupPath, targetId, provider, fsImpl }),
+      });
     }
     if (!pending) {
       pending = {

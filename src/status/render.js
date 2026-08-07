@@ -27,6 +27,28 @@ function pushStatusAccountTable(lines, { heading, accounts, now }) {
   lines.push(...formatStatusTable(accountRows));
 }
 
+
+/**
+ * One safe Desktop line: expected label plus readable/match/reserved booleans
+ * and the fixed reason code. Never identity, fingerprint, or enrollment data.
+ */
+function formatStatusBoolean(value) {
+  return typeof value === "boolean" ? (value ? "yes" : "no") : "--";
+}
+
+function renderCodexDesktopStatusText(codexDesktop) {
+  const label =
+    typeof codexDesktop?.expectedLabel === "string" && codexDesktop.expectedLabel.trim()
+      ? codexDesktop.expectedLabel.trim()
+      : "none";
+  const reason = typeof codexDesktop?.reason === "string" && codexDesktop.reason.trim() ? codexDesktop.reason.trim() : "unknown";
+  return `label=${label}`
+    + `  readable=${formatStatusBoolean(codexDesktop?.readable)}`
+    + `  match=${formatStatusBoolean(codexDesktop?.match)}`
+    + `  reserved=${formatStatusBoolean(codexDesktop?.reserved)}`
+    + `  reason=${reason}`;
+}
+
 export function renderStatusText(view, {
   showAssignments = false,
   showAccounts = true,
@@ -77,6 +99,9 @@ export function renderStatusText(view, {
     }
   }
 
+  lines.push("");
+  lines.push("CODEX DESKTOP");
+  lines.push(renderCodexDesktopStatusText(view.codexDesktop));
   lines.push("");
   lines.push("CODEX ACTIVE");
   lines.push(renderCurrentCodexUsageText(view, { now }).trimEnd());

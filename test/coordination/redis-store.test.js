@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildRedisConnectionPolicy,
+  casPutJsonRecord,
   connectRedisStore,
   importCredentialsSnapshot,
   publishCredential,
@@ -10,6 +11,7 @@ import {
   REDIS_CONNECTION_POLICY_OBSERVE,
   REDIS_CONNECTION_POLICY_ONE_SHOT,
 } from "../../src/coordination/redis-store.js";
+import { FakeRedisClient as WatchFakeRedisClient } from "../helpers/fake-redis.js";
 
 class FakeRedisClient {
   constructor({ failExecOnce = false } = {}) {
@@ -111,10 +113,23 @@ test("Redis connection policies bound observations and initial leased acquisitio
   assert.equal(leased.initialConnectTimeoutMs, 5_000);
 
   let destroyed = false;
+  // The store's initial-deadline timer is unref'd, so the stalled fake connect
+  // must hold a ref'd timer of its own to keep the event loop alive until the
+  // deadline fires, and destroy() must settle the stalled promise so the test
+  // never ends with a pending promise (Node 22 fails such tests).
+  let abortConnect;
+  let stallTimer = null;
   const stalledClient = {
     on() {},
-    connect: () => new Promise(() => {}),
-    destroy() { destroyed = true; },
+    connect: () => new Promise((_, reject) => {
+      abortConnect = reject;
+      stallTimer = setTimeout(() => reject(new Error("stalled connect gave up")), 5_000);
+    }),
+    destroy() {
+      destroyed = true;
+      clearTimeout(stallTimer);
+      abortConnect?.(new Error("destroyed"));
+    },
   };
   await assert.rejects(
     () => connectRedisStore({
@@ -227,4 +242,54 @@ test("Redis store imports credential snapshots into an empty namespace", async (
   assert.equal(snapshot.meta.migration.id, "import-1");
   assert.equal(snapshot.credentials[0].label, "boss");
   assert.deepEqual(snapshot.credentials[0].credential, { ok: true });
+});
+
+test("casPutJsonRecord refuses to write when the fence token is not live", async () => {
+  const client = new WatchFakeRedisClient();
+  const store = await connectRedisStore({ client, keyPrefix: "aimgr:fence-test" });
+  const key = store.keys.credential({ provider: "openai-codex", label: "boss" });
+  const fenceKey = "aimgr:fence-test:lease:identity-catalog:openai-codex";
+  await client.set(fenceKey, "winner-token");
+
+  const result = await casPutJsonRecord(store, {
+    key,
+    expectedVersion: null,
+    nextRecord: { provider: "openai-codex", label: "boss" },
+    updatedBy: "aimgr-cli",
+    observedAt: "2026-08-07T00:00:00.000Z",
+    fence: { key: fenceKey, token: "stale-token" },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "fence_lost");
+  assert.equal(await client.get(key), null);
+});
+
+test("casPutJsonRecord aborts EXEC when the watched fence key expires mid-commit", async () => {
+  const client = new WatchFakeRedisClient({ nowMs: 0 });
+  const store = await connectRedisStore({ client, keyPrefix: "aimgr:fence-test" });
+  const key = store.keys.credential({ provider: "openai-codex", label: "boss" });
+  const fenceKey = "aimgr:fence-test:lease:identity-catalog:openai-codex";
+  await client.set(fenceKey, "live-token", { expiration: { type: "PX", value: 100 } });
+
+  // The fence GET must still see the live token; the expiry lands between
+  // that check and EXEC, so only real WATCH semantics can abort the write.
+  const originalGet = client.get.bind(client);
+  client.get = async (target) => {
+    const value = await originalGet(target);
+    if (target === fenceKey) client.advanceTime(150);
+    return value;
+  };
+
+  const result = await casPutJsonRecord(store, {
+    key,
+    expectedVersion: null,
+    nextRecord: { provider: "openai-codex", label: "boss" },
+    updatedBy: "aimgr-cli",
+    observedAt: "2026-08-07T00:00:00.000Z",
+    fence: { key: fenceKey, token: "live-token" },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(await originalGet(key), null);
 });

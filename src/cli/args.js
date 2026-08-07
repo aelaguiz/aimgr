@@ -293,6 +293,13 @@ export function parseArgs(argv) {
       opts.confirm = true;
       continue;
     }
+    if (arg === "--dry-run") {
+      if (argv[0] !== "codex" || argv[1] !== "desktop" || argv[2] !== "drain") {
+        throw new Error("Unknown option: --dry-run");
+      }
+      opts.dryRun = true;
+      continue;
+    }
     if (arg === "--interval-seconds") {
       opts.intervalSeconds = argv[i + 1];
       i += 1;

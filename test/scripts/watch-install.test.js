@@ -71,18 +71,17 @@ test("watch installers render one-shot Linux services in print-only mode", () =>
     "17",
   ];
 
-  const codex = runInstaller("install-codex-watch.sh", baseArgs, { env });
-  assert.equal(codex.status, 0, codex.stderr);
-  assert.match(codex.stdout, /# Linux systemd service/);
-  assert.match(codex.stdout, /Unit=aim-codex-watch\.service/);
-  assert.match(codex.stdout, /OnUnitActiveSec=123s/);
-  assert.ok(codex.stdout.includes(`${process.execPath} ${path.join(process.cwd(), "bin", "aimgr.js")} codex watch --once`));
-  assert.ok(codex.stdout.includes(`--rotate-below-5h-remaining-pct 17 --home ${home}`));
+  // The Codex watch installer is deleted with `aim codex use/watch`; Hermes
+  // remains the only watch scheduler surface.
+  assert.equal(fs.existsSync(path.join("scripts", "install-codex-watch.sh")), false);
 
   const hermes = runInstaller("install-hermes-watch.sh", baseArgs, { env });
   assert.equal(hermes.status, 0, hermes.stderr);
+  assert.match(hermes.stdout, /# Linux systemd service/);
   assert.match(hermes.stdout, /Unit=aim-hermes-watch\.service/);
+  assert.match(hermes.stdout, /OnUnitActiveSec=123s/);
   assert.ok(hermes.stdout.includes(`${process.execPath} ${path.join(process.cwd(), "bin", "aimgr.js")} hermes watch --once`));
+  assert.ok(hermes.stdout.includes(`--rotate-below-5h-remaining-pct 17 --home ${home}`));
 });
 
 test("watch status does not require Node and reads only the temp scheduler root", () => {
@@ -95,7 +94,7 @@ test("watch status does not require Node and reads only the temp scheduler root"
   installFakeCommands(fakeBin, { systemctlLogPath });
 
   const result = runInstaller(
-    "install-codex-watch.sh",
+    "install-hermes-watch.sh",
     [
       "--status",
       "--user",
@@ -118,7 +117,7 @@ test("watch status does not require Node and reads only the temp scheduler root"
   assert.equal(result.status, 1);
   assert.match(
     result.stderr,
-    new RegExp(`Not installed: ${schedulerRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/etc/systemd/system/aim-codex-watch\\.service`),
+    new RegExp(`Not installed: ${schedulerRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/etc/systemd/system/aim-hermes-watch\\.service`),
   );
   assert.doesNotMatch(result.stderr, /Missing Node binary/);
   assert.equal(fs.existsSync(systemctlLogPath), false);
@@ -133,12 +132,12 @@ test("watch status uses fake systemctl only when temp-root units exist", () => {
   const systemctlLogPath = path.join(root, "systemctl.log");
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(systemdDir, { recursive: true });
-  fs.writeFileSync(path.join(systemdDir, "aim-codex-watch.service"), "[Service]\n", "utf8");
-  fs.writeFileSync(path.join(systemdDir, "aim-codex-watch.timer"), "[Timer]\n", "utf8");
+  fs.writeFileSync(path.join(systemdDir, "aim-hermes-watch.service"), "[Service]\n", "utf8");
+  fs.writeFileSync(path.join(systemdDir, "aim-hermes-watch.timer"), "[Timer]\n", "utf8");
   installFakeCommands(fakeBin, { systemctlLogPath });
 
   const result = runInstaller(
-    "install-codex-watch.sh",
+    "install-hermes-watch.sh",
     [
       "--status",
       "--user",
@@ -160,7 +159,7 @@ test("watch status uses fake systemctl only when temp-root units exist", () => {
   // otherwise a harmless audit check can inspect the host scheduler by accident.
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stderr, /Missing Node binary/);
-  assert.equal(fs.readFileSync(systemctlLogPath, "utf8").trim(), "status aim-codex-watch.timer --no-pager");
+  assert.equal(fs.readFileSync(systemctlLogPath, "utf8").trim(), "status aim-hermes-watch.timer --no-pager");
 });
 
 test("watch uninstall removes only temp-root scheduler files and does not require Node", () => {
@@ -216,7 +215,7 @@ test("watch launchd status and uninstall stay inside temp scheduler roots", () =
   const fakeBin = path.join(root, "bin");
   const home = path.join(root, "home");
   const schedulerRoot = path.join(root, "scheduler-root");
-  const label = "com.funcountry.agents_host.aim_codex_watch";
+  const label = "com.funcountry.agents_host.aim_hermes_watch";
   const plistPath = path.join(schedulerRoot, "Library", "LaunchDaemons", `${label}.plist`);
   const legacySystemAgent = path.join(schedulerRoot, "Library", "LaunchAgents", `${label}.plist`);
   const legacyUserAgent = path.join(home, "Library", "LaunchAgents", `${label}.plist`);
@@ -242,12 +241,12 @@ test("watch launchd status and uninstall stay inside temp scheduler roots", () =
     path.join(root, "missing-node"),
   ];
 
-  const status = runInstaller("install-codex-watch.sh", ["--status", ...commonArgs], { env });
+  const status = runInstaller("install-hermes-watch.sh", ["--status", ...commonArgs], { env });
   assert.equal(status.status, 0, status.stderr);
   assert.doesNotMatch(status.stderr, /Missing Node binary/);
   assert.equal(fs.readFileSync(launchctlLogPath, "utf8").trim(), `print system/${label}`);
 
-  const uninstall = runInstaller("install-codex-watch.sh", ["--uninstall", ...commonArgs], { env });
+  const uninstall = runInstaller("install-hermes-watch.sh", ["--uninstall", ...commonArgs], { env });
   // Launchd cleanup reaches several service aliases. With the temp root and fake
   // launchctl, the audit can prove those removals without touching host LaunchDaemons.
   assert.equal(uninstall.status, 0, uninstall.stderr);

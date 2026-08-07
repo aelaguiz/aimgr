@@ -100,6 +100,15 @@ export class FakeRedisClient {
       if (this.values.get(key) !== args[0]) return 0;
       return this.del(key);
     }
+    if (script.includes("AIMGR_CODEX_IDENTITY_CATALOG_LEASE_RENEW_V1")) {
+      if (this.values.get(key) !== args[0]) return 0;
+      this.expirations.set(key, this.nowMs + Number(args[1]));
+      return 1;
+    }
+    if (script.includes("AIMGR_CODEX_IDENTITY_CATALOG_LEASE_RELEASE_V1")) {
+      if (this.values.get(key) !== args[0]) return 0;
+      return this.del(key);
+    }
     if (script.includes("AIMGR_CREDENTIAL_LEASE_GUARDED_DELETE_V1")) {
       this.expireIfNeeded(targetKey);
       if (this.values.get(key) !== args[0]) return 0;

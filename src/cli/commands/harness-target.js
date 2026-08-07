@@ -6,6 +6,12 @@ import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { readHeldRedisCredentialLeaseLabels } from "../../coordination/redis-credential-lease.js";
 import {
+  assertCodexCredentialWriteAllowedFresh,
+  assertCodexIdentityWriteAllowed,
+  readReservedCodexIdentityIndex,
+} from "../../coordination/codex-identity.js";
+import { resolveCodexAuthEntryAccountId } from "../../targets/codex-desktop-drain.js";
+import {
   closeRedisRuntime,
   isRedisConfigured,
   loadRedisRuntime,
@@ -35,6 +41,24 @@ import { createPrimeTargetAdapter } from "../../targets/prime-agent.js";
 
 function adapterFor(targetId, options) {
   return targetId === "pi" ? createPiTargetAdapter(options) : createPrimeTargetAdapter(options);
+}
+
+/**
+ * Fresh-read reservation gate for restoring a displaced raw Codex auth backup
+ * during harness uninstall. A backup whose immutable account is
+ * Desktop-reserved must never rematerialize into a consumer auth file; the
+ * gate throws with the fixed codex_desktop_reserved reason and the backup file
+ * is left in place for operator cleanup (never deleted silently).
+ */
+async function assertCodexBackupRestoreAllowed({ store, targetId, entry }) {
+  const accountId = resolveCodexAuthEntryAccountId(entry);
+  if (!accountId) return;
+  const index = await readReservedCodexIdentityIndex(store);
+  assertCodexIdentityWriteAllowed({
+    index,
+    accountId,
+    operation: `${targetId} uninstall auth restore`,
+  });
 }
 
 function exactRecord(snapshot, provider, label) {
@@ -205,6 +229,17 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
       return { ok: false, receipt };
     }
 
+    // Codex reservation gate before any install/uninstall write in this
+    // command: a Desktop-reserved label or same-immutable-account alias fails
+    // the whole selection with its fixed reason and zero writes.
+    for (const selection of resolved.selections) {
+      if (selection.off || selection.provider !== OPENAI_CODEX_PROVIDER) continue;
+      await assertCodexCredentialWriteAllowedFresh(runtime.store, {
+        label: selection.record.label,
+        accountId: selection.record.identity?.accountId ?? selection.record.credential?.accountId ?? null,
+        operation: `${targetId} codex binding`,
+      });
+    }
     const changes = [];
     for (const selection of resolved.selections) {
       if (selection.off) {
@@ -214,6 +249,10 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
           authPath: adapter.authPath,
           provider: selection.provider,
           persistTargetState,
+          assertRestoredEntryAllowed: async ({ provider, entry }) => {
+            if (provider !== OPENAI_CODEX_PROVIDER) return;
+            await assertCodexBackupRestoreAllowed({ store: runtime.store, targetId, entry });
+          },
         }));
         writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
         continue;
@@ -364,6 +403,27 @@ async function handleUninstall(context, targetId) {
   const localState = loadLocalState({ homeDir });
   const adapter = adapterFor(targetId, { state: localState, homeDir, env });
   const persistTargetState = async () => writeLocalStateImpl({ homeDir, localState });
+  // Uninstall runs without a loaded runtime, so the restore gate connects on
+  // demand only when a displaced Codex backup would actually be restored.
+  // Coordination that is unconfigured or unreachable fails closed: without a
+  // fresh reservation read there is no proof the backup identity is not
+  // Desktop-reserved, and a displaced backup must never become a side door.
+  const assertRestoredEntryAllowed = async ({ provider, entry }) => {
+    if (provider !== OPENAI_CODEX_PROVIDER) return;
+    if (!resolveCodexAuthEntryAccountId(entry)) return;
+    if (!isRedisConfigured({ homeDir })) {
+      throw new Error(
+        `Refusing ${targetId} uninstall auth restore: Redis coordination is not configured, `
+          + "so the Desktop reservation state cannot be verified (codex_desktop_reserved fail-closed).",
+      );
+    }
+    const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl: context.connectRedisStoreImpl });
+    try {
+      await assertCodexBackupRestoreAllowed({ store: runtime.store, targetId, entry });
+    } finally {
+      await closeRedisRuntime(runtime);
+    }
+  };
   const changes = [];
   for (const provider of normalizeUninstallProviders(opts.provider)) {
     changes.push(await uninstallHarnessProvider({
@@ -372,6 +432,7 @@ async function handleUninstall(context, targetId) {
       authPath: adapter.authPath,
       provider,
       persistTargetState,
+      assertRestoredEntryAllowed,
     }));
   }
   adapter.targetState.lastUninstallReceipt = {

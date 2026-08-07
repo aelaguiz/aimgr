@@ -2,7 +2,9 @@ import { setBrowserBindingFromCli } from "../../browser/bindings-cli.js";
 import { showBrowserBinding } from "../../browser/bindings.js";
 import { readAimgrConfig } from "../../config/aimgr-config.js";
 import { buildLocalBrowserBindingsFromState, buildSharedBrowserPolicy } from "../../coordination/browser-policy.js";
+import { publishCodexCredentialRecordGuarded } from "../../coordination/codex-identity.js";
 import { closeRedisStore, connectRedisStore, publishCredential, readSnapshot } from "../../coordination/redis-store.js";
+import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { buildCoordinationView, findCredentialRecord } from "../../coordination/snapshot.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { writeJsonFileWithBackup } from "../../io/json-store.js";
@@ -39,7 +41,16 @@ async function handleRedisBrowser(context, { subcmd, label }) {
         browserBindings: buildLocalBrowserBindingsFromState(state),
       },
     });
-    const published = await publishCredential(store, {
+    // Codex policy writes round-trip through the guarded identity path so a
+    // browser-binding edit can never drop or alter a Desktop reservation.
+    const publishImpl = currentCredential.provider === OPENAI_CODEX_PROVIDER
+      ? (targetStore, args) => publishCodexCredentialRecordGuarded(targetStore, {
+          ...args,
+          operation: "codex browser policy publication",
+          allowReservedPolicyRoundTrip: true,
+        })
+      : publishCredential;
+    const published = await publishImpl(store, {
       expectedVersion: currentCredential.version,
       updatedBy: "aimgr-cli",
       observedAt: new Date(nowMs).toISOString(),

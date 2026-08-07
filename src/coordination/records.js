@@ -49,18 +49,25 @@ export function normalizeCredentialRecord(record = {}, { now = new Date().toISOS
   if (!provider) throw new Error("Redis credential record is missing provider.");
   const label = normalizeLabel(source.label);
   const credential = isObject(source.credential) ? source.credential : {};
+  const policy = normalizeCredentialPolicy(source);
   return {
     kind: "aimgr.credential.v1",
     provider,
     label,
     credential,
     identity: isObject(source.identity) ? source.identity : isObject(source.stableIdentity) ? source.stableIdentity : {},
-    policy: normalizeCredentialPolicy(source),
+    policy,
+    // A Desktop-reserved record is deliberately credential-empty but is not a
+    // pool "candidate": its credential lineage is native-owned by the Codex
+    // Desktop app, so normalization must round-trip that fixed health shape
+    // instead of downgrading it to credential_missing.
     health: hasCredentialMaterial(credential)
       ? isObject(source.health)
         ? source.health
         : { status: "ready", reason: null }
-      : { status: "candidate", reason: "credential_missing" },
+      : policy.expect?.codexDesktop?.reserved === true
+        ? { status: "native_owned", reason: "codex_desktop_reserved" }
+        : { status: "candidate", reason: "credential_missing" },
     provenance: isObject(source.provenance) ? source.provenance : {},
     createdAt: timestamp(source.createdAt, now),
     updatedAt: timestamp(source.updatedAt, now),

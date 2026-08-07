@@ -11,11 +11,12 @@ import {
 } from "../coordination/redis-store.js";
 import { buildClaudeCredentialSummaryFromBundle } from "../credentials/claude-bundle.js";
 import { getAnthropicCredentialView } from "../credentials/anthropic.js";
-import { resolveAimgrRedisCachePath } from "../io/paths.js";
+import { resolveAimgrRedisCachePath, resolveManagedCodexHomeDir } from "../io/paths.js";
 import { collectCodexUsageSnapshots, probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { loadLocalState } from "../state/local-state.js";
 import { readClaudeCliTargetStatus } from "../targets/claude-status.js";
-import { readCodexCliTargetStatus } from "../targets/codex-cli.js";
+import { buildWarningsFromCodexTargetStatus, readCodexCliTargetStatus, readCodexDesktopStatus } from "../targets/codex-cli.js";
+import { readCodexRunLockStatus } from "../targets/codex-run-lock.js";
 import { collectClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
 import {
   AIMGR_REDIS_STATUS_CACHE_KIND,
@@ -128,6 +129,18 @@ function projectTarget(value, kind) {
   };
 }
 
+/** Cache-safe Desktop projection: label, booleans, and one fixed reason code. */
+function projectCodexDesktopTarget(value) {
+  return {
+    expectedLabel: safeToken(value?.expectedLabel),
+    pinned: value?.pinned === true,
+    readable: value?.readable === true,
+    match: typeof value?.match === "boolean" ? value.match : null,
+    reserved: typeof value?.reserved === "boolean" ? value.reserved : null,
+    reason: safeToken(value?.reason) ?? "unknown",
+  };
+}
+
 function projectRedisSummary(value) {
   const credentialCount = Number(value?.credentialCount);
   const cacheAgeMs = Number(value?.cacheAgeMs);
@@ -167,6 +180,7 @@ export function buildRedisDiagnosticCacheView(view) {
     statePath: safeText(view?.statePath) ?? "redis:unavailable",
     accounts: (Array.isArray(view?.accounts) ? view.accounts : []).slice(0, 512).map(projectStatusAccount).filter(Boolean),
     codexCli: projectTarget(view?.codexCli, "codex"),
+    codexDesktop: projectCodexDesktopTarget(view?.codexDesktop),
     claudeCli: projectTarget(view?.claudeCli, "claude"),
     redis: projectRedisSummary(view?.redis),
     redisCredentials: (Array.isArray(view?.redisCredentials) ? view.redisCredentials : [])
@@ -214,17 +228,93 @@ function buildRedisSummary({ configRead, snapshot, cachePath, status = "live", e
   };
 }
 
-function readLocalTargetFacts({ state, homeDir, env }) {
+function projectCodexSelectionReceipt(receipt) {
+  if (!receipt || typeof receipt !== "object") return null;
+  return {
+    action: safeToken(receipt.action),
+    status: safeToken(receipt.status),
+    ...(safeTimestamp(receipt.observedAt) ? { observedAt: safeTimestamp(receipt.observedAt) } : {}),
+    ...(safeToken(receipt.label) ? { label: safeToken(receipt.label) } : {}),
+    ...(safeToken(receipt.previousLabel) ? { previousLabel: safeToken(receipt.previousLabel) } : {}),
+    reasons: (Array.isArray(receipt.reasons) ? receipt.reasons : []).map(safeToken).filter(Boolean),
+    warnings: (Array.isArray(receipt.warnings) ? receipt.warnings : []).flatMap((warning) => {
+      const kind = safeToken(warning?.kind) ?? safeToken(warning?.reason);
+      return kind ? [{ kind }] : [];
+    }),
+    blockers: (Array.isArray(receipt.blockers) ? receipt.blockers : []).flatMap((blocker) => {
+      const reason = safeToken(blocker?.reason);
+      return reason ? [{ reason, ...(safeToken(blocker?.label) ? { label: safeToken(blocker.label) } : {}) }] : [];
+    }),
+    wroteAuthJson: receipt.wroteAuthJson === true,
+  };
+}
+
+/** Read-only managed-home run-lock state: booleans and fixed reason codes only. */
+function readCodexRunLockFacts({ homeDir }) {
+  try {
+    const status = readCodexRunLockStatus({ managedCodexHome: resolveManagedCodexHomeDir({ homeDir }) });
+    if (status.locked !== true) return { locked: false };
+    return {
+      locked: true,
+      phase: safeToken(status.phase),
+      managerAlive: typeof status.managerAlive === "boolean" ? status.managerAlive : null,
+      childAlive: typeof status.childAlive === "boolean" ? status.childAlive : null,
+      recoverable: status.recoverable === true,
+      reason: safeToken(status.reason),
+    };
+  } catch {
+    return { locked: null };
+  }
+}
+
+/**
+ * Safe rotating-CLI status projection. This is an explicit allowlist — labels,
+ * paths, booleans, fixed warning kinds, and the run lock — because the raw
+ * target status carries immutable account IDs that must never reach status
+ * output or the diagnostic cache.
+ */
+function projectCodexCliFacts(status, { homeDir }) {
+  return {
+    status: "managed",
+    homeDir: status.homeDir ?? null,
+    authPath: status.authPath ?? null,
+    storeMode: safeToken(status.storeMode),
+    activeLabel: safeToken(status.activeLabel),
+    inferredLabel: safeToken(status.inferredLabel),
+    authFilePresent: status.readback?.exists === true,
+    authReadable: status.readback?.ok === true,
+    accountMatchesExpected:
+      status.expectedAccountId && status.actualAccountId
+        ? status.expectedAccountId === status.actualAccountId
+        : null,
+    ...(safeTimestamp(status.lastAppliedAt) ? { lastAppliedAt: safeTimestamp(status.lastAppliedAt) } : {}),
+    lastSelectionReceipt: projectCodexSelectionReceipt(status.lastSelectionReceipt),
+    warnings: buildWarningsFromCodexTargetStatus(status).flatMap((warning) => {
+      const kind = safeToken(warning?.kind);
+      return kind ? [{ kind, ...(safeToken(warning?.label) ? { label: safeToken(warning.label) } : {}) }] : [];
+    }),
+    lock: readCodexRunLockFacts({ homeDir }),
+  };
+}
+
+function readLocalTargetFacts({ state, homeDir, env, rawCodexRecords = null }) {
   let codexCli;
   let claudeCli;
   try {
-    codexCli = readCodexCliTargetStatus({ state, homeDir, env });
+    codexCli = projectCodexCliFacts(readCodexCliTargetStatus({ state, homeDir, env }), { homeDir });
   } catch {
     codexCli = {
       status: "unreadable",
-      activeLabel: state?.targets?.codexCli?.activeLabel ?? null,
+      activeLabel: safeToken(state?.targets?.codexCli?.activeLabel),
       inferredLabel: null,
+      lock: readCodexRunLockFacts({ homeDir }),
     };
+  }
+  let codexDesktop;
+  try {
+    codexDesktop = readCodexDesktopStatus({ state, homeDir, rawRecords: rawCodexRecords });
+  } catch {
+    codexDesktop = { status: "unreadable", expectedLabel: null, readable: false, match: null, reserved: null, reason: "status_unreadable" };
   }
   try {
     claudeCli = readClaudeCliTargetStatus({ state, homeDir, env });
@@ -235,7 +325,7 @@ function readLocalTargetFacts({ state, homeDir, env }) {
       inferredLabel: null,
     };
   }
-  return { codexCli, claudeCli };
+  return { codexCli, codexDesktop, claudeCli };
 }
 
 function credentialStatusForCodex(record, nowMs) {
@@ -371,7 +461,9 @@ export async function buildRedisStatusView({
     const snapshot = await readSnapshot(store);
     const localState = loadLocalState({ homeDir });
     const state = buildCoordinationView(snapshot, { localState });
-    const targets = readLocalTargetFacts({ state, homeDir, env });
+    // The raw record snapshot (including credential-empty identity records)
+    // feeds only the reserved boolean; identity fields never leave the reader.
+    const targets = readLocalTargetFacts({ state, homeDir, env, rawCodexRecords: snapshot.credentials });
 
     let claudeUsageStatus;
     try {
@@ -480,6 +572,7 @@ export async function buildRedisStatusView({
     cached.generatedAt = new Date(nowMs).toISOString();
     cached.nowMs = nowMs;
     cached.codexCli = localFallback.codexCli;
+    cached.codexDesktop = localFallback.codexDesktop;
     cached.claudeCli = localFallback.claudeCli;
     cached.redis = buildRedisSummary({
       configRead,

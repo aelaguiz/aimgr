@@ -13,6 +13,13 @@ import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.j
 import { getAnthropicCredentialView } from "../../credentials/anthropic.js";
 import { maintainRedisClaudeCredential } from "../../credentials/claude-maintenance.js";
 import { maintainRedisCodexCredential } from "../../credentials/harness-access.js";
+import {
+  assertCodexCredentialWriteAllowedFresh,
+  assertCodexIdentityWriteAllowed,
+  buildReservedCodexIdentityIndex,
+  CODEX_DESKTOP_RESERVED_REASON,
+  CodexDesktopReservedError,
+} from "../../coordination/codex-identity.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { writeHermesAuthFromState } from "../../targets/hermes-auth.js";
 
@@ -143,9 +150,34 @@ async function handleOAuthMaintain(context) {
     skipped: 0,
   };
   try {
+    // Desktop-reserved Codex identities are skipped up front with their fixed
+    // reason: the per-record maintainer would fail them anyway (its own fresh
+    // gate throws desktop_reserved), but a reservation is an expected steady
+    // state, not a per-run maintenance error. Built from the record-level
+    // snapshot, which includes credential-empty identity-only records.
+    const reservedCodexIndex = buildReservedCodexIdentityIndex(
+      (runtime.snapshot?.credentials ?? []).filter((record) => record.provider === OPENAI_CODEX_PROVIDER),
+    );
+    const isDesktopReservedCodexRecord = (record) => {
+      if (record.provider !== OPENAI_CODEX_PROVIDER || reservedCodexIndex.size === 0) return false;
+      try {
+        assertCodexIdentityWriteAllowed({
+          index: reservedCodexIndex,
+          label: record.label,
+          accountId: record.identity?.accountId ?? record.credential?.accountId ?? null,
+          operation: "codex credential maintenance scan",
+        });
+        return false;
+      } catch (error) {
+        if (error instanceof CodexDesktopReservedError) return true;
+        throw error;
+      }
+    };
     for (const record of sortedMaintenanceRecords(runtime.snapshot)) {
       let maintenanceResult = null;
-      if (
+      if (isDesktopReservedCodexRecord(record)) {
+        maintenanceResult = { outcome: "skipped", reason: CODEX_DESKTOP_RESERVED_REASON };
+      } else if (
         !hasLoadedCredential(record)
         || isTerminallyMarked(record)
         // Claude applies its own refresh due gate after the per-label lease is held.
@@ -274,6 +306,15 @@ export async function handleAuth(context) {
   const label = normalizeLabel(positional[3]);
   const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
   try {
+    // Fresh raw-record reservation read (store handle available here): a
+    // Desktop-reserved label or same-account alias never reaches the Hermes
+    // file writer, even if the loaded state snapshot predates the pin.
+    const record = findCredentialRecord(runtime.snapshot, { provider: OPENAI_CODEX_PROVIDER, label });
+    await assertCodexCredentialWriteAllowedFresh(runtime.store, {
+      label,
+      accountId: record?.identity?.accountId ?? record?.credential?.accountId ?? null,
+      operation: "hermes auth write",
+    });
     const written = writeHermesAuthFromState({ label, authPath: opts.authFile }, runtime.state);
     stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, written }), null, 2)}\n`);
   } finally {

@@ -99,6 +99,16 @@ test("Redis status view reads shared credentials, writes redacted cache, and has
   assert.equal(result.view.redis.credentialCount, 1);
   assert.equal(result.view.accounts[0].label, "boss");
   assert.equal(result.view.codexCli.activeLabel, "boss");
+  assert.equal(result.view.codexCli.lock.locked, false);
+  assert.equal(result.view.codexDesktop.reason, "not_pinned");
+  assert.equal(result.view.codexDesktop.reserved, false);
+  assert.equal(result.view.redisCredentials[0].status, "ready");
+  // The full status view is identity-free: raw immutable account IDs live only
+  // inside the reader, never in the projected codexCli/codexDesktop facts.
+  assert.doesNotMatch(
+    JSON.stringify({ codexCli: result.view.codexCli, codexDesktop: result.view.codexDesktop }),
+    /acct_boss|REFRESH_BOSS|cache-private@example|org-cache-private/,
+  );
   assert.equal(result.view.redisCredentials[0].status, "ready");
   assert.equal(Object.hasOwn(result.view, "redisSessionMatrix"), false);
   assert.equal(Object.hasOwn(result.view, "redisMachines"), false);
@@ -113,7 +123,8 @@ test("Redis status view reads shared credentials, writes redacted cache, and has
     cache,
     /cache-user|cache-password|cache-query-secret|cache-private@example|acct_boss|org-cache-private|private\/cache\/browser|RAW_PRIVATE_HEALTH_REASON/,
   );
-  assert.doesNotMatch(cache, /"identity"|"policy"|"reason"/);
+  assert.doesNotMatch(cache, /"identity"|"policy"/);
+  assert.doesNotMatch(cache, /RAW_PRIVATE_HEALTH_REASON/);
 });
 
 test("Redis status view uses diagnostic cache when Redis is unavailable", async () => {

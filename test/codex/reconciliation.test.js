@@ -8,7 +8,31 @@ import {
   reconcileCodexCliAuth,
 } from "../../src/targets/codex-cli.js";
 import { collectCodexUsageSnapshots } from "../../src/pool/usage.js";
+import { resolveCodexAuthFilePath, resolveManagedCodexHomeDir, resolveNativeCodexHomeDir } from "../../src/io/paths.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
+
+// AIM's rotating projection lives only in the managed home. The native
+// Desktop home gets a sentinel in each test and must stay byte-identical.
+function managedAuthPath(home) {
+  return resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
+}
+
+const NATIVE_SENTINEL = `${JSON.stringify({
+  OPENAI_API_KEY: null,
+  tokens: { account_id: "acct_desktop_native" },
+  last_refresh: "2026-01-01T00:00:00.000Z",
+}, null, 2)}\n`;
+
+function seedNativeSentinel(home) {
+  const nativePath = resolveCodexAuthFilePath(resolveNativeCodexHomeDir({ homeDir: home }));
+  fs.mkdirSync(path.dirname(nativePath), { recursive: true });
+  fs.writeFileSync(nativePath, NATIVE_SENTINEL, "utf8");
+  return nativePath;
+}
+
+function assertNativeUntouched(nativePath) {
+  assert.equal(fs.readFileSync(nativePath, "utf8"), NATIVE_SENTINEL);
+}
 
 function credential(accountId, expiresAtMs, marker) {
   const token = makeFakeJwt({
@@ -43,7 +67,7 @@ function stateFor(credentials) {
 }
 
 function writeAuth(home, value) {
-  writeJson(path.join(home, ".codex", "auth.json"), {
+  writeJson(managedAuthPath(home), {
     OPENAI_API_KEY: null,
     tokens: {
       id_token: value.idToken,
@@ -60,11 +84,13 @@ test("Codex reconciliation chooses identical, newer-local, newer-Redis, and conf
 
   {
     const home = mkTempHome();
+    const nativePath = seedNativeSentinel(home);
     const stored = credential("acct_boss", baseMs, "same");
     const state = stateFor({ boss: stored });
     state.targets.codexCli = { activeLabel: "boss", expectedAccountId: "acct_boss" };
     writeAuth(home, stored);
     assert.equal(reconcileCodexCliAuth({ state, homeDir: home }).status, "identical");
+    assertNativeUntouched(nativePath);
   }
 
   {
@@ -74,9 +100,11 @@ test("Codex reconciliation chooses identical, newer-local, newer-Redis, and conf
     const state = stateFor({ boss: stored });
     state.targets.codexCli = { activeLabel: "boss", expectedAccountId: "acct_boss" };
     writeAuth(home, local);
+    const nativePath = seedNativeSentinel(home);
     const result = reconcileCodexCliAuth({ state, homeDir: home });
     assert.equal(result.status, "local_newer");
     assert.equal(state.credentials["openai-codex"].boss.refresh, "REFRESH_new");
+    assertNativeUntouched(nativePath);
   }
 
   {
@@ -86,10 +114,12 @@ test("Codex reconciliation chooses identical, newer-local, newer-Redis, and conf
     const state = stateFor({ boss: stored });
     state.targets.codexCli = { activeLabel: "boss", expectedAccountId: "acct_boss" };
     writeAuth(home, local);
+    const nativePath = seedNativeSentinel(home);
     const result = reconcileCodexCliAuth({ state, homeDir: home });
     assert.equal(result.status, "redis_newer");
-    const projected = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
+    const projected = JSON.parse(fs.readFileSync(managedAuthPath(home), "utf8"));
     assert.equal(projected.tokens.refresh_token, "REFRESH_new");
+    assertNativeUntouched(nativePath);
   }
 
   {
@@ -108,7 +138,7 @@ test("Codex reconciliation chooses identical, newer-local, newer-Redis, and conf
   }
 });
 
-test("Codex activation receipt reports the native account as the true previous label", () => {
+test("Codex activation receipt reports the managed-home account as the true previous label", () => {
   const home = mkTempHome();
   const expiresAtMs = Date.now() + 4 * 3_600_000;
   const boss = credential("acct_boss", expiresAtMs, "boss");
@@ -129,7 +159,7 @@ test("reselecting the current Codex account is a true file no-op", () => {
   const state = stateFor({ boss });
 
   const first = activateCodexLabelSelection({ state, homeDir: home, label: "boss" });
-  const authPath = path.join(home, ".codex", "auth.json");
+  const authPath = managedAuthPath(home);
   const before = fs.readFileSync(authPath, "utf8");
   const second = activateCodexLabelSelection({ state, homeDir: home, label: "boss" });
 
@@ -202,7 +232,7 @@ test("automatic Codex choice keeps a valid projected target when telemetry and c
   const boss = credential("acct_boss", Date.now() + 4 * 3_600_000, "boss");
   const state = stateFor({ boss });
   assert.notEqual(activateCodexLabelSelection({ state, homeDir: home, label: "boss" }).status, "blocked");
-  const authPath = path.join(home, ".codex", "auth.json");
+  const authPath = managedAuthPath(home);
   const before = fs.readFileSync(authPath, "utf8");
 
   const result = await activateCodexPoolSelection({

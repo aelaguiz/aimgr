@@ -10,6 +10,7 @@ import { getHermesFleetState } from "../state/accounts.js";
 import { ensureStateShape } from "../state/schema.js";
 import { sanitizeForStatus } from "../core/sanitize.js";
 import { writeHermesAuthFromState } from "../targets/hermes-auth.js";
+import { isCodexStateCredentialUseAllowed } from "../targets/codex-desktop-drain.js";
 
 export function buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped = false } = {}) {
   const entries = [];
@@ -147,6 +148,12 @@ export async function rebalanceHermesPool(
     usageByLabel,
     observedAt,
   });
+  // A Desktop-reserved Codex identity (or same-account alias) never becomes a
+  // Hermes home assignment; the write path enforces the same gate fail-closed.
+  const eligibleLabels = poolStatus.eligibleLabels.filter((label) => isCodexStateCredentialUseAllowed(state, {
+    label,
+    accountId: state.credentials[OPENAI_CODEX_PROVIDER]?.[label]?.accountId ?? null,
+  }));
 
   const fleet = getHermesFleetState(state);
   const homes = discoverHermesHomesImpl({ homeDir });
@@ -202,7 +209,7 @@ export async function rebalanceHermesPool(
   const plan = planWeightedHermesRebalance({
     configuredHomes: homeStatuses.map((home) => home.homeId),
     currentAssignments: buildHermesAssignmentsByHome(homeStatuses),
-    eligibleLabels: poolStatus.eligibleLabels,
+    eligibleLabels,
     usage: usageByLabel,
     homeDemand: demandRefresh.demandByHome,
     now: Date.parse(observedAt),

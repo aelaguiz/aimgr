@@ -11,14 +11,15 @@ import { parseExpiresAtToMs, toIsoFromExpiresMs } from "../core/time.js";
 import { assertCodexCredentialShape, buildCodexCredentialFingerprint, findCodexLabelByAccountId } from "../credentials/codex.js";
 import { decodeJwtPayload } from "../credentials/jwt.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
-import { resolveCodexAuthFilePath, resolveCodexConfigPath, resolveManagedCodexHomeDir } from "../io/paths.js";
+import { resolveCodexAuthFilePath, resolveCodexConfigPath, resolveManagedCodexHomeDir, resolveNativeCodexHomeDir } from "../io/paths.js";
 import { appendOpenaiCodexHistory, collectCodexPoolStatusWithExhaustionHistory, recordOpenaiCodexBlockedSelectionHistory } from "../pool/history.js";
 import { getCodexPoolLabels, pickLeastUsedCodexPoolLabel, pickNextBestLocalCliPoolLabel, rankPoolCandidates } from "../pool/ranking.js";
 import { collectCodexUsageSnapshots, probeUsageSnapshotsByProvider } from "../pool/usage.js";
-import { discoverStatusConfiguredOpenclawCodexAgents, getCodexTargetState, getImportedCodexLabels, getOpenclawAssignments, getOpenclawTargetState, hasImportedCodexReplica } from "../state/accounts.js";
+import { discoverStatusConfiguredOpenclawCodexAgents, getCodexDesktopTargetState, getCodexTargetState, getImportedCodexLabels, getOpenclawAssignments, getOpenclawTargetState, hasImportedCodexReplica } from "../state/accounts.js";
 import { markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
 import { getAuthorityCodexImport } from "../state/authority-codex.js";
 import { ensureStateShape } from "../state/schema.js";
+import { buildCodexDesktopIdentityFingerprint, getCodexDesktopReservation } from "../coordination/codex-identity.js";
 import { buildCodexAuthDotJson, clearManagedCodexCliActivation, ensureFileBackedCodexHome, readCodexAuthFile, readCodexCliStoreMode } from "./codex-store.js";
 
 export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
@@ -192,13 +193,14 @@ export function buildWarningsFromCodexTargetStatus(status) {
     });
   }
 
+  // Identity mismatch is reported as a boolean only: raw immutable account
+  // IDs never enter operator-visible warning payloads.
   if (status.activeLabel && status.expectedAccountId && status.actualAccountId && status.expectedAccountId !== status.actualAccountId) {
     warnings.push({
       kind: "codex_target_account_mismatch",
       system: "codex-cli",
       label: status.activeLabel,
-      accountId: status.actualAccountId,
-      expectedAccountId: status.expectedAccountId,
+      accountMismatch: true,
     });
   }
 
@@ -212,6 +214,66 @@ export function buildWarningsFromCodexTargetStatus(status) {
   }
 
   return warnings;
+}
+
+/**
+ * Safe status projection for the Desktop-owned native Codex home. The native
+ * home is strictly read-only here, and the result carries only the expected
+ * label, booleans, and fixed reason codes: raw account IDs, fingerprints,
+ * tokens, and enrollment data never enter status output. AIM deliberately has
+ * no enrollment-DB reader.
+ *
+ * `rawRecords` is the optional raw provider-wide Redis record list (including
+ * credential-empty identity records). When it is unavailable — Redis down or
+ * unconfigured — the reservation state is reported as unknown (null) rather
+ * than guessed.
+ */
+export function readCodexDesktopStatus({ state, homeDir, rawRecords = null }) {
+  ensureStateShape(state);
+  const nativeHome = resolveNativeCodexHomeDir({ homeDir });
+  const desktop = getCodexDesktopTargetState(state);
+  const expectedLabel =
+    typeof desktop.expectedLabel === "string" && desktop.expectedLabel.trim() ? desktop.expectedLabel.trim() : null;
+  const storedFingerprint =
+    typeof desktop.identityFingerprint === "string" && desktop.identityFingerprint.trim()
+      ? desktop.identityFingerprint.trim()
+      : null;
+  const pinnedAt = typeof desktop.pinnedAt === "string" && desktop.pinnedAt.trim() ? desktop.pinnedAt.trim() : null;
+  const pinned = Boolean(expectedLabel && storedFingerprint);
+
+  const native = readCodexAuthFile({ codexHome: nativeHome });
+  const readable = native.exists === true && native.ok === true && Boolean(native.accountId);
+
+  // Identity comparison stays inside this function: the opaque fingerprint of
+  // the native account is compared against the pinned fingerprint and only the
+  // resulting boolean escapes.
+  let match = null;
+  if (pinned && readable) {
+    match = buildCodexDesktopIdentityFingerprint(native.accountId) === storedFingerprint;
+  }
+
+  let reserved = null;
+  if (Array.isArray(rawRecords)) {
+    reserved = rawRecords.some((record) => {
+      if (record?.provider !== OPENAI_CODEX_PROVIDER) return false;
+      const reservation = getCodexDesktopReservation(record);
+      if (!reservation) return false;
+      if (expectedLabel && record.label === expectedLabel) return true;
+      return Boolean(storedFingerprint && reservation.identityFingerprint === storedFingerprint);
+    });
+  }
+
+  const reason = !pinned
+    ? "not_pinned"
+    : !readable
+      ? "native_auth_unreadable"
+      : match === false
+        ? "native_identity_mismatch"
+        : reserved === false
+          ? "reservation_missing"
+          : "ok";
+
+  return { nativeHome, expectedLabel, pinned, pinnedAt, readable, match, reserved, reason };
 }
 
 export function getPrimaryRemainingPctFromUsageSnapshot(snapshot) {
@@ -240,6 +302,8 @@ function newestCodexTokenExpiry(...tokens) {
  * Reconcile the one managed Codex auth file with the credential currently
  * loaded from Redis. Identity must agree before freshness is considered.
  * The fresher side wins; equal-expiry token conflicts are left untouched.
+ * Reconciliation results are operator-visible receipts: they carry labels and
+ * fixed reason codes only, never raw immutable account IDs.
  */
 export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = new Date().toISOString() }) {
   ensureStateShape(state);
@@ -263,7 +327,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
       status: "skipped",
       reason: "auth_tokens_incomplete",
       authPath: readback.authPath,
-      accountId: accountId || null,
     };
   }
 
@@ -276,7 +339,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
       reason: "target_identity_mismatch",
       label: targetLabel,
       actualLabel: inferredLabel,
-      accountId,
     };
   }
   const label = targetLabel || inferredLabel;
@@ -285,7 +347,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
       status: "skipped",
       reason: "label_not_found",
       authPath: readback.authPath,
-      accountId,
     };
   }
 
@@ -295,7 +356,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
       status: "skipped",
       reason: "stored_credential_missing",
       label,
-      accountId,
     };
   }
   if (typeof existing.accountId === "string" && existing.accountId.trim() && existing.accountId.trim() !== accountId) {
@@ -303,8 +363,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
       status: "skipped",
       reason: "account_mismatch",
       label,
-      accountId,
-      expectedAccountId: existing.accountId.trim(),
     };
   }
 
@@ -323,7 +381,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
       status: "skipped",
       reason: "live_credential_invalid",
       label,
-      accountId,
       detail: String(err?.message ?? err),
     };
   }
@@ -334,7 +391,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
     return {
       status: "identical",
       label,
-      accountId,
     };
   }
 
@@ -345,7 +401,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
       status: "conflict",
       reason: "freshness_unavailable",
       label,
-      accountId,
     };
   }
   if (localExpiresAtMs < storedExpiresAtMs) {
@@ -353,7 +408,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
     return {
       status: "redis_newer",
       label,
-      accountId,
       wroteAuthJson: Boolean(projected.wrote),
     };
   }
@@ -362,7 +416,6 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
       status: "conflict",
       reason: "token_conflict_at_equal_expiry",
       label,
-      accountId,
     };
   }
 
@@ -371,55 +424,8 @@ export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = n
   return {
     status: "local_newer",
     label,
-    accountId,
     authorityPromotion,
   };
-}
-
-export function buildCodexWatchNonfatalWarnings(status) {
-  return buildWarningsFromCodexTargetStatus(status)
-    .filter((warning) => warning?.kind === "codex_import_missing");
-}
-
-export function buildCodexWatchTargetBlockers(status) {
-  const blockers = [];
-  if (!status) return blockers;
-
-  if (status.storeError) {
-    blockers.push({ reason: "codex_target_config_invalid", status: status.storeError });
-  } else if (status.storeMode && status.storeMode !== CODEX_AUTH_STORE_MODE_FILE) {
-    blockers.push({ reason: "codex_target_store_mode_unsupported", status: status.storeMode });
-  }
-
-  if (status.activeLabel && !status.activeAccountPresent) {
-    blockers.push({ reason: "codex_target_label_missing", label: status.activeLabel });
-  }
-  if (status.activeLabel && !status.activeCredentialPresent) {
-    blockers.push({ reason: "codex_target_credentials_missing", label: status.activeLabel });
-  }
-  if (status.activeLabel && !status.readback.exists) {
-    blockers.push({ reason: "codex_target_missing_auth_file", label: status.activeLabel });
-  }
-  if (status.readback.exists && status.readback.ok !== true) {
-    blockers.push({ reason: "codex_target_auth_unreadable", status: status.readback.error || "unknown" });
-  }
-  if (status.activeLabel && status.expectedAccountId && status.actualAccountId && status.expectedAccountId !== status.actualAccountId) {
-    blockers.push({
-      reason: "codex_target_account_mismatch",
-      label: status.activeLabel,
-      accountId: status.actualAccountId,
-      expectedAccountId: status.expectedAccountId,
-    });
-  }
-  if (status.activeLabel && status.inferredLabel && status.inferredLabel !== status.activeLabel) {
-    blockers.push({
-      reason: "codex_target_label_mismatch",
-      label: status.activeLabel,
-      actualLabel: status.inferredLabel,
-    });
-  }
-
-  return blockers;
 }
 
 export function classifyCodexActivationError(err) {
@@ -466,7 +472,6 @@ export function activateCodexLabelSelection({ state, homeDir, env = {}, label })
       observedAt,
       previousLabel: currentLabel ?? undefined,
       label: normalizedLabel,
-      accountId: activated.accountId,
       explicit: true,
       reasons: ["explicit_label"],
       authPath: activated.authPath,
@@ -488,7 +493,6 @@ export function activateCodexLabelSelection({ state, homeDir, env = {}, label })
     ]);
     return { status, receipt, wrote: Boolean(activated.wrote) };
   } catch (err) {
-    const message = String(err?.message ?? err);
     const receipt = {
       action: "codex_use",
       status: "blocked",
@@ -498,11 +502,12 @@ export function activateCodexLabelSelection({ state, homeDir, env = {}, label })
       explicit: true,
       reasons: ["explicit_label"],
       warnings: [],
+      // Blocked-selection receipts stay reason-code only: raw activation error
+      // text can echo immutable account IDs and must not reach operator output.
       blockers: [
         {
           label: normalizedLabel,
           reason: classifyCodexActivationError(err),
-          detail: message,
         },
       ],
       wroteAuthJson: false,
@@ -700,7 +705,6 @@ export async function activateCodexPoolSelection({
     observedAt,
     previousLabel: currentLabel ?? undefined,
     label: selection.label,
-    accountId: activated.accountId,
     keptCurrent: Boolean(selection.keptCurrent),
     reasons: Array.isArray(selection.reasons) ? selection.reasons : [],
     authPath: activated.authPath,

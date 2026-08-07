@@ -1,7 +1,8 @@
 import { readAimgrConfig } from "../../config/aimgr-config.js";
+import { publishCodexCredentialRecordGuarded } from "../../coordination/codex-identity.js";
 import { buildStableIdentityForCredential } from "../../coordination/login-publish.js";
 import { closeRedisStore, connectRedisStore, publishCredential, readSnapshot } from "../../coordination/redis-store.js";
-import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL } from "../../core/constants.js";
+import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { normalizeLabel, normalizeProviderId } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 
@@ -54,7 +55,18 @@ export async function handleLabel(context) {
     if (Object.keys(identity).length === 0) {
       throw new Error(`Cannot rebind ${credential.provider}:${credential.label}; current credential has no stable identity.`);
     }
-    const result = await publishCredential(store, {
+    // Codex rebinds are identity writes, so they go through the guarded
+    // publisher: the catalog lease plus fresh raw scan rejects a rebind whose
+    // incoming account ID aliases a Desktop-reserved identity under any label
+    // and refuses to touch a reserved record at all (which is what would drop
+    // the reservation object). Unpin is the only reservation-removal path.
+    const publishImpl = credential.provider === OPENAI_CODEX_PROVIDER
+      ? (targetStore, args) => publishCodexCredentialRecordGuarded(targetStore, {
+          ...args,
+          operation: "codex label rebind",
+        })
+      : publishCredential;
+    const result = await publishImpl(store, {
       expectedVersion: credential.version,
       updatedBy: "aimgr-cli",
       observedAt: new Date(nowMs).toISOString(),

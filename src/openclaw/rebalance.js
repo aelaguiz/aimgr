@@ -8,6 +8,7 @@ import { appendOpenaiCodexHistory, collectCodexPoolStatusWithExhaustionHistory }
 import { buildOpenclawDemandUnreadableBlocker } from "../pool/token-usage.js";
 import { probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { discoverConfiguredOpenclawCodexAgents, planWeightedOpenclawRebalance } from "../pool/weighted-planner.js";
+import { isCodexStateCredentialUseAllowed } from "../targets/codex-desktop-drain.js";
 import { getOpenclawAssignments, getOpenclawExclusions, getOpenclawTargetState } from "../state/accounts.js";
 import { ensureStateShape } from "../state/schema.js";
 import { sanitizeForStatus } from "../core/sanitize.js";
@@ -45,6 +46,12 @@ export async function rebalanceOpenclawPool(
     usageByLabel,
     observedAt,
   });
+  // A Desktop-reserved Codex identity (or a same-account alias) is never an
+  // assignable pool label, regardless of what generic eligibility says.
+  const eligibleLabels = poolStatus.eligibleLabels.filter((label) => isCodexStateCredentialUseAllowed(state, {
+    label,
+    accountId: state.credentials[OPENAI_CODEX_PROVIDER]?.[label]?.accountId ?? null,
+  }));
 
   const target = getOpenclawTargetState(state);
   const agentsList = readOpenclawAgentsListFromConfigImpl();
@@ -104,7 +111,7 @@ export async function rebalanceOpenclawPool(
         kind: "rebalance",
         status: "blocked",
         reason: "openclaw_agent_demand_unreadable",
-        hadSpareEligibleCapacity: poolStatus.eligibleLabels.length > 1,
+        hadSpareEligibleCapacity: eligibleLabels.length > 1,
       },
     ]);
     return { status: "blocked", receipt };
@@ -112,7 +119,7 @@ export async function rebalanceOpenclawPool(
   const plan = planWeightedOpenclawRebalance({
     configuredAgents,
     currentAssignments,
-    eligibleLabels: poolStatus.eligibleLabels,
+    eligibleLabels,
     usage: usageByLabel,
     agentDemand: demandRefresh.demandByAgent,
     now: Date.parse(observedAt),
@@ -174,7 +181,7 @@ export async function rebalanceOpenclawPool(
         kind: "rebalance",
         status: "blocked",
         reason: "openclaw_sync_failed",
-        hadSpareEligibleCapacity: poolStatus.eligibleLabels.length > 1,
+        hadSpareEligibleCapacity: eligibleLabels.length > 1,
       },
     ]);
     return { status: "blocked", receipt };
@@ -212,7 +219,7 @@ export async function rebalanceOpenclawPool(
       observedAt,
       kind: "rebalance",
       status,
-      hadSpareEligibleCapacity: poolStatus.eligibleLabels.length > 1,
+      hadSpareEligibleCapacity: eligibleLabels.length > 1,
       reason:
         plan.skipped.some((entry) => entry.reason === "projected_demand_exceeds_eligible_supply")
           ? "projected_demand_exceeds_eligible_supply"

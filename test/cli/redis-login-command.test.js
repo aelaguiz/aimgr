@@ -10,6 +10,7 @@ import {
   resolveAimgrLocalStatePath,
 } from "../../src/io/paths.js";
 import { loadLocalState } from "../../src/state/local-state.js";
+import { buildCodexDesktopIdentityFingerprint } from "../../src/coordination/codex-identity.js";
 import { runCli } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
@@ -780,4 +781,85 @@ test("Redis shorthand panel remains closed for Anthropic labels", async () => {
     snapshot.credentials[0],
     credential.nativeClaudeBundle.claudeAiOauth.refreshToken,
   );
+});
+
+test("post-pin login under another label rejects the Desktop-reserved account with zero writes", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const keyPrefix = "aimgr:login-reserved-test";
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix });
+  await importCredentialsSnapshot(
+    store,
+    {
+      credentials: [
+        {
+          // Canonical Desktop reservation: identity/policy only, credential
+          // deliberately retired to {}.
+          provider: "openai-codex",
+          label: "desktop",
+          identity: { accountId: "acct_reserved" },
+          credential: {},
+          policy: {
+            expect: {
+              codexDesktop: {
+                reserved: true,
+                ownerHost: "test-host",
+                identityFingerprint: buildCodexDesktopIdentityFingerprint("acct_reserved"),
+                reservedAt: "2026-08-07T00:00:00.000Z",
+              },
+            },
+            pool: { enabled: false, disabledReason: "codex_desktop_reserved" },
+          },
+        },
+        {
+          // A stale alias credential that survived on another label; its
+          // refresh would republish the reserved account under this label.
+          provider: "openai-codex",
+          label: "other",
+          identity: { accountId: "acct_reserved" },
+          credential: {
+            access: token("acct_reserved"),
+            refresh: "OLD_REFRESH",
+            idToken: token("acct_reserved"),
+            accountId: "acct_reserved",
+            expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          },
+          policy: {
+            reauth: { mode: "manual-callback", blockedReason: "oauth_reauth_required" },
+            pool: { enabled: true },
+          },
+        },
+      ],
+    },
+    { updatedBy: "test", observedAt: "2026-08-07T00:00:00.000Z" },
+  );
+  const before = JSON.stringify([...client.values.entries()].sort());
+
+  await assert.rejects(
+    () => runCli(["login", "other", "--home", home], {
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix }),
+      refreshOpenAICodexImpl: async () => ({
+        access: token("acct_reserved"),
+        refresh: "FRESH_RESERVED_REFRESH",
+        expires: Date.now() + 7200_000,
+        accountId: "acct_reserved",
+      }),
+    }),
+    /codex_desktop_reserved/,
+  );
+
+  // Zero Redis writes: the alias keeps its stale material and the canonical
+  // reserved record stays credential-empty.
+  assert.equal(JSON.stringify([...client.values.entries()].sort()), before);
+  const snapshot = await readSnapshot(store);
+  const desktop = snapshot.credentials.find((record) => record.label === "desktop");
+  assert.deepEqual(desktop.credential, {});
+  assert.equal(desktop.policy.expect.codexDesktop.reserved, true);
+  const other = snapshot.credentials.find((record) => record.label === "other");
+  assert.equal(other.credential.refresh, "OLD_REFRESH");
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });

@@ -6,6 +6,7 @@ import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize
 import { assertCodexCredentialShape, findCodexLabelByTokenPair } from "../credentials/codex.js";
 import { extractJwtIdentityLabel, extractOpenAICodexAccountIdFromToken } from "../credentials/jwt.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
+import { assertCodexStateCredentialUseAllowed } from "./codex-desktop-drain.js";
 import { resolveExplicitHermesAuthFilePath } from "../io/paths.js";
 import { ensureStateShape } from "../state/schema.js";
 
@@ -142,6 +143,12 @@ export function writeHermesAuthFromState({ label, authPath }, state) {
   if (provider !== OPENAI_CODEX_PROVIDER) {
     throw new Error(`Refusing to activate non-Codex label=${normalizedLabel} provider=${provider || "unknown"} for Hermes.`);
   }
+  // Reserved-label gate before the generic missing-credential error can fire:
+  // a Desktop-reserved record surfaces its fixed reason, not a shape failure.
+  assertCodexStateCredentialUseAllowed(state, {
+    label: normalizedLabel,
+    operation: "Hermes auth materialization",
+  });
 
   const resolvedAuthPath = resolveExplicitHermesAuthFilePath(authPath);
   const parentDir = path.dirname(resolvedAuthPath);
@@ -156,6 +163,13 @@ export function writeHermesAuthFromState({ label, authPath }, state) {
     label: normalizedLabel,
     credential: getCodexCredential(state, normalizedLabel),
     requireFresh: true,
+  });
+  // Alias gate: refuse writing raw material whose immutable account matches
+  // the Desktop reservation even when it hides under another label.
+  assertCodexStateCredentialUseAllowed(state, {
+    label: normalizedLabel,
+    accountId: typeof credential.accountId === "string" ? credential.accountId : null,
+    operation: "Hermes auth materialization",
   });
 
   const authRead = readHermesAuthFile({ authPath: resolvedAuthPath });

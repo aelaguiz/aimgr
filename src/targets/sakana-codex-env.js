@@ -1,11 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolveManagedCodexHomeDir } from "../io/paths.js";
 import { buildSakanaKeyFingerprint, normalizeSakanaApiKey } from "../providers/sakana.js";
 
 export const SAKANA_CODEX_ENV_KEY = "SAKANA_API_KEY";
 
+// The Sakana key rides in the AIM-managed rotating Codex home. The native
+// ~/.codex home belongs exclusively to the Codex Desktop app, so AIM never
+// writes even a non-secret dotfile there.
 export function resolveSakanaCodexEnvPath({ homeDir }) {
-  return path.join(homeDir, ".codex", ".env");
+  return path.join(resolveManagedCodexHomeDir({ homeDir }), ".env");
 }
 
 function isSakanaApiKeyLine(line) {
@@ -72,7 +76,7 @@ export function activateSakanaCodexEnvSelection({
 }) {
   const normalizedApiKey = normalizeSakanaApiKey(apiKey);
   const expectedKeyFingerprint = buildSakanaKeyFingerprint(normalizedApiKey);
-  const codexHome = path.join(homeDir, ".codex");
+  const codexHome = resolveManagedCodexHomeDir({ homeDir });
   const envPath = resolveSakanaCodexEnvPath({ homeDir });
   fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   const existingText = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
