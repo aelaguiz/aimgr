@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
+import { resolveManagedPrimeAgentDir } from "../../io/paths.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { readHeldRedisCredentialLeaseLabels } from "../../coordination/redis-credential-lease.js";
@@ -22,6 +23,7 @@ import {
   buildHarnessExternalDescriptor,
   HARNESS_MANAGED_PROVIDERS,
   installHarnessProvider,
+  isAimHarnessExternalDescriptor,
   readHarnessTargetStatus,
   uninstallHarnessProvider,
 } from "../../targets/harness-auth.js";
@@ -31,10 +33,24 @@ import {
   isRecognizedAimLegacyPiProjection,
   selectNextBestPiCodexLabel,
 } from "../../targets/pi-cli.js";
+import { ensureHarnessSessionIdentityExtension } from "../../targets/harness-session-identity.js";
 import { createPrimeTargetAdapter } from "../../targets/prime-agent.js";
 
 function adapterFor(targetId, options) {
   return targetId === "pi" ? createPiTargetAdapter(options) : createPrimeTargetAdapter(options);
+}
+
+function readInstalledAimBinding(authPath, provider) {
+  try {
+    if (!fs.existsSync(authPath)) return null;
+    const stat = fs.lstatSync(authPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) return null;
+    const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    const entry = auth && typeof auth === "object" && !Array.isArray(auth) ? auth[provider] : null;
+    return isAimHarnessExternalDescriptor(entry) ? entry.binding : null;
+  } catch {
+    return null;
+  }
 }
 
 function exactRecord(snapshot, provider, label) {
@@ -107,9 +123,11 @@ async function resolveUseSelections({
       let label;
       let selectionMeta = null;
       if (codexSelection === "auto") {
-        const currentLabel = typeof targetState?.providers?.[OPENAI_CODEX_PROVIDER]?.binding === "string"
-          ? targetState.providers[OPENAI_CODEX_PROVIDER].binding
-          : null;
+        const currentLabel = context.currentCodexLabel !== undefined
+          ? context.currentCodexLabel
+          : typeof targetState?.providers?.[OPENAI_CODEX_PROVIDER]?.binding === "string"
+            ? targetState.providers[OPENAI_CODEX_PROVIDER].binding
+            : null;
         const selected = await selectNextBestPiCodexLabel({
           state: runtime.state,
           homeDir: context.homeDir,
@@ -121,6 +139,9 @@ async function resolveUseSelections({
           return { blocked: true, selections: [], reason: "no_eligible_account" };
         }
         label = selected.selection.label;
+        if (context.requireDifferentSelection === true && currentLabel && label === currentLabel) {
+          return { blocked: true, selections: [], reason: "no_alternate_account" };
+        }
         selectionMeta = selected.selection;
       } else {
         label = normalizeLabel(codexSelection);
@@ -181,8 +202,12 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
       localState: runtime.localState,
     });
     adapter.targetState.agentDir = adapter.agentDir;
+    const selectionContext = { ...effectiveContext };
+    if (targetId === "prime" && effectiveContext.avoidCurrentSelection === true) {
+      selectionContext.currentCodexLabel = readInstalledAimBinding(adapter.authPath, OPENAI_CODEX_PROVIDER);
+    }
     const resolved = await resolveUseSelections({
-      context: effectiveContext,
+      context: selectionContext,
       runtime,
       targetId,
       targetState: adapter.targetState,
@@ -204,6 +229,10 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
       setExitCode(1);
       return { ok: false, receipt };
     }
+
+    const ensureSessionIdentityImpl = context.ensureHarnessSessionIdentityExtensionImpl
+      ?? ensureHarnessSessionIdentityExtension;
+    ensureSessionIdentityImpl({ agentDir: adapter.agentDir });
 
     const changes = [];
     for (const selection of resolved.selections) {
@@ -309,6 +338,81 @@ function launchPrimeAgent({ command, args, cwd, env, spawnImpl = spawnSync } = {
   });
 }
 
+function runPrimeLauncher(context, args) {
+  const resolvePrimeLauncherImpl = context.resolvePrimeLauncherImpl ?? resolvePrimeLauncher;
+  const launchPrimeAgentImpl = context.launchPrimeAgentImpl ?? launchPrimeAgent;
+  const ensureSessionIdentityImpl = context.ensureHarnessSessionIdentityExtensionImpl
+    ?? ensureHarnessSessionIdentityExtension;
+  ensureSessionIdentityImpl({
+    agentDir: resolveManagedPrimeAgentDir({ homeDir: context.homeDir, env: context.env }),
+  });
+  const result = launchPrimeAgentImpl({
+    command: resolvePrimeLauncherImpl({ homeDir: context.homeDir }),
+    args,
+    cwd: context.cwd ?? process.cwd(),
+    env: context.env,
+  });
+  if (result?.error) throw new Error("Could not start the local Prime Agent launcher.");
+  if (result?.status !== 0) {
+    context.setExitCode(Number.isInteger(result?.status) ? result.status : 1);
+  }
+}
+
+async function handleResume(context, targetId) {
+  if (targetId !== "prime") throw new Error("Only Prime supports the resume command.");
+  if (context.positional.length !== 3) {
+    throw new Error("Usage: aim prime resume <path-or-id> [--rotate]");
+  }
+  if (context.opts.afterDoubleDash?.length) {
+    throw new Error("`aim prime resume` does not accept additional Prime arguments.");
+  }
+  const selector = String(context.positional[2] ?? "").trim();
+  if (!selector) throw new Error("Usage: aim prime resume <path-or-id> [--rotate]");
+
+  if (context.opts.primeResumeRotate !== true) {
+    runPrimeLauncher(context, ["--dist", "--resume", selector]);
+    return;
+  }
+
+  const selected = await handleUse({
+    ...context,
+    opts: { ...context.opts, codex: "auto", replaceNativeAuth: true },
+    positional: [targetId, "use"],
+    avoidCurrentSelection: true,
+    requireDifferentSelection: true,
+  }, targetId, { emitReceipt: false });
+  if (!selected?.ok) {
+    context.stdout.write(`AIM Prime could not rotate accounts: ${selected?.receipt?.reason ?? "unknown"}\n`);
+    return;
+  }
+  const providerReceipt = selected.receipt.providers.find(
+    (provider) => provider.provider === OPENAI_CODEX_PROVIDER && provider.binding,
+  );
+  if (!providerReceipt) throw new Error("AIM did not select a Codex account.");
+
+  context.stdout.write(`AIM Prime: ${OPENAI_CODEX_PROVIDER} · ${providerReceipt.binding} · rotating resume\n`);
+  // The reset flag ships in Prime source with this AIM command. Avoid a stale local dist bundle
+  // rejecting it before the next Prime bundle release is built. Launch from the exact agent dir
+  // that received the selected descriptor, including persisted-path recovery cases.
+  const launchContext = {
+    ...context,
+    env: {
+      ...context.env,
+      PRIME_AGENT_CODING_AGENT_DIR: path.dirname(selected.receipt.authPath),
+    },
+  };
+  runPrimeLauncher(launchContext, [
+    "--provider",
+    OPENAI_CODEX_PROVIDER,
+    "--model",
+    "gpt-5.6-sol",
+    "--fork",
+    selector,
+    "--reset-credential-binding",
+    OPENAI_CODEX_PROVIDER,
+  ]);
+}
+
 async function handleRun(context, targetId) {
   if (targetId !== "prime") throw new Error("Only Prime supports the run command.");
   if (context.positional.length !== 3) {
@@ -341,18 +445,7 @@ async function handleRun(context, targetId) {
   if (!providerReceipt) throw new Error(`AIM did not select a ${flavor} account.`);
 
   context.stdout.write(`AIM Prime: ${profile.provider} · ${providerReceipt.binding}\n`);
-  const resolvePrimeLauncherImpl = context.resolvePrimeLauncherImpl ?? resolvePrimeLauncher;
-  const launchPrimeAgentImpl = context.launchPrimeAgentImpl ?? launchPrimeAgent;
-  const result = launchPrimeAgentImpl({
-    command: resolvePrimeLauncherImpl({ homeDir: context.homeDir }),
-    args: ["--dist", "--provider", profile.provider, "--model", profile.model],
-    cwd: context.cwd ?? process.cwd(),
-    env: context.env,
-  });
-  if (result?.error) throw new Error("Could not start the local Prime Agent launcher.");
-  if (result?.status !== 0) {
-    context.setExitCode(Number.isInteger(result?.status) ? result.status : 1);
-  }
+  runPrimeLauncher(context, ["--dist", "--provider", profile.provider, "--model", profile.model]);
 }
 
 async function handleUninstall(context, targetId) {
@@ -460,12 +553,13 @@ async function handleTargetStatus(context, targetId) {
 
 export async function handleHarnessTarget(context, targetId) {
   const subcmd = String(context.positional[1] ?? "").trim().toLowerCase();
-  const supported = targetId === "prime" ? "use, run, status, uninstall" : "use, status, uninstall";
+  const supported = targetId === "prime" ? "use, run, resume, status, uninstall" : "use, status, uninstall";
   if (!subcmd) {
     throw new Error(`Missing ${targetId} subcommand. Supported: ${supported}.`);
   }
   if (subcmd === "use") return handleUse(context, targetId);
   if (subcmd === "run" && targetId === "prime") return handleRun(context, targetId);
+  if (subcmd === "resume" && targetId === "prime") return handleResume(context, targetId);
   if (subcmd === "status") return handleTargetStatus(context, targetId);
   if (subcmd === "uninstall") return handleUninstall(context, targetId);
   throw new Error(`Unsupported ${targetId} subcommand: ${subcmd} (supported: ${supported}).`);

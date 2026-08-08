@@ -118,6 +118,9 @@ aim pi use --codex <auto|label|off> --claude <fable|opus|label|off>
 aim pi status
 aim pi uninstall [--provider <openai-codex|anthropic>]
 aim prime use --codex <auto|label|off> --claude <fable|opus|label|off>
+aim prime run codex
+aim prime run claude
+aim prime resume <path-or-id> [--rotate]
 aim prime status
 aim prime uninstall [--provider <openai-codex|anthropic>]
 ```
@@ -141,6 +144,22 @@ refresh token. The exact label and opaque AIM identity fingerprint are
 non-secret and may be persisted by a harness to keep a root session tree
 stable across resume and subagents. Account changes apply to a new root tree;
 loaded trees never hop labels.
+
+Plain `aim prime resume <path-or-id>` delegates to Prime's ordinary pinned resume
+path without changing AIM account state. Add `--rotate` after a Codex account is
+rate limited: AIM installs the next-best eligible *different* Codex label, forks
+the saved conversation into a new Prime root, and resets only the fork's
+`openai-codex` binding. The original session file and its account binding remain
+unchanged. If no alternate account is eligible, AIM exits without relaunching
+the current account.
+
+AIM-managed Pi and Prime homes also receive one global session-identity
+extension. Its below-editor banner always shows title, AIM account, git branch,
+and cwd. Unnamed sessions derive a compact title from the first request; Prime
+may improve that fallback once from its existing persisted agent recap. Each
+new session chooses a colored title pill and stores that color in the session
+JSONL, so reloads, exact resumes, and continuity forks retain the same visual
+identity. A manual `/name` or `/rename` remains authoritative.
 
 Unknown native provider entries are not replaced unless `--replace-native-auth`
 is explicit. AIM then keeps at most one private displaced-native backup per

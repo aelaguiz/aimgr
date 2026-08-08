@@ -77,6 +77,7 @@ export function parseArgs(argv) {
     confirm: false,
     intervalSeconds: undefined,
     rotateBelow5hRemainingPct: undefined,
+    primeResumeRotate: false,
     pool: undefined,
     claudeAutoSelect: expandedClaudeRun.autoSelect,
     claudeAutoSelectPreset: expandedClaudeRun.autoSelectPreset,
@@ -301,6 +302,10 @@ export function parseArgs(argv) {
     if (arg === "--rotate-below-5h-remaining-pct") {
       opts.rotateBelow5hRemainingPct = argv[i + 1];
       i += 1;
+      continue;
+    }
+    if (arg === "--rotate" && argv[0] === "prime" && argv[1] === "resume") {
+      opts.primeResumeRotate = true;
       continue;
     }
     if (arg === "--help" || arg === "-h") {
