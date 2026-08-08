@@ -68,8 +68,6 @@ export function parseArgs(argv) {
     notes: undefined,
     manualCallbackStdio: false,
     json: false,
-    briefJson: false,
-    requestJson: undefined,
     compact: false,
     accounts: false,
     help: false,
@@ -79,7 +77,6 @@ export function parseArgs(argv) {
     confirm: false,
     intervalSeconds: undefined,
     rotateBelow5hRemainingPct: undefined,
-    primeResumeRotate: false,
     pool: undefined,
     claudeAutoSelect: expandedClaudeRun.autoSelect,
     claudeAutoSelectPreset: expandedClaudeRun.autoSelectPreset,
@@ -130,12 +127,7 @@ export function parseArgs(argv) {
       continue;
     }
     if (arg === "--codex" || arg === "--claude") {
-      const harnessUse = (argv[0] === "pi" || argv[0] === "prime") && argv[1] === "use";
-      const exactPrimeCodexRun = arg === "--codex"
-        && argv[0] === "prime"
-        && argv[1] === "run"
-        && argv[2] === "codex";
-      if (!harnessUse && !exactPrimeCodexRun) {
+      if ((argv[0] !== "pi" && argv[0] !== "prime") || argv[1] !== "use") {
         throw new Error(`Unknown option: ${arg}`);
       }
       const value = argv[i + 1];
@@ -237,25 +229,6 @@ export function parseArgs(argv) {
       opts.manualCallbackStdio = true;
       continue;
     }
-    if (arg === "--brief-json") {
-      if (argv[0] !== "prime" || argv[1] !== "status") {
-        throw new Error("Unknown option: --brief-json");
-      }
-      opts.briefJson = true;
-      continue;
-    }
-    if (arg === "--request-json") {
-      if (argv[0] !== "prime" || argv[1] !== "create") {
-        throw new Error("Unknown option: --request-json");
-      }
-      const value = argv[i + 1];
-      if (value !== "-") {
-        throw new Error("--request-json requires -.");
-      }
-      opts.requestJson = value;
-      i += 1;
-      continue;
-    }
     if (arg === "--json") {
       opts.json = true;
       continue;
@@ -328,10 +301,6 @@ export function parseArgs(argv) {
     if (arg === "--rotate-below-5h-remaining-pct") {
       opts.rotateBelow5hRemainingPct = argv[i + 1];
       i += 1;
-      continue;
-    }
-    if (arg === "--rotate" && argv[0] === "prime" && argv[1] === "resume") {
-      opts.primeResumeRotate = true;
       continue;
     }
     if (arg === "--help" || arg === "-h") {
