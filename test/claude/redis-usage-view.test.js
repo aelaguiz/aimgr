@@ -13,6 +13,7 @@ import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../src/core/consta
 import { resolveAimgrLocalStatePath, resolveAimgrRedisCachePath } from "../../src/io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../../src/pool/usage.js";
 import {
+  CLAUDE_REDIS_USAGE_FRESH_MS,
   collectClaudeRedisAccountInventory,
   collectClaudeRedisAccountUsageStatus,
   renderClaudeRedisAccountInventory,
@@ -93,6 +94,8 @@ test("Claude automatic selection ranks Fable separately from Opus five-hour usag
   const account = (label, fiveHourUsedPercent, fableUsedPercent, options = {}) => ({
     label,
     authState: options.authState ?? "usage_readable",
+    credentialState: options.credentialState ?? "credential_ready",
+    credentialReady: options.credentialReady !== false,
     locked: options.locked === true,
     usage: {
       ok: true,
@@ -124,8 +127,20 @@ test("Claude automatic selection ranks Fable separately from Opus five-hour usag
     label: "missing",
     usedPercent: 0,
   });
+  assert.deepEqual(selectLeastUsedUnlockedClaudeAccount({
+    accounts: [account("refreshing", 0, 20, { authState: "refresh_in_progress" })],
+  }, { preset: "opus" }), {
+    label: "refreshing",
+    usedPercent: 0,
+  });
   assert.equal(selectLeastUsedUnlockedClaudeAccount({
     accounts: [account("locked", 0, 0, { locked: true })],
+  }, { preset: "fable" }), null);
+  assert.equal(selectLeastUsedUnlockedClaudeAccount({
+    accounts: [account("credential-unavailable", 0, 0, {
+      authState: "status_unavailable",
+      credentialReady: false,
+    })],
   }, { preset: "fable" }), null);
   assert.throws(
     () => selectLeastUsedUnlockedClaudeAccount(result),
@@ -631,6 +646,53 @@ test("unknown selected labels fail before provider work and simultaneous refresh
   const first = await firstPromise;
   assert.equal(first.requestCount, 1);
   assert.equal(providerCalls, 1);
+});
+
+test("automatic selection uses bounded cached usage while another process refreshes it", async () => {
+  const { homeDir, connectRedisStoreImpl } = await setup([anthropicRecord("ready")]);
+  await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: NOW_MS,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: async () => successSnapshot(0),
+  });
+
+  let releaseProvider;
+  const providerGate = new Promise((resolve) => {
+    releaseProvider = resolve;
+  });
+  const refreshAt = NOW_MS + CLAUDE_REDIS_USAGE_FRESH_MS + 1;
+  const refreshPromise = collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: refreshAt,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: async () => {
+      await providerGate;
+      return successSnapshot(1);
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  try {
+    const concurrent = await collectClaudeRedisAccountUsageStatus({
+      homeDir,
+      nowMs: refreshAt,
+      connectRedisStoreImpl,
+      fetchClaudeUsageSnapshotImpl: async () => {
+        throw new Error("single-flight caller must not duplicate provider work");
+      },
+    });
+    assert.equal(concurrent.refreshInProgress, true);
+    assert.equal(concurrent.accounts[0].authState, "refresh_in_progress");
+    assert.equal(concurrent.accounts[0].stale, true);
+    assert.deepEqual(selectLeastUsedUnlockedClaudeAccount(concurrent, { preset: "opus" }), {
+      label: "ready",
+      usedPercent: 0,
+    });
+  } finally {
+    releaseProvider();
+  }
+  await refreshPromise;
 });
 
 test("invalid selections fail before Redis I/O and Redis availability errors are value-free", async () => {

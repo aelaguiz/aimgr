@@ -118,7 +118,13 @@ aim pi use --codex <auto|label|off> --claude <fable|opus|label|off>
 aim pi status
 aim pi uninstall [--provider <openai-codex|anthropic>]
 aim prime use --codex <auto|label|off> --claude <fable|opus|label|off>
-aim prime status
+aim prime run codex [--codex <exact-label>]
+aim prime run claude
+aim prime resume <path-or-id> [--rotate]  # human interactive convenience only
+aim prime status [--brief-json]
+aim prime create --request-json -
+aim prime create status --request-json -
+aim prime identity install | aim prime identity status
 aim prime uninstall [--provider <openai-codex|anthropic>]
 ```
 
@@ -141,6 +147,45 @@ refresh token. The exact label and opaque AIM identity fingerprint are
 non-secret and may be persisted by a harness to keep a root session tree
 stable across resume and subagents. Account changes apply to a new root tree;
 loaded trees never hop labels.
+
+`aim prime status --brief-json` is the content-free account-projection view. It
+separates the current validated descriptor's `configuredBinding` from the
+persisted `lastSelectedBinding`, reports path and ownership conflicts, and omits
+paths, fingerprints, provider record details, and helper material.
+
+`aim prime create --request-json -` is the machine-safe account-aware root lane.
+Its strict stdin request carries `schemaVersion`, a stable `operationId`, the
+exact target agent directory, one managed provider and exact label or `auto`,
+`preserveOtherProvider: true`, and a strict `prime` object containing socket,
+cwd, optional name, and optional model. It never accepts a prompt. AIM journals
+the projection change before writing, keeps the distinct target-selection lock
+through Prime admission, releases the short `auth.json` lock before invoking
+Prime, and returns a typed committed, rolled-back, partial-effect, or uncertain
+receipt. Recover a lost response with `aim prime create status --request-json -`;
+do not replay under a new operation ID.
+
+For a disposable isolated literal run, use:
+
+```bash
+aim prime run codex --codex <exact-label> -- \
+  --no-env --offline --daemon-socket <absolute> --session-dir <absolute>
+```
+
+This skips usage probing and accepts only that ordered Prime tail. It is a
+human/test convenience, not the account-aware machine-create lane.
+
+Plain and rotating `aim prime resume` remain human interactive conveniences,
+not structured machine-control surfaces. They do not install extension code.
+All Prime mutations fail with `path_conflict` before auth, extension, selection,
+or launch effects when the persisted owner path differs from the resolved
+`PRIME_AGENT_CODING_AGENT_DIR`.
+
+Session identity is also separately authorized. `aim prime identity install`
+installs or updates the managed extension, while `aim prime identity status` is
+read-only. Account selection, run, resume, status, and create never install it
+implicitly. The extension's below-editor banner shows title, AIM account, git
+branch, and cwd; automatic names and colors remain stored in the session JSONL,
+and a manual `/name` or `/rename` remains authoritative.
 
 Unknown native provider entries are not replaced unless `--replace-native-auth`
 is explicit. AIM then keeps at most one private displaced-native backup per

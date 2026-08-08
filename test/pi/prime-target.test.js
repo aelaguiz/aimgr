@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { parseArgs } from "../../src/cli/args.js";
 import { writeLocalState } from "../../src/state/local-state.js";
-import { runCli } from "../helpers/cli-runner.js";
+import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
@@ -60,6 +61,34 @@ test("Pi explicit Codex and Claude selections install only non-secret external d
   assert.equal(auth["openai-codex"].type, "external");
   assert.equal(auth.anthropic.type, "external");
   assert.doesNotMatch(JSON.stringify(auth), /CODEX_REFRESH|REFRESH_BOSS|ACCESS_BOSS/);
+  assert.equal(
+    fs.existsSync(path.join(agentDir, "extensions", "session-title-footer.ts")),
+    false,
+    "account selection must not install extension code",
+  );
+});
+
+test("harness use does not project session identity even when every requested provider is off", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, "pi-agent");
+  writeJson(statePath, fixtureState());
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  const projected = [];
+
+  const result = JSON.parse(await runCli([
+    "pi", "use", "--codex", "off", "--claude", "off", "--home", home,
+  ], {
+    env: { PI_CODING_AGENT_DIR: agentDir },
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+    ensureHarnessSessionIdentityExtensionImpl: ({ agentDir: selectedAgentDir }) => {
+      projected.push(selectedAgentDir);
+    },
+  }));
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(projected, []);
+  assert.equal(fs.existsSync(path.join(agentDir, "extensions", "session-title-footer.ts")), false);
 });
 
 test("Prime use/status/uninstall uses its agent dir; status degrades and uninstall never opens Redis", async () => {
@@ -192,6 +221,244 @@ test("Prime use codex and claude shorthands choose one provider and turn the oth
   }
 });
 
+test("Prime resume parses --rotate and plain resume delegates to Prime without Redis", async () => {
+  const parsed = parseArgs(["prime", "resume", "thread-123", "--rotate"]);
+  assert.deepEqual(parsed.positional, ["prime", "resume", "thread-123"]);
+  assert.equal(parsed.opts.primeResumeRotate, true);
+  assert.throws(() => parseArgs(["prime", "run", "codex", "--rotate"]), /Unknown option: --rotate/);
+  assert.deepEqual(parseArgs(["claude", "run", "pro3", "--rotate"]).opts.afterDoubleDash, ["--rotate"]);
+
+  const home = mkTempHome();
+  let launched = null;
+  let redisAttempts = 0;
+  const output = await runCli(["prime", "resume", "thread-123", "--home", home], {
+    cwd: "/tmp/prime-project",
+    env: { PRIME_AGENT_CODING_AGENT_DIR: path.join(home, ".prime", "agent") },
+    connectRedisStoreImpl: async () => {
+      redisAttempts += 1;
+      throw new Error("plain resume must not open Redis");
+    },
+    resolvePrimeLauncherImpl: () => "/tmp/prime-agent.sh",
+    launchPrimeAgentImpl: (options) => {
+      launched = options;
+      return { status: 0 };
+    },
+  });
+
+  assert.equal(output, "");
+  assert.equal(redisAttempts, 0);
+  assert.deepEqual(launched.args, ["--dist", "--resume", "thread-123"]);
+  assert.equal(launched.cwd, "/tmp/prime-project");
+  assert.equal(
+    fs.existsSync(path.join(home, ".prime", "agent", "extensions", "session-title-footer.ts")),
+    false,
+  );
+});
+
+test("Prime rotate resume selects a different Codex account and forks with a fresh binding", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, "prime-agent");
+  const state = fixtureState();
+  const betaAccess = makeFakeJwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_beta" },
+  });
+  state.accounts.beta = { provider: "openai-codex", reauth: {}, pool: { enabled: true } };
+  state.credentials["openai-codex"].beta = {
+    access: betaAccess,
+    refresh: "BETA_REFRESH",
+    idToken: betaAccess,
+    expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    accountId: "acct_beta",
+  };
+  writeJson(statePath, state);
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  const env = { PRIME_AGENT_CODING_AGENT_DIR: agentDir };
+  const usage = {
+    "openai-codex": {
+      pro3: {
+        ok: true,
+        windows: [
+          { kind: "primary", usedPercent: 10 },
+          { kind: "secondary", usedPercent: 10 },
+        ],
+      },
+      beta: {
+        ok: true,
+        windows: [
+          { kind: "primary", usedPercent: 20 },
+          { kind: "secondary", usedPercent: 20 },
+        ],
+      },
+    },
+  };
+  await runCli(["prime", "use", "--codex", "pro3", "--claude", "claude", "--home", home], {
+    env,
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+  });
+
+  let launched = null;
+  const output = await runCli(["prime", "resume", "thread-123", "--rotate", "--home", home], {
+    cwd: "/tmp/prime-project",
+    env: { PRIME_AGENT_CODING_AGENT_DIR: agentDir },
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => usage,
+    resolvePrimeLauncherImpl: () => "/tmp/prime-agent.sh",
+    launchPrimeAgentImpl: (options) => {
+      launched = options;
+      return { status: 0 };
+    },
+  });
+
+  assert.match(output, /openai-codex · beta · rotating resume/);
+  const auth = JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json")));
+  assert.equal(auth["openai-codex"].binding, "beta");
+  assert.equal(auth.anthropic.binding, "claude");
+  assert.equal(launched.env.PRIME_AGENT_CODING_AGENT_DIR, agentDir);
+  assert.deepEqual(launched.args, [
+    "--provider",
+    "openai-codex",
+    "--model",
+    "gpt-5.6-sol",
+    "--fork",
+    "thread-123",
+    "--reset-credential-binding",
+    "openai-codex",
+  ]);
+});
+
+test("Prime rotate resume detects a Claude thread, avoids its exhausted account, and bypasses the outer mutex", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, "prime-agent");
+  const sessionId = "019fe167-ebc3-7492-b368-f778dd520579";
+  const state = fixtureState();
+  state.accounts.fresh = {
+    provider: "anthropic",
+    expect: { email: "fresh@example.com" },
+    reauth: { mode: "native-claude" },
+    pool: { enabled: true },
+  };
+  const freshCredential = buildAnthropicClaudeCredential({
+    access: "ACCESS_FRESH",
+    refresh: "REFRESH_FRESH",
+    emailAddress: "fresh@example.com",
+    organizationName: "Fresh Org",
+    organizationUuid: "org_fresh",
+  });
+  freshCredential.nativeClaudeBundle.oauthAccount.accountUuid = "acct_fresh";
+  state.credentials.anthropic.fresh = freshCredential;
+  writeJson(statePath, state);
+  fs.mkdirSync(path.join(agentDir, "sessions"), { recursive: true });
+  fs.writeFileSync(path.join(agentDir, "sessions", `${sessionId}.jsonl`), [
+    { type: "session", id: sessionId, cwd: "/tmp/prime-project" },
+    { type: "credential_configuration", provider: "anthropic", source: "aimgr", binding: "claude" },
+    { type: "model_change", provider: "anthropic", modelId: "claude-fable-5" },
+  ].map((record) => JSON.stringify(record)).join("\n"));
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  await runCli(["prime", "use", "--codex", "off", "--claude", "claude", "--home", home], {
+    env: { PRIME_AGENT_CODING_AGENT_DIR: agentDir },
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+  });
+  const usage = {
+    anthropic: {
+      claude: {
+        ok: true,
+        windows: [
+          { label: "5h", kind: "session", usedPercent: 100 },
+          { label: "Fable", kind: "weekly_scoped", usedPercent: 42 },
+        ],
+      },
+      fresh: {
+        ok: true,
+        windows: [
+          { label: "5h", kind: "session", usedPercent: 5 },
+          { label: "Fable", kind: "weekly_scoped", usedPercent: 10 },
+        ],
+      },
+    },
+  };
+  let launched = null;
+  let outerLockCalls = 0;
+  let leaseReadAttempts = 0;
+  const output = await runCli(["prime", "resume", sessionId, "--rotate", "--home", home], {
+    cwd: "/tmp/prime-project",
+    env: { PRIME_AGENT_CODING_AGENT_DIR: agentDir },
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => usage,
+    readHeldRedisCredentialLeaseLabelsImpl: async () => {
+      leaseReadAttempts += 1;
+      if (leaseReadAttempts === 1) throw new Error("transient fixture disconnect");
+      return new Set();
+    },
+    withHarnessTargetMutationLockImpl: async () => {
+      outerLockCalls += 1;
+      throw new Error("interactive resume must not acquire the outer mutex");
+    },
+    resolvePrimeLauncherImpl: () => "/tmp/prime-agent.sh",
+    launchPrimeAgentImpl: (options) => {
+      launched = options;
+      return { status: 0 };
+    },
+  });
+
+  assert.equal(outerLockCalls, 0);
+  assert.equal(leaseReadAttempts, 2);
+  assert.match(output, /anthropic · fresh · rotating resume/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json"))).anthropic.binding, "fresh");
+  assert.deepEqual(launched.args, [
+    "--provider",
+    "anthropic",
+    "--model",
+    "claude-fable-5",
+    "--fork",
+    sessionId,
+    "--reset-credential-binding",
+    "anthropic",
+  ]);
+});
+
+test("Prime rotate resume does not relaunch the same account when no alternate exists", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, "prime-agent");
+  writeJson(statePath, fixtureState());
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  const env = { PRIME_AGENT_CODING_AGENT_DIR: agentDir };
+  const usage = {
+    "openai-codex": {
+      pro3: {
+        ok: true,
+        windows: [
+          { kind: "primary", usedPercent: 10 },
+          { kind: "secondary", usedPercent: 10 },
+        ],
+      },
+    },
+  };
+  await runCli(["prime", "use", "--codex", "pro3", "--home", home], {
+    env,
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+  });
+  fs.rmSync(path.join(home, ".aimgr", "local-state.json"));
+
+  let launches = 0;
+  const result = await runCliWithExitCode(["prime", "resume", "thread-123", "--rotate", "--home", home], {
+    env,
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => usage,
+    resolvePrimeLauncherImpl: () => "/tmp/prime-agent.sh",
+    launchPrimeAgentImpl: () => {
+      launches += 1;
+      return { status: 0 };
+    },
+  });
+
+  assert.match(result.stdout, /could not rotate accounts: no_alternate_account/);
+  assert.equal(result.exitCode, 1);
+  assert.equal(launches, 0);
+});
+
 test("Prime run selects an account and launches the integrated bundle in the current directory", async () => {
   const usage = {
     "openai-codex": {
@@ -249,6 +516,40 @@ test("Prime run selects an account and launches the integrated bundle in the cur
     assert.deepEqual(launched.args, ["--dist", "--provider", run.provider, "--model", run.model]);
     assert.equal(launched.cwd, "/tmp/prime-project");
   }
+});
+
+test("Prime run with alternate --home and no environment launches from the selected agent dir", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, ".prime", "agent");
+  const launcher = path.join(home, "workspace", "prime-agent", "prime-agent.sh");
+  writeJson(statePath, fixtureState());
+  fs.mkdirSync(path.dirname(launcher), { recursive: true });
+  fs.writeFileSync(launcher, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  let launched = null;
+
+  await runCli([
+    "prime", "run", "codex", "--codex", "pro3", "--home", home,
+  ], {
+    env: {},
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => {
+      throw new Error("an exact selection must not probe usage");
+    },
+    launchPrimeAgentImpl: (options) => {
+      launched = options;
+      return { status: 0 };
+    },
+  });
+
+  assert.equal(launched.command, fs.realpathSync(launcher));
+  assert.equal(launched.env.HOME, undefined);
+  assert.equal(launched.env.PRIME_AGENT_CODING_AGENT_DIR, agentDir);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json"), "utf8"))["openai-codex"].binding,
+    "pro3",
+  );
 });
 
 test("Prime run codex rotates away from the current account when another is eligible", async () => {
@@ -398,7 +699,7 @@ for (const targetCase of [
     assert.equal(statusOutput.status.providers["openai-codex"].installed, true);
 
     let redisAttempts = 0;
-    const uninstallOutput = JSON.parse(await runCli([
+    const uninstallResult = await runCliWithExitCode([
       targetCase.targetId, "uninstall", "--provider", "codex", "--home", home,
     ], {
       env: targetCase.laterEnv(home),
@@ -406,11 +707,19 @@ for (const targetCase of [
         redisAttempts += 1;
         throw new Error("uninstall must stay local");
       },
-    }));
+    });
+    const uninstallOutput = JSON.parse(uninstallResult.stdout);
     assert.equal(redisAttempts, 0);
-    assert.equal(uninstallOutput.receipt.authPath, ownedAuthPath);
-    assert.equal(uninstallOutput.receipt.pathConflict, true);
-    assert.equal(JSON.parse(fs.readFileSync(ownedAuthPath))["openai-codex"], undefined);
+    if (targetCase.targetId === "prime") {
+      assert.equal(uninstallOutput.receipt.reason, "path_conflict");
+      assert.equal(uninstallOutput.receipt.pathConflict, true);
+      assert.equal(uninstallResult.exitCode, 1);
+      assert.equal(JSON.parse(fs.readFileSync(ownedAuthPath))["openai-codex"].binding, "pro3");
+    } else {
+      assert.equal(uninstallOutput.receipt.authPath, ownedAuthPath);
+      assert.equal(uninstallOutput.receipt.pathConflict, true);
+      assert.equal(JSON.parse(fs.readFileSync(ownedAuthPath))["openai-codex"], undefined);
+    }
     assert.equal(fs.existsSync(path.join(targetCase.defaultDir(home), "auth.json")), false);
   });
 }

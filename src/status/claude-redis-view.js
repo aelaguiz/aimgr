@@ -1014,7 +1014,17 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
     throw new Error("Claude automatic selection requires the fable or opus preset.");
   }
   const candidates = (Array.isArray(result?.accounts) ? result.accounts : [])
-    .filter((account) => account?.authState === "usage_readable" && account?.locked === false)
+    .filter((account) => (
+      account?.locked === false
+      && (
+        account?.authState === "usage_readable"
+        || (
+          (account?.credentialReady === true || account?.credentialState === "credential_expired")
+          && account?.authState !== "usage_limited"
+        )
+      )
+      && !hasExhaustedActiveWindow(account?.usage)
+    ))
     .map((account) => {
       const fiveHourWindow = findFiveHourWindow(account?.usage);
       const rankingWindow = preset === "fable"
