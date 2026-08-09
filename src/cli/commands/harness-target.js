@@ -18,6 +18,11 @@ import {
   inspectHarnessCredentialRecord,
 } from "../../credentials/harness-access.js";
 import { loadLocalState, writeLocalState } from "../../state/local-state.js";
+import {
+  appendAnthropicHistory,
+  appendOpenaiCodexHistory,
+  buildRecentSelectionCycleAvoidLabels,
+} from "../../pool/history.js";
 import { selectLeastUsedUnlockedClaudeAccount } from "../../status/claude-redis-view.js";
 import {
   buildHarnessExternalDescriptor,
@@ -70,12 +75,51 @@ function normalizeUninstallProviders(raw) {
   throw new Error("--provider must be openai-codex, codex, anthropic, or claude.");
 }
 
-async function selectClaudePreset({ runtime, preset, usageByProvider, excludeLabel = null }) {
+const PRIME_ROTATION_HISTORY_KIND = "prime_rotation";
+
+function primeRotationHistoryLabels(state, provider) {
+  const history = provider === OPENAI_CODEX_PROVIDER
+    ? state?.pool?.openaiCodex?.history
+    : state?.pool?.anthropic?.history;
+  return (Array.isArray(history) ? history : [])
+    .filter((entry) => (
+      entry?.kind === PRIME_ROTATION_HISTORY_KIND
+      && entry?.status === "selected"
+      && typeof entry.label === "string"
+    ))
+    .flatMap((entry) => [
+      ...(typeof entry.previousLabel === "string" ? [entry.previousLabel] : []),
+      entry.label,
+    ]);
+}
+
+function recordPrimeRotationSelection(state, {
+  provider,
+  label,
+  previousLabel,
+  observedAt,
+}) {
+  const append = provider === OPENAI_CODEX_PROVIDER
+    ? appendOpenaiCodexHistory
+    : appendAnthropicHistory;
+  append(state, [{
+    observedAt,
+    kind: PRIME_ROTATION_HISTORY_KIND,
+    status: "selected",
+    label,
+    ...(previousLabel && previousLabel !== label ? { previousLabel } : {}),
+  }]);
+}
+
+async function selectClaudePreset({
+  runtime,
+  preset,
+  usageByProvider,
+  excludeLabel = null,
+  recentRotationLabels = [],
+}) {
   const records = (runtime.snapshot?.credentials ?? [])
-    .filter((record) => (
-      record.provider === ANTHROPIC_PROVIDER
-      && record.label !== excludeLabel
-    ));
+    .filter((record) => record.provider === ANTHROPIC_PROVIDER);
   const held = await readHeldRedisCredentialLeaseLabels(runtime.store, {
     provider: ANTHROPIC_PROVIDER,
     labels: records.map((record) => record.label),
@@ -96,7 +140,19 @@ async function selectClaudePreset({ runtime, preset, usageByProvider, excludeLab
       usage,
     };
   });
-  const selected = selectLeastUsedUnlockedClaudeAccount({ accounts }, { preset });
+  const selectableLabels = accounts
+    .filter((account) => selectLeastUsedUnlockedClaudeAccount({ accounts: [account] }, { preset }))
+    .map((account) => account.label);
+  const cycleAvoid = buildRecentSelectionCycleAvoidLabels({
+    selectableLabels,
+    sourceLabel: excludeLabel,
+    recentLabels: recentRotationLabels,
+  });
+  const withoutSource = accounts.filter((account) => account.label !== excludeLabel);
+  const preferred = withoutSource.filter((account) => !cycleAvoid.has(account.label));
+  const selected = selectLeastUsedUnlockedClaudeAccount({ accounts: preferred }, { preset })
+    ?? selectLeastUsedUnlockedClaudeAccount({ accounts: withoutSource }, { preset })
+    ?? selectLeastUsedUnlockedClaudeAccount({ accounts }, { preset });
   return selected?.label ?? null;
 }
 
@@ -136,6 +192,7 @@ async function resolveUseSelections({
           usageByProvider,
           currentLabel,
           avoidCurrentLabel: context.avoidCurrentSelection === true,
+          recentRotationLabels: context.primeRotationRecentLabels ?? [],
         });
         if (!selected.selection) {
           return { blocked: true, selections: [], reason: "no_eligible_account" };
@@ -172,6 +229,7 @@ async function resolveUseSelections({
             preset: claudeSelection,
             usageByProvider,
             excludeLabel: context.avoidCurrentSelection === true ? currentLabel : null,
+            recentRotationLabels: context.primeRotationRecentLabels ?? [],
           })
         : normalizeLabel(claudeSelection);
       if (!label) {
@@ -218,12 +276,23 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
   const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
   try {
     const adapter = adapterFor(targetId, { state: runtime.state, homeDir, env });
+    const installedCodexLabel = readInstalledAimBinding(adapter.authPath, OPENAI_CODEX_PROVIDER);
+    const installedClaudeLabel = readInstalledAimBinding(adapter.authPath, ANTHROPIC_PROVIDER);
     const selectionContext = { ...effectiveContext };
     if (selectionContext.currentCodexLabel === undefined) {
-      selectionContext.currentCodexLabel = readInstalledAimBinding(adapter.authPath, OPENAI_CODEX_PROVIDER);
+      selectionContext.currentCodexLabel = installedCodexLabel;
     }
     if (selectionContext.currentClaudeLabel === undefined) {
-      selectionContext.currentClaudeLabel = readInstalledAimBinding(adapter.authPath, ANTHROPIC_PROVIDER);
+      selectionContext.currentClaudeLabel = installedClaudeLabel;
+    }
+    if (effectiveContext.primeRotationProvider) {
+      const installedLabel = effectiveContext.primeRotationProvider === OPENAI_CODEX_PROVIDER
+        ? installedCodexLabel
+        : installedClaudeLabel;
+      selectionContext.primeRotationRecentLabels = [
+        ...primeRotationHistoryLabels(runtime.state, effectiveContext.primeRotationProvider),
+        ...(installedLabel ? [installedLabel] : []),
+      ];
     }
     const resolved = await resolveUseSelections({
       context: selectionContext,
@@ -307,6 +376,24 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
       };
       if (targetId === "pi" && selection.provider === OPENAI_CODEX_PROVIDER) {
         clearLegacyPiProjectionReceipt(adapter.targetState);
+      }
+    }
+    if (effectiveContext.primeRotationProvider) {
+      const rotationChange = changes.find((change) => (
+        change.provider === effectiveContext.primeRotationProvider
+        && typeof change.binding === "string"
+      ));
+      if (rotationChange) {
+        const observedAt = new Date(context.nowMs ?? Date.now()).toISOString();
+        const installedLabel = rotationChange.provider === OPENAI_CODEX_PROVIDER
+          ? installedCodexLabel
+          : installedClaudeLabel;
+        recordPrimeRotationSelection(runtime.state, {
+          provider: rotationChange.provider,
+          label: rotationChange.binding,
+          previousLabel: installedLabel,
+          observedAt,
+        });
       }
     }
     writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
@@ -531,6 +618,7 @@ async function handleResume(context, targetId) {
     requireDifferentSelection: true,
     currentCodexLabel: profile.provider === OPENAI_CODEX_PROVIDER ? profile.binding : undefined,
     currentClaudeLabel: profile.provider === ANTHROPIC_PROVIDER ? profile.binding : undefined,
+    primeRotationProvider: profile.provider,
   }, targetId, { emitReceipt: false });
   if (!selected?.ok) {
     context.stdout.write(`AIM Prime could not rotate accounts: ${selected?.receipt?.reason ?? "unknown"}\n`);

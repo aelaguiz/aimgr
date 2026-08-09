@@ -67,6 +67,20 @@ export function collectCodexPoolStatusWithExhaustionHistory({ state, homeDir, us
   return poolStatus;
 }
 
+export function buildRecentSelectionCycleAvoidLabels({ selectableLabels, sourceLabel, recentLabels }) {
+  const alternatives = new Set(
+    (Array.isArray(selectableLabels) ? selectableLabels : []).filter((label) => label !== sourceLabel),
+  );
+  const avoidCount = Math.max(0, alternatives.size - 1);
+  const avoided = new Set();
+  const recent = Array.isArray(recentLabels) ? recentLabels : [];
+  for (let index = recent.length - 1; index >= 0 && avoided.size < avoidCount; index -= 1) {
+    const label = recent[index];
+    if (alternatives.has(label)) avoided.add(label);
+  }
+  return avoided;
+}
+
 export function buildBlockedSelectionHistoryEntry({ observedAt, reason = "no_eligible_pool_account" }) {
   return {
     observedAt,

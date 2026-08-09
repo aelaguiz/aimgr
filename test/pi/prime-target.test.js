@@ -386,6 +386,78 @@ test("Prime rotate resume preserves Codex and its exact model while selecting a 
   ]);
 });
 
+test("repeated Codex rotating resumes cycle across selectable alternate accounts", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, "prime-agent");
+  const state = fixtureState();
+  for (const label of ["beta", "delta", "gamma"]) {
+    const access = makeFakeJwt({
+      "https://api.openai.com/auth": { chatgpt_account_id: `acct_${label}` },
+    });
+    state.accounts[label] = {
+      provider: "openai-codex",
+      reauth: {},
+      pool: { enabled: true },
+    };
+    state.credentials["openai-codex"][label] = {
+      access,
+      refresh: `${label.toUpperCase()}_REFRESH`,
+      idToken: access,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      accountId: `acct_${label}`,
+    };
+  }
+  writeJson(statePath, state);
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  const env = { PRIME_AGENT_CODING_AGENT_DIR: agentDir };
+  await runCli(["prime", "use", "--codex", "pro3", "--home", home], {
+    env,
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+  });
+  const sessionId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  writePrimeSession(agentDir, {
+    id: sessionId,
+    provider: "openai-codex",
+    model: "gpt-5.6-sol",
+    binding: "beta",
+  });
+  const usage = {
+    "openai-codex": Object.fromEntries(["pro3", "beta", "delta", "gamma"].map((label) => [
+      label,
+      {
+        ok: true,
+        windows: [
+          { kind: "primary", usedPercent: 10 },
+          { kind: "secondary", usedPercent: 10 },
+        ],
+      },
+    ])),
+  };
+
+  const selected = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await runCli(["prime", "resume", sessionId, "--rotate", "--home", home], {
+      env,
+      connectRedisStoreImpl: redis.connectRedisStoreImpl,
+      probeUsageSnapshotsByProviderImpl: async () => usage,
+      resolvePrimeLauncherImpl: () => "/tmp/prime-agent.sh",
+      inspectPrimeDefaultLauncherLaneImpl: () => "dist",
+      launchPrimeAgentImpl: () => ({ status: 0 }),
+    });
+    selected.push(JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json")))["openai-codex"].binding);
+  }
+
+  assert.deepEqual(selected, ["delta", "gamma", "pro3"]);
+  const local = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json")));
+  assert.deepEqual(
+    local.pool.openaiCodex.history
+      .filter((entry) => entry.kind === "prime_rotation")
+      .map((entry) => entry.label),
+    selected,
+  );
+});
+
 test("Prime rotate resume preserves Claude Fable and selects a different Claude account", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -464,6 +536,76 @@ test("Prime rotate resume preserves Claude Fable and selects a different Claude 
     "--reset-credential-binding",
     "anthropic",
   ]);
+});
+
+test("repeated Claude rotating resumes cycle across selectable alternate accounts", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, "prime-agent");
+  const state = fixtureState();
+  for (const [label, index] of [["pro2", 2], ["pro3", 3], ["pro4", 4]]) {
+    state.accounts[label] = {
+      provider: "anthropic",
+      expect: { email: `${label}@example.com` },
+      reauth: { mode: "native-claude" },
+      pool: { enabled: true },
+    };
+    state.credentials.anthropic[label] = buildAnthropicClaudeCredential({
+      access: `ACCESS_${index}`,
+      refresh: `REFRESH_${index}`,
+      emailAddress: `${label}@example.com`,
+      organizationName: `Org ${index}`,
+      organizationUuid: `org_${index}`,
+    });
+  }
+  writeJson(statePath, state);
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  const env = { PRIME_AGENT_CODING_AGENT_DIR: agentDir };
+  await runCli(["prime", "use", "--claude", "pro2", "--home", home], {
+    env,
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+  });
+  const sessionId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  writePrimeSession(agentDir, {
+    id: sessionId,
+    provider: "anthropic",
+    model: "claude-fable-5",
+    binding: "claude",
+  });
+  const usage = {
+    anthropic: Object.fromEntries(["claude", "pro2", "pro3", "pro4"].map((label) => [
+      label,
+      {
+        ok: true,
+        windows: [
+          { label: "5h", kind: "session", usedPercent: 10 },
+          { label: "Fable", kind: "weekly_scoped", usedPercent: 10 },
+        ],
+      },
+    ])),
+  };
+
+  const selected = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await runCli(["prime", "resume", sessionId, "--rotate", "--home", home], {
+      env,
+      connectRedisStoreImpl: redis.connectRedisStoreImpl,
+      probeUsageSnapshotsByProviderImpl: async () => usage,
+      resolvePrimeLauncherImpl: () => "/tmp/prime-agent.sh",
+      inspectPrimeDefaultLauncherLaneImpl: () => "dist",
+      launchPrimeAgentImpl: () => ({ status: 0 }),
+    });
+    selected.push(JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json"))).anthropic.binding);
+  }
+
+  assert.deepEqual(selected, ["pro3", "pro4", "pro2"]);
+  const local = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json")));
+  assert.deepEqual(
+    local.pool.anthropic.history
+      .filter((entry) => entry.kind === "prime_rotation")
+      .map((entry) => entry.label),
+    selected,
+  );
 });
 
 test("Prime rotate resume does not relaunch the same account when no alternate exists", async () => {

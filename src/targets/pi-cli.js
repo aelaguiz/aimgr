@@ -5,6 +5,7 @@ import { parseExpiresAtToMs } from "../core/time.js";
 import { resolveManagedPiAgentDir, resolvePiAuthFilePath } from "../io/paths.js";
 import { resolveHarnessOwnedAuthPath } from "./harness-auth.js";
 import {
+  buildRecentSelectionCycleAvoidLabels,
   collectCodexPoolStatusWithExhaustionHistory,
   recordOpenaiCodexBlockedSelectionHistory,
 } from "../pool/history.js";
@@ -71,6 +72,7 @@ export async function selectNextBestPiCodexLabel({
   usageByProvider,
   currentLabel: currentLabelOverride,
   avoidCurrentLabel = false,
+  recentRotationLabels = [],
   observedAt = new Date().toISOString(),
 }) {
   ensureStateShape(state);
@@ -108,12 +110,20 @@ export async function selectNextBestPiCodexLabel({
     lastApplyReceipt: getOpenclawTargetState(state).lastApplyReceipt ?? null,
     now: Date.parse(observedAt),
   });
-  const selection = pickNextBestLocalCliPoolLabel({
-    rankedCandidates,
-    avoidLabel: avoidCurrentLabel ? currentLabel : undefined,
-  }) ?? (avoidCurrentLabel
-    ? pickNextBestLocalCliPoolLabel({ rankedCandidates })
-    : null);
+  const sourceLabel = avoidCurrentLabel ? currentLabel : null;
+  const selectableLabels = rankedCandidates
+    .filter((candidate) => pickNextBestLocalCliPoolLabel({ rankedCandidates: [candidate] }))
+    .map((candidate) => candidate.label);
+  const cycleAvoid = buildRecentSelectionCycleAvoidLabels({
+    selectableLabels,
+    sourceLabel,
+    recentLabels: recentRotationLabels,
+  });
+  const withoutSource = rankedCandidates.filter((candidate) => candidate.label !== sourceLabel);
+  const preferred = withoutSource.filter((candidate) => !cycleAvoid.has(candidate.label));
+  const selection = pickNextBestLocalCliPoolLabel({ rankedCandidates: preferred })
+    ?? pickNextBestLocalCliPoolLabel({ rankedCandidates: withoutSource })
+    ?? pickNextBestLocalCliPoolLabel({ rankedCandidates });
   if (!selection) throw new Error("Failed to select a next-best Pi pool label.");
   return Object.freeze({ status: "selected", selection, poolStatus });
 }

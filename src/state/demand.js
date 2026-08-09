@@ -41,6 +41,9 @@ export function pruneOpenaiCodexHistory(history) {
     };
     if (typeof entry.status === "string" && entry.status.trim()) next.status = entry.status.trim();
     if (typeof entry.label === "string" && entry.label.trim()) next.label = entry.label.trim();
+    if (typeof entry.previousLabel === "string" && entry.previousLabel.trim()) {
+      next.previousLabel = entry.previousLabel.trim();
+    }
     if (typeof entry.accountId === "string" && entry.accountId.trim()) next.accountId = entry.accountId.trim();
     if (typeof entry.reason === "string" && entry.reason.trim()) next.reason = entry.reason.trim();
     if (typeof entry.hadSpareEligibleCapacity === "boolean") {
