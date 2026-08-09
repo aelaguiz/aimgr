@@ -138,7 +138,7 @@ provider is unchanged.
 
 AIM remains the only managed refresh-token authority. Pi and Prime invoke the
 machine-only `aim credential-helper` directly with bounded JSON over stdin and
-receive only an access token in memory. Target `auth.json`, AIM local receipts,
+receive only an access token in memory. Target `auth.json`, AIM local state,
 status, backups, argv, and environment never receive an AIM-managed access or
 refresh token. The exact label and opaque AIM identity fingerprint are
 non-secret and may be persisted by a harness to keep a root session tree
@@ -146,12 +146,13 @@ stable across resume and subagents. Account changes apply to a new root tree;
 loaded trees never hop labels.
 
 Plain `aim prime resume <path-or-id>` delegates to Prime's ordinary pinned resume
-path without changing AIM account state. Add `--rotate` after a Codex account is
-rate limited: AIM installs the next-best eligible *different* Codex label, forks
-the saved conversation into a new Prime root, and resets only the fork's
-`openai-codex` binding. The original session file and its account binding remain
-unchanged. If no alternate account is eligible, AIM exits without relaunching
-the current account.
+path without changing AIM account state. Add `--rotate` after the active account
+is rate limited: AIM reads the saved session's last-used provider and exact
+model, installs the next-best eligible *different* label for that provider,
+forks the conversation into a new Prime root, and resets only that provider's
+binding. The original session file and its account binding remain unchanged. If
+no alternate account is eligible, AIM exits without relaunching the current
+account.
 
 AIM-managed Pi and Prime homes also receive one global session-identity
 extension. Its below-editor banner always shows title, AIM account, git branch,
@@ -161,13 +162,13 @@ new session chooses a colored title pill and stores that color in the session
 JSONL, so reloads, exact resumes, and continuity forks retain the same visual
 identity. A manual `/name` or `/rename` remains authoritative.
 
-Unknown native provider entries are not replaced unless `--replace-native-auth`
-is explicit. AIM then keeps at most one private displaced-native backup per
-target/provider. `aim pi uninstall` and `aim prime uninstall` are local-only:
-they restore that backup (or remove the descriptor) only when the current entry
-exactly equals AIM's last installed descriptor. Stop active Pi/Prime workers
-before uninstall. A conflicting edit is left untouched and the backup path is
-reported.
+An explicit AIM provider selection replaces that provider entry immediately. If
+it displaces native auth, AIM keeps one private backup at a deterministic path
+so turning the provider off can restore direct native use. The backup is passive:
+there is no ownership receipt, exact-descriptor guard, or pending-transition
+state. `aim pi uninstall` and `aim prime uninstall` restore the backup when the
+live entry is AIM-managed; an already-native or foreign live entry is left
+untouched and never blocks the command.
 
 `status` always reports local ownership even when Redis is unavailable. A
 loaded harness may use an already cached, unexpired access token only until its

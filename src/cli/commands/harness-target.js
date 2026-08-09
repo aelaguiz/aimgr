@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
-import { resolveManagedPrimeAgentDir } from "../../io/paths.js";
+import { expandHomeShorthandPath, resolveManagedPrimeAgentDir } from "../../io/paths.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { readHeldRedisCredentialLeaseLabels } from "../../coordination/redis-credential-lease.js";
@@ -70,9 +70,12 @@ function normalizeUninstallProviders(raw) {
   throw new Error("--provider must be openai-codex, codex, anthropic, or claude.");
 }
 
-async function selectClaudePreset({ runtime, preset, usageByProvider }) {
+async function selectClaudePreset({ runtime, preset, usageByProvider, excludeLabel = null }) {
   const records = (runtime.snapshot?.credentials ?? [])
-    .filter((record) => record.provider === ANTHROPIC_PROVIDER);
+    .filter((record) => (
+      record.provider === ANTHROPIC_PROVIDER
+      && record.label !== excludeLabel
+    ));
   const held = await readHeldRedisCredentialLeaseLabels(runtime.store, {
     provider: ANTHROPIC_PROVIDER,
     labels: records.map((record) => record.label),
@@ -94,8 +97,7 @@ async function selectClaudePreset({ runtime, preset, usageByProvider }) {
     };
   });
   const selected = selectLeastUsedUnlockedClaudeAccount({ accounts }, { preset });
-  if (!selected) throw new Error(`No eligible unlocked Claude account is available for ${preset}.`);
-  return selected.label;
+  return selected?.label ?? null;
 }
 
 async function resolveUseSelections({
@@ -158,9 +160,29 @@ async function resolveUseSelections({
     if (claudeSelection === "off") {
       selections.push({ provider: ANTHROPIC_PROVIDER, off: true });
     } else {
-      const label = claudeSelection === "fable" || claudeSelection === "opus"
-        ? await selectClaudePreset({ runtime, preset: claudeSelection, usageByProvider })
+      const currentLabel = context.currentClaudeLabel !== undefined
+        ? context.currentClaudeLabel
+        : typeof targetState?.providers?.[ANTHROPIC_PROVIDER]?.binding === "string"
+          ? targetState.providers[ANTHROPIC_PROVIDER].binding
+          : null;
+      const isPreset = claudeSelection === "fable" || claudeSelection === "opus";
+      const label = isPreset
+        ? await selectClaudePreset({
+            runtime,
+            preset: claudeSelection,
+            usageByProvider,
+            excludeLabel: context.avoidCurrentSelection === true ? currentLabel : null,
+          })
         : normalizeLabel(claudeSelection);
+      if (!label) {
+        if (context.requireDifferentSelection === true && currentLabel) {
+          return { blocked: true, selections: [], reason: "no_alternate_account" };
+        }
+        throw new Error(`No eligible unlocked Claude account is available for ${claudeSelection}.`);
+      }
+      if (context.requireDifferentSelection === true && currentLabel && label === currentLabel) {
+        return { blocked: true, selections: [], reason: "no_alternate_account" };
+      }
       selections.push({
         provider: ANTHROPIC_PROVIDER,
         record: exactRecord(runtime.snapshot, ANTHROPIC_PROVIDER, label),
@@ -196,15 +218,12 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
   const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
   try {
     const adapter = adapterFor(targetId, { state: runtime.state, homeDir, env });
-    const persistTargetState = async () => writeRedisLocalStateFromView({
-      homeDir,
-      state: runtime.state,
-      localState: runtime.localState,
-    });
-    adapter.targetState.agentDir = adapter.agentDir;
     const selectionContext = { ...effectiveContext };
-    if (targetId === "prime" && effectiveContext.avoidCurrentSelection === true) {
+    if (selectionContext.currentCodexLabel === undefined) {
       selectionContext.currentCodexLabel = readInstalledAimBinding(adapter.authPath, OPENAI_CODEX_PROVIDER);
+    }
+    if (selectionContext.currentClaudeLabel === undefined) {
+      selectionContext.currentClaudeLabel = readInstalledAimBinding(adapter.authPath, ANTHROPIC_PROVIDER);
     }
     const resolved = await resolveUseSelections({
       context: selectionContext,
@@ -223,8 +242,6 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
         effect: "new_root_sessions",
         secretsCopiedToTarget: false,
       };
-      adapter.targetState.lastSelectionReceipt = receipt;
-      writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
       if (emitReceipt) stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: false, receipt }), null, 2)}\n`);
       setExitCode(1);
       return { ok: false, receipt };
@@ -234,34 +251,37 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
       ?? ensureHarnessSessionIdentityExtension;
     ensureSessionIdentityImpl({ agentDir: adapter.agentDir });
 
+    const preparedSelections = resolved.selections.map((selection) => {
+      if (selection.off) return selection;
+      return {
+        ...selection,
+        inspection: inspectHarnessCredentialRecord(selection.record, { nowMs: context.nowMs }),
+        descriptor: buildHarnessExternalDescriptor({
+          executable: context.aimExecutable,
+          binding: selection.record.label,
+          expectedIdentityFingerprint: buildHarnessIdentityFingerprint(selection.record),
+        }),
+      };
+    });
     const changes = [];
-    for (const selection of resolved.selections) {
+    for (const selection of preparedSelections) {
       if (selection.off) {
         changes.push(await uninstallHarnessProvider({
           targetId,
           targetState: adapter.targetState,
           authPath: adapter.authPath,
+          homeDir,
           provider: selection.provider,
-          persistTargetState,
         }));
-        writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
         continue;
       }
-      const inspection = inspectHarnessCredentialRecord(selection.record, { nowMs: context.nowMs });
-      const descriptor = buildHarnessExternalDescriptor({
-        executable: context.aimExecutable,
-        binding: selection.record.label,
-        expectedIdentityFingerprint: buildHarnessIdentityFingerprint(selection.record),
-      });
       changes.push(await installHarnessProvider({
         targetId,
         targetState: adapter.targetState,
         authPath: adapter.authPath,
         homeDir,
         provider: selection.provider,
-        descriptor,
-        replaceNativeAuth: opts.replaceNativeAuth,
-        persistTargetState,
+        descriptor: selection.descriptor,
         recognizeLegacyEntry: targetId === "pi" && selection.provider === OPENAI_CODEX_PROVIDER
           ? (entry) => {
               const legacyLabel = typeof adapter.targetState.activeLabel === "string"
@@ -281,15 +301,15 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
             }
           : undefined,
       }));
-      if (inspection.due) changes[changes.length - 1] = {
+      if (selection.inspection.due) changes[changes.length - 1] = {
         ...changes[changes.length - 1],
         credentialMaintenanceDue: true,
       };
       if (targetId === "pi" && selection.provider === OPENAI_CODEX_PROVIDER) {
         clearLegacyPiProjectionReceipt(adapter.targetState);
       }
-      writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
     }
+    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
     const receipt = {
       action: `${targetId}_use`,
       status: changes.some((change) => change.wrote) ? "updated" : "noop",
@@ -308,8 +328,6 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
         credentialMaintenanceDue: change.credentialMaintenanceDue === true,
       })),
     };
-    adapter.targetState.lastSelectionReceipt = receipt;
-    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
     if (emitReceipt) stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, receipt }), null, 2)}\n`);
     return { ok: true, receipt };
   } finally {
@@ -338,6 +356,27 @@ function launchPrimeAgent({ command, args, cwd, env, spawnImpl = spawnSync } = {
   });
 }
 
+function inspectPrimeDefaultLauncherLane({ command, cwd, env, spawnSyncImpl = spawnSync }) {
+  try {
+    const result = spawnSyncImpl(command, ["status", "--json"], {
+      cwd,
+      env,
+      shell: false,
+      encoding: "utf8",
+      timeout: 5_000,
+      maxBuffer: 2 * 1_024 * 1_024,
+    });
+    if (result?.status !== 0 || typeof result.stdout !== "string") return null;
+    const daemons = JSON.parse(result.stdout);
+    if (!Array.isArray(daemons)) return null;
+    const current = daemons.find((daemon) => daemon?.isDefault === true && daemon?.status === "current");
+    if (typeof current?.buildId !== "string") return null;
+    return current.buildId.startsWith("dist-") ? "dist" : "source";
+  } catch {
+    return null;
+  }
+}
+
 function runPrimeLauncher(context, args) {
   const resolvePrimeLauncherImpl = context.resolvePrimeLauncherImpl ?? resolvePrimeLauncher;
   const launchPrimeAgentImpl = context.launchPrimeAgentImpl ?? launchPrimeAgent;
@@ -346,16 +385,117 @@ function runPrimeLauncher(context, args) {
   ensureSessionIdentityImpl({
     agentDir: resolveManagedPrimeAgentDir({ homeDir: context.homeDir, env: context.env }),
   });
+  const command = resolvePrimeLauncherImpl({ homeDir: context.homeDir });
+  const cwd = context.cwd ?? process.cwd();
+  const inspectLaneImpl = context.inspectPrimeDefaultLauncherLaneImpl ?? inspectPrimeDefaultLauncherLane;
+  const activeLane = inspectLaneImpl({ command, cwd, env: context.env });
+  const baseArgs = args[0] === "--dist" ? args.slice(1) : args;
+  const launchArgs = activeLane === "source" ? baseArgs : ["--dist", ...baseArgs];
   const result = launchPrimeAgentImpl({
-    command: resolvePrimeLauncherImpl({ homeDir: context.homeDir }),
-    args,
-    cwd: context.cwd ?? process.cwd(),
+    command,
+    args: launchArgs,
+    cwd,
     env: context.env,
   });
   if (result?.error) throw new Error("Could not start the local Prime Agent launcher.");
   if (result?.status !== 0) {
     context.setExitCode(Number.isInteger(result?.status) ? result.status : 1);
   }
+}
+
+function resolvePrimeSessionPath({ selector, homeDir, env = {}, cwd = process.cwd() }) {
+  const looksLikePath = selector.includes("/") || selector.includes("\\") || selector.endsWith(".jsonl");
+  if (looksLikePath) {
+    const candidate = path.resolve(cwd, expandHomeShorthandPath(selector, { homeDir }));
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
+      throw new Error(`Prime session file does not exist: ${candidate}`);
+    }
+    return candidate;
+  }
+
+  const sessionDirOverride = String(
+    env.PRIME_AGENT_SESSION_DIR ?? env.PRIME_AGENT_CODING_AGENT_SESSION_DIR ?? "",
+  ).trim();
+  const sessionDir = sessionDirOverride
+    ? path.resolve(expandHomeShorthandPath(sessionDirOverride, { homeDir }))
+    : path.join(resolveManagedPrimeAgentDir({ homeDir, env }), "sessions");
+  const exactPath = path.join(sessionDir, `${selector}.jsonl`);
+  if (fs.existsSync(exactPath) && fs.statSync(exactPath).isFile()) return exactPath;
+
+  let names;
+  try {
+    names = fs.readdirSync(sessionDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+      .map((entry) => entry.name);
+  } catch {
+    throw new Error(`Prime session directory is unavailable: ${sessionDir}`);
+  }
+  const normalizedSelector = selector.replaceAll("-", "").toLowerCase();
+  const hexSelector = normalizedSelector && /^[0-9a-f]+$/.test(normalizedSelector);
+  const matches = names.filter((name) => {
+    const id = name.slice(0, -".jsonl".length);
+    const normalizedId = id.replaceAll("-", "").toLowerCase();
+    return hexSelector && /^[0-9a-f]+$/.test(normalizedId)
+      ? normalizedId.startsWith(normalizedSelector) || normalizedId.endsWith(normalizedSelector)
+      : id.startsWith(selector);
+  });
+  if (matches.length === 1) return path.join(sessionDir, matches[0]);
+  if (matches.length > 1) throw new Error(`Ambiguous Prime session selector: ${selector}`);
+  throw new Error(`No Prime session found matching: ${selector}`);
+}
+
+function readPrimeResumeProfile({ selector, homeDir, env, cwd }) {
+  const sessionPath = resolvePrimeSessionPath({ selector, homeDir, env, cwd });
+  let lastModel = null;
+  const bindings = new Map();
+  for (const line of fs.readFileSync(sessionPath, "utf8").split(/\r?\n/)) {
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (
+      entry?.type === "model_change"
+      && typeof entry.provider === "string"
+      && typeof entry.modelId === "string"
+    ) {
+      lastModel = { provider: entry.provider, model: entry.modelId };
+    }
+    if (
+      entry?.type === "message"
+      && entry.message?.role === "assistant"
+      && typeof entry.message.provider === "string"
+      && typeof entry.message.model === "string"
+    ) {
+      lastModel = { provider: entry.message.provider, model: entry.message.model };
+    }
+    if (
+      entry?.type === "credential_binding"
+      && entry.source === "aimgr"
+      && typeof entry.provider === "string"
+      && typeof entry.binding === "string"
+    ) {
+      bindings.set(entry.provider, entry.binding);
+    }
+  }
+  if (!lastModel) throw new Error(`Prime session has no model metadata: ${sessionPath}`);
+  if (!HARNESS_MANAGED_PROVIDERS.includes(lastModel.provider)) {
+    throw new Error(`AIM cannot rotate unsupported Prime provider=${lastModel.provider}.`);
+  }
+  const binding = bindings.get(lastModel.provider);
+  if (!binding) {
+    throw new Error(`Prime session has no AIM binding for provider=${lastModel.provider}.`);
+  }
+  return { ...lastModel, binding, sessionPath };
+}
+
+function claudePresetForModel(model) {
+  const normalized = String(model).toLowerCase();
+  if (normalized.includes("fable") || normalized.includes("sonnet")) return "fable";
+  if (normalized.includes("opus")) return "opus";
+  throw new Error(`AIM cannot automatically rotate unsupported Claude model=${model}.`);
 }
 
 async function handleResume(context, targetId) {
@@ -374,23 +514,34 @@ async function handleResume(context, targetId) {
     return;
   }
 
+  const profile = readPrimeResumeProfile({
+    selector,
+    homeDir: context.homeDir,
+    env: context.env,
+    cwd: context.cwd,
+  });
+  const selectionOpts = profile.provider === OPENAI_CODEX_PROVIDER
+    ? { codex: "auto" }
+    : { claude: claudePresetForModel(profile.model) };
   const selected = await handleUse({
     ...context,
-    opts: { ...context.opts, codex: "auto", replaceNativeAuth: true },
+    opts: { ...context.opts, ...selectionOpts },
     positional: [targetId, "use"],
     avoidCurrentSelection: true,
     requireDifferentSelection: true,
+    currentCodexLabel: profile.provider === OPENAI_CODEX_PROVIDER ? profile.binding : undefined,
+    currentClaudeLabel: profile.provider === ANTHROPIC_PROVIDER ? profile.binding : undefined,
   }, targetId, { emitReceipt: false });
   if (!selected?.ok) {
     context.stdout.write(`AIM Prime could not rotate accounts: ${selected?.receipt?.reason ?? "unknown"}\n`);
     return;
   }
   const providerReceipt = selected.receipt.providers.find(
-    (provider) => provider.provider === OPENAI_CODEX_PROVIDER && provider.binding,
+    (provider) => provider.provider === profile.provider && provider.binding,
   );
-  if (!providerReceipt) throw new Error("AIM did not select a Codex account.");
+  if (!providerReceipt) throw new Error(`AIM did not select a ${profile.provider} account.`);
 
-  context.stdout.write(`AIM Prime: ${OPENAI_CODEX_PROVIDER} · ${providerReceipt.binding} · rotating resume\n`);
+  context.stdout.write(`AIM Prime: ${profile.provider} · ${providerReceipt.binding} · rotating resume\n`);
   // The reset flag ships in Prime source with this AIM command. Avoid a stale local dist bundle
   // rejecting it before the next Prime bundle release is built. Launch from the exact agent dir
   // that received the selected descriptor, including persisted-path recovery cases.
@@ -403,13 +554,13 @@ async function handleResume(context, targetId) {
   };
   runPrimeLauncher(launchContext, [
     "--provider",
-    OPENAI_CODEX_PROVIDER,
+    profile.provider,
     "--model",
-    "gpt-5.6-sol",
+    profile.model,
     "--fork",
     selector,
     "--reset-credential-binding",
-    OPENAI_CODEX_PROVIDER,
+    profile.provider,
   ]);
 }
 
@@ -431,7 +582,7 @@ async function handleRun(context, targetId) {
 
   const selected = await handleUse({
     ...context,
-    opts: { ...context.opts, replaceNativeAuth: true },
+    opts: { ...context.opts },
     positional: [targetId, "use", flavor],
     avoidCurrentSelection: true,
   }, targetId, { emitReceipt: false });
@@ -456,18 +607,18 @@ async function handleUninstall(context, targetId) {
   }
   const localState = loadLocalState({ homeDir });
   const adapter = adapterFor(targetId, { state: localState, homeDir, env });
-  const persistTargetState = async () => writeLocalStateImpl({ homeDir, localState });
   const changes = [];
   for (const provider of normalizeUninstallProviders(opts.provider)) {
     changes.push(await uninstallHarnessProvider({
       targetId,
       targetState: adapter.targetState,
       authPath: adapter.authPath,
+      homeDir,
       provider,
-      persistTargetState,
     }));
   }
-  adapter.targetState.lastUninstallReceipt = {
+  await writeLocalStateImpl({ homeDir, localState });
+  const receipt = {
     action: `${targetId}_uninstall`,
     status: changes.some((change) => change.wrote) ? "updated" : "noop",
     authPath: adapter.authPath,
@@ -476,8 +627,7 @@ async function handleUninstall(context, targetId) {
     effect: "after_active_workers_stop",
     providers: changes.map(({ provider, status, backupPath }) => ({ provider, status, backupPath })),
   };
-  await writeLocalStateImpl({ homeDir, localState });
-  stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, receipt: adapter.targetState.lastUninstallReceipt }), null, 2)}\n`);
+  stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, receipt }), null, 2)}\n`);
 }
 
 async function handleTargetStatus(context, targetId) {
@@ -520,6 +670,7 @@ async function handleTargetStatus(context, targetId) {
       targetId,
       targetState: adapter.targetState,
       authPath: adapter.authPath,
+      homeDir,
       resolvedAuthPath: adapter.resolvedAuthPath,
       persistedAuthPath: adapter.persistedAuthPath,
       pathConflict: adapter.pathConflict,

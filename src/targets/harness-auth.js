@@ -212,12 +212,6 @@ export async function withHarnessAuthTransaction(authPath, operation, {
   }
 }
 
-function providerState(targetState, provider, { create = false } = {}) {
-  targetState.providers = isObject(targetState.providers) ? targetState.providers : {};
-  if (!isObject(targetState.providers[provider]) && create) targetState.providers[provider] = {};
-  return isObject(targetState.providers[provider]) ? targetState.providers[provider] : null;
-}
-
 function backupPathFor({ homeDir, targetId, provider }) {
   assertSafePathComponent(assertTargetId(targetId));
   assertSafePathComponent(assertProvider(provider));
@@ -229,14 +223,7 @@ function backupPathFor({ homeDir, targetId, provider }) {
   );
 }
 
-function writeDisplacedEntryBackup({ backupPath, targetId, provider, entry, fsImpl = fs }) {
-  if (fsImpl.existsSync(backupPath)) {
-    const existing = readDisplacedEntryBackup({ backupPath, targetId, provider, fsImpl });
-    if (!isDeepStrictEqual(existing, entry)) {
-      throw new Error(`Refusing to overwrite an existing displaced auth backup: ${backupPath}`);
-    }
-    return false;
-  }
+function writeDisplacedEntryBackup({ backupPath, targetId, provider, entry }) {
   ensureDirectoryMode(path.dirname(backupPath), 0o700);
   writeJsonFileIfChanged(backupPath, {
     schemaVersion: 1,
@@ -244,7 +231,6 @@ function writeDisplacedEntryBackup({ backupPath, targetId, provider, entry, fsIm
     provider,
     entry,
   }, { mode: 0o600 });
-  return true;
 }
 
 function readDisplacedEntryBackup({ backupPath, targetId, provider, fsImpl = fs }) {
@@ -266,15 +252,10 @@ function readDisplacedEntryBackup({ backupPath, targetId, provider, fsImpl = fs 
   return value.entry;
 }
 
-function readPendingTransition(providerStateValue) {
-  const pending = providerStateValue?.pendingTransition;
-  if (!isObject(pending) || pending.schemaVersion !== 1) return null;
-  if (pending.operation !== "install" && pending.operation !== "uninstall") return null;
-  return pending;
-}
-
-async function persistTargetTransition(persistTargetState) {
-  await persistTargetState();
+function clearHarnessReceiptState(targetState) {
+  delete targetState.providers;
+  delete targetState.lastSelectionReceipt;
+  delete targetState.lastUninstallReceipt;
 }
 
 export async function installHarnessProvider({
@@ -284,9 +265,7 @@ export async function installHarnessProvider({
   homeDir,
   provider,
   descriptor,
-  replaceNativeAuth = false,
   recognizeLegacyEntry = () => false,
-  persistTargetState = async () => {},
   fsImpl = fs,
   lockfileImpl = lockfile,
 }) {
@@ -295,27 +274,11 @@ export async function installHarnessProvider({
   if (!isAimHarnessExternalDescriptor(descriptor)) {
     throw new Error("Refusing to install an invalid AIM external descriptor.");
   }
-  const currentProviderState = providerState(targetState, provider, { create: true });
-  const lastInstalled = isObject(currentProviderState.lastInstalledDescriptor)
-    ? currentProviderState.lastInstalledDescriptor
-    : null;
-  let pending = readPendingTransition(currentProviderState);
-  if (pending?.operation === "uninstall") {
-    throw new Error(`Finish the pending ${provider} uninstall before installing a binding.`);
-  }
-  if (pending && !isDeepStrictEqual(pending.descriptor, descriptor)) {
-    throw new Error(`Finish recovery of the pending ${provider} descriptor before selecting another binding.`);
-  }
-  let backupPath = typeof pending?.backupPath === "string"
-    ? pending.backupPath
-    : typeof currentProviderState.backupPath === "string"
-      ? currentProviderState.backupPath
-      : null;
-  let migratedLegacy = pending?.migratedLegacy === true;
-  let displacedNative = pending?.displacedNative === true;
-  let recoveredInstallReceipt = pending?.recoveredInstallReceipt === true;
-  let preparedPersisted = Boolean(pending);
-  let createdBackup = false;
+
+  const deterministicBackupPath = backupPathFor({ homeDir, targetId, provider });
+  let migratedLegacy = false;
+  let displacedNative = false;
+  let backupPath = fsImpl.existsSync(deterministicBackupPath) ? deterministicBackupPath : null;
 
   const result = await withHarnessAuthTransaction(authPath, async (auth) => {
     const currentPresent = Object.hasOwn(auth, provider);
@@ -324,118 +287,32 @@ export async function installHarnessProvider({
       throw new Error(`Refusing malformed native ${provider} auth.`);
     }
 
-    if (!pending) {
-      const ownedCurrent = current && lastInstalled && isDeepStrictEqual(current, lastInstalled);
-      const recognizedLegacy = current && !ownedCurrent && recognizeLegacyEntry(current) === true;
-      let source = null;
-      if (ownedCurrent) {
-        source = "owned_descriptor";
-      } else if (isAimHarnessExternalDescriptor(current)) {
-        // The descriptor identifies AIM ownership. Local state is a recovery
-        // aid, not a second authority that can block an explicit AIM switch.
-        source = "recovered_descriptor";
-        recoveredInstallReceipt = true;
-        const orphanBackupPath = backupPathFor({ homeDir, targetId, provider });
-        if (fsImpl.existsSync(orphanBackupPath)) {
-          readDisplacedEntryBackup({ backupPath: orphanBackupPath, targetId, provider, fsImpl });
-          backupPath = orphanBackupPath;
-          displacedNative = true;
-        }
-      } else if (recognizedLegacy) {
-        source = "legacy_projection";
+    if (current && !isAimHarnessExternalDescriptor(current)) {
+      if (recognizeLegacyEntry(current) === true) {
         migratedLegacy = true;
-      } else if (!current && !lastInstalled) {
-        source = "empty";
       } else {
-        if (lastInstalled) {
-          throw new Error(`Refusing to replace ${provider}: current auth conflicts with AIM's last installed descriptor.`);
-        }
-        if (!replaceNativeAuth) {
-          throw new Error(`Refusing to replace native ${provider} auth without --replace-native-auth.`);
-        }
-        source = "native";
-        if (!backupPath) backupPath = backupPathFor({ homeDir, targetId, provider });
-        createdBackup = writeDisplacedEntryBackup({
-          backupPath,
+        writeDisplacedEntryBackup({
+          backupPath: deterministicBackupPath,
           targetId,
           provider,
           entry: current,
-          fsImpl,
         });
+        backupPath = deterministicBackupPath;
         displacedNative = true;
-      }
-      pending = {
-        schemaVersion: 1,
-        operation: "install",
-        source,
-        descriptor: structuredClone(descriptor),
-        backupPath,
-        migratedLegacy,
-        displacedNative,
-        recoveredInstallReceipt,
-      };
-      currentProviderState.pendingTransition = pending;
-      targetState.authPath = authPath;
-      try {
-        await persistTargetTransition(persistTargetState);
-        preparedPersisted = true;
-      } catch (error) {
-        delete currentProviderState.pendingTransition;
-        if (createdBackup && backupPath) {
-          try {
-            fsImpl.unlinkSync(backupPath);
-          } catch {
-            // A surviving exact orphan backup is validated on the next retry.
-          }
-        }
-        throw error;
       }
     }
 
-    const alreadySwitched = isDeepStrictEqual(current, descriptor);
-    if (!alreadySwitched) {
-      if (pending.source === "native") {
-        if (!backupPath) throw new Error(`Missing ${provider} displaced auth backup receipt.`);
-        const displaced = readDisplacedEntryBackup({ backupPath, targetId, provider, fsImpl });
-        if (!isDeepStrictEqual(current, displaced)) {
-          throw new Error(`Refusing ${provider} install recovery after native auth changed.`);
-        }
-      } else if (pending.source === "legacy_projection") {
-        if (!current || recognizeLegacyEntry(current) !== true) {
-          throw new Error(`Refusing ${provider} install recovery after legacy auth changed.`);
-        }
-      } else if (pending.source === "owned_descriptor") {
-        if (!current || !lastInstalled || !isDeepStrictEqual(current, lastInstalled)) {
-          throw new Error(`Refusing ${provider} install recovery after AIM auth changed.`);
-        }
-      } else if (pending.source === "empty") {
-        if (current) throw new Error(`Refusing ${provider} install recovery after native auth appeared.`);
-      } else if (pending.source === "recovered_descriptor") {
-        if (!isAimHarnessExternalDescriptor(current)) {
-          throw new Error(`Refusing ${provider} descriptor recovery after target auth changed.`);
-        }
-      } else {
-        throw new Error(`Invalid pending ${provider} install transition.`);
-      }
+    if (isDeepStrictEqual(current, descriptor)) {
+      return { result: { wrote: false } };
     }
-    const next = { ...auth, [provider]: descriptor };
     return {
-      result: { wrote: !alreadySwitched },
-      next: isDeepStrictEqual(auth, next) ? undefined : next,
+      result: { wrote: true },
+      next: { ...auth, [provider]: descriptor },
     };
   }, { fsImpl, lockfileImpl });
 
-  if (!preparedPersisted) {
-    throw new Error(`Could not persist the prepared ${provider} install transition.`);
-  }
-  currentProviderState.binding = descriptor.binding;
-  currentProviderState.lastInstalledDescriptor = structuredClone(descriptor);
-  if (backupPath) currentProviderState.backupPath = backupPath;
-  else delete currentProviderState.backupPath;
-  currentProviderState.lastInstalledAt = new Date().toISOString();
-  delete currentProviderState.pendingTransition;
+  clearHarnessReceiptState(targetState);
   targetState.authPath = authPath;
-  await persistTargetTransition(persistTargetState);
   return Object.freeze({
     provider,
     binding: descriptor.binding,
@@ -443,7 +320,6 @@ export async function installHarnessProvider({
     wrote: Boolean(result?.wrote),
     migratedLegacy,
     displacedNative,
-    recoveredInstallReceipt,
     backupPath,
   });
 }
@@ -452,51 +328,23 @@ export async function uninstallHarnessProvider({
   targetId,
   targetState,
   authPath,
+  homeDir,
   provider,
-  persistTargetState = async () => {},
   fsImpl = fs,
   lockfileImpl = lockfile,
 }) {
   assertTargetId(targetId);
   assertProvider(provider);
-  let currentProviderState = providerState(targetState, provider);
-  let pending = readPendingTransition(currentProviderState);
-  if (pending?.operation === "install") {
-    // An install whose target switch landed before its final receipt can be
-    // finalized safely only when the exact pending descriptor is still live.
-    await withHarnessAuthTransaction(authPath, async (auth) => {
-      const current = isObject(auth[provider]) ? auth[provider] : null;
-      if (!isDeepStrictEqual(current, pending.descriptor)) {
-        throw new Error(`Finish the pending ${provider} install before uninstalling it.`);
-      }
-      currentProviderState.binding = pending.descriptor.binding;
-      currentProviderState.lastInstalledDescriptor = structuredClone(pending.descriptor);
-      if (typeof pending.backupPath === "string") currentProviderState.backupPath = pending.backupPath;
-      delete currentProviderState.pendingTransition;
-      targetState.authPath = authPath;
-      await persistTargetTransition(persistTargetState);
-      return { result: { wrote: false } };
-    }, { fsImpl, lockfileImpl });
-    pending = null;
+  const backupPath = backupPathFor({ homeDir, targetId, provider });
+  const backupPresent = fsImpl.existsSync(backupPath);
+  let restoredEntry = null;
+  if (backupPresent) {
+    try {
+      restoredEntry = readDisplacedEntryBackup({ backupPath, targetId, provider, fsImpl });
+    } catch {
+      // A broken passive backup must not strand an explicit provider switch.
+    }
   }
-
-  const lastInstalled = isObject(currentProviderState?.lastInstalledDescriptor)
-    ? currentProviderState.lastInstalledDescriptor
-    : null;
-  let backupPath = typeof currentProviderState?.backupPath === "string"
-    ? currentProviderState.backupPath
-    : null;
-  pending = readPendingTransition(currentProviderState);
-  if (!lastInstalled) {
-    return Object.freeze({ provider, authPath, status: "not_installed", wrote: false, backupPath });
-  }
-  if (pending && pending.operation !== "uninstall") {
-    throw new Error(`Invalid pending ${provider} target transition.`);
-  }
-  if (pending?.lastInstalledDescriptor && !isDeepStrictEqual(pending.lastInstalledDescriptor, lastInstalled)) {
-    throw new Error(`Pending ${provider} uninstall does not match AIM's ownership receipt.`);
-  }
-  if (typeof pending?.backupPath === "string") backupPath = pending.backupPath;
 
   const result = await withHarnessAuthTransaction(authPath, async (auth) => {
     const currentPresent = Object.hasOwn(auth, provider);
@@ -504,71 +352,37 @@ export async function uninstallHarnessProvider({
     if (currentPresent && !current) {
       throw new Error(`Refusing malformed current ${provider} auth.`);
     }
-    if (!pending) {
-      pending = {
-        schemaVersion: 1,
-        operation: "uninstall",
-        phase: "prepared",
-        lastInstalledDescriptor: structuredClone(lastInstalled),
-        backupPath,
-      };
-      currentProviderState.pendingTransition = pending;
-      targetState.authPath = authPath;
-      await persistTargetTransition(persistTargetState);
+    if (!isAimHarnessExternalDescriptor(current)) {
+      return { result: { wrote: false, status: "already_unmanaged" } };
     }
 
-    if (pending.phase === "auth_restored") {
-      if (backupPath && fsImpl.existsSync(backupPath)) {
-        const restored = readDisplacedEntryBackup({ backupPath, targetId, provider, fsImpl });
-        if (!isDeepStrictEqual(current, restored)) {
-          throw new Error(`Refusing ${provider} uninstall cleanup after restored auth changed.`);
-        }
-      }
-      return { result: { wrote: false, recoveredCleanup: true } };
-    }
-
-    const restoredEntry = backupPath
-      ? readDisplacedEntryBackup({ backupPath, targetId, provider, fsImpl })
-      : null;
-    if (
-      (restoredEntry && current && isDeepStrictEqual(current, restoredEntry))
-      || (!restoredEntry && !current)
-    ) {
-      // The auth mutation landed before the post-mutation phase receipt.
-      return { result: { wrote: false, recoveredCleanup: true } };
-    }
-    if (!current || !isDeepStrictEqual(current, lastInstalled)) {
-      throw new Error(
-        `Refusing to uninstall ${provider}: current auth does not equal AIM's last installed descriptor.`
-          + (backupPath ? ` Backup retained at ${backupPath}.` : ""),
-      );
-    }
     const next = { ...auth };
     if (restoredEntry) next[provider] = restoredEntry;
     else delete next[provider];
-    return { result: { wrote: true, recoveredCleanup: false }, next };
+    return {
+      result: {
+        wrote: true,
+        status: restoredEntry ? "restored_native" : "removed",
+      },
+      next,
+    };
   }, { fsImpl, lockfileImpl });
 
-  currentProviderState.pendingTransition = {
-    ...pending,
-    phase: "auth_restored",
-  };
+  if (backupPresent) {
+    try {
+      fsImpl.unlinkSync(backupPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  clearHarnessReceiptState(targetState);
   targetState.authPath = authPath;
-  await persistTargetTransition(persistTargetState);
-
-  if (backupPath && fsImpl.existsSync(backupPath)) fsImpl.unlinkSync(backupPath);
-  delete targetState.providers[provider];
-  if (Object.keys(targetState.providers).length === 0) delete targetState.providers;
-  targetState.authPath = authPath;
-  await persistTargetTransition(persistTargetState);
   return Object.freeze({
     provider,
     authPath,
-    status: result?.recoveredCleanup
-      ? "restored_native_cleanup"
-      : backupPath ? "restored_native" : "removed",
+    status: result?.status ?? "already_unmanaged",
     wrote: Boolean(result?.wrote),
-    backupPath: backupPath ?? null,
+    backupPath: backupPresent ? backupPath : null,
   });
 }
 
@@ -576,6 +390,7 @@ export function readHarnessTargetStatus({
   targetId,
   targetState,
   authPath,
+  homeDir,
   resolvedAuthPath = authPath,
   persistedAuthPath = null,
   pathConflict = false,
@@ -594,34 +409,31 @@ export function readHarnessTargetStatus({
   }
   const providers = {};
   for (const provider of HARNESS_MANAGED_PROVIDERS) {
-    const state = providerState(targetState, provider);
     const providerEntryMalformed = Boolean(auth) && Object.hasOwn(auth, provider) && !isObject(auth[provider]);
     const current = isObject(auth?.[provider]) ? auth[provider] : null;
-    const installed = Boolean(state?.lastInstalledDescriptor)
-      && isDeepStrictEqual(current, state.lastInstalledDescriptor);
-    const record = records.find((entry) => entry.provider === provider && entry.label === state?.binding);
+    const installed = isAimHarnessExternalDescriptor(current);
+    const binding = installed ? current.binding : null;
+    const record = records.find((entry) => entry.provider === provider && entry.label === binding);
     const legacyAimProjection = Boolean(current) && recognizeLegacyEntry(provider, current) === true;
     const legacyProjectionUnverified = targetId === "pi"
       && provider === OPENAI_CODEX_PROVIDER
       && coordination !== "available"
       && typeof targetState.activeLabel === "string"
       && current?.type === "oauth";
+    const deterministicBackupPath = typeof homeDir === "string"
+      ? backupPathFor({ homeDir, targetId, provider })
+      : null;
     providers[provider] = {
       installed,
       providerEntryMalformed,
       legacyAimProjection,
       legacyProjectionUnverified,
-      managedEntryPresent: isAimHarnessExternalDescriptor(current),
-      binding: typeof state?.binding === "string" ? state.binding : null,
-      backupPresent: typeof state?.backupPath === "string" && fsImpl.existsSync(state.backupPath),
-      backupPath: typeof state?.backupPath === "string" ? state.backupPath : null,
-      pendingTransition: typeof state?.pendingTransition?.operation === "string"
-        ? {
-            operation: state.pendingTransition.operation,
-            phase: state.pendingTransition.phase ?? "prepared",
-          }
+      managedEntryPresent: installed,
+      binding,
+      backupPresent: Boolean(deterministicBackupPath && fsImpl.existsSync(deterministicBackupPath)),
+      backupPath: deterministicBackupPath && fsImpl.existsSync(deterministicBackupPath)
+        ? deterministicBackupPath
         : null,
-      ownershipConflict: Boolean(state?.lastInstalledDescriptor) && !installed,
       recordReady: coordination === "available"
         ? Boolean(record && isObject(record.credential) && Object.keys(record.credential).length > 0)
         : null,

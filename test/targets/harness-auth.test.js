@@ -28,32 +28,18 @@ function targetFixture(targetId = "pi") {
   return { homeDir, agentDir, authPath, targetState, targetId };
 }
 
-test("native replacement creates one private backup, switches without overwriting it, and restores exactly", async () => {
-  const fixture = targetFixture("pi");
+test("native auth is passively backed up, AIM labels switch freely, and uninstall restores native auth", async () => {
+  const fixture = targetFixture("prime");
   const native = { type: "oauth", access: "NATIVE_ACCESS", refresh: "NATIVE_REFRESH", expires: 123 };
   writeJson(fixture.authPath, {
-    "openai-codex": native,
-    unrelated: { type: "api_key", key: "UNCHANGED" },
-  });
-
-  await assert.rejects(
-    installHarnessProvider({
-      ...fixture,
-      provider: "openai-codex",
-      descriptor: descriptor("alpha"),
-    }),
-    /--replace-native-auth/,
-  );
-  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.authPath)), {
-    "openai-codex": native,
+    anthropic: native,
     unrelated: { type: "api_key", key: "UNCHANGED" },
   });
 
   const installed = await installHarnessProvider({
     ...fixture,
-    provider: "openai-codex",
-    descriptor: descriptor("alpha"),
-    replaceNativeAuth: true,
+    provider: "anthropic",
+    descriptor: descriptor("pro8"),
   });
   assert.equal(installed.displacedNative, true);
   assert.equal(fs.statSync(installed.backupPath).mode & 0o777, 0o600);
@@ -62,62 +48,91 @@ test("native replacement creates one private backup, switches without overwritin
 
   await installHarnessProvider({
     ...fixture,
-    provider: "openai-codex",
-    descriptor: descriptor("beta", "B"),
+    provider: "anthropic",
+    descriptor: descriptor("pro7", "B"),
   });
   assert.equal(fs.readFileSync(installed.backupPath, "utf8"), firstBackup);
-  const managed = JSON.parse(fs.readFileSync(fixture.authPath));
-  assert.equal(managed["openai-codex"].binding, "beta");
-  assert.deepEqual(managed.unrelated, { type: "api_key", key: "UNCHANGED" });
-  assert.doesNotMatch(JSON.stringify(managed["openai-codex"]), /NATIVE_ACCESS|NATIVE_REFRESH/);
+  assert.equal(JSON.parse(fs.readFileSync(fixture.authPath)).anthropic.binding, "pro7");
 
-  const restored = await uninstallHarnessProvider({
-    ...fixture,
-    provider: "openai-codex",
-  });
+  const restored = await uninstallHarnessProvider({ ...fixture, provider: "anthropic" });
   assert.equal(restored.status, "restored_native");
   assert.equal(fs.existsSync(installed.backupPath), false);
   const finalAuth = JSON.parse(fs.readFileSync(fixture.authPath));
-  assert.deepEqual(finalAuth["openai-codex"], native);
+  assert.deepEqual(finalAuth.anthropic, native);
   assert.deepEqual(finalAuth.unrelated, { type: "api_key", key: "UNCHANGED" });
+  assert.equal(fixture.targetState.providers, undefined);
 });
 
-test("an existing AIM descriptor switches labels without a separate ownership receipt", async () => {
+test("stale ownership receipts never gate an AIM descriptor switch or uninstall", async () => {
   const fixture = targetFixture("prime");
-  writeJson(fixture.authPath, { "openai-codex": descriptor("alpha") });
-
-  const installed = await installHarnessProvider({
+  const native = { type: "oauth", access: "NATIVE", refresh: "REFRESH" };
+  writeJson(fixture.authPath, { anthropic: native });
+  const first = await installHarnessProvider({
     ...fixture,
-    provider: "openai-codex",
-    descriptor: descriptor("beta", "B"),
+    provider: "anthropic",
+    descriptor: descriptor("pro8"),
   });
 
-  assert.equal(installed.wrote, true);
-  assert.equal(installed.recoveredInstallReceipt, true);
-  assert.equal(installed.backupPath, null);
-  assert.equal(JSON.parse(fs.readFileSync(fixture.authPath))["openai-codex"].binding, "beta");
-  assert.equal(fixture.targetState.providers["openai-codex"].binding, "beta");
+  fixture.targetState.providers = {
+    anthropic: {
+      binding: "pro8",
+      lastInstalledDescriptor: descriptor("pro8"),
+      backupPath: first.backupPath,
+      pendingTransition: {
+        schemaVersion: 1,
+        operation: "uninstall",
+        phase: "prepared",
+      },
+    },
+  };
+  writeJson(fixture.authPath, { anthropic: descriptor("pro7", "B") });
+
+  const switched = await installHarnessProvider({
+    ...fixture,
+    provider: "anthropic",
+    descriptor: descriptor("pro2", "C"),
+  });
+  assert.equal(switched.wrote, true);
+  assert.equal(JSON.parse(fs.readFileSync(fixture.authPath)).anthropic.binding, "pro2");
+  assert.equal(fixture.targetState.providers, undefined);
+
+  fixture.targetState.providers = {
+    anthropic: {
+      binding: "stale",
+      lastInstalledDescriptor: descriptor("stale", "D"),
+      pendingTransition: { schemaVersion: 1, operation: "uninstall", phase: "prepared" },
+    },
+  };
+  const removed = await uninstallHarnessProvider({ ...fixture, provider: "anthropic" });
+  assert.equal(removed.status, "restored_native");
+  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.authPath)).anthropic, native);
+  assert.equal(fixture.targetState.providers, undefined);
 });
 
-test("uninstall refuses any edit away from the exact last installed descriptor", async () => {
+test("uninstall leaves a native or foreign live entry untouched and clears passive AIM bookkeeping", async () => {
   const fixture = targetFixture("prime");
-  const native = { type: "api_key", key: "NATIVE" };
+  const native = { type: "oauth", access: "FIRST_NATIVE" };
+  const operator = { type: "api_key", key: "OPERATOR_CURRENT" };
   writeJson(fixture.authPath, { anthropic: native });
   const installed = await installHarnessProvider({
     ...fixture,
     provider: "anthropic",
-    descriptor: descriptor("fable"),
-    replaceNativeAuth: true,
+    descriptor: descriptor("pro8"),
   });
-  const auth = JSON.parse(fs.readFileSync(fixture.authPath));
-  auth.anthropic.binding = "operator-edit";
-  writeJson(fixture.authPath, auth);
-  await assert.rejects(
-    uninstallHarnessProvider({ ...fixture, provider: "anthropic" }),
-    /does not equal AIM's last installed descriptor/,
-  );
-  assert.equal(fs.existsSync(installed.backupPath), true);
-  assert.deepEqual(JSON.parse(fs.readFileSync(installed.backupPath)).entry, native);
+  writeJson(fixture.authPath, { anthropic: operator });
+  fixture.targetState.providers = {
+    anthropic: {
+      lastInstalledDescriptor: descriptor("pro8"),
+      pendingTransition: { schemaVersion: 1, operation: "uninstall", phase: "prepared" },
+    },
+  };
+
+  const result = await uninstallHarnessProvider({ ...fixture, provider: "anthropic" });
+  assert.equal(result.status, "already_unmanaged");
+  assert.equal(result.wrote, false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.authPath)).anthropic, operator);
+  assert.equal(fs.existsSync(installed.backupPath), false);
+  assert.equal(fixture.targetState.providers, undefined);
 });
 
 test("recognized AIM legacy Pi projection migrates without preserving a secret backup", async () => {
@@ -160,7 +175,37 @@ test("recognized AIM legacy Pi projection migrates without preserving a secret b
   assert.equal(fs.existsSync(path.join(fixture.homeDir, ".aimgr", "backups")), false);
 });
 
-test("target transaction waits on the harness proper-lockfile lock and preserves a concurrent unrelated login", async () => {
+test("an orphan passive backup is recovered from its deterministic path", async () => {
+  const fixture = targetFixture("prime");
+  const native = { type: "oauth", access: "ORIGINAL" };
+  const backupPath = path.join(
+    fixture.homeDir,
+    ".aimgr",
+    "backups",
+    "harness-auth",
+    "prime-anthropic.json",
+  );
+  writeJson(backupPath, {
+    schemaVersion: 1,
+    target: "prime",
+    provider: "anthropic",
+    entry: native,
+  });
+  fs.chmodSync(path.dirname(backupPath), 0o700);
+  fs.chmodSync(backupPath, 0o600);
+  writeJson(fixture.authPath, { anthropic: descriptor("pro8") });
+
+  const installed = await installHarnessProvider({
+    ...fixture,
+    provider: "anthropic",
+    descriptor: descriptor("pro7", "B"),
+  });
+  assert.equal(installed.backupPath, backupPath);
+  await uninstallHarnessProvider({ ...fixture, provider: "anthropic" });
+  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.authPath)).anthropic, native);
+});
+
+test("target transaction waits on the harness auth lock and preserves an unrelated concurrent login", async () => {
   const fixture = targetFixture("pi");
   writeJson(fixture.authPath, {});
   const release = await lockfile.lock(fixture.authPath, { stale: 30_000 });
@@ -169,8 +214,6 @@ test("target transaction waits on the harness proper-lockfile lock and preserves
     provider: "openai-codex",
     descriptor: descriptor("alpha"),
   });
-  // This write represents a harness /login mutation while it owns the exact
-  // same proper-lockfile lock. AIM must read it only after the lock releases.
   writeJson(fixture.authPath, { unrelated: { type: "api_key", key: "LOGIN_WRITE" } });
   await release();
   await pending;
@@ -179,205 +222,27 @@ test("target transaction waits on the harness proper-lockfile lock and preserves
   assert.deepEqual(auth.unrelated, { type: "api_key", key: "LOGIN_WRITE" });
 });
 
-
 test("descriptor preflight rejects group/world-writable executables and parent paths", () => {
-  const home = mkTempHome();
-  const trustedDir = path.join(home, "trusted-bin");
-  const executable = path.join(trustedDir, "aim");
-  fs.mkdirSync(trustedDir, { mode: 0o700 });
-  fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-  assert.equal(resolveTrustedAimExecutable({ executable }), fs.realpathSync(executable));
-  fs.chmodSync(executable, 0o722);
+  const fixture = targetFixture("prime");
+  const executable = path.join(fixture.homeDir, "bin", "aimgr.js");
+  fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(executable, "#!/usr/bin/env node\n", { mode: 0o755 });
+  fs.chmodSync(executable, 0o775);
   assert.throws(() => resolveTrustedAimExecutable({ executable }), /owner-trusted/);
-  fs.chmodSync(executable, 0o700);
-  fs.chmodSync(trustedDir, 0o722);
+  fs.chmodSync(executable, 0o755);
+  fs.chmodSync(path.dirname(executable), 0o777);
   assert.throws(() => resolveTrustedAimExecutable({ executable }), /owner-trusted/);
 });
 
-
-test("install recovers a descriptor and native backup written before its local receipt", async () => {
+test("malformed provider entries still fail loudly", async () => {
   const fixture = targetFixture("prime");
-  const native = { type: "oauth", access: "native-access", refresh: "native-refresh" };
-  writeJson(fixture.authPath, { "openai-codex": native });
-  const installedDescriptor = descriptor("alpha", "R");
-  const first = await installHarnessProvider({
-    ...fixture,
-    provider: "openai-codex",
-    descriptor: installedDescriptor,
-    replaceNativeAuth: true,
-  });
-  delete fixture.targetState.providers;
-  const recovered = await installHarnessProvider({
-    ...fixture,
-    provider: "openai-codex",
-    descriptor: installedDescriptor,
-  });
-  assert.equal(recovered.wrote, false);
-  assert.equal(recovered.recoveredInstallReceipt, true);
-  assert.equal(recovered.backupPath, first.backupPath);
-  const removed = await uninstallHarnessProvider({
-    ...fixture,
-    provider: "openai-codex",
-  });
-  assert.equal(removed.status, "restored_native");
-  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.authPath))["openai-codex"], native);
-});
-
-
-test("install recovers an orphan backup left before the prepared receipt", async () => {
-  const fixture = targetFixture("pi");
-  const native = { type: "oauth", access: "orphan-access", refresh: "orphan-refresh" };
-  writeJson(fixture.authPath, { "openai-codex": native });
-  const backupPath = path.join(
-    fixture.homeDir,
-    ".aimgr",
-    "backups",
-    "harness-auth",
-    "pi-openai-codex.json",
-  );
-  writeJson(backupPath, {
-    schemaVersion: 1,
-    target: "pi",
-    provider: "openai-codex",
-    entry: native,
-  });
-  fs.chmodSync(path.dirname(backupPath), 0o700);
-  fs.chmodSync(backupPath, 0o600);
-  const originalBackup = fs.readFileSync(backupPath, "utf8");
-  const installed = await installHarnessProvider({
-    ...fixture,
-    provider: "openai-codex",
-    descriptor: descriptor("alpha", "O"),
-    replaceNativeAuth: true,
-  });
-  assert.equal(installed.backupPath, backupPath);
-  assert.equal(fs.readFileSync(backupPath, "utf8"), originalBackup);
-  await uninstallHarnessProvider({ ...fixture, provider: "openai-codex" });
-  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.authPath))["openai-codex"], native);
-});
-
-test("install finalizes from a durable prepared receipt after the descriptor switch", async () => {
-  const fixture = targetFixture("prime");
-  const native = { type: "oauth", access: "switch-access", refresh: "switch-refresh" };
-  writeJson(fixture.authPath, { "openai-codex": native });
-  const receiptPath = path.join(fixture.homeDir, "target-receipt.json");
-  let persists = 0;
+  writeJson(fixture.authPath, { anthropic: "broken" });
   await assert.rejects(
-    installHarnessProvider({
-      ...fixture,
-      provider: "openai-codex",
-      descriptor: descriptor("alpha", "S"),
-      replaceNativeAuth: true,
-      persistTargetState: async () => {
-        persists += 1;
-        if (persists === 2) throw new Error("crash after descriptor switch");
-        writeJson(receiptPath, fixture.targetState);
-      },
-    }),
-    /crash after descriptor switch/,
+    installHarnessProvider({ ...fixture, provider: "anthropic", descriptor: descriptor("pro8") }),
+    /malformed/,
   );
-  assert.equal(JSON.parse(fs.readFileSync(fixture.authPath))["openai-codex"].type, "external");
-  const recoveredTargetState = JSON.parse(fs.readFileSync(receiptPath));
-  assert.equal(
-    recoveredTargetState.providers["openai-codex"].pendingTransition.operation,
-    "install",
-  );
-  const recoveredFixture = { ...fixture, targetState: recoveredTargetState };
-  const recovered = await installHarnessProvider({
-    ...recoveredFixture,
-    provider: "openai-codex",
-    descriptor: descriptor("alpha", "S"),
-    persistTargetState: async () => writeJson(receiptPath, recoveredTargetState),
-  });
-  assert.equal(recovered.wrote, false);
-  assert.equal(recoveredTargetState.providers["openai-codex"].pendingTransition, undefined);
-  await uninstallHarnessProvider({
-    ...recoveredFixture,
-    provider: "openai-codex",
-    persistTargetState: async () => writeJson(receiptPath, recoveredTargetState),
-  });
-  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.authPath))["openai-codex"], native);
-});
-
-test("uninstall resumes after auth restore lands before its phase receipt", async () => {
-  const fixture = targetFixture("pi");
-  const native = { type: "oauth", access: "restore-access", refresh: "restore-refresh" };
-  writeJson(fixture.authPath, { "openai-codex": native });
-  const receiptPath = path.join(fixture.homeDir, "target-receipt.json");
-  await installHarnessProvider({
-    ...fixture,
-    provider: "openai-codex",
-    descriptor: descriptor("alpha", "T"),
-    replaceNativeAuth: true,
-    persistTargetState: async () => writeJson(receiptPath, fixture.targetState),
-  });
-  let persists = 0;
   await assert.rejects(
-    uninstallHarnessProvider({
-      ...fixture,
-      provider: "openai-codex",
-      persistTargetState: async () => {
-        persists += 1;
-        if (persists === 2) throw new Error("crash after auth restore");
-        writeJson(receiptPath, fixture.targetState);
-      },
-    }),
-    /crash after auth restore/,
+    uninstallHarnessProvider({ ...fixture, provider: "anthropic" }),
+    /malformed/,
   );
-  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.authPath))["openai-codex"], native);
-  const recoveredTargetState = JSON.parse(fs.readFileSync(receiptPath));
-  assert.equal(
-    recoveredTargetState.providers["openai-codex"].pendingTransition.phase,
-    "prepared",
-  );
-  await uninstallHarnessProvider({
-    ...fixture,
-    targetState: recoveredTargetState,
-    provider: "openai-codex",
-    persistTargetState: async () => writeJson(receiptPath, recoveredTargetState),
-  });
-  assert.equal(recoveredTargetState.providers, undefined);
-});
-
-test("uninstall finishes from auth-restored state after the only backup was deleted", async () => {
-  const fixture = targetFixture("prime");
-  const native = { type: "oauth", access: "delete-access", refresh: "delete-refresh" };
-  writeJson(fixture.authPath, { "openai-codex": native });
-  const receiptPath = path.join(fixture.homeDir, "target-receipt.json");
-  await installHarnessProvider({
-    ...fixture,
-    provider: "openai-codex",
-    descriptor: descriptor("alpha", "D"),
-    replaceNativeAuth: true,
-    persistTargetState: async () => writeJson(receiptPath, fixture.targetState),
-  });
-  const backupPath = fixture.targetState.providers["openai-codex"].backupPath;
-  let persists = 0;
-  await assert.rejects(
-    uninstallHarnessProvider({
-      ...fixture,
-      provider: "openai-codex",
-      persistTargetState: async () => {
-        persists += 1;
-        if (persists === 3) throw new Error("crash after backup deletion");
-        writeJson(receiptPath, fixture.targetState);
-      },
-    }),
-    /crash after backup deletion/,
-  );
-  assert.equal(fs.existsSync(backupPath), false);
-  const recoveredTargetState = JSON.parse(fs.readFileSync(receiptPath));
-  assert.equal(
-    recoveredTargetState.providers["openai-codex"].pendingTransition.phase,
-    "auth_restored",
-  );
-  const recovered = await uninstallHarnessProvider({
-    ...fixture,
-    targetState: recoveredTargetState,
-    provider: "openai-codex",
-    persistTargetState: async () => writeJson(receiptPath, recoveredTargetState),
-  });
-  assert.equal(recovered.status, "restored_native_cleanup");
-  assert.equal(recoveredTargetState.providers, undefined);
-  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.authPath))["openai-codex"], native);
 });

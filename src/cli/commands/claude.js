@@ -791,7 +791,6 @@ async function handleRedisClaudeRun(context, {
         publicationFailed = true;
       }
     }
-    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
     if (publicationFailed) {
       stdout?.write?.(
         `AIM coordination=degraded label=${label} publication=retryable local_candidate=retained\n`,

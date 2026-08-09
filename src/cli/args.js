@@ -144,13 +144,6 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg === "--replace-native-auth") {
-      if ((argv[0] !== "pi" && argv[0] !== "prime") || argv[1] !== "use") {
-        throw new Error("Unknown option: --replace-native-auth");
-      }
-      opts.replaceNativeAuth = true;
-      continue;
-    }
     if (arg === "--mode") {
       opts.mode = argv[i + 1];
       i += 1;

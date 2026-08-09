@@ -102,8 +102,8 @@ test("Redis-backed pi use writes auth.json and preserves non-openai providers", 
         assert.doesNotMatch(JSON.stringify(auth["openai-codex"]), /REFRESH_TOKEN/);
 
         const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
-        assert.equal(updatedState.targets.piCli.providers["openai-codex"].binding, "boss");
-        assert.equal(updatedState.targets.piCli.lastSelectionReceipt.status, "updated");
+        assert.equal(updatedState.targets.piCli.providers, undefined);
+        assert.equal(updatedState.targets.piCli.lastSelectionReceipt, undefined);
       },
     );
 });
@@ -212,8 +212,8 @@ test("pi use prefers weekly pool headroom over the lowest short-window usage", a
         assert.equal(result.receipt.providers[0].binding, "pro2");
 
         const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
-        assert.equal(updatedState.targets.piCli.providers["openai-codex"].binding, "pro2");
-        assert.equal(updatedState.targets.piCli.lastSelectionReceipt.providers[0].binding, "pro2");
+        assert.equal(updatedState.targets.piCli.providers, undefined);
+        assert.equal(updatedState.targets.piCli.lastSelectionReceipt, undefined);
       },
     );
 });

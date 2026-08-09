@@ -509,6 +509,10 @@ test("redis-configured claude run projects into a per-label home and publishes p
         accessToken: "CLAUDE_ACCESS_ROTATED",
         refreshToken: "CLAUDE_REFRESH_ROTATED",
       });
+      const localStatePath = resolveAimgrLocalStatePath({ homeDir: home });
+      const concurrent = JSON.parse(fs.readFileSync(localStatePath, "utf8"));
+      concurrent.targets.primeAgent = { liveBindingMarker: "newer-prime-state" };
+      writeJson(localStatePath, concurrent);
       return { status: 0, signal: null };
     },
   });
@@ -526,6 +530,7 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.equal(local.targets.claudeCli.lastRunLabel, "claude");
   assert.equal(local.targets.claudeCli.credentialsPath, undefined);
   assert.equal(local.targets.claudeCli.projectionReceiptsByLabel, undefined);
+  assert.deepEqual(local.targets.primeAgent, { liveBindingMarker: "newer-prime-state" });
   assert.doesNotMatch(JSON.stringify(local), /CLAUDE_REFRESH_ROTATED/);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });

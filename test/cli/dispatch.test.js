@@ -75,14 +75,13 @@ test("executable boundary prints one expected error line without a stack", () =>
 
 
 test("Pi and Prime target options are scoped and reject missing values", () => {
-  const pi = parseArgs(["pi", "use", "--codex", "auto", "--claude", "fable", "--replace-native-auth"]);
+  const pi = parseArgs(["pi", "use", "--codex", "auto", "--claude", "fable"]);
   assert.equal(pi.opts.codex, "auto");
   assert.equal(pi.opts.claude, "fable");
-  assert.equal(pi.opts.replaceNativeAuth, true);
   const prime = parseArgs(["prime", "use", "--codex", "off", "--claude", "alpha"]);
   assert.equal(prime.opts.codex, "off");
   assert.equal(prime.opts.claude, "alpha");
   assert.throws(() => parseArgs(["status", "--codex", "auto"]), /Unknown option/);
-  assert.throws(() => parseArgs(["pi", "status", "--replace-native-auth"]), /Unknown option/);
+  assert.throws(() => parseArgs(["pi", "use", "--replace-native-auth"]), /Unknown option/);
   assert.throws(() => parseArgs(["prime", "use", "--claude"]), /--claude requires/);
 });
