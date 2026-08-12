@@ -68,6 +68,10 @@ export const HARNESS_CREDENTIAL_ERROR_DETAILS = Object.freeze({
     message: "No eligible AIM account is available.",
     action: "Inspect AIM status or select an exact eligible label.",
   }),
+  automatic_failover_disabled: Object.freeze({
+    message: "Automatic AIM credential failover is disabled for this pool.",
+    action: "Use manual credential handoff unless the provider-approved pool policy is enabled.",
+  }),
 });
 
 export class HarnessCredentialError extends Error {

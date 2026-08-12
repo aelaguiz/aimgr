@@ -1,11 +1,17 @@
 import { isObject, normalizeLabel } from "../../core/normalize.js";
+import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { closeRedisRuntime, loadRedisRuntime } from "../../coordination/runtime.js";
+import { findCredentialRecord } from "../../coordination/snapshot.js";
 import {
   HARNESS_CREDENTIAL_ERROR_DETAILS,
   HARNESS_CREDENTIAL_SCHEMA_VERSION,
   HarnessCredentialError,
+  buildHarnessIdentityFingerprint,
+  inspectHarnessCredentialRecord,
   resolveHarnessAccessCredential,
 } from "../../credentials/harness-access.js";
+import { probeUsageSnapshotsByProvider } from "../../pool/usage.js";
+import { selectNextBestPiCodexLabel } from "../../targets/pi-cli.js";
 
 const MAX_REQUEST_BYTES = 8 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -18,8 +24,10 @@ const ALLOWED_REQUEST_KEYS = new Set([
   "binding",
   "expectedIdentityFingerprint",
   "rejectedCredentialVersion",
+  "reason",
 ]);
 const IDENTITY_FINGERPRINT_PATTERN = /^aimgr-id-v1:[A-Za-z0-9_-]{43}$/;
+const AUTOMATIC_CODEX_REASON = "usage_limit_reached";
 
 function protocolError() {
   return new HarnessCredentialError("protocol_mismatch");
@@ -93,7 +101,7 @@ export function parseCredentialHelperRequest(raw) {
   }
   if (
     request.schemaVersion !== HARNESS_CREDENTIAL_SCHEMA_VERSION
-    || request.operation !== "resolve"
+    || (request.operation !== "resolve" && request.operation !== "advance")
     || (provider !== "openai-codex" && provider !== "anthropic")
     || normalizedBinding !== binding
     || !IDENTITY_FINGERPRINT_PATTERN.test(expectedIdentityFingerprint)
@@ -101,16 +109,127 @@ export function parseCredentialHelperRequest(raw) {
       request.rejectedCredentialVersion !== undefined
       && (!Number.isSafeInteger(request.rejectedCredentialVersion) || request.rejectedCredentialVersion < 0)
     )
+    || (
+      request.operation === "resolve"
+      && request.reason !== undefined
+    )
+    || (
+      request.operation === "advance"
+      && (
+        provider !== OPENAI_CODEX_PROVIDER
+        || request.reason !== AUTOMATIC_CODEX_REASON
+        || request.rejectedCredentialVersion !== undefined
+      )
+    )
   ) {
     throw protocolError();
   }
   return Object.freeze({
+    operation: request.operation,
     provider,
     binding: normalizedBinding,
     expectedIdentityFingerprint,
     ...(request.rejectedCredentialVersion !== undefined
       ? { rejectedCredentialVersion: request.rejectedCredentialVersion }
       : {}),
+    ...(request.operation === "advance" ? { reason: request.reason } : {}),
+  });
+}
+
+function findCurrentRecord(snapshot, { provider, binding }) {
+  const record = findCredentialRecord(snapshot, { provider, label: binding });
+  if (record) return record;
+  const otherProvider = (snapshot?.credentials ?? []).some((candidate) => candidate.label === binding);
+  throw new HarnessCredentialError(otherProvider ? "provider_mismatch" : "unknown_label");
+}
+
+function automaticFailoverApproved(record) {
+  // This is deliberately opt-in on both sides of the transition. Missing
+  // policy stays denied without introducing another configuration owner.
+  return record?.policy?.pool?.enabled !== false
+    && record?.policy?.pool?.automaticFailoverApproved === true;
+}
+
+function buildAdvanceSelectionState(runtime, candidateLabels) {
+  const allowed = new Set(candidateLabels);
+  // Existing AIM selection records local history while ranking. Give it a
+  // filtered clone so the helper remains a read-only credential operation.
+  const state = structuredClone(runtime.state);
+  for (const [label, account] of Object.entries(state.accounts ?? {})) {
+    account.pool = {
+      ...(isObject(account.pool) ? account.pool : {}),
+      enabled: allowed.has(label),
+    };
+  }
+  for (const label of Object.keys(state.credentials?.[OPENAI_CODEX_PROVIDER] ?? {})) {
+    if (!allowed.has(label)) delete state.credentials[OPENAI_CODEX_PROVIDER][label];
+  }
+  return state;
+}
+
+async function advanceHarnessAccessCredential(context, { runtime, request }) {
+  const current = findCurrentRecord(runtime.snapshot, request);
+  if (buildHarnessIdentityFingerprint(current) !== request.expectedIdentityFingerprint) {
+    throw new HarnessCredentialError("identity_conflict");
+  }
+  if (!automaticFailoverApproved(current)) {
+    throw new HarnessCredentialError("automatic_failover_disabled");
+  }
+
+  const nowMs = Number.isFinite(context.nowMs) ? context.nowMs : Date.now();
+  const approvedAlternates = (runtime.snapshot?.credentials ?? []).filter((record) => (
+    record.provider === request.provider
+    && record.label !== request.binding
+    && automaticFailoverApproved(record)
+  ));
+  if (approvedAlternates.length === 0) {
+    throw new HarnessCredentialError("automatic_failover_disabled");
+  }
+  const readyLabels = approvedAlternates.flatMap((record) => {
+    try {
+      // Advancing never runs credential maintenance. A fresh candidate keeps
+      // the exact resolver on its existing lock-free, read-only path.
+      return record?.health?.status === "ready"
+        && !inspectHarnessCredentialRecord(record, { nowMs }).due
+        ? [record.label]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  if (readyLabels.length === 0) {
+    throw new HarnessCredentialError("no_eligible_account");
+  }
+
+  const selectionState = buildAdvanceSelectionState(runtime, readyLabels);
+  const probeUsageSnapshotsByProviderImpl = context.probeUsageSnapshotsByProviderImpl
+    ?? probeUsageSnapshotsByProvider;
+  const usageByProvider = await probeUsageSnapshotsByProviderImpl(selectionState, { env: context.env });
+  if (context.signal?.aborted) throw new HarnessCredentialError("helper_timeout");
+  const selected = await selectNextBestPiCodexLabel({
+    state: selectionState,
+    homeDir: context.homeDir,
+    usageByProvider,
+    currentLabel: request.binding,
+    avoidCurrentLabel: true,
+  });
+  if (!selected.selection || selected.selection.label === request.binding) {
+    throw new HarnessCredentialError("no_eligible_account");
+  }
+  const record = findCredentialRecord(runtime.snapshot, {
+    provider: request.provider,
+    label: selected.selection.label,
+  });
+  if (!record || !automaticFailoverApproved(record)) {
+    throw new HarnessCredentialError("no_eligible_account");
+  }
+  return resolveHarnessAccessCredential(context, {
+    runtime,
+    provider: request.provider,
+    binding: record.label,
+    expectedIdentityFingerprint: buildHarnessIdentityFingerprint(record),
+    signal: context.signal,
+    deadlineMs: context.deadlineMs,
   });
 }
 
@@ -204,17 +323,20 @@ export async function handleCredentialHelper(context) {
       homeDir,
       connectRedisStoreImpl,
     }, { signal: controller.signal });
-    const response = await resolveHarnessAccessCredential({
+    const credentialContext = {
       ...context,
       nowMs: Date.now(),
       signal: controller.signal,
       deadlineMs,
-    }, {
-      runtime,
-      ...request,
-      signal: controller.signal,
-      deadlineMs,
-    });
+    };
+    const response = request.operation === "advance"
+      ? await advanceHarnessAccessCredential(credentialContext, { runtime, request })
+      : await resolveHarnessAccessCredential(credentialContext, {
+          runtime,
+          ...request,
+          signal: controller.signal,
+          deadlineMs,
+        });
     writeProtocolObject(stdout, response);
   } catch (error) {
     setExitCode(1);

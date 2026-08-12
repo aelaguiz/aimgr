@@ -9,6 +9,7 @@ import {
   pickSessionColor,
   readIdentityState,
   renderIdentityLine,
+  renderSessionIdLine,
   titleFromPrompt,
   titleFromRecap,
 } from "../../native/harness/session-title-footer.js";
@@ -71,6 +72,16 @@ test("identity state, prompt, recap, and ANSI banner helpers preserve the sessio
     }),
     /^\u001b\[1;97;48;5;28m title:Automatic title /,
   );
+});
+
+test("session identity rendering preserves the full canonical UUID without suffix collisions", () => {
+  const first = "019fd96e-51cb-72ef-ae34-83ecf10c6a12";
+  const second = "11111111-2222-3333-4444-5555550c6a12";
+
+  assert.equal(renderSessionIdLine(first), `\u001b[2m session-id: ${first}\u001b[0m`);
+  assert.equal(renderSessionIdLine(`${first}\n`), `\u001b[2m session-id: ${first}\u001b[0m`);
+  assert.notEqual(renderSessionIdLine(first), renderSessionIdLine(second));
+  assert.equal(renderSessionIdLine(undefined), undefined);
 });
 
 function createExtensionHarness(initialEntries = [], initialName = "", options = {}) {
@@ -148,6 +159,10 @@ test("extension names the first request, upgrades once from a native recap, and 
   const initialWidget = harness.widgets.at(-1).content[0];
   assert.match(initialWidget, /title:waiting for first prompt/);
   assert.match(initialWidget, /account:qa/);
+  assert.deepEqual(harness.widgets.at(-1).content, [
+    initialWidget,
+    "\u001b[2m session-id: 019fd96e-51cb-72ef-ae34-83ecf10c6a12\u001b[0m",
+  ]);
 
   await harness.handlers.get("input")({ text: requestedPrompt, source: "interactive" }, harness.ctx);
   assert.equal(harness.getName(), "Make our title always show that little status bar plugin");
@@ -249,12 +264,45 @@ test("the refresh cadence re-broadcasts unchanged daemon UI for late attachments
     assert.equal(harness.widgets.length, widgetCount + 1);
     assert.equal(harness.terminalTitles.length, titleCount + 1);
     assert.equal(readIdentityState(harness.entries), undefined);
+    assert.deepEqual(harness.widgets.at(-1).content, harness.widgets.at(-2).content);
+    assert.match(harness.widgets.at(-1).content[1], /session-id: 019fd96e-51cb-72ef-ae34-83ecf10c6a12/);
 
     await harness.handlers.get("session_shutdown")({ type: "session_shutdown" }, harness.ctx);
   } finally {
     globalThis.setInterval = originalSetInterval;
     globalThis.clearInterval = originalClearInterval;
   }
+});
+
+test("the identity banner follows the session binding after a live credential handoff", async () => {
+  const harness = createExtensionHarness([
+    {
+      type: "custom",
+      customType: "aimgr_credential_binding_v1",
+      data: { provider: "openai-codex", source: "aimgr", binding: "qa" },
+    },
+    {
+      type: "custom",
+      customType: "aimgr_credential_binding_v1",
+      data: { provider: "openai-codex", source: "aimgr", binding: "growth" },
+    },
+  ]);
+  delete harness.ctx.sessionManager.getCredentialBindings;
+  const { default: loadExtension } = await import("../../native/harness/session-title-footer.js");
+  loadExtension(harness.pi);
+
+  await harness.handlers.get("session_start")({ type: "session_start", reason: "resume" }, harness.ctx);
+  assert.match(harness.widgets.at(-1).content[0], /account:growth/);
+
+  harness.entries.push({
+    type: "custom",
+    customType: "aimgr_credential_binding_v1",
+    data: { provider: "openai-codex", source: "aimgr", binding: "pro11" },
+  });
+  await harness.handlers.get("agent_start")({ type: "agent_start" }, harness.ctx);
+  assert.match(harness.widgets.at(-1).content[0], /account:pro11/);
+
+  await harness.handlers.get("session_shutdown")({ type: "session_shutdown" }, harness.ctx);
 });
 
 test("an explicit name command remains human-owned from the first input", async () => {
@@ -299,6 +347,10 @@ test("extension restores an existing automatic name and exact color on resume", 
   await harness.handlers.get("session_start")({ type: "session_start", reason: "resume" }, harness.ctx);
   assert.equal(harness.getName(), "Persisted purple work");
   assert.match(harness.widgets.at(-1).content[0], /^\u001b\[1;97;48;5;55m title:Persisted purple work /);
+  assert.equal(
+    harness.widgets.at(-1).content[1],
+    "\u001b[2m session-id: 019fd96e-51cb-72ef-ae34-83ecf10c6a12\u001b[0m",
+  );
   assert.equal(readIdentityState(harness.entries).color, "purple");
 
   await harness.handlers.get("session_shutdown")({ type: "session_shutdown" }, harness.ctx);
@@ -311,7 +363,13 @@ test("managed extension projection is atomic, idempotent, adopts the legacy foot
 
   const installed = ensureHarnessSessionIdentityExtension({ agentDir });
   assert.deepEqual(installed, { status: "installed", path: extensionPath });
-  assert.match(fs.readFileSync(extensionPath, "utf8"), /^\/\/ Managed by aimgr\./);
+  const installedSource = fs.readFileSync(extensionPath, "utf8");
+  assert.match(installedSource, /^\/\/ Managed by aimgr\./);
+  assert.match(installedSource, /session-id:/);
+  assert.equal(
+    installedSource,
+    fs.readFileSync(new URL("../../native/harness/session-title-footer.js", import.meta.url), "utf8"),
+  );
   assert.equal(fs.statSync(extensionPath).mode & 0o777, 0o644);
   assert.deepEqual(ensureHarnessSessionIdentityExtension({ agentDir }), {
     status: "unchanged",

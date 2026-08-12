@@ -14,7 +14,7 @@ import { runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 
-async function helperFixture() {
+async function helperFixture({ automaticFailoverApproved = false, extraCredentials = [] } = {}) {
   const homeDir = mkTempHome();
   const client = new FakeRedisClient();
   const keyPrefix = `aimgr:helper:${Math.random().toString(16).slice(2)}:`;
@@ -33,9 +33,15 @@ async function helperFixture() {
         accountId: "acct_alpha",
       },
       identity: { accountId: "acct_alpha" },
-      policy: { reauth: {}, pool: { enabled: true } },
+      policy: {
+        reauth: {},
+        pool: {
+          enabled: true,
+          ...(automaticFailoverApproved ? { automaticFailoverApproved: true } : {}),
+        },
+      },
       health: { status: "ready", reason: null },
-    }],
+    }, ...extraCredentials],
   }, { updatedBy: "test" });
   const snapshot = await readSnapshot(store);
   const request = {
@@ -81,6 +87,9 @@ test("credential-helper rejects legacy requestId/minValidity and malformed or ov
     { ...fixture.request, requestId: "legacy" },
     { ...fixture.request, minValidityMs: 60_000 },
     { ...fixture.request, schemaVersion: 2 },
+    { ...fixture.request, operation: "resolve", reason: "usage_limit_reached" },
+    { ...fixture.request, operation: "advance", reason: "rate_limit_exceeded" },
+    { ...fixture.request, operation: "advance", provider: "anthropic", reason: "usage_limit_reached" },
     "not-json",
     `${JSON.stringify(fixture.request)}${" ".repeat(9 * 1024)}`,
   ]) {
@@ -186,6 +195,192 @@ test("credential-helper honors rejectedCredentialVersion by rotating the exact c
   assert.equal(response.credentialVersion, fixture.credentialVersion + 1);
   assert.equal(response.accessToken, rotatedAccess);
   assert.doesNotMatch(result.stdout, /ROTATED_REFRESH_MUST_NOT_ESCAPE/);
+});
+
+test("credential-helper advance returns one different eligible policy-approved Codex credential read-only", async () => {
+  const betaAccess = makeFakeJwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_beta" },
+  });
+  const gammaAccess = makeFakeJwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_gamma" },
+  });
+  const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const fixture = await helperFixture({
+    automaticFailoverApproved: true,
+    extraCredentials: [
+      {
+        provider: "openai-codex",
+        label: "beta",
+        credential: {
+          access: betaAccess,
+          refresh: "BETA_REFRESH_MUST_NOT_ESCAPE",
+          idToken: betaAccess,
+          expiresAt,
+          accountId: "acct_beta",
+        },
+        identity: { accountId: "acct_beta" },
+        policy: { reauth: {}, pool: { enabled: true } },
+        health: { status: "ready", reason: null },
+      },
+      {
+        provider: "openai-codex",
+        label: "gamma",
+        credential: {
+          access: gammaAccess,
+          refresh: "GAMMA_REFRESH_MUST_NOT_ESCAPE",
+          idToken: gammaAccess,
+          expiresAt,
+          accountId: "acct_gamma",
+        },
+        identity: { accountId: "acct_gamma" },
+        policy: {
+          reauth: {},
+          pool: { enabled: true, automaticFailoverApproved: true },
+        },
+        health: { status: "ready", reason: null },
+      },
+    ],
+  });
+  const before = await readSnapshot(fixture.store);
+  let probedLabels = null;
+  const result = await runCliWithExitCode(["credential-helper"], {
+    env: { HOME: fixture.homeDir },
+    stdin: Readable.from([JSON.stringify({
+      ...fixture.request,
+      operation: "advance",
+      reason: "usage_limit_reached",
+    })]),
+    connectRedisStoreImpl: fixture.connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async (state) => {
+      probedLabels = Object.keys(state.credentials["openai-codex"]);
+      return {
+        "openai-codex": {
+          gamma: {
+            ok: true,
+            windows: [
+              { kind: "primary", usedPercent: 20 },
+              { kind: "secondary", usedPercent: 20 },
+            ],
+          },
+        },
+      };
+    },
+  });
+  assert.equal(result.exitCode, 0);
+  const response = JSON.parse(result.stdout);
+  const gammaRecord = before.credentials.find((record) => record.label === "gamma");
+  assert.deepEqual(probedLabels, ["gamma"]);
+  assert.equal(response.ok, true);
+  assert.equal(response.provider, "openai-codex");
+  assert.equal(response.binding, "gamma");
+  assert.equal(response.identityFingerprint, buildHarnessIdentityFingerprint(gammaRecord));
+  assert.equal(response.accessToken, gammaAccess);
+  assert.notEqual(response.binding, fixture.request.binding);
+  assert.doesNotMatch(
+    result.stdout,
+    /BETA_REFRESH_MUST_NOT_ESCAPE|GAMMA_REFRESH_MUST_NOT_ESCAPE|acct_beta|acct_gamma/,
+  );
+  assert.deepEqual((await readSnapshot(fixture.store)).credentials, before.credentials);
+});
+
+test("credential-helper advance is default-deny when the current pool is not policy-approved", async () => {
+  const betaAccess = makeFakeJwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_beta" },
+  });
+  const fixture = await helperFixture({
+    extraCredentials: [{
+      provider: "openai-codex",
+      label: "beta",
+      credential: {
+        access: betaAccess,
+        refresh: "BETA_REFRESH_MUST_NOT_ESCAPE",
+        idToken: betaAccess,
+        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        accountId: "acct_beta",
+      },
+      identity: { accountId: "acct_beta" },
+      policy: {
+        reauth: {},
+        pool: { enabled: true, automaticFailoverApproved: true },
+      },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  let probes = 0;
+  const result = await runCliWithExitCode(["credential-helper"], {
+    env: { HOME: fixture.homeDir },
+    stdin: Readable.from([JSON.stringify({
+      ...fixture.request,
+      operation: "advance",
+      reason: "usage_limit_reached",
+    })]),
+    connectRedisStoreImpl: fixture.connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => {
+      probes += 1;
+      return {};
+    },
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(probes, 0);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    schemaVersion: 1,
+    ok: false,
+    code: "automatic_failover_disabled",
+    message: "Automatic AIM credential failover is disabled for this pool.",
+    action: "Use manual credential handoff unless the provider-approved pool policy is enabled.",
+  });
+  assert.doesNotMatch(result.stdout, /BETA_REFRESH_MUST_NOT_ESCAPE/);
+});
+
+test("credential-helper advance reports no eligible account when every approved alternate is exhausted", async () => {
+  const betaAccess = makeFakeJwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_beta" },
+  });
+  const fixture = await helperFixture({
+    automaticFailoverApproved: true,
+    extraCredentials: [{
+      provider: "openai-codex",
+      label: "beta",
+      credential: {
+        access: betaAccess,
+        refresh: "BETA_REFRESH_MUST_NOT_ESCAPE",
+        idToken: betaAccess,
+        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        accountId: "acct_beta",
+      },
+      identity: { accountId: "acct_beta" },
+      policy: {
+        reauth: {},
+        pool: { enabled: true, automaticFailoverApproved: true },
+      },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  const before = await readSnapshot(fixture.store);
+  const result = await runCliWithExitCode(["credential-helper"], {
+    env: { HOME: fixture.homeDir },
+    stdin: Readable.from([JSON.stringify({
+      ...fixture.request,
+      operation: "advance",
+      reason: "usage_limit_reached",
+    })]),
+    connectRedisStoreImpl: fixture.connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => ({
+      "openai-codex": {
+        beta: {
+          ok: true,
+          windows: [
+            { kind: "primary", usedPercent: 100 },
+            { kind: "secondary", usedPercent: 100 },
+          ],
+        },
+      },
+    }),
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(JSON.parse(result.stdout).code, "no_eligible_account");
+  assert.doesNotMatch(result.stdout, /BETA_REFRESH_MUST_NOT_ESCAPE/);
+  assert.deepEqual((await readSnapshot(fixture.store)).credentials, before.credentials);
 });
 
 test("credential-helper closes a connected Redis store when local runtime loading fails", async () => {

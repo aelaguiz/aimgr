@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 export const IDENTITY_STATE_TYPE = "aimgr.session-identity";
 export const IDENTITY_STATE_VERSION = 1;
 export const WIDGET_KEY = "session-identity";
+const AIM_CREDENTIAL_BINDING_TYPE = "aimgr_credential_binding_v1";
 
 export const SESSION_COLORS = Object.freeze([
   Object.freeze({ name: "red", ansi: 124 }),
@@ -163,6 +164,11 @@ export function renderIdentityLine({ title, color, account, branch, cwd }) {
   ].join("");
 }
 
+export function renderSessionIdLine(sessionId) {
+  const safeSessionId = singleLine(sessionId);
+  return safeSessionId ? `\u001b[2m session-id: ${safeSessionId}\u001b[0m` : undefined;
+}
+
 function installedAgentDir() {
   const extensionPath = fileURLToPath(import.meta.url);
   return dirname(dirname(extensionPath));
@@ -193,6 +199,25 @@ function configuredBindings(agentDir = installedAgentDir()) {
 }
 
 function sessionBindings(ctx) {
+  const persisted = new Map();
+  try {
+    for (const entry of ctx.sessionManager?.getEntries?.() ?? []) {
+      const data = entry?.type === "custom" && entry.customType === AIM_CREDENTIAL_BINDING_TYPE
+        ? entry.data
+        : undefined;
+      if (
+        data?.source === "aimgr" &&
+        typeof data.provider === "string" &&
+        typeof data.binding === "string"
+      ) {
+        persisted.set(data.provider, data);
+      }
+    }
+  } catch {
+    // Fall through to a host-provided binding snapshot when entries are unavailable.
+  }
+  if (persisted.size > 0) return persisted;
+
   const getBindings = ctx.sessionManager?.getCredentialBindings;
   if (typeof getBindings !== "function") return new Map();
   try {
@@ -235,6 +260,16 @@ function currentSessionName(pi, ctx) {
   }
 }
 
+function currentSessionId(ctx) {
+  const getSessionId = ctx.sessionManager?.getSessionId;
+  if (typeof getSessionId !== "function") return undefined;
+  try {
+    return getSessionId.call(ctx.sessionManager);
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveAccount(ctx, configured) {
   const persisted = sessionBindings(ctx);
   const provider = ctx.model?.provider;
@@ -255,7 +290,7 @@ export default function sessionIdentityExtension(pi) {
   let identityPersisted = false;
   let branch = "no-branch";
   let manualTitle = false;
-  let lastLine;
+  let lastRenderedWidget;
   let lastTerminalTitle;
   let refreshTimer;
   let titleUpdate = Promise.resolve();
@@ -312,9 +347,12 @@ export default function sessionIdentityExtension(pi) {
       branch,
       cwd: compactHome(ctx.cwd),
     });
-    if (force || line !== lastLine) {
-      lastLine = line;
-      ctx.ui.setWidget(WIDGET_KEY, [line], { placement: "belowEditor" });
+    const sessionIdLine = renderSessionIdLine(currentSessionId(ctx));
+    const lines = sessionIdLine ? [line, sessionIdLine] : [line];
+    const renderedWidget = lines.join("\n");
+    if (force || renderedWidget !== lastRenderedWidget) {
+      lastRenderedWidget = renderedWidget;
+      ctx.ui.setWidget(WIDGET_KEY, lines, { placement: "belowEditor" });
     }
     const terminalTitle = `${title} — ${basename(ctx.cwd)}`;
     if (force || terminalTitle !== lastTerminalTitle) {
@@ -398,7 +436,7 @@ export default function sessionIdentityExtension(pi) {
     if (refreshTimer) clearInterval(refreshTimer);
     configured = configuredBindings();
     branch = gitBranch(ctx.cwd);
-    lastLine = undefined;
+    lastRenderedWidget = undefined;
     lastTerminalTitle = undefined;
     manualTitle = false;
 
@@ -462,7 +500,7 @@ export default function sessionIdentityExtension(pi) {
   pi.on("session_shutdown", async (_event, ctx) => {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = undefined;
-    lastLine = undefined;
+    lastRenderedWidget = undefined;
     lastTerminalTitle = undefined;
     ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "belowEditor" });
   });
