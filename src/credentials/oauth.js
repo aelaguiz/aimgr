@@ -1,7 +1,7 @@
 import path from "node:path";
 import { normalizeBrowserBindingMode } from "../browser/bindings.js";
 import { promptLine } from "../io/prompts.js";
-import { ANTHROPIC_PROVIDER, BROWSER_MODE_AGENT_BROWSER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHROME_PROFILE, OPENAI_CODEX_PROVIDER, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK, SUPPORTED_OAUTH_PROVIDERS } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, BROWSER_MODE_AGENT_BROWSER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHROME_PROFILE, OPENAI_CODEX_PROVIDER, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK, SUPPORTED_OAUTH_PROVIDERS, XAI_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeProviderId } from "../core/normalize.js";
 import { ensureStateShape } from "../state/schema.js";
 
@@ -50,17 +50,39 @@ export function resolveSupportedProviderFromInput(input) {
 
   if (raw === "1") return OPENAI_CODEX_PROVIDER;
   if (raw === "2") return ANTHROPIC_PROVIDER;
+  if (raw === "3") return XAI_PROVIDER;
 
   const normalized = normalizeProviderId(raw);
   if (normalized === "codex") return OPENAI_CODEX_PROVIDER;
   if (normalized === "claude") return ANTHROPIC_PROVIDER;
+  if (normalized === XAI_PROVIDER) return XAI_PROVIDER;
 
   return SUPPORTED_OAUTH_PROVIDERS.has(normalized) ? normalized : null;
 }
 
-export async function ensureProviderConfiguredForLabel({ state, label, promptLineImpl = promptLine, writeImpl = () => {} }) {
+export async function ensureProviderConfiguredForLabel({
+  state,
+  label,
+  explicitProvider = null,
+  promptLineImpl = promptLine,
+  writeImpl = () => {},
+}) {
   ensureStateShape(state);
   const existing = state.accounts[label];
+  const requested = explicitProvider ? resolveSupportedProviderFromInput(explicitProvider) : null;
+  if (explicitProvider && !requested) {
+    throw new Error(`Unsupported provider selection: ${explicitProvider}`);
+  }
+  if (requested) {
+    if (!isObject(existing) || !SUPPORTED_OAUTH_PROVIDERS.has(normalizeProviderId(existing.provider))) {
+      state.accounts[label] = {
+        ...(isObject(existing) ? existing : {}),
+        provider: requested,
+      };
+    }
+    return requested;
+  }
+
   const raw = typeof existing?.provider === "string" ? existing.provider.trim() : "";
   const normalized = raw ? normalizeProviderId(raw) : "";
   if (normalized && SUPPORTED_OAUTH_PROVIDERS.has(normalized)) {
@@ -69,13 +91,14 @@ export async function ensureProviderConfiguredForLabel({ state, label, promptLin
 
   writeImpl(`No provider configured for label "${label}" yet.\n`);
   writeImpl("Pick provider:\n");
-  writeImpl(`  1) ${OPENAI_CODEX_PROVIDER} — ${SUPPORTED_OAUTH_PROVIDERS.get(OPENAI_CODEX_PROVIDER).name}\n`);
-  writeImpl(`  2) ${ANTHROPIC_PROVIDER} — ${SUPPORTED_OAUTH_PROVIDERS.get(ANTHROPIC_PROVIDER).name}\n`);
+  writeImpl(`  1) ${OPENAI_CODEX_PROVIDER} - ${SUPPORTED_OAUTH_PROVIDERS.get(OPENAI_CODEX_PROVIDER).name}\n`);
+  writeImpl(`  2) ${ANTHROPIC_PROVIDER} - ${SUPPORTED_OAUTH_PROVIDERS.get(ANTHROPIC_PROVIDER).name}\n`);
+  writeImpl(`  3) ${XAI_PROVIDER} - ${SUPPORTED_OAUTH_PROVIDERS.get(XAI_PROVIDER).name}\n`);
   writeImpl("\n");
 
-  // Default to OpenAI Codex to preserve the common fast path: "aim boss" → press Enter → continue.
-  // If you want Claude Max, type "2" or "anthropic".
-  const answer = await promptLineImpl(`Provider for "${label}" (1-2 or id) [1]:`, { defaultValue: "1" });
+  // Default to OpenAI Codex to preserve the common fast path: "aim boss" then Enter.
+  // If you want Claude Max, type "2" or "anthropic". For SuperGrok, type "3" or "xai".
+  const answer = await promptLineImpl(`Provider for "${label}" (1-3 or id) [1]:`, { defaultValue: "1" });
   const provider = resolveSupportedProviderFromInput(answer);
   if (!provider) {
     throw new Error(`Unsupported provider selection: ${answer}`);

@@ -1,4 +1,4 @@
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import {
   closeRedisRuntime,
   isRedisConfigured,
@@ -13,13 +13,15 @@ import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.j
 import { getAnthropicCredentialView } from "../../credentials/anthropic.js";
 import { maintainRedisClaudeCredential } from "../../credentials/claude-maintenance.js";
 import { maintainRedisCodexCredential } from "../../credentials/harness-access.js";
+import { hasXaiRefreshMaterial, maintainRedisXaiCredential } from "../../credentials/xai-login.js";
+
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { writeHermesAuthFromState } from "../../targets/hermes-auth.js";
 
 const OAUTH_REAUTH_REQUIRED = "oauth_reauth_required";
 const CLAUDE_DUE_WINDOW_MS = 5 * 60_000;
 const CODEX_DUE_WINDOW_MS = 48 * 60 * 60_000;
-const MAINTAINED_PROVIDERS = new Set([ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER]);
+const MAINTAINED_PROVIDERS = new Set([ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER]);
 
 function hasLoadedCredential(record) {
   return isObject(record?.credential) && Object.keys(record.credential).length > 0;
@@ -41,11 +43,15 @@ function hasRequiredRefreshMaterial(record) {
   if (record.provider === OPENAI_CODEX_PROVIDER) {
     return hasCodexRefreshMaterial(record.credential);
   }
+  if (record.provider === XAI_PROVIDER) {
+    return hasXaiRefreshMaterial(record.credential);
+  }
   return false;
 }
 
 function dueWindowMs(provider) {
-  return provider === ANTHROPIC_PROVIDER ? CLAUDE_DUE_WINDOW_MS : CODEX_DUE_WINDOW_MS;
+  if (provider === ANTHROPIC_PROVIDER || provider === XAI_PROVIDER) return CLAUDE_DUE_WINDOW_MS;
+  return CODEX_DUE_WINDOW_MS;
 }
 
 function recordExpiryMs(record) {
@@ -172,6 +178,14 @@ async function handleOAuthMaintain(context) {
             outcome = result.outcome;
             reason = result.reason;
             detail = result.detail ?? null;
+          } else if (record.provider === XAI_PROVIDER) {
+            const result = await maintainRedisXaiCredential({
+              runtime,
+              record,
+              fetchImpl: context.fetchImpl ?? globalThis.fetch.bind(globalThis),
+            });
+            outcome = result.outcome;
+            reason = result.reason;
           } else if (!hasRequiredRefreshMaterial(record)) {
             await refreshRedisRuntimeState(runtime);
             const current = findCredentialRecord(runtime.snapshot, {

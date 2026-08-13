@@ -1,4 +1,4 @@
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../core/constants.js";
 import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { buildCodexCredentialFingerprint } from "../credentials/codex.js";
 import { clampPercent } from "../core/numbers.js";
@@ -11,6 +11,52 @@ import {
   releaseRedisCacheLock,
   writeCachedProviderUsage,
 } from "../status/redis-cache.js";
+
+export async function fetchXaiUsageSnapshot({
+  accessToken,
+  timeoutMs,
+  fetchJsonWithTimeoutImpl = fetchJsonWithTimeout,
+}) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: "application/json",
+  };
+  const billingRes = await fetchJsonWithTimeoutImpl(
+    "https://cli-chat-proxy.grok.com/v1/billing",
+    { method: "GET", headers },
+    timeoutMs,
+  );
+  if (!billingRes.ok) {
+    return {
+      provider: XAI_PROVIDER,
+      ok: false,
+      status: billingRes.status,
+      tokenExpired: billingRes.status === 401 || billingRes.status === 403,
+    };
+  }
+  const billing = await billingRes.json();
+  const settingsRes = await fetchJsonWithTimeoutImpl(
+    "https://cli-chat-proxy.grok.com/v1/settings",
+    { method: "GET", headers },
+    timeoutMs,
+  );
+  const settings = settingsRes.ok ? await settingsRes.json() : {};
+  const used = Number(billing?.config?.used?.val);
+  const limit = Number(billing?.config?.monthlyLimit?.val);
+  return {
+    provider: XAI_PROVIDER,
+    ok: true,
+    used: Number.isFinite(used) ? used : null,
+    limit: Number.isFinite(limit) ? limit : null,
+    remaining: Number.isFinite(used) && Number.isFinite(limit) ? Math.max(0, limit - used) : null,
+    periodStart: typeof billing?.config?.billingPeriodStart === "string" ? billing.config.billingPeriodStart : null,
+    periodEnd: typeof billing?.config?.billingPeriodEnd === "string" ? billing.config.billingPeriodEnd : null,
+    allowAccess: settings?.allow_access === true,
+    subscriptionTier: typeof settings?.subscription_tier_display === "string"
+      ? settings.subscription_tier_display
+      : null,
+  };
+}
 
 export async function fetchCodexUsageSnapshot({
   accessToken,

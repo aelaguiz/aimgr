@@ -1,4 +1,4 @@
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, SCHEMA_VERSION } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, SCHEMA_VERSION, XAI_PROVIDER } from "../core/constants.js";
 
 export function createEmptyState() {
   return {
@@ -7,6 +7,7 @@ export function createEmptyState() {
     credentials: {
       [OPENAI_CODEX_PROVIDER]: {},
       [ANTHROPIC_PROVIDER]: {},
+      [XAI_PROVIDER]: {},
     },
     imports: {
       authority: {

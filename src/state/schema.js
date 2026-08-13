@@ -1,4 +1,4 @@
-import { ANTHROPIC_PROVIDER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHROME_PROFILE, LEGACY_INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE, LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE, OPENAI_CODEX_PROVIDER, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK, REAUTH_MODE_NATIVE_CLAUDE, SCHEMA_VERSION } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHROME_PROFILE, LEGACY_INTERACTIVE_OAUTH_MODE_AIM_BROWSER_PROFILE, LEGACY_INTERACTIVE_OAUTH_MODE_OPENCLAW_BROWSER_PROFILE, OPENAI_CODEX_PROVIDER, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK, REAUTH_MODE_NATIVE_CLAUDE, SCHEMA_VERSION, XAI_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeAgentId, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { readJsonFile, writeJsonFileWithBackupIfChanged } from "../io/json-store.js";
 import { ensureAccountShape, normalizeInteractiveOAuthMode } from "./account-shape.js";
@@ -151,6 +151,9 @@ export function ensureStateShape(state) {
     : {};
   state.credentials[ANTHROPIC_PROVIDER] = isObject(state.credentials[ANTHROPIC_PROVIDER])
     ? state.credentials[ANTHROPIC_PROVIDER]
+    : {};
+  state.credentials[XAI_PROVIDER] = isObject(state.credentials[XAI_PROVIDER])
+    ? state.credentials[XAI_PROVIDER]
     : {};
   state.imports = isObject(state.imports) ? state.imports : {};
   state.imports.authority = isObject(state.imports.authority) ? state.imports.authority : {};

@@ -21,6 +21,10 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim label rebind <label> --provider <provider> --confirm",
     "  aim <label>            # primary human path: guided label panel on a TTY; one-shot login in non-interactive use",
     "  aim login <label>      # one-shot maintenance / automation / admin lane",
+    "  aim login <label> --provider xai  # attach SuperGrok OAuth onto a label (device-code)",
+    "  aim grok status [label...] [--json]  # SuperGrok seat health plus monthly leftover",
+    "  aim grok inventory [--json]  # SuperGrok seats only; no provider requests",
+
     "  aim login <label> --manual-callback-stdio  # scriptable manual OAuth: JSONL auth_url out, callback URL in",
     "  aim rebalance openclaw # choose pooled Codex assignments for configured OpenClaw agents",
     "  aim rebalance hermes   # choose pooled Codex assignments for live Hermes homes",
@@ -45,11 +49,15 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim pi status | aim pi uninstall [--provider <openai-codex|anthropic>]",
     "  aim prime run codex   # select Codex and start a new Prime session with gpt-5.6-sol",
     "  aim prime run claude  # select Claude and start a new Prime session with claude-fable-5",
+    "  aim prime run grok    # select SuperGrok and start a new Prime session with grok-4.6",
+
     "  aim prime resume <path-or-id> [--rotate]  # resume normally, or hand off the live root to the next-best same-provider account",
     "  aim prime use codex   # use the next-best Codex account and preserve Claude",
     "  aim prime use claude  # use the least-used Claude account and preserve Codex",
-    "  aim prime use [--codex <auto|label|off>] [--claude <fable|opus|label|off>]",
-    "  aim prime status | aim prime uninstall [--provider <openai-codex|anthropic>]",
+    "  aim prime use grok    # use a ready SuperGrok seat and preserve Claude/Codex",
+
+    "  aim prime use [--codex <auto|label|off>] [--claude <fable|opus|label|off>] [--grok <auto|label|off>]",
+    "  aim prime status | aim prime uninstall [--provider <openai-codex|anthropic|xai>]",
     "  aim credential-helper # machine-only bounded JSON stdin/stdout protocol; never invoke interactively",
     "  aim sakana add <account-name> [--key <api-key>] [--tier standard|pro|max|payg] [--subscription <name>] [--notes <text>]",
     "  aim sakana use <account-name>  # write selected key to ~/.codex/.env as SAKANA_API_KEY",
@@ -86,6 +94,8 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  --provider <id>                Provider disambiguation for repair or Pi/Prime uninstall.",
     "  --codex <auto|label|off>       Pi/Prime Codex binding for new root sessions.",
     "  --claude <fable|opus|label|off> Pi/Prime Claude binding for new root sessions.",
+    "  --grok <auto|label|off>        Prime SuperGrok binding for new root sessions.",
+
     "  --confirm                      Required for Redis label repair commands.",
     "  --mode <id>     Browser binding mode for `aim browser set`.",
     "  --seed-from-openclaw <profileId>  Optional one-time OpenClaw seed source for `--mode aim-profile`.",

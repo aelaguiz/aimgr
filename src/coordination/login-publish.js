@@ -1,5 +1,6 @@
 import { getAnthropicCredential, getCodexCredential } from "../browser/seed.js";
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, SAKANA_PROVIDER } from "../core/constants.js";
+import { getXaiCredential } from "../credentials/xai.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, SAKANA_PROVIDER, XAI_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import { getClaudeNativeBundleIdentity } from "../credentials/claude-native.js";
@@ -43,12 +44,18 @@ export function buildStableIdentityForCredential(provider, credential) {
       ? { keyFingerprint: buildSakanaKeyFingerprint(credential.apiKey) }
       : {};
   }
+  if (provider === XAI_PROVIDER) {
+    return typeof credential?.emailAddress === "string" && credential.emailAddress.trim()
+      ? { emailAddress: credential.emailAddress.trim().toLowerCase() }
+      : {};
+  }
   return {};
 }
 
 function getCredentialForProvider(state, provider, label) {
   if (provider === OPENAI_CODEX_PROVIDER) return getCodexCredential(state, label);
   if (provider === ANTHROPIC_PROVIDER) return getAnthropicCredential(state, label);
+  if (provider === XAI_PROVIDER) return getXaiCredential(state, label);
   return null;
 }
 

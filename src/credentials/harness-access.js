@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import { acquireRedisCredentialLease } from "../coordination/redis-credential-lease.js";
@@ -114,6 +114,11 @@ function immutableIdentityBasis(provider, identity) {
     if (!accountUuid) fail("credential_incomplete");
     return Object.freeze({ accountUuid });
   }
+  if (provider === XAI_PROVIDER) {
+    const emailAddress = typeof identity.emailAddress === "string" ? identity.emailAddress.trim().toLowerCase() : "";
+    if (!emailAddress) fail("credential_incomplete");
+    return Object.freeze({ emailAddress });
+  }
   fail("provider_mismatch");
 }
 
@@ -161,7 +166,16 @@ function validateRecord(record, { nowMs, requireFresh = false } = {}) {
       )
     : record.provider === ANTHROPIC_PROVIDER
       ? Boolean(accessToken && expiresAt && hasCompleteClaudeNativeBundle(record.credential))
-      : false;
+      : record.provider === XAI_PROVIDER
+        ? Boolean(
+            accessToken
+            && typeof credential?.refresh === "string"
+            && credential.refresh.trim()
+            && typeof credential?.emailAddress === "string"
+            && credential.emailAddress.trim()
+            && expiresAt,
+          )
+        : false;
   if (!complete) fail("credential_incomplete");
   const storedIdentity = immutableIdentityBasis(record.provider, record.identity);
   const derivedIdentity = immutableIdentityBasis(
@@ -334,7 +348,11 @@ export async function resolveHarnessAccessCredential(context, {
 } = {}) {
   const normalizedProvider = normalizeProviderId(provider);
   const normalizedLabel = normalizeLabel(binding);
-  if (normalizedProvider !== OPENAI_CODEX_PROVIDER && normalizedProvider !== ANTHROPIC_PROVIDER) {
+  if (
+    normalizedProvider !== OPENAI_CODEX_PROVIDER
+    && normalizedProvider !== ANTHROPIC_PROVIDER
+    && normalizedProvider !== XAI_PROVIDER
+  ) {
     fail("provider_mismatch");
   }
   throwIfAborted(signal);
@@ -360,6 +378,14 @@ export async function resolveHarnessAccessCredential(context, {
         deadlineMs,
       });
       if (maintenance?.reason === "lease_busy") fail("lease_busy");
+      if (maintenance?.outcome === "reauth_required") fail("reauth_required");
+    } else if (normalizedProvider === XAI_PROVIDER) {
+      const { maintainRedisXaiCredential } = await import("./xai-login.js");
+      const maintenance = await maintainRedisXaiCredential({
+        runtime,
+        record,
+        fetchImpl: context.fetchImpl ?? globalThis.fetch.bind(globalThis),
+      });
       if (maintenance?.outcome === "reauth_required") fail("reauth_required");
     } else {
       const maintenance = await maintainRedisClaudeCredential({

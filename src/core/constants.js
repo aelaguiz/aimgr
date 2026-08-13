@@ -25,6 +25,8 @@ export const ANTHROPIC_PROVIDER = "anthropic";
 
 export const SAKANA_PROVIDER = "sakana";
 
+export const XAI_PROVIDER = "xai";
+
 export const OPENCLAW_ENFORCED_CODEX_MODEL = "openai-codex/gpt-5.4";
 
 export const OPENCLAW_ENFORCED_ANTHROPIC_MODEL = "anthropic/claude-opus-4-6";
@@ -117,6 +119,13 @@ export const SUPPORTED_OAUTH_PROVIDERS = new Map([
     {
       id: ANTHROPIC_PROVIDER,
       name: "Anthropic (Claude Pro/Max subscription)",
+    },
+  ],
+  [
+    XAI_PROVIDER,
+    {
+      id: XAI_PROVIDER,
+      name: "xAI (SuperGrok subscription)",
     },
   ],
 ]);

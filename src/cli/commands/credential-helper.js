@@ -102,7 +102,7 @@ export function parseCredentialHelperRequest(raw) {
   if (
     request.schemaVersion !== HARNESS_CREDENTIAL_SCHEMA_VERSION
     || (request.operation !== "resolve" && request.operation !== "advance")
-    || (provider !== "openai-codex" && provider !== "anthropic")
+    || (provider !== "openai-codex" && provider !== "anthropic" && provider !== "xai")
     || normalizedBinding !== binding
     || !IDENTITY_FINGERPRINT_PATTERN.test(expectedIdentityFingerprint)
     || (

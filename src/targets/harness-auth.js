@@ -3,7 +3,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { ensureDirectoryMode, writeJsonFileIfChanged } from "../io/json-store.js";
 import { resolveAimgrStateDir } from "../io/paths.js";
@@ -12,6 +12,7 @@ export const HARNESS_EXTERNAL_PROTOCOL = "aimgr-credential-v1";
 export const HARNESS_MANAGED_PROVIDERS = Object.freeze([
   OPENAI_CODEX_PROVIDER,
   ANTHROPIC_PROVIDER,
+  XAI_PROVIDER,
 ]);
 
 const IDENTITY_FINGERPRINT_PATTERN = /^aimgr-id-v1:[A-Za-z0-9_-]{43}$/;
@@ -29,7 +30,7 @@ const LOCK_OPTIONS = Object.freeze({
 
 function assertProvider(provider) {
   if (!HARNESS_MANAGED_PROVIDERS.includes(provider)) {
-    throw new Error("Harness target provider must be openai-codex or anthropic.");
+    throw new Error("Harness target provider must be openai-codex, anthropic, or xai.");
   }
   return provider;
 }

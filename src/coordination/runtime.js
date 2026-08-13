@@ -111,12 +111,7 @@ export async function publishRedisCredentialPolicyFromState({
   if (!provider) {
     throw new Error(`Cannot publish Redis label policy without a provider for label=${normalizedLabel}.`);
   }
-  const conflicting = findConflictingCredential(runtime.snapshot, { provider, label: normalizedLabel });
-  if (conflicting) {
-    throw new Error(
-      `Redis credential label=${normalizedLabel} already exists for provider=${conflicting.provider}; refusing to create provider=${provider}.`,
-    );
-  }
+  // Other providers on the same label are allowed. Redis keys are provider+label.
   const currentCredential = findCredentialRecord(runtime.snapshot, { provider, label: normalizedLabel });
   const credential = isObject(currentCredential?.credential) ? currentCredential.credential : {};
   const result = await publishCredential(runtime.store, {

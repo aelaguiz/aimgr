@@ -51,6 +51,7 @@ export function parseArgs(argv) {
     provider: undefined,
     codex: undefined,
     claude: undefined,
+    grok: undefined,
     replaceNativeAuth: false,
     mode: undefined,
     seedFromOpenclaw: undefined,
@@ -127,20 +128,26 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg === "--codex" || arg === "--claude") {
+    if (arg === "--codex" || arg === "--claude" || arg === "--grok") {
       if ((argv[0] !== "pi" && argv[0] !== "prime") || argv[1] !== "use") {
         throw new Error(`Unknown option: ${arg}`);
+      }
+      if (arg === "--grok" && argv[0] !== "prime") {
+        throw new Error("Unknown option: --grok");
       }
       const value = argv[i + 1];
       if (!value || value.startsWith("--")) {
         throw new Error(
           arg === "--codex"
             ? "--codex requires auto, an exact label, or off."
-            : "--claude requires fable, opus, an exact label, or off.",
+            : arg === "--claude"
+              ? "--claude requires fable, opus, an exact label, or off."
+              : "--grok requires auto, an exact label, or off.",
         );
       }
       if (arg === "--codex") opts.codex = value;
-      else opts.claude = value;
+      else if (arg === "--claude") opts.claude = value;
+      else opts.grok = value;
       i += 1;
       continue;
     }

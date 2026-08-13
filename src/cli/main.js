@@ -19,7 +19,9 @@ const COMMAND_LOADERS = new Map([
   ["credential-helper", async () => (await import("./commands/credential-helper.js")).handleCredentialHelper],
   ["sakana", async () => (await import("./commands/sakana.js")).handleSakana],
   ["browser", async () => (await import("./commands/browser.js")).handleBrowser],
+  ["grok", async () => (await import("./commands/grok.js")).handleGrok],
 ]);
+
 
 const RETIRED_COMMANDS = new Set(["apply", "autopin", "internal", "pin", "promote", "session", "sync"]);
 

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import { expandHomeShorthandPath, resolveManagedPrimeAgentDir } from "../../io/paths.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
@@ -71,7 +71,24 @@ function normalizeUninstallProviders(raw) {
   if (!value) return HARNESS_MANAGED_PROVIDERS;
   if (value === "codex" || value === OPENAI_CODEX_PROVIDER) return [OPENAI_CODEX_PROVIDER];
   if (value === "claude" || value === ANTHROPIC_PROVIDER) return [ANTHROPIC_PROVIDER];
-  throw new Error("--provider must be openai-codex, codex, anthropic, or claude.");
+  if (value === "grok" || value === XAI_PROVIDER) return [XAI_PROVIDER];
+  throw new Error("--provider must be openai-codex, codex, anthropic, claude, xai, or grok.");
+}
+
+function selectReadyXaiLabel(snapshot, { currentLabel = null, avoidCurrentLabel = false } = {}) {
+  const labels = (snapshot?.credentials ?? [])
+    .filter((record) => (
+      record.provider === XAI_PROVIDER
+      && record.health?.status === "ready"
+      && record.policy?.reauth?.blockedReason !== "oauth_reauth_required"
+    ))
+    .map((record) => record.label)
+    .sort();
+  if (avoidCurrentLabel && currentLabel) {
+    const alternate = labels.find((label) => label !== currentLabel);
+    if (alternate) return alternate;
+  }
+  return labels[0] ?? null;
 }
 
 async function selectClaudePreset({
@@ -117,9 +134,10 @@ async function resolveUseSelections({
   targetState,
 }) {
   const { opts, probeUsageSnapshotsByProviderImpl } = context;
-  const bareUse = opts.codex === undefined && opts.claude === undefined;
+  const bareUse = opts.codex === undefined && opts.claude === undefined && opts.grok === undefined;
   const codexSelection = bareUse ? "auto" : opts.codex;
   const claudeSelection = opts.claude;
+  const grokSelection = opts.grok;
   // Claude selection owns a bounded, cache-aware status path. The generic
   // provider probe fans out across every account and can turn provider
   // throttling into a false `no_alternate_account` result.
@@ -204,28 +222,58 @@ async function resolveUseSelections({
       });
     }
   }
+
+  if (grokSelection !== undefined) {
+    if (grokSelection === "off") {
+      selections.push({ provider: XAI_PROVIDER, off: true });
+    } else {
+      const currentLabel = context.currentGrokLabel !== undefined
+        ? context.currentGrokLabel
+        : typeof targetState?.providers?.[XAI_PROVIDER]?.binding === "string"
+          ? targetState.providers[XAI_PROVIDER].binding
+          : null;
+      const label = grokSelection === "auto"
+        ? selectReadyXaiLabel(runtime.snapshot, {
+            currentLabel,
+            avoidCurrentLabel: context.avoidCurrentSelection === true,
+          })
+        : normalizeLabel(grokSelection);
+      if (!label) {
+        return { blocked: true, selections: [], reason: "no_eligible_account" };
+      }
+      if (context.requireDifferentSelection === true && currentLabel && label === currentLabel) {
+        return { blocked: true, selections: [], reason: "no_alternate_account" };
+      }
+      selections.push({
+        provider: XAI_PROVIDER,
+        record: exactRecord(runtime.snapshot, XAI_PROVIDER, label),
+      });
+    }
+  }
   return { blocked: false, selections };
 }
 
 async function handleUse(context, targetId, { emitReceipt = true } = {}) {
   const { homeDir, env, stdout, setExitCode, connectRedisStoreImpl } = context;
   if (targetId !== "prime" && context.positional.length > 2) {
-    throw new Error(`\`aim ${targetId} use\` does not accept a label; use --codex or --claude.`);
+    throw new Error(`\`aim ${targetId} use\` does not accept a label; use --codex, --claude, or --grok.`);
   }
   const shorthand = targetId === "prime"
     ? String(context.positional[2] ?? "").trim().toLowerCase()
     : "";
-  if (context.positional.length > 3 || (shorthand && shorthand !== "codex" && shorthand !== "claude")) {
-    throw new Error("Usage: aim prime use codex | aim prime use claude");
+  if (context.positional.length > 3 || (shorthand && shorthand !== "codex" && shorthand !== "claude" && shorthand !== "grok")) {
+    throw new Error("Usage: aim prime use codex | aim prime use claude | aim prime use grok");
   }
-  if (shorthand && (context.opts.codex !== undefined || context.opts.claude !== undefined)) {
-    throw new Error(`Do not combine \`aim ${targetId} use ${shorthand}\` with --codex or --claude.`);
+  if (shorthand && (context.opts.codex !== undefined || context.opts.claude !== undefined || context.opts.grok !== undefined)) {
+    throw new Error(`Do not combine \`aim ${targetId} use ${shorthand}\` with --codex, --claude, or --grok.`);
   }
   const opts = shorthand === "codex"
     ? { ...context.opts, codex: "auto" }
     : shorthand === "claude"
       ? { ...context.opts, claude: "fable" }
-      : context.opts;
+      : shorthand === "grok"
+        ? { ...context.opts, grok: "auto" }
+        : context.opts;
   const effectiveContext = opts === context.opts ? context : { ...context, opts };
   if (opts.provider !== undefined) {
     throw new Error(`\`aim ${targetId} use\` does not accept --provider.`);
@@ -242,12 +290,16 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
     const adapter = adapterFor(targetId, { state: runtime.state, homeDir, env });
     const installedCodexLabel = readInstalledAimBinding(adapter.authPath, OPENAI_CODEX_PROVIDER);
     const installedClaudeLabel = readInstalledAimBinding(adapter.authPath, ANTHROPIC_PROVIDER);
+    const installedGrokLabel = readInstalledAimBinding(adapter.authPath, XAI_PROVIDER);
     const selectionContext = { ...effectiveContext };
     if (selectionContext.currentCodexLabel === undefined) {
       selectionContext.currentCodexLabel = installedCodexLabel;
     }
     if (selectionContext.currentClaudeLabel === undefined) {
       selectionContext.currentClaudeLabel = installedClaudeLabel;
+    }
+    if (selectionContext.currentGrokLabel === undefined) {
+      selectionContext.currentGrokLabel = installedGrokLabel;
     }
     const resolved = await resolveUseSelections({
       context: selectionContext,
@@ -647,7 +699,7 @@ async function handleResume(context, targetId) {
 async function handleRun(context, targetId) {
   if (targetId !== "prime") throw new Error("Only Prime supports the run command.");
   if (context.positional.length !== 3) {
-    throw new Error("Usage: aim prime run codex | aim prime run claude");
+    throw new Error("Usage: aim prime run codex | aim prime run claude | aim prime run grok");
   }
   if (context.opts.afterDoubleDash?.length) {
     throw new Error("`aim prime run` does not accept additional Prime arguments.");
@@ -657,8 +709,10 @@ async function handleRun(context, targetId) {
     ? { provider: OPENAI_CODEX_PROVIDER, model: "gpt-5.6-sol" }
     : flavor === "claude"
       ? { provider: ANTHROPIC_PROVIDER, model: "claude-fable-5" }
-      : null;
-  if (!profile) throw new Error("Usage: aim prime run codex | aim prime run claude");
+      : flavor === "grok"
+        ? { provider: XAI_PROVIDER, model: "grok-4.6" }
+        : null;
+  if (!profile) throw new Error("Usage: aim prime run codex | aim prime run claude | aim prime run grok");
 
   const selected = await handleUse({
     ...context,

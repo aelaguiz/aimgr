@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import {
   acquireRedisCredentialLease,
   renewOrReacquireRedisCredentialLease,
@@ -11,7 +11,9 @@ import { publishMaintainedCredential } from "../../coordination/login-publish.js
 import { closeRedisRuntime, isRedisConfigured, loadRedisRuntime, publishRedisCredentialPolicyFromState, refreshRedisRuntimeSnapshot, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { persistAnthropicNativeBundleForLabel } from "../../credentials/claude-native.js";
 import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.js";
-import { ensureProviderConfiguredForLabel } from "../../credentials/oauth.js";
+import { ensureProviderConfiguredForLabel, resolveSupportedProviderFromInput } from "../../credentials/oauth.js";
+import { loginXaiDevice, storeXaiLoginCredential } from "../../credentials/xai-login.js";
+
 import {
   buildManagedClaudeNativeStorageDescriptor,
   ensureSafeManagedClaudeStorage,
@@ -19,7 +21,7 @@ import {
   readManagedClaudeNativeBundleFromFiles,
 } from "../../credentials/claude-native-storage.js";
 import { isInteractiveTerminal } from "../tty.js";
-import { normalizeLabel, normalizeProviderId } from "../../core/normalize.js";
+import { isObject, normalizeLabel, normalizeProviderId } from "../../core/normalize.js";
 import { writeJsonFileWithBackup } from "../../io/json-store.js";
 import {
   resolveAgentsRepoRoot,
@@ -302,6 +304,72 @@ async function performRedisClaudeLogin(context, {
   });
 }
 
+async function performRedisXaiLogin(context, { store, snapshot, state, localState, label, writeImpl }) {
+  const {
+    homeDir,
+    promptLineImpl,
+    openUrlImpl,
+    fetchImpl,
+    nowMs,
+  } = context;
+  const existing = state.accounts[label];
+  const expectedEmail = String(
+    existing?.expect?.email
+    || await promptLineImpl(`Expected SuperGrok email for "${label}":`),
+  ).trim().toLowerCase();
+  if (!expectedEmail) {
+    throw new Error(`xAI label=${label} requires an expected email before login.`);
+  }
+  if (!isObject(existing) || !existing.provider) {
+    state.accounts[label] = {
+      ...(isObject(existing) ? existing : {}),
+      provider: XAI_PROVIDER,
+      expect: {
+        ...(existing?.expect ?? {}),
+        email: expectedEmail,
+      },
+      pool: existing?.pool ?? { enabled: true },
+    };
+  } else {
+    state.accounts[label] = {
+      ...existing,
+      expect: {
+        ...(existing.expect ?? {}),
+        email: expectedEmail,
+      },
+    };
+  }
+  const credential = await loginXaiDevice({
+    expectedEmail,
+    fetchImpl: fetchImpl ?? globalThis.fetch.bind(globalThis),
+    openUrlImpl,
+    writeImpl,
+  });
+  storeXaiLoginCredential({ state, label, credential });
+  const published = await publishMaintainedCredential({
+    store,
+    snapshot,
+    state,
+    label,
+    provider: XAI_PROVIDER,
+    observedAt: new Date(nowMs).toISOString(),
+  });
+  if (!published.ok) {
+    throw new Error(`Redis publish failed for label=${label}: ${published.credential?.code ?? "unknown"}`);
+  }
+  writeRedisLocalStateFromView({ homeDir, state, localState });
+  return {
+    ok: true,
+    label,
+    provider: XAI_PROVIDER,
+    maintenance: {
+      action: "xai-login",
+      observedAt: published.credential.record.updatedAt,
+    },
+    redis: { credentialVersion: published.credential.record.version },
+  };
+}
+
 async function performRedisLabelMaintenance(context, { label, manualCallbackAutomation = null, writeImpl }) {
   const {
     homeDir,
@@ -328,6 +396,20 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
   try {
     const { store, snapshot, localState } = runtime;
     const normalizedLabel = normalizeLabel(label);
+    const requestedProvider = resolveSupportedProviderFromInput(context.opts?.provider);
+    if (requestedProvider === XAI_PROVIDER) {
+      if (manualCallbackAutomation) {
+        throw new Error("xAI login does not use the Codex manual-callback JSONL protocol.");
+      }
+      return await performRedisXaiLogin(context, {
+        store,
+        snapshot,
+        state: runtime.state,
+        localState,
+        label: normalizedLabel,
+        writeImpl,
+      });
+    }
     const anthropicRecord = currentAnthropicRecord(snapshot, normalizedLabel);
     if (anthropicRecord) {
       if (manualCallbackAutomation) {
@@ -348,9 +430,23 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
     const provider = await ensureProviderConfiguredForLabel({
       state,
       label: normalizedLabel,
+      explicitProvider: context.opts?.provider,
       promptLineImpl,
       writeImpl,
     });
+    if (provider === XAI_PROVIDER) {
+      if (manualCallbackAutomation) {
+        throw new Error("xAI login does not use the Codex manual-callback JSONL protocol.");
+      }
+      return await performRedisXaiLogin(context, {
+        store,
+        snapshot,
+        state,
+        localState,
+        label: normalizedLabel,
+        writeImpl,
+      });
+    }
     if (provider === ANTHROPIC_PROVIDER) {
       if (manualCallbackAutomation) {
         throw new Error("Anthropic login does not use the Codex manual-callback JSONL protocol.");
