@@ -51,7 +51,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim prime run claude  # select Claude and start a new Prime session with claude-fable-5",
     "  aim prime run grok    # select SuperGrok and start a new Prime session with grok-4.6",
 
-    "  aim prime resume <path-or-id> [--rotate]  # resume normally, or hand off the live root to the next-best same-provider account",
+    "  aim prime resume <path-or-id> [--rotate]  # resume normally, or manually hand off managed Codex/Claude/Grok to a different same-provider account",
     "  aim prime use codex   # use the next-best Codex account and preserve Claude",
     "  aim prime use claude  # use the least-used Claude account and preserve Codex",
     "  aim prime use grok    # use a ready SuperGrok seat and preserve Claude/Codex",
@@ -81,7 +81,8 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  - Codex target management is file-backed only in v1; keyring/auto homes fail loud.",
     "  - Pi/Prime managed providers contain non-secret external descriptors; AIM/Redis alone owns refresh credentials.",
     "  - Harness target changes affect new root session trees. Uninstall is local-only and restores only an exact guarded backup.",
-    "  - `aim prime resume <session> --rotate` hands an already-live root to a different same-provider account, then attaches that exact root; plain resume stays pinned.",
+    "  - `aim prime resume <session> --rotate` manually hands an already-live managed Codex, Claude, or Grok root to a different same-provider account, then attaches that exact root; plain resume stays pinned.",
+    "  - Automatic credential `advance` is Codex-only; Claude and Grok change live bindings only through explicit manual handoff.",
     "  - During Redis outages, status remains local; cached harness access may continue only until its freshness skew.",
     `  - \`aim codex watch --once\` is the scheduler-safe one-shot; foreground watch loops default to ${DEFAULT_CODEX_WATCH_INTERVAL_SECONDS}s and rotate below ${DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT}% 5h remaining.`,
     `  - \`aim hermes watch --once\` is the Hermes scheduler-safe one-shot and always delegates writes through \`aim rebalance hermes\`.`,

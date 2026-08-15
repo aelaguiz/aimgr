@@ -90,6 +90,7 @@ test("credential-helper rejects legacy requestId/minValidity and malformed or ov
     { ...fixture.request, operation: "resolve", reason: "usage_limit_reached" },
     { ...fixture.request, operation: "advance", reason: "rate_limit_exceeded" },
     { ...fixture.request, operation: "advance", provider: "anthropic", reason: "usage_limit_reached" },
+    { ...fixture.request, operation: "advance", provider: "xai", reason: "usage_limit_reached" },
     "not-json",
     `${JSON.stringify(fixture.request)}${" ".repeat(9 * 1024)}`,
   ]) {

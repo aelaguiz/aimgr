@@ -81,6 +81,7 @@ function selectReadyXaiLabel(snapshot, { currentLabel = null, avoidCurrentLabel 
     .filter((record) => (
       record.provider === XAI_PROVIDER
       && record.health?.status === "ready"
+      && record.policy?.pool?.enabled !== false
       && record.policy?.reauth?.blockedReason !== "oauth_reauth_required"
     ))
     .map((record) => record.label)
@@ -492,7 +493,9 @@ async function selectPrimeRotation(context, profile) {
   try {
     const selectionOpts = profile.provider === OPENAI_CODEX_PROVIDER
       ? { codex: "auto" }
-      : { claude: claudePresetForModel(profile.model) };
+      : profile.provider === ANTHROPIC_PROVIDER
+        ? { claude: claudePresetForModel(profile.model) }
+        : { grok: "auto" };
     const resolved = await resolveUseSelections({
       context: {
         ...context,
@@ -501,6 +504,7 @@ async function selectPrimeRotation(context, profile) {
         requireDifferentSelection: true,
         currentCodexLabel: profile.provider === OPENAI_CODEX_PROVIDER ? profile.binding : undefined,
         currentClaudeLabel: profile.provider === ANTHROPIC_PROVIDER ? profile.binding : undefined,
+        currentGrokLabel: profile.provider === XAI_PROVIDER ? profile.binding : undefined,
       },
       runtime,
       targetId: "prime",

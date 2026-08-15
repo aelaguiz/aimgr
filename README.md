@@ -117,15 +117,16 @@ aim pi use
 aim pi use --codex <auto|label|off> --claude <fable|opus|label|off>
 aim pi status
 aim pi uninstall [--provider <openai-codex|anthropic>]
-aim prime use --codex <auto|label|off> --claude <fable|opus|label|off>
+aim prime use --codex <auto|label|off> --claude <fable|opus|label|off> --grok <auto|label|off>
 aim prime run codex
 aim prime run claude
+aim prime run grok
 aim prime resume <path-or-id> [--rotate]
 aim prime status
-aim prime uninstall [--provider <openai-codex|anthropic>]
+aim prime uninstall [--provider <openai-codex|anthropic|xai>]
 ```
 
-`aim prime run codex|claude` selects the account and model, then starts a new
+`aim prime run codex|claude|grok` selects the account and model, then starts a new
 Prime session directly. Use `aim prime resume <path-or-id>` when you want an
 existing session instead.
 
@@ -135,10 +136,10 @@ existing session instead.
 `aim pi use` keeps its bare behavior: it selects the next-best pooled Codex
 label, resolves it to one exact identity, and installs a non-secret external
 descriptor for **new root sessions**. `aim prime use` uses the same descriptor
-owner. Explicit `--codex` and `--claude` selections may name an exact label;
-Codex also accepts `auto`, Claude accepts the existing `fable`/`opus` ranking,
-and `off` performs the same guarded local removal as uninstall. An omitted
-provider is unchanged.
+owner. Explicit `--codex`, `--claude`, and Prime-only `--grok` selections may
+name an exact label; Codex and Grok also accept `auto`, Claude accepts the
+existing `fable`/`opus` ranking, and `off` performs the same guarded local
+removal as uninstall. An omitted provider is unchanged.
 
 AIM remains the only managed refresh-token authority. Pi and Prime invoke the
 machine-only `aim credential-helper` directly with bounded JSON over stdin and
@@ -158,7 +159,10 @@ that provider; and asks Prime to compare-and-swap the binding inside that exact
 already-live root. AIM writes no target auth or selection history. After Prime
 confirms the handoff, AIM attaches the same root through ordinary resume. An
 inactive or busy root, stale expected binding, failed handoff, or lack of an
-eligible alternate exits without attaching or mutating the saved session.
+eligible alternate exits without attaching or mutating the saved session. This
+manual same-provider handoff supports managed Codex, Claude, and Grok roots.
+Automatic credential `advance` remains Codex-only; Claude and Grok never switch
+accounts without this explicit operator command.
 
 AIM-managed Pi and Prime homes also receive one global session-identity
 extension. Its below-editor banner always shows title, AIM account, git branch,

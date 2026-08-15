@@ -528,6 +528,98 @@ test("Prime rotate resume hands off Claude in place without mutating AIM target 
   assert.doesNotMatch(JSON.stringify(launches), /ACCESS_TWO|REFRESH_TWO/);
 });
 
+test("Prime rotate resume manually hands off xAI in place without automatic advance", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, "prime-agent");
+  const state = fixtureState();
+  state.accounts.grok0 = {
+    provider: "xai",
+    expect: { email: "grok0@example.com" },
+    reauth: {},
+    pool: { enabled: false },
+  };
+  state.accounts.grok1 = {
+    provider: "xai",
+    expect: { email: "grok1@example.com" },
+    reauth: {},
+    pool: { enabled: true },
+  };
+  state.accounts.grok2 = {
+    provider: "xai",
+    expect: { email: "grok2@example.com" },
+    reauth: {},
+    pool: { enabled: true },
+  };
+  state.credentials.xai = {
+    grok0: {
+      access: "GROK_ACCESS_DISABLED",
+      refresh: "GROK_REFRESH_DISABLED",
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      emailAddress: "grok0@example.com",
+    },
+    grok1: {
+      access: "GROK_ACCESS_ONE",
+      refresh: "GROK_REFRESH_ONE",
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      emailAddress: "grok1@example.com",
+    },
+    grok2: {
+      access: "GROK_ACCESS_TWO",
+      refresh: "GROK_REFRESH_TWO",
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      emailAddress: "grok2@example.com",
+    },
+  };
+  writeJson(statePath, state);
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  const sessionId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const sessionPath = writePrimeSession(agentDir, {
+    id: sessionId,
+    provider: "xai",
+    model: "grok-4.6",
+    binding: "grok1",
+    identityFingerprint: fixtureIdentityFingerprint(state, "xai", "grok1"),
+  });
+  const localStatePath = path.join(home, ".aimgr", "local-state.json");
+  const localStateBefore = fs.readFileSync(localStatePath, "utf8");
+  const sessionBefore = fs.readFileSync(sessionPath, "utf8");
+  const launches = [];
+
+  const output = await runCli(["prime", "resume", sessionId, "--rotate", "--home", home], {
+    cwd: "/tmp/prime-project",
+    env: { PRIME_AGENT_CODING_AGENT_DIR: agentDir },
+    connectRedisStoreImpl: redis.connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => {
+      throw new Error("xAI manual handoff must not enter automatic Codex selection");
+    },
+    resolvePrimeLauncherImpl: () => "/tmp/prime-agent.sh",
+    launchPrimeAgentImpl: (options) => {
+      launches.push(options);
+      return { status: 0 };
+    },
+  });
+
+  assert.match(output, /xai · grok2 · live handoff complete/);
+  assert.equal(launches.length, 2);
+  assert.deepEqual(launches[0].args, [
+    "--dist",
+    "__aim-handoff-credential",
+    sessionId,
+    "xai",
+    "grok-4.6",
+    "grok1",
+    fixtureIdentityFingerprint(state, "xai", "grok1"),
+    "grok2",
+    fixtureIdentityFingerprint(state, "xai", "grok2"),
+    "--json",
+  ]);
+  assert.deepEqual(launches[1].args, ["--dist", "--resume", sessionId]);
+  assert.equal(fs.readFileSync(localStatePath, "utf8"), localStateBefore);
+  assert.equal(fs.readFileSync(sessionPath, "utf8"), sessionBefore);
+  assert.doesNotMatch(JSON.stringify(launches), /GROK_ACCESS|GROK_REFRESH/);
+});
+
 test("Prime rotate resume refuses a historical unbound Claude session without mutation", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
