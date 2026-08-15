@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
-import { expandHomeShorthandPath, resolveManagedPrimeAgentDir } from "../../io/paths.js";
+import { resolveManagedPrimeAgentDir } from "../../io/paths.js";
+import { readPrimeSessionProfile } from "../../targets/prime-sessions.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import {
@@ -472,130 +473,6 @@ function runPrimeLauncher(context, args, { ensureSessionIdentity = true, stdio =
   return true;
 }
 
-function resolvePrimeSessionPath({ selector, homeDir, env = {}, cwd = process.cwd() }) {
-  const looksLikePath = selector.includes("/") || selector.includes("\\") || selector.endsWith(".jsonl");
-  if (looksLikePath) {
-    const candidate = path.resolve(cwd, expandHomeShorthandPath(selector, { homeDir }));
-    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
-      throw new Error(`Prime session file does not exist: ${candidate}`);
-    }
-    return candidate;
-  }
-
-  const sessionDirOverride = String(
-    env.PRIME_AGENT_SESSION_DIR ?? env.PRIME_AGENT_CODING_AGENT_SESSION_DIR ?? "",
-  ).trim();
-  const sessionDir = sessionDirOverride
-    ? path.resolve(expandHomeShorthandPath(sessionDirOverride, { homeDir }))
-    : path.join(resolveManagedPrimeAgentDir({ homeDir, env }), "sessions");
-  const exactPath = path.join(sessionDir, `${selector}.jsonl`);
-  if (fs.existsSync(exactPath) && fs.statSync(exactPath).isFile()) return exactPath;
-
-  let names;
-  try {
-    names = fs.readdirSync(sessionDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
-      .map((entry) => entry.name);
-  } catch {
-    throw new Error(`Prime session directory is unavailable: ${sessionDir}`);
-  }
-  const normalizedSelector = selector.replaceAll("-", "").toLowerCase();
-  const hexSelector = normalizedSelector && /^[0-9a-f]+$/.test(normalizedSelector);
-  const matches = names.filter((name) => {
-    const id = name.slice(0, -".jsonl".length);
-    const normalizedId = id.replaceAll("-", "").toLowerCase();
-    return hexSelector && /^[0-9a-f]+$/.test(normalizedId)
-      ? normalizedId.startsWith(normalizedSelector) || normalizedId.endsWith(normalizedSelector)
-      : id.startsWith(selector);
-  });
-  if (matches.length === 1) return path.join(sessionDir, matches[0]);
-  if (matches.length > 1) throw new Error(`Ambiguous Prime session selector: ${selector}`);
-  throw new Error(`No Prime session found matching: ${selector}`);
-}
-
-function readPrimeResumeProfile({ selector, homeDir, env, cwd }) {
-  const sessionPath = resolvePrimeSessionPath({ selector, homeDir, env, cwd });
-  const entries = [];
-  for (const line of fs.readFileSync(sessionPath, "utf8").split(/\r?\n/)) {
-    if (!line) continue;
-    try {
-      entries.push(JSON.parse(line));
-    } catch {
-      // A concurrently appended partial line cannot become the active leaf.
-    }
-  }
-  const sessionId = entries.find((candidate) => (
-    candidate?.type === "session" && typeof candidate.id === "string"
-  ))?.id;
-  if (!sessionId) throw new Error(`Prime session has no session ID: ${sessionPath}`);
-  const byId = new Map(entries
-    .filter((entry) => entry?.type !== "session" && typeof entry?.id === "string")
-    .map((entry) => [entry.id, entry]));
-  const activeBranch = [];
-  const seenEntryIds = new Set();
-  let entry = [...entries].reverse().find((candidate) => (
-    candidate?.type !== "session" && typeof candidate?.id === "string"
-  ));
-  while (entry) {
-    if (seenEntryIds.has(entry.id)) {
-      throw new Error(`Prime session has a cyclic active branch: ${sessionPath}`);
-    }
-    seenEntryIds.add(entry.id);
-    activeBranch.push(entry);
-    entry = typeof entry.parentId === "string" ? byId.get(entry.parentId) : null;
-  }
-  activeBranch.reverse();
-
-  let lastModel = null;
-  const bindings = new Map();
-  for (const entry of activeBranch) {
-    if (
-      entry?.type === "model_change"
-      && typeof entry.provider === "string"
-      && typeof entry.modelId === "string"
-    ) {
-      lastModel = { provider: entry.provider, model: entry.modelId };
-    }
-    if (
-      entry?.type === "message"
-      && entry.message?.role === "assistant"
-      && typeof entry.message.provider === "string"
-      && typeof entry.message.model === "string"
-    ) {
-      lastModel = { provider: entry.message.provider, model: entry.message.model };
-    }
-    const credentialBinding = entry?.type === "credential_binding"
-      ? entry
-      : entry?.type === "custom" && entry.customType === "aimgr_credential_binding_v1"
-        ? entry.data
-        : null;
-    if (
-      credentialBinding?.source === "aimgr"
-      && typeof credentialBinding.provider === "string"
-      && typeof credentialBinding.binding === "string"
-    ) {
-      bindings.set(credentialBinding.provider, {
-        binding: credentialBinding.binding,
-        identityFingerprint: typeof credentialBinding.identityFingerprint === "string"
-          ? credentialBinding.identityFingerprint
-          : null,
-      });
-    }
-  }
-  if (!lastModel) throw new Error(`Prime session has no model metadata: ${sessionPath}`);
-  if (!HARNESS_MANAGED_PROVIDERS.includes(lastModel.provider)) {
-    throw new Error(`AIM cannot rotate unsupported Prime provider=${lastModel.provider}.`);
-  }
-  const binding = bindings.get(lastModel.provider);
-  if (!binding) {
-    throw new Error(`Prime session has no AIM binding for provider=${lastModel.provider}.`);
-  }
-  if (!binding.binding || !binding.identityFingerprint) {
-    throw new Error(`Prime session has an incomplete AIM binding for provider=${lastModel.provider}.`);
-  }
-  return { ...lastModel, ...binding, sessionId, sessionPath };
-}
-
 function claudePresetForModel(model) {
   const normalized = String(model).toLowerCase();
   if (normalized.includes("fable") || normalized.includes("sonnet")) return "fable";
@@ -666,7 +543,7 @@ async function handleResume(context, targetId) {
     return;
   }
 
-  const profile = readPrimeResumeProfile({
+  const profile = readPrimeSessionProfile({
     selector,
     homeDir: context.homeDir,
     env: context.env,

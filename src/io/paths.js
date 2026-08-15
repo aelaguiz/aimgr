@@ -71,6 +71,30 @@ export function resolveAimgrLocalStatePath({ homeDir }) {
   return path.join(resolveAimgrStateDir({ homeDir }), "local-state.json");
 }
 
+export function resolveAimgrRoutinesDir({ homeDir }) {
+  return path.join(resolveAimgrStateDir({ homeDir }), "routines");
+}
+
+export function resolveAimgrRoutinePromptsDir({ homeDir }) {
+  return path.join(resolveAimgrRoutinesDir({ homeDir }), "prompts");
+}
+
+export function resolveAimgrRoutineRunsDir({ homeDir }) {
+  return path.join(resolveAimgrStateDir({ homeDir }), "routine-runs");
+}
+
+export function resolveAimgrRoutineLocksDir({ homeDir }) {
+  return path.join(resolveAimgrStateDir({ homeDir }), "routine-locks");
+}
+
+export function resolveAimgrRoutineBootstrapLockPath({ homeDir }) {
+  return path.join(resolveAimgrStateDir({ homeDir }), "routine-bootstrap.lock");
+}
+
+export function resolveAimgrRoutineLogsDir({ homeDir }) {
+  return path.join(resolveAimgrStateDir({ homeDir }), "logs");
+}
+
 export function resolveAimgrClaudeLabelHomeDir({ homeDir, label }) {
   const safeLabel = String(label ?? "").trim().replace(/[^A-Za-z0-9_.-]/g, "_");
   if (!safeLabel) {

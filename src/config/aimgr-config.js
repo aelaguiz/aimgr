@@ -15,6 +15,30 @@ export function normalizeRedisKeyPrefix(value = AIMGR_REDIS_DEFAULT_KEY_PREFIX) 
   return raw.endsWith(":") ? raw : `${raw}:`;
 }
 
+function normalizeRoutineStorageMap(value) {
+  if (!isObject(value)) return {};
+  const normalized = {};
+  for (const [id, definition] of Object.entries(value)) {
+    if (!isObject(definition)) {
+      normalized[id] = definition;
+      continue;
+    }
+    normalized[id] = {
+      calendar: Array.isArray(definition.calendar)
+        ? definition.calendar.map((entry) => (isObject(entry) ? { ...entry } : entry))
+        : definition.calendar,
+      cwd: definition.cwd,
+      promptFile: definition.promptFile,
+      provider: definition.provider,
+      model: definition.model,
+      thinking: definition.thinking,
+      herdrSession: definition.herdrSession,
+      spaceTitleFormat: definition.spaceTitleFormat,
+    };
+  }
+  return normalized;
+}
+
 export function normalizeAimgrConfig(raw = {}) {
   const source = isObject(raw) ? raw : {};
   const redis = isObject(source.redis) ? source.redis : {};
@@ -36,6 +60,7 @@ export function normalizeAimgrConfig(raw = {}) {
       primaryHost,
       transport,
     },
+    routines: normalizeRoutineStorageMap(source.routines),
   };
 }
 

@@ -16,6 +16,7 @@ const COMMAND_LOADERS = new Map([
   ["claude", async () => (await import("./commands/claude.js")).handleClaude],
   ["pi", async () => (await import("./commands/pi.js")).handlePi],
   ["prime", async () => (await import("./commands/prime.js")).handlePrime],
+  ["routine", async () => (await import("../routines/run.js")).handleRoutineCommand],
   ["credential-helper", async () => (await import("./commands/credential-helper.js")).handleCredentialHelper],
   ["sakana", async () => (await import("./commands/sakana.js")).handleSakana],
   ["browser", async () => (await import("./commands/browser.js")).handleBrowser],

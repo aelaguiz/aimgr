@@ -456,7 +456,7 @@ test("Redis generic login enrolls an unknown Anthropic label in one flow", async
   assert.equal(result.label, "fresh");
   assert.equal(result.provider, "anthropic");
   assert.deepEqual(prompts.map((prompt) => String(prompt)), [
-    'Provider for "fresh" (1-2 or id) [1]:',
+    'Provider for "fresh" (1-3 or id) [1]:',
     'Expected Claude email for "fresh":',
   ]);
   const snapshot = await readSnapshot(store);

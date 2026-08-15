@@ -11,6 +11,7 @@ import {
 } from "../../src/config/aimgr-config.js";
 import { AIMGR_REDIS_DEFAULT_KEY_PREFIX } from "../../src/core/constants.js";
 import { resolveAimgrConfigPath } from "../../src/io/paths.js";
+import { readRoutineDefinition } from "../../src/routines/config.js";
 import { mkTempHome } from "../helpers/files.js";
 
 test("AIM config defaults to an unattached Redis config", () => {
@@ -77,4 +78,37 @@ test("AIM config parse failures point at the config path", () => {
   fs.writeFileSync(configPath, "redis: [broken\n", "utf8");
 
   assert.throws(() => readAimgrConfig({ homeDir: home }), new RegExp(configPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("unrelated config writes preserve routine records", () => {
+  const home = mkTempHome();
+  const routine = {
+    calendar: [{ hour: 6, minute: 0 }],
+    cwd: "/tmp/work",
+    promptFile: "/tmp/prompt.md",
+    provider: "anthropic",
+    model: "claude-fable-5",
+    thinking: "xhigh",
+    herdrSession: "growth",
+    spaceTitleFormat: "morning report · {scheduled_local}",
+  };
+  writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://one" }, routines: { morning: routine } } });
+  const current = readAimgrConfig({ homeDir: home }).config;
+  writeAimgrConfig({ homeDir: home, config: { ...current, redis: { ...current.redis, url: "redis://two" } } });
+
+  const reread = readAimgrConfig({ homeDir: home }).config;
+  assert.deepEqual(reread.routines, { morning: routine });
+  assert.equal(reread.redis.url, "redis://two");
+});
+
+
+test("malformed routine records are preserved for strict rejection", () => {
+  const home = mkTempHome();
+  writeAimgrConfig({ homeDir: home, config: { redis: {}, routines: { broken: "not-an-object" } } });
+
+  assert.equal(readAimgrConfig({ homeDir: home }).config.routines.broken, "not-an-object");
+  assert.throws(
+    () => readRoutineDefinition({ homeDir: home, id: "broken" }),
+    /Routine broken must be an object/,
+  );
 });

@@ -580,7 +580,7 @@ test("post-run sync captures a newer same-identity file rotation", async () => {
   const state = {
     schemaVersion: "0.2",
     accounts: { alpha: { provider: "anthropic", reauth: { mode: "native-claude" } } },
-    credentials: { "openai-codex": {}, anthropic: { alpha: stored } },
+    credentials: { "openai-codex": {}, anthropic: { alpha: stored }, xai: {} },
     targets: {
       openclaw: { assignments: {}, exclusions: {} },
       codexCli: {},

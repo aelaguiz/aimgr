@@ -79,6 +79,7 @@ export function parseArgs(argv) {
     intervalSeconds: undefined,
     rotateBelow5hRemainingPct: undefined,
     primeResumeRotate: false,
+    routineManual: false,
     pool: undefined,
     claudeAutoSelect: expandedClaudeRun.autoSelect,
     claudeAutoSelectPreset: expandedClaudeRun.autoSelectPreset,
@@ -228,6 +229,13 @@ export function parseArgs(argv) {
     }
     if (arg === "--manual-callback-stdio") {
       opts.manualCallbackStdio = true;
+      continue;
+    }
+    if (arg === "--manual") {
+      if (argv[0] !== "routine" || argv[1] !== "run") {
+        throw new Error("Unknown option: --manual");
+      }
+      opts.routineManual = true;
       continue;
     }
     if (arg === "--json") {

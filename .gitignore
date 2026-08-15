@@ -3,3 +3,13 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .DS_Store
+
+# Machine-local agent/research scratch artifacts.
+.antigravitycli/
+.firecrawl/
+.tmp/
+
+# Private local evidence; this repository is public.
+docs/PRIME_AGENT_CUTOVER_PREFLIGHT_MANIFEST_2026-08-12.json
+docs/PRIME_AGENT_HERDR_UPGRADE_RESTORATION_MANIFEST_2026-08-11.json
+docs/aelaguiz/I_HAVE_ADHD_AUTOMATIC_COMMUNICATION_ROOT_CAUSE_2026-08-13.md

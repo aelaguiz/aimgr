@@ -58,6 +58,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
 
     "  aim prime use [--codex <auto|label|off>] [--claude <fable|opus|label|off>] [--grok <auto|label|off>]",
     "  aim prime status | aim prime uninstall [--provider <openai-codex|anthropic|xai>]",
+    "  aim routine run <id> [--manual] [--json]  # run one configured local scheduled routine occurrence",
     "  aim credential-helper # machine-only bounded JSON stdin/stdout protocol; never invoke interactively",
     "  aim sakana add <account-name> [--key <api-key>] [--tier standard|pro|max|payg] [--subscription <name>] [--notes <text>]",
     "  aim sakana use <account-name>  # write selected key to ~/.codex/.env as SAKANA_API_KEY",
