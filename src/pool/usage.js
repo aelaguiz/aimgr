@@ -102,6 +102,10 @@ export async function fetchCodexUsageSnapshot({
 
   const data = await res.json();
   const rateLimitMetadata = extractCodexRateLimitMetadata(data);
+  const resetCreditsAvailableRaw = data?.rate_limit_reset_credits?.available_count;
+  const resetCreditsAvailable = Number.isInteger(resetCreditsAvailableRaw) && resetCreditsAvailableRaw >= 0
+    ? resetCreditsAvailableRaw
+    : null;
   const windows = [];
 
   const primary = data?.rate_limit?.primary_window;
@@ -137,6 +141,7 @@ export async function fetchCodexUsageSnapshot({
     ok: true,
     windows,
     plan,
+    ...(resetCreditsAvailable !== null ? { resetCreditsAvailable } : {}),
     ...rateLimitMetadata,
   };
 }

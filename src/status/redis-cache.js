@@ -74,7 +74,15 @@ function normalizeCachedUsage(provider, value) {
         };
       }).filter(Boolean)
     : [];
-  return { provider, ok: windows.length > 0, windows };
+  const resetCreditsAvailable = value?.resetCreditsAvailable;
+  return {
+    provider,
+    ok: windows.length > 0,
+    windows,
+    ...(Number.isInteger(resetCreditsAvailable) && resetCreditsAvailable >= 0
+      ? { resetCreditsAvailable }
+      : {}),
+  };
 }
 
 function normalizeProviderEntries(provider, value) {

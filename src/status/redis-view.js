@@ -75,6 +75,7 @@ function projectUsage(value) {
     : [];
   const ageMs = Number(value?.ageMs);
   const observedAtMs = Number(value?.observedAtMs ?? value?.usageObservedAtMs);
+  const resetCreditsAvailable = value?.resetCreditsAvailable;
   return {
     provider: safeToken(value?.provider) ?? null,
     ok: value?.ok === true && windows.length > 0,
@@ -82,6 +83,9 @@ function projectUsage(value) {
     windows,
     source: safeToken(value?.source) ?? "unavailable",
     stale: value?.stale === true,
+    ...(Number.isInteger(resetCreditsAvailable) && resetCreditsAvailable >= 0
+      ? { resetCreditsAvailable }
+      : {}),
     ...(Number.isFinite(ageMs) && ageMs >= 0 ? { ageMs } : {}),
     ...(Number.isFinite(observedAtMs) && observedAtMs > 0 ? { observedAtMs } : {}),
   };

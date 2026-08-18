@@ -55,6 +55,7 @@ test("plain status shows coordination provenance and canonical account facts", (
       usage: {
         ok: true,
         source: "cache",
+        resetCreditsAvailable: 3,
         windows: [
           { usedPercent: 12, resetAt: nowMs + 2 * 3_600_000 },
           { usedPercent: 34, resetAt: nowMs + 5 * 86_400_000 },
@@ -90,7 +91,8 @@ test("plain status shows coordination provenance and canonical account facts", (
   const text = renderStatusText(view, { claudeUsageStatus });
 
   assert.match(text, /^COORDINATION redis=live\n\nCODEX ACCOUNTS \(1\)/);
-  assert.match(text, /boss\s+ready\s+free\s+--\s+8d\s+12%\s+2\.0h\s+34%\s+5\.0d\s+openai-codex\s+cache/);
+  assert.match(text, /resets\s+provider/);
+  assert.match(text, /boss\s+ready\s+free\s+--\s+8d\s+12%\s+2\.0h\s+34%\s+5\.0d\s+3\s+openai-codex\s+cache/);
   assert.match(text, /CLAUDE: 0 ready · 1 in use · 0 needs you · 0 unknown/);
   assert.match(text, /pro7\s+IN USE\s+23%\s+3\.0h\s+45%\s+6\.0d\s+67%\s+6\.0d\s+--\s+--\s+2m\s+session active/);
   assert.doesNotMatch(text, /usage_readable|unpublished/);

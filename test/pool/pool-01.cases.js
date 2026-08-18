@@ -174,6 +174,7 @@ test("fetchCodexUsageSnapshot preserves hard WHAM rate-limit fields", async () =
         allowed: false,
         limit_reached: true,
         rate_limit_reached_type: "primary",
+        rate_limit_reset_credits: { available_count: 3 },
         rate_limit: {
           primary_window: {
             used_percent: 100,
@@ -192,6 +193,7 @@ test("fetchCodexUsageSnapshot preserves hard WHAM rate-limit fields", async () =
   assert.equal(snapshot.allowed, false);
   assert.equal(snapshot.limitReached, true);
   assert.equal(snapshot.rateLimitReachedType, "primary");
+  assert.equal(snapshot.resetCreditsAvailable, 3);
   assert.equal(isUsageSnapshotHardRateLimited(snapshot), true);
 });
 

@@ -151,7 +151,12 @@ test("Codex snapshot is cache-first, probes stale labels only, and binds cache t
     nowMs,
     probeUsageSnapshotsByProviderImpl: async () => ({
       "openai-codex": {
-        boss: { provider: "openai-codex", ok: true, windows: [{ label: "5h", usedPercent: 12 }] },
+        boss: {
+          provider: "openai-codex",
+          ok: true,
+          resetCreditsAvailable: 4,
+          windows: [{ label: "5h", usedPercent: 12 }],
+        },
       },
       anthropic: {},
     }),
@@ -171,6 +176,7 @@ test("Codex snapshot is cache-first, probes stale labels only, and binds cache t
   assert.equal(cached["openai-codex"].boss.source, "cache");
   assert.equal(cached["openai-codex"].boss.stale, false);
   assert.equal(cached["openai-codex"].boss.ageMs, 90_000);
+  assert.equal(cached["openai-codex"].boss.resetCreditsAvailable, 4);
   assert.equal(freshProbeCalls, 0);
 
   const staleFallback = await collectCodexUsageSnapshots({

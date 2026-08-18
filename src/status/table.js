@@ -51,6 +51,11 @@ export function formatStatusAccountUsedCell(usage, index) {
   return `${Math.round(usedPercent)}%`;
 }
 
+export function formatStatusAccountResetCreditsCell(usage) {
+  const count = usage?.resetCreditsAvailable;
+  return Number.isInteger(count) && count >= 0 ? String(count) : "--";
+}
+
 export function formatStatusDeltaMsCell(deltaMs) {
   if (!Number.isFinite(deltaMs)) return "--";
   const deltaHours = deltaMs / 3600000;
@@ -115,6 +120,7 @@ export function buildStatusAverageAccountTableRow(accounts, now = Date.now()) {
     formatStatusDeltaMsCell(averageFiveHourResetDeltaMs),
     Number.isFinite(averageWeekUsedPct) ? `${Math.round(averageWeekUsedPct)}%` : "--",
     formatStatusDeltaMsCell(averageWeekResetDeltaMs),
+    "--",
     "all",
     "--",
     "-",

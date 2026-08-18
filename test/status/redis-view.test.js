@@ -130,7 +130,16 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
     homeDir: home,
     nowMs: observedAtMs,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
-    probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }),
+    probeUsageSnapshotsByProviderImpl: async () => ({
+      [OPENAI_CODEX_PROVIDER]: {
+        boss: {
+          provider: OPENAI_CODEX_PROVIDER,
+          ok: true,
+          resetCreditsAvailable: 4,
+          windows: [{ label: "5h", usedPercent: 10 }],
+        },
+      },
+    }),
   });
   const cached = await buildRedisStatusView({
     homeDir: home,
@@ -144,6 +153,7 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
   assert.equal(cached.used, true);
   assert.equal(cached.view.redis.status, "cache");
   assert.equal(cached.view.redis.error, "unavailable");
+  assert.equal(cached.view.accounts[0].usage.resetCreditsAvailable, 4);
   assert.equal(cached.view.warnings.at(-1).kind, "redis_status_cache_used");
 
   const oldCached = await buildRedisStatusView({
