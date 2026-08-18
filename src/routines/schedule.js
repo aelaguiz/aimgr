@@ -38,15 +38,21 @@ export function buildRoutineFireKey(id, date) {
 }
 
 function candidatesForDate(routine, now, dayOffset) {
-  return routine.calendar.map(({ hour, minute }) => new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate() + dayOffset,
-    hour,
-    minute,
-    0,
-    0,
-  ));
+  return routine.calendar
+    .map((entry) => ({
+      entry,
+      date: new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + dayOffset,
+        entry.hour,
+        entry.minute,
+        0,
+        0,
+      ),
+    }))
+    .filter(({ entry, date }) => entry.weekday === undefined || date.getDay() === entry.weekday)
+    .map(({ date }) => date);
 }
 
 export function deriveRoutineOccurrence(routine, { now = new Date(), manual = false } = {}) {

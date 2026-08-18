@@ -28,7 +28,14 @@ function validateCalendar(value, id) {
     if (!Number.isInteger(minute) || minute < 0 || minute > 59) {
       throw new Error(`Routine ${id} calendar[${index}].minute must be an integer from 0 to 59.`);
     }
-    return { hour, minute };
+    if (entry.weekday === undefined || entry.weekday === null) {
+      return { hour, minute };
+    }
+    const weekday = Number(entry.weekday);
+    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+      throw new Error(`Routine ${id} calendar[${index}].weekday must be an integer from 0 (Sunday) to 6 (Saturday).`);
+    }
+    return { hour, minute, weekday };
   });
 }
 

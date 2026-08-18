@@ -15,8 +15,13 @@ function stringNode(value, indent = "    ") {
 }
 
 function calendarDict(entry, indent) {
+  const weekdayLines = entry.weekday === undefined ? [] : [
+    `${indent}  <key>Weekday</key>`,
+    `${indent}  <integer>${entry.weekday}</integer>`,
+  ];
   return [
     `${indent}<dict>`,
+    ...weekdayLines,
     `${indent}  <key>Hour</key>`,
     `${indent}  <integer>${entry.hour}</integer>`,
     `${indent}  <key>Minute</key>`,
