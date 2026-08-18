@@ -474,11 +474,54 @@ test("Claude usage status renders one fleet average across every readable window
     ],
   });
 
+  // Opus: only beta reports the window, at 50% with no pending reset. That is a
+  // zero wait rather than a missing measurement, so Op_in averages to 0h.
   assert.match(
     rendered,
-    /average\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+--\s+60%\s+6\.0d\s+--\s+--/,
+    /average\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+0h\s+60%\s+6\.0d\s+--\s+--/,
   );
   assert.equal(rendered.match(/^average\s/gm)?.length, 1);
+});
+
+test("fleet reset averages count free accounts as zero wait instead of dropping them", () => {
+  const buildAccount = (label, windows) => ({
+    label,
+    subscriptionType: "max",
+    rateLimitTier: "max_20x",
+    authState: "usage_readable",
+    credentialState: "credential_ready",
+    credentialReady: true,
+    locked: false,
+    source: "live",
+    ageMs: 0,
+    usage: { ok: true, windows },
+  });
+
+  const rendered = renderClaudeRedisAccountUsageStatus({
+    checkedAtMs: NOW_MS,
+    accounts: [
+      // Mid-session: a real two-hour wait.
+      buildAccount("busy", [
+        { label: "5h", kind: "session", usedPercent: 40, resetAt: NOW_MS + 2 * 60 * 60_000 },
+        { label: "Fable", kind: "weekly_scoped", usedPercent: 100, resetAt: NOW_MS + 4 * 24 * 60 * 60_000 },
+      ]),
+      // Idle: usable right now, so it contributes a zero wait, not nothing.
+      buildAccount("idle", [
+        { label: "5h", kind: "session", usedPercent: 0 },
+        { label: "Fable", kind: "weekly_scoped", usedPercent: 0 },
+      ]),
+      // Exhausted with no reset timestamp: genuinely unknown, stays excluded.
+      buildAccount("blocked", [
+        { label: "5h", kind: "session", usedPercent: 100 },
+        { label: "Fable", kind: "weekly_scoped", usedPercent: 100, resetAt: NOW_MS + 4 * 24 * 60 * 60_000 },
+      ]),
+    ],
+  });
+
+  // 5h_in averages busy (2h) and idle (0h) over two accounts, not busy alone.
+  // Fable at 100% with no reset on "blocked" is excluded, so Fb_in averages
+  // busy (4d), idle (0d), and blocked (4d) -> 2.7d.
+  assert.match(rendered, /average\s+--\s+47%\s+1\.0h\s+--\s+--\s+67%\s+2\.7d\s+--\s+--/);
 });
 
 test("failed refresh keeps one-hour stale usage and caches provider backoff without re-aging it", async () => {

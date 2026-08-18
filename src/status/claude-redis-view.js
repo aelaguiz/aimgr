@@ -1119,7 +1119,14 @@ function usageColumns(accounts, nowMs) {
     }));
     const resetDeltaMs = averageStatusNumbers(matched.map((window) => {
       const resetAt = Number(window?.resetAt);
-      return Number.isFinite(resetAt) ? resetAt - nowMs : null;
+      if (Number.isFinite(resetAt)) return resetAt - nowMs;
+      // A readable window with headroom and no pending reset is a zero wait, not a
+      // missing measurement. Dropping it let idle accounts inflate the fleet's
+      // reported wait: the average described only the accounts mid-window, so the
+      // more free capacity the fleet had, the longer the wait it advertised.
+      // A window at 100% with no reset stays excluded - that one is genuinely unknown.
+      const usedPercent = Number(window?.usedPercent);
+      return Number.isFinite(usedPercent) && usedPercent < 100 ? 0 : null;
     }));
     return [
       Number.isFinite(usedPercent) ? `${Math.round(usedPercent)}%` : "--",
