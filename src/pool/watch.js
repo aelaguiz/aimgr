@@ -1,6 +1,7 @@
 import { DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { resolveCodexWatchThresholdPct } from "../core/watch-options.js";
 import { activateCodexPoolSelection, buildCodexWatchNonfatalWarnings, buildCodexWatchTargetBlockers, getPrimaryRemainingPctFromUsageSnapshot, readCodexCliTargetStatus } from "../targets/codex-cli.js";
+import { isUsageSnapshotHardRateLimited } from "./account-status.js";
 import { buildHermesAssignmentsByHome, rebalanceHermesPool } from "./hermes-rebalance.js";
 import { buildHermesHomeBlockers, buildWarningsFromHermesHomeStatus, discoverHermesHomes, readHermesHomeStatus } from "./token-usage.js";
 import { collectCodexPoolStatus, getCodexPoolLabels } from "./ranking.js";
@@ -291,12 +292,18 @@ export async function watchHermesPoolSelectionOnce(
     const activeUsage = usageByLabel[currentLabel] ?? null;
     const primaryRemainingPctBefore = getPrimaryRemainingPctFromUsageSnapshot(activeUsage);
     if (primaryRemainingPctBefore === null) {
-      usageBlockers.push(buildUsageUnavailableBlocker({
-        reason: "hermes_home_usage_unavailable",
-        homeId: home.homeId,
-        label: currentLabel,
-        usage: activeUsage,
-      }));
+      const canRotateAwayFromHardFailure =
+        eligibleLabels.size > 0
+        && !eligibleLabels.has(currentLabel)
+        && (activeUsage?.tokenExpired === true || isUsageSnapshotHardRateLimited(activeUsage));
+      if (!canRotateAwayFromHardFailure) {
+        usageBlockers.push(buildUsageUnavailableBlocker({
+          reason: "hermes_home_usage_unavailable",
+          homeId: home.homeId,
+          label: currentLabel,
+          usage: activeUsage,
+        }));
+      }
       continue;
     }
     lowestPrimaryRemainingPctBefore =
@@ -379,7 +386,7 @@ export async function watchHermesPoolSelectionOnce(
       ...warnings,
       ...(Array.isArray(rebalanced.receipt?.warnings) ? rebalanced.receipt.warnings : []),
     ],
-    blockers: Array.isArray(rebalanced.receipt?.blockers) ? rebalanced.receipt.blockers : [],
+    blockers: Array.isArray(rebalanced.receipt?.blockers) ? [...rebalanced.receipt.blockers] : [],
   };
   fleet.lastWatchReceipt = receipt;
   return { status: rebalanced.status, receipt, wrote: Array.isArray(rebalanced.writes) && rebalanced.writes.some((entry) => entry?.wrote?.auth === true) };
