@@ -426,8 +426,7 @@ test("worker admits one prompt into an exact inherited-TTY Prime TUI and release
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
 
   assert.equal(runtime.primeArgvs.length, 2);
-  assert.equal(runtime.primeArgvs[0].includes("--dist"), false);
-  assert.equal(runtime.primeArgvs[1].includes("--dist"), false);
+  assert.equal(runtime.primeArgvs.some((args) => args.includes("--dist")), false);
   assert.ok(runtime.primeArgvs[0].includes("--no-tools"));
   assert.ok(runtime.primeArgvs[0].includes("--print"));
   assert.equal(runtime.primeOptions[1].stdio, "inherit");

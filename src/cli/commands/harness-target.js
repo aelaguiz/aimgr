@@ -40,6 +40,7 @@ import {
 } from "../../targets/pi-cli.js";
 import { ensureHarnessSessionIdentityExtension } from "../../targets/harness-session-identity.js";
 import { createPrimeTargetAdapter } from "../../targets/prime-agent.js";
+import { preparePrimeInvocation, resolvePrimeLauncher } from "../../targets/prime-launcher.js";
 
 function adapterFor(targetId, options) {
   return targetId === "pi" ? createPiTargetAdapter(options) : createPrimeTargetAdapter(options);
@@ -413,31 +414,6 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
   }
 }
 
-function resolvePrimeLauncher({ env = process.env, fsImpl = fs } = {}) {
-  const configuredLauncher = String(env.PRIME_AGENT_LAUNCHER_PATH ?? "").trim();
-  if (configuredLauncher && !path.isAbsolute(configuredLauncher)) {
-    throw new Error("PRIME_AGENT_LAUNCHER_PATH must be absolute.");
-  }
-
-  const candidates = configuredLauncher
-    ? [configuredLauncher]
-    : String(env.PATH ?? "")
-      .split(path.delimiter)
-      .filter(Boolean)
-      .map((directory) => path.join(directory, "prime-agent"));
-  for (const launcher of candidates) {
-    try {
-      const resolved = fsImpl.realpathSync(launcher);
-      if (!fsImpl.statSync(resolved).isFile()) continue;
-      fsImpl.accessSync(resolved, fs.constants.X_OK);
-      return resolved;
-    } catch {
-      // Keep looking through PATH.
-    }
-  }
-  throw new Error("Prime Agent launcher is unavailable on PATH.");
-}
-
 function launchPrimeAgent({ command, args, cwd, env, stdio = "inherit", spawnImpl = spawnSync } = {}) {
   return spawnImpl(command, args, {
     cwd,
@@ -457,11 +433,13 @@ function runPrimeLauncher(context, args, { ensureSessionIdentity = true, stdio =
       agentDir: resolveManagedPrimeAgentDir({ homeDir: context.homeDir, env: context.env }),
     });
   }
-  const command = resolvePrimeLauncherImpl({ homeDir: context.homeDir, env: context.env });
+  const invocation = preparePrimeInvocation({
+    command: resolvePrimeLauncherImpl({ homeDir: context.homeDir, env: context.env }),
+    args,
+  });
   const cwd = context.cwd ?? process.cwd();
   const result = launchPrimeAgentImpl({
-    command,
-    args,
+    ...invocation,
     cwd,
     env: context.env,
     stdio,

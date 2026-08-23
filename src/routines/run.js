@@ -17,6 +17,7 @@ import {
   readPrimeSessionProfile,
   resolvePrimeSessionDir,
 } from "../targets/prime-sessions.js";
+import { preparePrimeInvocation, resolvePrimeLauncher } from "../targets/prime-launcher.js";
 import { readRoutineDefinition } from "./config.js";
 import { deriveRoutineOccurrence } from "./schedule.js";
 
@@ -653,26 +654,6 @@ function readOwner(lockPath, token, fireKey) {
   return owner;
 }
 
-function resolvePrimeLauncher(env) {
-  const configured = String(env.PRIME_AGENT_LAUNCHER_PATH ?? "").trim();
-  if (configured) {
-    if (!path.isAbsolute(configured)) {
-      throw new Error("PRIME_AGENT_LAUNCHER_PATH must be absolute.");
-    }
-    return configured;
-  }
-  for (const directory of String(env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(directory, "prime-agent");
-    try {
-      const resolved = fs.realpathSync(candidate);
-      if (fs.statSync(resolved).isFile()) return resolved;
-    } catch {
-      // Continue to the next PATH directory.
-    }
-  }
-  throw new Error("Could not locate the local Prime Agent launcher on PATH.");
-}
-
 function privateTimeout(context, key, fallback) {
   const value = context.routineTimeouts?.[key];
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -815,7 +796,7 @@ export async function executeRoutineWorker(context) {
       outcome: "verifying_pin",
     });
 
-    const launcher = context.primeLauncher ?? resolvePrimeLauncher(context.env);
+    const launcher = context.primeLauncher ?? resolvePrimeLauncher({ env: context.env });
     // Print pins use Prime's process-owned frontend so they cannot replace a
     // separate busy interactive daemon. The resumed product process below is a
     // normal inherited-TTY interactive client.
@@ -825,24 +806,28 @@ export async function executeRoutineWorker(context) {
     };
     const sessionDir = resolvePrimeSessionDir({ homeDir: context.homeDir, env: primeEnv });
     fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
-    const pinResult = await runStreaming(launcher, [
-      "--provider",
-      routine.provider,
-      "--model",
-      routine.model,
-      "--thinking",
-      routine.thinking,
-      "--cwd",
-      routine.cwd,
-      "--session-dir",
-      sessionDir,
-      "--no-tools",
-      "--print",
-      "--mode",
-      "json",
-      "--",
-      PIN_PROMPT,
-    ], {
+    const pinInvocation = preparePrimeInvocation({
+      command: launcher,
+      args: [
+        "--provider",
+        routine.provider,
+        "--model",
+        routine.model,
+        "--thinking",
+        routine.thinking,
+        "--cwd",
+        routine.cwd,
+        "--session-dir",
+        sessionDir,
+        "--no-tools",
+        "--print",
+        "--mode",
+        "json",
+        "--",
+        PIN_PROMPT,
+      ],
+    });
+    const pinResult = await runStreaming(pinInvocation.command, pinInvocation.args, {
       cwd: routine.cwd,
       env: primeEnv,
       stdout: context.stdout,
@@ -915,16 +900,20 @@ export async function executeRoutineWorker(context) {
       },
       outcome: "starting_interactive_tui",
     });
-    tui = startInteractivePrime(launcher, [
-      "--cwd",
-      routine.cwd,
-      "--session-dir",
-      sessionDir,
-      "--resume",
-      profile.sessionPath,
-      "--",
-      effectivePrompt,
-    ], {
+    const interactiveInvocation = preparePrimeInvocation({
+      command: launcher,
+      args: [
+        "--cwd",
+        routine.cwd,
+        "--session-dir",
+        sessionDir,
+        "--resume",
+        profile.sessionPath,
+        "--",
+        effectivePrompt,
+      ],
+    });
+    tui = startInteractivePrime(interactiveInvocation.command, interactiveInvocation.args, {
       cwd: routine.cwd,
       env: primeEnv,
       spawnImpl: context.spawnImpl,
