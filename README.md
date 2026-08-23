@@ -195,9 +195,9 @@ This boundary prevents accidental persistent secret copies and competing
 refresh writers; it is not isolation from another process running as the same
 OS user, which can invoke the helper with the user's authority.
 
-The label-free Claude presets select only unlocked readable accounts. `fable`
-ranks by Fable/Sonnet usage and uses five-hour usage as its tie-break;
-`opus` ranks by the shared five-hour usage.
+The label-free Claude presets select only unlocked readable accounts. Both
+`fable` and `opus` rank eligible accounts only by shared five-hour usage;
+provider-blocked or exhausted accounts remain ineligible.
 
 Claude resume uses the session's recorded account by default. Add
 `--account <label>` to fork onto an exact account; combine it with

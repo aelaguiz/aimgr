@@ -108,7 +108,7 @@ test("Redis-backed pi use writes auth.json and preserves non-openai providers", 
     );
 });
 
-test("pi use prefers weekly pool headroom over the lowest short-window usage", async () => {
+test("pi use prefers the lowest five-hour usage regardless of weekly headroom", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const piAgentDir = path.join(home, ".pi-test", "agent");
@@ -209,7 +209,7 @@ test("pi use prefers weekly pool headroom over the lowest short-window usage", a
         const result = JSON.parse(await runCli(["pi", "use", "--home", home], { fetchImpl }));
         assert.equal(result.ok, true);
         assert.equal(result.receipt.status, "updated");
-        assert.equal(result.receipt.providers[0].binding, "pro2");
+        assert.equal(result.receipt.providers[0].binding, "qa");
 
         const updatedState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
         assert.equal(updatedState.targets.piCli.providers, undefined);

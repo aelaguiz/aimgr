@@ -252,23 +252,17 @@ export function pickLeastUsedCodexPoolLabel({ labels, usage, avoidLabel }) {
       const snapshot = usage?.[label] ?? null;
       if (snapshot?.ok !== true || isUsageSnapshotExhausted(snapshot)) return null;
       const capacity = buildLabelCapacityInfo(snapshot);
-      const windows = Array.isArray(snapshot?.windows) ? snapshot.windows : [];
       return {
         label,
         primaryUsedPct: capacity.primaryUsedPct,
-        tieBreakUsedPct: windows.length > 1 ? capacity.secondaryUsedPct : capacity.primaryUsedPct,
       };
     })
     .filter(Boolean)
-    .filter((candidate) => (
-      Number.isFinite(candidate.primaryUsedPct)
-      && Number.isFinite(candidate.tieBreakUsedPct)
-    ))
-    .sort((a, b) => {
-      if (a.primaryUsedPct !== b.primaryUsedPct) return a.primaryUsedPct - b.primaryUsedPct;
-      if (a.tieBreakUsedPct !== b.tieBreakUsedPct) return a.tieBreakUsedPct - b.tieBreakUsedPct;
-      return a.label.localeCompare(b.label);
-    });
+    .filter((candidate) => Number.isFinite(candidate.primaryUsedPct))
+    .sort((a, b) => (
+      a.primaryUsedPct - b.primaryUsedPct
+      || a.label.localeCompare(b.label)
+    ));
   const best = candidates[0] ?? null;
   if (!best) return null;
   return {
@@ -296,34 +290,20 @@ export function pickNextBestLocalCliPoolLabel({
     }));
   const selectableCandidates = candidates.filter((candidate) => {
     const primaryRemainingPct = Number(candidate.primaryRemainingPct);
-    const secondaryRemainingPct = Number(candidate.secondaryRemainingPct);
-    return (
-      Number.isFinite(primaryRemainingPct)
-      && Number.isFinite(secondaryRemainingPct)
-      && primaryRemainingPct > 5
-      && secondaryRemainingPct > 5
-    );
+    return Number.isFinite(primaryRemainingPct) && primaryRemainingPct > 5;
   });
   if (selectableCandidates.length === 0) return null;
   const primaryRemainingFloor = clampPercent(minPrimaryRemainingPct);
   const gatedCandidates = selectableCandidates.filter((candidate) => candidate.primaryRemainingPct >= primaryRemainingFloor);
   const selectionPool = gatedCandidates.length > 0 ? gatedCandidates : selectableCandidates;
 
-  selectionPool.sort((a, b) => {
-    if (a.secondaryUsedPct !== b.secondaryUsedPct) return a.secondaryUsedPct - b.secondaryUsedPct;
-    if (a.primaryUsedPct !== b.primaryUsedPct) return a.primaryUsedPct - b.primaryUsedPct;
-    if (a.secondaryRemainingPct !== b.secondaryRemainingPct) return b.secondaryRemainingPct - a.secondaryRemainingPct;
-    if (a.primaryRemainingPct !== b.primaryRemainingPct) return b.primaryRemainingPct - a.primaryRemainingPct;
-    if (a.assignedCount !== b.assignedCount) return a.assignedCount - b.assignedCount;
-    return a.label.localeCompare(b.label);
-  });
+  selectionPool.sort((a, b) => (
+    a.primaryUsedPct - b.primaryUsedPct
+    || a.label.localeCompare(b.label)
+  ));
 
   const best = selectionPool[0] ?? null;
   if (!best) return null;
-  best.reasons.push(
-    gatedCandidates.length > 0
-      ? "lowest_weekly_used_over_5h_gate"
-      : "lowest_weekly_used_after_5h_gate_relaxed",
-  );
+  best.reasons.push("lowest_5h_used");
   return best;
 }

@@ -133,17 +133,17 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     const result = JSON.parse(await runCli(["codex", "use", "--home", home], { fetchImpl }));
     assert.equal(result.ok, true);
     assert.equal(result.activated.status, "activated");
-    assert.equal(result.activated.receipt.label, "lessons");
+    assert.equal(result.activated.receipt.label, "coder2");
     assert.deepEqual(result.activated.receipt.reasons, ["lowest_5h_used"]);
 
     const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
-    assert.equal(auth.tokens.account_id, "acct_lessons");
+    assert.equal(auth.tokens.account_id, "acct_coder2");
 
     const status = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
-    const lessons = status.accounts.find((account) => account.label === "lessons");
-    assert.equal(lessons.operator.status, "ready");
-    assert.equal(lessons.credentials.source, "redis");
-    assert.equal(status.codexCli.activeLabel, "lessons");
+    const coder2 = status.accounts.find((account) => account.label === "coder2");
+    assert.equal(coder2.operator.status, "ready");
+    assert.equal(coder2.credentials.source, "redis");
+    assert.equal(status.codexCli.activeLabel, "coder2");
 });
 
 test("derivePoolAccountStatus requires a complete native Claude bundle for anthropic readiness", () => {

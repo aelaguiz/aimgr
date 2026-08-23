@@ -978,9 +978,8 @@ export async function handleClaude(context) {
         });
     if (!selected) {
       if (requestedSwitchPreset) {
-        const usage = forkPreset === "fable" ? "Fable" : "five-hour";
         throw new Error(
-          `No other unlocked Claude account with readable ${usage} usage is available for --switch-account ${forkPreset}.`,
+          `No other unlocked Claude account with readable five-hour usage is available for --switch-account ${forkPreset}.`,
         );
       }
       throw new Error(
@@ -1031,9 +1030,7 @@ export async function handleClaude(context) {
       });
       if (!selected) {
         throw new Error(
-          opts.claudeAutoSelectPreset === "fable"
-            ? "No unlocked Claude account with readable Fable and five-hour usage is available."
-            : "No unlocked Claude account with readable five-hour usage is available.",
+          "No unlocked Claude account with readable five-hour usage is available.",
         );
       }
       await handleRedisClaudeRun({

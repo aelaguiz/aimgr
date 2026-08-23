@@ -1027,11 +1027,7 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
     ))
     .map((account) => {
       const fiveHourWindow = findFiveHourWindow(account?.usage);
-      const rankingWindow = preset === "fable"
-        ? findWindow(account?.usage, ["Fable", "Sonnet"])
-        : fiveHourWindow;
-      const usedPercent = Number(rankingWindow?.usedPercent);
-      const fiveHourUsedPercent = Number(fiveHourWindow?.usedPercent);
+      const usedPercent = Number(fiveHourWindow?.usedPercent);
       let label;
       try {
         label = normalizeLabel(account?.label);
@@ -1041,16 +1037,12 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
       return Number.isFinite(usedPercent)
         && usedPercent >= 0
         && usedPercent < 100
-        && Number.isFinite(fiveHourUsedPercent)
-        && fiveHourUsedPercent >= 0
-        && fiveHourUsedPercent < 100
-        ? { label, usedPercent, fiveHourUsedPercent }
+        ? { label, usedPercent }
         : null;
     })
     .filter(Boolean)
     .sort((left, right) => (
       left.usedPercent - right.usedPercent
-      || left.fiveHourUsedPercent - right.fiveHourUsedPercent
       || left.label.localeCompare(right.label)
     ));
   const selected = candidates[0];

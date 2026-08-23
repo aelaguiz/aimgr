@@ -68,18 +68,18 @@ test("pickLeastUsedCodexPoolLabel chooses lowest 5h usage before weekly usage", 
   assert.deepEqual(picked.reasons, ["lowest_5h_used"]);
 });
 
-test("pickNextBestLocalCliPoolLabel picks the lowest weekly-used label over the 5h-free gate", () => {
+test("pickNextBestLocalCliPoolLabel picks the lowest five-hour usage regardless of weekly usage", () => {
   const ranked = rankPoolCandidates({
     labels: ["pro1", "pro2", "pro3"],
     currentLabel: "pro1",
     usage: {
       pro1: {
         ok: true,
-        windows: [{ kind: "primary", usedPercent: 12 }, { kind: "secondary", usedPercent: 75 }],
+        windows: [{ kind: "primary", usedPercent: 12 }, { kind: "secondary", usedPercent: 1 }],
       },
       pro2: {
         ok: true,
-        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 6 }],
+        windows: [{ kind: "primary", usedPercent: 0 }, { kind: "secondary", usedPercent: 90 }],
       },
       pro3: {
         ok: true,
@@ -92,10 +92,10 @@ test("pickNextBestLocalCliPoolLabel picks the lowest weekly-used label over the 
   const picked = pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked });
   assert.equal(picked.label, "pro2");
   assert.equal(picked.keptCurrent, false);
-  assert.deepEqual(picked.reasons, ["lowest_weekly_used_over_5h_gate"]);
+  assert.deepEqual(picked.reasons, ["lowest_5h_used"]);
 });
 
-test("pickNextBestLocalCliPoolLabel relaxes the 5h gate when every account is hot", () => {
+test("pickNextBestLocalCliPoolLabel still picks the lowest five-hour usage when every account is hot", () => {
   const ranked = rankPoolCandidates({
     labels: ["boss", "cfo", "qa"],
     usage: {
@@ -116,8 +116,8 @@ test("pickNextBestLocalCliPoolLabel relaxes the 5h gate when every account is ho
   });
 
   const picked = pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked });
-  assert.equal(picked.label, "cfo");
-  assert.deepEqual(picked.reasons, ["lowest_weekly_used_after_5h_gate_relaxed"]);
+  assert.equal(picked.label, "boss");
+  assert.deepEqual(picked.reasons, ["lowest_5h_used"]);
 });
 
 test("pickNextBestLocalCliPoolLabel refuses all-unusable candidates instead of relaxing blindly", () => {

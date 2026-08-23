@@ -1052,7 +1052,7 @@ test("managed Claude retries transient lease loss without pausing but aborts for
   }
 });
 
-test("automatic Fable run skips a locked account and launches the lowest Fable usage", async () => {
+test("automatic Fable run skips a locked account and launches the lowest five-hour usage", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -1094,10 +1094,10 @@ test("automatic Fable run skips a locked account and launches the lowest Fable u
     credentials: records,
   });
   const selectedConfigDir = path.join(
-    resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "high" }),
+    resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "low" }),
     ".claude",
   );
-  const emptyTokens = structuredClone(records[2].credential.nativeClaudeBundle.claudeAiOauth);
+  const emptyTokens = structuredClone(records[1].credential.nativeClaudeBundle.claudeAiOauth);
   emptyTokens.accessToken = "";
   emptyTokens.refreshToken = "";
   writeJson(path.join(selectedConfigDir, ".credentials.json"), { claudeAiOauth: emptyTokens });
@@ -1146,8 +1146,8 @@ test("automatic Fable run skips a locked account and launches the lowest Fable u
       const projected = JSON.parse(
         fs.readFileSync(path.join(selectedConfigDir, ".credentials.json"), "utf8"),
       );
-      assert.equal(projected.claudeAiOauth.accessToken, "ACCESS_HIGH");
-      assert.equal(projected.claudeAiOauth.refreshToken, "REFRESH_HIGH");
+      assert.equal(projected.claudeAiOauth.accessToken, "ACCESS_LOW");
+      assert.equal(projected.claudeAiOauth.refreshToken, "REFRESH_LOW");
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
@@ -1161,7 +1161,7 @@ test("automatic Fable run skips a locked account and launches the lowest Fable u
   });
 
   assert.equal(out, "");
-  assert.equal(launchedLabel, "high");
+  assert.equal(launchedLabel, "low");
   await lockedLease.release();
 });
 
@@ -1328,7 +1328,7 @@ test("claude resume reuses the exact recorded Fable model and effort", async () 
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
 });
 
-test("claude resume by name selects the lowest Fable account and honors an exact destination account", async () => {
+test("claude resume by name selects the lowest five-hour account and honors an exact destination account", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -1472,10 +1472,10 @@ test("claude resume by name selects the lowest Fable account and honors an exact
 
   assert.equal(
     out,
-    "Switching session from boss to fablelow using fable as "
+    "Switching session from boss to opuslow using fable as "
       + "\"[fork from boss/66666666] Continue rate-limited work\".\n",
   );
-  assert.equal(launchedLabel, "fablelow");
+  assert.equal(launchedLabel, "opuslow");
   assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
   assert.equal(
     fs.existsSync(path.join(
@@ -1516,7 +1516,7 @@ test("claude resume by name selects the lowest Fable account and honors an exact
   );
 });
 
-test("claude resume preserves Fable and uses Fable usage when the recorded account is busy", async () => {
+test("claude resume preserves Fable and uses five-hour usage when the recorded account is busy", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -1688,9 +1688,9 @@ test("claude resume preserves Fable and uses Fable usage when the recorded accou
 
     assert.equal(
       out,
-      'boss is busy; forking session onto high as "[fork from boss/33333333] Review puzzle quality".\n',
+      'boss is busy; forking session onto low as "[fork from boss/33333333] Review puzzle quality".\n',
     );
-    assert.equal(launchedLabel, "high");
+    assert.equal(launchedLabel, "low");
     assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
     assert.equal(
       fs.existsSync(path.join(
@@ -1722,7 +1722,7 @@ test("claude resume preserves Fable and uses Fable usage when the recorded accou
 
     const listed = JSON.parse(await runCli(["claude", "list", "--json", "--home", home]));
     const fork = listed.sessions.find((session) => session.threadId === forkThreadId);
-    assert.equal(fork.account, "high");
+    assert.equal(fork.account, "low");
     assert.equal(
       fork.threadName,
       "[fork from boss/33333333] Review puzzle quality",
@@ -1836,7 +1836,7 @@ test("claude resume fails safely when the recorded account is busy and no destin
       "--home",
       home,
     ], cliDeps),
-    /No other unlocked Claude account with readable Fable usage is available/,
+    /No other unlocked Claude account with readable five-hour usage is available/,
   );
 });
 

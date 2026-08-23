@@ -90,7 +90,7 @@ function successSnapshot(percent = 12, resetAt = NOW_MS + 60 * 60_000) {
   };
 }
 
-test("Claude automatic selection ranks Fable separately from Opus five-hour usage", () => {
+test("Claude automatic selection uses only five-hour usage for every model preset", () => {
   const account = (label, fiveHourUsedPercent, fableUsedPercent, options = {}) => ({
     label,
     authState: options.authState ?? "usage_readable",
@@ -100,11 +100,17 @@ test("Claude automatic selection ranks Fable separately from Opus five-hour usag
     usage: {
       ok: true,
       windows: [
-        { label: "5h", kind: "session", usedPercent: fiveHourUsedPercent, active: false },
+        { label: "5h", kind: "session", usedPercent: fiveHourUsedPercent, active: true },
         { label: "Week", kind: "weekly_all", usedPercent: 40, active: true },
         ...(fableUsedPercent === null
           ? []
-          : [{ label: "Fable", kind: "weekly_scoped", usedPercent: fableUsedPercent, active: true }]),
+          : [{
+              label: "Fable",
+              kind: "weekly_scoped",
+              usedPercent: fableUsedPercent,
+              active: true,
+              ...(options.fableSeverity ? { severity: options.fableSeverity } : {}),
+            }]),
       ],
     },
   });
@@ -112,21 +118,19 @@ test("Claude automatic selection ranks Fable separately from Opus five-hour usag
     accounts: [
       account("locked", 0, 0, { locked: true }),
       account("limited", 1, 1, { authState: "usage_limited" }),
-      account("missing", 0, null),
-      account("lower-five-hour", 2, 70),
-      account("fable-tie-high-five-hour", 50, 10),
-      account("fable-winner", 20, 10),
+      account("provider-blocked", 0, 0, { fableSeverity: "blocked" }),
+      account("missing-scoped-window", 3, null),
+      account("lowest-five-hour", 2, 70),
+      account("lowest-fable-high-five-hour", 20, 10),
     ],
   };
 
-  assert.deepEqual(selectLeastUsedUnlockedClaudeAccount(result, { preset: "fable" }), {
-    label: "fable-winner",
-    usedPercent: 10,
-  });
-  assert.deepEqual(selectLeastUsedUnlockedClaudeAccount(result, { preset: "opus" }), {
-    label: "missing",
-    usedPercent: 0,
-  });
+  for (const preset of ["fable", "opus"]) {
+    assert.deepEqual(selectLeastUsedUnlockedClaudeAccount(result, { preset }), {
+      label: "lowest-five-hour",
+      usedPercent: 2,
+    });
+  }
   assert.deepEqual(selectLeastUsedUnlockedClaudeAccount({
     accounts: [account("refreshing", 0, 20, { authState: "refresh_in_progress" })],
   }, { preset: "opus" }), {
