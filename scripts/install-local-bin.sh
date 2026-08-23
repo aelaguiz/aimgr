@@ -11,14 +11,17 @@ mkdir -p "$target_dir"
 install_wrapper() {
   local name="$1"
   local target="$target_dir/$name"
+  local staged
+  staged="$(mktemp "$target_dir/.${name}.XXXXXX")"
 
-  cat >"$target" <<EOF
+  cat >"$staged" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 exec "$node_bin" "$repo_root/bin/aimgr.js" "\$@"
 EOF
 
-  chmod 755 "$target"
+  chmod 755 "$staged"
+  mv -f "$staged" "$target"
 }
 
 install_wrapper "aim"
