@@ -74,8 +74,8 @@ AIM-managed Hermes profiles must start scheduled work with a usable AIM-selected
 
 - **Human-authorized corrected behavior:** On 2026-08-23 the user authorized a pushed and deployed fix so AIM-managed Hermes profiles rotate away from hard-invalid credentials instead of failing scheduled work.
 - **Smallest sufficient fix:** For a hard credential result such as token-invalid or provider-declared exhaustion, exclude that label and invoke the existing Hermes rebalancer when another eligible AIM label exists. Keep transient/ambiguous usage failures fail-closed.
-- **Initial minimal convergence closure:** Also prevent AIM-managed Hermes profiles from importing `~/.codex/auth.json`; otherwise the same credential contract still has two writers and AIM can be bypassed after a 401.
-- **Enough proof:** A focused watch test with one invalid assigned label plus one eligible alternative must move only affected homes; a transient network probe must still block; an integration fixture must prove global Codex auth cannot replace an AIM assignment.
+- **Known adjacent authority gap (not part of this deployment):** Hermes can import `~/.codex/auth.json` after rejected refresh credentials. Closing that path requires a separately approved Hermes or runtime-configuration change; this AIMgr watch deployment does not change it.
+- **Enough proof for the authorized AIMgr change:** A focused watch test with one invalid assigned label plus one eligible alternative must move only affected homes; transient failures and the no-spare case must still block; the live fleet must stay clean through two watch ticks.
 - **Do not build:** No generic provider router, new fallback framework, retry daemon, new credential store, or staged rollout.
 - **Accepted residual risk:** A provider can still reject a credential between five-minute watch ticks. Closing that final request-time window would require an explicit Hermes-to-AIM failure handoff or a separately approved fallback policy.
 - **Scope sign-off:** Approved by the user on 2026-08-23 before implementation.
@@ -84,15 +84,15 @@ AIM-managed Hermes profiles must start scheduled work with a usable AIM-selected
 
 1. Change the AIM Hermes watch classification so a hard-invalid/hard-limited active label triggers the existing rebalance path when eligible alternatives exist.
 2. Keep unavailable, malformed, DNS, and timeout usage probes as blockers unless there is hard provider evidence that the current label is unusable.
-3. Isolate AIM-managed Hermes profiles from the global Codex CLI recovery path, preferably through profile runtime configuration rather than a second credential writer.
-4. Prove the 2026-08-23 sequence with focused fixtures and a read-only live preflight before any manual cron rerun.
+3. Treat isolation from the global Codex CLI recovery path as separate follow-up work that needs explicit runtime-change approval.
+4. Prove the 2026-08-23 sequence with focused fixtures and two live watch ticks before any manual cron rerun.
 
 ## Verification plan
 
 - AIM unit/integration: invalid assigned label + spare capacity causes a replacement write.
 - AIM regression: transient usage endpoint failure causes no write.
 - AIM regression: no eligible alternative remains blocked with clear evidence.
-- Hermes/profile integration: rejected projected refresh cannot adopt the global Codex CLI account.
+- Separate follow-up proof after explicit approval: rejected projected refresh cannot adopt the global Codex CLI account.
 - Live evidence: `agent_growth_analyst` stays mapped to an AIM label with readable non-exhausted usage through at least two watch ticks.
 
 <!-- bugs:block:implementation -->
@@ -111,4 +111,14 @@ Local proof:
 - `npm run lint`: passed.
 - Full `npm test`: 398 passed, 0 failed.
 
-Deployment and live verification are pending.
+Deployment and live verification completed on 2026-08-23:
+
+- Pushed implementation commit `dfc420a266aa0da173571de47be16d1d6dafe9be` to `origin/main`.
+- Fast-forwarded the Mac Studio AIMgr checkout from `b6e356a` to the pushed commit.
+- Refreshed `/Users/agents/.local/bin/aim` so interactive commands and the LaunchDaemon use the same canonical checkout.
+- Remote focused Hermes suite: 25 passed, 0 failed.
+- Live tick 1 at `2026-08-23T17:14:28.256Z`: `noop`, 21 homes, 0 warnings, 0 blockers; `agent_growth_analyst` remained on `coder`.
+- Live tick 2 at `2026-08-23T17:14:29.233Z`: `noop`, 21 homes, 0 warnings, 0 blockers; `agent_growth_analyst` remained on `coder`.
+- No gateway restart was required: the LaunchDaemon invokes a fresh AIMgr `hermes watch --once` process from the canonical checkout on every interval.
+
+The authorized AIMgr rotation fix is deployed. Hermes's upstream global Codex-auth recovery remains unchanged and is recorded as separate follow-up work requiring explicit runtime-change approval.
