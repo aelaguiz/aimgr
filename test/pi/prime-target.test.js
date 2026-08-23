@@ -308,7 +308,7 @@ test("Prime use codex and claude shorthands preserve the other provider", async 
   }
 });
 
-test("Prime resume parses --rotate and plain resume delegates to Prime without Redis", async () => {
+test("Prime resume parses --rotate and delegates launcher lane selection without Redis", async () => {
   const parsed = parseArgs(["prime", "resume", "thread-123", "--rotate"]);
   assert.deepEqual(parsed.positional, ["prime", "resume", "thread-123"]);
   assert.equal(parsed.opts.primeResumeRotate, true);
@@ -334,7 +334,7 @@ test("Prime resume parses --rotate and plain resume delegates to Prime without R
 
   assert.equal(output, "");
   assert.equal(redisAttempts, 0);
-  assert.deepEqual(launched.args, ["--dist", "--resume", "thread-123"]);
+  assert.deepEqual(launched.args, ["--resume", "thread-123"]);
   assert.equal(launched.cwd, "/tmp/prime-project");
   assert.match(
     fs.readFileSync(path.join(home, ".prime", "agent", "extensions", "session-title-footer.ts"), "utf8"),
@@ -412,7 +412,6 @@ test("Prime rotate resume hands off Codex in place without mutating AIM target s
   assert.match(output, /openai-codex · pro3 · live handoff complete/);
   assert.equal(launches.length, 2);
   assert.deepEqual(launches[0].args, [
-	"--dist",
     "__aim-handoff-credential",
     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     "openai-codex",
@@ -423,7 +422,7 @@ test("Prime rotate resume hands off Codex in place without mutating AIM target s
     fixtureIdentityFingerprint(state, "openai-codex", "pro3"),
     "--json",
   ]);
-  assert.deepEqual(launches[1].args, ["--dist", "--resume", sessionPath]);
+  assert.deepEqual(launches[1].args, ["--resume", sessionPath]);
   assert.equal(launches[0].cwd, "/tmp/prime-project");
   assert.equal(launches[1].cwd, "/tmp/prime-project");
   assert.equal(fs.readFileSync(authPath, "utf8"), authBefore);
@@ -511,7 +510,6 @@ test("Prime rotate resume hands off Claude in place without mutating AIM target 
   assert.deepEqual(connectionPolicies, ["leased"]);
   assert.equal(launches.length, 2);
   assert.deepEqual(launches[0].args, [
-	"--dist",
     "__aim-handoff-credential",
     sessionId,
     "anthropic",
@@ -522,7 +520,7 @@ test("Prime rotate resume hands off Claude in place without mutating AIM target 
     fixtureIdentityFingerprint(state, "anthropic", "fable2"),
     "--json",
   ]);
-  assert.deepEqual(launches[1].args, ["--dist", "--resume", sessionId]);
+  assert.deepEqual(launches[1].args, ["--resume", sessionId]);
   assert.equal(fs.readFileSync(authPath, "utf8"), authBefore);
   assert.equal(fs.readFileSync(localStatePath, "utf8"), localStateBefore);
   assert.doesNotMatch(JSON.stringify(launches), /ACCESS_TWO|REFRESH_TWO/);
@@ -603,7 +601,6 @@ test("Prime rotate resume manually hands off xAI in place without automatic adva
   assert.match(output, /xai · grok2 · live handoff complete/);
   assert.equal(launches.length, 2);
   assert.deepEqual(launches[0].args, [
-    "--dist",
     "__aim-handoff-credential",
     sessionId,
     "xai",
@@ -614,7 +611,7 @@ test("Prime rotate resume manually hands off xAI in place without automatic adva
     fixtureIdentityFingerprint(state, "xai", "grok2"),
     "--json",
   ]);
-  assert.deepEqual(launches[1].args, ["--dist", "--resume", sessionId]);
+  assert.deepEqual(launches[1].args, ["--resume", sessionId]);
   assert.equal(fs.readFileSync(localStatePath, "utf8"), localStateBefore);
   assert.equal(fs.readFileSync(sessionPath, "utf8"), sessionBefore);
   assert.doesNotMatch(JSON.stringify(launches), /GROK_ACCESS|GROK_REFRESH/);
@@ -732,7 +729,6 @@ test("Prime rotate resume does not attach or mutate files when the live handoff 
   assert.equal(result.stdout, "");
   assert.equal(launches.length, 1);
   assert.deepEqual(launches[0].args, [
-	"--dist",
     "__aim-handoff-credential",
     sessionId,
     "openai-codex",
@@ -857,7 +853,7 @@ test("Prime run selects an account and starts a new session directly", async () 
     assert.match(output, new RegExp(`AIM Prime: ${run.provider} · ${run.binding}`));
     assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json")))[run.provider].binding, run.binding);
     assert.equal(launched.command, fs.realpathSync(launcher));
-    assert.deepEqual(launched.args, ["--dist", "--provider", run.provider, "--model", run.model]);
+    assert.deepEqual(launched.args, ["--provider", run.provider, "--model", run.model]);
     assert.equal(launched.cwd, "/tmp/prime-project");
     assert.deepEqual(connectionPolicies, ["leased"]);
   }

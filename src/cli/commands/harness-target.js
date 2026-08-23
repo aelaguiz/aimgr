@@ -543,7 +543,7 @@ async function handleResume(context, targetId) {
   if (!selector) throw new Error("Usage: aim prime resume <path-or-id> [--rotate]");
 
   if (context.opts.primeResumeRotate !== true) {
-    runPrimeLauncher(context, ["--dist", "--resume", selector]);
+    runPrimeLauncher(context, ["--resume", selector]);
     return;
   }
 
@@ -557,7 +557,6 @@ async function handleResume(context, targetId) {
   if (!requested) return;
 
   const handedOff = runPrimeLauncher(context, [
-	"--dist",
     "__aim-handoff-credential",
     profile.sessionId,
     profile.provider,
@@ -574,7 +573,7 @@ async function handleResume(context, targetId) {
   if (!handedOff) return;
 
   context.stdout.write(`AIM Prime: ${profile.provider} · ${requested.binding} · live handoff complete\n`);
-  runPrimeLauncher(context, ["--dist", "--resume", selector]);
+  runPrimeLauncher(context, ["--resume", selector]);
 }
 
 async function handleRun(context, targetId) {
@@ -611,7 +610,7 @@ async function handleRun(context, targetId) {
   if (!providerReceipt) throw new Error(`AIM did not select a ${flavor} account.`);
 
   context.stdout.write(`AIM Prime: ${profile.provider} · ${providerReceipt.binding}\n`);
-  runPrimeLauncher(context, ["--dist", "--provider", profile.provider, "--model", profile.model]);
+  runPrimeLauncher(context, ["--provider", profile.provider, "--model", profile.model]);
 }
 
 async function handleUninstall(context, targetId) {

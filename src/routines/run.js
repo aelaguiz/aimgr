@@ -826,7 +826,6 @@ export async function executeRoutineWorker(context) {
     const sessionDir = resolvePrimeSessionDir({ homeDir: context.homeDir, env: primeEnv });
     fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
     const pinResult = await runStreaming(launcher, [
-      "--dist",
       "--provider",
       routine.provider,
       "--model",
@@ -917,7 +916,6 @@ export async function executeRoutineWorker(context) {
       outcome: "starting_interactive_tui",
     });
     tui = startInteractivePrime(launcher, [
-      "--dist",
       "--cwd",
       routine.cwd,
       "--session-dir",
