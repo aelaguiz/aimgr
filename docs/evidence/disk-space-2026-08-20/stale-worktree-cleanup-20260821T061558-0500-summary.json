@@ -1,0 +1,19 @@
+{
+  "started_at_epoch": 1787310958.119856,
+  "finished_at": "2026-08-21T07:09:50.141362-05:00",
+  "canonical_untouched": "/Users/aelaguiz/workspace/psmobile",
+  "counts": {
+    "removed": 215,
+    "committed": 79,
+    "pushed": 215,
+    "skipped": 1,
+    "failed": 0
+  },
+  "estimated_removed_bytes": 1333905248256,
+  "free_before_bytes": 59054071808,
+  "free_after_bytes": 1259787476992,
+  "free_delta_bytes": 1200733405184,
+  "remaining_psmobile_worktrees_bytes": 381532835840,
+  "plan": "/Users/aelaguiz/workspace/aimgr/docs/evidence/disk-space-2026-08-20/stale-worktree-cleanup-20260821T061558-0500-plan.json",
+  "log": "/Users/aelaguiz/workspace/aimgr/docs/evidence/disk-space-2026-08-20/stale-worktree-cleanup-20260821T061558-0500.jsonl"
+}

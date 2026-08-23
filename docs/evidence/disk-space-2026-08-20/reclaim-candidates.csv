@@ -1,0 +1,10 @@
+candidate,GiB,risk,included_core,basis
+Inactive psmobile generated state,898.3998680114746,low,True,Exact ignored build/dependency directories in 289 worktrees with no cwd process
+Residual checkout data in 198 clean inactive psmobile worktrees,393.5978546142578,medium,True,Additional space after generated-state cleanup; branch retained; ignored local files can be lost
+139 shutdown iOS simulators,415.8455047607422,medium,True,simctl JSON joined to allocated device-directory sizes
+22 dormant Android AVDs,92.69869232177734,medium,True,All AVD allocation except running CLAUDE_pwvis2138_Pixel9Pro
+Conventional developer caches,185.03596878051758,low,True,"uv, Library caches, DerivedData, npm, Gradle caches, CoreSimulator logs"
+Stopped stale default Colima profile,124.44149017333984,medium,False,Stopped profile; 500 GiB sparse disk has 124.44 GiB allocated; running named profile excluded
+Codex July session JSONL,33.167301177978516,medium,False,July subtree; official cleanup blocked while Codex processes are live
+Prime session artifacts older than 7 days,30.480545043945312,medium,False,Directory-mtime age proxy; active and pinned recovery data excluded
+RustAI worktree target directories,72.6114387512207,medium,False,47 target directories; no RustAI worktree cwd observed; require separate fresh liveness gate

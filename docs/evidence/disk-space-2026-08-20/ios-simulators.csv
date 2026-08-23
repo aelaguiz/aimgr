@@ -1,0 +1,141 @@
+state,name,udid,runtime,isAvailable,GiB
+Booted,CLAUDE 3p-e2e (pvai overnight) - iPhone 17,8FB120B9-48CF-47B4-90D3-E125C84E8376,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,3.128856658935547
+Shutdown,PRIME pvai client corpus 20260816 - iPhone 17,E1A1389A-AE89-4E89-9A38-79959C15FF6B,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,15.536571502685547
+Shutdown,feat_more_effects2 - iPhone 17,DEF1631B-7125-43C6-BFA3-4423BF103C91,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,8.913394927978516
+Shutdown,SOL hub-liveness (pvai resume ux) - iPhone 17 Pro,C156F3C1-E159-4E07-BC95-D17EA2DC0044,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,7.030204772949219
+Shutdown,PRIME paygate visual guide - iPhone 17,7DC00E6D-8617-48B3-9BF0-E745F211BC8D,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,6.701702117919922
+Shutdown,feat_puzzle-monetization-restoration-20260720 - feat_puzzle-monetization-restoration-20260720 - ps-viewport-audit-iphone16,A7B7EA79-9873-432D-9DF8-8EFDC3218F9B,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,6.386192321777344
+Shutdown,feat_logo_targeted_treatment - iPhone 17 Pro Max,2194DB8C-5C92-475F-BC8B-9E675A4FDB39,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,6.329093933105469
+Shutdown,fix_ios-restart-instructions-20260807 - amir_pvai_demo,ED876440-3AB0-486D-A110-552EB4D62656,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,5.854736328125
+Shutdown,fix_shop-gem-scroll-clipping - iPhone 17 Pro,6FF1E352-CEC6-4DD2-979B-3A9E71133589,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,5.795780181884766
+Shutdown,feat_onboarding-three-arm-puzzle-count-20260815 - iPhone 17 Pro,F7B79356-08F1-4655-A33E-2C243F0B431D,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,5.375469207763672
+Shutdown,plans_revenuecat-paywall-local-feasibility-20260815 - iPhone 17 Pro,B8B7C4A9-EF72-4A37-A8E6-AE0FCCD90246,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,5.176219940185547
+Shutdown,fix_scrobbler_again - iPhone 17 Pro Max,49DA21BF-87EB-4705-AAFE-99BCCEB4D7BF,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,4.945320129394531
+Shutdown,CODEX tiv-invariant (thinking glow) - iPhone 17,BAD95C8E-3E57-4818-9B90-E4ED22593B4B,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.717052459716797
+Shutdown,test_lesson-test-rail-integration-20260720 - iPhone 17 Pro,32E4AA0F-5E0B-4029-8E29-0F26780BD712,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.714366912841797
+Shutdown,fix_scene-live-frame-publication-unification - iPhone 17,6F966752-5663-4B85-9399-0E5BF886CFE1,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.685554504394531
+Shutdown,prime_mw005-feedback-sim-20260806 - iPhone 17 Pro,80D98E57-B9C7-484C-9E04-79AB2D881D2F,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.4502716064453125
+Shutdown,fix_puzzle-path-card-order-20260809 - iPhone 16,4771BDB2-B2AB-42BE-98C7-474725B2FCE6,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.4443206787109375
+Shutdown,CLAUDE async-spinner-screens (#3724) - iPhone 17,00A5FBF7-DA0F-4366-B7C2-4053990C968E,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.321014404296875
+Shutdown,PRIME Run It Back #3495 - iPhone 17 Pro,737EAECE-4C73-4503-85EA-D4C0794040E0,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.22955322265625
+Shutdown,agent_remove-puzzle-collection-plus-badges - iPhone 17 Pro,F652D889-032E-4B7C-A4AD-B243EEFE0986,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.050540924072266
+Shutdown,CLAUDE payments-mocks (fix-forward) - iPhone 17,52B20CFA-CBBE-4F5D-842F-A1382F3497D5,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.048862457275391
+Shutdown,weekend-rig - weekend-rig - weekend-rig - weekend-rig-pvai,7CCC5F50-524F-46DF-85AC-57B317D05318,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.027202606201172
+Shutdown,CODEX t-to-10 (card faces) - iPhone 17,0E15E2A2-648F-42BC-98F4-CB09AABBFBEB,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,4.0006866455078125
+Shutdown,CODEX onboarding-guide forked-intros - iPhone 17 Pro,5146E5FF-2EF3-4ACE-9320-3E4CC61349C8,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.9472389221191406
+Shutdown,CLAUDE boot-exception (#3724) - iPhone 17,7BAB26EE-FABD-4A76-8C2E-4202844441DD,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.939208984375
+Shutdown,CLAUDE wait-ufc (#3724) - iPhone 17,718E4B0C-06DA-49C3-BF57-D9375C1D4B46,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.9261932373046875
+Shutdown,CODEX Patrol unification final campaign - iPhone 17 Pro,0144934C-3C56-4EC8-84C8-1321F497CE8A,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.916656494140625
+Shutdown,fix_4017-live-advice-entry-unification - iPhone 17 Pro,EB49E6D9-71FB-467A-9722-48623503B080,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.9068336486816406
+Shutdown,ps-viewport-audit-iphone14,98EF173D-EEA3-44B4-AC88-DA070C2386A5,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.8966827392578125
+Shutdown,PRIME repair-3824 (paywall readiness) - iPhone 17 Pro,7108E5A5-FD84-459B-9DA3-1640953E75CF,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.84039306640625
+Shutdown,psmobile-pr16-staging-validation - main - claude-review-prompt-20260730,C99ADD2A-8256-46B6-89D6-34AD97D7D907,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.7544517517089844
+Shutdown,feat_streak-celebration-centralization-20260730 - iPhone 17 Pro,F1DC5E47-7B8F-481E-BCFA-D7D6155B997C,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.749969482421875
+Shutdown,PRIME #3698 restore-guide (payment states) - iPhone 17 Pro,59CDEB70-B91D-41C0-8DF8-62EF3FDEB6A5,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.7369537353515625
+Shutdown,PRIME #3538 payment guide - iPhone 17 Pro,3526571F-28E9-438B-B783-43742DA51EF7,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.7205734252929688
+Shutdown,PRIME calendar override (staging proof) - iPhone 17 Pro,EF3B1DFD-DD7D-4A4F-B7B7-2B8E0423F411,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.7003936767578125
+Shutdown,prime_phil-pvai-maintenance-flag-sim-20260806 - iPhone 17 Pro,1E7D25A6-7CE8-4BA2-AC82-6782788CDDAD,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.6588096618652344
+Shutdown,CLAUDE daily-missions (MVP build) - iPhone 17,D2E73C98-CDCE-4BA1-ADEA-533F8056DC31,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.6258888244628906
+Shutdown,feat_lesson-db-runtime-cutover-20260719 - iPhone 17 Pro,48002B2A-C562-4DD7-A457-CBADB07E79B1,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.617961883544922
+Shutdown,CLAUDE pvai-grading-pr - iPhone,F5D3A232-8EE1-4637-9160-9E0D4EAC74DD,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.6127662658691406
+Shutdown,PRIME #3955 auth-observer PR evidence - iPhone 17 Pro,80FFBABE-0E8F-4D17-BB75-F20005B772CE,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.611858367919922
+Shutdown,PRIME paywall-offerings (#3432) - iPhone 17,C276A50F-C53A-4272-B1BE-941FD868EF58,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.5612144470214844
+Shutdown,CLAUDE transport-floor (#3724) - iPhone 17,F477CEA3-C99B-4A99-A2D7-B17F6BF18E91,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.526439666748047
+Shutdown,CLAUDE auth-loading-recovery (#3724) - iPhone 17,DABDE945-9F5F-4053-B94D-00F044259664,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.517913818359375
+Shutdown,feat_ads-to-plus-admob-mvp - iPhone 17 Pro,9C396B2A-D9D6-4CA1-9456-F6177F47A4E1,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.5006637573242188
+Shutdown,investigate_ios-resume-audio-fatal-3474-20260806 - iPhone 17 Pro,31F26DBC-3A6F-4A37-92F9-D54E451D249E,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.4881439208984375
+Shutdown,fix_staging_sentry_wk_wj - iPhone 17 Pro,A4EBCB83-FF19-4DBC-A891-CACE7592E198,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.4783554077148438
+Shutdown,CODEX wire-compat repro (P2) - iPhone,2D6E5BEE-1F06-4107-860E-62793A509A0B,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.4145355224609375
+Shutdown,PRIME #3701 energy-gate composed proof - iPhone 17 Pro,2C44766D-BE0F-4ABE-8E71-149BDD71FF1D,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.394824981689453
+Shutdown,CLAUDE entitlement-cutover (payments) - iPhone 16,9E449513-F97C-4495-829A-E4DB05899692,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.3800048828125
+Shutdown,CODEX PR4070 outro single owner - iPhone 17 Pro,BFD163A7-CC45-4B36-8C67-6F98EA2587D6,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.366313934326172
+Shutdown,fix_pvai-loading-interstitial-hide-counts-20260808 - iPhone 17,93898A1B-EB0C-4C10-94F4-0C17A705B6B0,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.3460464477539062
+Shutdown,LessonsGuide-t01 (lessons-changes-guide) - iPhone 17 Pro,FC272329-2805-44CD-B7BE-C2FAA2F44BD2,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.31512451171875
+Shutdown,CLAUDE style-refs (mockup screenshots) - iPhone 17,A6B4470B-2188-49D2-8076-A914E1D9058A,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.309967041015625
+Shutdown,CLAUDE route-recovery (#3724) - iPhone 17,1B266954-B6C5-474F-ACA0-B55C9389BB8B,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.307445526123047
+Shutdown,LessonsGuide-t04 (lessons-changes-guide) - iPhone 17 Pro,AE233FD9-07F0-4EFF-BDCC-0982AC944C18,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.2793121337890625
+Shutdown,CLAUDE ui-asset-gate (#3724) - iPhone 17,1DC335C1-BEE8-4883-8D9B-8D8E7B6D9116,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.276599884033203
+Shutdown,CLAUDE logout-guide (#3755) - iPhone 17,1E4166F4-5A51-4A35-86E0-CD7A016669A5,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.250263214111328
+Shutdown,CODEX PR4070 current-head filmstrips - iPhone 17 Pro,34C62478-A5D8-4A89-80BC-3AFCE97EEEDC,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.2365036010742188
+Shutdown,feat_report_playvsai - iPhone Air,FCB21B67-15D6-4B2C-8DED-7743CC7A9915,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,3.1851348876953125
+Shutdown,fix_onboarding-paygate-decline-20260805 - iPhone 16,3B09D33E-BBE2-4751-BAB5-EE69794BE137,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.1631736755371094
+Shutdown,CLAUDE post-auth-resolve (#3724) - iPhone 17,39470500-8F46-408B-9A49-73E3E9B95CA5,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.127674102783203
+Shutdown,PRIME remove practice badge (Run It Back) - iPhone 17,43A4635E-4588-4FD0-AFC2-BFFC87C3B4C3,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.1127281188964844
+Shutdown,LessonsGuide-t03 (lessons-changes-guide) - iPhone 17 Pro,50783428-CF67-4B2B-AC1A-2C15D3F475DA,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.0703659057617188
+Shutdown,LessonsGuide-t02 (lessons-changes-guide) - iPhone 17 Pro,A1737200-9F7A-41F6-955A-CE83E2ACE1C8,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.0516128540039062
+Shutdown,CLAUDE cio-telem (freeze/paygate CIO forwarding) - iPhone 17,4583F84F-3E12-4037-8E3B-017F435B6B61,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.0425796508789062
+Shutdown,PRIME #3474 iOS resume audio - iPhone 17 Pro,8F16332C-9368-4C65-99E8-BA2CAEE870FE,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.024158477783203
+Shutdown,OPUS p3-outro (pvai) - iPhone 17,12BEF9FA-DEFE-4D85-976A-FFB67602295C,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.020702362060547
+Shutdown,CLAUDE plus-lag (payments rca) - iPhone 17,C8360A95-D793-420C-8C26-7B2C33BC8BA1,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.0121536254882812
+Shutdown,CLAUDE onboarding-plan-loading (#3724) - iPhone 17,FD8A9E66-73E1-4491-8A43-188010929076,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,3.004039764404297
+Shutdown,CLAUDE showdown-restore - iPhone 16,F88680AA-17AF-4821-848C-50E309533F56,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.9588851928710938
+Shutdown,iPad Pro 13-inch (M5),0DA82ACE-9B93-48F0-91D4-6EE9C4CDA371,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.9399871826171875
+Shutdown,CLAUDE 3988-jharness (purchase journey) - iPhone 17,741DAA8C-3014-4563-B945-777EDCA62469,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.9163284301757812
+Shutdown,CLAUDE celebration-slot (phil black screen) - iPhone 17,79D3D5E0-2893-4F34-A6C0-8C36FFF373AE,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.9051284790039062
+Shutdown,CLAUDE mainline-no-exit (#3724) - iPhone 17,4ADE0E74-95D1-42ED-B68C-A6E93D9B60AA,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.8832244873046875
+Shutdown,CLAUDE metagate-guide (#3700) - iPhone 17,29122D33-BDD6-4D07-9ED5-2EF2E7873DC9,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.8629226684570312
+Shutdown,codex_pr-3023-mergeable-20260729 - iPhone 17 Pro,0FAAC3BD-FBD0-4455-9EEC-4EFCC31BB11A,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.831829071044922
+Shutdown,CLAUDE g8-evidence (finish-copy) - iPhone 17,1FACFED0-1060-44EF-B45E-A01CE3733438,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.831073760986328
+Shutdown,CLAUDE outbox-predicate sweep (3434 follow-up) - iPhone 17,66D1E14A-F9E5-4ABF-AA95-2602D4BCF564,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.818767547607422
+Shutdown,feat_phil-plus-public-profile-20260814 - iPhone 17,198EF5B6-C837-4F92-938B-990C55462932,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.8160018920898438
+Shutdown,PRIME PR4007 paygate clarity - iPhone 17,BE2F052E-39C4-4C8C-A34C-83D274FAEC4F,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.8082656860351562
+Shutdown,CLAUDE conductor: streak-centralization (Codex client tests) - iPhone 17 Pro,78F99061-6FC2-45F1-9B85-418C1C3481A5,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.8066139221191406
+Shutdown,CLAUDE offerings-gate (#3724) - iPhone 17,E0C68B61-86D5-4F50-9C80-281C4FBC3B61,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.7964439392089844
+Shutdown,ps-viewport-audit-ipad9,4A9D5ED6-EED1-4CED-AF53-E2F677D70485,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.7937774658203125
+Shutdown,CODEX pvai-beta-faq - iPhone 16,55A9AE12-4645-46E8-8B87-B4809B9190B8,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.7704811096191406
+Shutdown,OPUS outro-safearea - iPhone 17 Pro,A3C42956-C315-45FA-9B61-7BFA46CAE47D,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.7578048706054688
+Shutdown,CODEX onboarding-fix (celebrate) - iPhone 17 Pro,3F49C161-DDEF-48E4-82F2-B54E9FD1FEE5,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.748889923095703
+Shutdown,PRIME #3525 offerings pending - iPhone 17,CCEF4422-4021-4FF3-A3A9-6B6A769F18EB,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.73175048828125
+Shutdown,PRIME #3538 checkout final - iPhone 17 Pro,3B83AECF-F4E4-4004-BADE-96B5C97FD7A5,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.728912353515625
+Shutdown,feat_streak-centralization-20260801 - iPhone 17 Pro,3FEF87A0-7CFC-4746-93C4-D4C6844E5533,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.725177764892578
+Shutdown,CLAUDE final-sim (streak) - iPhone 17,2B249EAA-609D-4780-AE91-C1D988192F85,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.7213516235351562
+Shutdown,ps-viewport-audit-ipadpro129,4D9B4549-AC6D-4C47-8724-5D6820EEC7E1,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.7045669555664062
+Shutdown,testprog-w4-paygate-proof - iPhone 17 Pro,FD3BE5D4-EF90-4E2E-BFC1-B5BEC00A6B6D,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.682933807373047
+Shutdown,ps-viewport-audit-ipadair11,801EE500-C851-4655-864C-AFDD839780BA,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.6664390563964844
+Shutdown,rc-canonical-ios,C63AB3E0-915A-4262-95D7-AE15624786C5,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.6523399353027344
+Shutdown,CLAUDE coach-occlusion (completed path) - iPhone 17,79C2079E-AE65-415C-9DBE-42A4BD0BCF42,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.6366920471191406
+Shutdown,PRIME qwen-coach-beta (filmstrip) - iPhone 17 Pro,53DACA24-4191-498E-B9F9-E151A4C43F35,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.6067543029785156
+Shutdown,CLAUDE path-guide (puzzle path testing guide) - iPhone 17,14DAA5C6-E732-4D43-968D-670CE3EEFCA2,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.5866851806640625
+Shutdown,claude-streak-guide-20260730,1FA81EFC-75C4-4B4F-838C-52D76F6AA945,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.579357147216797
+Shutdown,OPUS missions-copy-pr - iPhone 17,C40AF579-7A98-4E77-A084-2B0D3B15CE2E,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.5700531005859375
+Shutdown,PRIME paygate watchdog fix - iPhone 17,F3F50B8F-D453-4317-870C-E61ABA5935AF,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.5547142028808594
+Shutdown,fix_remove-inappropriate-wyw-cards-20260810 - iPhone 17 Pro,3B85F6BF-66C2-4DE4-9D9D-DF6F8513AF47,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,2.544178009033203
+Shutdown,PRIME billing-recovery (grace fixtures) - iPhone 17 Pro,5A17E758-9F82-45AF-9708-BDBB04ADF15D,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,2.5403213500976562
+Shutdown,PRIME puzzle-open-4105 - iPhone 17,1640FE0D-9EE2-4187-886A-79AF4C1C346A,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.5124969482421875
+Shutdown,PRIME #3474 iOS resume audio - iPhone 17 Pro,DF5C3555-6BDA-4454-AC90-DE7922E02AC7,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.489856719970703
+Shutdown,RLM PR3825 final 4301c99 - iPhone 17 Pro,384E67B4-B756-4A06-999E-138241CFA548,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.4573211669921875
+Shutdown,FABLE issue-3725 (deadline floor) - iPhone 17 Pro,7BAB6DB5-C10F-4F31-BB17-6F4EB4B04DAA,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.41436767578125
+Shutdown,OPUS difficulty-pill (daily card) - iPhone 17,B6E6FD0C-2753-4F8B-B410-BEB498C657DF,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.330291748046875
+Shutdown,investigate_3899-telemetry-ramp-up-20260812 - iPhone 17 Pro Max,F73FA6D4-8967-47BD-8950-143738FB5FBD,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,2.3188323974609375
+Shutdown,CLAUDE cloud-qa-ios (money suite) - iPhone 17,484A1270-2F24-47A2-9B52-A0C3CA73DA5F,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.318706512451172
+Shutdown,PRIME pvai split-pot (joey-pvai-01) - iPhone 17,9B97B4B1-1DFB-4994-BA8C-8AB0D68B748F,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.316650390625
+Shutdown,CLAUDE onboarding-preopen (slot dwell) - iPhone 17 Pro,7AB6AFB1-8205-4769-BFFD-017F6560CAA8,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.3050155639648438
+Shutdown,PRIME first-open-auth automation 20260816 - iPhone 17,3D7D7483-264F-468F-9A32-DF8EECBF254B,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.278308868408203
+Shutdown,CODEX flame-orange (streak) - iPhone 17 Pro,D238191F-E7FD-4BD6-B77F-85398AEA204E,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.275238037109375
+Shutdown,CODEX lane-flows (PR3449) - iPhone 17 Pro,39FD117C-45D2-4400-B1D7-91EFF8DDE5B6,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.257843017578125
+Shutdown,fix_scripted-hand-replay-budget-deferred-20260719 - ps-viewport-audit-iphone16pro,8236E6AD-8CA6-4962-B54B-EC614CA983CC,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.0673828125
+Shutdown,iPad (A16),A9396C09-667B-48EC-9396-80417BF8460A,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.0509262084960938
+Shutdown,CODEX frozen-head-verify - iPhone 17 Pro,86DB6CFC-7F5B-4BBA-AF70-7E2F5BB0B21B,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.0467071533203125
+Shutdown,PRIME m6-paint (pvai coach pixels) - iPhone 17 Pro,2A6094CC-973B-490A-A7AF-2DE5C7826346,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.0283279418945312
+Shutdown,PRIME #3474 graph-start test - iPhone 17 Pro,275D5FF3-B5BF-4419-B8FD-728CF770717C,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,2.0140914916992188
+Shutdown,PRIME #3474 Swift suite - iPhone 17 Pro,DF8648D0-E12D-4063-A101-44FFC3089B74,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,1.8819007873535156
+Shutdown,iPad mini (A17 Pro),0B411A2B-DAF8-4ECB-9CA9-22291F6A3B2C,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,0.01708221435546875
+Shutdown,iPad Air 13-inch (M4),518ABBCF-8515-42A0-AD78-150E90FC42E2,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,0.01708221435546875
+Shutdown,iPad Air 11-inch (M4),E1673BCA-B43F-4968-8B19-936377262201,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,0.01708221435546875
+Shutdown,iPad (A16),790D446D-5778-4A45-B650-DEC508372274,com.apple.CoreSimulator.SimRuntime.iOS-26-4,True,0.01708221435546875
+Shutdown,CLAUDE streak-simplification (races) - iPhone 17 Pro,4A5299F0-1406-4049-8332-17DBDC16990F,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,0.01708221435546875
+Shutdown,ps-viewport-audit-iphone16promax,90AF89CF-F1C2-4C83-8AF1-7A8C33D136F8,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,0.01708221435546875
+Shutdown,ps-viewport-audit-iphone15promax,4C3F12B3-51DB-4AC8-A150-841E3DF47153,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,0.01708221435546875
+Shutdown,iPad Pro 11-inch (M5),4CBDBBC7-F3C6-4F2D-93B6-C46C25E28B85,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,0.01708221435546875
+Shutdown,iPad mini (A17 Pro),716240C5-8E3D-4537-BE3F-702784E21B69,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,0.01708221435546875
+Shutdown,iPad Air 13-inch (M4),A9805526-E2CF-4DAA-A10D-5393002E85FA,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,0.01708221435546875
+Shutdown,iPad Air 11-inch (M4),78993CA5-B9EB-45D6-B84B-DB394A585D0D,com.apple.CoreSimulator.SimRuntime.iOS-26-5,True,0.01708221435546875
+Shutdown,iPhone 17e,79E195C8-7E49-41BD-92E6-6CA80A484DE5,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,0.01708221435546875
+Shutdown,iPhone Air,9CDCB330-6672-4EEA-B1AB-2E7B908860B0,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,0.01708221435546875
+Shutdown,iPhone 17,E986152E-F4D5-4EB4-AF23-98F590158E17,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,0.01708221435546875
+Shutdown,iPad Pro 13-inch (M5),AA9A0CD9-46F2-4683-A0AF-F09B211DE475,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,0.01708221435546875
+Shutdown,iPad Pro 11-inch (M5),35798F97-2823-4FBD-B32A-7FB89A1A4592,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,0.01708221435546875
+Shutdown,iPad mini (A17 Pro),7DD8A3FB-C374-48AF-9CDE-D36F7D495439,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,0.01708221435546875
+Shutdown,iPad Air 13-inch (M4),4805A9AC-A31E-492C-9961-4573DB5A27AA,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,0.01708221435546875
+Shutdown,iPad Air 11-inch (M4),8C95262D-6109-4203-A564-F01A75BAC632,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,0.01708221435546875
+Shutdown,iPad (A16),728EBCA8-7467-497E-89C2-F8305F1473A0,com.apple.CoreSimulator.SimRuntime.iOS-26-3,True,0.01708221435546875
