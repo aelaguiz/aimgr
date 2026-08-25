@@ -91,7 +91,7 @@ test("output is capped with an explicit truncation notice", async () => {
   const result = await runAimCommand(["flood", String(AIM_MCP_OUTPUT_CAP_CHARS)], { binPath });
 
   assert.equal(result.truncated, true);
-  assert.match(result.stdout, /\[aim mcp: output truncated at 200000 characters\]$/);
+  assert.match(result.stdout, new RegExp(`\\[aim mcp: output truncated at ${AIM_MCP_OUTPUT_CAP_CHARS} characters\\]$`));
   // The cap is shared across both streams, so the whole envelope stays bounded.
   const captured = result.stdout.replace(/\n\[aim mcp:[^\]]+\]$/, "").length
     + result.stderr.replace(/\n\[aim mcp:[^\]]+\]$/, "").length;

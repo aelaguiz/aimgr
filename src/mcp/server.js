@@ -26,6 +26,8 @@ const AIM_EXEC_DESCRIPTION = [
   '["claude","list","--json"], ["codex","use"], ["auth","maintain"],',
   '["routine","run","<id>","--manual"].',
   'Run ["help"] to print the full command surface, including flags.',
+  'Prefer ["status","--compact"] or a scoped read such as ["claude","status","--json"] or',
+  '["grok","status","--json"] first: ["status","--json"] returns roughly 200k characters.',
   "Interactive lanes are rejected with the reason: login, credential-helper,",
   "claude/prime run|resume, and codex/hermes watch without --once.",
   "Returns {ok, exitCode, signal, durationMs, stdout, stderr, truncated}; stdout is",

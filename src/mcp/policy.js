@@ -18,7 +18,6 @@ export const AIM_MCP_ALLOWED_COMMANDS = Object.freeze([
   "routine",
   "sakana",
   "browser",
-  "repair",
   "help",
 ]);
 

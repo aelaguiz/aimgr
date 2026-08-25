@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const AIM_MCP_DEFAULT_TIMEOUT_MS = 120_000;
-export const AIM_MCP_OUTPUT_CAP_CHARS = 200_000;
+export const AIM_MCP_OUTPUT_CAP_CHARS = 400_000;
 export const AIM_MCP_KILL_GRACE_MS = 5_000;
 
 export function resolveAimBinPath() {

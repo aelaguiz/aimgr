@@ -35,6 +35,13 @@ test("an unknown first token is the label panel, not a command", () => {
   assert.equal(verdict.ok, false);
   assert.match(verdict.reason, /interactive label panel/);
   assert.match(verdict.reason, /\["help"\]/);
+
+  // `repair` reads like a command but is not one: label repair is `aim label rebind`,
+  // so a bare `repair` would sit in the label/login lane until the timeout kills it.
+  assert.equal(AIM_MCP_ALLOWED_COMMANDS.includes("repair"), false);
+  const repair = validateAimArgv(["repair"]);
+  assert.equal(repair.ok, false);
+  assert.match(repair.reason, /Unknown aim command: repair/);
 });
 
 test("watch loops are rejected until they are one-shot", () => {
