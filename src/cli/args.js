@@ -80,6 +80,9 @@ export function parseArgs(argv) {
     rotateBelow5hRemainingPct: undefined,
     primeResumeRotate: false,
     routineManual: false,
+    port: undefined,
+    bind: undefined,
+    stdio: false,
     pool: undefined,
     claudeAutoSelect: expandedClaudeRun.autoSelect,
     claudeAutoSelectPreset: expandedClaudeRun.autoSelectPreset,
@@ -236,6 +239,26 @@ export function parseArgs(argv) {
         throw new Error("Unknown option: --manual");
       }
       opts.routineManual = true;
+      continue;
+    }
+    if (arg === "--port" || arg === "--bind") {
+      if (argv[0] !== "mcp") {
+        throw new Error(`Unknown option: ${arg}`);
+      }
+      const value = argv[i + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error(arg === "--port" ? "--port requires a TCP port." : "--bind requires an IP address.");
+      }
+      if (arg === "--port") opts.port = value;
+      else opts.bind = value;
+      i += 1;
+      continue;
+    }
+    if (arg === "--stdio") {
+      if (argv[0] !== "mcp") {
+        throw new Error("Unknown option: --stdio");
+      }
+      opts.stdio = true;
       continue;
     }
     if (arg === "--json") {

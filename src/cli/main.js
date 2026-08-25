@@ -21,6 +21,7 @@ const COMMAND_LOADERS = new Map([
   ["sakana", async () => (await import("./commands/sakana.js")).handleSakana],
   ["browser", async () => (await import("./commands/browser.js")).handleBrowser],
   ["grok", async () => (await import("./commands/grok.js")).handleGrok],
+  ["mcp", async () => (await import("./commands/mcp.js")).handleMcp],
 ]);
 
 
@@ -35,6 +36,12 @@ export async function main(argv, injectedDeps = {}) {
   let shorthandLabel = null;
 
   if (opts.help || !cmd) {
+    printHelp({ stdout: parseStdout });
+    return;
+  }
+  if (cmd === "help") {
+    // `aim help` is the argv form an MCP client reaches for; keep it identical to
+    // `aim --help` instead of falling through to the label panel.
     printHelp({ stdout: parseStdout });
     return;
   }
