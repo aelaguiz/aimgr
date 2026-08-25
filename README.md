@@ -274,6 +274,34 @@ aim browser set <label> --mode agent-browser --profile <abs-path> --session <nam
 aim browser set <label> --mode manual-callback
 ```
 
+## MCP server
+
+`aim mcp serve` exposes this machine's `aim` CLI to MCP clients (Claude Code, Codex, Prime Agent,
+a phone) so a remote agent can read pool state and take account actions without an ssh session.
+
+```bash
+aim mcp serve                          # Streamable HTTP on this machine's Tailscale IPv4, port 7337
+aim mcp serve --port 7337 --bind <ip>  # explicit listener
+aim mcp serve --stdio                  # one client over stdin/stdout instead of HTTP
+bash scripts/install-mcp-server.sh     # LaunchAgent: RunAtLoad + KeepAlive, logs to ~/.aimgr/logs/mcp-serve.*.log
+bash scripts/install-mcp-server.sh --status
+bash scripts/install-mcp-server.sh --uninstall
+```
+
+The endpoint is `http://<tailscale-ip>:7337/mcp`. Three tools:
+
+- `aim_exec` — run any non-interactive `aim` command, e.g. `["status","--json"]`,
+  `["claude","status","--json"]`, `["codex","use"]`, `["auth","maintain"]`. Interactive lanes
+  (`login`, `credential-helper`, `claude`/`prime` `run|resume`, `codex`/`hermes` `watch` without
+  `--once`) are rejected with the reason. Run `["help"]` for the full command surface.
+- `aim_machine_info` — hostname, Tailscale IPv4, aimgr git rev, disk free, `aim redis ping` duration,
+  watcher log mtime and age, newest routine receipt per routine. Facts only, no health verdict.
+- `aim_log_tail` — tail `auth-maintainer`, `codex-watch`, `hermes-watch`, `mcp-serve`, or an absolute path.
+
+**The MCP server is unauthenticated — the tailnet is the trust boundary.** Anyone who can reach the
+port gets the same authority ssh to this machine already grants, including `aim redis export`. Bind
+it to the Tailscale address (the default), never to a public interface.
+
 ## State Model
 
 Redis records own shared credential truth:
