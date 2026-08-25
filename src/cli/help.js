@@ -87,7 +87,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  - During Redis outages, status remains local; cached harness access may continue only until its freshness skew.",
     `  - \`aim codex watch --once\` is the scheduler-safe one-shot; foreground watch loops default to ${DEFAULT_CODEX_WATCH_INTERVAL_SECONDS}s and rotate below ${DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT}% 5h remaining.`,
     `  - \`aim hermes watch --once\` is the Hermes scheduler-safe one-shot and always delegates writes through \`aim rebalance hermes\`.`,
-    "  - `aim mcp serve` is unauthenticated; tailnet-only by intent (default port 7337, default bind is this machine's Tailscale IPv4).",
+    "  - `aim mcp serve` is unauthenticated; tailnet-only by intent (default port 7337). Without --bind it waits for this machine's Tailscale IPv4 rather than binding every interface.",
     "",
     "Developer options (rare):",
     "  --home <dir>    Run against an alternate HOME (dev/test; e.g. /tmp/aimgr-home).",
@@ -101,7 +101,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  --grok <auto|label|off>        Prime SuperGrok binding for new root sessions.",
 
     "  --port <n>                     TCP port for `aim mcp serve` (default 7337).",
-    "  --bind <ip>                    Bind address for `aim mcp serve` (default: this machine's Tailscale IPv4).",
+    "  --bind <ip>                    Bind address for `aim mcp serve` (default: wait for this machine's Tailscale IPv4).",
     "  --stdio                        Serve MCP over stdin/stdout instead of HTTP.",
     "  --confirm                      Required for Redis label repair commands.",
     "  --mode <id>     Browser binding mode for `aim browser set`.",

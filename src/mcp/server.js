@@ -156,10 +156,10 @@ export function buildMcpServer({
   return server;
 }
 
-function writeJson(res, status, payload) {
+function writeJson(res, status, payload, onFinish) {
   const body = JSON.stringify(payload);
   res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(body);
+  res.end(body, onFinish);
 }
 
 function jsonRpcError(code, message) {
@@ -173,8 +173,12 @@ function readRequestBody(req) {
     req.on("data", (chunk) => {
       size += chunk.length;
       if (size > MAX_REQUEST_BODY_BYTES) {
-        reject(new Error("Request body too large."));
-        req.destroy();
+        // Stop reading, but leave the socket alive: the caller still owes this
+        // client an error response before the connection goes away.
+        req.pause();
+        const error = new Error("Request body too large.");
+        error.oversized = true;
+        reject(error);
         return;
       }
       chunks.push(chunk);
@@ -190,7 +194,14 @@ async function handleMcpPost(req, res, deps) {
     const raw = await readRequestBody(req);
     parsedBody = raw ? JSON.parse(raw) : undefined;
   } catch (error) {
-    writeJson(res, 400, jsonRpcError(-32700, `Parse error: ${String(error?.message ?? error)}`));
+    // The response is written first; an oversized body only then loses its socket,
+    // so the client reads the reason instead of a bare connection reset.
+    writeJson(
+      res,
+      400,
+      jsonRpcError(-32700, `Parse error: ${String(error?.message ?? error)}`),
+      error?.oversized ? () => req.socket?.destroy() : undefined,
+    );
     return;
   }
   // Stateless: a fresh server and transport per request, torn down when the

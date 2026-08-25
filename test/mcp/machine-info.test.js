@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  TAILSCALE_LOOKUP_TIMEOUT_MS,
   collectMachineInfo,
   parseDfKilobytes,
   readNewestRoutineReceipts,
   resolveTailscaleIpv4,
+  runCommandCapture,
 } from "../../src/mcp/machine-info.js";
 import { mkTempHome, writeJson } from "../helpers/files.js";
 
@@ -109,6 +111,34 @@ test("every collector degrades to a per-field error instead of throwing", async 
     },
   }));
   assert.deepEqual(thrown.redisPingMs, { ok: false, error: "spawn blew up" });
+});
+
+test("a hanging collector is bounded by a real spawnSync timeout", () => {
+  // Node's option is `timeout`; spelling it `timeoutMs` silently disabled the
+  // bound and let `aim_machine_info` hang on a wedged tailscale/git/df.
+  const startedAt = Date.now();
+  const result = runCommandCapture("sleep", ["5"], { timeoutMs: 250 });
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(result.ok, false);
+  assert.ok(elapsedMs < 2_500, `expected the timeout to bound the command, took ${elapsedMs}ms`);
+});
+
+test("each collector passes its own timeout to the command runner", async () => {
+  const seen = [];
+  await collectMachineInfo(fakeDeps(mkTempHome(), {
+    runCommandImpl: (command, args, options) => {
+      seen.push([command, options?.timeoutMs]);
+      return fakeRunCommand()(command, args, options);
+    },
+  }));
+
+  assert.deepEqual(seen, [
+    ["git", 5_000],
+    ["tailscale", TAILSCALE_LOOKUP_TIMEOUT_MS],
+    ["df", 5_000],
+  ]);
+  assert.equal(TAILSCALE_LOOKUP_TIMEOUT_MS, 2_000);
 });
 
 test("tailscale lookup prefers the CLI and falls back to a CGNAT interface", () => {

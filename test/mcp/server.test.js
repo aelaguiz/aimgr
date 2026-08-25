@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { runAimCommand } from "../../src/mcp/exec.js";
 import { AIM_MCP_HTTP_PATH, startHttpServer } from "../../src/mcp/server.js";
+import { mkTempHome } from "../helpers/files.js";
 
 const MCP_HEADERS = {
   "Content-Type": "application/json",
@@ -20,13 +24,14 @@ function toolPayload(body) {
   return JSON.parse(body.result.content[0].text);
 }
 
-async function withServer(run) {
+async function withServer(run, deps = {}) {
   const logLines = [];
   // Port 0 keeps the test off 7337 so a live `aim mcp serve` can stay running.
   const served = await startHttpServer({
     port: 0,
     bind: "127.0.0.1",
     logImpl: (line) => logLines.push(line),
+    ...deps,
   });
   const endpoint = `http://127.0.0.1:${served.port}${AIM_MCP_HTTP_PATH}`;
   try {
@@ -73,6 +78,27 @@ test("aim_exec runs a real aim command and returns the raw envelope", async () =
     assert.equal(typeof payload.durationMs, "number");
     assert.match(logLines.at(-1), /tool=aim_exec argv="help" ms=\d+ ok=true/);
   });
+});
+
+test("a non-zero aim exit surfaces as an error envelope, not a silent success", async () => {
+  const home = mkTempHome();
+  const binPath = path.join(home, "bin", "failing-aim.js");
+  fs.mkdirSync(path.dirname(binPath), { recursive: true });
+  fs.writeFileSync(binPath, 'process.stderr.write("aim: redis unreachable");\nprocess.exitCode = 2;\n', "utf8");
+
+  await withServer(async ({ endpoint }) => {
+    const call = await rpc(endpoint, "tools/call", {
+      name: "aim_exec",
+      arguments: { argv: ["status"] },
+    }, 7);
+
+    assert.equal(call.body.result.isError, true);
+    const payload = toolPayload(call.body);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.exitCode, 2);
+    assert.equal(payload.timedOut, false);
+    assert.match(payload.stderr, /redis unreachable/);
+  }, { runAimCommandImpl: (argv, options) => runAimCommand(argv, { ...options, binPath }) });
 });
 
 test("aim_exec refuses an interactive lane with the policy reason", async () => {

@@ -300,7 +300,10 @@ The endpoint is `http://<tailscale-ip>:7337/mcp`. Three tools:
 
 **The MCP server is unauthenticated — the tailnet is the trust boundary.** Anyone who can reach the
 port gets the same authority ssh to this machine already grants, including `aim redis export`. Bind
-it to the Tailscale address (the default), never to a public interface.
+it to the Tailscale address, never to a public interface. Without `--bind` the server waits for this
+machine's Tailscale IPv4 (retrying every 5s, one log line per 30s) and binds only when it appears, so
+a LaunchAgent that starts before tailscaled converges on the tailnet address instead of exposing every
+interface. An explicit `--bind`, including `--bind 0.0.0.0`, skips the wait and is the operator's call.
 
 ## State Model
 

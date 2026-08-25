@@ -20,8 +20,15 @@ export function resolveAimgrRepoRoot() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 }
 
-function runCommandCapture(command, args, { timeoutMs = 5_000, cwd } = {}) {
-  const result = spawnSync(command, args, { cwd, timeoutMs, encoding: "utf8" });
+// Node's spawnSync option is `timeout`, not `timeoutMs`; the misspelling silently
+// disables the bound, so every collector here must go through this one helper.
+export function runCommandCapture(command, args, { timeoutMs = 5_000, cwd } = {}) {
+  const result = spawnSync(command, args, {
+    cwd,
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+    encoding: "utf8",
+  });
   if (result.error) return { ok: false, error: String(result.error.message ?? result.error) };
   if (result.status !== 0) {
     return {
@@ -51,7 +58,7 @@ export function resolveTailscaleIpv4({
 }
 
 function collectAimgrRev({ runCommandImpl, repoRoot }) {
-  const result = runCommandImpl("git", ["rev-parse", "--short", "HEAD"], { cwd: repoRoot });
+  const result = runCommandImpl("git", ["rev-parse", "--short", "HEAD"], { cwd: repoRoot, timeoutMs: 5_000 });
   if (!result?.ok) return { error: String(result?.error ?? "unavailable") };
   return { rev: String(result.stdout ?? "").trim() };
 }
@@ -71,7 +78,7 @@ export function parseDfKilobytes(stdout) {
 }
 
 function collectDiskFree({ runCommandImpl, homeDir }) {
-  const result = runCommandImpl("df", ["-k", homeDir], {});
+  const result = runCommandImpl("df", ["-k", homeDir], { timeoutMs: 5_000 });
   if (!result?.ok) return { path: homeDir, error: String(result?.error ?? "unavailable") };
   return { path: homeDir, ...parseDfKilobytes(result.stdout) };
 }

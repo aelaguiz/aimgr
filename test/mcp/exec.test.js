@@ -35,6 +35,18 @@ if (mode === "flood") {
 if (mode === "hang") {
   setInterval(() => {}, 1000);
 }
+if (mode === "orphan") {
+  // A detached grandchild that inherits this process's stdout/stderr pipes. It is
+  // in its own process group, so the group kill never reaches it and it keeps the
+  // pipe write ends open — the exact shape that used to hang "close"-based settle.
+  // It self-exits so no test ever leaves a stray process behind.
+  const { spawn } = require("node:child_process");
+  spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 5000)"], {
+    detached: true,
+    stdio: "inherit",
+  }).unref();
+  setInterval(() => {}, 1000);
+}
 `;
 
 function installFixtureBin() {
@@ -83,7 +95,28 @@ test("a hung command is killed on timeout instead of holding the MCP request", a
 
   assert.equal(result.ok, false);
   assert.equal(result.signal, "SIGTERM");
+  assert.equal(result.timedOut, true);
+  assert.match(result.stderr, /\[aim mcp: killed after 200ms\]$/);
   assert.ok(result.durationMs >= 150, `expected the timeout to elapse, got ${result.durationMs}ms`);
+});
+
+test("an orphaned grandchild holding the pipes cannot block the timeout", async () => {
+  const { binPath } = installFixtureBin();
+  const startedAt = Date.now();
+  const result = await runAimCommand(["orphan"], {
+    binPath,
+    timeoutMs: 300,
+    killGraceMs: 100,
+    drainMs: 250,
+  });
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(result.timedOut, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.signal, "SIGTERM");
+  // timeout + grace + drain, with slack for a loaded machine. Before settling on
+  // `exit` this call never resolved at all.
+  assert.ok(elapsedMs < 3_000, `expected a bounded settle, took ${elapsedMs}ms`);
 });
 
 test("output is capped with an explicit truncation notice", async () => {
