@@ -29,6 +29,7 @@ sync_repo() {
   [ "$ahead" -gt 0 ] && note=" (WARN: $ahead unpushed local commits ahead of main)"
   [ "$dirty" -gt 0 ] && note="$note (WARN: $dirty dirty tracked files)"
   npm install --no-audit --no-fund >/dev/null 2>&1 || note="$note (WARN: npm install failed)"
+  git checkout -q -- package-lock.json 2>/dev/null
   echo "$repo: $(git rev-parse --short HEAD)$note"
 }
 
