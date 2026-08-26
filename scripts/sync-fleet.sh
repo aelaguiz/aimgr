@@ -32,9 +32,11 @@ sync_repo() {
   echo "$repo: $(git rev-parse --short HEAD)$note"
 }
 
+rc=0
 sync_repo aimgr
 aimgr_ok=$?
-sync_repo prime-agent
+[ "$aimgr_ok" -ne 0 ] && rc=1
+sync_repo prime-agent || rc=1
 
 if [ "$aimgr_ok" -eq 0 ]; then
   bash "$HOME/workspace/aimgr/scripts/install-local-bin.sh" >/dev/null 2>&1 && echo "wrappers: aim/aimgr refreshed" || echo "wrappers: aim install FAILED"
@@ -42,6 +44,7 @@ fi
 launcher="$HOME/.local/bin/prime-agent"
 printf "#!/bin/sh\nexec \"%s\" \"\$@\"\n" "$HOME/workspace/prime-agent/prime-agent.sh" > "$launcher.tmp" \
   && chmod +x "$launcher.tmp" && mv "$launcher.tmp" "$launcher" && echo "wrappers: prime-agent -> live checkout"
+exit "$rc"
 '
 
 failures=0
