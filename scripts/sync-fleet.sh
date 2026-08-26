@@ -25,7 +25,9 @@ sync_repo() {
   else
     echo "$repo: PULL FAILED (diverged from origin/main at $(git rev-parse --short HEAD); resolve by hand)"; return 1
   fi
-  [ "$dirty" -gt 0 ] && note=" (WARN: $dirty dirty tracked files)"
+  ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+  [ "$ahead" -gt 0 ] && note=" (WARN: $ahead unpushed local commits ahead of main)"
+  [ "$dirty" -gt 0 ] && note="$note (WARN: $dirty dirty tracked files)"
   npm install --no-audit --no-fund >/dev/null 2>&1 || note="$note (WARN: npm install failed)"
   echo "$repo: $(git rev-parse --short HEAD)$note"
 }
@@ -45,7 +47,7 @@ printf "#!/bin/sh\nexec \"%s\" \"\$@\"\n" "$HOME/workspace/prime-agent/prime-age
 failures=0
 for host in "${HOSTS[@]}"; do
   echo "===== $host ====="
-  if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "$REMOTE_SCRIPT"; then
+  if ! printf '%s' "$REMOTE_SCRIPT" | ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" bash -s; then
     failures=$((failures + 1))
   fi
 done
