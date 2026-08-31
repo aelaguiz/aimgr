@@ -564,7 +564,12 @@ async function handleRun(context, targetId) {
   }
   const flavor = String(context.positional[2] ?? "").trim().toLowerCase();
   const profile = flavor === "codex"
-    ? { provider: OPENAI_CODEX_PROVIDER, model: "gpt-5.6-sol" }
+    ? {
+        provider: OPENAI_CODEX_PROVIDER,
+        model: "gpt-5.6-sol",
+        thinking: "xhigh",
+        serviceTier: "priority",
+      }
     : flavor === "claude"
       ? { provider: ANTHROPIC_PROVIDER, model: "claude-fable-5" }
       : flavor === "grok"
@@ -588,7 +593,10 @@ async function handleRun(context, targetId) {
   if (!providerReceipt) throw new Error(`AIM did not select a ${flavor} account.`);
 
   context.stdout.write(`AIM Prime: ${profile.provider} · ${providerReceipt.binding}\n`);
-  runPrimeLauncher(context, ["--provider", profile.provider, "--model", profile.model]);
+  const launcherArgs = ["--provider", profile.provider, "--model", profile.model];
+  if (profile.thinking) launcherArgs.push("--thinking", profile.thinking);
+  if (profile.serviceTier) launcherArgs.push("--service-tier", profile.serviceTier);
+  runPrimeLauncher(context, launcherArgs);
 }
 
 async function handleUninstall(context, targetId) {

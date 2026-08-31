@@ -816,8 +816,20 @@ test("Prime run selects an account and starts a new session directly", async () 
   };
 
   for (const run of [
-    { flavor: "codex", provider: "openai-codex", model: "gpt-5.6-sol", binding: "pro3" },
-    { flavor: "claude", provider: "anthropic", model: "claude-fable-5", binding: "claude" },
+    {
+      flavor: "codex",
+      provider: "openai-codex",
+      model: "gpt-5.6-sol",
+      binding: "pro3",
+      extraArgs: ["--thinking", "xhigh", "--service-tier", "priority"],
+    },
+    {
+      flavor: "claude",
+      provider: "anthropic",
+      model: "claude-fable-5",
+      binding: "claude",
+      extraArgs: [],
+    },
   ]) {
     const home = mkTempHome();
     const statePath = path.join(home, ".aimgr", "secrets.json");
@@ -853,7 +865,13 @@ test("Prime run selects an account and starts a new session directly", async () 
     assert.match(output, new RegExp(`AIM Prime: ${run.provider} · ${run.binding}`));
     assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json")))[run.provider].binding, run.binding);
     assert.equal(launched.command, fs.realpathSync(launcher));
-    assert.deepEqual(launched.args, ["--provider", run.provider, "--model", run.model]);
+    assert.deepEqual(launched.args, [
+      "--provider",
+      run.provider,
+      "--model",
+      run.model,
+      ...run.extraArgs,
+    ]);
     assert.equal(launched.cwd, "/tmp/prime-project");
     assert.deepEqual(connectionPolicies, ["leased"]);
   }
