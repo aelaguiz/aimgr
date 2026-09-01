@@ -1,3 +1,5 @@
+import { DEFAULT_CLAUDE_FABLE_MODEL } from "../core/constants.js";
+
 export const CLAUDE_OPUS_RUN_PRESET_ARGS = Object.freeze([
   "--dangerously-skip-permissions",
   "--model",
@@ -9,7 +11,7 @@ export const CLAUDE_OPUS_RUN_PRESET_ARGS = Object.freeze([
 export const CLAUDE_FABLE_RUN_PRESET_ARGS = Object.freeze([
   "--dangerously-skip-permissions",
   "--model",
-  "claude-fable-5",
+  DEFAULT_CLAUDE_FABLE_MODEL,
   "--effort",
   "xhigh",
 ]);

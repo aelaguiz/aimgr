@@ -23,6 +23,8 @@ export const OPENAI_CODEX_PROVIDER = "openai-codex";
 
 export const ANTHROPIC_PROVIDER = "anthropic";
 
+export const DEFAULT_CLAUDE_FABLE_MODEL = "claude-fable-5-1";
+
 export const SAKANA_PROVIDER = "sakana";
 
 export const XAI_PROVIDER = "xai";

@@ -817,7 +817,7 @@ test("Prime run selects an account and starts a new session directly", async () 
 
   for (const run of [
     { flavor: "codex", provider: "openai-codex", model: "gpt-5.6-sol", binding: "pro3" },
-    { flavor: "claude", provider: "anthropic", model: "claude-fable-5", binding: "claude" },
+    { flavor: "claude", provider: "anthropic", model: "claude-fable-5-1", binding: "claude" },
   ]) {
     const home = mkTempHome();
     const statePath = path.join(home, ".aimgr", "secrets.json");

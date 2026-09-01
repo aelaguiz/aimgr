@@ -4,6 +4,7 @@ import {
   AIMGR_REDIS_PRIMARY_HOST,
   AIMGR_REDIS_PRIMARY_URL,
   AIMGR_REDIS_TRANSPORT,
+  DEFAULT_CLAUDE_FABLE_MODEL,
   DEFAULT_CODEX_WATCH_INTERVAL_SECONDS,
   DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
 } from "../core/constants.js";
@@ -48,7 +49,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim pi use [--codex <auto|label|off>] [--claude <fable|opus|label|off>]",
     "  aim pi status | aim pi uninstall [--provider <openai-codex|anthropic>]",
     "  aim prime run codex   # select Codex and start a new Prime session with gpt-5.6-sol",
-    "  aim prime run claude  # select Claude and start a new Prime session with claude-fable-5",
+    `  aim prime run claude  # select Claude and start a new Prime session with ${DEFAULT_CLAUDE_FABLE_MODEL}`,
     "  aim prime run grok    # select SuperGrok and start a new Prime session with grok-4.6",
 
     "  aim prime resume <path-or-id> [--rotate]  # resume normally, or manually hand off managed Codex/Claude/Grok to a different same-provider account",

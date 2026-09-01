@@ -1,7 +1,12 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
+import {
+  ANTHROPIC_PROVIDER,
+  DEFAULT_CLAUDE_FABLE_MODEL,
+  OPENAI_CODEX_PROVIDER,
+  XAI_PROVIDER,
+} from "../../core/constants.js";
 import { resolveManagedPrimeAgentDir } from "../../io/paths.js";
 import { readPrimeSessionProfile } from "../../targets/prime-sessions.js";
 import { normalizeLabel } from "../../core/normalize.js";
@@ -566,7 +571,7 @@ async function handleRun(context, targetId) {
   const profile = flavor === "codex"
     ? { provider: OPENAI_CODEX_PROVIDER, model: "gpt-5.6-sol" }
     : flavor === "claude"
-      ? { provider: ANTHROPIC_PROVIDER, model: "claude-fable-5" }
+      ? { provider: ANTHROPIC_PROVIDER, model: DEFAULT_CLAUDE_FABLE_MODEL }
       : flavor === "grok"
         ? { provider: XAI_PROVIDER, model: "grok-4.6" }
         : null;
