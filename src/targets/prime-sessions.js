@@ -156,6 +156,7 @@ export function readPrimeSessionProfile({
   let lastModel = null;
   let thinking = null;
   const bindings = new Map();
+  const bindingHistoryByProvider = new Map();
   for (const entry of activeBranch) {
     if (
       entry?.type === "model_change"
@@ -185,6 +186,9 @@ export function readPrimeSessionProfile({
       && typeof credentialBinding.provider === "string"
       && typeof credentialBinding.binding === "string"
     ) {
+      const bindingHistory = bindingHistoryByProvider.get(credentialBinding.provider) ?? [];
+      bindingHistory.push(credentialBinding.binding);
+      bindingHistoryByProvider.set(credentialBinding.provider, bindingHistory);
       bindings.set(credentialBinding.provider, {
         binding: credentialBinding.binding,
         identityFingerprint: typeof credentialBinding.identityFingerprint === "string"
@@ -210,6 +214,7 @@ export function readPrimeSessionProfile({
   return {
     ...lastModel,
     ...binding,
+    bindingHistory: bindingHistoryByProvider.get(lastModel.provider) ?? [],
     thinking,
     sessionId: sessionHeader.id,
     sessionPath,

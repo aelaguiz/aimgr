@@ -526,6 +526,82 @@ test("Prime rotate resume hands off Claude in place without mutating AIM target 
   assert.doesNotMatch(JSON.stringify(launches), /ACCESS_TWO|REFRESH_TWO/);
 });
 
+test("repeated Claude rotating resumes cycle across selectable alternate accounts", async () => {
+  const home = mkTempHome();
+  const statePath = path.join(home, ".aimgr", "secrets.json");
+  const agentDir = path.join(home, "prime-agent");
+  const state = fixtureState();
+  state.accounts.boss = state.accounts.claude;
+  state.credentials.anthropic.boss = state.credentials.anthropic.claude;
+  delete state.accounts.claude;
+  delete state.credentials.anthropic.claude;
+  for (const [label, index] of [["pro12", 12], ["pro13", 13]]) {
+    state.accounts[label] = {
+      provider: "anthropic",
+      expect: { email: `${label}@example.com` },
+      reauth: { mode: "native-claude" },
+      pool: { enabled: true },
+    };
+    state.credentials.anthropic[label] = buildAnthropicClaudeCredential({
+      access: `ACCESS_${index}`,
+      refresh: `REFRESH_${index}`,
+      emailAddress: `${label}@example.com`,
+      organizationName: `Org ${index}`,
+      organizationUuid: `org_${index}`,
+    });
+  }
+  writeJson(statePath, state);
+  const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  const env = { PRIME_AGENT_CODING_AGENT_DIR: agentDir };
+  const sessionId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const sessionPath = writePrimeSession(agentDir, {
+    id: sessionId,
+    provider: "anthropic",
+    model: "claude-fable-5",
+    binding: "boss",
+    identityFingerprint: fixtureIdentityFingerprint(state, "anthropic", "boss"),
+  });
+  const usage = {
+    boss: { ok: true, windows: [{ label: "5h", kind: "session", usedPercent: 0 }] },
+    pro13: { ok: true, windows: [{ label: "5h", kind: "session", usedPercent: 0 }] },
+    pro12: { ok: true, windows: [{ label: "5h", kind: "session", usedPercent: 1 }] },
+  };
+  const selected = [];
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await runCli(["prime", "resume", sessionId, "--rotate", "--home", home], {
+      env,
+      connectRedisStoreImpl: redis.connectRedisStoreImpl,
+      collectClaudeRedisAccountUsageStatusImpl: claudeUsageStatusStub(usage),
+      resolvePrimeLauncherImpl: () => "/tmp/prime-agent.sh",
+      launchPrimeAgentImpl: (options) => {
+        if (options.args[0] !== "__aim-handoff-credential") return { status: 0 };
+        const requestedBinding = options.args[6];
+        const requestedFingerprint = options.args[7];
+        const lines = fs.readFileSync(sessionPath, "utf8").trimEnd().split(/\r?\n/);
+        const parentId = JSON.parse(lines.at(-1)).id;
+        fs.appendFileSync(sessionPath, `${JSON.stringify({
+          type: "custom",
+          customType: "aimgr_credential_binding_v1",
+          id: `handoff-binding-${attempt}`,
+          parentId,
+          timestamp: new Date().toISOString(),
+          data: {
+            provider: "anthropic",
+            source: "aimgr",
+            binding: requestedBinding,
+            identityFingerprint: requestedFingerprint,
+          },
+        })}\n`);
+        selected.push(requestedBinding);
+        return { status: 0 };
+      },
+    });
+  }
+
+  assert.deepEqual(selected, ["pro13", "pro12", "boss"]);
+});
+
 test("Prime rotate resume manually hands off xAI in place without automatic advance", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");

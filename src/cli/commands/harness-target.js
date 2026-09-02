@@ -107,6 +107,7 @@ async function selectClaudePreset({
   fetchJsonWithTimeoutImpl,
   collectClaudeRedisAccountUsageStatusImpl = collectClaudeRedisAccountUsageStatus,
   excludeLabel = null,
+  recentLabels = [],
 }) {
   const records = (runtime.snapshot?.credentials ?? [])
     .filter((record) => record.provider === ANTHROPIC_PROVIDER);
@@ -125,7 +126,7 @@ async function selectClaudePreset({
   const cycleAvoid = buildRecentSelectionCycleAvoidLabels({
     selectableLabels,
     sourceLabel: excludeLabel,
-    recentLabels: [],
+    recentLabels,
   });
   const withoutSource = accounts.filter((account) => account.label !== excludeLabel);
   const preferred = withoutSource.filter((account) => !cycleAvoid.has(account.label));
@@ -213,6 +214,7 @@ async function resolveUseSelections({
             collectClaudeRedisAccountUsageStatusImpl:
               context.collectClaudeRedisAccountUsageStatusImpl,
             excludeLabel: context.avoidCurrentSelection === true ? currentLabel : null,
+            recentLabels: context.primeRotationRecentLabels,
           })
         : normalizeLabel(claudeSelection);
       if (!label) {
@@ -488,6 +490,8 @@ async function selectPrimeRotation(context, profile) {
         currentCodexLabel: profile.provider === OPENAI_CODEX_PROVIDER ? profile.binding : undefined,
         currentClaudeLabel: profile.provider === ANTHROPIC_PROVIDER ? profile.binding : undefined,
         currentGrokLabel: profile.provider === XAI_PROVIDER ? profile.binding : undefined,
+        primeRotationRecentLabels:
+          profile.provider === ANTHROPIC_PROVIDER ? profile.bindingHistory : undefined,
       },
       runtime,
       targetId: "prime",
