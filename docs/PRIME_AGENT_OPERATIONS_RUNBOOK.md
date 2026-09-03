@@ -238,6 +238,12 @@ Symptoms: `Timed out waiting for daemon worker response to heartbeats_list`, `cr
 
 ---
 
+### 6.x Un-archiving a session and rotating its account (tested 2026-09-03)
+
+- `ctrl+x` in the TUI archives the session: it appends `session_state {status: "archived"}` to the transcript, releases the worker, and **cancels every live heartbeat the root had** (`cancelJobsForSession`, all jobs flip to `cancelled` with that timestamp). Resuming re-marks the transcript `active` but does not restore the heartbeats; the agent has to re-arm them.
+- `aim prime resume <uuid> --rotate` on an archived session fails with `Unknown active session`: the credential handoff needs the session live in the daemon roster. Sequence that works, in the pane's own cwd: `aim prime resume /abs/path/<uuid>.jsonl` (plain, no `--rotate`) → wait for the TUI → `ctrl+d` detaches and leaves the worker resident → `aim prime resume <uuid> --rotate` in the same pane (handoff, then reattach by uuid). Verify with the `aimgr_credential_binding_v1` custom record at the end of the transcript.
+- Old `Provider usage limit reached (429)` lines stay in the pane scrollback after the rotation; check the transcript for assistant messages after the binding record before concluding the new account also failed.
+
 ## 7. Mass restore, 2026-09-02: what happened and what will bite you
 
 24 sessions across 7 Herdr servers were restored between 11:52 and 12:12 CDT. The first ten went in two waves of five by uuid and worked. The next thirteen were launched with `exec aim prime resume <uuid>` while ten kernels were still restoring; every one of them died on the uuid lookup timeout, and because of `exec` the shell died with the TUI, Herdr closed the pane, and ten single-pane workspaces vanished. They were recreated with their original labels and cwds and resumed one at a time by absolute path; all thirteen succeeded on the first attempt.
