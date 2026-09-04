@@ -48,7 +48,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim pi use            # activate the next-best pooled openai-codex label for local Pi CLI (external; new sessions)",
     "  aim pi use [--codex <auto|label|off>] [--claude <fable|opus|label|off>]",
     "  aim pi status | aim pi uninstall [--provider <openai-codex|anthropic>]",
-    "  aim prime run codex   # select Codex and start a new Prime session with gpt-5.6-sol",
+    "  aim prime run codex [model]  # select Codex and start a new Prime session (default gpt-5.6-sol; e.g. `aim prime run codex gpt-6-astra`)",
     `  aim prime run claude  # select Claude and start a new Prime session with ${DEFAULT_CLAUDE_FABLE_MODEL}`,
     "  aim prime run grok    # select SuperGrok and start a new Prime session with grok-4.6",
 

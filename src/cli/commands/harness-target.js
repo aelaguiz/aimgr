@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {
+
   ANTHROPIC_PROVIDER,
   DEFAULT_CLAUDE_FABLE_MODEL,
   OPENAI_CODEX_PROVIDER,
@@ -47,6 +48,8 @@ import { ensureHarnessSessionIdentityExtension } from "../../targets/harness-ses
 import { createPrimeTargetAdapter } from "../../targets/prime-agent.js";
 import { preparePrimeInvocation, resolvePrimeLauncher } from "../../targets/prime-launcher.js";
 
+
+const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 function adapterFor(targetId, options) {
   return targetId === "pi" ? createPiTargetAdapter(options) : createPrimeTargetAdapter(options);
 }
@@ -565,21 +568,26 @@ async function handleResume(context, targetId) {
 
 async function handleRun(context, targetId) {
   if (targetId !== "prime") throw new Error("Only Prime supports the run command.");
-  if (context.positional.length !== 3) {
-    throw new Error("Usage: aim prime run codex | aim prime run claude | aim prime run grok");
+  if (context.positional.length !== 3 && context.positional.length !== 4) {
+    throw new Error("Usage: aim prime run codex [model] | aim prime run claude | aim prime run grok");
   }
   if (context.opts.afterDoubleDash?.length) {
     throw new Error("`aim prime run` does not accept additional Prime arguments.");
   }
   const flavor = String(context.positional[2] ?? "").trim().toLowerCase();
+  // Optional exact model id, e.g. `aim prime run codex gpt-6-astra`.
+  const requestedModel = String(context.positional[3] ?? "").trim();
+  if (requestedModel && flavor !== "codex") {
+    throw new Error("Usage: aim prime run codex [model] | aim prime run claude | aim prime run grok");
+  }
   const profile = flavor === "codex"
-    ? { provider: OPENAI_CODEX_PROVIDER, model: "gpt-5.6-sol" }
+    ? { provider: OPENAI_CODEX_PROVIDER, model: requestedModel || DEFAULT_CODEX_MODEL }
     : flavor === "claude"
       ? { provider: ANTHROPIC_PROVIDER, model: DEFAULT_CLAUDE_FABLE_MODEL }
       : flavor === "grok"
         ? { provider: XAI_PROVIDER, model: "grok-4.6" }
         : null;
-  if (!profile) throw new Error("Usage: aim prime run codex | aim prime run claude | aim prime run grok");
+  if (!profile) throw new Error("Usage: aim prime run codex [model] | aim prime run claude | aim prime run grok");
 
   const selected = await handleUse({
     ...context,
