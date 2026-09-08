@@ -25,7 +25,9 @@ export function writeJsonFileWithBackup(filePath, data) {
     fs.copyFileSync(filePath, backupPath);
   }
   const json = `${JSON.stringify(data, null, 2)}\n`;
-  fs.writeFileSync(filePath, json, { encoding: "utf8" });
+  writeTextFileIfChanged(filePath, json, {
+    mode: fs.existsSync(filePath) ? fs.statSync(filePath).mode & 0o777 : undefined,
+  });
 }
 
 export function writeJsonFileWithBackupIfChanged(filePath, data) {

@@ -4,6 +4,7 @@ import { isObject } from "../core/normalize.js";
 
 export const ROUTINE_PROVIDERS = new Set(["anthropic", "openai-codex"]);
 export const ROUTINE_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+const CODEX_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 
 function requiredString(value, field, id) {
   if (typeof value !== "string" || !value.trim()) {
@@ -47,12 +48,22 @@ export function validateRoutineDefinition(id, value) {
     throw new Error(`Routine ${id} must be an object.`);
   }
 
-  const provider = requiredString(value.provider, "provider", id);
+  const agent = value.agent === undefined ? "prime" : requiredString(value.agent, "agent", id);
+  if (!["prime", "codex"].includes(agent)) {
+    throw new Error(`Routine ${id} has unsupported agent=${agent}.`);
+  }
+  if (agent === "prime" && value.profile !== undefined) {
+    throw new Error(`Routine ${id} profile is supported only with agent=codex.`);
+  }
+  const provider = requiredString(value.provider ?? (agent === "codex" ? "openai-codex" : undefined), "provider", id);
   if (!ROUTINE_PROVIDERS.has(provider)) {
     throw new Error(`Routine ${id} has unsupported provider=${provider}.`);
   }
-  const thinking = requiredString(value.thinking, "thinking", id);
-  if (!ROUTINE_THINKING_LEVELS.has(thinking)) {
+  if (agent === "codex" && provider !== "openai-codex") {
+    throw new Error(`Routine ${id} agent=codex requires provider=openai-codex.`);
+  }
+  const thinking = requiredString(value.thinking ?? (agent === "codex" ? "xhigh" : undefined), "thinking", id);
+  if (!(agent === "codex" ? CODEX_THINKING_LEVELS : ROUTINE_THINKING_LEVELS).has(thinking)) {
     throw new Error(`Routine ${id} has unsupported thinking=${thinking}.`);
   }
   const cwd = requiredString(value.cwd, "cwd", id);
@@ -68,11 +79,13 @@ export function validateRoutineDefinition(id, value) {
 
   return Object.freeze({
     id,
+    agent,
+    ...(agent === "codex" ? { profile: requiredString(value.profile ?? "yolo", "profile", id) } : {}),
     calendar: validateCalendar(value.calendar, id),
     cwd,
     promptFile,
     provider,
-    model: requiredString(value.model, "model", id),
+    model: requiredString(value.model ?? (agent === "codex" ? "gpt-6-astra" : undefined), "model", id),
     thinking,
     herdrSession: requiredString(value.herdrSession, "herdrSession", id),
     spaceTitleFormat,

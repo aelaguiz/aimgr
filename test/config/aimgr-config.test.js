@@ -112,3 +112,30 @@ test("malformed routine records are preserved for strict rejection", () => {
     /Routine broken must be an object/,
   );
 });
+
+test("Codex routine agent and profile survive unrelated config writes", () => {
+  const home = mkTempHome();
+  const definition = {
+    agent: "codex", profile: "automation", calendar: [{ weekday: 1, hour: 7, minute: 0 }],
+    cwd: "/tmp/work", promptFile: "/tmp/prompt.md", herdrSession: "growth",
+    spaceTitleFormat: "Codex report · {scheduled_local}",
+  };
+  writeAimgrConfig({ homeDir: home, config: { routines: { report: definition } } });
+  const read = readAimgrConfig({ homeDir: home });
+  writeAimgrConfig({ homeDir: home, config: { ...read.config, redis: { url: "redis://changed" } } });
+  const { routine } = readRoutineDefinition({ homeDir: home, id: "report" });
+  assert.equal(routine.agent, "codex");
+  assert.equal(routine.profile, "automation");
+  assert.equal(routine.model, "gpt-6-astra");
+  assert.equal(routine.thinking, "xhigh");
+  assert.equal(routine.provider, "openai-codex");
+  for (const [overrides, expected] of [
+    [{ agent: "unknown" }, /unsupported agent/],
+    [{ provider: "anthropic" }, /requires provider=openai-codex/],
+    [{ thinking: "off" }, /unsupported thinking/],
+    [{ profile: "" }, /requires non-empty profile/],
+  ]) {
+    writeAimgrConfig({ homeDir: home, config: { routines: { report: { ...definition, ...overrides } } } });
+    assert.throws(() => readRoutineDefinition({ homeDir: home, id: "report" }), expected);
+  }
+});

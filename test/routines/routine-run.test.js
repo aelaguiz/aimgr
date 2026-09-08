@@ -565,3 +565,191 @@ test("busy bootstrap contention fails visibly inside the retained Space", async 
   assert.equal(failed.exitCode, 1);
   assert.equal(runtime.pinCalls(), 0);
 });
+
+function codexDefinition(home, overrides = {}) {
+  return routineDefinition(home, {
+    agent: "codex", provider: "openai-codex", model: "gpt-6-astra", thinking: "xhigh", ...overrides,
+  });
+}
+
+function makeCodexRuntime(home, options = {}) {
+  const sessionId = "12345678-1234-4234-8234-123456789abc";
+  const calls = [];
+  let submitted = "";
+  let tui;
+  const kills = [];
+  return {
+    sessionId, calls, kills,
+    get submitted() { return submitted; },
+    closeTui(code = 0) { tui.emit("close", code, null); },
+    spawnSyncImpl(command, args) {
+      assert.equal(command, "fake-aim");
+      assert.deepEqual(args, ["codex", "use", "--home", home]);
+      const authPath = path.join(home, ".codex", "auth.json");
+      fs.mkdirSync(path.dirname(authPath), { recursive: true });
+      fs.writeFileSync(authPath, JSON.stringify({ tokens: { account_id: options.wrongAccount ? "wrong" : "acct-test" } }));
+      return { status: 0, stdout: JSON.stringify({ ok: true, activated: { receipt: { label: "test", accountId: "acct-test" } } }) };
+    },
+    spawnImpl(command, args, spawnOptions) {
+      calls.push({ command, args, options: spawnOptions });
+      assert.equal(command, "codex");
+      const child = new EventEmitter();
+      if (args.includes("resume")) {
+        assert.equal(spawnOptions.stdio, "inherit");
+        assert.equal(args.at(-1), sessionId);
+        assert.equal(args.includes("--last"), false);
+        tui = child;
+        if (options.resumeError) setImmediate(() => child.emit("error", new Error("resume unavailable")));
+        return child;
+      }
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.stdin = new Writable({ write(chunk, _encoding, callback) { submitted += chunk.toString(); callback(); } });
+      child.kill = (signal) => {
+        kills.push(signal);
+        if (!options.ignoreTerm || signal === "SIGKILL") setImmediate(() => child.emit("close", null, signal));
+      };
+      setImmediate(() => {
+        if (options.spawnError) { child.emit("error", Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" })); return; }
+        const events = options.events ?? [
+          { type: "thread.started", thread_id: sessionId },
+          { type: "turn.started" },
+          { type: "item.completed", item: { type: "agent_message", text: "Done ✓" } },
+          { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 3 } },
+        ];
+        const bytes = Buffer.from(events.map((event) => typeof event === "string" ? event : JSON.stringify(event)).join("\n") + (options.hang ? "\n" : ""));
+        // Split every byte, including Unicode and the final line without LF.
+        for (const byte of bytes) child.stdout.write(Buffer.from([byte]));
+        if (!options.hang) child.emit("close", options.exitCode ?? 0, null);
+      });
+      return child;
+    },
+  };
+}
+
+test("Codex routine executes the prompt once, saves events, and resumes that session while releasing overlap protection", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  const runtime = makeCodexRuntime(home);
+  const context = workerContext(home, receipt, runtime);
+  context.env.CODEX_API_KEY = "must-not-use-this-key";
+  context.env.OPENAI_API_KEY = "must-not-use-this-key";
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.calls.length === 2, "Codex TUI did not open");
+  const saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
+  assert.equal(saved.outcome, "completed");
+  assert.equal(saved.codex.sessionId, runtime.sessionId);
+  assert.deepEqual(saved.codex.usage, { input_tokens: 10, output_tokens: 3 });
+  assert.equal(saved.prompt.stdinSha256, saved.prompt.effectiveSha256);
+  assert.equal(saved.prompt.persistedSha256, null);
+  assert.equal(runtime.submitted, fs.readFileSync(receipt.configured.promptFile, "utf8").trim());
+  assert.match(fs.readFileSync(saved.codex.eventsPath, "utf8"), /Done ✓/);
+  assert.equal(fs.statSync(saved.codex.eventsPath).mode & 0o777, 0o600);
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
+  for (const call of runtime.calls) {
+    assert.equal(call.options.cwd, receipt.configured.cwd);
+    assert.equal(call.options.env.CODEX_HOME, path.join(home, ".codex"));
+    assert.equal(call.options.env.CODEX_API_KEY, undefined);
+    assert.equal(call.options.env.OPENAI_API_KEY, undefined);
+    assert.deepEqual(call.args.slice(0, 6), ["--profile", "yolo", "--model", "gpt-6-astra", "-c", 'model_reasoning_effort="xhigh"']);
+  }
+  assert.equal(runtime.calls[0].args.at(-1), "-");
+  runtime.closeTui();
+  const result = await worker;
+  assert.equal(result.interactiveTui.status, "exited");
+  assert.equal(context.getExitCode(), 0);
+});
+
+for (const [name, options, error, outcome] of [
+  ["wrong selected account", { wrongAccount: true }, /selected AIM account/, "failed_before_prompt"],
+  ["missing executable", { spawnError: true }, /ENOENT/, "failed_before_prompt"],
+  ["missing completion", { events: [
+    { type: "thread.started", thread_id: "12345678-1234-4234-8234-123456789abc" }, { type: "turn.started" },
+  ] }, /without a completed turn/, "needs_attention"],
+  ["failed turn", { events: [
+    { type: "thread.started", thread_id: "12345678-1234-4234-8234-123456789abc" }, { type: "turn.started" },
+    { type: "turn.failed", error: { message: "rate limited" } },
+  ] }, /rate limited/, "needs_attention"],
+  ["unclean exit", { exitCode: 1 }, /exited 1/, "needs_attention"],
+  ["malformed event", { events: ["{broken-json"] }, /JSON/, "failed_before_prompt"],
+  ["timeout", { hang: true, ignoreTerm: true, events: [
+    { type: "thread.started", thread_id: "12345678-1234-4234-8234-123456789abc" }, { type: "turn.started" },
+  ] }, /exceeded/, "needs_attention"],
+]) {
+  test(`Codex routine handles ${name} without a second prompt or retained ownership`, async () => {
+    const home = mkTempHome();
+    const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+    const runtime = makeCodexRuntime(home, options);
+    const context = workerContext(home, receipt, runtime);
+    context.routineTimeouts.killGraceMs = 5;
+    await assert.rejects(executeRoutineWorker(context), error);
+    const saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
+    assert.equal(saved.outcome, outcome);
+    assert.equal(context.getExitCode(), 1);
+    assert.equal(runtime.calls.some((call) => call.args.includes("resume")), false);
+    assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
+    assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
+    if (options.ignoreTerm) assert.deepEqual(runtime.kills, ["SIGTERM", "SIGKILL"]);
+  });
+}
+
+test("Codex resume failure preserves the completed job and records the TUI error", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  const runtime = makeCodexRuntime(home, { resumeError: true });
+  const context = workerContext(home, receipt, runtime);
+  const result = await executeRoutineWorker(context);
+  assert.equal(result.outcome, "completed");
+  assert.equal(result.needsAttention, true);
+  assert.equal(result.interactiveTui.exitCode, 1);
+  assert.match(result.interactiveTui.error, /resume unavailable/);
+  assert.equal(context.getExitCode(), 1);
+});
+
+test("Codex prompt drift fails before launching the agent", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  fs.appendFileSync(receipt.configured.promptFile, "Changed after claim");
+  const runtime = makeCodexRuntime(home);
+  await assert.rejects(executeRoutineWorker(workerContext(home, receipt, runtime)), /prompt changed/);
+  assert.equal(runtime.calls.length, 0);
+});
+
+test("scheduled Codex occurrences deduplicate and prevent overlap through the shared scheduler", async () => {
+  const home = mkTempHome();
+  configure(home, codexDefinition(home));
+  const calls = [];
+  const deps = {
+    env: { HOME: home },
+    routineNow: new Date(2026, 7, 15, 7, 5, 0),
+    routineAimCommand: ["fake-aim"],
+    spawnSyncImpl: fakeParentSpawn(calls, home),
+    routineWorkspaceMoveImpl: fakeWorkspaceMove,
+  };
+  const argv = ["routine", "run", "demo", "--json", "--home", home];
+  const first = JSON.parse(await runCli(argv, deps));
+  assert.equal(first.outcome, "queued");
+  assert.equal(first.configured.agent, "codex");
+  assert.equal(JSON.parse(await runCli(argv, deps)).outcome, "duplicate");
+  assert.equal(JSON.parse(await runCli([...argv, "--manual"], deps)).outcome, "overlap");
+  assert.equal(calls.filter((call) => call.args.includes("create")).length, 1);
+});
+
+test("interrupting a Codex routine stops its child and releases ownership", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  const runtime = makeCodexRuntime(home, { hang: true, events: [
+    { type: "thread.started", thread_id: "12345678-1234-4234-8234-123456789abc" }, { type: "turn.started" },
+  ] });
+  const context = workerContext(home, receipt, runtime);
+  const listenersBefore = process.listenerCount("SIGTERM");
+  const worker = executeRoutineWorker(context);
+  const rejected = assert.rejects(worker, /interrupted by SIGTERM/);
+  await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).outcome === "prompt_admitted", "prompt was not admitted");
+  process.emit("SIGTERM");
+  await rejected;
+  assert.deepEqual(runtime.kills, ["SIGTERM"]);
+  assert.equal(process.listenerCount("SIGTERM"), listenersBefore);
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
+});

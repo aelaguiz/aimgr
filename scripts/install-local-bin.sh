@@ -27,6 +27,8 @@ EOF
 install_wrapper "aim"
 install_wrapper "aimgr"
 
+AIMGR_NODE_BIN="$node_bin" bash "$repo_root/scripts/install-codex-shortcuts.sh"
+
 if [[ "$(uname -s)" == "Darwin" ]]; then
   mkdir -p "$claude_adapter_root"
   chmod 700 "$claude_adapter_root"

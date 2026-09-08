@@ -158,7 +158,7 @@ test("redis-configured codex use projects from Redis and writes only local adjun
   assert.doesNotMatch(JSON.stringify(local), /REFRESH_BOSS/);
 });
 
-test("redis-configured automatic codex use selects the lowest current 5h usage", async () => {
+test("redis-configured automatic codex use selects the lowest current weekly usage", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   await seedOpenAiRedis({
@@ -190,7 +190,7 @@ test("redis-configured automatic codex use selects the lowest current 5h usage",
   const result = JSON.parse(out);
   assert.equal(result.ok, true);
   assert.equal(result.activated.receipt.label, "qa");
-  assert.deepEqual(result.activated.receipt.reasons, ["lowest_5h_used"]);
+  assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used"]);
 });
 
 test("redis-configured codex use does not publish stale local auth before projection", async () => {
@@ -1151,7 +1151,7 @@ test("automatic Fable run skips a locked account and launches the lowest five-ho
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
-        "claude-fable-5",
+        "claude-fable-5-1",
         "--effort",
         "xhigh",
         "--resume",
@@ -1448,7 +1448,7 @@ test("claude resume by name selects the lowest five-hour account and honors an e
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
-        "claude-fable-5",
+        "claude-fable-5-1",
         "--effort",
         "xhigh",
         "--resume",

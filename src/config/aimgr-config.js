@@ -24,6 +24,8 @@ function normalizeRoutineStorageMap(value) {
       continue;
     }
     normalized[id] = {
+      ...(Object.hasOwn(definition, "agent") ? { agent: definition.agent } : {}),
+      ...(Object.hasOwn(definition, "profile") ? { profile: definition.profile } : {}),
       calendar: Array.isArray(definition.calendar)
         ? definition.calendar.map((entry) => (isObject(entry) ? { ...entry } : entry))
         : definition.calendar,

@@ -235,7 +235,7 @@ Current state on this machine: launcher → `path-resume-fix-20260902` (`bundle-
 
 | Command | What it does | Daemon contact |
 |---|---|---|
-| `aim prime run codex|claude|grok` | selects an account from Redis (Codex: lowest 5h usage and not exhausted; Claude: least-used unlocked; Grok: ready seat), writes an external descriptor into `~/.prime/agent/auth.json`, installs the footer extension, then `spawnSync prime-agent --provider <p> --model <m>` in the foreground | none by aim; the client launches the daemon if needed |
+| `aim prime run codex|claude|grok` | selects an account from Redis (Codex: lowest weekly usage and not exhausted; Claude: least-used unlocked; Grok: ready seat), writes an external descriptor into `~/.prime/agent/auth.json`, installs the footer extension, then `spawnSync prime-agent --provider <p> --model <m>` in the foreground | none by aim; the client launches the daemon if needed |
 | `aim prime resume <sel>` | installs the footer extension, then `spawnSync prime-agent --resume <sel>`; no Redis, no session read | same |
 | `aim prime resume <sel> --rotate` | reads the transcript's active branch for provider/model/binding history, selects a different account, runs `prime-agent __aim-handoff-credential <sid> <p> <m> <old> <oldfp> <new> <newfp> --json` (a daemon wire command that swaps the live root's credential generation without restarting the worker), then plain `--resume` | requires the session to be resident in the daemon |
 | `aim prime use ...` / `status` / `uninstall` | descriptor management only | none |

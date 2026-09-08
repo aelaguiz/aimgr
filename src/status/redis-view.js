@@ -56,10 +56,11 @@ function redactRedisEndpoint(value) {
   }
 }
 
-function projectUsage(value) {
+function projectUsage(value, provider) {
   const windows = Array.isArray(value?.windows)
     ? value.windows.slice(0, 16).map((window) => {
-        const label = safeText(window?.label);
+        const rawLabel = safeText(window?.label);
+        const label = provider === OPENAI_CODEX_PROVIDER && rawLabel === "168h" ? "Week" : rawLabel;
         const usedPercent = Number(window?.usedPercent);
         if (!label || !Number.isFinite(usedPercent)) return null;
         const resetAt = Number(window?.resetAt);
@@ -109,7 +110,7 @@ function projectStatusAccount(value) {
       ...(expiresAt ? { expiresAt } : {}),
       ...(safeText(value?.credentials?.expiresIn) ? { expiresIn: safeText(value.credentials.expiresIn) } : {}),
     },
-    usage: projectUsage(value?.usage),
+    usage: projectUsage(value?.usage, provider),
     lock: {
       status: safeToken(value?.lock?.status) ?? "unknown",
       source: safeToken(value?.lock?.source) ?? "unavailable",

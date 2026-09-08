@@ -99,8 +99,8 @@ aim rebalance openclaw
 aim rebalance hermes
 aim auth write hermes <label> --auth-file <abs-path>
 aim codex use [label]
-aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
-aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]
+aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
+aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--verbose] [--json]
 aim claude usage [account...] [--fresh] [--verbose] [--json]
@@ -126,9 +126,120 @@ aim prime status
 aim prime uninstall [--provider <openai-codex|anthropic|xai>]
 ```
 
+`aim codex use` rotates away from the current Codex account on every successful
+call. It prefers labels that have not been selected recently, then uses the
+current weekly usage as the tie-breaker, so repeated launches walk the
+eligible pool instead of bunching on one low-usage account.
+If no eligible alternative exists, it fails with `no_alternate_pool_account` and
+preserves the current account. `aim codex use <label>` selects that exact label,
+including when it is already active.
+
+For the normal interactive path, use `aim codex run`, which rotates and then
+launches `codex -p yolo` as one command. `aim codex run -- <codex args...>` passes
+explicit arguments through, and `aim codex run resume [<session-id>]` or
+`aim codex resume [<session-id>]` rotates before resuming a session.
+
+To launch on an explicitly chosen account, use `aim codex run <label> -- <codex args...>`.
+It selects that exact label, including when it is already active, without automatic
+pool selection. Arguments after `--` pass through unchanged; omit them to launch
+`codex -p yolo`. For example, after selecting and checking `writer`:
+
+```zsh
+aim codex use writer
+aim status --compact
+aim codex run writer -- exec --model gpt-6-astra -c 'model_reasoning_effort="xhigh"' --json 'Your prompt'
+```
+
+For a resume on that label, pass the native resume arguments after `--`, for
+example `aim codex run writer -- -p yolo resume <session-id>`; `resume` before
+`--` remains the rotating resume shorthand. Install the same rotating shell
+shortcuts on macOS or Linux with `bash scripts/install-codex-shortcuts.sh`
+(also run by `scripts/install-local-bin.sh`):
+
+```zsh
+c() { command aim codex run "$@"; }
+cr() { command aim codex resume "$@"; }
+```
+
+The installer loads these definitions at the end of `.zshrc`, overriding older
+dotfile definitions that called Codex directly. New terminals pick them up
+automatically; in an existing terminal, run
+`source "$HOME/.config/aimgr/codex-shortcuts.zsh"`. Interactive launches print
+the selected AIM account and previous label before opening Codex. Both `cr`
+and `cr <session-id>` rotate, and neither launches if no eligible alternate exists.
+
 `aim prime run codex|claude|grok` selects the account and model, then starts a new
 Prime session directly. Use `aim prime resume <path-or-id>` when you want an
 existing session instead.
+
+### Scheduled Prime and Codex jobs
+
+Add jobs under `routines` in `~/.aimgr/config.yaml`. Set `agent: codex` to run
+the native Codex CLI. Definitions without `agent` keep using Prime, including
+existing Prime jobs with `provider: openai-codex`.
+
+```yaml
+routines:
+  codex-morning-review:
+    agent: codex
+    calendar:
+      - hour: 8
+        minute: 0
+        weekday: 1
+    cwd: /Users/you/workspace/project
+    promptFile: /Users/you/.aimgr/routines/prompts/morning-review.md
+    herdrSession: work
+    spaceTitleFormat: "Codex morning review · {scheduled_local}"
+    model: gpt-6-astra
+    thinking: xhigh
+    profile: yolo
+```
+
+The example runs every Monday at 08:00 in the machine's local timezone. Omit
+`weekday` for every day, or add calendar entries for more times; weekdays are
+0 (Sunday) through 6 (Saturday). Both paths must be absolute and the named
+Herdr session must already be running with a focused workspace. The new job's
+workspace opens without taking focus.
+
+For Codex, `provider` defaults to `openai-codex`, `model` to `gpt-6-astra`,
+`thinking` to `xhigh`, and `profile` to `yolo`. The profile must exist in the
+Codex configuration and supplies permissions and other settings; use a custom
+profile for jobs that need different permissions. The routine explicitly sets
+the model/reasoning and uses AIM-selected ChatGPT account authentication.
+Prime retains its existing required provider/model/thinking fields.
+
+From this checkout, prepare and install a schedule with:
+
+```sh
+node scripts/install-routines.mjs --prepare codex-morning-review
+node scripts/install-routines.mjs codex-morning-review --desktop-off-confirmed
+```
+
+Use `--desktop-off-confirmed` only after confirming no Desktop automation also
+runs this job. Installing does not run the job immediately. To test one occurrence
+now, run `aim routine run codex-morning-review --manual --json`. Remove its
+schedule with `node scripts/install-routines.mjs --uninstall codex-morning-review`.
+
+Each Codex occurrence selects an account through `aim codex use`, runs the prompt
+file through `codex exec --json`, and opens `codex resume <exact-session-id>` in
+the same Herdr pane after the initial task finishes. The prompt is submitted only
+once. Codex sessions remain available for interactive follow-up while subsequent
+scheduled occurrences can start. Jobs inherit `aim codex use`'s requirement for
+an eligible alternate account. A blocked selection fails before the prompt runs.
+
+Receipts live in `~/.aimgr/routine-runs/<fire-key>.json`; Codex event logs sit
+beside them as `<fire-key>.codex.jsonl`. Receipts include the chosen account,
+session ID, prompt hash, usage, completion status, and interactive resume exit.
+Codex prompt admission is recorded from `turn.started`; completion requires
+`turn.completed` plus a successful process exit. Failures after admission need
+attention and are never automatically replayed. Execution times out after two
+hours and stops the job's process group. A failed interactive resume preserves
+the completed task's result and records that the follow-up UI needs attention.
+
+Both agents share duplicate prevention, per-job overlap protection, and the
+ten-minute admission window after a scheduled time. `--manual` creates a unique
+occurrence but still respects overlap protection. Scheduling uses macOS launchd.
+Codex's event protocol follows the [official non-interactive mode documentation](https://learn.chatgpt.com/docs/non-interactive-mode).
 
 
 ### Pi and Prime managed credentials

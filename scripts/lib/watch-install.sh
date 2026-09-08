@@ -138,7 +138,7 @@ render_mac_program_arguments() {
       <string>${WATCH_COMMAND_TARGET}</string>
       <string>watch</string>
       <string>--once</string>
-      <string>--rotate-below-5h-remaining-pct</string>
+      <string>--rotate-below-weekly-remaining-pct</string>
       <string>${THRESHOLD_PCT}</string>
       <string>--home</string>
       <string>${TARGET_HOME}</string>
@@ -151,7 +151,7 @@ EOF
       <string>${WATCH_COMMAND_TARGET}</string>
       <string>watch</string>
       <string>--once</string>
-      <string>--rotate-below-5h-remaining-pct</string>
+      <string>--rotate-below-weekly-remaining-pct</string>
       <string>${THRESHOLD_PCT}</string>
       <string>--home</string>
       <string>${TARGET_HOME}</string>
@@ -160,10 +160,10 @@ EOF
 
 render_linux_execstart() {
   if [[ -n "${HOST_ENV_WRAPPER}" ]]; then
-    printf '%s\n' "/bin/bash ${HOST_ENV_WRAPPER} -- ${NODE_BIN} ${AIMGR_ENTRYPOINT} ${WATCH_COMMAND_TARGET} watch --once --rotate-below-5h-remaining-pct ${THRESHOLD_PCT} --home ${TARGET_HOME}"
+    printf '%s\n' "/bin/bash ${HOST_ENV_WRAPPER} -- ${NODE_BIN} ${AIMGR_ENTRYPOINT} ${WATCH_COMMAND_TARGET} watch --once --rotate-below-weekly-remaining-pct ${THRESHOLD_PCT} --home ${TARGET_HOME}"
     return
   fi
-  printf '%s\n' "${NODE_BIN} ${AIMGR_ENTRYPOINT} ${WATCH_COMMAND_TARGET} watch --once --rotate-below-5h-remaining-pct ${THRESHOLD_PCT} --home ${TARGET_HOME}"
+  printf '%s\n' "${NODE_BIN} ${AIMGR_ENTRYPOINT} ${WATCH_COMMAND_TARGET} watch --once --rotate-below-weekly-remaining-pct ${THRESHOLD_PCT} --home ${TARGET_HOME}"
 }
 
 render_mac_plist() {

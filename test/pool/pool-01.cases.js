@@ -28,7 +28,7 @@ test("rankPoolCandidates keeps current label when it stays within the weighted h
   assert.equal(pickNextBestPoolLabel({ rankedCandidates: ranked }).label, "boss");
 });
 
-test("rankPoolCandidates favors weekly weighted headroom over the lowest 5h-used label", () => {
+test("rankPoolCandidates favors weekly weighted headroom over the lowest primary-window label", () => {
   const ranked = rankPoolCandidates({
     labels: ["qa", "pro2"],
     usage: {
@@ -48,7 +48,7 @@ test("rankPoolCandidates favors weekly weighted headroom over the lowest 5h-used
   assert.equal(ranked[1].label, "qa");
 });
 
-test("pickLeastUsedCodexPoolLabel chooses lowest 5h usage before weekly usage", () => {
+test("pickLeastUsedCodexPoolLabel chooses the lowest weekly usage", () => {
   const picked = pickLeastUsedCodexPoolLabel({
     labels: ["qa", "pro2"],
     usage: {
@@ -65,10 +65,25 @@ test("pickLeastUsedCodexPoolLabel chooses lowest 5h usage before weekly usage", 
 
   assert.equal(picked.label, "qa");
   assert.equal(picked.keptCurrent, false);
-  assert.deepEqual(picked.reasons, ["lowest_5h_used"]);
+  assert.deepEqual(picked.reasons, ["lowest_weekly_used"]);
 });
 
-test("pickNextBestLocalCliPoolLabel picks the lowest five-hour usage regardless of weekly usage", () => {
+test("pickLeastUsedCodexPoolLabel walks the eligible pool before reusing a recent label", () => {
+  const usage = Object.fromEntries(["boss", "editor", "qa", "writer"].map((label, index) => [label, {
+    ok: true,
+    windows: [{ kind: "primary", usedPercent: index }, { kind: "secondary", usedPercent: index }],
+  }]));
+
+  const picked = pickLeastUsedCodexPoolLabel({
+    labels: ["boss", "editor", "qa", "writer"],
+    usage,
+    recentLabels: ["boss", "editor", "qa"],
+  });
+
+  assert.equal(picked.label, "writer");
+});
+
+test("pickNextBestLocalCliPoolLabel picks the lowest weekly usage", () => {
   const ranked = rankPoolCandidates({
     labels: ["pro1", "pro2", "pro3"],
     currentLabel: "pro1",
@@ -92,10 +107,10 @@ test("pickNextBestLocalCliPoolLabel picks the lowest five-hour usage regardless 
   const picked = pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked });
   assert.equal(picked.label, "pro2");
   assert.equal(picked.keptCurrent, false);
-  assert.deepEqual(picked.reasons, ["lowest_5h_used"]);
+  assert.deepEqual(picked.reasons, ["lowest_weekly_used"]);
 });
 
-test("pickNextBestLocalCliPoolLabel still picks the lowest five-hour usage when every account is hot", () => {
+test("pickNextBestLocalCliPoolLabel still picks the lowest weekly usage when every account is hot", () => {
   const ranked = rankPoolCandidates({
     labels: ["boss", "cfo", "qa"],
     usage: {
@@ -117,7 +132,7 @@ test("pickNextBestLocalCliPoolLabel still picks the lowest five-hour usage when 
 
   const picked = pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked });
   assert.equal(picked.label, "boss");
-  assert.deepEqual(picked.reasons, ["lowest_5h_used"]);
+  assert.deepEqual(picked.reasons, ["lowest_weekly_used"]);
 });
 
 test("pickNextBestLocalCliPoolLabel refuses all-unusable candidates instead of relaxing blindly", () => {
@@ -136,7 +151,7 @@ test("pickNextBestLocalCliPoolLabel refuses all-unusable candidates instead of r
     now: Date.now(),
   });
 
-  // The 5h gate relaxation is for hot-but-usable accounts. If every ranked
+  // The primary-window gate relaxation is for hot-but-usable accounts. If every ranked
   // candidate is unavailable or exhausted, callers must block instead of activating one.
   assert.equal(pickNextBestLocalCliPoolLabel({ rankedCandidates: ranked }), null);
 });
@@ -195,6 +210,27 @@ test("fetchCodexUsageSnapshot preserves hard WHAM rate-limit fields", async () =
   assert.equal(snapshot.rateLimitReachedType, "primary");
   assert.equal(snapshot.resetCreditsAvailable, 3);
   assert.equal(isUsageSnapshotHardRateLimited(snapshot), true);
+});
+
+test("fetchCodexUsageSnapshot names a 168-hour Codex window Week", async () => {
+  const snapshot = await fetchCodexUsageSnapshot({
+    accessToken: "token",
+    accountId: "acct_1",
+    timeoutMs: 1000,
+    fetchJsonWithTimeoutImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        rate_limit: {
+          primary_window: {
+            used_percent: 82,
+            limit_window_seconds: 604800,
+          },
+        },
+      }),
+    }),
+  });
+
+  assert.deepEqual(snapshot.windows, [{ label: "Week", usedPercent: 82, resetAt: undefined }]);
 });
 
 test("fetchCodexUsageSnapshot preserves hard rate-limit fields from non-OK responses", async () => {

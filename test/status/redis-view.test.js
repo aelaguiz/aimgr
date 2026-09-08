@@ -9,11 +9,40 @@ import { resolveAimgrRedisCachePath } from "../../src/io/paths.js";
 import { writeLocalState } from "../../src/state/local-state.js";
 import {
   AIMGR_REDIS_STATUS_CACHE_KIND,
+  buildRedisDiagnosticCacheView,
   buildRedisStatusView,
 } from "../../src/status/redis-view.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
+
+test("Codex cache projects the legacy 168h window as Week", () => {
+  const view = buildRedisDiagnosticCacheView({
+    generatedAt: "2026-09-05T12:00:00.000Z",
+    nowMs: Date.parse("2026-09-05T12:00:00.000Z"),
+    accounts: [
+      {
+        label: "codex",
+        provider: OPENAI_CODEX_PROVIDER,
+        usage: {
+          ok: true,
+          windows: [{ label: "168h", usedPercent: 42 }],
+        },
+      },
+      {
+        label: "claude",
+        provider: ANTHROPIC_PROVIDER,
+        usage: {
+          ok: true,
+          windows: [{ label: "168h", usedPercent: 42 }],
+        },
+      },
+    ],
+  });
+
+  assert.equal(view.accounts[0].usage.windows[0].label, "Week");
+  assert.equal(view.accounts[1].usage.windows[0].label, "168h");
+});
 
 async function seedRedis(client) {
   const store = await connectRedisStore({ client, keyPrefix: "aimgr:status-test" });

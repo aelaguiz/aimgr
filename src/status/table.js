@@ -1,5 +1,5 @@
 import { normalizeBrowserBindingMode, normalizeInteractiveOAuthMode } from "../browser/bindings.js";
-import { BROWSER_MODE_AGENT_BROWSER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHROME_PROFILE, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK, REAUTH_MODE_NATIVE_CLAUDE } from "../core/constants.js";
+import { BROWSER_MODE_AGENT_BROWSER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHROME_PROFILE, OPENAI_CODEX_PROVIDER, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK, REAUTH_MODE_NATIVE_CLAUDE } from "../core/constants.js";
 import { normalizeLabel } from "../core/normalize.js";
 import { formatDurationRough, parseExpiresAtToMs } from "../core/time.js";
 
@@ -92,7 +92,7 @@ export function averageStatusNumbers(values) {
   return normalizedValues.reduce((sum, value) => sum + value, 0) / normalizedValues.length;
 }
 
-export function buildStatusAverageAccountTableRow(accounts, now = Date.now()) {
+export function buildStatusAverageAccountTableRow(accounts, now = Date.now(), { codex = false } = {}) {
   const normalizedAccounts = Array.isArray(accounts) ? accounts : [];
   const averageExpiryDeltaMs = averageStatusNumbers(
     normalizedAccounts.map((account) => readStatusAccountExpiryDeltaMs(account?.credentials, now)),
@@ -103,12 +103,28 @@ export function buildStatusAverageAccountTableRow(accounts, now = Date.now()) {
   const averageFiveHourResetDeltaMs = averageStatusNumbers(
     normalizedAccounts.map((account) => readStatusAccountResetDeltaMs(account?.usage, 0, now)),
   );
-  const averageWeekUsedPct = averageStatusNumbers(
-    normalizedAccounts.map((account) => readStatusAccountUsedPercent(account?.usage, 1)),
+  const averageWeeklyUsedPct = averageStatusNumbers(
+    normalizedAccounts.map((account) => readStatusAccountUsedPercent(account?.usage, codex ? 0 : 1)),
   );
-  const averageWeekResetDeltaMs = averageStatusNumbers(
-    normalizedAccounts.map((account) => readStatusAccountResetDeltaMs(account?.usage, 1, now)),
+  const averageWeeklyResetDeltaMs = averageStatusNumbers(
+    normalizedAccounts.map((account) => readStatusAccountResetDeltaMs(account?.usage, codex ? 0 : 1, now)),
   );
+
+  if (codex) {
+    return [
+      "average",
+      "--",
+      "--",
+      "--",
+      Number.isFinite(averageExpiryDeltaMs) ? formatDurationRough(averageExpiryDeltaMs) : "--",
+      Number.isFinite(averageWeeklyUsedPct) ? `${Math.round(averageWeeklyUsedPct)}%` : "--",
+      formatStatusDeltaMsCell(averageWeeklyResetDeltaMs),
+      "--",
+      "all",
+      "--",
+      "-",
+    ];
+  }
 
   return [
     "average",
@@ -118,8 +134,8 @@ export function buildStatusAverageAccountTableRow(accounts, now = Date.now()) {
     Number.isFinite(averageExpiryDeltaMs) ? formatDurationRough(averageExpiryDeltaMs) : "--",
     Number.isFinite(averageFiveHourUsedPct) ? `${Math.round(averageFiveHourUsedPct)}%` : "--",
     formatStatusDeltaMsCell(averageFiveHourResetDeltaMs),
-    Number.isFinite(averageWeekUsedPct) ? `${Math.round(averageWeekUsedPct)}%` : "--",
-    formatStatusDeltaMsCell(averageWeekResetDeltaMs),
+    Number.isFinite(averageWeeklyUsedPct) ? `${Math.round(averageWeeklyUsedPct)}%` : "--",
+    formatStatusDeltaMsCell(averageWeeklyResetDeltaMs),
     "--",
     "all",
     "--",
@@ -141,11 +157,17 @@ export function buildStatusAccountFlags(account) {
 
   if (account?.usage?.ok === true) {
     const windows = Array.isArray(account.usage.windows) ? account.usage.windows : [];
-    if (Number(windows[0]?.usedPercent) >= 100) {
-      flags.push("5h_full");
-    }
-    if (Number(windows[1]?.usedPercent) >= 100) {
-      flags.push("week_full");
+    if (account?.provider === OPENAI_CODEX_PROVIDER) {
+      if (Number(windows[0]?.usedPercent) >= 100) {
+        flags.push("week_full");
+      }
+    } else {
+      if (Number(windows[0]?.usedPercent) >= 100) {
+        flags.push("5h_full");
+      }
+      if (Number(windows[1]?.usedPercent) >= 100) {
+        flags.push("week_full");
+      }
     }
   }
 
@@ -193,9 +215,7 @@ export function renderCurrentCodexUsageText(view, { now = view?.nowMs ?? Date.no
   const account = Array.isArray(view.accounts) ? view.accounts.find((entry) => entry?.label === label) ?? null : null;
   return (
     `label=${label}` +
-    `  5h_used=${formatStatusAccountUsedCell(account?.usage, 0)}` +
-    `  5h_in=${formatStatusAccountResetCell(account?.usage, 0, now)}` +
-    `  wk_used=${formatStatusAccountUsedCell(account?.usage, 1)}` +
-    `  wk_in=${formatStatusAccountResetCell(account?.usage, 1, now)}\n`
+    `  wk_used=${formatStatusAccountUsedCell(account?.usage, 0)}` +
+    `  wk_in=${formatStatusAccountResetCell(account?.usage, 0, now)}\n`
   );
 }

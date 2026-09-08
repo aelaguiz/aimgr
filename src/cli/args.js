@@ -79,7 +79,7 @@ export function parseArgs(argv) {
     verbose: false,
     confirm: false,
     intervalSeconds: undefined,
-    rotateBelow5hRemainingPct: undefined,
+    rotateBelowWeeklyRemainingPct: undefined,
     primeResumeRotate: false,
     routineManual: false,
     port: undefined,
@@ -332,8 +332,8 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg === "--rotate-below-5h-remaining-pct") {
-      opts.rotateBelow5hRemainingPct = argv[i + 1];
+    if (arg === "--rotate-below-weekly-remaining-pct" || arg === "--rotate-below-5h-remaining-pct") {
+      opts.rotateBelowWeeklyRemainingPct = argv[i + 1];
       i += 1;
       continue;
     }

@@ -414,7 +414,7 @@ test("syncHermesHomesForLabel returns a blocked partial sync when a later home w
   assert.equal(betaAuth.providers["openai-codex"].tokens.refresh_token, "STALE_BOSS_BETA");
 });
 
-test("hermes watch --once noops when every live home stays above the 5h remaining threshold", async () => {
+test("hermes watch --once noops when every live home stays above the weekly remaining threshold", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
   const bossJwt = makeFakeJwt({

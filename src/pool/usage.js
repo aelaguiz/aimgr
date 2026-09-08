@@ -112,7 +112,7 @@ export async function fetchCodexUsageSnapshot({
   if (primary) {
     const windowHours = Math.round(((primary.limit_window_seconds || 10800) * 1.0) / 3600);
     windows.push({
-      label: `${windowHours}h`,
+      label: windowHours >= 168 ? "Week" : windowHours >= 24 ? "Day" : `${windowHours}h`,
       usedPercent: clampPercent(primary.used_percent || 0),
       resetAt: primary.reset_at ? primary.reset_at * 1000 : undefined,
     });

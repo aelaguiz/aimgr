@@ -3,11 +3,12 @@ import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js"
 import { renderClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
 import { buildStatusAccountFlags, buildStatusAverageAccountTableRow, formatInteractiveLoginSummary, formatStatusAccountExpiryCell, formatStatusAccountResetCell, formatStatusAccountResetCreditsCell, formatStatusAccountUsedCell, formatStatusTable, renderCurrentCodexUsageText } from "./table.js";
 
-function pushStatusAccountTable(lines, { heading, accounts, now }) {
+function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }) {
   lines.push(`${heading} (${accounts.length})`);
-  const averageAccountRow = accounts.length > 0 ? buildStatusAverageAccountTableRow(accounts, now) : null;
+  const averageAccountRow = accounts.length > 0 ? buildStatusAverageAccountTableRow(accounts, now, { codex }) : null;
+  const windowHeaders = codex ? ["wk_used", "wk_in"] : ["5h_used", "5h_in", "wk_used", "wk_in"];
   const accountRows = [
-    ["label", "st", "lock", "login", "exp", "5h_used", "5h_in", "wk_used", "wk_in", "resets", "provider", "usage_src", "flags"],
+    ["label", "st", "lock", "login", "exp", ...windowHeaders, "resets", "provider", "usage_src", "flags"],
     ...accounts.map((account) => [
       account.label,
       account.operator?.status || "unknown",
@@ -16,8 +17,10 @@ function pushStatusAccountTable(lines, { heading, accounts, now }) {
       formatStatusAccountExpiryCell(account.credentials?.expiresIn),
       formatStatusAccountUsedCell(account.usage, 0),
       formatStatusAccountResetCell(account.usage, 0, now),
-      formatStatusAccountUsedCell(account.usage, 1),
-      formatStatusAccountResetCell(account.usage, 1, now),
+      ...(codex ? [] : [
+        formatStatusAccountUsedCell(account.usage, 1),
+        formatStatusAccountResetCell(account.usage, 1, now),
+      ]),
       formatStatusAccountResetCreditsCell(account.usage),
       account.provider || "unknown",
       account.usage?.source || "unavailable",
@@ -48,7 +51,7 @@ export function renderStatusText(view, {
   );
 
   if (showAccounts) {
-    pushStatusAccountTable(lines, { heading: "CODEX ACCOUNTS", accounts: codexAccounts, now });
+    pushStatusAccountTable(lines, { heading: "CODEX ACCOUNTS", accounts: codexAccounts, now, codex: true });
     lines.push("");
     if (claudeUsageStatus) {
       lines.push(

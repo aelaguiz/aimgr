@@ -32,7 +32,7 @@ async function handleRedisHermesWatch(context) {
   if (String(positional[2] ?? "").trim()) {
     throw new Error("`aim hermes watch <label>` is not supported. Use `aim hermes watch` and let AIM decide when to rebalance.");
   }
-  const thresholdPct = resolveCodexWatchThresholdPct(opts.rotateBelow5hRemainingPct);
+  const thresholdPct = resolveCodexWatchThresholdPct(opts.rotateBelowWeeklyRemainingPct);
   if (opts.once) {
     const watched = await runRedisHermesWatchOnce(context, { thresholdPct });
     stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: watched.status !== "blocked", watched }), null, 2)}\n`);

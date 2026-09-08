@@ -214,7 +214,7 @@ export function buildWarningsFromCodexTargetStatus(status) {
   return warnings;
 }
 
-export function getPrimaryRemainingPctFromUsageSnapshot(snapshot) {
+export function getWeeklyRemainingPctFromUsageSnapshot(snapshot) {
   if (!snapshot || snapshot.ok !== true) return null;
   const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
   if (windows.length === 0) return null;
@@ -657,10 +657,17 @@ export async function activateCodexPoolSelection({
 
   let selection;
   if (selectLeastUsed) {
+    const recentRotationLabels = (Array.isArray(state.pool?.openaiCodex?.history)
+      ? state.pool.openaiCodex.history
+      : [])
+      .filter((entry) => entry?.kind === "selection" && (entry?.status === "activated" || entry?.status === "noop"))
+      .map((entry) => entry.label)
+      .filter((label) => typeof label === "string" && label.trim());
     selection = pickLeastUsedCodexPoolLabel({
       labels: selectionEligibleLabels,
       usage: usageByLabel,
       avoidLabel: avoidCurrentLabel ? currentLabel : null,
+      recentLabels: recentRotationLabels,
     });
   } else {
     const configuredCodexAgents = discoverStatusConfiguredOpenclawCodexAgents(state);

@@ -77,7 +77,7 @@ test("watch installers render one-shot Linux services in print-only mode", () =>
   assert.match(codex.stdout, /Unit=aim-codex-watch\.service/);
   assert.match(codex.stdout, /OnUnitActiveSec=123s/);
   assert.ok(codex.stdout.includes(`${process.execPath} ${path.join(process.cwd(), "bin", "aimgr.js")} codex watch --once`));
-  assert.ok(codex.stdout.includes(`--rotate-below-5h-remaining-pct 17 --home ${home}`));
+  assert.ok(codex.stdout.includes(`--rotate-below-weekly-remaining-pct 17 --home ${home}`));
 
   const hermes = runInstaller("install-hermes-watch.sh", baseArgs, { env });
   assert.equal(hermes.status, 0, hermes.stderr);

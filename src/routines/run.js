@@ -9,6 +9,7 @@ import {
   resolveAimgrRoutineLocksDir,
   resolveAimgrRoutineRunsDir,
   resolveManagedPrimeAgentDir,
+  resolveManagedCodexHomeDir,
 } from "../io/paths.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
 import {
@@ -18,8 +19,10 @@ import {
   resolvePrimeSessionDir,
 } from "../targets/prime-sessions.js";
 import { preparePrimeInvocation, resolvePrimeLauncher } from "../targets/prime-launcher.js";
+import { resolveCodexCommand } from "../targets/codex-runner.js";
 import { readRoutineDefinition } from "./config.js";
 import { deriveRoutineOccurrence } from "./schedule.js";
+import { codexRoutineArgs, startCodexRoutineTurn } from "./codex.js";
 
 const PIN_PROMPT = "AIM routine binding check. Do not use tools. Reply exactly AIM_ROUTINE_PIN_OK.";
 
@@ -88,6 +91,7 @@ function createReceipt(filePath, receipt) {
 
 function configuredReceipt(routine) {
   return {
+    ...(routine.agent === "codex" ? { agent: "codex", profile: routine.profile } : {}),
     calendar: routine.calendar,
     cwd: routine.cwd,
     promptFile: routine.promptFile,
@@ -250,9 +254,7 @@ function selectAccount(routine, context) {
   const flavor = routine.provider === "anthropic" ? "claude" : "codex";
   const output = runJsonSync(command, [
     ...prefix,
-    "prime",
-    "use",
-    flavor,
+    ...(routine.agent === "codex" ? ["codex", "use"] : ["prime", "use", flavor]),
     "--home",
     context.homeDir,
   ], {
@@ -260,6 +262,17 @@ function selectAccount(routine, context) {
     env: context.env,
     timeout: ACCOUNT_SELECTION_TIMEOUT_MS,
   }, context.spawnSyncImpl);
+  if (routine.agent === "codex") {
+    const selected = output?.activated?.receipt;
+    const codexHome = resolveManagedCodexHomeDir({ homeDir: context.homeDir, env: context.env });
+    if (!output?.ok || !selected?.label || !selected?.accountId) {
+      throw new Error("AIM did not select an eligible Codex account.");
+    }
+    if (readJson(path.join(codexHome, "auth.json"))?.tokens?.account_id !== selected.accountId) {
+      throw new Error("Codex auth did not preserve the selected AIM account.");
+    }
+    return { binding: selected.label, accountId: selected.accountId, codexHome };
+  }
   const selected = output?.receipt?.providers?.find((entry) => (
     entry.provider === routine.provider && typeof entry.binding === "string"
   ));
@@ -665,7 +678,7 @@ function lifecycleSleep(context, milliseconds) {
   return sleepImpl(milliseconds);
 }
 
-function startInteractivePrime(command, args, { cwd, env, spawnImpl = spawn } = {}) {
+function startInteractiveAgent(command, args, { cwd, env, spawnImpl = spawn } = {}) {
   const child = spawnImpl(command, args, {
     cwd,
     env,
@@ -771,6 +784,7 @@ export async function executeRoutineWorker(context) {
   let receipt = readJson(receiptPath);
   let bootstrapLease = null;
   let tui = null;
+  let codexTurn = null;
   let promptSubmissionStarted = false;
   let ownershipReleased = false;
   const releaseRoutineOwnership = () => {
@@ -795,6 +809,96 @@ export async function executeRoutineWorker(context) {
       selectedAccount: account,
       outcome: "verifying_pin",
     });
+
+    if (routine.agent === "codex") {
+      const command = resolveCodexCommand({ homeDir: context.homeDir, spawnImpl: context.spawnImpl });
+      const codexEnv = { ...context.env, CODEX_HOME: account.codexHome };
+      // Routine auth comes from the AIM-selected file, including exec runs
+      // launched from shells which also carry API credentials.
+      delete codexEnv.CODEX_API_KEY;
+      delete codexEnv.OPENAI_API_KEY;
+      const promptSource = fs.readFileSync(routine.promptFile, "utf8");
+      const effectivePrompt = promptSource.trim();
+      if (!effectivePrompt || sha256(promptSource) !== receipt.prompt.sourceSha256
+        || sha256(effectivePrompt) !== receipt.prompt.effectiveSha256) {
+        throw new Error("Routine prompt changed after the occurrence was claimed.");
+      }
+      const eventsPath = receiptPath.replace(/\.json$/, ".codex.jsonl");
+      const commonArgs = codexRoutineArgs(routine);
+      receipt = writeReceipt(receiptPath, {
+        ...receipt,
+        codex: { sessionId: null, eventsPath, codexHome: account.codexHome },
+        outcome: "starting_codex",
+      });
+      codexTurn = startCodexRoutineTurn({
+        command,
+        args: [...commonArgs, "exec", "--json", "--color", "never", "--skip-git-repo-check", "-"],
+        cwd: routine.cwd,
+        env: codexEnv,
+        prompt: effectivePrompt,
+        eventsPath,
+        stdout: context.stdout,
+        stderr: context.stderr ?? process.stderr,
+        spawnImpl: context.spawnImpl,
+        timeoutMs: privateTimeout(context, "initialTurnMs", INITIAL_TURN_TIMEOUT_MS),
+        killGraceMs: privateTimeout(context, "killGraceMs", 5_000),
+        onEvent(event) {
+          if (event.type === "thread.started") {
+            receipt = writeReceipt(receiptPath, {
+              ...receipt,
+              codex: { ...receipt.codex, sessionId: event.thread_id },
+            });
+          } else if (event.type === "turn.started") {
+            promptSubmissionStarted = true;
+            receipt = writeReceipt(receiptPath, {
+              ...receipt,
+              prompt: { ...receipt.prompt, admittedAt: new Date().toISOString(), stdinSha256: sha256(effectivePrompt) },
+              outcome: "prompt_admitted",
+            });
+          }
+        },
+      });
+      const ready = await codexTurn.ready;
+      bootstrapLease.assertHealthy();
+      await bootstrapLease.release();
+      bootstrapLease = null;
+      const result = await codexTurn.result;
+      if (ready.error || result.error) throw ready.error ?? result.error;
+      receipt = writeReceipt(receiptPath, {
+        ...receipt,
+        codex: { ...receipt.codex, usage: result.usage },
+        initialTurn: { status: "idle", stopReason: "turn.completed", settledAt: new Date().toISOString() },
+        outcome: "completed",
+        completedAt: new Date().toISOString(),
+        exitCode: 0,
+        needsAttention: false,
+        interactiveTui: { status: "starting", startedAt: new Date().toISOString(), sessionId: result.sessionId },
+      });
+      releaseRoutineOwnership();
+      // Resume by exact ID with no prompt, so opening the TUI never executes
+      // the scheduled task a second time. Keep it as a child of the pane shell.
+      tui = startInteractiveAgent(command, [...commonArgs, "resume", result.sessionId], {
+        cwd: routine.cwd, env: codexEnv, spawnImpl: context.spawnImpl,
+      });
+      receipt = writeReceipt(receiptPath, {
+        ...receipt,
+        interactiveTui: { ...receipt.interactiveTui, status: "live" },
+      });
+      const tuiExit = await tui.exit;
+      receipt = writeReceipt(receiptPath, {
+        ...receipt,
+        interactiveTui: {
+          ...receipt.interactiveTui, status: "exited", exitedAt: new Date().toISOString(),
+          exitCode: tuiExit.code, exitSignal: tuiExit.signal,
+          ...(tuiExit.error ? { error: safeError(tuiExit.error) } : {}),
+        },
+      });
+      if (tuiExit.code !== 0) {
+        receipt = writeReceipt(receiptPath, { ...receipt, needsAttention: true, error: "Codex task completed, but interactive resume failed." });
+        context.setExitCode(1);
+      }
+      return receipt;
+    }
 
     const launcher = context.primeLauncher ?? resolvePrimeLauncher({ env: context.env });
     // Print pins use Prime's process-owned frontend so they cannot replace a
@@ -913,7 +1017,7 @@ export async function executeRoutineWorker(context) {
         effectivePrompt,
       ],
     });
-    tui = startInteractivePrime(interactiveInvocation.command, interactiveInvocation.args, {
+    tui = startInteractiveAgent(interactiveInvocation.command, interactiveInvocation.args, {
       cwd: routine.cwd,
       env: primeEnv,
       spawnImpl: context.spawnImpl,
@@ -1019,6 +1123,10 @@ export async function executeRoutineWorker(context) {
     });
     return receipt;
   } catch (error) {
+    if (codexTurn) {
+      codexTurn.stop(error);
+      await codexTurn.result;
+    }
     const needsAttention = promptSubmissionStarted;
     receipt = writeReceipt(receiptPath, {
       ...receipt,
@@ -1026,7 +1134,7 @@ export async function executeRoutineWorker(context) {
         status: needsAttention ? "uncertain" : "not_started",
         settledAt: new Date().toISOString(),
       },
-      outcome: needsAttention ? "needs_attention" : "failed_before_prompt",
+      outcome: receipt.initialTurn?.status === "idle" ? "completed" : needsAttention ? "needs_attention" : "failed_before_prompt",
       completedAt: receipt.completedAt ?? new Date().toISOString(),
       error: safeError(error),
       exitCode: 1,
@@ -1047,7 +1155,7 @@ export async function executeRoutineWorker(context) {
       if (!promptAdmitted) {
         tui.terminate();
       } else {
-        context.stderr?.write?.(`AIM routine ${routineId} needs attention; leaving its Prime TUI alive.\n`);
+        context.stderr?.write?.(`AIM routine ${routineId} needs attention; leaving its ${routine.agent} TUI alive.\n`);
       }
       const tuiExit = await tui.exit;
       receipt = writeReceipt(receiptPath, {

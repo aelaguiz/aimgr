@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { ensureDirectoryMode, writeJsonFileIfChanged } from "../io/json-store.js";
 import { resolveAimgrRedisCachePath } from "../io/paths.js";
@@ -54,11 +55,16 @@ function normalizeCacheToken(value) {
   return SAFE_TOKEN_PATTERN.test(token) ? token : null;
 }
 
+function normalizeUsageWindowLabel(provider, label) {
+  return provider === OPENAI_CODEX_PROVIDER && label === "168h" ? "Week" : label;
+}
+
 function normalizeCachedUsage(provider, value) {
   const windows = Array.isArray(value?.windows)
     ? value.windows.slice(0, MAX_USAGE_WINDOWS).map((window) => {
         if (!isObject(window)) return null;
-        const label = typeof window.label === "string" ? window.label.trim() : "";
+        const rawLabel = typeof window.label === "string" ? window.label.trim() : "";
+        const label = normalizeUsageWindowLabel(provider, rawLabel);
         const usedPercent = Number(window.usedPercent);
         if (!WINDOW_LABEL_PATTERN.test(label) || !Number.isFinite(usedPercent)) return null;
         const resetAt = normalizeCacheTimestamp(window.resetAt);

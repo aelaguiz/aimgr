@@ -6,7 +6,7 @@ import {
   AIMGR_REDIS_TRANSPORT,
   DEFAULT_CLAUDE_FABLE_MODEL,
   DEFAULT_CODEX_WATCH_INTERVAL_SECONDS,
-  DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
+  DEFAULT_CODEX_WATCH_ROTATE_BELOW_WEEKLY_REMAINING_PCT,
 } from "../core/constants.js";
 
 export function printHelp({ stdout = process.stdout } = {}) {
@@ -31,9 +31,11 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim rebalance hermes   # choose pooled Codex assignments for live Hermes homes",
     "  aim auth write hermes <label> --auth-file <abs-path>  # write Hermes auth.json only",
     "  aim auth maintain     # refresh due Redis-backed Claude and Codex OAuth credentials once",
-    "  aim codex use [label] # activate the eligible openai-codex label with the lowest current 5h usage, or explicitly switch a chosen label",
-    "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
-    "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-5h-remaining-pct <pct>]",
+    "  aim codex use [label] # select a balanced next account, or explicitly select a label",
+    "  aim codex run [label | resume [<session-id>]] [-- <codex args...>] # select the exact label, or rotate when omitted; defaults to -p yolo",
+    "  aim codex resume [<session-id>] # rotate, then resume with -p yolo",
+    "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]",
+    "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]",
     "  aim claude list [count] [--json]  # show recent local managed Claude sessions (default: 50)",
     "  aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus]  # optionally fork onto an exact label or the least-used unlocked account",
     "  aim claude run (opus|fable) [--resume]  # launch an unlocked account by preset usage: Fable-scoped for fable, shared 5h for opus",
@@ -59,7 +61,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
 
     "  aim prime use [--codex <auto|label|off>] [--claude <fable|opus|label|off>] [--grok <auto|label|off>]",
     "  aim prime status | aim prime uninstall [--provider <openai-codex|anthropic|xai>]",
-    "  aim routine run <id> [--manual] [--json]  # run one configured local scheduled routine occurrence",
+    "  aim routine run <id> [--manual] [--json]  # run a scheduled Prime or Codex job from ~/.aimgr/config.yaml",
     "  aim credential-helper # machine-only bounded JSON stdin/stdout protocol; never invoke interactively",
     "  aim sakana add <account-name> [--key <api-key>] [--tier standard|pro|max|payg] [--subscription <name>] [--notes <text>]",
     "  aim sakana use <account-name>  # write selected key to ~/.codex/.env as SAKANA_API_KEY",
@@ -86,7 +88,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  - `aim prime resume <session> --rotate` manually hands an already-live managed Codex, Claude, or Grok root to a different same-provider account, then attaches that exact root; plain resume stays pinned.",
     "  - Automatic credential `advance` is Codex-only; Claude and Grok change live bindings only through explicit manual handoff.",
     "  - During Redis outages, status remains local; cached harness access may continue only until its freshness skew.",
-    `  - \`aim codex watch --once\` is the scheduler-safe one-shot; foreground watch loops default to ${DEFAULT_CODEX_WATCH_INTERVAL_SECONDS}s and rotate below ${DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT}% 5h remaining.`,
+    `  - \`aim codex watch --once\` is the scheduler-safe one-shot; foreground watch loops default to ${DEFAULT_CODEX_WATCH_INTERVAL_SECONDS}s and rotate below ${DEFAULT_CODEX_WATCH_ROTATE_BELOW_WEEKLY_REMAINING_PCT}% weekly remaining.`,
     `  - \`aim hermes watch --once\` is the Hermes scheduler-safe one-shot and always delegates writes through \`aim rebalance hermes\`.`,
     "  - `aim mcp serve` is unauthenticated; tailnet-only by intent (default port 7337). Without --bind it waits for this machine's Tailscale IPv4 rather than binding every interface.",
     "",

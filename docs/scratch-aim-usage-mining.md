@@ -34,7 +34,7 @@ Interactive human usage is ~95% session lifecycle: run, resume, resume --rotate,
 | `aim status [--accounts\|--json\|--compact]` | ~740 | ~1,060 | pool health dashboard |
 | `aim auth maintain / auth write hermes` | ~770 | ~1,160 | credential repair/refresh |
 | `aim redis configure/import/export/config/ping/migrate` | ~1,200 | ~1,300 | shared cred store ops |
-| `aim hermes watch [--once] [--rotate-below-5h-remaining-pct N]` | ~390 | ~300 | fleet auto-rotation daemon |
+| `aim hermes watch [--once] [--rotate-below-weekly-remaining-pct N]` | ~390 | ~300 | fleet auto-rotation daemon |
 | `aim prime status / uninstall / create / identity` | ~800 | ~600 | binding + scheduled-routine surface |
 | `aim grok status / inventory` | ~275 | — | Grok pool checks |
 | `aim repair` | 1 | — | effectively unused |
@@ -69,7 +69,7 @@ Related non-`aim` tooling in the same loops: `codex-watch.sh --status/--install/
 
 **W9. Scheduled routines through aimgr.** "figure out how to set the gp monday reset as an aimgr recurring job using opus 5 high... every monday morning 8am" (08-17) → LaunchDaemon `com.funcountry.aimgr.routine.gp-monday-reset`; scheduled probe messages ("AIM_SCHEDULE_SMOKE_OK", "AIM_ROUTINE_PIN_OK", rotate-probe messages) confirm bindings after rotation.
 
-**W10. Watchers/daemons.** `aim hermes watch --once --rotate-below-5h-remaining-pct 20` as scheduler-safe one-shot; installed as LaunchDaemon every 300s on fleet machines; `codex-watch.sh --status/--install/--uninstall` maintenance sessions.
+**W10. Watchers/daemons.** `aim hermes watch --once --rotate-below-weekly-remaining-pct 20` as scheduler-safe one-shot; installed as LaunchDaemon every 300s on fleet machines; `codex-watch.sh --status/--install/--uninstall` maintenance sessions.
 
 ## 4. UX signals Amir stated directly
 

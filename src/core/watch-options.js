@@ -1,4 +1,4 @@
-import { DEFAULT_CODEX_WATCH_INTERVAL_SECONDS, DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT } from "./constants.js";
+import { DEFAULT_CODEX_WATCH_INTERVAL_SECONDS, DEFAULT_CODEX_WATCH_ROTATE_BELOW_WEEKLY_REMAINING_PCT } from "./constants.js";
 
 export function parseIntegerOption(rawValue, { name, minimum = 0, maximum = Number.POSITIVE_INFINITY } = {}) {
   const raw = String(rawValue ?? "").trim();
@@ -25,9 +25,9 @@ export function resolveCodexWatchIntervalSeconds(rawValue) {
 }
 
 export function resolveCodexWatchThresholdPct(rawValue) {
-  if (rawValue === undefined) return DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT;
+  if (rawValue === undefined) return DEFAULT_CODEX_WATCH_ROTATE_BELOW_WEEKLY_REMAINING_PCT;
   return parseIntegerOption(rawValue, {
-    name: "--rotate-below-5h-remaining-pct",
+    name: "--rotate-below-weekly-remaining-pct",
     minimum: 0,
     maximum: 100,
   });

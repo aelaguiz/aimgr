@@ -1,6 +1,6 @@
-import { DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { DEFAULT_CODEX_WATCH_ROTATE_BELOW_WEEKLY_REMAINING_PCT, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { resolveCodexWatchThresholdPct } from "../core/watch-options.js";
-import { activateCodexPoolSelection, buildCodexWatchNonfatalWarnings, buildCodexWatchTargetBlockers, getPrimaryRemainingPctFromUsageSnapshot, readCodexCliTargetStatus } from "../targets/codex-cli.js";
+import { activateCodexPoolSelection, buildCodexWatchNonfatalWarnings, buildCodexWatchTargetBlockers, getWeeklyRemainingPctFromUsageSnapshot, readCodexCliTargetStatus } from "../targets/codex-cli.js";
 import { isUsageSnapshotHardRateLimited } from "./account-status.js";
 import { buildHermesAssignmentsByHome, rebalanceHermesPool } from "./hermes-rebalance.js";
 import { buildHermesHomeBlockers, buildWarningsFromHermesHomeStatus, discoverHermesHomes, readHermesHomeStatus } from "./token-usage.js";
@@ -46,7 +46,7 @@ export async function watchCodexPoolSelectionOnce(
     state,
     homeDir,
     env = {},
-    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
+    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_WEEKLY_REMAINING_PCT,
   },
   {
     probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
@@ -83,7 +83,7 @@ export async function watchCodexPoolSelectionOnce(
         thresholdPct: effectiveThresholdPct,
         currentLabelBefore: null,
         currentLabelAfter: currentTarget.inferredLabel || null,
-        primaryRemainingPctBefore: null,
+        weeklyRemainingPctBefore: null,
         triggeredSelection: false,
         warnings,
         blockers: [{ reason: "no_pool_account_available" }],
@@ -107,7 +107,7 @@ export async function watchCodexPoolSelectionOnce(
       thresholdPct: effectiveThresholdPct,
       currentLabelBefore: null,
       currentLabelAfter: postTarget.inferredLabel || postTarget.activeLabel || null,
-      primaryRemainingPctBefore: null,
+      weeklyRemainingPctBefore: null,
       triggeredSelection: true,
       selectionReceipt: selection.receipt,
       warnings: [...warnings, ...(Array.isArray(selection.receipt?.warnings) ? selection.receipt.warnings : [])],
@@ -126,7 +126,7 @@ export async function watchCodexPoolSelectionOnce(
       thresholdPct: effectiveThresholdPct,
       currentLabelBefore,
       currentLabelAfter: currentLabelBefore,
-      primaryRemainingPctBefore: null,
+      weeklyRemainingPctBefore: null,
       triggeredSelection: false,
       warnings,
       blockers: targetBlockers,
@@ -136,8 +136,8 @@ export async function watchCodexPoolSelectionOnce(
   }
 
   const activeUsage = usageByLabel[currentLabelBefore] ?? null;
-  const primaryRemainingPctBefore = getPrimaryRemainingPctFromUsageSnapshot(activeUsage);
-  if (primaryRemainingPctBefore === null) {
+  const weeklyRemainingPctBefore = getWeeklyRemainingPctFromUsageSnapshot(activeUsage);
+  if (weeklyRemainingPctBefore === null) {
     const blockers = [
       buildUsageUnavailableBlocker({
         reason: "active_target_usage_unavailable",
@@ -152,7 +152,7 @@ export async function watchCodexPoolSelectionOnce(
       thresholdPct: effectiveThresholdPct,
       currentLabelBefore,
       currentLabelAfter: currentLabelBefore,
-      primaryRemainingPctBefore: null,
+      weeklyRemainingPctBefore: null,
       triggeredSelection: false,
       warnings,
       blockers,
@@ -161,7 +161,7 @@ export async function watchCodexPoolSelectionOnce(
     return { status: "blocked", receipt, wrote: false };
   }
 
-  if (primaryRemainingPctBefore >= effectiveThresholdPct) {
+  if (weeklyRemainingPctBefore >= effectiveThresholdPct) {
     const receipt = {
       action: "codex_watch",
       status: "noop",
@@ -169,7 +169,7 @@ export async function watchCodexPoolSelectionOnce(
       thresholdPct: effectiveThresholdPct,
       currentLabelBefore,
       currentLabelAfter: currentLabelBefore,
-      primaryRemainingPctBefore,
+      weeklyRemainingPctBefore,
       triggeredSelection: false,
       warnings,
       blockers: [],
@@ -193,7 +193,7 @@ export async function watchCodexPoolSelectionOnce(
     thresholdPct: effectiveThresholdPct,
     currentLabelBefore,
     currentLabelAfter: postTarget.inferredLabel || postTarget.activeLabel || null,
-    primaryRemainingPctBefore,
+    weeklyRemainingPctBefore,
     triggeredSelection: true,
     selectionReceipt: selection.receipt,
     warnings: [...warnings, ...(Array.isArray(selection.receipt?.warnings) ? selection.receipt.warnings : [])],
@@ -208,7 +208,7 @@ export async function watchHermesPoolSelectionOnce(
     state,
     homeDir,
     env = {},
-    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_5H_REMAINING_PCT,
+    thresholdPct = DEFAULT_CODEX_WATCH_ROTATE_BELOW_WEEKLY_REMAINING_PCT,
   },
   {
     probeUsageSnapshotsByProviderImpl = probeUsageSnapshotsByProvider,
@@ -242,7 +242,7 @@ export async function watchHermesPoolSelectionOnce(
       homeCount: 0,
       currentAssignmentsBefore: {},
       currentAssignmentsAfter: {},
-      lowestPrimaryRemainingPctBefore: null,
+      lowestWeeklyRemainingPctBefore: null,
       triggeredRebalance: false,
       needsSyncHomeIds: [],
       belowThresholdHomeIds: [],
@@ -263,7 +263,7 @@ export async function watchHermesPoolSelectionOnce(
       homeCount: homeStatuses.length,
       currentAssignmentsBefore: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
       currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
-      lowestPrimaryRemainingPctBefore: null,
+      lowestWeeklyRemainingPctBefore: null,
       triggeredRebalance: false,
       needsSyncHomeIds: sanitizeForStatus(needsSyncHomeIds),
       belowThresholdHomeIds: [],
@@ -279,7 +279,7 @@ export async function watchHermesPoolSelectionOnce(
   const belowThresholdHomeIds = [];
   const ineligibleHomeIds = [];
   const usageBlockers = [];
-  let lowestPrimaryRemainingPctBefore = null;
+  let lowestWeeklyRemainingPctBefore = null;
 
   for (const home of homeStatuses) {
     const currentLabel = home.currentLabel;
@@ -290,8 +290,8 @@ export async function watchHermesPoolSelectionOnce(
       ineligibleHomeIds.push(home.homeId);
     }
     const activeUsage = usageByLabel[currentLabel] ?? null;
-    const primaryRemainingPctBefore = getPrimaryRemainingPctFromUsageSnapshot(activeUsage);
-    if (primaryRemainingPctBefore === null) {
+    const weeklyRemainingPctBefore = getWeeklyRemainingPctFromUsageSnapshot(activeUsage);
+    if (weeklyRemainingPctBefore === null) {
       const canRotateAwayFromHardFailure =
         eligibleLabels.size > 0
         && !eligibleLabels.has(currentLabel)
@@ -306,11 +306,11 @@ export async function watchHermesPoolSelectionOnce(
       }
       continue;
     }
-    lowestPrimaryRemainingPctBefore =
-      lowestPrimaryRemainingPctBefore === null
-        ? primaryRemainingPctBefore
-        : Math.min(lowestPrimaryRemainingPctBefore, primaryRemainingPctBefore);
-    if (primaryRemainingPctBefore < effectiveThresholdPct) {
+    lowestWeeklyRemainingPctBefore =
+      lowestWeeklyRemainingPctBefore === null
+        ? weeklyRemainingPctBefore
+        : Math.min(lowestWeeklyRemainingPctBefore, weeklyRemainingPctBefore);
+    if (weeklyRemainingPctBefore < effectiveThresholdPct) {
       belowThresholdHomeIds.push(home.homeId);
     }
   }
@@ -324,7 +324,7 @@ export async function watchHermesPoolSelectionOnce(
       homeCount: homeStatuses.length,
       currentAssignmentsBefore: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
       currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
-      lowestPrimaryRemainingPctBefore,
+      lowestWeeklyRemainingPctBefore,
       triggeredRebalance: false,
       needsSyncHomeIds: sanitizeForStatus(needsSyncHomeIds),
       belowThresholdHomeIds,
@@ -345,7 +345,7 @@ export async function watchHermesPoolSelectionOnce(
       homeCount: homeStatuses.length,
       currentAssignmentsBefore: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
       currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(homeStatuses, { includeUnmapped: true })),
-      lowestPrimaryRemainingPctBefore,
+      lowestWeeklyRemainingPctBefore,
       triggeredRebalance: false,
       needsSyncHomeIds: [],
       belowThresholdHomeIds: [],
@@ -376,7 +376,7 @@ export async function watchHermesPoolSelectionOnce(
     homeCount: homeStatuses.length,
     currentAssignmentsBefore: sanitizeForStatus(currentAssignmentsBefore),
     currentAssignmentsAfter: sanitizeForStatus(buildHermesAssignmentsByHome(postStatuses, { includeUnmapped: true })),
-    lowestPrimaryRemainingPctBefore,
+    lowestWeeklyRemainingPctBefore,
     triggeredRebalance: true,
     needsSyncHomeIds: sanitizeForStatus(needsSyncHomeIds),
     belowThresholdHomeIds,

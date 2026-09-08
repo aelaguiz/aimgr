@@ -117,7 +117,7 @@ related:
 - Authoritative anchor: `src/coordination/records.js:42-60` — Redis credential records can already store arbitrary provider IDs with credential, identity, policy, health, and provenance.
 - Authoritative anchor: `src/coordination/snapshot.js:16-39` — coordination view creation already loops over all Redis credential records and creates `state.credentials[record.provider]` dynamically.
 - Authoritative anchor: `src/state/schema.js:144-165` — local state normalization still hardcodes OpenAI Codex and Anthropic pool scaffolding.
-- Authoritative anchor: `src/pool/usage.js:7-72` — OpenAI Codex usage is a live `wham/usage` endpoint with 5h/week windows; Sakana may not have an equivalent.
+- Authoritative anchor: `src/pool/usage.js:7-72` — OpenAI Codex usage is a live `wham/usage` endpoint with a weekly Pro window; Sakana may not have an equivalent.
 - Authoritative anchor: `src/targets/codex-cli.js:465-610` — pool activation has the right receipt and history shape but is tied to OAuth usage snapshots and `auth.json` projection.
 - Authoritative anchor: `src/targets/codex-tender.js:555-590` — Tend already has the desired stop/rotate/resume loop; it needs a provider-specific rotation adapter.
 
@@ -229,7 +229,7 @@ src/
 - Flow A: OpenAI Codex OAuth selection
   - Redis credential records -> `buildCoordinationView()` -> `activateCodexPoolSelection()` -> `applyCodexCliFromState()` -> write `~/.codex/auth.json`.
 - Flow B: OpenAI Codex proactive watch
-  - `aim codex watch --once` -> probe `wham/usage` for every Codex OAuth label -> rotate if the active 5h remaining percentage is below the threshold.
+  - `aim codex watch --once` -> probe `wham/usage` for every Codex OAuth label -> rotate if the active weekly remaining percentage is below the threshold.
 - Flow C: OpenAI Codex long-run Tend recovery
   - `aim codex run --tend` -> Codex session goal becomes `usageLimited` -> preserve live OAuth token -> select another Codex OAuth account -> resume the same Codex session.
 - Flow D: Sakana today

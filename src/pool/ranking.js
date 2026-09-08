@@ -242,7 +242,7 @@ export function pickNextBestPoolLabel({ rankedCandidates }) {
   return candidates[0] ?? null;
 }
 
-export function pickLeastUsedCodexPoolLabel({ labels, usage, avoidLabel }) {
+export function pickLeastUsedCodexPoolLabel({ labels, usage, avoidLabel, recentLabels = [] }) {
   const avoided = typeof avoidLabel === "string" && avoidLabel.trim() ? normalizeLabel(avoidLabel) : null;
   const candidates = [...new Set(
     (Array.isArray(labels) ? labels : []).map((label) => normalizeLabel(label)),
@@ -263,12 +263,25 @@ export function pickLeastUsedCodexPoolLabel({ labels, usage, avoidLabel }) {
       a.primaryUsedPct - b.primaryUsedPct
       || a.label.localeCompare(b.label)
     ));
-  const best = candidates[0] ?? null;
+  // Prefer labels that have not appeared recently. This makes repeated local
+  // launches walk the eligible pool instead of sending every new process to
+  // whichever account currently has the lowest usage percentage. Usage still
+  // decides the order inside the not-recently-used set and remains the
+  // fallback when the cycle is exhausted or telemetry is incomplete.
+  const alternatives = candidates.filter((candidate) => candidate.label !== avoided);
+  const avoidCount = Math.max(0, alternatives.length - 1);
+  const cycleAvoid = new Set();
+  for (let index = recentLabels.length - 1; index >= 0 && cycleAvoid.size < avoidCount; index -= 1) {
+    const label = recentLabels[index];
+    if (alternatives.some((candidate) => candidate.label === label)) cycleAvoid.add(label);
+  }
+  const preferred = candidates.filter((candidate) => !cycleAvoid.has(candidate.label));
+  const best = preferred[0] ?? candidates[0] ?? null;
   if (!best) return null;
   return {
     label: best.label,
     keptCurrent: false,
-    reasons: ["lowest_5h_used"],
+    reasons: ["lowest_weekly_used"],
   };
 }
 
@@ -304,6 +317,6 @@ export function pickNextBestLocalCliPoolLabel({
 
   const best = selectionPool[0] ?? null;
   if (!best) return null;
-  best.reasons.push("lowest_5h_used");
+  best.reasons.push("lowest_weekly_used");
   return best;
 }

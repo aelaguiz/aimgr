@@ -21,6 +21,8 @@ const PUBLIC_COMMAND_STEMS = [
   "aim rebalance hermes",
   "aim auth write hermes",
   "aim codex use",
+  "aim codex run",
+  "aim codex resume",
   "aim codex watch",
   "aim hermes watch",
   "aim claude status",
