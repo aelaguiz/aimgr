@@ -1,7 +1,7 @@
 ---
 title: Codex Desktop Stable Identity
 date: 2026-08-07
-status: ready
+status: archived
 review_verdict: pass
 fallback_policy: fail_closed
 owners:
@@ -14,6 +14,12 @@ related:
   - docs/aelaguiz/v2-proposal.md
   - https://learn.chatgpt.com/docs/remote-connections
 ---
+
+> Archived on 2026-09-07 during consolidation onto `main`. The experiment's
+> commits are preserved in the merge history. Its runtime changes are not active:
+> current AIM keeps `codex use/watch`, the existing managed Codex home, and the
+> current account-rotation behavior. The implementation checklist below records
+> what existed on the historical branch, not what is installed from `main`.
 
 # TL;DR
 
