@@ -23,7 +23,7 @@ import { resolveCodexCommand } from "../targets/codex-runner.js";
 import { readRoutineDefinition } from "./config.js";
 import { deriveRoutineOccurrence } from "./schedule.js";
 import { codexRoutineArgs, startCodexRoutineTurn } from "./codex.js";
-import { claudeRoutineArgs, runClaudeRoutineSession, startClaudeRoutineTurn } from "./claude.js";
+import { prepareInteractiveClaudeRoutine, readClaudeRoutineEvents, runClaudeRoutineSession } from "./claude.js";
 import { runClaudeCli } from "../targets/claude-runner.js";
 
 const PIN_PROMPT = "AIM routine binding check. Do not use tools. Reply exactly AIM_ROUTINE_PIN_OK.";
@@ -817,82 +817,114 @@ export async function executeRoutineWorker(context) {
       const eventsPath = receiptPath.replace(/\.json$/, ".claude.jsonl");
       const runSession = context.routineClaudeSessionImpl ?? runClaudeRoutineSession;
       await runSession(context, { cwd: routine.cwd, async runSession(launch) {
+        const interactiveLaunch = prepareInteractiveClaudeRoutine({ launch, routine, sessionId, eventsPath });
+        bootstrapLease.assertHealthy();
+        await bootstrapLease.release();
+        bootstrapLease = null;
+        receipt = writeReceipt(receiptPath, {
+          ...receipt,
+          selectedAccount: { binding: launch.label, configDir: launch.configDir },
+          claude: { sessionId, eventsPath, configDir: launch.configDir },
+          outcome: "starting_claude",
+          interactiveTui: { status: "starting", startedAt: new Date().toISOString(), sessionId },
+        });
+        let exited = false;
+        const interactiveExit = Promise.resolve().then(() => (context.runClaudeCliImpl ?? runClaudeCli)({
+          ...interactiveLaunch, args: [...interactiveLaunch.args, "--", effectivePrompt],
+        })).then((result) => { exited = true; return result; }, (error) => {
+          exited = true;
+          return { status: 1, error };
+        });
+        let settled = false;
+        let consumed = 0;
+        let observerError = null;
+        const timeoutMs = privateTimeout(context, "initialTurnMs", INITIAL_TURN_TIMEOUT_MS);
+        const deadline = Date.now() + timeoutMs;
+        let timedOut = false;
         try {
-          bootstrapLease.assertHealthy();
           receipt = writeReceipt(receiptPath, {
-            ...receipt,
-            selectedAccount: { binding: launch.label, configDir: launch.configDir },
-            claude: { sessionId, eventsPath, configDir: launch.configDir },
-            outcome: "starting_claude",
+            ...receipt, interactiveTui: { ...receipt.interactiveTui, status: "live" },
           });
-          nativeTurn = startClaudeRoutineTurn({
-            launch, routine, sessionId, prompt: effectivePrompt, eventsPath,
-            stdout: context.stdout, stderr: context.stderr ?? process.stderr,
-            spawnImpl: context.spawnImpl,
-            timeoutMs: privateTimeout(context, "initialTurnMs", INITIAL_TURN_TIMEOUT_MS),
-            killGraceMs: privateTimeout(context, "killGraceMs", 5_000),
-            onEvent(event) {
-              if (event.type === "system" && event.subtype === "init") {
-                promptSubmissionStarted = true;
+          while (!settled) {
+            for (const event of readClaudeRoutineEvents(eventsPath).slice(consumed)) {
+              consumed += 1;
+              if (event.sessionId !== sessionId) continue;
+              if (event.type === "SessionStart") {
                 receipt = writeReceipt(receiptPath, {
-                  ...receipt, claude: { ...receipt.claude, model: event.model }, outcome: "running_claude",
+                  ...receipt,
+                  claude: { ...receipt.claude, transcriptPath: event.transcriptPath, model: event.model ?? routine.model },
+                  interactiveTui: { ...receipt.interactiveTui, readyAt: event.at },
                 });
-              } else if (event.type === "user" && event.isReplay === true && !event.parent_tool_use_id) {
+              } else if (event.type === "UserPromptSubmit" && !promptSubmissionStarted
+                && event.promptSha256 === receipt.prompt.effectiveSha256) {
                 promptSubmissionStarted = true;
                 receipt = writeReceipt(receiptPath, {
                   ...receipt,
-                  prompt: { ...receipt.prompt, admittedAt: new Date().toISOString(), stdinSha256: sha256(effectivePrompt) },
+                  claude: { ...receipt.claude, transcriptPath: event.transcriptPath },
+                  prompt: { ...receipt.prompt, admittedAt: event.at, submittedSha256: event.promptSha256 },
                   outcome: "prompt_admitted",
                 });
-              } else if (event.type === "result") {
+              } else if (promptSubmissionStarted && ["Stop", "StopFailure"].includes(event.type)) {
+                const failed = event.type === "StopFailure";
+                settled = true;
                 receipt = writeReceipt(receiptPath, {
-                  ...receipt, claude: { ...receipt.claude, costUsd: event.total_cost_usd ?? null, modelUsage: event.modelUsage ?? null },
+                  ...receipt,
+                  initialTurn: { status: failed ? "error" : "idle", stopReason: event.type, settledAt: event.at },
+                  outcome: failed ? "needs_attention" : "completed", completedAt: event.at,
+                  exitCode: failed ? 1 : 0, needsAttention: failed,
+                  ...(failed ? { error: `Claude turn failed: ${event.error ?? "unknown error"}. The interactive session remains available.` } : { error: null }),
                 });
+                releaseRoutineOwnership();
+                break;
               }
-            },
-          });
-          const ready = await nativeTurn.ready;
-          bootstrapLease.assertHealthy();
-          await bootstrapLease.release();
-          bootstrapLease = null;
-          const result = await nativeTurn.result;
-          if (ready.error || result.error) throw ready.error ?? result.error;
-          receipt = writeReceipt(receiptPath, {
-            ...receipt,
-            claude: { ...receipt.claude, usage: result.usage },
-            initialTurn: { status: "idle", stopReason: "result.success", settledAt: new Date().toISOString() },
-            outcome: "completed", completedAt: new Date().toISOString(), exitCode: 0, needsAttention: false,
-            interactiveTui: { status: "live", startedAt: new Date().toISOString(), sessionId },
-          });
-          releaseRoutineOwnership();
-          let resumed;
-          try {
-            resumed = await (context.runClaudeCliImpl ?? runClaudeCli)({
-              ...launch, args: [...claudeRoutineArgs(routine), "--resume", sessionId],
-            });
-          } catch (error) {
-            resumed = { status: 1, error };
+              // Later user messages, background notifications, and subagent
+              // activity are normal. They never invalidate the original prompt.
+            }
+            if (exited || settled) break;
+            if (!timedOut && Date.now() >= deadline) {
+              timedOut = true;
+              receipt = writeReceipt(receiptPath, {
+                ...receipt, outcome: "needs_attention", needsAttention: true,
+                error: `Claude initial turn has not settled after ${timeoutMs}ms. The interactive session remains available.`,
+              });
+            }
+            await Promise.race([interactiveExit, lifecycleSleep(context, privateTimeout(context, "pollMs", LIFECYCLE_POLL_MS))]);
           }
-          const resumeFailed = resumed?.status !== 0 || Boolean(resumed?.signal);
-          if (resumeFailed) context.setExitCode(1);
-          receipt = writeReceipt(receiptPath, {
-            ...receipt,
-            interactiveTui: {
-              ...receipt.interactiveTui, status: "exited", exitedAt: new Date().toISOString(),
-              exitCode: resumed?.status ?? 1, exitSignal: resumed?.signal ?? null,
-              ...(resumed?.error ? { error: safeError(resumed.error) } : {}),
-            },
-            ...(resumeFailed ? { needsAttention: true, error: "Claude task completed, but interactive resume failed." } : {}),
-          });
-          // Let the managed runner publish rotated credentials and release its
-          // account lease even if the follow-up TUI failed or was interrupted.
-          return { status: resumeFailed ? 1 : 0, signal: null };
         } catch (error) {
-          // Stop before the managed callback returns and releases its account.
-          nativeTurn?.stop(error);
-          await nativeTurn?.result;
-          throw error;
+          observerError = error;
+          try {
+            receipt = writeReceipt(receiptPath, {
+              ...receipt, outcome: "needs_attention", needsAttention: true,
+              error: `Routine observation failed: ${safeError(error)}. The interactive session remains available.`,
+            });
+          } catch {
+            // A receipt write failure must not terminate the user's Claude UI.
+          }
+          context.stderr?.write?.(`AIM routine observation failed: ${safeError(error)}. Claude remains interactive.\n`);
         }
+        // Keep the account lease alive for the actual interactive process, even
+        // when observation fails or the scheduled task has already finished.
+        const ended = await interactiveExit;
+        const failedExit = ended?.status !== 0 || Boolean(ended?.signal);
+        const needsAttention = !settled || receipt.needsAttention || failedExit;
+        receipt = writeReceipt(receiptPath, {
+          ...receipt,
+          ...(settled ? {} : {
+            outcome: promptSubmissionStarted ? "needs_attention" : "failed_before_prompt",
+            initialTurn: { status: promptSubmissionStarted ? "uncertain" : "not_started", settledAt: new Date().toISOString() },
+            error: safeError(observerError ?? ended?.error ?? new Error("Claude exited before the scheduled turn settled.")),
+            completedAt: new Date().toISOString(),
+          }),
+          needsAttention, exitCode: needsAttention ? 1 : 0,
+          interactiveTui: {
+            ...receipt.interactiveTui, status: "exited", exitedAt: new Date().toISOString(),
+            exitCode: ended?.status ?? 1, exitSignal: ended?.signal ?? null,
+            ...(ended?.error ? { error: safeError(ended.error) } : {}),
+          },
+        });
+        releaseRoutineOwnership();
+        if (needsAttention) context.setExitCode(1);
+        return { status: needsAttention ? 1 : 0, signal: null };
       } });
       return receipt;
     }

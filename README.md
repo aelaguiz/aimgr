@@ -253,23 +253,34 @@ scheduled occurrences can start. Jobs inherit `aim codex use`'s requirement for
 an eligible alternate account. A blocked selection fails before the prompt runs.
 
 Each Claude occurrence selects the least-used unlocked eligible account through
-the native AIM Claude account path, runs `claude --print` with streaming JSON,
-and opens `claude --resume <exact-session-id>` after the task finishes. The
-scheduled prompt is sent once over stdin. Account isolation, credential leases,
-native identity preflight, user skills/hooks/plugins, and token rotation use the
-same managed launcher as `aim claude run`. The account lease stays held through
-interactive follow-up; later occurrences choose an unlocked account. Redis must
-be reachable for selection. No eligible account fails before prompt submission.
-The first interactive resume for an account in a new directory can show Claude's
-workspace trust prompt; the scheduled task has already completed at that point.
+the native AIM Claude account path and opens the normal interactive Claude UI
+immediately, with the scheduled prompt supplied once at launch. Progress, tool
+calls, errors, and the input box are visible while the task runs. You can interrupt
+or give further instructions without waiting for completion. The same process
+stays open for follow-up; there is no print-mode run or resume handoff.
 
-Claude event logs use `<fire-key>.claude.jsonl`. Receipts record the selected
-account, exact session ID, observed model, prompt acknowledgement, usage, cost,
-and interactive exit. Prompt acknowledgement must match the submitted text;
-completion requires a successful Claude `result` event and process exit 0.
-Timeouts and credential-lease loss stop the initial task, and failed runs are
-never automatically replayed. Claude uses the same two-hour execution timeout.
-The protocol follows the [official Claude programmatic execution documentation](https://code.claude.com/docs/en/headless).
+Account isolation, credential leases, native identity preflight, user
+skills/hooks/plugins, and token rotation use the same managed launcher as
+`aim claude run`. The account lease stays held for the interactive session;
+later occurrences choose an unlocked account. Redis must be reachable for
+selection. No eligible account fails before prompt submission. The configured
+project's existing trust decision in your normal Claude config carries over to
+the selected account, so MCP header helpers retain that permission. AIM also
+honors your existing `skipDangerousModePermissionPrompt` preference. Any remaining
+first-use Claude dialogs appear directly in the interactive UI.
+
+Claude lifecycle logs use `<fire-key>.claude.jsonl`; the full conversation stays
+in Claude's native transcript. Receipts record the account, exact session ID,
+model, transcript path, prompt hash, turn status, and interactive exit. Native
+`UserPromptSubmit` and `Stop`/`StopFailure` hooks observe the scheduled turn.
+Later messages and background notifications do not invalidate the prompt.
+Completion or a native API failure releases the job's overlap lock while the
+interactive session stays available. Observation errors and the two-hour
+observation deadline flag attention without terminating Claude; an unsettled
+job keeps its overlap lock until it settles or its UI exits. Credential-lease
+loss still stops the process through the managed launcher's existing protection.
+Failed occurrences are never automatically replayed. Hook details follow the
+[official Claude hooks reference](https://code.claude.com/docs/en/hooks).
 
 Receipts live in `~/.aimgr/routine-runs/<fire-key>.json`; Codex event logs sit
 beside them as `<fire-key>.codex.jsonl`. Receipts include the chosen account,

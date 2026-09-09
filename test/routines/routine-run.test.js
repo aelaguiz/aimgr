@@ -759,66 +759,52 @@ function claudeDefinition(home, overrides = {}) {
 }
 
 function makeClaudeRuntime(home, options = {}) {
-  let submitted;
-  let resumeResolve;
+  let close;
   let leaseHeld = false;
+  let active = false;
+  let eventsPath;
+  let sessionId;
   const calls = [];
-  const kills = [];
   const abort = new AbortController();
   const configDir = path.join(home, ".aimgr", "claude-homes", "fable-a", ".claude");
-  return {
-    calls, kills, configDir, abort,
-    get submitted() { return submitted; },
+  const runtime = {
+    calls, configDir, abort,
+    get active() { return active; },
     get leaseHeld() { return leaseHeld; },
-    closeTui(status = 0) { resumeResolve({ status, signal: null }); },
+    get eventsPath() { return eventsPath; },
+    get sessionId() { return sessionId; },
+    closeTui(status = 0) { close({ status, signal: null }); },
+    emit(type, extra = {}) {
+      fs.appendFileSync(eventsPath, `${JSON.stringify({ type, sessionId, at: new Date().toISOString(), ...extra })}\n`);
+    },
     async routineClaudeSessionImpl(context, { cwd, runSession }) {
       if (options.accountError) throw new Error("No unlocked Claude account with readable five-hour usage is available.");
       leaseHeld = true;
       try {
         const result = await runSession({
-          label: "fable-a", command: "/fake/claude", cwd, configDir, env: context.env, signal: abort.signal,
+          label: "fable-a", command: "/fake/claude", cwd, configDir, userHomeDir: home,
+          env: context.env, signal: abort.signal,
           preparedLaunch: { command: "/fake/claude", userHomeDir: home, homeDir: path.dirname(configDir), configDir,
-            adapterDir: path.join(home, "adapter"), userPluginDirs: ["/fake/plugin"], userHooksPath: "/fake/hooks.json" },
+            adapterDir: path.join(home, "adapter"), userPluginDirs: ["/fake/plugin"] },
         });
         if (result.status !== 0) context.setExitCode(result.status);
       } finally { leaseHeld = false; }
     },
     async runClaudeCliImpl(launch) {
       assert.equal(leaseHeld, true);
-      calls.push({ type: "resume", launch });
-      if (options.resumeError) throw new Error("resume unavailable");
-      return new Promise((resolve) => { resumeResolve = resolve; });
-    },
-    spawnImpl(command, args, spawnOptions) {
-      assert.equal(leaseHeld, true);
-      assert.equal(command, process.execPath);
-      assert.match(args[0], /claude-supervisor\.js$/);
-      assert.equal(args[1], "/fake/claude");
-      assert.deepEqual(spawnOptions.stdio, ["pipe", "pipe", "pipe", "ipc"]);
-      calls.push({ type: "print", command, args, options: spawnOptions });
-      const sessionId = args[args.indexOf("--session-id") + 1];
-      const child = new EventEmitter();
-      child.stdout = new PassThrough();
-      child.stderr = new PassThrough();
-      child.stdin = new Writable({ write(chunk, _encoding, callback) { submitted = JSON.parse(chunk.toString()); callback(); } });
-      child.kill = (signal) => {
-        kills.push(signal);
-        if (!options.ignoreTerm || signal === "SIGKILL") setImmediate(() => child.emit("close", null, signal));
-      };
-      setImmediate(() => {
-        if (options.spawnError) { child.emit("error", new Error("spawn claude ENOENT")); return; }
-        const init = { type: "system", subtype: "init", session_id: sessionId, model: "claude-fable-5-1" };
-        const replay = { ...submitted, isReplay: true };
-        const result = { type: "result", subtype: "success", session_id: sessionId, is_error: false,
-          result: "Done ✓", usage: { input_tokens: 10, output_tokens: 3 }, total_cost_usd: 0.01 };
-        const events = options.events ? options.events({ init, replay, result }) : [init, replay, result];
-        const bytes = Buffer.from(events.map((event) => typeof event === "string" ? event : JSON.stringify(event)).join("\n") + (options.hang ? "\n" : ""));
-        for (const byte of bytes) child.stdout.write(Buffer.from([byte]));
-        if (!options.hang) child.emit("close", options.exitCode ?? 0, null);
+      calls.push(launch);
+      if (options.spawnError) throw new Error("spawn claude ENOENT");
+      sessionId = launch.args[launch.args.indexOf("--session-id") + 1];
+      eventsPath = launch.preparedLaunch.userHooksPath.replace(/\.settings\.json$/, ".jsonl");
+      active = true;
+      runtime.emit("SessionStart", { model: "claude-fable-5-1", transcriptPath: "/fake/transcript.jsonl" });
+      return new Promise((resolve) => {
+        close = (result) => { active = false; resolve(result); };
+        abort.signal.addEventListener("abort", () => close({ status: 1, signal: "SIGTERM" }), { once: true });
       });
-      return child;
     },
   };
+  return runtime;
 }
 
 function claudeWorkerContext(home, receipt, runtime) {
@@ -826,108 +812,160 @@ function claudeWorkerContext(home, receipt, runtime) {
     routineClaudeSessionImpl: runtime.routineClaudeSessionImpl, runClaudeCliImpl: runtime.runClaudeCliImpl };
 }
 
-test("Claude routine keeps its managed account through one prompt and exact interactive resume", async () => {
+test("Claude opens one interactive session before the task runs, and keeps it through completion and follow-up", async () => {
   const home = mkTempHome();
   const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
   const runtime = makeClaudeRuntime(home);
   const context = claudeWorkerContext(home, receipt, runtime);
-  Object.assign(context.env, { ANTHROPIC_API_KEY: "do-not-use", CLAUDE_CODE_OAUTH_TOKEN: "do-not-use", ANTHROPIC_BASE_URL: "https://wrong.test", PATH: "/bin" });
   const worker = executeRoutineWorker(context);
-  await waitUntil(() => runtime.calls.length === 2, "Claude TUI did not open");
-  const saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
-  assert.equal(saved.outcome, "completed");
-  assert.equal(saved.selectedAccount.binding, "fable-a");
-  assert.equal(saved.claude.sessionId, runtime.submitted.session_id);
-  assert.equal(saved.claude.costUsd, 0.01);
-  assert.deepEqual(saved.claude.usage, { input_tokens: 10, output_tokens: 3 });
-  assert.equal(saved.prompt.stdinSha256, saved.prompt.effectiveSha256);
-  assert.equal(saved.prompt.persistedSha256, null);
-  assert.equal(runtime.submitted.message.content, fs.readFileSync(receipt.configured.promptFile, "utf8").trim());
-  assert.equal(fs.statSync(saved.claude.eventsPath).mode & 0o777, 0o600);
-  assert.match(fs.readFileSync(saved.claude.eventsPath, "utf8"), /Done ✓/);
-  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
+  await waitUntil(() => runtime.active, "Claude UI did not start");
+  let saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
+  assert.equal(saved.interactiveTui.status, "live");
+  assert.equal(saved.prompt.admittedAt, null);
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), true);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
+  const launch = runtime.calls[0];
+  assert.deepEqual(launch.args.slice(0, 5), ["--model", "claude-fable-5-1", "--effort", "xhigh", "--dangerously-skip-permissions"]);
+  assert.equal(launch.args.includes("--print"), false);
+  assert.equal(launch.args.includes("--resume"), false);
+  assert.equal(launch.args.at(-1), fs.readFileSync(receipt.configured.promptFile, "utf8").trim());
+  assert.equal(launch.args.at(-2), "--");
+  assert.equal(fs.statSync(runtime.eventsPath).mode & 0o777, 0o600);
+  const settings = JSON.parse(fs.readFileSync(launch.preparedLaunch.userHooksPath));
+  assert.deepEqual(Object.keys(settings.hooks), ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure"]);
+  runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256, transcriptPath: "/fake/transcript.jsonl" });
+  await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).outcome === "prompt_admitted", "prompt not admitted");
+  // Reproduce the actual failure: a later background message must not reject
+  // an already admitted scheduled prompt or terminate the interactive process.
+  runtime.emit("UserPromptSubmit", { promptSha256: "background-notification" });
+  fs.appendFileSync(runtime.eventsPath, "{malformed-observation}\n");
+  runtime.emit("Stop");
+  await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).outcome === "completed", "turn not settled");
+  saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
+  assert.equal(saved.claude.sessionId, runtime.sessionId);
+  assert.equal(saved.claude.transcriptPath, "/fake/transcript.jsonl");
+  assert.equal(saved.prompt.submittedSha256, saved.prompt.effectiveSha256);
+  assert.equal(saved.initialTurn.stopReason, "Stop");
+  assert.equal(saved.interactiveTui.status, "live");
+  assert.equal(runtime.active, true);
   assert.equal(runtime.leaseHeld, true);
-  const [print, resume] = runtime.calls;
-  assert.equal(print.options.env.CLAUDE_CONFIG_DIR, runtime.configDir);
-  assert.equal(print.options.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, runtime.configDir);
-  assert.equal(print.options.env.HOME, home);
-  assert.equal(print.options.env.ANTHROPIC_API_KEY, undefined);
-  assert.equal(print.options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
-  assert.equal(print.options.env.ANTHROPIC_BASE_URL, undefined);
-  assert.ok(print.options.env.PATH.startsWith(path.join(home, "adapter")));
-  assert.equal(print.args.includes("--plugin-dir"), true);
-  assert.equal(print.args.includes("--replay-user-messages"), true);
-  assert.deepEqual(resume.launch.args, ["--model", "claude-fable-5-1", "--effort", "xhigh", "--dangerously-skip-permissions", "--resume", saved.claude.sessionId]);
+  assert.equal(runtime.calls.length, 1);
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
   runtime.closeTui();
-  const completed = await worker;
-  assert.equal(completed.interactiveTui.exitCode, 0);
+  assert.equal((await worker).interactiveTui.exitCode, 0);
   assert.equal(runtime.leaseHeld, false);
 });
 
-for (const [name, options, error, outcome] of [
-  ["no eligible account", { accountError: true }, /No unlocked Claude account/, "failed_before_prompt"],
-  ["missing executable", { spawnError: true }, /ENOENT/, "failed_before_prompt"],
-  ["missing completion", { events: ({ init, replay }) => [init, replay] }, /without a completed turn/, "needs_attention"],
-  ["failed result", { events: ({ init, replay, result }) => [init, replay, { ...result, subtype: "error_during_execution", is_error: true, errors: ["rate limited"] }] }, /rate limited/, "needs_attention"],
-  ["unclean exit", { exitCode: 1 }, /exited 1/, "needs_attention"],
-  ["malformed event", { events: () => ["{broken-json"] }, /JSON/, "failed_before_prompt"],
-  ["wrong session", { events: ({ init, result }) => [init, { ...result, session_id: "wrong" }] }, /unexpected session ID/, "needs_attention"],
-  ["wrong acknowledgement", { events: ({ init, replay }) => [init, { ...replay, message: { content: "wrong" } }] }, /different or repeated routine prompt/, "needs_attention"],
-  ["missing acknowledgement", { events: ({ init, result }) => [init, result] }, /without acknowledging/, "needs_attention"],
-  ["timeout", { hang: true, ignoreTerm: true, events: ({ init, replay }) => [init, replay] }, /exceeded/, "needs_attention"],
-]) {
-  test(`Claude routine handles ${name} without resubmission or retained locks`, async () => {
+test("Claude API failure leaves the interactive UI and account available for the user", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home);
+  const context = claudeWorkerContext(home, receipt, runtime);
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.active, "Claude UI did not start");
+  runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256 });
+  runtime.emit("StopFailure", { error: "rate_limit" });
+  await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).initialTurn?.status === "error", "failure not recorded");
+  assert.equal(runtime.active, true);
+  assert.equal(runtime.leaseHeld, true);
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
+  runtime.closeTui();
+  const result = await worker;
+  assert.equal(result.outcome, "needs_attention");
+  assert.match(result.error, /rate_limit/);
+});
+
+test("Claude observation timeout records attention without closing the UI or releasing a running job", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home);
+  const context = claudeWorkerContext(home, receipt, runtime);
+  context.routineTimeouts.initialTurnMs = 5;
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.active, "Claude UI did not start");
+  runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256 });
+  await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).needsAttention, "timeout not recorded");
+  assert.equal(runtime.active, true);
+  assert.equal(runtime.leaseHeld, true);
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), true);
+  runtime.emit("Stop");
+  await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).outcome === "completed", "later completion not recorded");
+  runtime.closeTui();
+  assert.equal((await worker).needsAttention, false);
+});
+
+test("Claude observer read errors do not close the interactive process or release its account", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home);
+  const context = claudeWorkerContext(home, receipt, runtime);
+  let warning = "";
+  context.stderr = { write(text) { warning += text; } };
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.active, "Claude UI did not start");
+  fs.unlinkSync(runtime.eventsPath);
+  await waitUntil(() => warning.includes("Claude remains interactive"), "observation error not reported");
+  assert.equal(runtime.active, true);
+  assert.equal(runtime.leaseHeld, true);
+  runtime.closeTui();
+  assert.equal((await worker).needsAttention, true);
+  assert.equal(runtime.leaseHeld, false);
+});
+
+for (const admitted of [false, true]) {
+  test(`Claude early exit ${admitted ? "after" : "before"} admission preserves the single launch and releases ownership`, async () => {
     const home = mkTempHome();
     const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
-    const runtime = makeClaudeRuntime(home, options);
+    const runtime = makeClaudeRuntime(home);
     const context = claudeWorkerContext(home, receipt, runtime);
-    context.routineTimeouts.killGraceMs = 5;
-    await assert.rejects(executeRoutineWorker(context), error);
-    assert.equal(JSON.parse(fs.readFileSync(receipt.receiptPath)).outcome, outcome);
-    assert.equal(context.getExitCode(), 1);
-    assert.equal(runtime.calls.some((call) => call.type === "resume"), false);
+    const worker = executeRoutineWorker(context);
+    await waitUntil(() => runtime.active, "Claude UI did not start");
+    if (admitted) runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256 });
+    runtime.closeTui(1);
+    const result = await worker;
+    assert.equal(result.outcome, admitted ? "needs_attention" : "failed_before_prompt");
+    assert.equal(runtime.calls.length, 1);
     assert.equal(runtime.leaseHeld, false);
     assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
-    assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
-    if (options.ignoreTerm) assert.deepEqual(runtime.kills, ["SIGTERM", "SIGKILL"]);
   });
 }
 
-test("Claude account lease loss stops the running task before releasing account ownership", async () => {
+test("Claude account lease loss uses the managed interactive runner's cancellation", async () => {
   const home = mkTempHome();
   const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
-  const runtime = makeClaudeRuntime(home, { hang: true, events: ({ init, replay }) => [init, replay] });
+  const runtime = makeClaudeRuntime(home);
   const context = claudeWorkerContext(home, receipt, runtime);
   const worker = executeRoutineWorker(context);
-  const rejected = assert.rejects(worker, /account lease lost/);
-  await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).outcome === "prompt_admitted", "prompt was not admitted");
+  await waitUntil(() => runtime.active, "Claude UI did not start");
+  runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256 });
   runtime.abort.abort();
-  await rejected;
-  assert.deepEqual(runtime.kills, ["SIGTERM"]);
+  const result = await worker;
+  assert.equal(result.outcome, "needs_attention");
+  assert.equal(result.interactiveTui.exitSignal, "SIGTERM");
+  assert.equal(runtime.active, false);
   assert.equal(runtime.leaseHeld, false);
 });
 
-test("Claude resume failure keeps the completed task and cleans up the account", async () => {
+test("Claude launch errors are recorded without attempting another launch", async () => {
   const home = mkTempHome();
   const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
-  const runtime = makeClaudeRuntime(home, { resumeError: true });
-  const context = claudeWorkerContext(home, receipt, runtime);
-  const result = await executeRoutineWorker(context);
-  assert.equal(result.outcome, "completed");
-  assert.equal(result.needsAttention, true);
-  assert.match(result.interactiveTui.error, /resume unavailable/);
-  assert.equal(context.getExitCode(), 1);
+  const runtime = makeClaudeRuntime(home, { spawnError: true });
+  const result = await executeRoutineWorker(claudeWorkerContext(home, receipt, runtime));
+  assert.equal(result.outcome, "failed_before_prompt");
+  assert.match(result.error, /ENOENT/);
+  assert.equal(runtime.calls.length, 1);
   assert.equal(runtime.leaseHeld, false);
 });
 
-test("Claude prompt drift fails before account selection", async () => {
-  const home = mkTempHome();
-  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
-  fs.appendFileSync(receipt.configured.promptFile, "Changed after claim");
-  const runtime = makeClaudeRuntime(home);
-  await assert.rejects(executeRoutineWorker(claudeWorkerContext(home, receipt, runtime)), /prompt changed/);
-  assert.equal(runtime.calls.length, 0);
+test("Claude missing accounts and prompt drift fail before interactive launch", async () => {
+  for (const drift of [false, true]) {
+    const home = mkTempHome();
+    const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+    if (drift) fs.appendFileSync(receipt.configured.promptFile, "Changed after claim");
+    const runtime = makeClaudeRuntime(home, { accountError: !drift });
+    await assert.rejects(executeRoutineWorker(claudeWorkerContext(home, receipt, runtime)), drift ? /prompt changed/ : /No unlocked/);
+    assert.equal(runtime.calls.length, 0);
+  }
 });
 
 test("scheduled Claude occurrences deduplicate and prevent overlap", async () => {

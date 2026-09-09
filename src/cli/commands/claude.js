@@ -848,8 +848,8 @@ async function handleRedisClaudeRun(context, {
 }
 
 // Scheduled Claude work uses the same account lease, native preflight, and
-// rotation publication as interactive runs. The callback owns both the initial
-// task and its interactive resume, so credentials stay pinned between them.
+// rotation publication as interactive runs. The callback owns the interactive
+// session from launch to exit, keeping credentials pinned through follow-up.
 export async function runAutomaticClaudeSession(context, { cwd, runSession }) {
   if (!isRedisConfigured({ homeDir: context.homeDir })) {
     throw new Error("Claude routines require configured Redis account coordination.");
