@@ -139,3 +139,29 @@ test("Codex routine agent and profile survive unrelated config writes", () => {
     assert.throws(() => readRoutineDefinition({ homeDir: home, id: "report" }), expected);
   }
 });
+
+test("Claude routines preserve their agent, default to Fable xhigh, and reject incompatible settings", () => {
+  const home = mkTempHome();
+  const definition = { agent: "claude", calendar: [{ hour: 8, minute: 0 }], cwd: "/tmp/work", promptFile: "/tmp/prompt.md",
+    herdrSession: "growth", spaceTitleFormat: "Claude report · {scheduled_local}" };
+  writeAimgrConfig({ homeDir: home, config: { routines: { report: definition } } });
+  const read = readAimgrConfig({ homeDir: home });
+  writeAimgrConfig({ homeDir: home, config: { ...read.config, redis: { url: "redis://changed" } } });
+  const { routine } = readRoutineDefinition({ homeDir: home, id: "report" });
+  assert.equal(routine.agent, "claude");
+  assert.equal(routine.provider, "anthropic");
+  assert.equal(routine.model, "claude-fable-5-1");
+  assert.equal(routine.thinking, "xhigh");
+  assert.equal(routine.profile, undefined);
+  for (const [overrides, error] of [
+    [{ provider: "openai-codex" }, /requires provider=anthropic/],
+    [{ profile: "yolo" }, /profile is supported only with agent=codex/],
+    [{ thinking: "off" }, /unsupported thinking/],
+    [{ thinking: "minimal" }, /unsupported thinking/],
+  ]) {
+    writeAimgrConfig({ homeDir: home, config: { routines: { report: { ...definition, ...overrides } } } });
+    assert.throws(() => readRoutineDefinition({ homeDir: home, id: "report" }), error);
+  }
+  writeAimgrConfig({ homeDir: home, config: { routines: { report: { ...definition, thinking: "max" } } } });
+  assert.equal(readRoutineDefinition({ homeDir: home, id: "report" }).routine.thinking, "max");
+});

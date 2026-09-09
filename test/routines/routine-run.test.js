@@ -753,3 +753,194 @@ test("interrupting a Codex routine stops its child and releases ownership", asyn
   assert.equal(process.listenerCount("SIGTERM"), listenersBefore);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
 });
+
+function claudeDefinition(home, overrides = {}) {
+  return routineDefinition(home, { agent: "claude", model: "claude-fable-5-1", ...overrides });
+}
+
+function makeClaudeRuntime(home, options = {}) {
+  let submitted;
+  let resumeResolve;
+  let leaseHeld = false;
+  const calls = [];
+  const kills = [];
+  const abort = new AbortController();
+  const configDir = path.join(home, ".aimgr", "claude-homes", "fable-a", ".claude");
+  return {
+    calls, kills, configDir, abort,
+    get submitted() { return submitted; },
+    get leaseHeld() { return leaseHeld; },
+    closeTui(status = 0) { resumeResolve({ status, signal: null }); },
+    async routineClaudeSessionImpl(context, { cwd, runSession }) {
+      if (options.accountError) throw new Error("No unlocked Claude account with readable five-hour usage is available.");
+      leaseHeld = true;
+      try {
+        const result = await runSession({
+          label: "fable-a", command: "/fake/claude", cwd, configDir, env: context.env, signal: abort.signal,
+          preparedLaunch: { command: "/fake/claude", userHomeDir: home, homeDir: path.dirname(configDir), configDir,
+            adapterDir: path.join(home, "adapter"), userPluginDirs: ["/fake/plugin"], userHooksPath: "/fake/hooks.json" },
+        });
+        if (result.status !== 0) context.setExitCode(result.status);
+      } finally { leaseHeld = false; }
+    },
+    async runClaudeCliImpl(launch) {
+      assert.equal(leaseHeld, true);
+      calls.push({ type: "resume", launch });
+      if (options.resumeError) throw new Error("resume unavailable");
+      return new Promise((resolve) => { resumeResolve = resolve; });
+    },
+    spawnImpl(command, args, spawnOptions) {
+      assert.equal(leaseHeld, true);
+      assert.equal(command, process.execPath);
+      assert.match(args[0], /claude-supervisor\.js$/);
+      assert.equal(args[1], "/fake/claude");
+      assert.deepEqual(spawnOptions.stdio, ["pipe", "pipe", "pipe", "ipc"]);
+      calls.push({ type: "print", command, args, options: spawnOptions });
+      const sessionId = args[args.indexOf("--session-id") + 1];
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.stdin = new Writable({ write(chunk, _encoding, callback) { submitted = JSON.parse(chunk.toString()); callback(); } });
+      child.kill = (signal) => {
+        kills.push(signal);
+        if (!options.ignoreTerm || signal === "SIGKILL") setImmediate(() => child.emit("close", null, signal));
+      };
+      setImmediate(() => {
+        if (options.spawnError) { child.emit("error", new Error("spawn claude ENOENT")); return; }
+        const init = { type: "system", subtype: "init", session_id: sessionId, model: "claude-fable-5-1" };
+        const replay = { ...submitted, isReplay: true };
+        const result = { type: "result", subtype: "success", session_id: sessionId, is_error: false,
+          result: "Done ✓", usage: { input_tokens: 10, output_tokens: 3 }, total_cost_usd: 0.01 };
+        const events = options.events ? options.events({ init, replay, result }) : [init, replay, result];
+        const bytes = Buffer.from(events.map((event) => typeof event === "string" ? event : JSON.stringify(event)).join("\n") + (options.hang ? "\n" : ""));
+        for (const byte of bytes) child.stdout.write(Buffer.from([byte]));
+        if (!options.hang) child.emit("close", options.exitCode ?? 0, null);
+      });
+      return child;
+    },
+  };
+}
+
+function claudeWorkerContext(home, receipt, runtime) {
+  return { ...workerContext(home, receipt, runtime),
+    routineClaudeSessionImpl: runtime.routineClaudeSessionImpl, runClaudeCliImpl: runtime.runClaudeCliImpl };
+}
+
+test("Claude routine keeps its managed account through one prompt and exact interactive resume", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home);
+  const context = claudeWorkerContext(home, receipt, runtime);
+  Object.assign(context.env, { ANTHROPIC_API_KEY: "do-not-use", CLAUDE_CODE_OAUTH_TOKEN: "do-not-use", ANTHROPIC_BASE_URL: "https://wrong.test", PATH: "/bin" });
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.calls.length === 2, "Claude TUI did not open");
+  const saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
+  assert.equal(saved.outcome, "completed");
+  assert.equal(saved.selectedAccount.binding, "fable-a");
+  assert.equal(saved.claude.sessionId, runtime.submitted.session_id);
+  assert.equal(saved.claude.costUsd, 0.01);
+  assert.deepEqual(saved.claude.usage, { input_tokens: 10, output_tokens: 3 });
+  assert.equal(saved.prompt.stdinSha256, saved.prompt.effectiveSha256);
+  assert.equal(saved.prompt.persistedSha256, null);
+  assert.equal(runtime.submitted.message.content, fs.readFileSync(receipt.configured.promptFile, "utf8").trim());
+  assert.equal(fs.statSync(saved.claude.eventsPath).mode & 0o777, 0o600);
+  assert.match(fs.readFileSync(saved.claude.eventsPath, "utf8"), /Done ✓/);
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
+  assert.equal(runtime.leaseHeld, true);
+  const [print, resume] = runtime.calls;
+  assert.equal(print.options.env.CLAUDE_CONFIG_DIR, runtime.configDir);
+  assert.equal(print.options.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, runtime.configDir);
+  assert.equal(print.options.env.HOME, home);
+  assert.equal(print.options.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(print.options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+  assert.equal(print.options.env.ANTHROPIC_BASE_URL, undefined);
+  assert.ok(print.options.env.PATH.startsWith(path.join(home, "adapter")));
+  assert.equal(print.args.includes("--plugin-dir"), true);
+  assert.equal(print.args.includes("--replay-user-messages"), true);
+  assert.deepEqual(resume.launch.args, ["--model", "claude-fable-5-1", "--effort", "xhigh", "--dangerously-skip-permissions", "--resume", saved.claude.sessionId]);
+  runtime.closeTui();
+  const completed = await worker;
+  assert.equal(completed.interactiveTui.exitCode, 0);
+  assert.equal(runtime.leaseHeld, false);
+});
+
+for (const [name, options, error, outcome] of [
+  ["no eligible account", { accountError: true }, /No unlocked Claude account/, "failed_before_prompt"],
+  ["missing executable", { spawnError: true }, /ENOENT/, "failed_before_prompt"],
+  ["missing completion", { events: ({ init, replay }) => [init, replay] }, /without a completed turn/, "needs_attention"],
+  ["failed result", { events: ({ init, replay, result }) => [init, replay, { ...result, subtype: "error_during_execution", is_error: true, errors: ["rate limited"] }] }, /rate limited/, "needs_attention"],
+  ["unclean exit", { exitCode: 1 }, /exited 1/, "needs_attention"],
+  ["malformed event", { events: () => ["{broken-json"] }, /JSON/, "failed_before_prompt"],
+  ["wrong session", { events: ({ init, result }) => [init, { ...result, session_id: "wrong" }] }, /unexpected session ID/, "needs_attention"],
+  ["wrong acknowledgement", { events: ({ init, replay }) => [init, { ...replay, message: { content: "wrong" } }] }, /different or repeated routine prompt/, "needs_attention"],
+  ["missing acknowledgement", { events: ({ init, result }) => [init, result] }, /without acknowledging/, "needs_attention"],
+  ["timeout", { hang: true, ignoreTerm: true, events: ({ init, replay }) => [init, replay] }, /exceeded/, "needs_attention"],
+]) {
+  test(`Claude routine handles ${name} without resubmission or retained locks`, async () => {
+    const home = mkTempHome();
+    const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+    const runtime = makeClaudeRuntime(home, options);
+    const context = claudeWorkerContext(home, receipt, runtime);
+    context.routineTimeouts.killGraceMs = 5;
+    await assert.rejects(executeRoutineWorker(context), error);
+    assert.equal(JSON.parse(fs.readFileSync(receipt.receiptPath)).outcome, outcome);
+    assert.equal(context.getExitCode(), 1);
+    assert.equal(runtime.calls.some((call) => call.type === "resume"), false);
+    assert.equal(runtime.leaseHeld, false);
+    assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
+    assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
+    if (options.ignoreTerm) assert.deepEqual(runtime.kills, ["SIGTERM", "SIGKILL"]);
+  });
+}
+
+test("Claude account lease loss stops the running task before releasing account ownership", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home, { hang: true, events: ({ init, replay }) => [init, replay] });
+  const context = claudeWorkerContext(home, receipt, runtime);
+  const worker = executeRoutineWorker(context);
+  const rejected = assert.rejects(worker, /account lease lost/);
+  await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).outcome === "prompt_admitted", "prompt was not admitted");
+  runtime.abort.abort();
+  await rejected;
+  assert.deepEqual(runtime.kills, ["SIGTERM"]);
+  assert.equal(runtime.leaseHeld, false);
+});
+
+test("Claude resume failure keeps the completed task and cleans up the account", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home, { resumeError: true });
+  const context = claudeWorkerContext(home, receipt, runtime);
+  const result = await executeRoutineWorker(context);
+  assert.equal(result.outcome, "completed");
+  assert.equal(result.needsAttention, true);
+  assert.match(result.interactiveTui.error, /resume unavailable/);
+  assert.equal(context.getExitCode(), 1);
+  assert.equal(runtime.leaseHeld, false);
+});
+
+test("Claude prompt drift fails before account selection", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  fs.appendFileSync(receipt.configured.promptFile, "Changed after claim");
+  const runtime = makeClaudeRuntime(home);
+  await assert.rejects(executeRoutineWorker(claudeWorkerContext(home, receipt, runtime)), /prompt changed/);
+  assert.equal(runtime.calls.length, 0);
+});
+
+test("scheduled Claude occurrences deduplicate and prevent overlap", async () => {
+  const home = mkTempHome();
+  configure(home, claudeDefinition(home));
+  const calls = [];
+  const deps = { env: { HOME: home }, routineNow: new Date(2026, 7, 15, 7, 5, 0),
+    spawnSyncImpl: fakeParentSpawn(calls, home), routineWorkspaceMoveImpl: fakeWorkspaceMove };
+  const argv = ["routine", "run", "demo", "--json", "--home", home];
+  const first = JSON.parse(await runCli(argv, deps));
+  assert.equal(first.outcome, "queued");
+  assert.equal(first.configured.agent, "claude");
+  assert.equal(JSON.parse(await runCli(argv, deps)).outcome, "duplicate");
+  assert.equal(JSON.parse(await runCli([...argv, "--manual"], deps)).outcome, "overlap");
+  assert.equal(calls.filter((call) => call.args.includes("create")).length, 1);
+});

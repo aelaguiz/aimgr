@@ -172,10 +172,10 @@ and `cr <session-id>` rotate, and neither launches if no eligible alternate exis
 Prime session directly. Use `aim prime resume <path-or-id>` when you want an
 existing session instead.
 
-### Scheduled Prime and Codex jobs
+### Scheduled Prime, Codex, and Claude jobs
 
 Add jobs under `routines` in `~/.aimgr/config.yaml`. Set `agent: codex` to run
-the native Codex CLI. Definitions without `agent` keep using Prime, including
+the native Codex CLI, or `agent: claude` for native Claude Code. Definitions without `agent` keep using Prime, including
 existing Prime jobs with `provider: openai-codex`.
 
 ```yaml
@@ -208,12 +208,37 @@ profile for jobs that need different permissions. The routine explicitly sets
 the model/reasoning and uses AIM-selected ChatGPT account authentication.
 Prime retains its existing required provider/model/thinking fields.
 
+For Claude, use the same schedule fields with `agent: claude`:
+
+```yaml
+routines:
+  claude-morning-review:
+    agent: claude
+    calendar:
+      - hour: 8
+        minute: 0
+    cwd: /Users/you/workspace/project
+    promptFile: /Users/you/.aimgr/routines/prompts/morning-review.md
+    herdrSession: work
+    spaceTitleFormat: "Claude morning review · {scheduled_local}"
+    model: claude-fable-5-1
+    thinking: xhigh
+```
+
+Claude defaults to `provider: anthropic`, `model: claude-fable-5-1`, and
+`thinking: xhigh`. Thinking maps to Claude's `--effort` and accepts `low`,
+`medium`, `high`, `xhigh`, or `max`; the chosen model must support that effort.
+`profile` is Codex-only. Claude jobs run with `--dangerously-skip-permissions`
+for unattended execution, as the native AIM Claude presets do.
+
 From this checkout, prepare and install a schedule with:
 
 ```sh
 node scripts/install-routines.mjs --prepare codex-morning-review
 node scripts/install-routines.mjs codex-morning-review --desktop-off-confirmed
 ```
+
+Replace `codex-morning-review` with `claude-morning-review` for the Claude example.
 
 Use `--desktop-off-confirmed` only after confirming no Desktop automation also
 runs this job. Installing does not run the job immediately. To test one occurrence
@@ -227,6 +252,25 @@ once. Codex sessions remain available for interactive follow-up while subsequent
 scheduled occurrences can start. Jobs inherit `aim codex use`'s requirement for
 an eligible alternate account. A blocked selection fails before the prompt runs.
 
+Each Claude occurrence selects the least-used unlocked eligible account through
+the native AIM Claude account path, runs `claude --print` with streaming JSON,
+and opens `claude --resume <exact-session-id>` after the task finishes. The
+scheduled prompt is sent once over stdin. Account isolation, credential leases,
+native identity preflight, user skills/hooks/plugins, and token rotation use the
+same managed launcher as `aim claude run`. The account lease stays held through
+interactive follow-up; later occurrences choose an unlocked account. Redis must
+be reachable for selection. No eligible account fails before prompt submission.
+The first interactive resume for an account in a new directory can show Claude's
+workspace trust prompt; the scheduled task has already completed at that point.
+
+Claude event logs use `<fire-key>.claude.jsonl`. Receipts record the selected
+account, exact session ID, observed model, prompt acknowledgement, usage, cost,
+and interactive exit. Prompt acknowledgement must match the submitted text;
+completion requires a successful Claude `result` event and process exit 0.
+Timeouts and credential-lease loss stop the initial task, and failed runs are
+never automatically replayed. Claude uses the same two-hour execution timeout.
+The protocol follows the [official Claude programmatic execution documentation](https://code.claude.com/docs/en/headless).
+
 Receipts live in `~/.aimgr/routine-runs/<fire-key>.json`; Codex event logs sit
 beside them as `<fire-key>.codex.jsonl`. Receipts include the chosen account,
 session ID, prompt hash, usage, completion status, and interactive resume exit.
@@ -236,7 +280,7 @@ attention and are never automatically replayed. Execution times out after two
 hours and stops the job's process group. A failed interactive resume preserves
 the completed task's result and records that the follow-up UI needs attention.
 
-Both agents share duplicate prevention, per-job overlap protection, and the
+All three agents share duplicate prevention, per-job overlap protection, and the
 ten-minute admission window after a scheduled time. `--manual` creates a unique
 occurrence but still respects overlap protection. Scheduling uses macOS launchd.
 Codex's event protocol follows the [official non-interactive mode documentation](https://learn.chatgpt.com/docs/non-interactive-mode).

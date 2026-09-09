@@ -23,6 +23,8 @@ import { resolveCodexCommand } from "../targets/codex-runner.js";
 import { readRoutineDefinition } from "./config.js";
 import { deriveRoutineOccurrence } from "./schedule.js";
 import { codexRoutineArgs, startCodexRoutineTurn } from "./codex.js";
+import { claudeRoutineArgs, runClaudeRoutineSession, startClaudeRoutineTurn } from "./claude.js";
+import { runClaudeCli } from "../targets/claude-runner.js";
 
 const PIN_PROMPT = "AIM routine binding check. Do not use tools. Reply exactly AIM_ROUTINE_PIN_OK.";
 
@@ -92,6 +94,7 @@ function createReceipt(filePath, receipt) {
 function configuredReceipt(routine) {
   return {
     ...(routine.agent === "codex" ? { agent: "codex", profile: routine.profile } : {}),
+    ...(routine.agent === "claude" ? { agent: "claude" } : {}),
     calendar: routine.calendar,
     cwd: routine.cwd,
     promptFile: routine.promptFile,
@@ -784,7 +787,7 @@ export async function executeRoutineWorker(context) {
   let receipt = readJson(receiptPath);
   let bootstrapLease = null;
   let tui = null;
-  let codexTurn = null;
+  let nativeTurn = null;
   let promptSubmissionStarted = false;
   let ownershipReleased = false;
   const releaseRoutineOwnership = () => {
@@ -803,6 +806,96 @@ export async function executeRoutineWorker(context) {
     });
     bootstrapLease = await acquireBootstrapLock(bootstrapLock, context.routineLockfileImpl);
     bootstrapLease.assertHealthy();
+    if (routine.agent === "claude") {
+      const promptSource = fs.readFileSync(routine.promptFile, "utf8");
+      const effectivePrompt = promptSource.trim();
+      if (!effectivePrompt || sha256(promptSource) !== receipt.prompt.sourceSha256
+        || sha256(effectivePrompt) !== receipt.prompt.effectiveSha256) {
+        throw new Error("Routine prompt changed after the occurrence was claimed.");
+      }
+      const sessionId = randomUUID();
+      const eventsPath = receiptPath.replace(/\.json$/, ".claude.jsonl");
+      const runSession = context.routineClaudeSessionImpl ?? runClaudeRoutineSession;
+      await runSession(context, { cwd: routine.cwd, async runSession(launch) {
+        try {
+          bootstrapLease.assertHealthy();
+          receipt = writeReceipt(receiptPath, {
+            ...receipt,
+            selectedAccount: { binding: launch.label, configDir: launch.configDir },
+            claude: { sessionId, eventsPath, configDir: launch.configDir },
+            outcome: "starting_claude",
+          });
+          nativeTurn = startClaudeRoutineTurn({
+            launch, routine, sessionId, prompt: effectivePrompt, eventsPath,
+            stdout: context.stdout, stderr: context.stderr ?? process.stderr,
+            spawnImpl: context.spawnImpl,
+            timeoutMs: privateTimeout(context, "initialTurnMs", INITIAL_TURN_TIMEOUT_MS),
+            killGraceMs: privateTimeout(context, "killGraceMs", 5_000),
+            onEvent(event) {
+              if (event.type === "system" && event.subtype === "init") {
+                promptSubmissionStarted = true;
+                receipt = writeReceipt(receiptPath, {
+                  ...receipt, claude: { ...receipt.claude, model: event.model }, outcome: "running_claude",
+                });
+              } else if (event.type === "user" && event.isReplay === true && !event.parent_tool_use_id) {
+                promptSubmissionStarted = true;
+                receipt = writeReceipt(receiptPath, {
+                  ...receipt,
+                  prompt: { ...receipt.prompt, admittedAt: new Date().toISOString(), stdinSha256: sha256(effectivePrompt) },
+                  outcome: "prompt_admitted",
+                });
+              } else if (event.type === "result") {
+                receipt = writeReceipt(receiptPath, {
+                  ...receipt, claude: { ...receipt.claude, costUsd: event.total_cost_usd ?? null, modelUsage: event.modelUsage ?? null },
+                });
+              }
+            },
+          });
+          const ready = await nativeTurn.ready;
+          bootstrapLease.assertHealthy();
+          await bootstrapLease.release();
+          bootstrapLease = null;
+          const result = await nativeTurn.result;
+          if (ready.error || result.error) throw ready.error ?? result.error;
+          receipt = writeReceipt(receiptPath, {
+            ...receipt,
+            claude: { ...receipt.claude, usage: result.usage },
+            initialTurn: { status: "idle", stopReason: "result.success", settledAt: new Date().toISOString() },
+            outcome: "completed", completedAt: new Date().toISOString(), exitCode: 0, needsAttention: false,
+            interactiveTui: { status: "live", startedAt: new Date().toISOString(), sessionId },
+          });
+          releaseRoutineOwnership();
+          let resumed;
+          try {
+            resumed = await (context.runClaudeCliImpl ?? runClaudeCli)({
+              ...launch, args: [...claudeRoutineArgs(routine), "--resume", sessionId],
+            });
+          } catch (error) {
+            resumed = { status: 1, error };
+          }
+          const resumeFailed = resumed?.status !== 0 || Boolean(resumed?.signal);
+          if (resumeFailed) context.setExitCode(1);
+          receipt = writeReceipt(receiptPath, {
+            ...receipt,
+            interactiveTui: {
+              ...receipt.interactiveTui, status: "exited", exitedAt: new Date().toISOString(),
+              exitCode: resumed?.status ?? 1, exitSignal: resumed?.signal ?? null,
+              ...(resumed?.error ? { error: safeError(resumed.error) } : {}),
+            },
+            ...(resumeFailed ? { needsAttention: true, error: "Claude task completed, but interactive resume failed." } : {}),
+          });
+          // Let the managed runner publish rotated credentials and release its
+          // account lease even if the follow-up TUI failed or was interrupted.
+          return { status: resumeFailed ? 1 : 0, signal: null };
+        } catch (error) {
+          // Stop before the managed callback returns and releases its account.
+          nativeTurn?.stop(error);
+          await nativeTurn?.result;
+          throw error;
+        }
+      } });
+      return receipt;
+    }
     const account = selectAccount(routine, context);
     receipt = writeReceipt(receiptPath, {
       ...receipt,
@@ -830,7 +923,7 @@ export async function executeRoutineWorker(context) {
         codex: { sessionId: null, eventsPath, codexHome: account.codexHome },
         outcome: "starting_codex",
       });
-      codexTurn = startCodexRoutineTurn({
+      nativeTurn = startCodexRoutineTurn({
         command,
         args: [...commonArgs, "exec", "--json", "--color", "never", "--skip-git-repo-check", "-"],
         cwd: routine.cwd,
@@ -858,11 +951,11 @@ export async function executeRoutineWorker(context) {
           }
         },
       });
-      const ready = await codexTurn.ready;
+      const ready = await nativeTurn.ready;
       bootstrapLease.assertHealthy();
       await bootstrapLease.release();
       bootstrapLease = null;
-      const result = await codexTurn.result;
+      const result = await nativeTurn.result;
       if (ready.error || result.error) throw ready.error ?? result.error;
       receipt = writeReceipt(receiptPath, {
         ...receipt,
@@ -1123,9 +1216,9 @@ export async function executeRoutineWorker(context) {
     });
     return receipt;
   } catch (error) {
-    if (codexTurn) {
-      codexTurn.stop(error);
-      await codexTurn.result;
+    if (nativeTurn) {
+      nativeTurn.stop(error);
+      await nativeTurn.result;
     }
     const needsAttention = promptSubmissionStarted;
     receipt = writeReceipt(receiptPath, {

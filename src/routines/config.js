@@ -1,10 +1,12 @@
 import path from "node:path";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { isObject } from "../core/normalize.js";
+import { DEFAULT_CLAUDE_FABLE_MODEL } from "../core/constants.js";
 
 export const ROUTINE_PROVIDERS = new Set(["anthropic", "openai-codex"]);
 export const ROUTINE_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const CODEX_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+const CLAUDE_THINKING_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 function requiredString(value, field, id) {
   if (typeof value !== "string" || !value.trim()) {
@@ -49,21 +51,25 @@ export function validateRoutineDefinition(id, value) {
   }
 
   const agent = value.agent === undefined ? "prime" : requiredString(value.agent, "agent", id);
-  if (!["prime", "codex"].includes(agent)) {
+  if (!["prime", "codex", "claude"].includes(agent)) {
     throw new Error(`Routine ${id} has unsupported agent=${agent}.`);
   }
-  if (agent === "prime" && value.profile !== undefined) {
+  if (agent !== "codex" && value.profile !== undefined) {
     throw new Error(`Routine ${id} profile is supported only with agent=codex.`);
   }
-  const provider = requiredString(value.provider ?? (agent === "codex" ? "openai-codex" : undefined), "provider", id);
+  const provider = requiredString(value.provider ?? (agent === "codex" ? "openai-codex" : agent === "claude" ? "anthropic" : undefined), "provider", id);
   if (!ROUTINE_PROVIDERS.has(provider)) {
     throw new Error(`Routine ${id} has unsupported provider=${provider}.`);
   }
   if (agent === "codex" && provider !== "openai-codex") {
     throw new Error(`Routine ${id} agent=codex requires provider=openai-codex.`);
   }
-  const thinking = requiredString(value.thinking ?? (agent === "codex" ? "xhigh" : undefined), "thinking", id);
-  if (!(agent === "codex" ? CODEX_THINKING_LEVELS : ROUTINE_THINKING_LEVELS).has(thinking)) {
+  if (agent === "claude" && provider !== "anthropic") {
+    throw new Error(`Routine ${id} agent=claude requires provider=anthropic.`);
+  }
+  const thinking = requiredString(value.thinking ?? (agent !== "prime" ? "xhigh" : undefined), "thinking", id);
+  const thinkingLevels = agent === "codex" ? CODEX_THINKING_LEVELS : agent === "claude" ? CLAUDE_THINKING_LEVELS : ROUTINE_THINKING_LEVELS;
+  if (!thinkingLevels.has(thinking)) {
     throw new Error(`Routine ${id} has unsupported thinking=${thinking}.`);
   }
   const cwd = requiredString(value.cwd, "cwd", id);
@@ -85,7 +91,7 @@ export function validateRoutineDefinition(id, value) {
     cwd,
     promptFile,
     provider,
-    model: requiredString(value.model ?? (agent === "codex" ? "gpt-6-astra" : undefined), "model", id),
+    model: requiredString(value.model ?? (agent === "codex" ? "gpt-6-astra" : agent === "claude" ? DEFAULT_CLAUDE_FABLE_MODEL : undefined), "model", id),
     thinking,
     herdrSession: requiredString(value.herdrSession, "herdrSession", id),
     spaceTitleFormat,

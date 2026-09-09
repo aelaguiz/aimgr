@@ -532,7 +532,7 @@ export async function prepareClaudeCliLaunch({
   });
 }
 
-function buildContainedLaunchEnvironment({ preparedLaunch, env }) {
+export function buildContainedLaunchEnvironment({ preparedLaunch, env }) {
   const launchEnv = { ...(env ?? {}) };
   for (const key of COMPETING_CLAUDE_ENV_KEYS) delete launchEnv[key];
   launchEnv.HOME = preparedLaunch.userHomeDir;
@@ -561,7 +561,7 @@ function buildClaudeArgs(preparedLaunch, args) {
   ];
 }
 
-function buildSupervisorArgs(preparedLaunch, args) {
+export function buildSupervisorArgs(preparedLaunch, args) {
   return [SUPERVISOR_PATH, preparedLaunch.command, ...buildClaudeArgs(preparedLaunch, args)];
 }
 
