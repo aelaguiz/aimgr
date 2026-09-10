@@ -1532,7 +1532,8 @@ test("claude resume by name selects the lowest five-hour account and honors an e
   );
 });
 
-test("claude resume preserves Fable and uses five-hour usage when the recorded account is busy", async () => {
+for (const sourceState of ["busy", "reauth_required", "incomplete"]) {
+test(`claude resume preserves model, effort and history when the recorded account is ${sourceState}`, async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -1607,13 +1608,19 @@ test("claude resume preserves Fable and uses five-hour usage when the recorded a
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  const sourceRecord = record("boss");
+  if (sourceState === "reauth_required") {
+    sourceRecord.policy.reauth = { blockedReason: "oauth_reauth_required" };
+  } else if (sourceState === "incomplete") {
+    sourceRecord.credential.nativeClaudeBundle.claudeAiOauth.refreshToken = "";
+  }
   await importCredentialsSnapshot(store, {
-    credentials: [record("boss"), record("low"), record("high")],
+    credentials: [sourceRecord, record("low"), record("high")],
   });
-  const sourceLease = await acquireRedisCredentialLease(store, {
+  const sourceLease = sourceState === "busy" ? await acquireRedisCredentialLease(store, {
     provider: "anthropic",
     label: "boss",
-  });
+  }) : null;
   const usage = {
     ACCESS_BOSS: { fiveHour: 0, fable: 0 },
     ACCESS_LOW: { fiveHour: 10, fable: 70 },
@@ -1623,6 +1630,13 @@ test("claude resume preserves Fable and uses five-hour usage when the recorded a
   let targetConfigDir = null;
 
   try {
+    if (sourceState !== "busy") {
+      await assert.rejects(runCli(["claude", "run", "boss", "--home", home], {
+        connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+        resolveExecutableOnPathImpl: () => { throw new Error("Must reject before client preparation"); },
+        runClaudeCliImpl: () => { throw new Error("Must never open a logged-out client"); },
+      }), /requires login/);
+    }
     const out = await runCli(["claude", "resume", threadId, "--home", home], {
       env: { HOME: home },
       nowImpl: () => nowMs,
@@ -1704,7 +1718,7 @@ test("claude resume preserves Fable and uses five-hour usage when the recorded a
 
     assert.equal(
       out,
-      'boss is busy; forking session onto low as "[fork from boss/33333333] Review puzzle quality".\n',
+      `boss ${sourceState === "busy" ? "is busy" : "requires login"}; forking session onto low as "[fork from boss/33333333] Review puzzle quality".\n`,
     );
     assert.equal(launchedLabel, "low");
     assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
@@ -1744,9 +1758,10 @@ test("claude resume preserves Fable and uses five-hour usage when the recorded a
       "[fork from boss/33333333] Review puzzle quality",
     );
   } finally {
-    await sourceLease.release();
+    await sourceLease?.release();
   }
 });
+}
 
 test("claude resume fails safely when the recorded account is busy and no destination is unlocked", async () => {
   const home = mkTempHome();

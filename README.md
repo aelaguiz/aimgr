@@ -132,7 +132,10 @@ The picker lists the most recently used sessions first, with their saved title
 Type a displayed number and press Enter to resume; `n` shows older sessions,
 `p` shows newer sessions, and `q` or an empty Enter cancels. The selected session
 resumes in its own working directory with its recorded model and effort, using
-the existing account handling. `--account` and `--switch-account` also work with
+the original account when available. If that account is busy or requires login,
+AIM forks the conversation onto another available account while preserving the
+recorded model and effort. Login failures require a successful live usage check
+on the replacement account before launch. `--account` and `--switch-account` also work with
 the picker. For scripts, use `aim claude list --json` and an explicit selector.
 
 `aim codex use` rotates away from the current Codex account on every successful

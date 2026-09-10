@@ -49,7 +49,7 @@ import {
 import { markImportedAnthropicLabelDirtyState } from "../../state/authority-anthropic.js";
 import { loadAimgrState } from "../../state/schema.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
-import { readClaudeAppStateFile } from "../../credentials/claude-bundle.js";
+import { hasCompleteClaudeNativeBundle, readClaudeAppStateFile } from "../../credentials/claude-bundle.js";
 import {
   activateClaudeLabelSelection,
   activateClaudePoolSelection,
@@ -227,6 +227,7 @@ async function releaseClaudeCredentialLeaseGuard(guard) {
 async function selectAutomaticClaudeAccount(context, {
   preset,
   excludeLabels = [],
+  requireLive = false,
 } = {}) {
   const {
     homeDir,
@@ -237,7 +238,7 @@ async function selectAutomaticClaudeAccount(context, {
   const excluded = new Set(excludeLabels.map((label) => normalizeLabel(label)));
   const usageStatus = await collectClaudeRedisAccountUsageStatus({
     homeDir,
-    fresh: false,
+    fresh: requireLive,
     nowMs,
     fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl,
@@ -245,7 +246,8 @@ async function selectAutomaticClaudeAccount(context, {
   return selectLeastUsedUnlockedClaudeAccount({
     ...usageStatus,
     accounts: usageStatus.accounts.filter(
-      (account) => !excluded.has(account.label),
+      (account) => !excluded.has(account.label)
+        && (!requireLive || (account.source === "live" && account.credentialReady && account.usage?.ok)),
     ),
   }, { preset });
 }
@@ -266,6 +268,19 @@ function requireRedisClaudeCredential(state, label) {
     throw new Error(`Claude label=${label} does not have a credential-ready Redis record.`);
   }
   return credential;
+}
+
+function assertClaudeAccountCanLaunch(runtime, label) {
+  const record = currentRedisClaudeRecord(runtime, label);
+  if (
+    record?.policy?.reauth?.blockedReason === "oauth_reauth_required"
+    || record?.health?.status === "reauth_required"
+    || !hasCompleteClaudeNativeBundle(record?.credential)
+  ) {
+    const error = new Error(`Claude account "${label}" requires login. Run \`aim login ${label} --provider anthropic\`, or resume on another account.`);
+    error.code = "AIMGR_CLAUDE_AUTH_UNAVAILABLE";
+    throw error;
+  }
 }
 
 function startClaudeActiveRotationPublisher({
@@ -678,11 +693,13 @@ async function handleRedisClaudeRun(context, {
   let activeRotationPublisher = null;
   let stagedSessionFork = null;
   try {
+    assertClaudeAccountCanLaunch(runtime, label);
     guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
     // A prior lease owner may have rotated this label between our initial read
     // and lease acquisition. Reload under the lease before inspecting local
     // projections or choosing the authoritative bundle.
     await refreshRedisRuntimeState(runtime);
+    assertClaudeAccountCanLaunch(runtime, label);
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before managed Claude preflight" });
     const expectedEmail = requireExpectedClaudeEmail(runtime.state, label);
     const preflight = await runSharedClaudePreRunPreflight({
@@ -962,6 +979,7 @@ export async function handleClaude(context) {
         `Claude session ${session.threadId} does not record an exact model and effort; refusing to guess.`,
       );
     }
+    let unavailableReason = "busy";
     if (!requestedSwitchPreset && !requestedAccountLabel) {
       const directContext = {
         ...context,
@@ -981,7 +999,8 @@ export async function handleClaude(context) {
         });
         return;
       } catch (error) {
-        if (error?.code !== "AIMGR_CREDENTIAL_BUSY") throw error;
+        if (error?.code === "AIMGR_CLAUDE_AUTH_UNAVAILABLE") unavailableReason = "requires login";
+        else if (error?.code !== "AIMGR_CREDENTIAL_BUSY") throw error;
       }
     }
 
@@ -999,6 +1018,7 @@ export async function handleClaude(context) {
       : await selectAutomaticClaudeAccount(context, {
           preset: forkPreset,
           excludeLabels: [session.account],
+          requireLive: unavailableReason === "requires login",
         });
     if (!selected) {
       if (requestedSwitchPreset) {
@@ -1007,7 +1027,7 @@ export async function handleClaude(context) {
         );
       }
       throw new Error(
-        `Claude label=${session.account} is busy and no other unlocked Claude account with readable five-hour usage is available.`,
+        `Claude label=${session.account} ${unavailableReason === "busy" ? "is busy" : "requires login"} and no other unlocked Claude account with readable five-hour usage is available.`,
       );
     }
     const forkName = buildManagedClaudeSessionForkName(session);
@@ -1016,7 +1036,7 @@ export async function handleClaude(context) {
         + (requestedSwitchPreset ? ` using ${forkPreset}` : "")
       : requestedSwitchPreset
         ? `Switching session from ${session.account} to ${selected.label} using ${forkPreset}`
-        : `${session.account} is busy; forking session onto ${selected.label}`;
+        : `${session.account} ${unavailableReason === "busy" ? "is busy" : "requires login"}; forking session onto ${selected.label}`;
     stdout.write(`${forkReason} as "${forkName}".\n`);
     await handleRedisClaudeRun({
       ...context,
