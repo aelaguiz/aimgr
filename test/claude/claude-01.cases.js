@@ -30,7 +30,7 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   assert.match(out, /aim auth maintain\s+# refresh due Redis-backed Claude and Codex OAuth credentials once/);
   assert.match(
     out,
-    /aim claude resume <row-or-thread-id-or-name> \[--account <label>\] \[--switch-account fable\|opus\]/,
+    /aim claude resume \[<row-or-thread-id-or-name>\] \[--account <label>\] \[--switch-account fable\|opus\]/,
   );
   assert.match(out, /aim claude run \(opus\|fable\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \(opus\|fable\) \[--resume\]/);

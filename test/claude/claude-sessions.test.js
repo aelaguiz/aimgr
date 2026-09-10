@@ -229,6 +229,35 @@ test("managed Claude session listing stops reading after the recent bound closes
   assert.equal(reads.some((filePath) => filePath.endsWith(`${THREAD_IDS[9]}.jsonl`)), false);
 });
 
+test("untitled sessions get a short user prompt preview without tool results or injected context", () => {
+  const home = mkTempHome();
+  writeManagedSession({
+    home, account: "pro5", threadId: THREAD_IDS[0], cwd: path.join(home, "project"),
+    timestamp: new Date(NOW_MS).toISOString(),
+    events: [
+      { type: "user", isMeta: true, message: { content: "injected context" } },
+      { type: "user", isSidechain: true, message: { content: "child task" } },
+      { type: "user", message: { content: [{ type: "tool_result", content: "tool output" }] } },
+      { type: "user", message: { content: [{ type: "text", text: "Fix\n the login flow " + "x".repeat(200) }] } },
+      { type: "user", message: { content: "later follow-up" } },
+    ],
+  });
+  const [session] = listRecentManagedClaudeSessions({ homeDir: home });
+  assert.match(session.description, /^Fix the login flow /);
+  assert.equal(session.description.length, 160);
+  assert.equal(session.threadName, null);
+  assert.doesNotMatch(session.description, /injected|child|tool output|later/);
+});
+
+test("picker account plus ID resolves the exact copy when the same ID exists in two homes", () => {
+  const home = mkTempHome();
+  for (const account of ["pro5", "pro7"]) {
+    writeManagedSession({ home, account, threadId: THREAD_IDS[0], cwd: path.join(home, account), timestamp: new Date(NOW_MS).toISOString() });
+  }
+  assert.throws(() => resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[0] }), /more than one/);
+  assert.equal(resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[0], account: "pro7" }).account, "pro7");
+});
+
 test("managed Claude recent ordering continues across equal mtime boundaries", () => {
   const home = mkTempHome();
   const tiedTimestamp = new Date(NOW_MS).toISOString();

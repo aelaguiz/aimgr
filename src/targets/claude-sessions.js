@@ -14,7 +14,7 @@ const STAGED_FORK_MARKER_SUFFIX = ".aimgr-staged-fork";
 const RECENT_SESSION_CANDIDATE_MARGIN = 3;
 const INVALID_JSON_LINE = Symbol("invalid-json-line");
 const JSON_LINE_BREAK = 10;
-// Search raw bytes first so listing does not decode or parse transcript message bodies.
+// Search raw bytes first; only decode metadata hits or an untitled prompt preview.
 // Every hit is still validated by parsing its complete containing JSONL record.
 const SESSION_JSON_MARKERS = Object.freeze({
   cwd: Buffer.from('"cwd"'),
@@ -22,6 +22,7 @@ const SESSION_JSON_MARKERS = Object.freeze({
   customTitle: Buffer.from('"customTitle"'),
   aiTitle: Buffer.from('"aiTitle"'),
   effort: Buffer.from('"effort"'),
+  message: Buffer.from('"message"'),
 });
 
 function readDirectory(directory, { missingIsEmpty = false } = {}) {
@@ -66,6 +67,26 @@ function findLatestSessionValue(content, marker, cache, selectValue) {
       if (value !== undefined) return value;
     }
     searchBefore = start;
+  }
+  return null;
+}
+
+function firstUserPromptPreview(content, cache) {
+  let cursor = 0;
+  while (cursor < content.length) {
+    const markerIndex = content.indexOf(SESSION_JSON_MARKERS.message, cursor);
+    if (markerIndex < 0) break;
+    const { entry } = parseJsonLineAt(content, markerIndex, cache);
+    const newline = content.indexOf(JSON_LINE_BREAK, markerIndex);
+    cursor = newline < 0 ? content.length : newline + 1;
+    if (entry?.type !== "user" || entry.isMeta || entry.isSidechain) continue;
+    const contentValue = entry.message?.content;
+    const text = typeof contentValue === "string" ? contentValue
+      : Array.isArray(contentValue)
+        ? contentValue.filter((block) => block?.type === "text").map((block) => block.text).join(" ")
+        : "";
+    const preview = normalizeThreadName(text);
+    if (preview) return preview.length > 160 ? `${preview.slice(0, 159)}…` : preview;
   }
   return null;
 }
@@ -133,10 +154,12 @@ function parseSessionFile({ filePath, account, threadId, fallbackTimestampMs }) 
   const observedAtMs = lastUsedMs ?? fallbackTimestampMs;
   if (!Number.isFinite(observedAtMs)) return null;
   const threadName = customTitle ?? aiTitle;
+  const description = threadName ?? firstUserPromptPreview(content, parsedLines);
   return {
     account,
     threadId,
     threadName,
+    description,
     thread: threadName ?? threadId,
     cwd,
     model: runtime?.model ?? null,
@@ -245,7 +268,7 @@ export function listRecentManagedClaudeSessions({
     .map((session, index) => ({ ...session, rank: index + 1 }));
 }
 
-export function resolveManagedClaudeSession({ homeDir, selector }) {
+export function resolveManagedClaudeSession({ homeDir, selector, account }) {
   const value = String(selector ?? "").trim();
   if (!value) {
     throw new Error("Missing Claude session selector. Use a row number, thread ID, or exact name.");
@@ -259,6 +282,7 @@ export function resolveManagedClaudeSession({ homeDir, selector }) {
   } else if (SESSION_ID_PATTERN.test(value)) {
     const matches = discoverManagedClaudeSessionCandidates({ homeDir })
       .filter((candidate) => candidate.threadId === value.toLowerCase())
+      .filter((candidate) => account === undefined || candidate.account === account)
       .map(parseSessionCandidate)
       .filter(Boolean);
     if (matches.length > 1) {

@@ -37,7 +37,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]",
     "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]",
     "  aim claude list [count] [--json]  # show recent local managed Claude sessions (default: 50)",
-    "  aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus]  # optionally fork onto an exact label or the least-used unlocked account",
+    "  aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus]  # omit selector for a recent-session picker; optional account fork",
     "  aim claude run (opus|fable) [--resume]  # launch an unlocked account by preset usage: Fable-scoped for fable, shared 5h for opus",
     "  aim claude run <label> (opus|fable) [--resume]  # common one-line managed Claude launch presets",
     "  aim claude run <label> [-- <claude args...>]  # project the Redis-backed Claude label into a per-label home and launch Claude",

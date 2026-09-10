@@ -105,7 +105,7 @@ aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--verbose] [--json]
 aim claude usage [account...] [--fresh] [--verbose] [--json]
 aim claude list [count] [--json]
-aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus]
+aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus]
 aim claude run (opus|fable) [--resume]
 aim claude run <label> (opus|fable) [--resume]
 aim claude run <label> [-- <claude args...>]
@@ -125,6 +125,15 @@ aim prime resume <path-or-id> [--rotate]
 aim prime status
 aim prime uninstall [--provider <openai-codex|anthropic|xai>]
 ```
+
+Run `aim claude resume` in a terminal to choose a local managed Claude session.
+The picker lists the most recently used sessions first, with their saved title
+(or a preview of the first user prompt), age, account, and working directory.
+Type a displayed number and press Enter to resume; `n` shows older sessions,
+`p` shows newer sessions, and `q` or an empty Enter cancels. The selected session
+resumes in its own working directory with its recorded model and effort, using
+the existing account handling. `--account` and `--switch-account` also work with
+the picker. For scripts, use `aim claude list --json` and an explicit selector.
 
 `aim codex use` rotates away from the current Codex account on every successful
 call. It prefers labels that have not been selected recently, then uses the

@@ -1237,7 +1237,8 @@ test("explicit Claude run replaces incomplete credentials and malformed app stat
   assert.equal(fs.existsSync(path.join(configDir, ".credentials.json")), true);
 });
 
-test("claude resume reuses the exact recorded Fable model and effort", async () => {
+for (const picker of [false, true]) {
+test(`claude resume ${picker ? "picker" : "row selector"} reuses the exact recorded Fable model and effort`, async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const threadId = "11111111-1111-4111-8111-111111111111";
@@ -1296,8 +1297,19 @@ test("claude resume reuses the exact recorded Fable model and effort", async () 
 
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" });
   const configDir = path.join(claudeHome, ".claude");
-  const out = await runCli(["claude", "resume", "1", "--home", home], {
+  let launches = 0;
+  const out = await runCli(["claude", "resume", ...(picker ? [] : ["1"]), "--home", home], {
     env: { HOME: home },
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    promptLineImpl: async () => {
+      // A different session becomes newest after the picker has rendered.
+      // Choosing row 1 must still resume the session that was displayed there.
+      fs.writeFileSync(path.join(path.dirname(sessionPath), "22222222-2222-4222-8222-222222222222.jsonl"), JSON.stringify({
+        type: "user", cwd: launchCwd, timestamp: new Date().toISOString(),
+      }) + "\n");
+      return "1";
+    },
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
     resolveExecutableOnPathImpl: buildTestClaudeResolver(),
     runClaudeCliImpl: ({
@@ -1307,6 +1319,7 @@ test("claude resume reuses the exact recorded Fable model and effort", async () 
       cwd,
       args,
     }) => {
+      launches += 1;
       assert.equal(userHomeDir, home);
       assert.equal(actualClaudeHome, claudeHome);
       assert.equal(actualConfigDir, configDir);
@@ -1324,9 +1337,12 @@ test("claude resume reuses the exact recorded Fable model and effort", async () 
     },
   });
 
-  assert.equal(out, "");
+  if (picker) assert.match(out, /Claude sessions · newest first/);
+  else assert.equal(out, "");
+  assert.equal(launches, 1);
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
 });
+}
 
 test("claude resume by name selects the lowest five-hour account and honors an exact destination account", async () => {
   const home = mkTempHome();

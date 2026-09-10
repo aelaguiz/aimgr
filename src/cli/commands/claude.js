@@ -1,4 +1,5 @@
 import path from "node:path";
+import { pickClaudeSession } from "../claude-session-picker.js";
 import {
   CLAUDE_FABLE_RUN_PRESET_ARGS,
   CLAUDE_OPUS_RUN_PRESET_ARGS,
@@ -880,7 +881,7 @@ export async function handleClaude(context) {
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
     throw new Error(
-      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus] | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
+      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus] | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
     );
   }
   if (subcmd === "list") {
@@ -919,14 +920,21 @@ export async function handleClaude(context) {
     return;
   }
   if (subcmd === "resume") {
-    if (positional.length !== 3) {
+    if (positional.length > 3) {
       throw new Error(
-        "Usage: aim claude resume <row-or-thread-id-or-name> [--account <label>] [--switch-account fable|opus]",
+        "Usage: aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus]",
       );
+    }
+    let picked;
+    if (positional[2] === undefined) {
+      if (opts.json) throw new Error("Use `aim claude list --json` to list sessions, or `aim claude resume` in an interactive terminal to choose one.");
+      picked = await pickClaudeSession(context);
+      if (!picked) return;
     }
     const session = resolveManagedClaudeSession({
       homeDir,
-      selector: positional[2],
+      selector: picked?.threadId ?? positional[2],
+      ...(picked ? { account: picked.account } : {}),
     });
     if (!isRedisConfigured({ homeDir })) {
       throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
