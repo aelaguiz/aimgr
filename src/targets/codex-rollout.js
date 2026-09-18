@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { resolveSqlite3Command } from "../io/process.js";
 
@@ -11,12 +10,13 @@ import { resolveSqlite3Command } from "../io/process.js";
 // `thread/revert` keeps the thread id and adds `_<rollout-id>` to the basename.
 // Cold rollouts may be compressed to `<name>.jsonl.zst`.
 //
-// These helpers only read and locate rollouts. The identifier rewrite lives in
+// These helpers only locate and read rollouts. The identifier rewrite lives in
 // codex-thread-copy.js.
 
 export const CODEX_SESSION_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 export const CODEX_SESSIONS_SUBDIR = "sessions";
 export const CODEX_ARCHIVED_SESSIONS_SUBDIR = "archived_sessions";
+const HEADER_READ_BYTES = 512 * 1024;
 
 export function isCodexSessionId(value) {
   return CODEX_SESSION_ID_PATTERN.test(String(value ?? "").trim());
@@ -116,123 +116,29 @@ export function findRolloutPathById({ codexHome, threadId, fsImpl = fs } = {}) {
   return null;
 }
 
-/** Every rollout file for one thread id (thread/revert can leave several). */
-export function listRolloutPathsForThreadId({ codexHome, threadId, fsImpl = fs, includeArchived = true } = {}) {
-  const wanted = String(threadId ?? "").trim().toLowerCase();
-  if (!isCodexSessionId(wanted)) return [];
-  const found = [];
-  for (const root of codexRolloutRoots({ codexHome })) {
-    if (root.archived && !includeArchived) continue;
-    for (const dayDir of listDayDirectories(root.dir, { fsImpl })) {
-      for (const file of listRolloutFilesInDay(dayDir, { fsImpl })) {
-        if (file.threadId === wanted) found.push({ path: file.path, archived: root.archived, fileName: file.fileName });
-      }
-    }
-  }
-  return found.sort((a, b) => b.fileName.localeCompare(a.fileName));
-}
-
-export function listRolloutFiles({ codexHome, fsImpl = fs, limit = Number.POSITIVE_INFINITY } = {}) {
-  const files = [];
-  for (const root of codexRolloutRoots({ codexHome })) {
-    for (const dayDir of listDayDirectories(root.dir, { fsImpl })) {
-      for (const file of listRolloutFilesInDay(dayDir, { fsImpl })) {
-        files.push({ ...file, archived: root.archived });
-        if (files.length >= limit) return files;
-      }
-    }
-  }
-  return files;
-}
-
-function openRolloutReadStream(filePath, { fsImpl = fs } = {}) {
-  if (!filePath.endsWith(".zst")) return fsImpl.createReadStream(filePath);
-  // Compressed rollouts are read through `zstd -d`; the plain path is the
-  // normal case and never pays this cost.
-  const child = spawn("zstd", ["-dc", filePath], { stdio: ["ignore", "pipe", "ignore"] });
-  return child.stdout;
-}
-
-/** Stream a rollout file line by line, for any representation. */
-export async function forEachRolloutLine(filePath, onLine, { fsImpl = fs } = {}) {
-  const stream = openRolloutReadStream(filePath, { fsImpl });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  try {
-    for await (const line of rl) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const stop = await onLine(trimmed);
-      if (stop === false) break;
-    }
-  } finally {
-    rl.close();
-    stream.destroy?.();
-  }
-}
-
-export function readCompleteJsonlRecords(filePath, { offset = 0, fsImpl = fs } = {}) {
+function readFirstLine(filePath, { fsImpl = fs } = {}) {
   let fd = null;
   try {
     fd = fsImpl.openSync(filePath, "r");
-    const stat = fsImpl.fstatSync(fd);
-    const start = Math.max(0, Math.min(Number(offset) || 0, stat.size));
-    const length = stat.size - start;
-    if (length <= 0) return { records: [], nextOffset: stat.size };
-    const buffer = Buffer.alloc(length);
-    fsImpl.readSync(fd, buffer, 0, length, start);
-    let raw = buffer.toString("utf8");
-    let nextOffset = stat.size;
-    if (!raw.endsWith("\n")) {
-      const lastNewline = raw.lastIndexOf("\n");
-      if (lastNewline === -1) return { records: [], nextOffset: start };
-      const completeBytes = Buffer.byteLength(raw.slice(0, lastNewline + 1), "utf8");
-      raw = raw.slice(0, lastNewline + 1);
-      nextOffset = start + completeBytes;
-    }
-    const records = [];
-    for (const line of raw.split(/\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        records.push(JSON.parse(trimmed));
-      } catch {
-        // Ignore a partially written final record; callers only read the head.
-      }
-    }
-    return { records, nextOffset };
+    const buffer = Buffer.alloc(HEADER_READ_BYTES);
+    const read = fsImpl.readSync(fd, buffer, 0, HEADER_READ_BYTES, 0);
+    const raw = buffer.subarray(0, read).toString("utf8");
+    const newline = raw.indexOf("\n");
+    return newline === -1 ? raw : raw.slice(0, newline);
   } catch (err) {
-    if (err?.code === "ENOENT") return { records: [], nextOffset: 0 };
+    if (err?.code === "ENOENT") return null;
     throw err;
   } finally {
     if (fd !== null) fsImpl.closeSync(fd);
   }
 }
 
+/**
+ * Read a rollout header. Only the first line is read: a rollout can be gigabytes
+ * long, and the header is always line 0.
+ */
 export function readRolloutMeta(filePath, { fsImpl = fs } = {}) {
-  const { records } = readCompleteJsonlRecords(filePath, { fsImpl });
-  const first = records[0] ?? null;
-  if (first?.type !== "session_meta") return null;
-  const payload = first.payload ?? {};
-  return {
-    id: String(payload.id ?? "").trim().toLowerCase(),
-    sessionId: String(payload.session_id ?? payload.sessionId ?? payload.id ?? "").trim().toLowerCase(),
-    historyMode: String(payload.history_mode ?? payload.historyMode ?? "legacy").trim().toLowerCase(),
-    forkedFromId: payload.forked_from_id ?? null,
-    parentThreadId: payload.parent_thread_id ?? null,
-    historyBase: payload.history_base ?? null,
-    source: payload.source ?? null,
-    cwd: String(payload.cwd ?? "").trim(),
-    originator: String(payload.originator ?? "").trim(),
-    raw: payload,
-  };
-}
-
-export async function readRolloutMetaAsync(filePath, { fsImpl = fs } = {}) {
-  let first = null;
-  await forEachRolloutLine(filePath, (line) => {
-    first = line;
-    return false;
-  }, { fsImpl });
+  const first = readFirstLine(filePath, { fsImpl });
   if (!first) return null;
   let parsed = null;
   try {
@@ -258,21 +164,14 @@ export async function readRolloutMetaAsync(filePath, { fsImpl = fs } = {}) {
 
 /** Highest-numbered `state_<n>.sqlite` in the Codex home, if any. */
 export function resolveCodexStateDbPath({ codexHome, fsImpl = fs } = {}) {
-  let entries = [];
-  try {
-    entries = fsImpl.readdirSync(codexHome, { withFileTypes: true });
-  } catch (err) {
-    if (err?.code === "ENOENT") return null;
-    throw err;
-  }
-  const candidates = entries
-    .filter((entry) => entry.isFile() && /^state_\d+\.sqlite$/.test(entry.name))
-    .map((entry) => ({ name: entry.name, version: Number(entry.name.match(/^state_(\d+)\.sqlite$/)[1]) }))
-    .sort((a, b) => b.version - a.version);
-  return candidates.length > 0 ? path.join(codexHome, candidates[0].name) : null;
+  return highestVersionedDb({ codexHome, prefix: "state", fsImpl });
 }
 
 export function resolveCodexGoalsDbPath({ codexHome, fsImpl = fs } = {}) {
+  return highestVersionedDb({ codexHome, prefix: "goals", fsImpl });
+}
+
+function highestVersionedDb({ codexHome, prefix, fsImpl = fs } = {}) {
   let entries = [];
   try {
     entries = fsImpl.readdirSync(codexHome, { withFileTypes: true });
@@ -280,21 +179,29 @@ export function resolveCodexGoalsDbPath({ codexHome, fsImpl = fs } = {}) {
     if (err?.code === "ENOENT") return null;
     throw err;
   }
+  const pattern = new RegExp(`^${prefix}_(\\d+)\\.sqlite$`);
   const candidates = entries
-    .filter((entry) => entry.isFile() && /^goals_\d+\.sqlite$/.test(entry.name))
-    .map((entry) => ({ name: entry.name, version: Number(entry.name.match(/^goals_(\d+)\.sqlite$/)[1]) }))
+    .filter((entry) => entry.isFile() && pattern.test(entry.name))
+    .map((entry) => ({ name: entry.name, version: Number(entry.name.match(pattern)[1]) }))
     .sort((a, b) => b.version - a.version);
   return candidates.length > 0 ? path.join(codexHome, candidates[0].name) : null;
 }
 
-function spawnSqliteSync({ command, dbPath, sql, spawnSyncImpl }) {
-  const args = ["-readonly", "-noheader", "-separator", "\t", dbPath, sql];
-  const result = spawnSyncImpl(command, args, { encoding: "utf8" });
+function querySqlite({ command, dbPath, sql, spawnSyncImpl }) {
+  const result = spawnSyncImpl(command, ["-readonly", "-noheader", "-separator", "\t", dbPath, sql], { encoding: "utf8" });
   if (result?.error) throw new Error(`Failed to run sqlite3 for ${dbPath}: ${String(result.error.message ?? result.error)}`);
   if (result?.status !== 0) {
     throw new Error(`Failed to query sqlite3 for ${dbPath}: ${String(result?.stderr ?? "").trim() || `exit ${result?.status}`}`);
   }
   return String(result?.stdout ?? "");
+}
+
+function firstLineValue(output) {
+  return output.split("\n").map((line) => line.trim()).filter(Boolean)[0] ?? "";
+}
+
+function escapeSqlString(value) {
+  return String(value ?? "").replace(/'/g, "''");
 }
 
 /** Ask the Codex state DB for a thread's rollout path. */
@@ -303,14 +210,12 @@ export function readStateDbRolloutPath({ codexHome, threadId, spawnSyncImpl, hom
   if (!dbPath || typeof spawnSyncImpl !== "function") return null;
   const id = String(threadId ?? "").trim().toLowerCase();
   if (!isCodexSessionId(id)) return null;
-  const sql = `select rollout_path from threads where id = '${id}' limit 1;`;
-  const out = spawnSqliteSync({
+  const value = firstLineValue(querySqlite({
     command: resolveSqlite3Command({ homeDir, spawnImpl: spawnSyncImpl }),
     dbPath,
-    sql,
+    sql: `select rollout_path from threads where id = '${escapeSqlString(id)}' limit 1;`,
     spawnSyncImpl,
-  });
-  const value = out.split("\n").map((line) => line.trim()).filter(Boolean)[0];
+  }));
   return value ? { path: value, sqlite: true } : null;
 }
 
@@ -318,35 +223,31 @@ export function readStateDbRolloutPath({ codexHome, threadId, spawnSyncImpl, hom
 export function readMostRecentThreadIdForCwd({ codexHome, cwd, spawnSyncImpl, homeDir, fsImpl = fs } = {}) {
   const dbPath = resolveCodexStateDbPath({ codexHome, fsImpl });
   if (!dbPath || typeof spawnSyncImpl !== "function") return null;
-  const escaped = String(cwd ?? "").replace(/'/g, "''");
+  const escaped = escapeSqlString(cwd);
   if (!escaped) return null;
-  const sql =
-    "select id from threads where cwd = '" + escaped + "' and archived_at is null "
-    + "order by coalesce(recency_at, updated_at, created_at) desc limit 1;";
-  const out = spawnSqliteSync({
+  const value = firstLineValue(querySqlite({
     command: resolveSqlite3Command({ homeDir, spawnImpl: spawnSyncImpl }),
     dbPath,
-    sql,
+    sql: "select id from threads where cwd = '" + escaped + "' and archived_at is null "
+      + "order by coalesce(recency_at, updated_at, created_at) desc limit 1;",
     spawnSyncImpl,
-  });
-  const value = out.split("\n").map((line) => line.trim()).filter(Boolean)[0];
+  }));
   return isCodexSessionId(value) ? value.toLowerCase() : null;
 }
 
-export function hasSpawnedSubagents({ codexHome, threadId, spawnSyncImpl, homeDir, fsImpl = fs } = {}) {
+/** How many subagents the thread spawned, per the state DB. */
+export function countSpawnedSubagents({ codexHome, threadId, spawnSyncImpl, homeDir, fsImpl = fs } = {}) {
   const dbPath = resolveCodexStateDbPath({ codexHome, fsImpl });
   if (!dbPath || typeof spawnSyncImpl !== "function") return null;
   const id = String(threadId ?? "").trim().toLowerCase();
   if (!isCodexSessionId(id)) return null;
-  const sql = `select count(*) from thread_spawn_edges where parent_thread_id = '${id}';`;
   try {
-    const out = spawnSqliteSync({
+    const value = Number(firstLineValue(querySqlite({
       command: resolveSqlite3Command({ homeDir, spawnImpl: spawnSyncImpl }),
       dbPath,
-      sql,
+      sql: `select count(*) from thread_spawn_edges where parent_thread_id = '${escapeSqlString(id)}';`,
       spawnSyncImpl,
-    });
-    const value = Number(out.trim());
+    })));
     return Number.isFinite(value) ? value : null;
   } catch {
     return null;
@@ -388,31 +289,10 @@ export function resolveRolloutForThreadId({
       return { status: "found", threadId: normalized, rolloutPath: fileHit.path, meta, source: "filename" };
     }
   }
-  const stale = dbHit?.path ?? null;
-  return { status: "missing", threadId: normalized, staleRolloutPath: stale };
+  return { status: "missing", threadId: normalized, staleRolloutPath: dbHit?.path ?? null };
 }
 
-export function goalFromRecord(record) {
-  if (record?.type !== "event_msg") return null;
-  const payload = record.payload ?? {};
-  const payloadType = String(payload.type ?? "");
-  if (!payloadType.startsWith("thread_goal_")) return null;
-  const goal = payload.goal ?? null;
-  if (!goal || typeof goal !== "object") return null;
-  return {
-    ...goal,
-    threadId: payload.threadId ?? payload.thread_id ?? goal.threadId ?? goal.thread_id ?? null,
-  };
-}
-
-export function latestGoalFromRecords(records, { threadId } = {}) {
-  let latest = null;
-  for (const record of records) {
-    const goal = goalFromRecord(record);
-    if (!goal) continue;
-    const eventThreadId = String(goal.threadId ?? "").trim();
-    if (eventThreadId && threadId && eventThreadId !== threadId) continue;
-    latest = goal;
-  }
-  return latest;
+/** Read a compressed rollout through `zstd -d`. Used only for `.zst` sources. */
+export function openCompressedRollout(filePath) {
+  return spawn("zstd", ["-dc", filePath], { stdio: ["ignore", "pipe", "ignore"] }).stdout;
 }

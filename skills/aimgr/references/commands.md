@@ -55,9 +55,12 @@ session. `resume-fresh` rotates the account and starts a new thread with the
 prior turns copied in and the old identifiers retired; use it when a session
 must not look like one account hopping. It refuses paginated fork segments,
 subagent threads, and threads that spawned subagents, and it verifies the copy
-before launching. Flags: `--last`, `--dry-run`, `--no-goal`,
-`--keep-server-blobs`, `--max-copy-mb <n>`, `--archive-source`, and `--` for
-arguments passed to `codex resume`.
+before launching. Flags: `--last`, `--dry-run` (side-effect free: no rotation, no writes),
+`--no-goal`, `--keep-server-blobs`, `--allow-context-loss`, `--max-copy-mb <n>`,
+`--archive-source`, and `--` for arguments passed to `codex resume`. Compacted
+sources are refused by default because their memory lives in a server-side blob;
+`--keep-server-blobs` carries that memory and accepts the blob link,
+`--allow-context-loss` copies without it.
 
 `aim codex run` with no arguments defaults to `codex -p yolo`. Arguments after
 `--` pass through unchanged.
@@ -80,7 +83,7 @@ If `scripts/install-codex-shortcuts.sh` has been run, two zsh functions exist:
 
 ```zsh
 c()   { command aim codex run "$@"; }
-cr()  { command aim codex resume-fresh "$@"; }
+cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last; else command aim codex resume-fresh "$@"; fi }
 crr() { command aim codex resume "$@"; }
 ```
 

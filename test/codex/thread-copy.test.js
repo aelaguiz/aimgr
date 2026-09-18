@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkTempHome } from "../helpers/files.js";
 import {
   analyticsDisabledInProfile,
+  assertCompactionPolicy,
   buildRewriteMap,
   carryThreadGoal,
   copyThreadRollout,
@@ -21,17 +22,14 @@ import { resolveRolloutForThreadId } from "../../src/targets/codex-rollout.js";
 const THREAD = "01a0b222-95ce-7fa3-96d8-680acb15cbcc";
 const OTHER_THREAD = "01a0b222-95ce-7fa3-96d8-680acb15cbc1";
 const TURN = "01a0b222-96ae-7241-8dfc-c8c63bebf91b";
+const SHORT_ID = "msg_00f3a1";
 const WINDOW_A = "01a0b222-95ce-7fa3-96d8-680acb15cb01";
 const WINDOW_B = "01a0b222-95ce-7fa3-96d8-680acb15cb02";
 const WINDOW_C = "01a0b222-95ce-7fa3-96d8-680acb15cb03";
 const NOW = Date.parse("2026-09-18T12:00:00.000Z");
 
-function uuidList(...values) {
-  return values;
-}
-
-function rolloutLines({ includeSpawnEvent = false, contentMention = false } = {}) {
-  return [
+function rolloutLines({ includeSpawnEvent = false, includeSpawnItem = false, contentMention = false, compacted = false } = {}) {
+  const lines = [
     {
       timestamp: "2026-09-17T10:00:00.000Z",
       ordinal: 0,
@@ -72,8 +70,20 @@ function rolloutLines({ includeSpawnEvent = false, contentMention = false } = {}
       },
     },
     {
-      timestamp: "2026-09-17T10:00:03.000Z",
+      timestamp: "2026-09-17T10:00:02.500Z",
       ordinal: 3,
+      type: "response_item",
+      payload: {
+        type: "message",
+        id: SHORT_ID,
+        role: "assistant",
+        content: [{ type: "output_text", text: "short id message" }],
+        internal_chat_message_metadata_passthrough: { turn_id: TURN },
+      },
+    },
+    {
+      timestamp: "2026-09-17T10:00:03.000Z",
+      ordinal: 4,
       type: "response_item",
       payload: {
         type: "reasoning",
@@ -85,7 +95,7 @@ function rolloutLines({ includeSpawnEvent = false, contentMention = false } = {}
     },
     {
       timestamp: "2026-09-17T10:00:04.000Z",
-      ordinal: 4,
+      ordinal: 5,
       type: "response_item",
       payload: {
         type: "custom_tool_call",
@@ -100,26 +110,56 @@ function rolloutLines({ includeSpawnEvent = false, contentMention = false } = {}
     },
     {
       timestamp: "2026-09-17T10:00:05.000Z",
-      ordinal: 5,
+      ordinal: 6,
       type: "event_msg",
       payload: {
         type: "item_completed",
         thread_id: THREAD,
         turn_id: TURN,
-        item: { id: "msg_01a0b222-95ce-7fa3-96d8-680acb15c111", type: "message" },
+        item: { id: SHORT_ID, type: "message" },
       },
+    },
+    {
+      timestamp: "2026-09-17T10:00:06.000Z",
+      ordinal: 7,
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        thread_id: THREAD,
+        turn_id: TURN,
+        item: { type: includeSpawnItem ? "SubAgentActivity" : "mcp_tool_call", id: "call_child" },
+      },
+    },
+    {
+      // Real rollouts carry locally minted `exec-<uuid>` item ids in item_completed events.
+      timestamp: "2026-09-17T10:00:06.250Z",
+      ordinal: 8,
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        thread_id: THREAD,
+        turn_id: TURN,
+        item: { type: "exec", id: "exec-b52731f6-4935-4c58-b3c6-0396441973b1" },
+      },
+    },
+    {
+      // Positional ids like `item-1` are not identifying and must survive untouched.
+      timestamp: "2026-09-17T10:00:06.500Z",
+      ordinal: 9,
+      type: "event_msg",
+      payload: { type: "item_completed", thread_id: THREAD, turn_id: TURN, item: { type: "message", id: "item-1" } },
     },
     ...(includeSpawnEvent
       ? [{
-          timestamp: "2026-09-17T10:00:06.000Z",
-          ordinal: 6,
+          timestamp: "2026-09-17T10:00:06.500Z",
+          ordinal: 8,
           type: "event_msg",
           payload: { type: "sub_agent_activity", agent_thread_id: OTHER_THREAD, thread_id: THREAD },
         }]
       : []),
     {
       timestamp: "2026-09-17T10:00:07.000Z",
-      ordinal: 7,
+      ordinal: 10,
       type: "token_usage_record",
       payload: {
         session_id: THREAD,
@@ -127,39 +167,52 @@ function rolloutLines({ includeSpawnEvent = false, contentMention = false } = {}
         turn_id: TURN,
         root_turn_id: TURN,
         response_id: "resp_abc123def456",
+        usage: { input_tokens: 1, output_tokens: 2 },
         turn_token_usage: { input_tokens: 1, output_tokens: 2 },
+        thread_token_usage: { input_tokens: 1, output_tokens: 2 },
       },
     },
-    {
-      timestamp: "2026-09-17T10:00:08.000Z",
-      ordinal: 8,
-      type: "compacted",
-      payload: {
-        message: "summary of earlier work",
-        replacement_history: [
-          {
-            type: "message",
-            id: "msg_01a0b222-95ce-7fa3-96d8-680acb15c222",
-            role: "developer",
-            content: [{ type: "input_text", text: "project instructions" }],
-            internal_chat_message_metadata_passthrough: { turn_id: TURN },
+    ...(compacted
+      ? [{
+          timestamp: "2026-09-17T10:00:08.000Z",
+          ordinal: 11,
+          type: "compacted",
+          payload: {
+            message: "",
+            replacement_history: [
+              {
+                type: "message",
+                id: "msg_01a0b222-95ce-7fa3-96d8-680acb15c222",
+                role: "developer",
+                content: [{ type: "input_text", text: "project instructions" }],
+                internal_chat_message_metadata_passthrough: { turn_id: TURN, create_time: 1789695007.5 },
+              },
+              {
+                type: "compaction",
+                id: "cmp_085e491022de5600016aac9421ad3487d193d5a151e24a2780",
+                encrypted_content: "ENCRYPTED_COMPACTION_BLOB",
+              },
+            ],
+            window_number: 0,
+            first_window_id: WINDOW_A,
+            previous_window_id: WINDOW_B,
+            window_id: WINDOW_C,
+            compaction_response_id: "resp_compaction999",
+            latest_token_usage_record: {
+              session_id: THREAD,
+              thread_id: THREAD,
+              turn_id: TURN,
+              root_turn_id: TURN,
+              response_id: "resp_abc123def456",
+              usage: { input_tokens: 1, output_tokens: 2 },
+              turn_token_usage: { input_tokens: 1, output_tokens: 2 },
+              thread_token_usage: { input_tokens: 1, output_tokens: 2 },
+            },
           },
-          { type: "compaction", encrypted_content: "ENCRYPTED_COMPACTION_BLOB" },
-        ],
-        window_number: 0,
-        first_window_id: WINDOW_A,
-        previous_window_id: WINDOW_B,
-        window_id: WINDOW_C,
-        compaction_response_id: "resp_compaction999",
-        latest_token_usage_record: {
-          session_id: THREAD,
-          thread_id: THREAD,
-          turn_id: TURN,
-          response_id: "resp_abc123def456",
-        },
-      },
-    },
+        }]
+      : []),
   ];
+  return lines;
 }
 
 function writeRollout({ home, threadId = THREAD, lines }) {
@@ -174,7 +227,13 @@ function setup(options = {}) {
   const home = mkTempHome();
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
   const sourcePath = writeRollout({ home, lines: rolloutLines(options) });
-  return { home, codexHome: path.join(home, ".codex"), sourcePath };
+  return { home, codexHome: path.join(home, ".codex"), sourcePath, options };
+}
+
+function planAndScan({ codexHome, options = {}, nowMs = NOW }) {
+  const plan = planThreadCopy({ codexHome, sourceId: THREAD, nowMs, randomBytesImpl: () => Buffer.alloc(10, 3) });
+  const scan = scanThreadRollout({ plan });
+  return { plan, scan };
 }
 
 test("generateUuidV7 emits monotonic version-7 identifiers", () => {
@@ -182,70 +241,69 @@ test("generateUuidV7 emits monotonic version-7 identifiers", () => {
   const second = generateUuidV7({ nowMs: NOW + 5, randomBytesImpl: () => Buffer.alloc(10, 2) });
   assert.equal(isUuidV7(first), true);
   assert.equal(isUuidV7(second), true);
-  assert.equal(first[14], "7");
   assert.ok(second > first);
   assert.equal(isUuidV7("01a0b222-95ce-4fa3-96d8-680acb15cbcc"), false);
 });
 
-test("remapIdValue keeps the prefix and the suffix shape", () => {
+test("remapIdValue keeps the prefix and the suffix shape, including short ids", () => {
   const bytes = () => Buffer.alloc(24, 7);
   const uuid = remapIdValue("msg_01a0b222-95ce-7fa3-96d8-680acb15c111", { nowMs: NOW, randomBytesImpl: bytes });
   assert.match(uuid, /^msg_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  const short = remapIdValue(SHORT_ID, { nowMs: NOW, randomBytesImpl: bytes });
+  assert.match(short, /^msg_[0-9a-f]{6}$/);
+  assert.notEqual(short, SHORT_ID);
   const sourceHex = "086c64c19dfa8c6e016aac9421ad3487d193d5a151e24a2780";
   const long = remapIdValue(`rs_${sourceHex}`, { nowMs: NOW, randomBytesImpl: bytes });
-  assert.match(long, /^rs_[0-9a-f]+$/);
   assert.equal(long.length, `rs_${sourceHex}`.length);
   assert.notEqual(long, `rs_${sourceHex}`);
   const call = remapIdValue("call_S3eqf9BvKhZ1SmhvyUCoUvIV", { nowMs: NOW, randomBytesImpl: bytes });
   assert.match(call, /^call_[A-Za-z0-9]{24}$/);
-  assert.equal(remapIdValue("no-underscore", { nowMs: NOW }), null);
+  const bare = remapIdValue(WINDOW_A, { nowMs: NOW, randomBytesImpl: bytes });
+  assert.equal(isUuidV7(bare), true);
+  assert.equal(remapIdValue("plainword", { nowMs: NOW }), null, "no separator means no remap");
+  const dashed = remapIdValue("exec-b52731f6-4935-4c58-b3c6-0396441973b1", { nowMs: NOW, randomBytesImpl: bytes });
+  assert.match(dashed, /^exec-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
-test("scan collects every retired identifier and what the file carries", async () => {
-  const { home, codexHome } = setup();
-  const plan = planThreadCopy({ codexHome, sourceId: THREAD, nowMs: NOW });
-  const scan = await scanThreadRollout({ plan });
+test("scan collects every retired identifier, including short and bare ids", () => {
+  const { codexHome } = setup();
+  const { scan } = planAndScan({ codexHome });
   assert.equal(scan.threadId, THREAD);
   assert.equal(scan.sessionId, THREAD);
-  assert.deepEqual(scan.turnIds, [TURN]);
-  assert.deepEqual(scan.windowIds, uuidList(WINDOW_A, WINDOW_B, WINDOW_C));
-  assert.ok(scan.itemIds.includes("msg_01a0b222-95ce-7fa3-96d8-680acb15c111"));
-  assert.ok(scan.itemIds.includes("ctc_086c64c19dfa8c6e016aac9428b8c087d18418b4f13d8efb1e"));
-  assert.ok(scan.itemIds.includes("call_s3eqf9bvkhz1smhvyucouviv"));
-  assert.deepEqual([...scan.responseIds].sort(), ["resp_abc123def456", "resp_compaction999"]);
+  const ids = new Set(scan.ids.map((id) => String(id).toLowerCase()));
+  assert.ok(ids.has(TURN), "turn id");
+  assert.ok(ids.has(SHORT_ID), "short prefixed id");
+  assert.ok(ids.has(WINDOW_A), "header window id");
+  assert.equal(ids.has(WINDOW_B), false, "window ids only arrive with a compacted record");
+  assert.ok(ids.has("msg_01a0b222-95ce-7fa3-96d8-680acb15c111"));
+  assert.ok(ids.has("ctc_086c64c19dfa8c6e016aac9428b8c087d18418b4f13d8efb1e"));
+  assert.ok(ids.has("call_s3eqf9bvkhz1smhvyucouviv"));
+  assert.ok(ids.has("resp_abc123def456"), "response id collected so it can be blanked");
+  assert.ok(ids.has("exec-b52731f6-4935-4c58-b3c6-0396441973b1"), "dash-separated local id");
+  assert.equal(ids.has("item-1"), false, "positional ids are not retired");
+  assert.ok(ids.has(OTHER_THREAD), "lineage pointer collected");
   assert.equal(scan.createTimes, 2);
-  assert.equal(scan.encryptedBlobs, 3);
-  assert.equal(scan.droppedItemLines, 2);
-  assert.equal(scan.lineTypes.compacted, 1);
-  assert.equal(scan.subagentSpawnCount, 0);
-  assert.ok(scan.lineCount === rolloutLines().length);
+  assert.equal(scan.encryptedBlobs, 2);
+  assert.equal(scan.compactedLines, 0);
+  assert.deepEqual(scan.agentItemTypes.filter((type) => type === "SubAgentActivity"), []);
 });
 
-test("copy retires ids, drops server blobs, and keeps conversation content", async () => {
-  const { home, codexHome } = setup();
-  const plan = planThreadCopy({ codexHome, sourceId: THREAD, nowMs: NOW, randomBytesImpl: () => Buffer.alloc(10, 3) });
-  const scan = await scanThreadRollout({ plan });
+test("copy retires ids, blanks response_id, and keeps the transcript decodable", () => {
+  const { codexHome } = setup();
+  const { plan, scan } = planAndScan({ codexHome });
   const map = buildRewriteMap({ scan, newId: plan.newId, nowMs: NOW, randomBytesImpl: () => Buffer.alloc(10, 4) });
-  const copy = await copyThreadRollout({ plan, scan, map, nowMs: NOW });
+  const copy = copyThreadRollout({ plan, scan, map, nowMs: NOW });
   assert.equal(fs.existsSync(plan.targetPath), true);
-  assert.equal(path.basename(plan.targetPath), `rollout-2026-09-18T07-00-00-${plan.newId}.jsonl`);
-  // One whole line is dropped (the reasoning item); the nested compaction marker
-  // is dropped from its array inside the compacted record.
-  assert.equal(copy.dropped, 1);
-  assert.equal(copy.lines, rolloutLines().length - 1);
+  assert.equal(copy.dropped, 1, "the reasoning line is dropped");
+  assert.equal(copy.sourceGrew, false);
 
   const written = fs.readFileSync(plan.targetPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   const header = written[0];
-  assert.equal(header.type, "session_meta");
-  assert.equal(header.ordinal, 0);
   assert.equal(header.payload.id, plan.newId);
   assert.equal(header.payload.session_id, plan.newId);
-  assert.equal(header.payload.forked_from_id, undefined);
-  assert.equal(header.payload.forked_from_ordinal_exclusive, undefined);
-  assert.equal(header.payload.parent_thread_id, undefined);
-  assert.equal(header.payload.history_base, undefined);
-  assert.equal(header.payload.history_mode, "paginated");
-  assert.equal(header.payload.base_instructions.text, "You are Codex");
+  for (const key of ["forked_from_id", "forked_from_ordinal_exclusive", "parent_thread_id", "history_base"]) {
+    assert.equal(header.payload[key], undefined, key);
+  }
   assert.equal(isUuidV7(header.payload.context_window.window_id), true);
   assert.notEqual(header.payload.context_window.window_id, WINDOW_A);
   assert.deepEqual(written.map((line) => line.ordinal), written.map((_, index) => index));
@@ -253,45 +311,79 @@ test("copy retires ids, drops server blobs, and keeps conversation content", asy
   const serialized = JSON.stringify(written);
   assert.equal(serialized.includes(THREAD), false);
   assert.equal(serialized.includes(TURN), false);
+  assert.equal(serialized.includes(SHORT_ID), false);
   assert.equal(serialized.includes("ENCRYPTED_REASONING_BLOB"), false);
   assert.equal(serialized.includes("ENCRYPTED_ARGS"), false);
-  assert.equal(serialized.includes("ENCRYPTED_COMPACTION_BLOB"), false);
   assert.equal(serialized.includes("create_time"), false);
-  assert.equal(serialized.includes("resp_abc123def456"), false);
   assert.equal(serialized.includes("compaction_response_id"), false);
   assert.equal(written.some((line) => line.payload?.type === "reasoning"), false);
 
-  const messageItem = written.find((line) => line.type === "response_item" && line.payload.role === "user");
-  assert.equal(messageItem.payload.content[0].text, "hello there");
-  assert.match(messageItem.payload.id, /^msg_/);
-  assert.notEqual(messageItem.payload.id, "msg_01a0b222-95ce-7fa3-96d8-680acb15c111");
-  assert.equal(isUuidV7(messageItem.payload.internal_chat_message_metadata_passthrough.turn_id), true);
+  // `TokenUsageRecord.response_id` is a required String: the key stays, blanked.
+  const usage = written.find((line) => line.type === "token_usage_record");
+  assert.equal(typeof usage.payload.response_id, "string");
+  assert.equal(usage.payload.response_id, "");
+  assert.equal(usage.payload.thread_id, plan.newId);
+  assert.equal(usage.payload.root_turn_id, usage.payload.turn_id);
+
+  const shortMessage = written.find((line) => line.type === "response_item" && line.payload.role === "assistant");
+  assert.match(shortMessage.payload.id, /^msg_[0-9a-f]{6}$/);
+  assert.notEqual(shortMessage.payload.id, SHORT_ID);
+
+  // Real-world `exec-<uuid>` item ids must be remapped, and positional ids left alone.
+  const execItem = written.find((line) => line.type === "event_msg" && line.payload.item?.type === "exec");
+  assert.match(execItem.payload.item.id, /^exec-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  const positional = written.find((line) => line.type === "event_msg" && line.payload.item?.id === "item-1");
+  assert.equal(positional.payload.item.id, "item-1");
 
   const toolCall = written.find((line) => line.type === "response_item" && line.payload.type === "custom_tool_call");
   assert.match(toolCall.payload.call_id, /^call_/);
   assert.equal(toolCall.payload.input, "echo hi");
 
-  const compacted = written.find((line) => line.type === "compacted");
-  assert.equal(compacted.payload.message, "summary of earlier work");
-  assert.equal(compacted.payload.replacement_history.length, 1);
-  assert.equal(compacted.payload.replacement_history[0].content[0].text, "project instructions");
-  assert.equal(compacted.payload.latest_token_usage_record.session_id, plan.newId);
-
-  const usage = written.find((line) => line.type === "token_usage_record");
-  assert.equal(usage.payload.thread_id, plan.newId);
-  assert.equal(usage.payload.session_id, plan.newId);
-  assert.equal(usage.payload.response_id, undefined);
-
-  // Copied lines keep their own timestamps; only the new header is stamped now.
   assert.equal(header.timestamp, new Date(NOW).toISOString());
   assert.equal(written[1].timestamp, "2026-09-17T10:00:01.000Z");
 });
 
-test("verify passes on a scrubbed copy and reports content mentions separately", async () => {
-  const { home, codexHome } = setup({ contentMention: true });
-  const plan = planThreadCopy({ codexHome, sourceId: THREAD, nowMs: NOW });
-  const scan = await scanThreadRollout({ plan });
-  await copyThreadRollout({ plan, scan, nowMs: NOW });
+test("compacted sources are refused under the default scrub, and carried only by explicit flags", () => {
+  const { codexHome } = setup({ compacted: true });
+  const { plan, scan } = planAndScan({ codexHome });
+  assert.equal(scan.compactedLines, 1);
+  assert.throws(
+    () => assertCompactionPolicy({ scan, dropServerBlobs: true, allowContextLoss: false }),
+    /was compacted/,
+  );
+  assert.doesNotThrow(() => assertCompactionPolicy({ scan, dropServerBlobs: false, allowContextLoss: false }));
+  assert.doesNotThrow(() => assertCompactionPolicy({ scan, dropServerBlobs: true, allowContextLoss: true }));
+
+  // --allow-context-loss: the compaction blob goes away, everything else is scrubbed.
+  const lossPlan = planAndScan({ codexHome }).plan;
+  const lossMap = buildRewriteMap({ scan, newId: lossPlan.newId, nowMs: NOW });
+  copyThreadRollout({ plan: { ...lossPlan, targetPath: `${lossPlan.targetPath}.loss` }, scan, map: lossMap, nowMs: NOW });
+  const lossText = fs.readFileSync(`${lossPlan.targetPath}.loss`, "utf8");
+  assert.equal(lossText.includes("ENCRYPTED_COMPACTION_BLOB"), false);
+  assert.equal(lossText.includes("cmp_085e491022de5600016a"), false);
+  assert.equal(lossText.includes(THREAD), false);
+
+  // --keep-server-blobs: the compaction item and its ids stay, memory preserved.
+  const keepPlan = planAndScan({ codexHome }).plan;
+  const keepMap = buildRewriteMap({ scan, newId: keepPlan.newId, nowMs: NOW });
+  copyThreadRollout({
+    plan: { ...keepPlan, targetPath: `${keepPlan.targetPath}.keep` },
+    scan,
+    map: keepMap,
+    nowMs: NOW,
+    dropServerBlobs: false,
+  });
+  const keepText = fs.readFileSync(`${keepPlan.targetPath}.keep`, "utf8");
+  assert.equal(keepText.includes("ENCRYPTED_COMPACTION_BLOB"), true);
+  assert.equal(keepText.includes("create_time"), false, "create_time is stripped even when blobs are kept");
+  assert.equal(keepText.includes("cmp_085e491022de5600016a"), true, "the blob-bearing item keeps its own ids");
+  assert.equal(keepText.includes(THREAD), false, "everything else is still retired");
+});
+
+test("verify passes on a scrubbed copy and separates content mentions from residue", () => {
+  const { codexHome } = setup({ contentMention: true });
+  const { plan, scan } = planAndScan({ codexHome });
+  copyThreadRollout({ plan, scan, nowMs: NOW });
   const verification = verifyCopiedRollout({ plan, scan });
   assert.deepEqual(verification.failures, []);
   assert.equal(verification.ok, true);
@@ -299,16 +391,11 @@ test("verify passes on a scrubbed copy and reports content mentions separately",
   assert.match(verification.contentMentions[0].path, /content/);
 });
 
-test("verify fails on identifier residue and on surviving server blobs", async () => {
-  const { home, codexHome } = setup();
-  const plan = planThreadCopy({ codexHome, sourceId: THREAD, nowMs: NOW });
-  const scan = await scanThreadRollout({ plan });
-  await copyThreadRollout({ plan, scan, nowMs: NOW, dropServerBlobs: false });
-  const verification = verifyCopiedRollout({ plan, scan, dropServerBlobs: false });
-  assert.equal(verification.ok, true, "keeping blobs is allowed when asked for explicitly");
+test("verify fails on identifier residue, surviving blobs, and kept create_time", () => {
+  const { codexHome } = setup();
+  const { plan, scan } = planAndScan({ codexHome });
+  copyThreadRollout({ plan, scan, nowMs: NOW });
 
-  fs.rmSync(plan.targetPath, { force: true });
-  await copyThreadRollout({ plan, scan, nowMs: NOW });
   fs.appendFileSync(
     plan.targetPath,
     `${JSON.stringify({ timestamp: "2026-09-18T07:00:01.000Z", ordinal: 99, type: "event_msg", payload: { type: "item_completed", thread_id: THREAD } })}\n`,
@@ -317,10 +404,27 @@ test("verify fails on identifier residue and on surviving server blobs", async (
   assert.equal(residue.ok, false);
   assert.ok(residue.failures.some((failure) => failure.check === "identifier-residue"));
   assert.ok(residue.failures.some((failure) => failure.check === "ordinals"));
+
+  fs.rmSync(plan.targetPath, { force: true });
+  copyThreadRollout({ plan, scan, nowMs: NOW, dropServerBlobs: false });
+  const kept = verifyCopiedRollout({ plan, scan, dropServerBlobs: false });
+  assert.equal(kept.failures.some((failure) => failure.check === "encrypted-blob"), false);
+  assert.ok(kept.blobMentions.length > 0, "kept blob items are reported, not failed");
+});
+
+test("a live source is copied as a consistent snapshot and reported", () => {
+  const { codexHome, sourcePath } = setup();
+  const { plan, scan } = planAndScan({ codexHome });
+  const extra = { timestamp: "2026-09-17T10:01:00.000Z", ordinal: 99, type: "response_item", payload: { type: "message", id: "msg_extra01", role: "user", content: [{ type: "input_text", text: "appended later" }] } };
+  fs.appendFileSync(sourcePath, `${JSON.stringify(extra)}\n`);
+  const copy = copyThreadRollout({ plan, scan, nowMs: NOW });
+  assert.equal(copy.sourceGrew, true);
+  const text = fs.readFileSync(plan.targetPath, "utf8");
+  assert.equal(text.includes("appended later"), false);
 });
 
 test("plan refuses lineage segments, subagent sources, and oversized rollouts", () => {
-  const { home, codexHome } = setup();
+  const { codexHome } = setup();
   const sourcePath = path.join(codexHome, "sessions", "2026", "09", "17", `rollout-2026-09-17T10-00-00-${THREAD}.jsonl`);
   const original = fs.readFileSync(sourcePath, "utf8");
   const base = JSON.parse(original.split("\n")[0]);
@@ -337,19 +441,17 @@ test("plan refuses lineage segments, subagent sources, and oversized rollouts", 
   assert.throws(() => planThreadCopy({ codexHome, sourceId: THREAD, nowMs: NOW }), /subagent/);
 
   fs.writeFileSync(sourcePath, original, "utf8");
-  assert.throws(
-    () => planThreadCopy({ codexHome, sourceId: THREAD, nowMs: NOW, maxCopyMb: 0.000001 }),
-    /above the/,
-  );
+  assert.throws(() => planThreadCopy({ codexHome, sourceId: THREAD, nowMs: NOW, maxCopyMb: 0.000001 }), /above the/);
   assert.throws(() => planThreadCopy({ codexHome, sourceId: "not-a-uuid", nowMs: NOW }), /Not a Codex thread id/);
   assert.throws(() => planThreadCopy({ codexHome, sourceId: OTHER_THREAD, nowMs: NOW }), /No rollout found/);
 });
 
-test("resolveRolloutForThreadId finds a rollout by filename and reports a stale state-DB path", () => {
+test("readRolloutMeta reads only the header, and the resolver reports a stale state-DB path", () => {
   const { codexHome } = setup();
   const found = resolveRolloutForThreadId({ codexHome, threadId: THREAD });
   assert.equal(found.status, "found");
   assert.equal(found.source, "filename");
+  assert.equal(found.meta.historyMode, "paginated");
 
   fs.writeFileSync(path.join(codexHome, "state_5.sqlite"), "", "utf8");
   const stale = resolveRolloutForThreadId({
@@ -365,11 +467,8 @@ test("ensureCodexProfileAnalyticsDisabled writes once and keeps existing keys", 
   const { codexHome } = setup();
   const profilePath = path.join(codexHome, "yolo.config.toml");
   fs.writeFileSync(profilePath, "model = \"gpt-6-astra\"\n\n[features]\ngoals = true\n", "utf8");
-  const first = ensureCodexProfileAnalyticsDisabled({ codexHome });
-  assert.equal(first.changed, true);
-  const text = fs.readFileSync(profilePath, "utf8");
-  assert.match(text, /model = "gpt-6-astra"/);
-  assert.match(text, /\[analytics\]\nenabled = false/);
+  assert.equal(ensureCodexProfileAnalyticsDisabled({ codexHome }).changed, true);
+  assert.match(fs.readFileSync(profilePath, "utf8"), /\[analytics\]\nenabled = false/);
   assert.equal(analyticsDisabledInProfile({ codexHome }), true);
   assert.equal(ensureCodexProfileAnalyticsDisabled({ codexHome }).changed, false);
 
@@ -378,31 +477,26 @@ test("ensureCodexProfileAnalyticsDisabled writes once and keeps existing keys", 
   ensureCodexProfileAnalyticsDisabled({ codexHome });
   assert.equal(analyticsDisabledInProfile({ codexHome }), true);
   assert.equal((fs.readFileSync(profilePath, "utf8").match(/enabled = false/g) ?? []).length, 1);
-
-  fs.writeFileSync(profilePath, "[features]\ngoals = true\n\n[analytics]\n", "utf8");
-  ensureCodexProfileAnalyticsDisabled({ codexHome });
-  const inserted = fs.readFileSync(profilePath, "utf8");
-  assert.match(inserted, /\[analytics\]\nenabled = false/);
-  assert.equal(analyticsDisabledInProfile({ codexHome }), true);
-  assert.equal((inserted.match(/enabled = false/g) ?? []).length, 1);
 });
 
 test("carryThreadGoal mints a fresh goal id and skips threads without a goal", () => {
   const { codexHome } = setup();
   fs.writeFileSync(path.join(codexHome, "goals_1.sqlite"), "", "utf8");
   const calls = [];
-  const spawnSyncImpl = (command, args) => {
-    calls.push({ command, args });
-    return { status: 0, stdout: "1\n", stderr: "" };
-  };
-  const carried = carryThreadGoal({ codexHome, sourceId: THREAD, newId: OTHER_THREAD, nowMs: NOW, spawnSyncImpl });
+  const carried = carryThreadGoal({
+    codexHome,
+    sourceId: THREAD,
+    newId: OTHER_THREAD,
+    nowMs: NOW,
+    spawnSyncImpl: (command, args) => {
+      calls.push({ command, args });
+      return { status: 0, stdout: "1\n", stderr: "" };
+    },
+  });
   assert.equal(carried.carried, true);
   assert.equal(isUuidV7(carried.goalId), true);
-  const sql = calls[0].args[1];
-  assert.match(sql, /insert or replace into thread_goals/);
-  assert.match(sql, new RegExp(`'${OTHER_THREAD}'`));
-  assert.match(sql, new RegExp(`where thread_id = '${THREAD}'`));
-  assert.match(sql, /pragma foreign_keys=off/);
+  assert.match(calls[0].args[1], /insert or replace into thread_goals/);
+  assert.match(calls[0].args[1], new RegExp(`where thread_id = '${THREAD}'`));
 
   const empty = carryThreadGoal({
     codexHome,

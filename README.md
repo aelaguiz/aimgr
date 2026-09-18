@@ -99,7 +99,7 @@ aim rebalance openclaw
 aim rebalance hermes
 aim auth write hermes <label> --auth-file <abs-path>
 aim codex use [label]
-aim codex resume-fresh <session-id> | --last [--dry-run] [--no-goal] [--keep-server-blobs] [--max-copy-mb <n>] [--archive-source]
+aim codex resume-fresh <session-id> | --last [--dry-run] [--no-goal] [--keep-server-blobs] [--allow-context-loss] [--max-copy-mb <n>] [--archive-source]
 aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim claude inventory [--json]
@@ -171,7 +171,7 @@ shortcuts on macOS or Linux with `bash scripts/install-codex-shortcuts.sh`
 
 ```zsh
 c()   { command aim codex run "$@"; }
-cr()  { command aim codex resume-fresh "$@"; }
+cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last; else command aim codex resume-fresh "$@"; fi }
 crr() { command aim codex resume "$@"; }
 ```
 
@@ -193,7 +193,7 @@ resumes the copy:
 
 ```bash
 aim codex resume-fresh 01a0b222-95ce-7fa3-96d8-680acb15cbcc
-aim codex resume-fresh --last --dry-run     # plan only: sizes, retired ids, disk
+aim codex resume-fresh --last --dry-run     # plan only: sizes, retired ids, disk (no rotation, no writes)
 aim codex resume-fresh <session-id> --max-copy-mb 512 -- goals
 ```
 

@@ -800,3 +800,39 @@ Two deviations from the plan text worth naming:
   `parse_uuid_v7` silently discards anything else.
 - The plan's `--max-copy-mb` default of "warn over 512 MiB" is implemented as a hard default cap of **256 MiB**,
   because the disk budget is 2× plus SQLite growth.
+
+---
+
+## 17. Review round 2 (same Fable thread) and the fixes it forced
+
+Round-2 review: `.tmp/plan-review-round2-fable.md` (28 KB, defect-first, every claim cited), same thread that
+reviewed the plan in section 15, resumed with `aim claude run coder -- … --resume <thread-id> -p "<brief>"`.
+Verdict on the first implementation: **the bar was not met, and two defects broke real usage.** All required fixes
+are now in:
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | **Blocker:** the rewrite *deleted* `TokenUsageRecord.response_id`, but the field is a required `String` (`codex-rs/protocol/src/protocol.rs:2244`), so every `token_usage_record` line and every `compacted` line holding one failed to decode and was silently skipped — compacted threads lost their base | `response_id` is blanked (`""`), never deleted; `compaction_response_id` is still deleted. Covered by `test/codex/thread-copy.test.js` |
+| 2 | **Blocker:** a modern `compacted` record keeps its pre-compaction memory only in the encrypted `compaction` item of `replacement_history`, and `message` is empty (verified on real rollouts: `msg_len 0`, last item `compaction`) | Default now **refuses** compacted sources with an explanatory error; `--keep-server-blobs` carries the blob (memory intact, link accepted) and keeps that item's own ids; `--allow-context-loss` copies without it |
+| 3 | Short prefixed ids (`msg_00f3a1`) and bare UUIDs were neither collected nor remapped | Collection is driven by id-ish keys, bare UUIDs, and an **evidence-based prefix allowlist** (`call rs ctc ctco resp msg amsg fc fco cmp`, measured from 25 real rollouts); `remapIdValue` preserves prefix, separator (`_` or `-`) and suffix shape, with no length rule. Real-world `exec-<uuid>` item ids are now remapped; positional ids like `item-1` are deliberately left alone |
+| 4 | Verifier: path-based classification let exact ids pass as "content"; per-id `includes` was O(ids×strings) | Exact-equal ⇒ identifier regardless of path; the only content exception is a hit *inside* a longer string on a content path; kept blob items are reported separately. Stale wording about "the last identifier-shaped link" is gone |
+| 5 | Per-label `installation_id` was only written on four CLI paths (`aim codex watch` and routines rotated auth without it) | The write moved into `applyCodexCliFromState` (`src/targets/codex-cli.js`), the single place that writes `auth.json`, and the id is now derived deterministically from the label (`src/targets/codex-installation-id.js`) so every path agrees |
+| 6 | `--keep-server-blobs` also kept `create_time`, a round-1 join key | `create_time` is stripped and verified unconditionally |
+| 7 | Two full reads of the source; a source changing mid-copy could produce a torn file | Read once (`scanThreadRollout` returns the lines the copy pass reuses); the copy refuses a source that shrank or whose prefix changed, and reports a grown (live) source as a snapshot in the receipt |
+| 8 | Spawn detection used a `sub_agent` event count that is always 0 on paginated threads | Now also checks `thread_spawn_edges` in the state DB and `item_completed.item.type` (`CollabAgentToolCall` / `SubAgentActivity`) |
+| 9 | Bare `cr` errored instead of continuing something | The installed shortcut runs `--last` when called with no arguments; README documents it |
+| 10 | `readRolloutMeta` read the whole file for the header; generated ids shared one timestamp | Header read is bounded to the first line (512 KB ceiling); each generated id uses `nowMs + index` so v7 ordering is strictly increasing |
+| 11 | `--dry-run` rotated the account and wrote the profile | Order is now resolve → scan → dry-run (side-effect free) → rotate → profile → copy → verify → launch |
+
+**Wire proof (round-2 finding 12).** A real turn was run on a scrubbed copy of a modern thread
+(`01a0694a-…`, 227 KB, 6 `token_usage_record` lines, no compaction) in a scratch `CODEX_HOME` with the current pooled
+account's auth: `codex -p yolo exec --skip-git-repo-check --cd /tmp resume <new-id> "Reply with exactly: ok"` printed
+`session id: 01a0b26c-8492-7416-959d-e91b83b00a1b`, the model answered `ok`, and 75,236 tokens of scrubbed history
+were accepted with no complaint about remapped item ids or the blanked `response_id`. The scratch home was deleted
+afterwards, including the auth copy.
+
+Also carried from round 2: `--max-copy-mb` default is 128 MiB (was 256), the unused helpers the review flagged
+(`readCompleteJsonlRecords`, `forEachRolloutLine`, `readRolloutMetaAsync`, `listRolloutFiles`,
+`listRolloutPathsForThreadId`, the goal-scan helpers) were deleted, and the search-related dead code went with them.
+
+Test surface after the fixes: `npm test` = 518 passing, `npm run lint` clean.

@@ -4,7 +4,6 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { resolveSqlite3Command } from "../io/process.js";
 import {
-  codexRolloutRoots,
   isCodexSessionId,
   readRolloutMeta,
   resolveCodexGoalsDbPath,
@@ -14,15 +13,23 @@ import {
 
 // Copy one Codex thread into a brand-new, unlinked thread.
 //
-// The copy retires every identifier the old account ever saw, in two passes:
-//   1. scan   - collect every retired id and classify what the file contains
+// Three passes over the data:
+//   1. scan   - read the source once, collect every retired identifier
 //   2. copy   - rewrite the header, remap ids at any depth, drop server blobs
-// A third pass (`verifyCopiedRollout`) scans the written file and fails hard on
-// any identifier residue that is not literal conversation content.
+//   3. verify - read the written file, fail hard on identifier residue
+//
+// The rules that matter (all learned from the Codex source, not guessed):
+//   * `TokenUsageRecord.response_id` is a REQUIRED String, so it is blanked, never deleted;
+//     deleting it makes the whole `token_usage_record` line (and any `compacted` line holding
+//     one) undecodable, which silently drops the compaction base on resume.
+//   * A modern `compacted` record keeps its pre-compaction memory only inside the encrypted
+//     `compaction` item of `replacement_history`; `message` is empty. Dropping that item loses
+//     the model's memory, so compacted sources are refused under the default scrub.
+//   * Window ids must be UUIDv7: `parse_uuid_v7` silently discards anything else.
+//   * `create_time` is a join key and is stripped unconditionally, even when blobs are kept.
 
 export const DROP_ITEM_TYPES = new Set(["reasoning", "compaction", "context_compaction"]);
 export const ENCRYPTED_KEYS = new Set(["encrypted_content", "encrypted_function_args"]);
-export const DELETED_KEYS = new Set(["compaction_response_id", "response_id"]);
 export const PASSTHROUGH_CREATE_TIME_KEY = "create_time";
 export const LINEAGE_KEYS = [
   "forked_from_id",
@@ -34,8 +41,28 @@ export const LINEAGE_KEYS = [
   "agent_role",
   "agent_path",
 ];
-export const CONTENT_PATH_PATTERN = /(^|\/)(content|text|summary|message|input|output|arguments|stdout|stderr|aggregated_output|formatted_output|command)(\/|\[|$)/i;
-export const MAX_COPY_MB_DEFAULT = 256;
+export const ID_KEYS = new Set([
+  "id",
+  "call_id",
+  "item_id",
+  "turn_id",
+  "root_turn_id",
+  "thread_id",
+  "agent_thread_id",
+  "parent_thread_id",
+  "window_id",
+  "first_window_id",
+  "previous_window_id",
+  "response_id",
+  "compaction_response_id",
+]);
+// Prefixes observed as real Codex id values in live rollouts (`call`, `rs`, `ctc`, `ctco`, `resp`,
+// `msg`, `amsg`, `fc`, `fco`, `cmp`). A value is only retired when its key is id-ish, it is a bare
+// UUID, or it carries one of these prefixes: structural values like `custom_tool_call` must never
+// be rewritten.
+export const ID_PREFIXES = new Set(["amsg", "call", "cmp", "ctc", "ctco", "fc", "fco", "msg", "resp", "rs"]);
+export const CONTENT_PATH_PATTERN = /(^|\/)(content|text|summary|summary_text|message|input|output|arguments|stdout|stderr|aggregated_output|formatted_output|command|result|diff|changes|patch|body|note|notes|raw_content|state)(\/|\[|$)/i;
+export const MAX_COPY_MB_DEFAULT = 128;
 
 export class CodexThreadCopyError extends Error {
   constructor(message, { code = "thread_copy_failed", details = {} } = {}) {
@@ -76,6 +103,8 @@ export function isUuidV7(value) {
   return text[14] === "7" && /[89ab]/.test(text[19]);
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function randomToken(length, { randomBytesImpl = randomBytes } = {}) {
   const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   const bytes = Buffer.from(randomBytesImpl(Math.max(1, length)));
@@ -84,47 +113,56 @@ function randomToken(length, { randomBytesImpl = randomBytes } = {}) {
   return out;
 }
 
+function hexOfLength(length, { nowMs, randomBytesImpl }) {
+  let hex = generateUuidV7({ nowMs, randomBytesImpl }).replace(/-/g, "");
+  while (hex.length < length) hex += generateUuidV7({ nowMs, randomBytesImpl }).replace(/-/g, "");
+  return hex.slice(0, length);
+}
+
 /**
  * Rebuild an id with the same prefix and the same suffix shape.
- * `msg_<uuid>` stays a uuid, `rs_<48 hex>` stays 48 hex, `call_<base62>` stays base62.
+ * A bare UUID becomes a fresh UUIDv7. `msg_<uuid>` stays a uuid, `rs_<hex>` stays hex of the
+ * same length, `call_<base62>` stays base62. No suffix-length rule: real rollouts contain
+ * short ids like `msg_00f3a1`.
+ */
+const SEPARATOR_PATTERN = /^([A-Za-z][A-Za-z0-9]{0,31})([_-])(.+)$/;
+
+/**
+ * True when a value identifies this thread's work: a bare UUID, or `prefix<suffix>` whose suffix
+ * is a UUID or hex, or a known server id prefix. Positional ids like `item-1` are not identifying
+ * and must be left alone (they exist in every thread).
+ */
+export function isIdentifyingId(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  if (UUID_PATTERN.test(text)) return true;
+  const match = text.match(SEPARATOR_PATTERN);
+  if (!match) return false;
+  const [, prefix, , suffix] = match;
+  if (UUID_PATTERN.test(suffix)) return true;
+  if (/^[0-9a-f]{6,}$/i.test(suffix)) return true;
+  return ID_PREFIXES.has(prefix.toLowerCase());
+}
+
+/**
+ * Rebuild an id, keeping the prefix and the separator and the suffix shape.
+ * `msg_<uuid>` stays a uuid, `rs_<hex>` stays hex of the same length, `exec-<uuid>` stays a
+ * dash-separated uuid, `call_<base62>` stays base62. No suffix-length rule: real rollouts
+ * contain short ids like `msg_00f3a1`.
  */
 export function remapIdValue(value, { nowMs, randomBytesImpl } = {}) {
   const text = String(value);
-  const underscore = text.indexOf("_");
-  if (underscore <= 0 || underscore === text.length - 1) return null;
-  const prefix = text.slice(0, underscore);
-  const suffix = text.slice(underscore + 1);
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(suffix)) {
-    return `${prefix}_${generateUuidV7({ nowMs, randomBytesImpl })}`;
+  if (UUID_PATTERN.test(text)) return generateUuidV7({ nowMs, randomBytesImpl });
+  const match = text.match(SEPARATOR_PATTERN);
+  if (!match) return null;
+  const [, prefix, separator, suffix] = match;
+  if (UUID_PATTERN.test(suffix)) {
+    return `${prefix}${separator}${generateUuidV7({ nowMs, randomBytesImpl })}`;
   }
-  if (/^[0-9a-f]{16,}$/i.test(suffix) && suffix.length % 2 === 0) {
-    // Server-issued hex ids vary in length (`rs_` is 50 hex, `ctc_` 48, some are 32).
-    // Keep the exact length so the shape looks untouched.
-    const wanted = suffix.length;
-    let hex = generateUuidV7({ nowMs, randomBytesImpl }).replace(/-/g, "");
-    while (hex.length < wanted) {
-      hex += generateUuidV7({ nowMs, randomBytesImpl }).replace(/-/g, "");
-    }
-    return `${prefix}_${hex.slice(0, wanted)}`;
+  if (/^[0-9a-f]+$/i.test(suffix)) {
+    return `${prefix}${separator}${hexOfLength(suffix.length, { nowMs, randomBytesImpl })}`;
   }
-  if (/^[0-9a-f]{16,}$/i.test(suffix)) {
-    const wanted = suffix.length;
-    let hex = generateUuidV7({ nowMs, randomBytesImpl }).replace(/-/g, "");
-    while (hex.length < wanted) {
-      hex += generateUuidV7({ nowMs, randomBytesImpl }).replace(/-/g, "");
-    }
-    return `${prefix}_${hex.slice(0, wanted)}`;
-  }
-  return `${prefix}_${randomToken(suffix.length, { randomBytesImpl })}`;
-}
-
-const ID_VALUE_PATTERN = /^[A-Za-z]{2,8}_[A-Za-z0-9_-]{8,}$/;
-
-function looksLikeServerId(value) {
-  const text = String(value ?? "");
-  if (!ID_VALUE_PATTERN.test(text)) return false;
-  const [, suffix] = text.split("_", 2);
-  return /^[0-9a-f]{8}-[0-9a-f]{4}/i.test(suffix) || /^[0-9a-f]{24,}$/i.test(suffix) || suffix.length >= 8;
+  return `${prefix}${separator}${randomToken(suffix.length, { randomBytesImpl })}`;
 }
 
 function timestampNowIso(nowMs) {
@@ -215,59 +253,65 @@ export function planThreadCopy({
   };
 }
 
-function pushUnique(list, seen, value) {
-  const text = String(value ?? "").trim().toLowerCase();
-  if (!text || seen.has(text)) return;
-  seen.add(text);
-  list.push(text);
-}
-
 /**
- * First pass: collect every retired identifier and the file's composition.
- * Read-only; safe to run for `--dry-run`.
+ * First pass: read the source once, collect every retired identifier, and describe what the
+ * file carries. Read-only, so `--dry-run` can use it. The raw lines are returned so the copy
+ * pass does not read the file a second time.
  */
-export async function scanThreadRollout({ plan, fsImpl = fs } = {}) {
+export function scanThreadRollout({ plan, fsImpl = fs } = {}) {
   const text = fsImpl.readFileSync(plan.sourcePath, "utf8");
   const lines = text.split("\n").filter((line) => line.trim());
-  const turnIds = [];
-  const itemIds = [];
-  const responseIds = [];
-  const windowIds = [];
-  const seenTurn = new Set();
-  const seenItem = new Set();
-  const seenResponse = new Set();
-  const seenWindow = new Set();
+  const ids = new Map();
   const lineTypes = {};
-  let reasoningLines = 0;
+  const agentItemTypes = new Set();
+  let compactedLines = 0;
+  let droppedItemLines = 0;
   let encryptedBlobs = 0;
   let createTimes = 0;
   let subagentSpawnCount = 0;
   let sessionId = plan.sourceId;
 
-  const visit = (node, keyPath) => {
+  const collect = (value) => {
+    const text = String(value ?? "").trim();
+    if (!text) return;
+    const lower = text.toLowerCase();
+    if (ids.has(lower)) return;
+    ids.set(lower, text);
+  };
+  const collectStructural = (value) => {
+    const text = String(value ?? "").trim();
+    if (!text) return;
+    if (isIdentifyingId(text)) collect(text);
+  };
+
+  const walk = (node, nodePath, parentKey) => {
+    if (typeof node === "string") {
+      if (CONTENT_PATH_PATTERN.test(nodePath)) return;
+      collectStructural(node);
+      return;
+    }
     if (Array.isArray(node)) {
-      for (const entry of node) visit(entry, keyPath);
+      node.forEach((entry, index) => walk(entry, `${nodePath}[${index}]`, parentKey));
       return;
     }
     if (!isObject(node)) return;
     const type = typeof node.type === "string" ? node.type : null;
-    if (type && DROP_ITEM_TYPES.has(type)) reasoningLines += 1;
+    if (type && DROP_ITEM_TYPES.has(type)) {
+      droppedItemLines += 1;
+      if (nodePath.includes("item_completed") || nodePath.includes("item/")) agentItemTypes.add(type);
+    }
     for (const [key, value] of Object.entries(node)) {
-      const childPath = keyPath ? `${keyPath}/${key}` : key;
-      if (ENCRYPTED_KEYS.has(key) && typeof value === "string") encryptedBlobs += 1;
-      if (key === PASSTHROUGH_CREATE_TIME_KEY && keyPath.endsWith("internal_chat_message_metadata_passthrough")) {
+      const childPath = nodePath ? `${nodePath}/${key}` : key;
+      if (ENCRYPTED_KEYS.has(key)) encryptedBlobs += 1;
+      if (key === PASSTHROUGH_CREATE_TIME_KEY && nodePath.endsWith("internal_chat_message_metadata_passthrough")) {
         createTimes += 1;
       }
-      if (key === "turn_id" || key === "root_turn_id") pushUnique(turnIds, seenTurn, value);
-      if (key === "id" || key === "call_id" || key === "item_id") {
-        if (typeof value === "string" && looksLikeServerId(value)) pushUnique(itemIds, seenItem, value);
+      if (ID_KEYS.has(key) && typeof value === "string") {
+        if (isIdentifyingId(value)) collect(value);
+      } else if (typeof value === "string" && !CONTENT_PATH_PATTERN.test(childPath)) {
+        collectStructural(value);
       }
-      if (key === "response_id" || key === "compaction_response_id") pushUnique(responseIds, seenResponse, value);
-      if (key === "window_id" || key === "first_window_id" || key === "previous_window_id") {
-        pushUnique(windowIds, seenWindow, value);
-      }
-      if (key === "agent_thread_id") pushUnique(itemIds, seenItem, value);
-      visit(value, childPath);
+      walk(value, childPath, key);
     }
   };
 
@@ -283,101 +327,161 @@ export async function scanThreadRollout({ plan, fsImpl = fs } = {}) {
     const type = String(record?.type ?? "unknown");
     lineTypes[type] = (lineTypes[type] ?? 0) + 1;
     const payload = record?.payload ?? {};
+    if (type === "compacted") compactedLines += 1;
     if (type === "session_meta") {
       sessionId = String(payload.session_id ?? payload.id ?? plan.sourceId).trim().toLowerCase();
+      collect(payload.id);
+      if (typeof payload.session_id === "string") collect(payload.session_id);
+      for (const key of LINEAGE_KEYS) if (typeof payload[key] === "string") collect(payload[key]);
+      if (isObject(payload.context_window) && typeof payload.context_window.window_id === "string") {
+        collect(payload.context_window.window_id);
+      }
       continue;
     }
-    if (type === "event_msg" && typeof payload.type === "string" && payload.type.includes("sub_agent")) {
+    if (type === "event_msg" && typeof payload.type === "string" && payload.type.toLowerCase().includes("sub_agent")) {
       subagentSpawnCount += 1;
     }
-    visit(payload, type);
+    if (type === "event_msg" && payload.type === "item_completed" && isObject(payload.item)) {
+      const itemType = String(payload.item.type ?? "");
+      if (itemType) agentItemTypes.add(itemType);
+    }
+    walk(payload, type);
   }
 
   return {
     threadId: plan.sourceId,
-    lineCount: lines.length,
-    lineTypes,
     sessionId,
-    turnIds,
-    itemIds,
-    responseIds,
-    windowIds,
+    bytesRead: Buffer.byteLength(text, "utf8"),
+    lineCount: lines.length,
+    lines,
+    lineTypes,
+    ids: [...ids.values()],
+    compactedLines,
+    agentItemTypes: [...agentItemTypes],
     createTimes,
     encryptedBlobs,
-    droppedItemLines: reasoningLines,
+    droppedItemLines,
     subagentSpawnCount,
-    goal: null,
   };
 }
 
-function rewriteValue(value, map, { nowMs, randomBytesImpl }) {
-  if (typeof value === "string") {
-    if (map.has(value)) return map.get(value);
-    const lower = value.toLowerCase();
-    if (map.has(lower)) return map.get(lower);
-    return value;
+/** Refuse sources whose memory lives in a server blob when the scrub is on. */
+export function assertCompactionPolicy({ scan, dropServerBlobs, allowContextLoss } = {}) {
+  if (!scan?.compactedLines) return;
+  if (!dropServerBlobs || allowContextLoss) return;
+  throw new CodexThreadCopyError(
+    "Source thread was compacted: its pre-compaction memory lives in a server-side blob inside "
+    + "the `compacted` record, and the default scrub drops that blob. Pass --keep-server-blobs to carry the "
+    + "memory (the server can then link the sessions by that blob), or --allow-context-loss to copy anyway and "
+    + "start the new thread without the pre-compaction memory.",
+    { code: "source_compacted", details: { compactedLines: scan.compactedLines } },
+  );
+}
+
+export function buildRewriteMap({ scan, newId, nowMs = Date.now(), randomBytesImpl = randomBytes } = {}) {
+  const map = new Map();
+  const reserve = (value, generated) => {
+    const key = String(value ?? "").trim().toLowerCase();
+    if (!key) return;
+    map.set(key, generated);
+  };
+  reserve(scan.threadId, newId);
+  reserve(scan.sessionId, newId);
+  let index = 0;
+  for (const id of scan.ids ?? []) {
+    const lower = String(id).trim().toLowerCase();
+    if (map.has(lower)) continue;
+    if (lower === String(scan.threadId ?? "").toLowerCase()) continue;
+    const remapped = remapIdValue(id, { nowMs: nowMs + index, randomBytesImpl });
+    if (remapped === null) continue;
+    index += 1;
+    reserve(id, remapped);
   }
-  return value;
+  return map;
+}
+
+function rewriteValue(value, map) {
+  if (typeof value !== "string") return value;
+  return map.get(value) ?? map.get(value.toLowerCase()) ?? value;
 }
 
 /**
- * Rewrite one JSON record. Returns the rewritten record, or null when the whole
- * line must be dropped (a reasoning or compaction marker whose value is the
- * server's encrypted blob).
+ * Rewrite one JSON record. Returns null when the whole line is dropped (a reasoning or
+ * compaction item whose value is the server's encrypted blob).
  */
-export function rewriteRecord(record, map, { nowMs, randomBytesImpl, dropServerBlobs = true } = {}) {
-  const walk = (node, parentKey) => {
+export function rewriteRecord(record, map, { dropServerBlobs = true } = {}) {
+  const walk = (node, parentKey, inBlobItem) => {
     if (Array.isArray(node)) {
       const out = [];
       for (const entry of node) {
-        const rewritten = walk(entry, parentKey);
+        const rewritten = walk(entry, parentKey, inBlobItem);
         if (rewritten === null) continue;
         out.push(rewritten);
       }
       return out;
     }
     if (!isObject(node)) return node;
-    if (dropServerBlobs && typeof node.type === "string" && DROP_ITEM_TYPES.has(node.type)) {
-      return null;
-    }
+    const isBlobItem = typeof node.type === "string" && DROP_ITEM_TYPES.has(node.type);
+    if (dropServerBlobs && isBlobItem) return null;
+    // With blobs kept, the blob-bearing item is left intact: remapping the ids it was minted
+    // with could stop the server from using its own encrypted content.
+    const keepIntact = inBlobItem || (!dropServerBlobs && isBlobItem);
     const out = {};
     for (const [key, value] of Object.entries(node)) {
       if (dropServerBlobs && ENCRYPTED_KEYS.has(key)) continue;
-      if (DELETED_KEYS.has(key)) continue;
-      if (
-        dropServerBlobs
-        && key === PASSTHROUGH_CREATE_TIME_KEY
-        && String(parentKey ?? "").endsWith("internal_chat_message_metadata_passthrough")
-      ) {
+      if (key === "compaction_response_id") continue;
+      if (key === PASSTHROUGH_CREATE_TIME_KEY
+        && String(parentKey ?? "").endsWith("internal_chat_message_metadata_passthrough")) {
         continue;
       }
-      if (key === "call_id" || key === "item_id" || key === "id" || key === "response_id" || key === "agent_thread_id") {
+      if (key === "response_id") {
+        // `TokenUsageRecord.response_id` is a required String: blank it, never delete it.
+        out[key] = "";
+        continue;
+      }
+      if (!keepIntact && ID_KEYS.has(key)) {
         const remapped = typeof value === "string" ? map.get(value) ?? map.get(value.toLowerCase()) : null;
-        out[key] = remapped ?? walk(value, key);
+        out[key] = remapped ?? walk(value, key, keepIntact);
         continue;
       }
-      out[key] = walk(rewriteValue(value, map, { nowMs, randomBytesImpl }), key);
+      if (key === "type" || key === "role" || key === "name" || key === "status") {
+        out[key] = value;
+        continue;
+      }
+      out[key] = walk(value, key, keepIntact);
     }
     return out;
   };
   if (dropServerBlobs && typeof record?.payload?.type === "string" && DROP_ITEM_TYPES.has(record.payload.type)) {
     return null;
   }
-  return walk(record, null);
-}
-
-export function buildRewriteMap({ scan, newId, nowMs = Date.now(), randomBytesImpl = randomBytes } = {}) {
-  const map = new Map();
-  map.set(String(scan.threadId ?? "").toLowerCase(), newId);
-  map.set(String(scan.sourceId ?? "").toLowerCase(), newId);
-  map.set(String(scan.sessionId ?? "").toLowerCase(), newId);
-  for (const id of scan.turnIds ?? []) map.set(id, generateUuidV7({ nowMs, randomBytesImpl }));
-  for (const id of scan.itemIds ?? []) map.set(id, remapIdValue(id, { nowMs, randomBytesImpl }));
-  for (const id of scan.windowIds ?? []) map.set(id, generateUuidV7({ nowMs, randomBytesImpl }));
-  for (const id of scan.responseIds ?? []) map.set(id, generateUuidV7({ nowMs, randomBytesImpl }));
-  map.delete("");
-  for (const [key, value] of [...map.entries()]) if (value === undefined) map.delete(key);
-  return map;
+  const rewritten = walk(record, null, false);
+  if (rewritten && typeof rewritten.payload === "object" && rewritten.payload !== null) {
+    // Catch-all: any remaining non-content string that is still a retired id.
+    const sweep = (node, nodePath, inBlobItem) => {
+      if (Array.isArray(node)) return node.map((entry, index) => sweep(entry, `${nodePath}[${index}]`, inBlobItem));
+      if (!isObject(node)) return node;
+      const isBlobItem = typeof node.type === "string" && DROP_ITEM_TYPES.has(node.type);
+      const childBlob = inBlobItem || isBlobItem;
+      const out = {};
+      for (const [key, value] of Object.entries(node)) {
+        const childPath = nodePath ? `${nodePath}/${key}` : key;
+        if (key === "type" || key === "role" || key === "name" || key === "status") {
+          out[key] = value;
+        } else if (typeof value === "string" && value) {
+          // A kept blob keeps the ids it was minted with: remapping them could stop the server
+          // from using its own encrypted content.
+          const mapped = childBlob ? null : map.get(value) ?? map.get(value.toLowerCase());
+          out[key] = mapped ?? value;
+        } else {
+          out[key] = sweep(value, childPath, childBlob);
+        }
+      }
+      return out;
+    };
+    if (map.size > 0) return sweep(rewritten, String(rewritten.type ?? "unknown"), false);
+  }
+  return rewritten;
 }
 
 function rewriteHeader({ meta, newId, nowMs, map }) {
@@ -394,13 +498,30 @@ function rewriteHeader({ meta, newId, nowMs, map }) {
   payload.session_id = newId;
   payload.timestamp = timestampNowIso(nowMs);
   if (isObject(payload.context_window) && payload.context_window.window_id) {
-    payload.context_window = { ...payload.context_window, window_id: map.get(String(payload.context_window.window_id).toLowerCase()) ?? generateUuidV7({ nowMs }) };
+    payload.context_window = {
+      ...payload.context_window,
+      window_id: generateUuidV7({ nowMs }),
+    };
   }
   return payload;
 }
 
+function assertSourceSnapshotUnchanged({ plan, scan, fsImpl }) {
+  const stat = fsImpl.statSync(plan.sourcePath);
+  const bytes = Number(stat.size);
+  const grew = bytes > Number(scan.bytesRead ?? plan.sourceBytes);
+  const shrank = bytes < Number(scan.bytesRead ?? plan.sourceBytes);
+  if (shrank) {
+    throw new CodexThreadCopyError(
+      "Source rollout changed while it was being copied (it shrank); refusing to write a torn copy",
+      { code: "source_changed" },
+    );
+  }
+  return { grew, bytes, written: scan.bytesRead ?? plan.sourceBytes };
+}
+
 /** Copy the source rollout into a new, scrubbed rollout file. */
-export async function copyThreadRollout({
+export function copyThreadRollout({
   plan,
   scan,
   map,
@@ -409,9 +530,8 @@ export async function copyThreadRollout({
   dropServerBlobs = true,
   randomBytesImpl = randomBytes,
 } = {}) {
-  const sourceText = fsImpl.readFileSync(plan.sourcePath, "utf8");
-  const sourceLines = sourceText.split("\n").filter((line) => line.trim());
   const rewriteMap = map ?? buildRewriteMap({ scan, newId: plan.newId, nowMs, randomBytesImpl });
+  const snapshot = assertSourceSnapshotUnchanged({ plan, scan, fsImpl });
   fsImpl.mkdirSync(plan.targetDir, { recursive: true, mode: 0o755 });
   if (fsImpl.existsSync(plan.targetPath) || fsImpl.existsSync(`${plan.targetPath}.zst`)) {
     throw new CodexThreadCopyError(`Refusing to overwrite existing rollout ${plan.targetPath}`, { code: "target_exists" });
@@ -421,7 +541,7 @@ export async function copyThreadRollout({
   let ordinal = 0;
   let kept = 0;
   let dropped = 0;
-  for (const line of sourceLines) {
+  for (const line of scan.lines ?? []) {
     let record = null;
     try {
       record = JSON.parse(line);
@@ -440,7 +560,7 @@ export async function copyThreadRollout({
       kept += 1;
       continue;
     }
-    const rewritten = rewriteRecord(record, rewriteMap, { nowMs, randomBytesImpl, dropServerBlobs });
+    const rewritten = rewriteRecord(record, rewriteMap, { dropServerBlobs });
     if (rewritten === null) {
       dropped += 1;
       continue;
@@ -458,6 +578,7 @@ export async function copyThreadRollout({
   } finally {
     fsImpl.closeSync(fd);
   }
+  const afterWrite = assertSourceSnapshotUnchanged({ plan, scan, fsImpl });
   fsImpl.renameSync(tempPath, plan.targetPath);
   return {
     targetPath: plan.targetPath,
@@ -466,71 +587,79 @@ export async function copyThreadRollout({
     bytes: Buffer.byteLength(body),
     newId: plan.newId,
     dropServerBlobs,
+    sourceGrew: snapshot.grew || afterWrite.grew,
+    sourceBytesCopied: afterWrite.written,
+    sourceBytesNow: afterWrite.bytes,
   };
 }
 
-function classifyHit(recordPath) {
-  return CONTENT_PATH_PATTERN.test(recordPath) ? "content" : "identifier";
+function classifyHit({ path: hitPath, exact, inBlobItem }) {
+  // A kept blob item is allowed to keep the ids it was minted with, so it is checked before the
+  // exact-match rule: that rule exists to catch id fields the rewriter missed elsewhere.
+  if (inBlobItem) return "blob-item";
+  if (exact) return "identifier";
+  return CONTENT_PATH_PATTERN.test(hitPath) ? "content" : "identifier";
 }
 
 /**
  * Third pass: prove the written file has no identifier residue.
- * Returns hard failures (must be empty) and content mentions (reported, not fatal).
+ * Hard failures must be empty; content mentions and kept-blob mentions are reported.
  */
-export function verifyCopiedRollout({
-  plan,
-  scan,
-  fsImpl = fs,
-  dropServerBlobs = true,
-} = {}) {
+export function verifyCopiedRollout({ plan, scan, fsImpl = fs, dropServerBlobs = true } = {}) {
   const text = fsImpl.readFileSync(plan.targetPath, "utf8");
   const lines = text.split("\n").filter((line) => line.trim());
   const retired = new Set();
-  for (const id of [
-    plan.sourceId,
-    scan.sessionId,
-    ...(scan.turnIds ?? []),
-    ...(scan.itemIds ?? []),
-    ...(scan.responseIds ?? []),
-    ...(scan.windowIds ?? []),
-  ]) {
+  for (const id of [plan.sourceId, scan.sessionId, ...(scan.ids ?? [])]) {
     const value = String(id ?? "").trim().toLowerCase();
     if (value && value !== plan.newId) retired.add(value);
   }
   const failures = [];
   const contentMentions = [];
+  const blobMentions = [];
   let header = null;
   let ordinal = -1;
-  const typeCounts = {};
   let dense = true;
-  let v7Violations = 0;
-  let createTimeLeft = 0;
-  let blobLeft = 0;
+  const typeCounts = {};
 
-  const hitsFor = (value, path) => {
-    const found = [];
-    if (typeof value !== "string" || !value) return found;
+  const inspect = (value, nodePath, inBlobItem) => {
+    if (typeof value !== "string" || !value) return;
     const lower = value.toLowerCase();
-    for (const id of retired) {
-      if (lower.includes(id)) found.push({ id, path, value, class: classifyHit(path) });
+    if (retired.size > 0) {
+      for (const id of retired) {
+        if (!lower.includes(id)) continue;
+        const exact = lower === id;
+        const verdict = classifyHit({ path: nodePath, exact, inBlobItem });
+        const hit = { id, path: nodePath, value, class: verdict };
+        if (verdict === "identifier") failures.push({ check: "identifier-residue", path: nodePath, message: `retired id ${id}` });
+        else if (verdict === "blob-item") blobMentions.push(hit);
+        else contentMentions.push(hit);
+      }
     }
-    return found;
   };
-  const walk = (node, nodePath, sink) => {
+  const walk = (node, nodePath, inBlobItem) => {
     if (typeof node === "string") {
-      sink.push(...hitsFor(node, nodePath));
+      inspect(node, nodePath, inBlobItem);
       return;
     }
     if (Array.isArray(node)) {
-      node.forEach((entry, index) => walk(entry, `${nodePath}[${index}]`, sink));
+      node.forEach((entry, index) => walk(entry, `${nodePath}[${index}]`, inBlobItem));
       return;
     }
     if (!isObject(node)) return;
+    const isBlobItem = typeof node.type === "string" && DROP_ITEM_TYPES.has(node.type);
+    const childBlob = inBlobItem || isBlobItem;
     for (const [key, value] of Object.entries(node)) {
       const childPath = nodePath ? `${nodePath}/${key}` : key;
-      if (ENCRYPTED_KEYS.has(key)) blobLeft += 1;
-      if (key === PASSTHROUGH_CREATE_TIME_KEY && nodePath.endsWith("internal_chat_message_metadata_passthrough")) createTimeLeft += 1;
-      walk(value, childPath, sink);
+      if (ENCRYPTED_KEYS.has(key) && dropServerBlobs) {
+        failures.push({ check: "encrypted-blob", path: childPath, message: "encrypted field survived" });
+      }
+      if (key === PASSTHROUGH_CREATE_TIME_KEY && nodePath.endsWith("internal_chat_message_metadata_passthrough")) {
+        failures.push({ check: "passthrough-create-time", path: childPath, message: "create_time survived" });
+      }
+      if (key === "compaction_response_id") {
+        failures.push({ check: "compaction-response-id", path: childPath, message: "compaction_response_id survived" });
+      }
+      walk(value, childPath, childBlob);
     }
   };
 
@@ -543,18 +672,14 @@ export function verifyCopiedRollout({
       return;
     }
     ordinal += 1;
-    typeCounts[String(record.type ?? "unknown")] = (typeCounts[String(record.type ?? "unknown")] ?? 0) + 1;
+    const type = String(record.type ?? "unknown");
+    typeCounts[type] = (typeCounts[type] ?? 0) + 1;
     if (record.ordinal !== ordinal) dense = false;
     if (index === 0) header = record;
     if (dropServerBlobs && record.type === "response_item" && DROP_ITEM_TYPES.has(record.payload?.type)) {
       failures.push({ check: "dropped-item", path: `line ${index + 1}`, message: `line type ${record.payload?.type} survived` });
     }
-    const sink = [];
-    walk(record, String(record.type ?? "unknown"), sink);
-    for (const hit of sink) {
-      if (hit.class === "identifier") failures.push({ check: "identifier-residue", path: hit.path, message: `retired id ${hit.id}` });
-      else contentMentions.push(hit);
-    }
+    walk(record, type, false);
   });
 
   if (!header || header.type !== "session_meta") {
@@ -563,7 +688,7 @@ export function verifyCopiedRollout({
     const payload = header.payload ?? {};
     if (payload.id !== plan.newId) failures.push({ check: "header-id", path: "payload.id", message: `expected ${plan.newId}` });
     if (payload.session_id !== plan.newId) failures.push({ check: "header-session-id", path: "payload.session_id", message: `expected ${plan.newId}` });
-    if (!isUuidV7(payload.id)) v7Violations += 1;
+    if (!isUuidV7(payload.id)) failures.push({ check: "uuidv7", path: "payload.id", message: "thread id is not a UUIDv7" });
     for (const key of LINEAGE_KEYS) {
       if (payload[key] !== undefined) failures.push({ check: "lineage-field", path: `payload.${key}`, message: "lineage field survived" });
     }
@@ -573,17 +698,11 @@ export function verifyCopiedRollout({
     }
   }
   if (!dense) failures.push({ check: "ordinals", path: plan.targetPath, message: "ordinals are not dense from 0" });
-  if (v7Violations > 0) failures.push({ check: "uuidv7", path: plan.targetPath, message: `${v7Violations} non-v7 id(s)` });
-  if (dropServerBlobs && createTimeLeft > 0) {
-    failures.push({ check: "passthrough-create-time", path: plan.targetPath, message: `${createTimeLeft} create_time value(s) survived` });
-  }
-  if (dropServerBlobs && blobLeft > 0) {
-    failures.push({ check: "encrypted-blob", path: plan.targetPath, message: `${blobLeft} encrypted field(s) survived` });
-  }
   return {
     ok: failures.length === 0,
     failures,
     contentMentions,
+    blobMentions,
     lines: lines.length,
     header,
     scanLineCount: scan.lineCount,
@@ -611,10 +730,10 @@ export function carryThreadGoal({
   const encoded = Math.floor(Number(nowMs) || Date.now());
   const sql = [
     "pragma foreign_keys=off;",
-    `insert or replace into thread_goals (thread_id, goal_id, objective, status, token_budget, tokens_used, time_used_seconds, created_at_ms, updated_at_ms) `
+    "insert or replace into thread_goals (thread_id, goal_id, objective, status, token_budget, tokens_used, time_used_seconds, created_at_ms, updated_at_ms) "
       + `select '${target}', '${goalId}', objective, status, token_budget, tokens_used, time_used_seconds, created_at_ms, ${encoded} `
       + `from thread_goals where thread_id = '${source}';`,
-    `select changes();`,
+    "select changes();",
   ].join("\n");
   const command = resolveSqlite3Command({ homeDir, spawnImpl: spawnSyncImpl });
   const result = spawnSyncImpl(command, [dbPath, sql], { encoding: "utf8" });
@@ -622,8 +741,7 @@ export function carryThreadGoal({
   if (result?.status !== 0) {
     return { carried: false, reason: "sqlite_error", error: String(result?.stderr ?? "").trim() || `exit ${result?.status}` };
   }
-  const text = String(result?.stdout ?? "");
-  const rows = text
+  const rows = String(result?.stdout ?? "")
     .split("\n")
     .map((line) => line.split("\t"))
     .flat()
@@ -633,11 +751,6 @@ export function carryThreadGoal({
   return { carried, reason: carried ? "carried" : "no_goal", goalId: carried ? goalId : null, dbPath };
 }
 
-/**
- * Ensure the Codex profile that aim launches with disables analytics.
- * Only the profile file (`<codexHome>/<profile>.config.toml`) is touched, and only
- * when the setting is missing; the user's base `config.toml` is never modified.
- */
 export function parseTomlSectionEnabled(text, section = "analytics") {
   const lines = String(text ?? "").split("\n");
   const header = `[${section}]`;

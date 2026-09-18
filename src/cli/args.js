@@ -101,6 +101,7 @@ export function parseArgs(argv) {
     codexResumeFreshArchiveSource: false,
     codexResumeFreshNoGoal: false,
     codexResumeFreshKeepServerBlobs: false,
+    codexResumeFreshAllowContextLoss: false,
     codexResumeFreshMaxCopyMb: undefined,
     afterDoubleDash: [],
   };
@@ -358,6 +359,11 @@ export function parseArgs(argv) {
     if (arg === "--keep-server-blobs") {
       requireCodexResumeFresh(argv);
       opts.codexResumeFreshKeepServerBlobs = true;
+      continue;
+    }
+    if (arg === "--allow-context-loss") {
+      requireCodexResumeFresh(argv);
+      opts.codexResumeFreshAllowContextLoss = true;
       continue;
     }
     if (arg === "--max-copy-mb") {

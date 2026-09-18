@@ -10,7 +10,7 @@ import { sanitizeForStatus } from "../../core/sanitize.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { resolveAimgrStateDir, resolveManagedCodexHomeDir } from "../../io/paths.js";
 import { activateCodexLabelSelection, reconcileCodexCliAuth } from "../../targets/codex-cli.js";
-import { ensureCodexLabelInstallationId } from "../../targets/codex-installation-id.js";
+import { assertCompactionPolicy } from "../../targets/codex-thread-copy.js";
 import { resolveCodexCommand } from "../../targets/codex-runner.js";
 import {
   MAX_COPY_MB_DEFAULT,
@@ -24,7 +24,7 @@ import {
   scanThreadRollout,
   verifyCopiedRollout,
 } from "../../targets/codex-thread-copy.js";
-import { isCodexSessionId, readMostRecentThreadIdForCwd } from "../../targets/codex-rollout.js";
+import { countSpawnedSubagents, isCodexSessionId, readMostRecentThreadIdForCwd } from "../../targets/codex-rollout.js";
 
 async function activateCodexForContext(context) {
   const { positional, homeDir, env, probeUsageSnapshotsByProviderImpl, activateCodexPoolSelectionImpl, connectRedisStoreImpl } = context;
@@ -62,21 +62,11 @@ async function activateCodexForContext(context) {
             avoidCurrentLabel: true,
             selectLeastUsed: true,
           });
-      // Give the selected label its own Codex installation id before any child
-      // Codex process starts: Codex reads `<codexHome>/installation_id` once at
-      // process start and sends it on every request.
-      let installationId = null;
-      try {
-        installationId = ensureCodexLabelInstallationId({
-          codexHome: resolveManagedCodexHomeDir({ homeDir, env }),
-          label: activated?.receipt?.label ?? activated?.label ?? null,
-          localState: runtime.localState,
-        });
-      } catch (err) {
-        installationId = { changed: false, reason: "error", error: String(err?.message ?? err) };
-      }
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-      return { reconciliation, activated, installationId };
+      // The per-label Codex installation id is written inside applyCodexCliFromState, which is
+      // the single place that writes auth.json (it covers `use`, `run`, `resume`, watch, and the
+      // scheduled routines that call `aim codex use`).
+      return { reconciliation, activated };
     } finally {
       await closeRedisRuntime(runtime);
     }
@@ -220,37 +210,44 @@ function assertCopyDiskSpace({ dir, requiredBytes, fsImpl }) {
   return { checked: true, freeBytes, requiredBytes };
 }
 
-function resumeFreshPlanSummary({ plan, scan, activation, analytics, disk, dropServerBlobs, profileName, codexHome, fsImpl }) {
+const SUBAGENT_ITEM_TYPES = new Set(["CollabAgentToolCall", "SubAgentActivity", "collab_agent_tool_call", "sub_agent_activity"]);
+
+function subagentEvidence({ scan, spawnedChildren }) {
+  const evidence = [];
+  if (Number(spawnedChildren) > 0) evidence.push(`${spawnedChildren} thread_spawn_edges row(s)`);
+  const itemTypes = (scan.agentItemTypes ?? []).filter((type) => SUBAGENT_ITEM_TYPES.has(type));
+  if (itemTypes.length > 0) evidence.push(`item types ${itemTypes.join(", ")}`);
+  if (Number(scan.subagentSpawnCount) > 0) evidence.push(`${scan.subagentSpawnCount} sub_agent event(s)`);
+  return evidence;
+}
+
+function resumeFreshPlanSummary({ plan, scan, disk, dropServerBlobs, allowContextLoss, analyticsSummary, profileName }) {
   return {
     ok: true,
     dryRun: true,
-    account: activation?.activated?.receipt?.label ?? null,
-    previousAccount: activation?.activated?.receipt?.previousLabel ?? null,
+    rotated: false,
     source: {
       id: plan.sourceId,
       path: plan.sourcePath,
       bytes: plan.sourceBytes,
       historyMode: plan.historyMode,
       lines: scan.lineCount,
+      compactedLines: scan.compactedLines,
     },
     target: { id: plan.newId, path: plan.targetPath },
     scan: {
-      turnIds: scan.turnIds.length,
-      itemIds: scan.itemIds.length,
-      responseIds: scan.responseIds.length,
-      windowIds: scan.windowIds.length,
+      ids: scan.ids.length,
+      createTimes: scan.createTimes,
       droppedItemLines: scan.droppedItemLines,
       encryptedBlobs: scan.encryptedBlobs,
-      createTimes: scan.createTimes,
     },
-    scrub: { dropServerBlobs, maxCopyMb: plan.maxCopyMb },
+    scrub: {
+      dropServerBlobs,
+      allowContextLoss,
+      maxCopyMb: plan.maxCopyMb,
+    },
     disk,
-    analytics: {
-      profile: profileName,
-      disabled: analyticsDisabledInProfile({ codexHome, profile: profileName, fsImpl }),
-      changed: analytics.changed,
-    },
-    installationId: activation?.installationId?.installationId ?? null,
+    analytics: { profile: profileName, disabled: analyticsSummary.disabled },
   };
 }
 
@@ -274,7 +271,9 @@ async function handleRedisCodexResumeFresh(context) {
   const archiveSource = Boolean(opts.codexResumeFreshArchiveSource);
   const skipGoal = Boolean(opts.codexResumeFreshNoGoal);
   const keepServerBlobs = Boolean(opts.codexResumeFreshKeepServerBlobs);
+  const allowContextLoss = Boolean(opts.codexResumeFreshAllowContextLoss);
   const maxCopyMb = opts.codexResumeFreshMaxCopyMb;
+  const profileName = "yolo";
   const requested = String(positional[2] ?? "").trim();
   if (requested && !isCodexSessionId(requested)) {
     throw new Error(`\`aim codex resume-fresh\` needs a Codex thread id, got: ${requested || "<empty>"}`);
@@ -286,20 +285,10 @@ async function handleRedisCodexResumeFresh(context) {
     throw new Error("Usage: aim codex resume-fresh <session-id> | aim codex resume-fresh --last [-- <codex args...>]");
   }
   const passthrough = resumeFreshPassthrough(context);
-  const profileName = "yolo";
+  const dropServerBlobs = !keepServerBlobs;
 
-  // 1. Rotate first: a blocked pool must not leave a stray thread behind.
-  const activation = await activateCodexForContext(context);
-  if (activation.activated.status === "blocked") {
-    stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: false, ...activation }), null, 2)}\n`);
-    setExitCode(1);
-    return;
-  }
-
-  // 2. Make sure the profile Codex will read has analytics disabled.
-  const analytics = ensureCodexProfileAnalyticsDisabled({ codexHome, profile: profileName, fsImpl });
-
-  // 3. Resolve the source thread.
+  // 1. Resolve and scan the source first: read-only, so --dry-run is side-effect free and a bad
+  //    source fails before anything is rotated or written.
   const sourceId = requested || readMostRecentThreadIdForCwd({
     codexHome,
     cwd: process.cwd(),
@@ -323,14 +312,16 @@ async function handleRedisCodexResumeFresh(context) {
     homeDir,
     fsImpl,
   });
-  const scan = await scanThreadRollout({ plan, fsImpl });
-  if (scan.subagentSpawnCount > 0) {
+  const scan = scanThreadRollout({ plan, fsImpl });
+  assertCompactionPolicy({ scan, dropServerBlobs, allowContextLoss });
+  const spawnedChildren = countSpawnedSubagents({ codexHome, threadId: plan.sourceId, spawnSyncImpl, homeDir, fsImpl });
+  const spawnEvidence = subagentEvidence({ scan, spawnedChildren });
+  if (spawnEvidence.length > 0) {
     throw new CodexThreadCopyError(
-      `Source thread spawned ${scan.subagentSpawnCount} subagent event(s); refusing to carry a thread whose children still name it`,
-      { code: "source_spawned_subagents", details: { subagentSpawnCount: scan.subagentSpawnCount } },
+      `Source thread spawned subagents (${spawnEvidence.join("; ")}); refusing to carry a thread whose children still name it`,
+      { code: "source_spawned_subagents", details: { spawnEvidence } },
     );
   }
-  const dropServerBlobs = !keepServerBlobs;
   const disk = assertCopyDiskSpace({
     dir: plan.targetDir,
     requiredBytes: plan.sourceBytes * 2 + 64 * 1024 * 1024,
@@ -341,29 +332,38 @@ async function handleRedisCodexResumeFresh(context) {
     const summary = resumeFreshPlanSummary({
       plan,
       scan,
-      activation,
-      analytics,
       disk,
       dropServerBlobs,
+      allowContextLoss,
+      analyticsSummary: { disabled: analyticsDisabledInProfile({ codexHome, profile: profileName, fsImpl }) },
       profileName,
-      codexHome,
-      fsImpl,
     });
     if (stdout.isTTY) {
-      stdout.write(`[aim] Codex account: ${summary.account}${summary.previousAccount ? ` (previous: ${summary.previousAccount})` : ""}\n`);
-      stdout.write(`[aim] source thread ${plan.sourceId} (${scan.lineCount} lines, ${formatBytes(plan.sourceBytes)}, ${plan.historyMode})\n`);
+      stdout.write(`[aim] dry run: no account rotation, no copy, no launch\n`);
+      stdout.write(`[aim] source thread ${plan.sourceId} (${scan.lineCount} lines, ${formatBytes(plan.sourceBytes)}, ${plan.historyMode}${scan.compactedLines > 0 ? `, ${scan.compactedLines} compacted` : ""})\n`);
       stdout.write(`[aim] would create ${plan.newId} at ${plan.targetPath}\n`);
-      stdout.write(`[aim] retired ids: ${scan.turnIds.length} turn, ${scan.itemIds.length} item, ${scan.responseIds.length} response, ${scan.windowIds.length} window\n`);
-      stdout.write(`[aim] scrub ${dropServerBlobs ? "on" : "off (--keep-server-blobs)"}; analytics ${summary.analytics.disabled ? "disabled" : "ENABLED"}; install id ${summary.installationId ?? "unchanged"}\n`);
+      stdout.write(`[aim] would retire ${scan.ids.length} identifier(s) and ${scan.createTimes} create_time value(s); scrub ${dropServerBlobs ? "on" : "off (--keep-server-blobs)"}\n`);
+      stdout.write(`[aim] analytics ${summary.analytics.disabled ? "disabled" : "ENABLED"}; disk free ${formatBytes(disk.freeBytes ?? 0)}\n`);
     } else {
       stdout.write(`${JSON.stringify(sanitizeForStatus(summary), null, 2)}\n`);
     }
     return;
   }
 
+  // 2. Rotate: a blocked pool must not leave a stray thread behind.
+  const activation = await activateCodexForContext(context);
+  if (activation.activated.status === "blocked") {
+    stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: false, ...activation }), null, 2)}\n`);
+    setExitCode(1);
+    return;
+  }
+
+  // 3. Make sure the profile Codex will read has analytics disabled.
+  const analytics = ensureCodexProfileAnalyticsDisabled({ codexHome, profile: profileName, fsImpl });
+
   // 4. Copy, then prove the copy carries no retired identifier.
   const map = buildRewriteMap({ scan, newId: plan.newId, nowMs, randomBytesImpl });
-  const copy = await copyThreadRollout({
+  const copy = copyThreadRollout({
     plan,
     scan,
     map,
@@ -409,9 +409,22 @@ async function handleRedisCodexResumeFresh(context) {
     stdout.write(`[aim] Codex account: ${label}${previousLabel ? ` (previous: ${previousLabel})` : ""}\n`);
     stdout.write(`[aim] new thread ${plan.newId} from ${plan.sourceId} (${copy.lines} lines, ${formatBytes(copy.bytes)}${copy.dropped > 0 ? `, dropped ${copy.dropped}` : ""})\n`);
     stdout.write(`[aim] source thread untouched${goal.carried ? "; goal carried with a fresh goal id" : goal.reason === "no_goal" ? "" : `; goal not carried (${goal.reason})`}\n`);
+    if (copy.sourceGrew) {
+      stdout.write(`[aim] source was live: copied the snapshot up to ${formatBytes(copy.sourceBytesCopied)} of ${formatBytes(copy.sourceBytesNow)} (later turns are not in the copy)\n`);
+    }
+    if (!dropServerBlobs) {
+      stdout.write(`[aim] --keep-server-blobs: encrypted reasoning/compaction blobs and their ids stay in the copy; the server can link the two sessions by them\n`);
+    }
+    if (allowContextLoss && scan.compactedLines > 0) {
+      stdout.write(`[aim] --allow-context-loss: the pre-compaction memory was dropped (${scan.compactedLines} compacted record(s))\n`);
+    }
+    if (verification.blobMentions.length > 0) {
+      stdout.write(`[aim] note: ${verification.blobMentions.length} old id(s) kept inside blob-bearing items by design\n`);
+    }
     if (verification.contentMentions.length > 0) {
       stdout.write(`[aim] note: the copied transcript still mentions a retired id ${verification.contentMentions.length} time(s) inside conversation content\n`);
     }
+    stdout.write(`[aim] analytics ${analytics.changed ? "disabled in the yolo profile" : "already disabled"}\n`);
   }
   const launched = await runCodexInteractiveImpl({
     homeDir,

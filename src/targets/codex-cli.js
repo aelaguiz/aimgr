@@ -20,6 +20,7 @@ import { markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
 import { getAuthorityCodexImport } from "../state/authority-codex.js";
 import { ensureStateShape } from "../state/schema.js";
 import { buildCodexAuthDotJson, clearManagedCodexCliActivation, ensureFileBackedCodexHome, readCodexAuthFile, readCodexCliStoreMode } from "./codex-store.js";
+import { writeCodexLabelInstallationId } from "./codex-installation-id.js";
 
 export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
   ensureStateShape(state);
@@ -71,6 +72,15 @@ export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
     );
   }
 
+  // Every Codex process that will read this auth also reads the installation id at start, so
+  // the label's id has to be in place wherever auth is written (CLI, watch loop, routines).
+  let installationId = null;
+  try {
+    installationId = writeCodexLabelInstallationId({ codexHome, label: normalizedLabel });
+  } catch (err) {
+    installationId = { changed: false, reason: "error", error: String(err?.message ?? err) };
+  }
+
   const target = getCodexTargetState(state);
   target.homeDir = codexHome;
   target.activeLabel = normalizedLabel;
@@ -84,6 +94,7 @@ export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
     authPath: readback.authPath,
     storeMode: store.storeMode,
     wrote: writeResult.wrote,
+    installationId,
   };
 }
 

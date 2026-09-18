@@ -34,7 +34,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim codex use [label] # select a balanced next account, or explicitly select a label",
     "  aim codex run [label | resume [<session-id>]] [-- <codex args...>] # select the exact label, or rotate when omitted; defaults to -p yolo",
     "  aim codex resume [<session-id>] # rotate, then resume the SAME thread with -p yolo",
-    "  aim codex resume-fresh <session-id> | --last [--dry-run] [--no-goal] [--keep-server-blobs] [--max-copy-mb <n>] [--archive-source] [-- <codex args...>] # rotate account, copy the thread into a brand-new thread id, scrub old identifiers, then resume the copy",
+    "  aim codex resume-fresh <session-id> | --last [--dry-run] [--no-goal] [--keep-server-blobs] [--allow-context-loss] [--max-copy-mb <n>] [--archive-source] [-- <codex args...>] # rotate account, copy the thread into a brand-new thread id, scrub old identifiers, then resume the copy",
     "  aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]",
     "  aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]",
     "  aim claude list [count] [--json]  # show recent local managed Claude sessions (default: 50)",

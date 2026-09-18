@@ -5,6 +5,7 @@ import path from "node:path";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
 import { resolveManagedCodexHomeDir } from "../../src/io/paths.js";
+import { resolveCodexLabelInstallationId } from "../../src/targets/codex-installation-id.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
@@ -45,7 +46,7 @@ function usage(usedPercent) {
   };
 }
 
-function rolloutLines({ withSpawnEvent = false } = {}) {
+function rolloutLines({ withSpawnEvent = false, compacted = false, spawnItemType = null } = {}) {
   return [
     {
       timestamp: "2026-09-17T10:00:00.000Z",
@@ -77,12 +78,67 @@ function rolloutLines({ withSpawnEvent = false } = {}) {
         internal_chat_message_metadata_passthrough: { turn_id: TURN, create_time: 1789695001.5 },
       },
     },
+    {
+      timestamp: "2026-09-17T10:00:02.500Z",
+      ordinal: 2,
+      type: "token_usage_record",
+      payload: {
+        session_id: SOURCE_THREAD,
+        thread_id: SOURCE_THREAD,
+        turn_id: TURN,
+        root_turn_id: TURN,
+        response_id: "resp_abc123def456",
+        usage: { input_tokens: 1, output_tokens: 2 },
+        turn_token_usage: { input_tokens: 1, output_tokens: 2 },
+        thread_token_usage: { input_tokens: 1, output_tokens: 2 },
+      },
+    },
     ...(withSpawnEvent
       ? [{
           timestamp: "2026-09-17T10:00:03.000Z",
-          ordinal: 2,
+          ordinal: 3,
           type: "event_msg",
           payload: { type: "sub_agent_activity", agent_thread_id: "01a0b222-95ce-7fa3-96d8-680acb15cbc1", thread_id: SOURCE_THREAD },
+        }]
+      : []),
+    ...(spawnItemType
+      ? [{
+          timestamp: "2026-09-17T10:00:03.500Z",
+          ordinal: 4,
+          type: "event_msg",
+          payload: { type: "item_completed", thread_id: SOURCE_THREAD, turn_id: TURN, item: { type: spawnItemType, id: "call_child" } },
+        }]
+      : []),
+    ...(compacted
+      ? [{
+          timestamp: "2026-09-17T10:00:04.000Z",
+          ordinal: 5,
+          type: "compacted",
+          payload: {
+            message: "",
+            replacement_history: [
+              {
+                type: "message",
+                id: "msg_01a0b222-95ce-7fa3-96d8-680acb15c333",
+                role: "developer",
+                content: [{ type: "input_text", text: "instructions" }],
+                internal_chat_message_metadata_passthrough: { turn_id: TURN },
+              },
+              { type: "compaction", id: "cmp_085e491022de5600016aac9421ad3487d193d5a151e24a2780", encrypted_content: "ENCRYPTED_COMPACTION_BLOB" },
+            ],
+            window_number: 0,
+            window_id: "01a0b222-95ce-7fa3-96d8-680acb15cb02",
+            latest_token_usage_record: {
+              session_id: SOURCE_THREAD,
+              thread_id: SOURCE_THREAD,
+              turn_id: TURN,
+              root_turn_id: TURN,
+              response_id: "resp_abc123def456",
+              usage: { input_tokens: 1, output_tokens: 2 },
+              turn_token_usage: { input_tokens: 1, output_tokens: 2 },
+              thread_token_usage: { input_tokens: 1, output_tokens: 2 },
+            },
+          },
         }]
       : []),
   ];
@@ -111,9 +167,7 @@ async function setup(labels = ["boss", "writer"], options = {}) {
   const codexHome = resolveManagedCodexHomeDir({ homeDir: home, env: {} });
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(path.join(codexHome, "yolo.config.toml"), "model = \"gpt-6-astra\"\n\n[features]\ngoals = true\n", "utf8");
-  const sourcePath = options.withSpawnEvent === "none"
-    ? null
-    : writeRollout({ codexHome, options });
+  const sourcePath = writeRollout({ codexHome, options });
   return {
     home,
     codexHome,
@@ -125,6 +179,10 @@ async function setup(labels = ["boss", "writer"], options = {}) {
       anthropic: {},
     }),
   };
+}
+
+function authCodexHome(homeDir) {
+  return homeDir;
 }
 
 function listCopiedRollouts({ codexHome, exclude }) {
@@ -182,10 +240,9 @@ test("resume-fresh rotates, copies the thread into a new id, scrubs it, and resu
   // Analytics is disabled in the profile aim launches with.
   assert.match(fs.readFileSync(path.join(codexHome, "yolo.config.toml"), "utf8"), /\[analytics\]\nenabled = false/);
 
-  // The selected label gets its own Codex installation id.
+  // The selected label gets its own Codex installation id, written wherever auth.json is written.
   const installationId = fs.readFileSync(path.join(codexHome, "installation_id"), "utf8").trim();
-  const localState = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "local-state.json"), "utf8"));
-  assert.equal(localState.targets.codexCli.installationIds.writer, installationId);
+  assert.equal(installationId, resolveCodexLabelInstallationId({ label: "writer" }));
 });
 
 test("resume-fresh chains: the copy becomes the next source and the account rotates again", async () => {
@@ -230,8 +287,16 @@ test("resume-fresh does not copy or launch when no alternate account exists", as
   assert.deepEqual(listCopiedRollouts({ codexHome, exclude: sourcePath }), []);
 });
 
-test("resume-fresh --dry-run plans the copy without writing or launching", async () => {
+test("resume-fresh --dry-run is side-effect free: no rotation, no copy, no profile or install-id write", async () => {
   const { home, codexHome, sourcePath, connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl } = await setup();
+  const authPath = resolveManagedCodexHomeDir({ homeDir: home, env: {} });
+  await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl, env: {} });
+  const authBefore = fs.readFileSync(path.join(authCodexHome(authPath), "auth.json"), "utf8");
+  const profileBefore = fs.readFileSync(path.join(codexHome, "yolo.config.toml"), "utf8");
+  const installBefore = fs.existsSync(path.join(codexHome, "installation_id"))
+    ? fs.readFileSync(path.join(codexHome, "installation_id"), "utf8")
+    : null;
+
   const out = await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--dry-run", "--home", home], {
     connectRedisStoreImpl,
     probeUsageSnapshotsByProviderImpl,
@@ -241,12 +306,74 @@ test("resume-fresh --dry-run plans the copy without writing or launching", async
   });
   const plan = JSON.parse(out);
   assert.equal(plan.dryRun, true);
+  assert.equal(plan.rotated, false);
   assert.equal(plan.source.id, SOURCE_THREAD);
   assert.equal(plan.scrub.dropServerBlobs, true);
-  assert.equal(plan.analytics.disabled, true);
-  assert.equal(plan.scan.turnIds, 1);
+  assert.equal(plan.analytics.disabled, false, "the profile is untouched by a dry run");
+  assert.equal(plan.scan.ids > 0, true);
   assert.ok(plan.target.id);
+
   assert.deepEqual(listCopiedRollouts({ codexHome, exclude: sourcePath }), []);
+  assert.equal(fs.readFileSync(path.join(authCodexHome(authPath), "auth.json"), "utf8"), authBefore);
+  assert.equal(fs.readFileSync(path.join(codexHome, "yolo.config.toml"), "utf8"), profileBefore);
+  assert.equal(
+    fs.existsSync(path.join(codexHome, "installation_id")) ? fs.readFileSync(path.join(codexHome, "installation_id"), "utf8") : null,
+    installBefore,
+  );
+});
+
+test("compacted sources need an explicit decision: refuse, keep blobs, or accept context loss", async (t) => {
+  await t.test("default refuses", async () => {
+    const { home, codexHome, sourcePath, connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl } = await setup(["boss", "writer"], { compacted: true });
+    await assert.rejects(
+      () => runCli(["codex", "resume-fresh", SOURCE_THREAD, "--home", home], {
+        connectRedisStoreImpl,
+        probeUsageSnapshotsByProviderImpl,
+        env: {},
+        spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
+      }),
+      /was compacted/,
+    );
+    assert.deepEqual(listCopiedRollouts({ codexHome, exclude: sourcePath }), []);
+  });
+
+  await t.test("--keep-server-blobs copies with the blob intact", async () => {
+    const { home, codexHome, sourcePath, connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl } = await setup(["boss", "writer"], { compacted: true });
+    let launched = null;
+    await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--keep-server-blobs", "--home", home], {
+      connectRedisStoreImpl,
+      probeUsageSnapshotsByProviderImpl,
+      env: {},
+      spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
+      runCodexInteractiveImpl: async (request) => {
+        launched = request;
+        return { code: 0, signal: null };
+      },
+    });
+    const copies = listCopiedRollouts({ codexHome, exclude: sourcePath });
+    assert.equal(copies.length, 1);
+    const text = fs.readFileSync(copies[0], "utf8");
+    assert.equal(text.includes("ENCRYPTED_COMPACTION_BLOB"), true);
+    assert.equal(text.includes(SOURCE_THREAD), false);
+    assert.equal(text.includes(TURN), false);
+    assert.equal(launched.args[3], JSON.parse(text.split("\n")[0]).payload.id);
+  });
+
+  await t.test("--allow-context-loss copies without the blob", async () => {
+    const { home, codexHome, sourcePath, connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl } = await setup(["boss", "writer"], { compacted: true });
+    await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--allow-context-loss", "--home", home], {
+      connectRedisStoreImpl,
+      probeUsageSnapshotsByProviderImpl,
+      env: {},
+      spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
+      runCodexInteractiveImpl: async () => ({ code: 0, signal: null }),
+    });
+    const copies = listCopiedRollouts({ codexHome, exclude: sourcePath });
+    assert.equal(copies.length, 1);
+    const text = fs.readFileSync(copies[0], "utf8");
+    assert.equal(text.includes("ENCRYPTED_COMPACTION_BLOB"), false);
+    assert.equal(text.includes(SOURCE_THREAD), false);
+  });
 });
 
 test("resume-fresh refuses bad ids and threads that spawned subagents", async (t) => {
@@ -269,7 +396,21 @@ test("resume-fresh refuses bad ids and threads that spawned subagents", async (t
         env: {},
         spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
       }),
-      /subagent event/,
+      /spawned subagents/,
+    );
+    assert.deepEqual(listCopiedRollouts({ codexHome: spawned.codexHome, exclude: spawned.sourcePath }), []);
+  });
+
+  await t.test("item_completed subagent activity is refused even without a sub_agent event", async () => {
+    const spawned = await setup(["boss", "writer"], { spawnItemType: "SubAgentActivity" });
+    await assert.rejects(
+      () => runCli(["codex", "resume-fresh", SOURCE_THREAD, "--home", spawned.home], {
+        connectRedisStoreImpl: spawned.connectRedisStoreImpl,
+        probeUsageSnapshotsByProviderImpl: spawned.probeUsageSnapshotsByProviderImpl,
+        env: {},
+        spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
+      }),
+      /spawned subagents/,
     );
     assert.deepEqual(listCopiedRollouts({ codexHome: spawned.codexHome, exclude: spawned.sourcePath }), []);
   });
