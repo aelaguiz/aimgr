@@ -99,7 +99,7 @@ aim rebalance openclaw
 aim rebalance hermes
 aim auth write hermes <label> --auth-file <abs-path>
 aim codex use [label]
-aim codex resume-fresh <session-id> | --last [--dry-run] [--no-goal] [--keep-server-blobs] [--allow-context-loss] [--max-copy-mb <n>] [--archive-source]
+aim codex resume-fresh <session-id> | --last [--dry-run] [--no-goal] [--keep-reasoning] [--drop-compaction] [--max-copy-mb <n>] [--archive-source]
 aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim claude inventory [--json]
@@ -172,7 +172,6 @@ shortcuts on macOS or Linux with `bash scripts/install-codex-shortcuts.sh`
 ```zsh
 c()   { command aim codex run "$@"; }
 cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last; else command aim codex resume-fresh "$@"; fi }
-crr() { command aim codex resume "$@"; }
 ```
 
 The installer loads these definitions at the end of `.zshrc`, overriding older
@@ -182,8 +181,11 @@ automatically; in an existing terminal, run
 the selected AIM account and previous label before opening Codex. `cr` and
 `cr <session-id>` rotate too, and neither launches if no eligible alternate exists.
 
-`aim codex resume` and `crr` keep the same Codex thread id and switch the
-account under it, which leaves one session that visibly hops accounts.
+There is no same-thread resume shortcut. `aim codex resume` rotates the account
+and keeps the Codex thread id, which sends that thread id and session id to the
+Codex servers under the new account and links the two accounts. It stays
+available as a deliberate manual command and warns before launching; do not
+alias it (see `CLAUDE.md`, "Codex account rotation rule").
 
 ### New thread on a rotated account: `aim codex resume-fresh`
 
@@ -205,17 +207,23 @@ What the copy retires, so the two threads are not linkable by metadata:
   ids and `call_id`s, response ids, and context-window ids
 - `forked_from_id` / `parent_thread_id` / `history_base` lineage pointers
 - the goal row's `goal_id` (the goal itself is carried with a fresh id)
-- by default, the server's encrypted reasoning and tool-argument blobs, which
-  means Codex also gets a per-label `installation_id` instead of one id shared by
-  every pooled account, and `[analytics] enabled = false` is ensured in the
-  `yolo` profile file aim launches with
+- child thread ids of any subagents the thread spawned (the children stay under
+  the old account and are not carried)
+- by default, the server's encrypted reasoning and tool-argument blobs
 
-`--keep-server-blobs` keeps those blobs (best model continuity) at the cost of
-leaving server-resolvable identifiers in the replayed history. The copy is
-verified before launch: any retired identifier left outside literal conversation
-content deletes the copy and aborts without launching. Sources that are paginated
-fork segments, subagent threads, or threads that spawned subagents are refused.
-The source thread is never modified.
+What the copy keeps: the prior turns, and the encrypted compaction blobs that
+hold the pre-compaction memory, so a long thread resumes with its history intact.
+Codex also gets a per-label `installation_id` instead of one id shared by every
+pooled account, and `[analytics] enabled = false` is ensured in the `yolo`
+profile file aim launches with.
+
+`--keep-reasoning` keeps the reasoning blobs too (best model continuity);
+`--drop-compaction` removes the compaction blobs as well, at the cost of the
+pre-compaction memory. The copy is verified before launch: any retired
+identifier left outside literal conversation content deletes the copy and aborts
+without launching. Only sources that are themselves subagent threads or
+paginated fork segments are refused. Copies stream, so multi-GB threads work
+(default cap 4 GiB, `--max-copy-mb`). The source thread is never modified.
 
 `aim prime run codex|claude|grok` selects the account and model, then starts a new
 Prime session directly. Use `aim prime resume <path-or-id>` when you want an
@@ -255,6 +263,12 @@ For Codex, `provider` defaults to `openai-codex`, `model` to `gpt-6-astra`,
 Codex configuration and supplies permissions and other settings; use a custom
 profile for jobs that need different permissions. The routine explicitly sets
 the model/reasoning and uses AIM-selected ChatGPT account authentication.
+
+For an installed DeepSeek Codex profile, set `provider: deepseek`,
+`profile: dsflash`, `model: deepseek-flash`, and `thinking: high`. This lane
+uses the profile's existing DeepSeek API credential and does not select or
+rotate a ChatGPT account. The same provider/profile applies to the initial
+execution and exact-session interactive resume.
 Prime retains its existing required provider/model/thinking fields.
 
 For Claude, use the same schedule fields with `agent: claude`:

@@ -5,15 +5,17 @@ import path from "node:path";
 import { mkTempHome } from "../helpers/files.js";
 import {
   analyticsDisabledInProfile,
-  assertCompactionPolicy,
   buildRewriteMap,
   carryThreadGoal,
   copyThreadRollout,
   ensureCodexProfileAnalyticsDisabled,
+  forEachRolloutLine,
   generateUuidV7,
   isUuidV7,
   planThreadCopy,
   remapIdValue,
+  remapUuidsInText,
+  resolveBlobPolicy,
   scanThreadRollout,
   verifyCopiedRollout,
 } from "../../src/targets/codex-thread-copy.js";
@@ -343,41 +345,134 @@ test("copy retires ids, blanks response_id, and keeps the transcript decodable",
   assert.equal(written[1].timestamp, "2026-09-17T10:00:01.000Z");
 });
 
-test("compacted sources are refused under the default scrub, and carried only by explicit flags", () => {
+test("blob policy: reasoning dropped and compaction kept by default, each overridable", () => {
+  assert.deepEqual(resolveBlobPolicy(), { dropReasoning: true, dropCompaction: false });
+  assert.deepEqual(resolveBlobPolicy({ keepReasoning: true }), { dropReasoning: false, dropCompaction: false });
+  assert.deepEqual(resolveBlobPolicy({ dropCompaction: true }), { dropReasoning: true, dropCompaction: true });
+  assert.deepEqual(resolveBlobPolicy({ dropServerBlobs: false }), { dropReasoning: false, dropCompaction: false });
+});
+
+test("compacted sources copy by default with the memory blob intact; --drop-compaction removes it", () => {
   const { codexHome } = setup({ compacted: true });
   const { plan, scan } = planAndScan({ codexHome });
   assert.equal(scan.compactedLines, 1);
-  assert.throws(
-    () => assertCompactionPolicy({ scan, dropServerBlobs: true, allowContextLoss: false }),
-    /was compacted/,
-  );
-  assert.doesNotThrow(() => assertCompactionPolicy({ scan, dropServerBlobs: false, allowContextLoss: false }));
-  assert.doesNotThrow(() => assertCompactionPolicy({ scan, dropServerBlobs: true, allowContextLoss: true }));
+  assert.equal(scan.reasoningItems, 1);
+  assert.equal(scan.compactionItems, 1);
 
-  // --allow-context-loss: the compaction blob goes away, everything else is scrubbed.
+  // Default: compaction blob kept (memory survives), reasoning dropped, everything else retired.
+  const map = buildRewriteMap({ scan, newId: plan.newId, nowMs: NOW });
+  const copy = copyThreadRollout({ plan, scan, map, nowMs: NOW });
+  assert.equal(copy.keptCompactions, 1);
+  assert.equal(copy.droppedReasoning, 1);
+  const text = fs.readFileSync(plan.targetPath, "utf8");
+  assert.equal(text.includes("ENCRYPTED_COMPACTION_BLOB"), true, "the memory blob survives");
+  assert.equal(text.includes("ENCRYPTED_REASONING_BLOB"), false, "reasoning blobs are dropped");
+  assert.equal(text.includes("ENCRYPTED_ARGS"), false, "encrypted_function_args is dropped with reasoning");
+  assert.equal(text.includes("cmp_085e491022de5600016a"), true, "the blob-bearing item keeps its own id");
+  assert.equal(text.includes("create_time"), false, "create_time is stripped even next to a kept blob");
+  assert.equal(text.includes(THREAD), false);
+  assert.equal(text.includes(TURN), false, "turn ids are retired inside replacement_history too");
+  assert.equal(text.includes("resp_compaction999"), false);
+  const verification = verifyCopiedRollout({ plan, scan });
+  assert.deepEqual(verification.failures, []);
+  assert.ok(verification.blobMentions.every((hit) => /\/(id|call_id)$/.test(hit.path)), "only the blob item's own id is tolerated");
+
+  // --drop-compaction: the compaction blob goes away too.
   const lossPlan = planAndScan({ codexHome }).plan;
   const lossMap = buildRewriteMap({ scan, newId: lossPlan.newId, nowMs: NOW });
-  copyThreadRollout({ plan: { ...lossPlan, targetPath: `${lossPlan.targetPath}.loss` }, scan, map: lossMap, nowMs: NOW });
+  copyThreadRollout({ plan: { ...lossPlan, targetPath: `${lossPlan.targetPath}.loss` }, scan, map: lossMap, nowMs: NOW, dropCompaction: true });
   const lossText = fs.readFileSync(`${lossPlan.targetPath}.loss`, "utf8");
   assert.equal(lossText.includes("ENCRYPTED_COMPACTION_BLOB"), false);
   assert.equal(lossText.includes("cmp_085e491022de5600016a"), false);
   assert.equal(lossText.includes(THREAD), false);
 
-  // --keep-server-blobs: the compaction item and its ids stay, memory preserved.
+  // --keep-reasoning: reasoning items stay, with their own id but retired turn id.
   const keepPlan = planAndScan({ codexHome }).plan;
   const keepMap = buildRewriteMap({ scan, newId: keepPlan.newId, nowMs: NOW });
-  copyThreadRollout({
-    plan: { ...keepPlan, targetPath: `${keepPlan.targetPath}.keep` },
-    scan,
-    map: keepMap,
-    nowMs: NOW,
-    dropServerBlobs: false,
-  });
+  copyThreadRollout({ plan: { ...keepPlan, targetPath: `${keepPlan.targetPath}.keep` }, scan, map: keepMap, nowMs: NOW, keepReasoning: true });
   const keepText = fs.readFileSync(`${keepPlan.targetPath}.keep`, "utf8");
-  assert.equal(keepText.includes("ENCRYPTED_COMPACTION_BLOB"), true);
-  assert.equal(keepText.includes("create_time"), false, "create_time is stripped even when blobs are kept");
-  assert.equal(keepText.includes("cmp_085e491022de5600016a"), true, "the blob-bearing item keeps its own ids");
-  assert.equal(keepText.includes(THREAD), false, "everything else is still retired");
+  assert.equal(keepText.includes("ENCRYPTED_REASONING_BLOB"), true);
+  assert.equal(keepText.includes("ENCRYPTED_ARGS"), true);
+  assert.equal(keepText.includes("rs_086c64c19dfa8c6e016aac9421ad3487d193d5a151e24a2780"), true, "kept reasoning keeps its own id");
+  assert.equal(keepText.includes(TURN), false, "but not the old turn id");
+  assert.equal(keepText.includes(THREAD), false);
+  const keptVerification = verifyCopiedRollout({ plan: { ...keepPlan, targetPath: `${keepPlan.targetPath}.keep` }, scan, keepReasoning: true });
+  assert.deepEqual(keptVerification.failures, []);
+});
+
+test("threads that spawned subagents are copied with every child id retired, even inside text", () => {
+  const { codexHome, sourcePath } = setup({ includeSpawnEvent: true, includeSpawnItem: true });
+  const stateChild = "01a0b222-95ce-7fa3-96d8-680acb15cbc9";
+  fs.appendFileSync(sourcePath, `${JSON.stringify({
+    timestamp: "2026-09-17T10:00:09.000Z",
+    ordinal: 11,
+    type: "response_item",
+    payload: {
+      type: "message",
+      id: "msg_01a0b222-95ce-7fa3-96d8-680acb15c444",
+      role: "assistant",
+      content: [{ type: "output_text", text: `spawned ${OTHER_THREAD} and ${stateChild}; see call_S3eqf9BvKhZ1SmhvyUCoUvIV` }],
+      internal_chat_message_metadata_passthrough: { turn_id: TURN },
+    },
+  })}\n`);
+  const plan = planThreadCopy({ codexHome, sourceId: THREAD, nowMs: NOW, randomBytesImpl: () => Buffer.alloc(10, 3) });
+  const scan = scanThreadRollout({ plan, extraIds: [stateChild, THREAD] });
+  assert.deepEqual([...scan.childThreadIds].sort(), [OTHER_THREAD, stateChild].sort());
+  assert.ok(scan.agentItemTypes.includes("SubAgentActivity"), "subagent items are inventoried, not refused");
+  const copy = copyThreadRollout({ plan, scan, nowMs: NOW });
+  assert.ok(copy.lines > 0);
+  const text = fs.readFileSync(plan.targetPath, "utf8");
+  assert.equal(text.includes(OTHER_THREAD), false, "child id from the file is retired");
+  assert.equal(text.includes(stateChild), false, "child id from the state DB is retired, even inside prose");
+  assert.equal(text.includes(THREAD), false);
+  const verification = verifyCopiedRollout({ plan, scan });
+  assert.deepEqual(verification.failures, []);
+  assert.equal(verification.contentMentions.filter((hit) => hit.id === stateChild || hit.id === OTHER_THREAD).length, 0);
+  assert.equal(verification.contentMentions.some((hit) => hit.id === "call_s3eqf9bvkhz1smhvyucouviv"), true, "non-UUID ids inside prose are reported, not rewritten");
+});
+
+test("remapUuidsInText rewrites only retired UUIDs inside longer strings", () => {
+  const map = new Map([[THREAD, "new-id"]]);
+  assert.equal(remapUuidsInText(`resume ${THREAD} then ${OTHER_THREAD}`, map), `resume new-id then ${OTHER_THREAD}`);
+  assert.equal(remapUuidsInText("short", map), "short");
+  assert.equal(remapUuidsInText(THREAD.toUpperCase(), map), "new-id");
+});
+
+test("forEachRolloutLine streams across chunk boundaries and honours the byte limit", () => {
+  const { sourcePath } = setup();
+  const whole = fs.readFileSync(sourcePath, "utf8").split("\n").filter(Boolean);
+  for (const chunkBytes of [1, 7, 64, 1024]) {
+    const seen = [];
+    const { bytesRead } = forEachRolloutLine(sourcePath, (line) => seen.push(line), { chunkBytes });
+    assert.deepEqual(seen, whole, `chunk ${chunkBytes}`);
+    assert.equal(bytesRead, fs.statSync(sourcePath).size);
+  }
+  const firstLineBytes = Buffer.byteLength(`${whole[0]}\n`);
+  const limited = [];
+  forEachRolloutLine(sourcePath, (line) => limited.push(line), { chunkBytes: 5, limitBytes: firstLineBytes });
+  assert.deepEqual(limited, [whole[0]]);
+});
+
+test("the streaming copy matches the in-memory result at tiny chunk sizes", () => {
+  const { codexHome } = setup({ compacted: true });
+  const { plan, scan } = planAndScan({ codexHome });
+  const tiny = scanThreadRollout({ plan, chunkBytes: 3 });
+  assert.deepEqual(tiny.ids.sort(), scan.ids.sort());
+  assert.equal(tiny.lineCount, scan.lineCount);
+  const map = buildRewriteMap({ scan, newId: plan.newId, nowMs: NOW, randomBytesImpl: () => Buffer.alloc(10, 4) });
+  // The header's context window id is freshly random on every copy; compare everything else.
+  const normalized = (text) => text.split("\n").filter(Boolean).map((line, index) => {
+    if (index !== 0) return line;
+    const header = JSON.parse(line);
+    delete header.payload.context_window;
+    return JSON.stringify(header);
+  });
+  copyThreadRollout({ plan, scan, map, nowMs: NOW, chunkBytes: 3 });
+  const streamed = normalized(fs.readFileSync(plan.targetPath, "utf8"));
+  fs.rmSync(plan.targetPath);
+  copyThreadRollout({ plan, scan, map, nowMs: NOW });
+  assert.deepEqual(normalized(fs.readFileSync(plan.targetPath, "utf8")), streamed);
+  assert.deepEqual(verifyCopiedRollout({ plan, scan, chunkBytes: 3 }).failures, []);
 });
 
 test("verify passes on a scrubbed copy and separates content mentions from residue", () => {
@@ -387,8 +482,9 @@ test("verify passes on a scrubbed copy and separates content mentions from resid
   const verification = verifyCopiedRollout({ plan, scan });
   assert.deepEqual(verification.failures, []);
   assert.equal(verification.ok, true);
-  assert.equal(verification.contentMentions.length, 1);
-  assert.match(verification.contentMentions[0].path, /content/);
+  assert.equal(verification.contentMentions.length, 0, "a UUID inside prose is rewritten, not just reported");
+  const text = fs.readFileSync(plan.targetPath, "utf8");
+  assert.equal(text.includes(`resume ${plan.newId} later`), true);
 });
 
 test("verify fails on identifier residue, surviving blobs, and kept create_time", () => {

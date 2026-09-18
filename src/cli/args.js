@@ -100,8 +100,8 @@ export function parseArgs(argv) {
     codexResumeFreshDryRun: false,
     codexResumeFreshArchiveSource: false,
     codexResumeFreshNoGoal: false,
-    codexResumeFreshKeepServerBlobs: false,
-    codexResumeFreshAllowContextLoss: false,
+    codexResumeFreshKeepReasoning: false,
+    codexResumeFreshDropCompaction: false,
     codexResumeFreshMaxCopyMb: undefined,
     afterDoubleDash: [],
   };
@@ -356,14 +356,14 @@ export function parseArgs(argv) {
       opts.codexResumeFreshNoGoal = true;
       continue;
     }
-    if (arg === "--keep-server-blobs") {
+    if (arg === "--keep-reasoning") {
       requireCodexResumeFresh(argv);
-      opts.codexResumeFreshKeepServerBlobs = true;
+      opts.codexResumeFreshKeepReasoning = true;
       continue;
     }
-    if (arg === "--allow-context-loss") {
+    if (arg === "--drop-compaction") {
       requireCodexResumeFresh(argv);
-      opts.codexResumeFreshAllowContextLoss = true;
+      opts.codexResumeFreshDropCompaction = true;
       continue;
     }
     if (arg === "--max-copy-mb") {

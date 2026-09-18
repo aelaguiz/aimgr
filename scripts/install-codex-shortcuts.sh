@@ -17,11 +17,13 @@ const body = `# Installed by aimgr/scripts/install-codex-shortcuts.sh.
 #   c   - new thread on a rotated account
 #   cr  - rotate, carry the thread into a brand-new thread id, scrubbed, then resume the copy
 #         (no argument means: the most recent thread for this directory, like the old picker default)
-#   crr - rotate, then resume the SAME thread id (legacy behaviour)
+# There is deliberately no same-thread resume shortcut: resuming an existing thread id on a
+# different account sends that thread id and session id to the Codex servers under the new
+# account, which links the two accounts. See CLAUDE.md, "Codex account rotation rule".
 unalias c cr crr 2>/dev/null || true
+unfunction crr 2>/dev/null || true
 c()   { command aim codex run "$@"; }
 cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last; else command aim codex resume-fresh "$@"; fi }
-crr() { command aim codex resume "$@"; }
 `;
 const source = '[ ! -r "$HOME/.config/aimgr/codex-shortcuts.zsh" ] || source "$HOME/.config/aimgr/codex-shortcuts.zsh"';
 
@@ -39,10 +41,16 @@ install(shortcuts, body);
 const rc = path.join(process.env.ZDOTDIR || home, ".zshrc");
 const current = fs.existsSync(rc) ? fs.readFileSync(rc, "utf8") : "";
 // Keep the managed source last, after any older shortcuts in shared dotfiles.
-const lines = current.split("\n").filter(line => line !== source);
+// Drop the managed source line (re-added last below) and any inline same-thread resume
+// definition an older installer or dotfile left behind.
+const hazardous = new Set([
+  'cr() { command aim codex resume "$@"; }',
+  'crr() { command aim codex resume "$@"; }',
+]);
+const lines = current.split("\n").filter(line => line !== source && !hazardous.has(line.trim()));
 const updated = `${lines.join("\n").trimEnd()}\n${source}\n`;
 install(rc, updated);
-console.log(`Installed c/cr/crr: ${shortcuts}`);
+console.log(`Installed c/cr (crr removed): ${shortcuts}`);
 console.log(`Startup file: ${rc}`);
 console.log('Reload in an existing shell: source "$HOME/.config/aimgr/codex-shortcuts.zsh"');
 JS

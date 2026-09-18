@@ -254,6 +254,28 @@ export function countSpawnedSubagents({ codexHome, threadId, spawnSyncImpl, home
   }
 }
 
+/** The child thread ids the thread spawned, per the state DB (empty when unknown). */
+export function listSpawnedSubagentIds({ codexHome, threadId, spawnSyncImpl, homeDir, fsImpl = fs } = {}) {
+  const dbPath = resolveCodexStateDbPath({ codexHome, fsImpl });
+  if (!dbPath || typeof spawnSyncImpl !== "function") return [];
+  const id = String(threadId ?? "").trim().toLowerCase();
+  if (!isCodexSessionId(id)) return [];
+  try {
+    const output = querySqlite({
+      command: resolveSqlite3Command({ homeDir, spawnImpl: spawnSyncImpl }),
+      dbPath,
+      sql: `select child_thread_id from thread_spawn_edges where parent_thread_id = '${escapeSqlString(id)}';`,
+      spawnSyncImpl,
+    });
+    return output
+      .split("\n")
+      .map((line) => line.trim().toLowerCase())
+      .filter((line) => isCodexSessionId(line) && line !== id);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Resolve one thread id to its rollout file.
  *

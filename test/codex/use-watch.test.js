@@ -209,6 +209,8 @@ test("back-to-back Codex resumes launch with different accounts and show the sel
     }));
   }
   assert.deepEqual(launchedAccounts, ["acct_2", "acct_1", "acct_2"]);
+  assert.match(outputs[0], /WARNING: thread same-thread will continue under account writer\. Codex will send this thread id and session id under the new account/);
+  assert.match(outputs[1], /WARNING: thread same-thread will continue under account boss \(was writer\)/);
   assert.match(outputs[0], /Codex account: writer/);
   assert.match(outputs[1], /Codex account: boss \(previous: writer\)/);
   assert.match(outputs[2], /Codex account: writer \(previous: boss\)/);

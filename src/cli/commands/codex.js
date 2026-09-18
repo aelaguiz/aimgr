@@ -10,7 +10,7 @@ import { sanitizeForStatus } from "../../core/sanitize.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { resolveAimgrStateDir, resolveManagedCodexHomeDir } from "../../io/paths.js";
 import { activateCodexLabelSelection, reconcileCodexCliAuth } from "../../targets/codex-cli.js";
-import { assertCompactionPolicy } from "../../targets/codex-thread-copy.js";
+import { resolveBlobPolicy } from "../../targets/codex-thread-copy.js";
 import { resolveCodexCommand } from "../../targets/codex-runner.js";
 import {
   MAX_COPY_MB_DEFAULT,
@@ -24,7 +24,7 @@ import {
   scanThreadRollout,
   verifyCopiedRollout,
 } from "../../targets/codex-thread-copy.js";
-import { countSpawnedSubagents, isCodexSessionId, readMostRecentThreadIdForCwd } from "../../targets/codex-rollout.js";
+import { isCodexSessionId, listSpawnedSubagentIds, readMostRecentThreadIdForCwd } from "../../targets/codex-rollout.js";
 
 async function activateCodexForContext(context) {
   const { positional, homeDir, env, probeUsageSnapshotsByProviderImpl, activateCodexPoolSelectionImpl, connectRedisStoreImpl } = context;
@@ -108,9 +108,17 @@ async function handleRedisCodexRun(context) {
     setExitCode(1);
     return;
   }
+  const { label, previousLabel } = result.activated.receipt;
   if (stdout.isTTY) {
-    const { label, previousLabel } = result.activated.receipt;
     stdout.write(`[aim] Codex account: ${label}${previousLabel ? ` (previous: ${previousLabel})` : ""}\n`);
+  }
+  const resumedThread = args[2] === "resume" ? args[3] : null;
+  if (resumedThread) {
+    // Deliberate manual path. Same thread id under a different account links the accounts on
+    // the Codex servers; `resume-fresh` is the default that avoids it (CLAUDE.md, rotation rule).
+    stdout.write(`[aim] WARNING: thread ${resumedThread} will continue under account ${label}${previousLabel ? ` (was ${previousLabel})` : ""}. `
+      + "Codex will send this thread id and session id under the new account, which links the two accounts. "
+      + `Use \`aim codex resume-fresh ${resumedThread}\` to avoid that.\n`);
   }
   const launched = await runCodexInteractiveImpl({
     homeDir: context.homeDir,
@@ -210,18 +218,7 @@ function assertCopyDiskSpace({ dir, requiredBytes, fsImpl }) {
   return { checked: true, freeBytes, requiredBytes };
 }
 
-const SUBAGENT_ITEM_TYPES = new Set(["CollabAgentToolCall", "SubAgentActivity", "collab_agent_tool_call", "sub_agent_activity"]);
-
-function subagentEvidence({ scan, spawnedChildren }) {
-  const evidence = [];
-  if (Number(spawnedChildren) > 0) evidence.push(`${spawnedChildren} thread_spawn_edges row(s)`);
-  const itemTypes = (scan.agentItemTypes ?? []).filter((type) => SUBAGENT_ITEM_TYPES.has(type));
-  if (itemTypes.length > 0) evidence.push(`item types ${itemTypes.join(", ")}`);
-  if (Number(scan.subagentSpawnCount) > 0) evidence.push(`${scan.subagentSpawnCount} sub_agent event(s)`);
-  return evidence;
-}
-
-function resumeFreshPlanSummary({ plan, scan, disk, dropServerBlobs, allowContextLoss, analyticsSummary, profileName }) {
+function resumeFreshPlanSummary({ plan, scan, disk, policy, analyticsSummary, profileName }) {
   return {
     ok: true,
     dryRun: true,
@@ -233,22 +230,40 @@ function resumeFreshPlanSummary({ plan, scan, disk, dropServerBlobs, allowContex
       historyMode: plan.historyMode,
       lines: scan.lineCount,
       compactedLines: scan.compactedLines,
+      childThreads: scan.childThreadIds.length,
     },
     target: { id: plan.newId, path: plan.targetPath },
     scan: {
       ids: scan.ids.length,
       createTimes: scan.createTimes,
-      droppedItemLines: scan.droppedItemLines,
+      reasoningItems: scan.reasoningItems,
+      compactionItems: scan.compactionItems,
       encryptedBlobs: scan.encryptedBlobs,
     },
     scrub: {
-      dropServerBlobs,
-      allowContextLoss,
+      dropReasoning: policy.dropReasoning,
+      dropCompaction: policy.dropCompaction,
+      dropServerBlobs: policy.dropReasoning && policy.dropCompaction,
       maxCopyMb: plan.maxCopyMb,
     },
     disk,
     analytics: { profile: profileName, disabled: analyticsSummary.disabled },
   };
+}
+
+function describeBlobPolicy({ scan, policy, copy }) {
+  const parts = [];
+  const reasoning = copy ? copy.droppedReasoning : scan.reasoningItems;
+  const compactions = copy ? copy.keptCompactions : scan.compactedLines;
+  parts.push(policy.dropReasoning
+    ? `${reasoning} reasoning blob(s) dropped (--keep-reasoning keeps them)`
+    : `${scan.reasoningItems} reasoning blob(s) kept (--keep-reasoning)`);
+  if (scan.compactedLines > 0) {
+    parts.push(policy.dropCompaction
+      ? `${scan.compactedLines} compaction blob(s) DROPPED: pre-compaction memory is lost (--drop-compaction)`
+      : `${compactions} compaction blob(s) kept so the pre-compaction memory survives (--drop-compaction removes them)`);
+  }
+  return parts.join("; ");
 }
 
 async function handleRedisCodexResumeFresh(context) {
@@ -270,8 +285,10 @@ async function handleRedisCodexResumeFresh(context) {
   const dryRun = Boolean(opts.codexResumeFreshDryRun);
   const archiveSource = Boolean(opts.codexResumeFreshArchiveSource);
   const skipGoal = Boolean(opts.codexResumeFreshNoGoal);
-  const keepServerBlobs = Boolean(opts.codexResumeFreshKeepServerBlobs);
-  const allowContextLoss = Boolean(opts.codexResumeFreshAllowContextLoss);
+  const policy = resolveBlobPolicy({
+    keepReasoning: Boolean(opts.codexResumeFreshKeepReasoning),
+    dropCompaction: Boolean(opts.codexResumeFreshDropCompaction),
+  });
   const maxCopyMb = opts.codexResumeFreshMaxCopyMb;
   const profileName = "yolo";
   const requested = String(positional[2] ?? "").trim();
@@ -285,7 +302,6 @@ async function handleRedisCodexResumeFresh(context) {
     throw new Error("Usage: aim codex resume-fresh <session-id> | aim codex resume-fresh --last [-- <codex args...>]");
   }
   const passthrough = resumeFreshPassthrough(context);
-  const dropServerBlobs = !keepServerBlobs;
 
   // 1. Resolve and scan the source first: read-only, so --dry-run is side-effect free and a bad
   //    source fails before anything is rotated or written.
@@ -312,16 +328,10 @@ async function handleRedisCodexResumeFresh(context) {
     homeDir,
     fsImpl,
   });
-  const scan = scanThreadRollout({ plan, fsImpl });
-  assertCompactionPolicy({ scan, dropServerBlobs, allowContextLoss });
-  const spawnedChildren = countSpawnedSubagents({ codexHome, threadId: plan.sourceId, spawnSyncImpl, homeDir, fsImpl });
-  const spawnEvidence = subagentEvidence({ scan, spawnedChildren });
-  if (spawnEvidence.length > 0) {
-    throw new CodexThreadCopyError(
-      `Source thread spawned subagents (${spawnEvidence.join("; ")}); refusing to carry a thread whose children still name it`,
-      { code: "source_spawned_subagents", details: { spawnEvidence } },
-    );
-  }
+  // Child thread ids (state DB spawn edges plus every agent_thread_id in the file) are retired
+  // with everything else; the children themselves stay under the old account and are never resumed.
+  const childIds = listSpawnedSubagentIds({ codexHome, threadId: plan.sourceId, spawnSyncImpl, homeDir, fsImpl });
+  const scan = scanThreadRollout({ plan, fsImpl, extraIds: childIds });
   const disk = assertCopyDiskSpace({
     dir: plan.targetDir,
     requiredBytes: plan.sourceBytes * 2 + 64 * 1024 * 1024,
@@ -333,8 +343,7 @@ async function handleRedisCodexResumeFresh(context) {
       plan,
       scan,
       disk,
-      dropServerBlobs,
-      allowContextLoss,
+      policy,
       analyticsSummary: { disabled: analyticsDisabledInProfile({ codexHome, profile: profileName, fsImpl }) },
       profileName,
     });
@@ -342,7 +351,8 @@ async function handleRedisCodexResumeFresh(context) {
       stdout.write(`[aim] dry run: no account rotation, no copy, no launch\n`);
       stdout.write(`[aim] source thread ${plan.sourceId} (${scan.lineCount} lines, ${formatBytes(plan.sourceBytes)}, ${plan.historyMode}${scan.compactedLines > 0 ? `, ${scan.compactedLines} compacted` : ""})\n`);
       stdout.write(`[aim] would create ${plan.newId} at ${plan.targetPath}\n`);
-      stdout.write(`[aim] would retire ${scan.ids.length} identifier(s) and ${scan.createTimes} create_time value(s); scrub ${dropServerBlobs ? "on" : "off (--keep-server-blobs)"}\n`);
+      stdout.write(`[aim] would retire ${scan.ids.length} identifier(s) (${scan.childThreadIds.length} child thread id(s)) and ${scan.createTimes} create_time value(s)\n`);
+      stdout.write(`[aim] blobs: ${describeBlobPolicy({ scan, policy })}\n`);
       stdout.write(`[aim] analytics ${summary.analytics.disabled ? "disabled" : "ENABLED"}; disk free ${formatBytes(disk.freeBytes ?? 0)}\n`);
     } else {
       stdout.write(`${JSON.stringify(sanitizeForStatus(summary), null, 2)}\n`);
@@ -369,10 +379,13 @@ async function handleRedisCodexResumeFresh(context) {
     map,
     nowMs,
     fsImpl,
-    dropServerBlobs,
+    policy,
     randomBytesImpl,
+    onProgress: stdout.isTTY
+      ? ({ bytesSeen, bytesTotal }) => stdout.write(`[aim] copying ${formatBytes(bytesSeen)} of ${formatBytes(bytesTotal)}\n`)
+      : undefined,
   });
-  const verification = verifyCopiedRollout({ plan, scan, fsImpl, dropServerBlobs });
+  const verification = verifyCopiedRollout({ plan, scan, fsImpl, policy });
   if (!verification.ok) {
     try {
       fsImpl.rmSync(plan.targetPath, { force: true });
@@ -412,12 +425,11 @@ async function handleRedisCodexResumeFresh(context) {
     if (copy.sourceGrew) {
       stdout.write(`[aim] source was live: copied the snapshot up to ${formatBytes(copy.sourceBytesCopied)} of ${formatBytes(copy.sourceBytesNow)} (later turns are not in the copy)\n`);
     }
-    if (!dropServerBlobs) {
-      stdout.write(`[aim] --keep-server-blobs: encrypted reasoning/compaction blobs and their ids stay in the copy; the server can link the two sessions by them\n`);
+    stdout.write(`[aim] blobs: ${describeBlobPolicy({ scan, policy, copy })}\n`);
+    if (scan.childThreadIds.length > 0) {
+      stdout.write(`[aim] ${scan.childThreadIds.length} child thread id(s) retired; the subagent threads stay under the old account and are not carried\n`);
     }
-    if (allowContextLoss && scan.compactedLines > 0) {
-      stdout.write(`[aim] --allow-context-loss: the pre-compaction memory was dropped (${scan.compactedLines} compacted record(s))\n`);
-    }
+    stdout.write(`[aim] still shared with the old account by design: repo remote and HEAD, cwd, client version, egress IP, timing, and the transcript text\n`);
     if (verification.blobMentions.length > 0) {
       stdout.write(`[aim] note: ${verification.blobMentions.length} old id(s) kept inside blob-bearing items by design\n`);
     }

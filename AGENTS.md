@@ -26,3 +26,18 @@ Rules that are not obvious from the code:
 3. In a Herdr pane, run `aim prime resume` as a child, never with `exec`, and pass the absolute transcript path, not the uuid.
 4. `ps` hides Prime argv; roles come from `~/.prime/supervisor-owners` and `~/.prime/agent/daemon-workers`.
 5. Do not resume Amir's sessions unless asked; when asked, one at a time, by exact id, in the pane's own cwd.
+
+## Codex account rotation rule
+
+Rule (Amir, 2026-09-18): never send an existing Codex thread id or session id to
+the Codex servers under a different underlying Codex account. Resuming a thread
+after rotating the pooled account (`aim codex resume <id>` with rotation, the old
+`cr`, the `crr` shortcut removed on 2026-09-18) does exactly that and links the
+two accounts server-side. The default path for rotation plus continuation is
+`aim codex resume-fresh`, which mints a new thread id and session id. Do not add
+a same-thread rotating shortcut, alias, routine, or MCP path on any machine.
+`aim codex resume` stays as an explicit manual command and must print a warning
+that the thread is about to continue under a different account (Amir, 2026-09-18:
+"add a warning ... so I can still do it manually if I want"). `scripts/install-codex-shortcuts.sh` removes `crr` and the inline
+`cr() { command aim codex resume "$@"; }` line from `.zshrc` on install.
+Background: `docs/CODEX_CR_INTENT_VS_BUILT_2026-09-18.md`.

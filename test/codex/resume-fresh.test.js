@@ -308,7 +308,9 @@ test("resume-fresh --dry-run is side-effect free: no rotation, no copy, no profi
   assert.equal(plan.dryRun, true);
   assert.equal(plan.rotated, false);
   assert.equal(plan.source.id, SOURCE_THREAD);
-  assert.equal(plan.scrub.dropServerBlobs, true);
+  assert.equal(plan.scrub.dropReasoning, true);
+  assert.equal(plan.scrub.dropCompaction, false);
+  assert.equal(plan.source.childThreads, 0);
   assert.equal(plan.analytics.disabled, false, "the profile is untouched by a dry run");
   assert.equal(plan.scan.ids > 0, true);
   assert.ok(plan.target.id);
@@ -322,25 +324,36 @@ test("resume-fresh --dry-run is side-effect free: no rotation, no copy, no profi
   );
 });
 
-test("compacted sources need an explicit decision: refuse, keep blobs, or accept context loss", async (t) => {
-  await t.test("default refuses", async () => {
-    const { home, codexHome, sourcePath, connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl } = await setup(["boss", "writer"], { compacted: true });
-    await assert.rejects(
-      () => runCli(["codex", "resume-fresh", SOURCE_THREAD, "--home", home], {
-        connectRedisStoreImpl,
-        probeUsageSnapshotsByProviderImpl,
-        env: {},
-        spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
-      }),
-      /was compacted/,
-    );
-    assert.deepEqual(listCopiedRollouts({ codexHome, exclude: sourcePath }), []);
-  });
-
-  await t.test("--keep-server-blobs copies with the blob intact", async () => {
+test("compacted sources copy by default with the memory intact; --drop-compaction is the opt-out", async (t) => {
+  await t.test("default copies with the compaction blob intact and launches", async () => {
     const { home, codexHome, sourcePath, connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl } = await setup(["boss", "writer"], { compacted: true });
     let launched = null;
-    await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--keep-server-blobs", "--home", home], {
+    const out = await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--home", home], {
+      connectRedisStoreImpl,
+      probeUsageSnapshotsByProviderImpl,
+      env: {},
+      stdout: { isTTY: true },
+      spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
+      runCodexInteractiveImpl: async (request) => {
+        launched = request;
+        return { code: 0, signal: null };
+      },
+    });
+    const copies = listCopiedRollouts({ codexHome, exclude: sourcePath });
+    assert.equal(copies.length, 1);
+    const text = fs.readFileSync(copies[0], "utf8");
+    assert.equal(text.includes("ENCRYPTED_COMPACTION_BLOB"), true, "memory survives by default");
+    assert.equal(text.includes(SOURCE_THREAD), false);
+    assert.equal(text.includes(TURN), false);
+    assert.equal(launched.args[3], JSON.parse(text.split("\n")[0]).payload.id);
+    assert.match(out, /1 compaction blob\(s\) kept/);
+    assert.match(out, /still shared with the old account by design/);
+  });
+
+  await t.test("--keep-reasoning also keeps reasoning blobs", async () => {
+    const { home, codexHome, sourcePath, connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl } = await setup(["boss", "writer"], { compacted: true });
+    let launched = null;
+    await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--keep-reasoning", "--home", home], {
       connectRedisStoreImpl,
       probeUsageSnapshotsByProviderImpl,
       env: {},
@@ -359,9 +372,9 @@ test("compacted sources need an explicit decision: refuse, keep blobs, or accept
     assert.equal(launched.args[3], JSON.parse(text.split("\n")[0]).payload.id);
   });
 
-  await t.test("--allow-context-loss copies without the blob", async () => {
+  await t.test("--drop-compaction copies without the blob", async () => {
     const { home, codexHome, sourcePath, connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl } = await setup(["boss", "writer"], { compacted: true });
-    await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--allow-context-loss", "--home", home], {
+    await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--drop-compaction", "--home", home], {
       connectRedisStoreImpl,
       probeUsageSnapshotsByProviderImpl,
       env: {},
@@ -376,7 +389,7 @@ test("compacted sources need an explicit decision: refuse, keep blobs, or accept
   });
 });
 
-test("resume-fresh refuses bad ids and threads that spawned subagents", async (t) => {
+test("resume-fresh refuses bad ids but copies threads that spawned subagents", async (t) => {
   const { home, connectRedisStoreImpl } = await setup();
   await assert.rejects(
     () => runCli(["codex", "resume-fresh", "not-a-uuid", "--home", home], { connectRedisStoreImpl, env: {} }),
@@ -387,31 +400,27 @@ test("resume-fresh refuses bad ids and threads that spawned subagents", async (t
     /Usage: aim codex resume-fresh/,
   );
 
-  await t.test("subagent threads are refused", async () => {
-    const spawned = await setup(["boss", "writer"], { withSpawnEvent: true });
-    await assert.rejects(
-      () => runCli(["codex", "resume-fresh", SOURCE_THREAD, "--home", spawned.home], {
-        connectRedisStoreImpl: spawned.connectRedisStoreImpl,
-        probeUsageSnapshotsByProviderImpl: spawned.probeUsageSnapshotsByProviderImpl,
-        env: {},
-        spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
-      }),
-      /spawned subagents/,
-    );
-    assert.deepEqual(listCopiedRollouts({ codexHome: spawned.codexHome, exclude: spawned.sourcePath }), []);
-  });
-
-  await t.test("item_completed subagent activity is refused even without a sub_agent event", async () => {
-    const spawned = await setup(["boss", "writer"], { spawnItemType: "SubAgentActivity" });
-    await assert.rejects(
-      () => runCli(["codex", "resume-fresh", SOURCE_THREAD, "--home", spawned.home], {
-        connectRedisStoreImpl: spawned.connectRedisStoreImpl,
-        probeUsageSnapshotsByProviderImpl: spawned.probeUsageSnapshotsByProviderImpl,
-        env: {},
-        spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
-      }),
-      /spawned subagents/,
-    );
-    assert.deepEqual(listCopiedRollouts({ codexHome: spawned.codexHome, exclude: spawned.sourcePath }), []);
+  await t.test("a thread that spawned subagents is copied and its child ids are retired", async () => {
+    const spawned = await setup(["boss", "writer"], { withSpawnEvent: true, spawnItemType: "SubAgentActivity" });
+    const child = "01a0b222-95ce-7fa3-96d8-680acb15cbc1";
+    let launched = null;
+    const out = await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--home", spawned.home], {
+      connectRedisStoreImpl: spawned.connectRedisStoreImpl,
+      probeUsageSnapshotsByProviderImpl: spawned.probeUsageSnapshotsByProviderImpl,
+      env: {},
+      stdout: { isTTY: true },
+      spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
+      runCodexInteractiveImpl: async (request) => {
+        launched = request;
+        return { code: 0, signal: null };
+      },
+    });
+    const copies = listCopiedRollouts({ codexHome: spawned.codexHome, exclude: spawned.sourcePath });
+    assert.equal(copies.length, 1);
+    const text = fs.readFileSync(copies[0], "utf8");
+    assert.equal(text.includes(child), false, "the child thread id is retired");
+    assert.equal(text.includes(SOURCE_THREAD), false);
+    assert.equal(launched.args[2], "resume");
+    assert.match(out, /1 child thread id\(s\) retired/);
   });
 });
