@@ -16,10 +16,11 @@ const body = `# Installed by aimgr/scripts/install-codex-shortcuts.sh.
 # Every command selects a different eligible AIM account before launching.
 #   c   - new thread on a rotated account
 #   cr  - rotate, carry the thread into a brand-new thread id, scrubbed, then resume the copy
+#         (no argument means: the most recent thread for this directory, like the old picker default)
 #   crr - rotate, then resume the SAME thread id (legacy behaviour)
 unalias c cr crr 2>/dev/null || true
 c()   { command aim codex run "$@"; }
-cr()  { command aim codex resume-fresh "$@"; }
+cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last; else command aim codex resume-fresh "$@"; fi }
 crr() { command aim codex resume "$@"; }
 `;
 const source = '[ ! -r "$HOME/.config/aimgr/codex-shortcuts.zsh" ] || source "$HOME/.config/aimgr/codex-shortcuts.zsh"';

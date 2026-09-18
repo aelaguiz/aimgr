@@ -621,19 +621,26 @@ export function verifyCopiedRollout({ plan, scan, fsImpl = fs, dropServerBlobs =
   let dense = true;
   const typeCounts = {};
 
+  const TOKEN_SPLIT = /[^A-Za-z0-9_-]+/;
   const inspect = (value, nodePath, inBlobItem) => {
-    if (typeof value !== "string" || !value) return;
+    if (typeof value !== "string" || !value || retired.size === 0) return;
     const lower = value.toLowerCase();
-    if (retired.size > 0) {
-      for (const id of retired) {
-        if (!lower.includes(id)) continue;
-        const exact = lower === id;
-        const verdict = classifyHit({ path: nodePath, exact, inBlobItem });
-        const hit = { id, path: nodePath, value, class: verdict };
-        if (verdict === "identifier") failures.push({ check: "identifier-residue", path: nodePath, message: `retired id ${id}` });
-        else if (verdict === "blob-item") blobMentions.push(hit);
-        else contentMentions.push(hit);
+    // Look up candidate tokens instead of scanning the retired set for every string: a big
+    // thread can carry thousands of ids and tens of thousands of strings.
+    const candidates = new Set([lower]);
+    if (!retired.has(lower)) {
+      for (const token of lower.split(TOKEN_SPLIT)) {
+        if (token && retired.has(token)) candidates.add(token);
       }
+    }
+    for (const id of candidates) {
+      if (!retired.has(id)) continue;
+      const exact = lower === id;
+      const verdict = classifyHit({ path: nodePath, exact, inBlobItem });
+      const hit = { id, path: nodePath, value, class: verdict };
+      if (verdict === "identifier") failures.push({ check: "identifier-residue", path: nodePath, message: `retired id ${id}` });
+      else if (verdict === "blob-item") blobMentions.push(hit);
+      else contentMentions.push(hit);
     }
   };
   const walk = (node, nodePath, inBlobItem) => {
