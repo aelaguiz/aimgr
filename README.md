@@ -452,6 +452,52 @@ aim browser set <label> --mode agent-browser --profile <abs-path> --session <nam
 aim browser set <label> --mode manual-callback
 ```
 
+## Agent skill
+
+`skills/aimgr/` is an agent skill that teaches coding agents the three basics of this CLI:
+launch a session, see which accounts are available, and choose an available one when the others
+are busy or rate-limited. It deliberately omits the credential, enrollment, Redis-admin, and
+routine surfaces, and it tells agents never to run them.
+
+Install it globally on a machine with [`npx skills`](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add aelaguiz/aimgr -g -a '*'
+```
+
+That materializes the skill in the canonical store at `~/.agents/skills/aimgr/` and symlinks it
+into every installed agent's directory (`~/.claude/skills/`, `~/.codex/skills/`, and so on), so
+one update refreshes all of them. Limit the fan-out with `-a claude-code -a codex` instead of
+`-a '*'`.
+
+Refresh after a change lands:
+
+```bash
+npx skills update aimgr      # pull the latest
+npx skills check             # report whether an update is pending
+npx skills list -g           # confirm what is installed
+```
+
+Installs read the **pushed** GitHub state, so a local edit is not live until it is committed and
+pushed. To test an unpushed change, install from the working copy:
+
+```bash
+npx skills add /path/to/aimgr -s aimgr -g -a '*' -y
+```
+
+### Known issue: the Claude Code symlink on machines with managed Claude homes
+
+On a machine where AIM has created managed Claude homes, `~/.aimgr/claude-homes/<label>/.claude/skills`
+is a symlink to `~/.claude/skills`. `npx skills` measures the relative depth from the managed-home
+path (five levels) but writes the link into the physically shared `~/.claude/skills`, where five
+levels overshoots to `/`. The result is one dead symlink for Claude Code while every other agent
+installs correctly. Repair it after any install or update:
+
+```bash
+ln -sfn ../../.agents/skills/aimgr ~/.claude/skills/aimgr
+test -e ~/.claude/skills/aimgr && echo ok
+```
+
 ## MCP server
 
 `aim mcp serve` exposes this machine's `aim` CLI to MCP clients (Claude Code, Codex, Prime Agent,
