@@ -63,6 +63,12 @@ export function validateAimArgv(argv) {
     );
   }
 
+  if (command === "codex" && (rest[0] === "run" || rest[0] === "resume" || rest[0] === "resume-fresh")) {
+    return reject(
+      `\`aim codex ${rest[0]}\` launches an interactive Codex session and is not available over MCP.`,
+    );
+  }
+
   if ((command === "codex" || command === "hermes") && rest[0] === "watch" && !rest.includes("--once")) {
     return reject(
       `\`aim ${command} watch\` loops forever without \`--once\`. Re-run as ["${command}","watch","--once"].`,

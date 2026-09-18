@@ -23,6 +23,7 @@ const PUBLIC_COMMAND_STEMS = [
   "aim codex use",
   "aim codex run",
   "aim codex resume",
+  "aim codex resume-fresh",
   "aim codex watch",
   "aim hermes watch",
   "aim claude status",

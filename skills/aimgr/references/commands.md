@@ -45,9 +45,19 @@ aim claude list [count] [--json]          # default 50 most recent
 ```bash
 aim codex run                             # select an account, then launch `codex -p yolo`
 aim codex run <label> -- <codex args>     # that exact account, your own arguments
-aim codex resume [<session-id>]           # select, then resume with -p yolo
+aim codex resume [<session-id>]           # select, then resume the SAME thread with -p yolo
+aim codex resume-fresh <session-id>       # select, copy the thread to a NEW scrubbed thread id, resume the copy
 aim codex use [label]                     # select only; does not launch
 ```
+
+`resume` keeps the thread id, so the account changes under one continuing
+session. `resume-fresh` rotates the account and starts a new thread with the
+prior turns copied in and the old identifiers retired; use it when a session
+must not look like one account hopping. It refuses paginated fork segments,
+subagent threads, and threads that spawned subagents, and it verifies the copy
+before launching. Flags: `--last`, `--dry-run`, `--no-goal`,
+`--keep-server-blobs`, `--max-copy-mb <n>`, `--archive-source`, and `--` for
+arguments passed to `codex resume`.
 
 `aim codex run` with no arguments defaults to `codex -p yolo`. Arguments after
 `--` pass through unchanged.
@@ -69,8 +79,9 @@ aim codex run writer -- exec --model gpt-6-astra \
 If `scripts/install-codex-shortcuts.sh` has been run, two zsh functions exist:
 
 ```zsh
-c()  { command aim codex run "$@"; }
-cr() { command aim codex resume "$@"; }
+c()   { command aim codex run "$@"; }
+cr()  { command aim codex resume-fresh "$@"; }
+crr() { command aim codex resume "$@"; }
 ```
 
 Both select an account before launching. In an existing terminal that predates

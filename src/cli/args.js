@@ -41,6 +41,12 @@ function expandClaudeRunPreset(argv) {
   };
 }
 
+function requireCodexResumeFresh(argv) {
+  if (argv[0] !== "codex" || argv[1] !== "resume-fresh") {
+    throw new Error("Unknown option: this flag is only valid for `aim codex resume-fresh`.");
+  }
+}
+
 export function parseArgs(argv) {
   const expandedClaudeRun = expandClaudeRunPreset(argv);
   argv = expandedClaudeRun.argv;
@@ -90,6 +96,12 @@ export function parseArgs(argv) {
     claudeAutoSelectPreset: expandedClaudeRun.autoSelectPreset,
     claudeResumeAccountLabel: undefined,
     claudeResumeSwitchAccountPreset: undefined,
+    codexResumeFreshLast: false,
+    codexResumeFreshDryRun: false,
+    codexResumeFreshArchiveSource: false,
+    codexResumeFreshNoGoal: false,
+    codexResumeFreshKeepServerBlobs: false,
+    codexResumeFreshMaxCopyMb: undefined,
     afterDoubleDash: [],
   };
   const positional = [];
@@ -320,6 +332,45 @@ export function parseArgs(argv) {
         throw new Error("--switch-account requires fable or opus.");
       }
       opts.claudeResumeSwitchAccountPreset = preset;
+      i += 1;
+      continue;
+    }
+    if (arg === "--last") {
+      requireCodexResumeFresh(argv);
+      opts.codexResumeFreshLast = true;
+      continue;
+    }
+    if (arg === "--dry-run") {
+      requireCodexResumeFresh(argv);
+      opts.codexResumeFreshDryRun = true;
+      continue;
+    }
+    if (arg === "--archive-source") {
+      requireCodexResumeFresh(argv);
+      opts.codexResumeFreshArchiveSource = true;
+      continue;
+    }
+    if (arg === "--no-goal") {
+      requireCodexResumeFresh(argv);
+      opts.codexResumeFreshNoGoal = true;
+      continue;
+    }
+    if (arg === "--keep-server-blobs") {
+      requireCodexResumeFresh(argv);
+      opts.codexResumeFreshKeepServerBlobs = true;
+      continue;
+    }
+    if (arg === "--max-copy-mb") {
+      requireCodexResumeFresh(argv);
+      const value = argv[i + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--max-copy-mb requires a size in MiB.");
+      }
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error("--max-copy-mb requires a positive number of MiB.");
+      }
+      opts.codexResumeFreshMaxCopyMb = parsed;
       i += 1;
       continue;
     }

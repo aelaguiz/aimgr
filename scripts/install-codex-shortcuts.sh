@@ -13,10 +13,14 @@ if (!home) throw new Error("HOME is required to install Codex shortcuts.");
 const shortcuts = path.join(home, ".config", "aimgr", "codex-shortcuts.zsh");
 fs.mkdirSync(path.dirname(shortcuts), { recursive: true });
 const body = `# Installed by aimgr/scripts/install-codex-shortcuts.sh.
-# Both commands select a different eligible AIM account before launching.
-unalias c cr 2>/dev/null || true
-c() { command aim codex run "$@"; }
-cr() { command aim codex resume "$@"; }
+# Every command selects a different eligible AIM account before launching.
+#   c   - new thread on a rotated account
+#   cr  - rotate, carry the thread into a brand-new thread id, scrubbed, then resume the copy
+#   crr - rotate, then resume the SAME thread id (legacy behaviour)
+unalias c cr crr 2>/dev/null || true
+c()   { command aim codex run "$@"; }
+cr()  { command aim codex resume-fresh "$@"; }
+crr() { command aim codex resume "$@"; }
 `;
 const source = '[ ! -r "$HOME/.config/aimgr/codex-shortcuts.zsh" ] || source "$HOME/.config/aimgr/codex-shortcuts.zsh"';
 
@@ -37,7 +41,7 @@ const current = fs.existsSync(rc) ? fs.readFileSync(rc, "utf8") : "";
 const lines = current.split("\n").filter(line => line !== source);
 const updated = `${lines.join("\n").trimEnd()}\n${source}\n`;
 install(rc, updated);
-console.log(`Installed c/cr: ${shortcuts}`);
+console.log(`Installed c/cr/crr: ${shortcuts}`);
 console.log(`Startup file: ${rc}`);
 console.log('Reload in an existing shell: source "$HOME/.config/aimgr/codex-shortcuts.zsh"');
 JS

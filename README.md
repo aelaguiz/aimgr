@@ -99,6 +99,7 @@ aim rebalance openclaw
 aim rebalance hermes
 aim auth write hermes <label> --auth-file <abs-path>
 aim codex use [label]
+aim codex resume-fresh <session-id> | --last [--dry-run] [--no-goal] [--keep-server-blobs] [--max-copy-mb <n>] [--archive-source]
 aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim claude inventory [--json]
@@ -169,16 +170,52 @@ shortcuts on macOS or Linux with `bash scripts/install-codex-shortcuts.sh`
 (also run by `scripts/install-local-bin.sh`):
 
 ```zsh
-c() { command aim codex run "$@"; }
-cr() { command aim codex resume "$@"; }
+c()   { command aim codex run "$@"; }
+cr()  { command aim codex resume-fresh "$@"; }
+crr() { command aim codex resume "$@"; }
 ```
 
 The installer loads these definitions at the end of `.zshrc`, overriding older
 dotfile definitions that called Codex directly. New terminals pick them up
 automatically; in an existing terminal, run
 `source "$HOME/.config/aimgr/codex-shortcuts.zsh"`. Interactive launches print
-the selected AIM account and previous label before opening Codex. Both `cr`
-and `cr <session-id>` rotate, and neither launches if no eligible alternate exists.
+the selected AIM account and previous label before opening Codex. `cr` and
+`cr <session-id>` rotate too, and neither launches if no eligible alternate exists.
+
+`aim codex resume` and `crr` keep the same Codex thread id and switch the
+account under it, which leaves one session that visibly hops accounts.
+
+### New thread on a rotated account: `aim codex resume-fresh`
+
+`aim codex resume-fresh <session-id>` rotates the account, copies the thread's
+rollout into a **brand-new** thread with the prior turns preserved, and then
+resumes the copy:
+
+```bash
+aim codex resume-fresh 01a0b222-95ce-7fa3-96d8-680acb15cbcc
+aim codex resume-fresh --last --dry-run     # plan only: sizes, retired ids, disk
+aim codex resume-fresh <session-id> --max-copy-mb 512 -- goals
+```
+
+What the copy retires, so the two threads are not linkable by metadata:
+
+- the thread id **and** the session id (Codex sends both, plus `prompt_cache_key`
+  derived from the session id)
+- every turn id and `create_time` inside the replayed items, server-issued item
+  ids and `call_id`s, response ids, and context-window ids
+- `forked_from_id` / `parent_thread_id` / `history_base` lineage pointers
+- the goal row's `goal_id` (the goal itself is carried with a fresh id)
+- by default, the server's encrypted reasoning and tool-argument blobs, which
+  means Codex also gets a per-label `installation_id` instead of one id shared by
+  every pooled account, and `[analytics] enabled = false` is ensured in the
+  `yolo` profile file aim launches with
+
+`--keep-server-blobs` keeps those blobs (best model continuity) at the cost of
+leaving server-resolvable identifiers in the replayed history. The copy is
+verified before launch: any retired identifier left outside literal conversation
+content deletes the copy and aborts without launching. Sources that are paginated
+fork segments, subagent threads, or threads that spawned subagents are refused.
+The source thread is never modified.
 
 `aim prime run codex|claude|grok` selects the account and model, then starts a new
 Prime session directly. Use `aim prime resume <path-or-id>` when you want an

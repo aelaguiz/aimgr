@@ -37,11 +37,13 @@ export async function loadCommandDefaultDeps(command) {
       import("../io/streams.js"),
       import("../targets/codex-runner.js"),
     ]);
+    const { spawnSync } = await import("node:child_process");
     return {
       probeUsageSnapshotsByProviderImpl: probeUsageSnapshotsByProvider,
       activateCodexPoolSelectionImpl: activateCodexPoolSelection,
       sleepImpl: sleep,
       runCodexInteractiveImpl: runCodexInteractive,
+      spawnSyncImpl: spawnSync,
     };
   }
 

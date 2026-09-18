@@ -30,6 +30,14 @@ test("interactive credential lanes are rejected with the reason the agent needs"
   }
 });
 
+test("Codex launch lanes are rejected over MCP", () => {
+  for (const argv of [["codex", "run"], ["codex", "resume"], ["codex", "resume", "abc"], ["codex", "resume-fresh", "abc"]]) {
+    const verdict = validateAimArgv(argv);
+    assert.equal(verdict.ok, false, `${argv.join(" ")} should be rejected`);
+    assert.match(verdict.reason, /interactive Codex session/);
+  }
+});
+
 test("an unknown first token is the label panel, not a command", () => {
   const verdict = validateAimArgv(["boss"]);
   assert.equal(verdict.ok, false);

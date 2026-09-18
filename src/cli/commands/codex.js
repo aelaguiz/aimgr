@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import lockfile from "proper-lockfile";
 import { resolveCodexWatchThresholdPct } from "../../core/watch-options.js";
 import { resolveCodexWatchIntervalSeconds } from "../../core/watch-options.js";
@@ -7,8 +8,23 @@ import { closeRedisRuntime, loadRedisRuntime, publishCodexReconciliation, writeR
 import { watchCodexPoolSelectionOnce } from "../../pool/watch.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { normalizeLabel } from "../../core/normalize.js";
-import { resolveAimgrStateDir } from "../../io/paths.js";
+import { resolveAimgrStateDir, resolveManagedCodexHomeDir } from "../../io/paths.js";
 import { activateCodexLabelSelection, reconcileCodexCliAuth } from "../../targets/codex-cli.js";
+import { ensureCodexLabelInstallationId } from "../../targets/codex-installation-id.js";
+import { resolveCodexCommand } from "../../targets/codex-runner.js";
+import {
+  MAX_COPY_MB_DEFAULT,
+  CodexThreadCopyError,
+  analyticsDisabledInProfile,
+  buildRewriteMap,
+  carryThreadGoal,
+  copyThreadRollout,
+  ensureCodexProfileAnalyticsDisabled,
+  planThreadCopy,
+  scanThreadRollout,
+  verifyCopiedRollout,
+} from "../../targets/codex-thread-copy.js";
+import { isCodexSessionId, readMostRecentThreadIdForCwd } from "../../targets/codex-rollout.js";
 
 async function activateCodexForContext(context) {
   const { positional, homeDir, env, probeUsageSnapshotsByProviderImpl, activateCodexPoolSelectionImpl, connectRedisStoreImpl } = context;
@@ -46,8 +62,21 @@ async function activateCodexForContext(context) {
             avoidCurrentLabel: true,
             selectLeastUsed: true,
           });
+      // Give the selected label its own Codex installation id before any child
+      // Codex process starts: Codex reads `<codexHome>/installation_id` once at
+      // process start and sends it on every request.
+      let installationId = null;
+      try {
+        installationId = ensureCodexLabelInstallationId({
+          codexHome: resolveManagedCodexHomeDir({ homeDir, env }),
+          label: activated?.receipt?.label ?? activated?.label ?? null,
+          localState: runtime.localState,
+        });
+      } catch (err) {
+        installationId = { changed: false, reason: "error", error: String(err?.message ?? err) };
+      }
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-      return { reconciliation, activated };
+      return { reconciliation, activated, installationId };
     } finally {
       await closeRedisRuntime(runtime);
     }
@@ -160,11 +189,256 @@ async function handleRedisCodexWatch(context) {
   }
 }
 
+
+function resumeFreshPassthrough(context) {
+  return Array.isArray(context.opts?.afterDoubleDash) ? context.opts.afterDoubleDash : [];
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(Number(bytes))) return "unknown";
+  const value = Number(bytes);
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value} B`;
+}
+
+function assertCopyDiskSpace({ dir, requiredBytes, fsImpl }) {
+  if (typeof fsImpl.statfsSync !== "function") return { checked: false, requiredBytes };
+  let stat = null;
+  try {
+    stat = fsImpl.statfsSync(dir);
+  } catch {
+    return { checked: false, requiredBytes };
+  }
+  const freeBytes = Number(stat.bsize) * Number(stat.bavail);
+  if (Number.isFinite(freeBytes) && freeBytes < requiredBytes) {
+    throw new CodexThreadCopyError(
+      `Not enough free disk space in ${dir}: the copy needs about ${formatBytes(requiredBytes)} and ${formatBytes(freeBytes)} is free`,
+      { code: "insufficient_disk", details: { freeBytes, requiredBytes } },
+    );
+  }
+  return { checked: true, freeBytes, requiredBytes };
+}
+
+function resumeFreshPlanSummary({ plan, scan, activation, analytics, disk, dropServerBlobs, profileName, codexHome, fsImpl }) {
+  return {
+    ok: true,
+    dryRun: true,
+    account: activation?.activated?.receipt?.label ?? null,
+    previousAccount: activation?.activated?.receipt?.previousLabel ?? null,
+    source: {
+      id: plan.sourceId,
+      path: plan.sourcePath,
+      bytes: plan.sourceBytes,
+      historyMode: plan.historyMode,
+      lines: scan.lineCount,
+    },
+    target: { id: plan.newId, path: plan.targetPath },
+    scan: {
+      turnIds: scan.turnIds.length,
+      itemIds: scan.itemIds.length,
+      responseIds: scan.responseIds.length,
+      windowIds: scan.windowIds.length,
+      droppedItemLines: scan.droppedItemLines,
+      encryptedBlobs: scan.encryptedBlobs,
+      createTimes: scan.createTimes,
+    },
+    scrub: { dropServerBlobs, maxCopyMb: plan.maxCopyMb },
+    disk,
+    analytics: {
+      profile: profileName,
+      disabled: analyticsDisabledInProfile({ codexHome, profile: profileName, fsImpl }),
+      changed: analytics.changed,
+    },
+    installationId: activation?.installationId?.installationId ?? null,
+  };
+}
+
+async function handleRedisCodexResumeFresh(context) {
+  const {
+    positional,
+    opts,
+    stdout,
+    setExitCode,
+    homeDir,
+    env,
+    runCodexInteractiveImpl,
+    spawnSyncImpl,
+    fsImpl = fs,
+    randomBytesImpl,
+    nowMs = Date.now(),
+  } = context;
+  const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
+  const lastRequested = Boolean(opts.codexResumeFreshLast);
+  const dryRun = Boolean(opts.codexResumeFreshDryRun);
+  const archiveSource = Boolean(opts.codexResumeFreshArchiveSource);
+  const skipGoal = Boolean(opts.codexResumeFreshNoGoal);
+  const keepServerBlobs = Boolean(opts.codexResumeFreshKeepServerBlobs);
+  const maxCopyMb = opts.codexResumeFreshMaxCopyMb;
+  const requested = String(positional[2] ?? "").trim();
+  if (requested && !isCodexSessionId(requested)) {
+    throw new Error(`\`aim codex resume-fresh\` needs a Codex thread id, got: ${requested || "<empty>"}`);
+  }
+  if (requested && lastRequested) {
+    throw new Error("`aim codex resume-fresh` accepts a session id or --last, not both.");
+  }
+  if (!requested && !lastRequested) {
+    throw new Error("Usage: aim codex resume-fresh <session-id> | aim codex resume-fresh --last [-- <codex args...>]");
+  }
+  const passthrough = resumeFreshPassthrough(context);
+  const profileName = "yolo";
+
+  // 1. Rotate first: a blocked pool must not leave a stray thread behind.
+  const activation = await activateCodexForContext(context);
+  if (activation.activated.status === "blocked") {
+    stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: false, ...activation }), null, 2)}\n`);
+    setExitCode(1);
+    return;
+  }
+
+  // 2. Make sure the profile Codex will read has analytics disabled.
+  const analytics = ensureCodexProfileAnalyticsDisabled({ codexHome, profile: profileName, fsImpl });
+
+  // 3. Resolve the source thread.
+  const sourceId = requested || readMostRecentThreadIdForCwd({
+    codexHome,
+    cwd: process.cwd(),
+    spawnSyncImpl,
+    homeDir,
+    fsImpl,
+  });
+  if (!sourceId) {
+    throw new CodexThreadCopyError(
+      "No recent Codex thread found for this working directory; pass an explicit session id",
+      { code: "no_recent_thread" },
+    );
+  }
+  const plan = planThreadCopy({
+    codexHome,
+    sourceId,
+    nowMs,
+    maxCopyMb: maxCopyMb ?? MAX_COPY_MB_DEFAULT,
+    randomBytesImpl,
+    spawnSyncImpl,
+    homeDir,
+    fsImpl,
+  });
+  const scan = await scanThreadRollout({ plan, fsImpl });
+  if (scan.subagentSpawnCount > 0) {
+    throw new CodexThreadCopyError(
+      `Source thread spawned ${scan.subagentSpawnCount} subagent event(s); refusing to carry a thread whose children still name it`,
+      { code: "source_spawned_subagents", details: { subagentSpawnCount: scan.subagentSpawnCount } },
+    );
+  }
+  const dropServerBlobs = !keepServerBlobs;
+  const disk = assertCopyDiskSpace({
+    dir: plan.targetDir,
+    requiredBytes: plan.sourceBytes * 2 + 64 * 1024 * 1024,
+    fsImpl,
+  });
+
+  if (dryRun) {
+    const summary = resumeFreshPlanSummary({
+      plan,
+      scan,
+      activation,
+      analytics,
+      disk,
+      dropServerBlobs,
+      profileName,
+      codexHome,
+      fsImpl,
+    });
+    if (stdout.isTTY) {
+      stdout.write(`[aim] Codex account: ${summary.account}${summary.previousAccount ? ` (previous: ${summary.previousAccount})` : ""}\n`);
+      stdout.write(`[aim] source thread ${plan.sourceId} (${scan.lineCount} lines, ${formatBytes(plan.sourceBytes)}, ${plan.historyMode})\n`);
+      stdout.write(`[aim] would create ${plan.newId} at ${plan.targetPath}\n`);
+      stdout.write(`[aim] retired ids: ${scan.turnIds.length} turn, ${scan.itemIds.length} item, ${scan.responseIds.length} response, ${scan.windowIds.length} window\n`);
+      stdout.write(`[aim] scrub ${dropServerBlobs ? "on" : "off (--keep-server-blobs)"}; analytics ${summary.analytics.disabled ? "disabled" : "ENABLED"}; install id ${summary.installationId ?? "unchanged"}\n`);
+    } else {
+      stdout.write(`${JSON.stringify(sanitizeForStatus(summary), null, 2)}\n`);
+    }
+    return;
+  }
+
+  // 4. Copy, then prove the copy carries no retired identifier.
+  const map = buildRewriteMap({ scan, newId: plan.newId, nowMs, randomBytesImpl });
+  const copy = await copyThreadRollout({
+    plan,
+    scan,
+    map,
+    nowMs,
+    fsImpl,
+    dropServerBlobs,
+    randomBytesImpl,
+  });
+  const verification = verifyCopiedRollout({ plan, scan, fsImpl, dropServerBlobs });
+  if (!verification.ok) {
+    try {
+      fsImpl.rmSync(plan.targetPath, { force: true });
+    } catch {
+      // Best effort: the failure below is the real signal.
+    }
+    throw new CodexThreadCopyError(
+      `Residue check failed for the copied thread; nothing was launched (${verification.failures
+        .slice(0, 5)
+        .map((failure) => `${failure.check}@${failure.path}`)
+        .join(", ")})`,
+      { code: "residue", details: { failures: verification.failures } },
+    );
+  }
+
+  // 5. Carry the goal (fresh goal id) so /goal continuity survives the rotation.
+  const goal = skipGoal
+    ? { carried: false, reason: "disabled" }
+    : carryThreadGoal({
+        codexHome,
+        sourceId: plan.sourceId,
+        newId: plan.newId,
+        nowMs,
+        spawnSyncImpl,
+        homeDir,
+        randomBytesImpl,
+        fsImpl,
+      });
+
+  // 6. Launch the new thread on the rotated account.
+  const args = ["-p", profileName, "resume", plan.newId, ...passthrough];
+  if (stdout.isTTY) {
+    const { label, previousLabel } = activation.activated.receipt;
+    stdout.write(`[aim] Codex account: ${label}${previousLabel ? ` (previous: ${previousLabel})` : ""}\n`);
+    stdout.write(`[aim] new thread ${plan.newId} from ${plan.sourceId} (${copy.lines} lines, ${formatBytes(copy.bytes)}${copy.dropped > 0 ? `, dropped ${copy.dropped}` : ""})\n`);
+    stdout.write(`[aim] source thread untouched${goal.carried ? "; goal carried with a fresh goal id" : goal.reason === "no_goal" ? "" : `; goal not carried (${goal.reason})`}\n`);
+    if (verification.contentMentions.length > 0) {
+      stdout.write(`[aim] note: the copied transcript still mentions a retired id ${verification.contentMentions.length} time(s) inside conversation content\n`);
+    }
+  }
+  const launched = await runCodexInteractiveImpl({
+    homeDir,
+    cwd: process.cwd(),
+    env,
+    args,
+  });
+  if (archiveSource) {
+    try {
+      const command = resolveCodexCommand({ homeDir, spawnImpl: spawnSyncImpl ?? spawnSync });
+      const run = spawnSyncImpl ?? spawnSync;
+      const archived = run(command, ["archive", plan.sourceId], { encoding: "utf8" });
+      if (archived?.status !== 0 && stdout.isTTY) {
+        stdout.write(`[aim] could not archive source thread ${plan.sourceId}\n`);
+      }
+    } catch {
+      if (stdout.isTTY) stdout.write(`[aim] could not archive source thread ${plan.sourceId}\n`);
+    }
+  }
+  if (launched?.code !== 0) setExitCode(Number.isInteger(launched?.code) ? launched.code : 1);
+}
+
 export async function handleCodex(context) {
   const { positional } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
-    throw new Error("Missing codex subcommand. Usage: aim codex use | aim codex run | aim codex resume | aim codex watch");
+    throw new Error("Missing codex subcommand. Usage: aim codex use | aim codex run | aim codex resume | aim codex resume-fresh | aim codex watch");
   }
   if (subcmd === "watch") {
     await handleRedisCodexWatch(context);
@@ -174,8 +448,12 @@ export async function handleCodex(context) {
     await handleRedisCodexRun(context);
     return;
   }
+  if (subcmd === "resume-fresh") {
+    await handleRedisCodexResumeFresh(context);
+    return;
+  }
   if (subcmd !== "use") {
-    throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: use, run, resume, watch).`);
+    throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: use, run, resume, resume-fresh, watch).`);
   }
   await handleRedisCodexUse(context);
 }
