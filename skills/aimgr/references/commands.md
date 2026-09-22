@@ -93,7 +93,7 @@ the install, load them with
 ## Prime
 
 ```bash
-aim prime run codex [model]               # default gpt-5.6-sol
+aim prime run codex gpt-6-sol             # select Sol explicitly
 aim prime run codex gpt-6-astra           # explicit model
 aim prime run claude                      # claude-fable-5-1
 aim prime run grok                        # grok-4.6
@@ -123,7 +123,7 @@ aim prime run grok
 | Fable | `claude-fable-5-1` |
 | Opus | `claude-opus-5` |
 | Astra | `gpt-6-astra` (default Codex model, `xhigh` effort) |
-| Sol | `gpt-5.6-sol` (Prime's Codex default) |
+| Sol | `gpt-6-sol` (select explicitly for Prime) |
 | Grok | `grok-4.6` |
 
 For Claude launches, prefer the `fable` / `opus` presets over passing a model
