@@ -892,9 +892,14 @@ test("another machine accepts a centrally published Claude rotation from Redis",
   await closeRedisRuntime(m3Runtime);
 });
 
-test("managed Claude retries transient lease loss without pausing but aborts for a replacement owner", async () => {
+test("managed Claude pauses during uncertain ownership, resumes after recovery, and aborts for a replacement owner", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
+  const reconnectedClient = new FakeRedisClient();
+  reconnectedClient.values = client.values;
+  reconnectedClient.sets = client.sets;
+  reconnectedClient.expirations = client.expirations;
+  let connectionCount = 0;
   const credential = buildAnthropicClaudeCredential({
     access: "CLAUDE_ACCESS",
     refresh: "CLAUDE_REFRESH",
@@ -928,6 +933,8 @@ test("managed Claude retries transient lease loss without pausing but aborts for
   const rotationTimers = [];
   let resolveLaunch = null;
   let launchSignal = null;
+  let paused = false;
+  const processControls = [];
   let exitCode = null;
   let markLaunchStarted;
   const launchStarted = new Promise((resolve) => {
@@ -957,7 +964,10 @@ test("managed Claude retries transient lease loss without pausing but aborts for
       setExitCode: (value) => {
         exitCode = value;
       },
-      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+      connectRedisStoreImpl: () => connectRedisStore({
+        client: ++connectionCount === 1 ? client : reconnectedClient,
+        keyPrefix: PREFIX,
+      }),
       resolveExecutableOnPathImpl: buildTestClaudeResolver(),
       nowMs: Date.now(),
       setTimeoutImpl: (callback, delay) => {
@@ -970,7 +980,18 @@ test("managed Claude retries transient lease loss without pausing but aborts for
       },
       runClaudeCliImpl: ({ signal, registerProcessControl }) => {
         launchSignal = signal;
-        assert.equal(registerProcessControl, undefined);
+        registerProcessControl({
+          async pause() {
+            processControls.push("pause");
+            paused = true;
+            return true;
+          },
+          async resume() {
+            processControls.push("resume");
+            paused = false;
+            return true;
+          },
+        });
         markLaunchStarted();
         return new Promise((resolve) => {
           resolveLaunch = resolve;
@@ -989,6 +1010,14 @@ test("managed Claude retries transient lease loss without pausing but aborts for
     const originalEval = client.eval.bind(client);
     let rejectNextRecovery = true;
     let recoveryEvalCount = 0;
+    let reconnectedEvalCount = 0;
+    const originalReconnectedEval = reconnectedClient.eval.bind(reconnectedClient);
+    reconnectedClient.eval = async (script, options) => {
+      if (script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
+        reconnectedEvalCount += 1;
+      }
+      return originalReconnectedEval(script, options);
+    };
     client.eval = async (script, options) => {
       if (script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
         recoveryEvalCount += 1;
@@ -1004,18 +1033,24 @@ test("managed Claude retries transient lease loss without pausing but aborts for
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(launchSignal.aborted, false);
-    const recoveryCountAfterFailure = recoveryEvalCount;
+    assert.equal(paused, true);
+    assert.deepEqual(processControls, ["pause"]);
+    assert.equal(connectionCount, 2);
+    assert.equal(recoveryEvalCount, 1);
     const retryTimer = heartbeatTimers.find(
       (timer) => timer !== heartbeatTimer && timer.delay === 10_000 && timer.cleared === false,
     );
     assert.ok(retryTimer);
     client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    reconnectedClient.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
     retryTimer.callback();
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(launchSignal.aborted, false);
-    assert.ok(recoveryEvalCount > recoveryCountAfterFailure);
+    assert.equal(paused, false);
+    assert.deepEqual(processControls, ["pause", "resume"]);
+    assert.ok(reconnectedEvalCount > 0);
     assert.equal(
       [...client.values.keys()].some((key) => key.includes(":lease:credential:anthropic:claude")),
       true,
@@ -1031,6 +1066,7 @@ test("managed Claude retries transient lease loss without pausing but aborts for
     );
     assert.ok(contentionTimer);
     client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    reconnectedClient.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
     const replacement = await acquireRedisCredentialLease(store, {
       provider: "anthropic",
       label: "claude",
@@ -1045,6 +1081,128 @@ test("managed Claude retries transient lease loss without pausing but aborts for
     await command;
     assert.equal(exitCode, 1);
     assert.equal(await replacement.release(), true);
+  } finally {
+    resolveLaunch?.({ status: 1, signal: null });
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
+});
+
+test("managed Claude does not resume a stale credential after another owner refreshes it", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "claude",
+      credential: buildAnthropicClaudeCredential(),
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } },
+      health: { status: "ready", reason: null },
+    }],
+  });
+
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const timers = [];
+  globalThis.setTimeout = (callback, delay) => {
+    const timer = { callback, delay, cleared: false, unref() {} };
+    timers.push(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => { timer.cleared = true; };
+  let resolveLaunch = null;
+  let launchSignal = null;
+  let paused = false;
+  let resumed = false;
+  let exitCode = null;
+  const output = [];
+  let markLaunchStarted;
+  const launchStarted = new Promise((resolve) => { markLaunchStarted = resolve; });
+  try {
+    const command = handleClaude({
+      opts: { afterDoubleDash: [] },
+      positional: ["claude", "run", "claude"],
+      homeDir: home,
+      env: {},
+      stdout: { write: (value) => output.push(value) },
+      setExitCode: (value) => { exitCode = value; },
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+      nowMs: Date.now(),
+      runClaudeCliImpl: ({ signal, registerProcessControl }) => {
+        launchSignal = signal;
+        registerProcessControl({
+          async pause() { paused = true; return true; },
+          async resume() { resumed = true; return true; },
+        });
+        markLaunchStarted();
+        return new Promise((resolve) => {
+          resolveLaunch = resolve;
+          signal.addEventListener("abort", () => resolve({ status: 1, signal: null }), { once: true });
+        });
+      },
+    });
+    await launchStarted;
+    const originalEval = client.eval.bind(client);
+    let failOnce = true;
+    client.eval = async (script, options) => {
+      if (failOnce && script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
+        failOnce = false;
+        throw new Error("temporary Redis transport failure");
+      }
+      return originalEval(script, options);
+    };
+    const heartbeatTimer = timers.find((timer) => timer.delay === 10_000 && !timer.cleared);
+    heartbeatTimer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(paused, true);
+    assert.equal(launchSignal.aborted, false);
+
+    client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    const replacement = await acquireRedisCredentialLease(store, {
+      provider: "anthropic",
+      label: "claude",
+    });
+    assert.ok(replacement);
+    const record = (await readSnapshot(store)).credentials.find(
+      (entry) => entry.provider === "anthropic" && entry.label === "claude",
+    );
+    const published = await publishCredential(store, {
+      expectedVersion: record.version,
+      updatedBy: "other-owner",
+      observedAt: new Date().toISOString(),
+      credentialRecord: {
+        ...record,
+        credential: buildAnthropicClaudeCredential({
+          access: "NEW_ACCESS",
+          refresh: "NEW_REFRESH",
+          expiresAtMs: Date.now() + 7_200_000,
+        }),
+      },
+    });
+    assert.equal(published.ok, true);
+    assert.equal(await replacement.release(), true);
+
+    const retryTimer = timers.find((timer) => timer !== heartbeatTimer && timer.delay === 10_000 && !timer.cleared);
+    retryTimer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(launchSignal.aborted, true);
+    assert.equal(resumed, false);
+    assert.match(output.join(""), /credential changed.*resume this session/);
+    await command;
+    assert.equal(exitCode, 1);
   } finally {
     resolveLaunch?.({ status: 1, signal: null });
     globalThis.setTimeout = realSetTimeout;

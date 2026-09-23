@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 const MODULE_PATH = fileURLToPath(import.meta.url);
 const TERMINATION_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
 const DEFAULT_CHILD_KILL_GRACE_MS = 4_000;
+export const CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE = "aimgr:claude-process-control-v1";
+export const CLAUDE_PROCESS_CONTROL_ACK_TYPE = "aimgr:claude-process-control-ack-v1";
 
 function normalizedResult(code, signal, requestedSignal = null) {
   const childSignal = typeof signal === "string" ? signal : null;
@@ -56,6 +58,7 @@ export async function superviseClaudeProcess({
   let settled = false;
   let forcedKillTimer = null;
   let requestedSignal = null;
+  let childPaused = false;
 
   const clearForcedKillTimer = () => {
     if (!forcedKillTimer) return;
@@ -64,26 +67,60 @@ export async function superviseClaudeProcess({
   };
   const removeParentListeners = () => {
     parentProcess.removeListener?.("disconnect", onDisconnect);
+    parentProcess.removeListener?.("message", onMessage);
     for (const signal of TERMINATION_SIGNALS) {
       parentProcess.removeListener?.(signal, signalHandlers.get(signal));
     }
   };
   const killChild = (signal) => {
-    if (!child || settled) return;
+    if (!child || settled) return false;
     try {
-      child.kill(signal);
+      return child.kill(signal) !== false;
     } catch {
       // The child error/close event remains the authoritative result.
+      return false;
     }
   };
   const requestTermination = (signal = "SIGTERM") => {
     requestedSignal ??= signal;
     if (!child || settled) return;
+    if (childPaused) {
+      killChild("SIGCONT");
+      childPaused = false;
+    }
     killChild(requestedSignal);
     if (!forcedKillTimer) {
       forcedKillTimer = setTimeoutImpl(() => {
         if (!settled) killChild("SIGKILL");
       }, boundedKillGraceMs);
+    }
+  };
+  const onMessage = (message) => {
+    if (
+      message?.type !== CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE
+      || !["pause", "resume"].includes(message.action)
+      || !Number.isSafeInteger(message.requestId)
+      || message.requestId < 1
+    ) return;
+    let ok = false;
+    if (child && !settled && !requestedSignal) {
+      if (message.action === "pause") {
+        ok = childPaused || killChild("SIGSTOP");
+        if (ok) childPaused = true;
+      } else {
+        ok = !childPaused || killChild("SIGCONT");
+        if (ok) childPaused = false;
+      }
+    }
+    try {
+      parentProcess.send?.({
+        type: CLAUDE_PROCESS_CONTROL_ACK_TYPE,
+        requestId: message.requestId,
+        action: message.action,
+        ok,
+      });
+    } catch {
+      // AIM times out an unacknowledged control request and terminates Claude.
     }
   };
   const onDisconnect = () => requestTermination("SIGTERM");
@@ -92,6 +129,7 @@ export async function superviseClaudeProcess({
   );
 
   parentProcess.once("disconnect", onDisconnect);
+  parentProcess.on("message", onMessage);
   for (const [signal, handler] of signalHandlers) {
     parentProcess.once(signal, handler);
   }

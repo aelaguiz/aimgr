@@ -2,6 +2,10 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  CLAUDE_PROCESS_CONTROL_ACK_TYPE,
+  CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
+} from "./claude-supervisor.js";
 
 const SUPERVISOR_PATH = fileURLToPath(new URL("./claude-supervisor.js", import.meta.url));
 const USER_HOOKS_OVERLAY_FILE = ".aimgr-user-hooks.json";
@@ -760,6 +764,7 @@ export async function runClaudeCli({
   args = [],
   env = process.env,
   signal = null,
+  registerProcessControl = null,
   preparedLaunch = null,
   prepareClaudeCliLaunchImpl = prepareClaudeCliLaunch,
   spawnImpl = spawn,
@@ -806,11 +811,54 @@ export async function runClaudeCli({
     throw new Error("Claude launch did not return a process handle.");
   }
 
+  let nextControlRequestId = 0;
+  const sendProcessControl = (action) => new Promise((resolve) => {
+    if (typeof child.send !== "function" || child.connected === false) {
+      resolve(false);
+      return;
+    }
+    const requestId = ++nextControlRequestId;
+    let settled = false;
+    let timer = null;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      child.removeListener?.("message", onMessage);
+      child.removeListener?.("close", onClose);
+      resolve(ok);
+    };
+    const onClose = () => finish(false);
+    const onMessage = (message) => {
+      if (
+        message?.type === CLAUDE_PROCESS_CONTROL_ACK_TYPE
+        && message.requestId === requestId
+        && message.action === action
+      ) finish(message.ok === true);
+    };
+    child.on?.("message", onMessage);
+    child.once?.("close", onClose);
+    timer = setTimeout(() => finish(false), 2_000);
+    timer.unref?.();
+    try {
+      child.send({ type: CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE, requestId, action }, (error) => {
+        if (error) finish(false);
+      });
+    } catch {
+      finish(false);
+    }
+  });
+  registerProcessControl?.({
+    pause: () => sendProcessControl("pause"),
+    resume: () => sendProcessControl("resume"),
+  });
+
   return await new Promise((resolve, reject) => {
     let settled = false;
     let forcedKillTimer = null;
     const cleanup = () => {
       signal?.removeEventListener?.("abort", onAbort);
+      registerProcessControl?.(null);
       if (forcedKillTimer) clearTimeout(forcedKillTimer);
     };
     const finish = (fn, value) => {
