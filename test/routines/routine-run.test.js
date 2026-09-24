@@ -917,7 +917,7 @@ function makeClaudeRuntime(home, options = {}) {
       runtime.emit("SessionStart", { model: "claude-fable-5-1", transcriptPath: "/fake/transcript.jsonl" });
       return new Promise((resolve) => {
         close = (result) => { active = false; resolve(result); };
-        abort.signal.addEventListener("abort", () => close({ status: 1, signal: "SIGTERM" }), { once: true });
+        (launch.signal ?? abort.signal).addEventListener("abort", () => close({ status: 1, signal: "SIGTERM" }), { once: true });
       });
     },
   };
@@ -1061,6 +1061,100 @@ test("Claude account lease loss uses the managed interactive runner's cancellati
   assert.equal(result.interactiveTui.exitSignal, "SIGTERM");
   assert.equal(runtime.active, false);
   assert.equal(runtime.leaseHeld, false);
+});
+
+async function startParkableClaude(home, parkTimeouts) {
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home);
+  const context = claudeWorkerContext(home, receipt, runtime);
+  let printed = "";
+  context.stdout = { write(text) { printed += text; } };
+  for (const [key, value] of Object.entries(parkTimeouts)) context.routineTimeouts[`claudePark.${key}`] = value;
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.active, "Claude UI did not start");
+  runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256, promptSource: "user" });
+  return { receipt, runtime, worker, printed: () => printed };
+}
+
+const readReceipt = (receipt) => JSON.parse(fs.readFileSync(receipt.receiptPath));
+
+test("Claude job that reports done is stopped after the grace period and its account released", async () => {
+  const { receipt, runtime, worker, printed } = await startParkableClaude(mkTempHome(), { done: 30 });
+  runtime.emit("Stop", { jobStatus: { state: "done", detail: null }, backgroundTasks: 0, sessionCrons: 0 });
+  const result = await worker;
+  assert.equal(result.outcome, "completed");
+  assert.equal(result.needsAttention, false);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.parked.reason, "done");
+  assert.equal(result.lastTurn.jobStatus.state, "done");
+  assert.equal(result.interactiveTui.stoppedBy, "aim");
+  assert.equal(runtime.active, false);
+  assert.equal(runtime.leaseHeld, false);
+  assert.match(printed(), new RegExp(`demo finished\\. Claude was stopped and account fable-a was released`));
+  assert.match(printed(), new RegExp(`aim claude resume ${runtime.sessionId}`));
+});
+
+test("Claude job waiting on its background agents is not stopped at the done grace period", async () => {
+  const { receipt, runtime, worker } = await startParkableClaude(mkTempHome(), { done: 5, stuck: 400 });
+  runtime.emit("Stop", { jobStatus: null, backgroundTasks: 2, sessionCrons: 0 });
+  await waitUntil(() => readReceipt(receipt).outcome === "completed", "first turn end not recorded");
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(runtime.active, true);
+  assert.equal(readReceipt(receipt).parked, undefined);
+  const result = await worker;
+  assert.equal(result.parked.reason, "stuck");
+  assert.equal(result.outcome, "needs_attention");
+  assert.match(result.error, /background work with no activity/);
+});
+
+test("Claude job that needs input is held for a reply, then stopped with the question on screen", async () => {
+  const { receipt, runtime, worker, printed } = await startParkableClaude(mkTempHome(), { "needs-input": 30 });
+  runtime.emit("Stop", { jobStatus: { state: "needs-input", detail: "Post drafts 1 and 2?" }, backgroundTasks: 0, sessionCrons: 0 });
+  await waitUntil(() => readReceipt(receipt).outcome === "needs_input", "needs-input not recorded");
+  const result = await worker;
+  assert.equal(result.outcome, "needs_input");
+  assert.equal(result.needsAttention, true);
+  assert.equal(result.parked.reason, "needs-input");
+  assert.match(printed(), /demo needs your reply/);
+  assert.match(printed(), /Post drafts 1 and 2\?/);
+});
+
+test("Claude failure after the first turn replaces the completed outcome and stops the session", async () => {
+  const { receipt, runtime, worker } = await startParkableClaude(mkTempHome(), { failed: 30 });
+  runtime.emit("Stop", { jobStatus: null, backgroundTasks: 1, sessionCrons: 0 });
+  await waitUntil(() => readReceipt(receipt).outcome === "completed", "first turn end not recorded");
+  runtime.emit("UserPromptSubmit", { promptSha256: "notification", promptSource: "task-notification" });
+  runtime.emit("StopFailure", { error: "rate_limit", backgroundTasks: 0, sessionCrons: 0 });
+  const result = await worker;
+  assert.equal(result.outcome, "needs_attention");
+  assert.match(result.error, /rate_limit/);
+  assert.equal(result.parked.reason, "failed");
+  assert.equal(result.initialTurn.status, "idle");
+  assert.equal(result.personJoinedAt, undefined);
+});
+
+test("Claude job that goes quiet without a status line is stopped and flagged", async () => {
+  const { runtime, worker } = await startParkableClaude(mkTempHome(), { quiet: 30 });
+  runtime.emit("Stop", { jobStatus: null, backgroundTasks: 0, sessionCrons: 0 });
+  const result = await worker;
+  assert.equal(result.parked.reason, "quiet");
+  assert.equal(result.outcome, "needs_attention");
+  assert.match(result.error, /without an AIM-JOB status line/);
+  assert.equal(runtime.leaseHeld, false);
+});
+
+test("Claude session a person typed into uses the idle limit, not the done grace period", async () => {
+  const { receipt, runtime, worker } = await startParkableClaude(mkTempHome(), { done: 5, idle: 300 });
+  runtime.emit("Stop", { jobStatus: null, backgroundTasks: 0, sessionCrons: 0 });
+  await waitUntil(() => readReceipt(receipt).outcome === "completed", "first turn end not recorded");
+  runtime.emit("UserPromptSubmit", { promptSha256: "typed", promptSource: "user" });
+  runtime.emit("Stop", { jobStatus: { state: "done", detail: null }, backgroundTasks: 0, sessionCrons: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(runtime.active, true);
+  assert.ok(readReceipt(receipt).personJoinedAt);
+  const result = await worker;
+  assert.equal(result.parked.reason, "done");
+  assert.equal(result.outcome, "completed");
 });
 
 test("Claude launch errors are recorded without attempting another launch", async () => {

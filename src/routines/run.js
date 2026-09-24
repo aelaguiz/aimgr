@@ -24,7 +24,12 @@ import { isPrimeKeyBackedProvider } from "../core/constants.js";
 import { readRoutineDefinition } from "./config.js";
 import { deriveRoutineOccurrence } from "./schedule.js";
 import { codexRoutineArgs, startCodexRoutineTurn } from "./codex.js";
-import { prepareInteractiveClaudeRoutine, readClaudeRoutineEvents, runClaudeRoutineSession } from "./claude.js";
+import {
+  formatClaudeRoutineParkNotice,
+  prepareInteractiveClaudeRoutine,
+  readClaudeRoutineEvents,
+  runClaudeRoutineSession,
+} from "./claude.js";
 import { runClaudeCli } from "../targets/claude-runner.js";
 
 const PIN_PROMPT = "AIM routine binding check. Do not use tools. Reply exactly AIM_ROUTINE_PIN_OK.";
@@ -341,6 +346,18 @@ const ACCOUNT_SELECTION_TIMEOUT_MS = 60_000;
 const PIN_TIMEOUT_MS = 120_000;
 const PROMPT_ADMISSION_TIMEOUT_MS = 30_000;
 const INITIAL_TURN_TIMEOUT_MS = 2 * 60 * 60 * 1_000;
+// How long a scheduled Claude session may sit idle after a turn before AIM
+// stops it and releases the account (Amir, 2026-09-24). Unattended jobs went at
+// most 29 minutes between transcript writes while their background agents ran.
+const CLAUDE_PARK_AFTER_MS = Object.freeze({
+  done: 10 * 60 * 1_000,
+  "needs-input": 30 * 60 * 1_000,
+  blocked: 10 * 60 * 1_000,
+  failed: 10 * 60 * 1_000,
+  quiet: 60 * 60 * 1_000,
+  idle: 60 * 60 * 1_000,
+  stuck: 3 * 60 * 60 * 1_000,
+});
 const LIFECYCLE_POLL_MS = 250;
 const HERDR_API_TIMEOUT_MS = 3_000;
 
@@ -811,6 +828,50 @@ async function waitForInitialTurnSettlement({ context, sessionPath, effectiveSha
   throw new Error(`Prime initial turn did not settle within ${timeoutMs}ms.${detail}`);
 }
 
+// The receipt reflects the latest turn end: the first idle turn is not the end
+// of a job that is still waiting on its background agents.
+function claudeTurnEndReceipt(event) {
+  const jobStatus = event.jobStatus ?? null;
+  const failed = event.type === "StopFailure";
+  const outcome = failed || jobStatus?.state === "blocked"
+    ? "needs_attention"
+    : jobStatus?.state === "needs-input" ? "needs_input" : "completed";
+  const error = failed
+    ? `Claude turn failed: ${event.error ?? "unknown error"}.`
+    : jobStatus?.state === "blocked" ? `Claude job blocked: ${jobStatus.detail ?? "no reason given"}.` : null;
+  return {
+    outcome, completedAt: event.at, needsAttention: outcome !== "completed", exitCode: outcome === "completed" ? 0 : 1, error,
+    lastTurn: {
+      endedAt: event.at, stopReason: event.type, jobStatus,
+      backgroundTasks: event.backgroundTasks ?? null, sessionCrons: event.sessionCrons ?? null,
+    },
+  };
+}
+
+// An interrupted turn fires no Stop, so an open turn with no activity for the
+// idle limit is treated as abandoned rather than held forever.
+function claudeParkReason(lastTurnEnd, personJoined, turnOpen) {
+  if ((lastTurnEnd.backgroundTasks ?? 0) > 0 || (lastTurnEnd.sessionCrons ?? 0) > 0) return "stuck";
+  if (turnOpen) return personJoined ? "idle" : "quiet";
+  if (lastTurnEnd.type === "StopFailure") return "failed";
+  const state = lastTurnEnd.jobStatus?.state;
+  if (personJoined) return state ?? "idle";
+  return state ?? "quiet";
+}
+
+function claudeParkLimitMs(context, reason, personJoined) {
+  const key = personJoined && reason !== "stuck" && reason !== "failed" ? "idle" : reason;
+  return privateTimeout(context, `claudePark.${key}`, CLAUDE_PARK_AFTER_MS[key]);
+}
+
+function transcriptModifiedMs(transcriptPath) {
+  try {
+    return transcriptPath ? fs.statSync(transcriptPath).mtimeMs : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function executeRoutineWorker(context) {
   if (context.positional.length !== 5) {
     throw new Error("Invalid private routine worker invocation.");
@@ -868,8 +929,12 @@ export async function executeRoutineWorker(context) {
           interactiveTui: { status: "starting", startedAt: new Date().toISOString(), sessionId },
         });
         let exited = false;
+        // AIM stops a finished or abandoned session through the same cancellation
+        // path as a lost lease, so the supervisor saves and the account is released.
+        const parkController = new AbortController();
+        const claudeSignal = launch.signal ? AbortSignal.any([launch.signal, parkController.signal]) : parkController.signal;
         const interactiveExit = Promise.resolve().then(() => (context.runClaudeCliImpl ?? runClaudeCli)({
-          ...interactiveLaunch, args: [...interactiveLaunch.args, "--", effectivePrompt],
+          ...interactiveLaunch, signal: claudeSignal, args: [...interactiveLaunch.args, "--", effectivePrompt],
         })).then((result) => { exited = true; return result; }, (error) => {
           exited = true;
           return { status: 1, error };
@@ -880,14 +945,20 @@ export async function executeRoutineWorker(context) {
         const timeoutMs = privateTimeout(context, "initialTurnMs", INITIAL_TURN_TIMEOUT_MS);
         const deadline = Date.now() + timeoutMs;
         let timedOut = false;
+        let lastTurnEnd = null;
+        let turnOpen = false;
+        let personJoined = false;
+        let lastEventMs = Date.now();
+        let parked = null;
         try {
           receipt = writeReceipt(receiptPath, {
             ...receipt, interactiveTui: { ...receipt.interactiveTui, status: "live" },
           });
-          while (!settled) {
+          for (;;) {
             for (const event of readClaudeRoutineEvents(eventsPath).slice(consumed)) {
               consumed += 1;
               if (event.sessionId !== sessionId) continue;
+              lastEventMs = Date.now();
               if (event.type === "SessionStart") {
                 receipt = writeReceipt(receiptPath, {
                   ...receipt,
@@ -903,29 +974,57 @@ export async function executeRoutineWorker(context) {
                   prompt: { ...receipt.prompt, admittedAt: event.at, submittedSha256: event.promptSha256 },
                   outcome: "prompt_admitted",
                 });
+              } else if (event.type === "UserPromptSubmit" && settled) {
+                // Later user messages and background notifications are normal
+                // and never invalidate the original prompt. They open a turn.
+                turnOpen = true;
+                if (event.promptSource === "user" && !personJoined) {
+                  personJoined = true;
+                  receipt = writeReceipt(receiptPath, { ...receipt, personJoinedAt: event.at });
+                }
               } else if (promptSubmissionStarted && ["Stop", "StopFailure"].includes(event.type)) {
-                const failed = event.type === "StopFailure";
-                settled = true;
-                receipt = writeReceipt(receiptPath, {
-                  ...receipt,
-                  initialTurn: { status: failed ? "error" : "idle", stopReason: event.type, settledAt: event.at },
-                  outcome: failed ? "needs_attention" : "completed", completedAt: event.at,
-                  exitCode: failed ? 1 : 0, needsAttention: failed,
-                  ...(failed ? { error: `Claude turn failed: ${event.error ?? "unknown error"}. The interactive session remains available.` } : { error: null }),
-                });
-                releaseRoutineOwnership();
-                break;
+                if (!settled) {
+                  settled = true;
+                  receipt = writeReceipt(receiptPath, {
+                    ...receipt,
+                    initialTurn: { status: event.type === "StopFailure" ? "error" : "idle", stopReason: event.type, settledAt: event.at },
+                  });
+                  releaseRoutineOwnership();
+                }
+                turnOpen = false;
+                lastTurnEnd = event;
+                receipt = writeReceipt(receiptPath, { ...receipt, ...claudeTurnEndReceipt(event) });
               }
-              // Later user messages, background notifications, and subagent
-              // activity are normal. They never invalidate the original prompt.
             }
-            if (exited || settled) break;
-            if (!timedOut && Date.now() >= deadline) {
+            if (exited) break;
+            if (!settled && !timedOut && Date.now() >= deadline) {
               timedOut = true;
               receipt = writeReceipt(receiptPath, {
                 ...receipt, outcome: "needs_attention", needsAttention: true,
                 error: `Claude initial turn has not settled after ${timeoutMs}ms. The interactive session remains available.`,
               });
+            }
+            if (settled && !parked && lastTurnEnd) {
+              const reason = claudeParkReason(lastTurnEnd, personJoined, turnOpen);
+              const limitMs = claudeParkLimitMs(context, reason, personJoined);
+              const idleMs = Date.now() - Math.max(lastEventMs, transcriptModifiedMs(receipt.claude.transcriptPath));
+              if (idleMs >= limitMs) {
+                const detail = turnOpen ? null : lastTurnEnd.type === "StopFailure"
+                  ? `Error: ${lastTurnEnd.error ?? "unknown"}.`
+                  : lastTurnEnd.jobStatus?.detail ?? null;
+                parked = { at: new Date().toISOString(), reason, idleMs, detail };
+                const unfinished = reason === "quiet" || reason === "stuck";
+                receipt = writeReceipt(receiptPath, {
+                  ...receipt, parked,
+                  ...(unfinished ? {
+                    outcome: "needs_attention", needsAttention: true, exitCode: 1,
+                    error: reason === "stuck"
+                      ? `Claude waited ${Math.round(idleMs / 60_000)} min on background work with no activity.`
+                      : `Claude went quiet for ${Math.round(idleMs / 60_000)} min without an AIM-JOB status line.`,
+                  } : {}),
+                });
+                parkController.abort();
+              }
             }
             await Promise.race([interactiveExit, lifecycleSleep(context, privateTimeout(context, "pollMs", LIFECYCLE_POLL_MS))]);
           }
@@ -941,10 +1040,10 @@ export async function executeRoutineWorker(context) {
           }
           context.stderr?.write?.(`AIM routine observation failed: ${safeError(error)}. Claude remains interactive.\n`);
         }
-        // Keep the account lease alive for the actual interactive process, even
-        // when observation fails or the scheduled task has already finished.
+        // Keep the account lease alive for the actual interactive process until
+        // it exits: the job parks it above, or the user closes it.
         const ended = await interactiveExit;
-        const failedExit = ended?.status !== 0 || Boolean(ended?.signal);
+        const failedExit = !parked && (ended?.status !== 0 || Boolean(ended?.signal));
         const needsAttention = !settled || receipt.needsAttention || failedExit;
         receipt = writeReceipt(receiptPath, {
           ...receipt,
@@ -958,10 +1057,17 @@ export async function executeRoutineWorker(context) {
           interactiveTui: {
             ...receipt.interactiveTui, status: "exited", exitedAt: new Date().toISOString(),
             exitCode: ended?.status ?? 1, exitSignal: ended?.signal ?? null,
+            ...(parked ? { stoppedBy: "aim" } : {}),
             ...(ended?.error ? { error: safeError(ended.error) } : {}),
           },
         });
         releaseRoutineOwnership();
+        if (parked) {
+          context.stdout?.write?.(formatClaudeRoutineParkNotice({
+            routineId: receipt.routineId, reason: parked.reason, detail: parked.detail,
+            label: launch.label, sessionId, at: parked.at,
+          }));
+        }
         if (needsAttention) context.setExitCode(1);
         return { status: needsAttention ? 1 : 0, signal: null };
       } });

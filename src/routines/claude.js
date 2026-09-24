@@ -5,8 +5,56 @@ import { writeJsonFileIfChanged } from "../io/json-store.js";
 
 const HOOK_PATH = fileURLToPath(new URL("./claude-hook.js", import.meta.url));
 
+// Amir, 2026-09-24: finished scheduled jobs held Claude accounts for up to a
+// day. The job says how it ended so AIM can release the account; the first
+// idle turn is not the end, because jobs keep working through background agents.
+export const CLAUDE_ROUTINE_STATUS_RULE = [
+  "This session is an AIM scheduled job. AIM releases this Claude account when the job ends, so it needs to know how the job ended.",
+  "When the job is completely finished and nothing you started is still running (background agents, background shells, monitors, scheduled wakeups), make the last line of your final message exactly one of:",
+  "AIM-JOB: done",
+  "AIM-JOB: needs-input <the question the user must answer>",
+  "AIM-JOB: blocked <what stopped the job>",
+  "Use needs-input only when the job cannot finish without a reply. Never write this line before the job is finished. If the user replies later, end your final message with the line again when that work is finished.",
+].join("\n");
+
+const JOB_STATUS_LINE = /^[\s>*_`#-]*AIM-JOB:\s*(done|needs-input|blocked)\b[\s:—–-]*(.*?)[\s*_`]*$/i;
+
+export function parseClaudeRoutineJobStatus(text) {
+  if (typeof text !== "string" || !text) return null;
+  const lines = text.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const match = JOB_STATUS_LINE.exec(lines[index]);
+    if (match) return { state: match[1].toLowerCase(), detail: match[2].trim().slice(0, 300) || null };
+  }
+  return null;
+}
+
 export function claudeRoutineArgs(routine) {
-  return ["--model", routine.model, "--effort", routine.thinking, "--dangerously-skip-permissions"];
+  return [
+    "--model", routine.model, "--effort", routine.thinking, "--dangerously-skip-permissions",
+    "--append-system-prompt", CLAUDE_ROUTINE_STATUS_RULE,
+  ];
+}
+
+const PARK_HEADLINES = {
+  done: "finished",
+  "needs-input": "needs your reply",
+  blocked: "is blocked",
+  failed: "stopped on an error",
+  quiet: "went quiet without saying it was finished",
+  stuck: "sat waiting on background work with no activity",
+  idle: "sat idle after your last message",
+};
+
+export function formatClaudeRoutineParkNotice({ routineId, reason, detail, label, sessionId, at }) {
+  const when = new Date(at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return [
+    "",
+    `[aim] ${routineId} ${PARK_HEADLINES[reason] ?? reason}. Claude was stopped and account ${label} was released at ${when}.`,
+    ...(detail ? [`[aim] ${detail}`] : []),
+    `[aim] Continue this conversation: aim claude resume ${sessionId}`,
+    "",
+  ].join("\n");
 }
 
 export async function runClaudeRoutineSession(context, options) {

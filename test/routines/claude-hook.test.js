@@ -5,7 +5,13 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { mkTempHome } from "../helpers/files.js";
 import { recordClaudeRoutineHook } from "../../src/routines/claude-hook.js";
-import { inheritClaudeRoutineTrust, prepareInteractiveClaudeRoutine, readClaudeRoutineEvents } from "../../src/routines/claude.js";
+import {
+  claudeRoutineArgs,
+  inheritClaudeRoutineTrust,
+  parseClaudeRoutineJobStatus,
+  prepareInteractiveClaudeRoutine,
+  readClaudeRoutineEvents,
+} from "../../src/routines/claude.js";
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -72,4 +78,51 @@ test("routine setup keeps user hooks and explicit bypass acknowledgement, withou
   assert.equal(settings.statusLine.command, "existing-status");
   assert.deepEqual(prepared.preparedLaunch.userPluginDirs, ["/plugin"]);
   assert.equal(fs.existsSync(path.join(configDir, ".claude.json")), false);
+});
+
+test("Claude turn-end hooks record the job status line and in-flight background work, not the message", () => {
+  const eventsPath = path.join(mkTempHome(), "events.jsonl");
+  const sessionId = "expected";
+  recordClaudeRoutineHook({ eventsPath, sessionId, input: JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: sessionId,
+    prompt: "<task-notification>\n<task-id>abc</task-id>" }) });
+  recordClaudeRoutineHook({ eventsPath, sessionId, input: JSON.stringify({ hook_event_name: "Stop", session_id: sessionId,
+    last_assistant_message: "Private report body\n\n**AIM-JOB: needs-input Post drafts 1 and 2?**",
+    background_tasks: [{ id: "a", type: "subagent", status: "running", description: "x" }], session_crons: [] }) });
+  recordClaudeRoutineHook({ eventsPath, sessionId, input: JSON.stringify({ hook_event_name: "Stop", session_id: sessionId }) });
+  const events = readClaudeRoutineEvents(eventsPath);
+  assert.equal(events[0].promptSource, "task-notification");
+  assert.deepEqual(events[1].jobStatus, { state: "needs-input", detail: "Post drafts 1 and 2?" });
+  assert.equal(events[1].backgroundTasks, 1);
+  assert.equal(events[1].sessionCrons, 0);
+  assert.equal(events[2].jobStatus, null);
+  assert.equal(events[2].backgroundTasks, null);
+  assert.doesNotMatch(fs.readFileSync(eventsPath, "utf8"), /Private report/);
+});
+
+test("Claude turn-end hooks fall back to the transcript's last main-thread assistant text", () => {
+  const home = mkTempHome();
+  const eventsPath = path.join(home, "events.jsonl");
+  const transcriptPath = path.join(home, "transcript.jsonl");
+  const line = (value) => `${JSON.stringify(value)}\n`;
+  fs.writeFileSync(transcriptPath, line({ type: "assistant", message: { content: [{ type: "text", text: "Done.\nAIM-JOB: done" }] } })
+    + line({ type: "assistant", isSidechain: true, message: { content: [{ type: "text", text: "AIM-JOB: blocked child" }] } })
+    + line({ type: "system", subtype: "turn_duration" }));
+  recordClaudeRoutineHook({ eventsPath, sessionId: "s", input: JSON.stringify({ hook_event_name: "Stop", session_id: "s", transcript_path: transcriptPath }) });
+  assert.deepEqual(readClaudeRoutineEvents(eventsPath)[0].jobStatus, { state: "done", detail: null });
+});
+
+test("Claude job status lines parse through common Markdown wrapping and ignore look-alikes", () => {
+  assert.deepEqual(parseClaudeRoutineJobStatus("x\n`AIM-JOB: blocked — Reddit login expired`\n```"), { state: "blocked", detail: "Reddit login expired" });
+  assert.deepEqual(parseClaudeRoutineJobStatus("AIM-JOB: DONE"), { state: "done", detail: null });
+  assert.equal(parseClaudeRoutineJobStatus("I will print AIM-JOB: done at the end"), null);
+  assert.equal(parseClaudeRoutineJobStatus("AIM-JOB: finished"), null);
+  assert.equal(parseClaudeRoutineJobStatus(null), null);
+});
+
+test("Claude routines append the job status rule to the system prompt", () => {
+  const args = claudeRoutineArgs({ model: "claude-opus-5-5", thinking: "high" });
+  const rule = args[args.indexOf("--append-system-prompt") + 1];
+  assert.match(rule, /AIM-JOB: done/);
+  assert.match(rule, /AIM-JOB: needs-input/);
+  assert.match(rule, /AIM-JOB: blocked/);
 });

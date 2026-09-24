@@ -1,7 +1,7 @@
 ---
 title: "Claude scheduled jobs: give the account back when the job is done"
 date: 2026-09-24
-status: proposed
+status: steps-1-3-implemented
 owners: [aimgr]
 related:
   - src/routines/run.js
@@ -13,6 +13,17 @@ related:
 ---
 
 # Claude scheduled jobs: give the account back when the job is done
+
+## Implementation status (2026-09-24)
+
+Steps 1 to 3 are on `main`. Differences from the plan below:
+
+- Claude 2.1.282's `Stop` hook input includes `last_assistant_message` and `background_tasks`, the in-flight background work. `claude-hook.js` records the parsed status line and the background-task and cron counts on every turn end, so AIM does not guess whether background agents are still running.
+- An idle session that still has background work in flight is parked only after **3 h** with no activity (`stuck`). Otherwise the limits are: `done` 10 min, `needs-input` 30 min, `blocked` or `StopFailure` 10 min, no status line 60 min, and 60 min once a person has typed in the session.
+- Background task completions also fire `UserPromptSubmit`. The hook tags them `promptSource: "task-notification"`, so only typed input counts as a person joining.
+- The receipt now follows the latest turn end (`lastTurn`, `parked`, `personJoinedAt`). A `StopFailure` after the first turn now changes the outcome to `needs_attention`.
+
+Steps 4 to 6 are not built.
 
 ## TL;DR
 
