@@ -1,7 +1,7 @@
 ---
 title: "Managed Claude login expires after a lost Redis lease"
 date: 2026-09-23
-status: fixed-in-working-tree
+status: fixed-on-main
 owners: [aelaguiz]
 ---
 
@@ -42,7 +42,7 @@ All times below are 2026-09-23 in America/Chicago.
 
 `pro1` had the same empty-token tombstone shortly after a Redis rotation.
 At inspection, 10 of 13 labels with active managed Claude supervisors had no
-Redis credential lease. This was a fleet pattern, not a defect confined to
+Redis credential lease. This was a multi-session pattern, not a defect confined to
 `economy`. The postmortem cannot distinguish whether each individual socket
 failed to reconnect after sleep or was closed for another transport reason;
 the persisted process/lease state and the safety regression are conclusive.
@@ -67,8 +67,9 @@ is not asserted here.
 
 ## Verification and operating limit
 
-`npm test` passed 531 tests, including the real-IPC supervisor test, and
-`npm run lint` passed. Existing AIM processes
+The combined local checkout passed 531 tests. This isolated release candidate
+passed 523 tests, including the real-IPC supervisor test; `npm run lint` passed
+in both checkouts. Existing AIM processes
 loaded the old JavaScript before this repair and must be relaunched to use it.
 The explicit clean-cache launch path can still run without Redis when the
 operator requests a specific label during an outage; that path cannot prove
