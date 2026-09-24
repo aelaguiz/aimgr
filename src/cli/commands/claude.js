@@ -1,5 +1,7 @@
+import fs from "node:fs";
 import path from "node:path";
 import { pickClaudeSession } from "../claude-session-picker.js";
+import { chooseClaudeAccountToFree, listLocalAimClaudeSessions, stopClaudeAccountSessions } from "../../targets/claude-idle-stop.js";
 import {
   CLAUDE_FABLE_RUN_PRESET_ARGS,
   CLAUDE_OPUS_RUN_PRESET_ARGS,
@@ -17,7 +19,7 @@ import {
   refreshRedisRuntimeState,
   writeRedisLocalStateFromView,
 } from "../../coordination/runtime.js";
-import { REDIS_CONNECTION_POLICY_LEASED } from "../../coordination/redis-store.js";
+import { connectRedisStore, REDIS_CONNECTION_POLICY_LEASED } from "../../coordination/redis-store.js";
 import { publishMaintainedCredential } from "../../coordination/login-publish.js";
 import { isObject, normalizeLabel } from "../../core/normalize.js";
 import { recordAccountMaintenanceAttempt, recordAccountMaintenanceFailure, recordAccountMaintenanceSuccess } from "../../credentials/anthropic-maintenance.js";
@@ -63,6 +65,7 @@ import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runne
 import {
   buildManagedClaudeSessionForkName,
   listRecentManagedClaudeSessions,
+  readManagedClaudeSessions,
   renderRecentManagedClaudeSessions,
   resolveManagedClaudeSession,
   stageManagedClaudeSessionFork,
@@ -81,6 +84,147 @@ const CLAUDE_ACTIVE_ROTATION_SYNC_INTERVAL_MS = 30_000;
 const CLAUDE_LEASE_RENEWED = "renewed";
 const CLAUDE_LEASE_CONTENDED = "contended";
 const CLAUDE_LEASE_UNREACHABLE = "unreachable";
+
+async function reconnectClaudeRedisRuntime({ runtime, connectRedisStoreImpl }) {
+  const replacement = await (connectRedisStoreImpl ?? connectRedisStore)({
+    ...runtime.redis,
+    connectionPolicy: REDIS_CONNECTION_POLICY_LEASED,
+  });
+  if (replacement.keyPrefix !== runtime.store.keyPrefix) {
+    replacement.client?.destroy?.();
+    throw new Error("Claude Redis reconnection changed the credential key prefix.");
+  }
+  const previousClient = runtime.store.client;
+  if (replacement.client === previousClient) return false;
+  runtime.store.client = replacement.client;
+  runtime.store.ownsClient = replacement.ownsClient;
+  try {
+    previousClient?.destroy?.();
+  } catch {
+    // The new client is authoritative even if the old socket resists teardown.
+  }
+  return true;
+}
+
+function nativeClaudeOption(args, names) {
+  const matches = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--") break;
+    if (names.includes(arg)) {
+      const next = args[index + 1];
+      matches.push({ index, inline: false, value: next && !next.startsWith("-") ? next : null });
+    } else {
+      const name = names.find((candidate) => arg.startsWith(`${candidate}=`));
+      if (name) matches.push({ index, inline: true, value: arg.slice(name.length + 1) || null });
+    }
+  }
+  if (matches.length > 1) throw new Error("Claude native arguments contain more than one resume or session-ID option.");
+  return matches[0] ?? null;
+}
+
+function isPathWithin(parent, candidate) {
+  let canonicalParent;
+  try {
+    canonicalParent = fs.realpathSync(parent);
+  } catch {
+    canonicalParent = path.resolve(parent);
+  }
+  const relative = path.relative(canonicalParent, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function planCrossAccountClaudeResume({ homeDir, label, configDir, cwd, args, sessionFork }) {
+  const nativeArgs = Array.isArray(args) ? [...args] : [];
+  const resumeOption = nativeClaudeOption(nativeArgs, ["--resume", "-r"]);
+  const sessionIdOption = nativeClaudeOption(nativeArgs, ["--session-id"]);
+  if (sessionFork) {
+    if (!resumeOption?.value) throw new Error("Cross-account Claude resume requires a source transcript.");
+    if (sessionIdOption) throw new Error("Cross-account Claude resume cannot reuse an explicit session ID.");
+    return { args: nativeArgs, resumeOption, sessionFork };
+  }
+  if (!resumeOption?.value && !sessionIdOption?.value) {
+    return { args: nativeArgs, resumeOption: null, sessionFork: null };
+  }
+
+  const selector = resumeOption?.value;
+  if (selector && (path.isAbsolute(selector) || selector.endsWith(".jsonl"))) {
+    let sourcePath;
+    try {
+      sourcePath = fs.realpathSync(path.resolve(cwd, selector));
+    } catch {
+      // Preserve native Claude's existing error for a path that does not exist.
+      return { args: nativeArgs, resumeOption, sessionFork: null };
+    }
+    if (isPathWithin(configDir, sourcePath)) {
+      return { args: nativeArgs, resumeOption, sessionFork: null };
+    }
+    if (sessionIdOption) throw new Error("Cross-account Claude resume cannot reuse an explicit session ID.");
+    return {
+      args: nativeArgs,
+      resumeOption,
+      sessionFork: { transcriptPath: sourcePath },
+    };
+  }
+
+  const managedSessions = readManagedClaudeSessions({ homeDir });
+  if (sessionIdOption?.value && managedSessions.some((candidate) => (
+    candidate.threadId.toLowerCase() === sessionIdOption.value.toLowerCase()
+    && candidate.account !== label
+  ))) {
+    throw new Error(
+      `Claude session ID ${sessionIdOption.value} belongs to another account; use \`aim claude resume ${sessionIdOption.value} --account ${label}\` to continue it with a fresh ID.`,
+    );
+  }
+  if (!selector) {
+    return { args: nativeArgs, resumeOption: null, sessionFork: null };
+  }
+
+  const sameAccount = managedSessions.some((candidate) => (
+    candidate.account === label
+    && (candidate.threadId.toLowerCase() === selector.toLowerCase()
+      || candidate.threadName?.toLowerCase() === selector.toLowerCase())
+  ));
+  if (sameAccount) return { args: nativeArgs, resumeOption, sessionFork: null };
+  const otherMatches = managedSessions.filter((candidate) => (
+    candidate.account !== label
+    && (candidate.threadId.toLowerCase() === selector.toLowerCase()
+      || candidate.threadName?.toLowerCase() === selector.toLowerCase())
+  ));
+  if (otherMatches.length > 1) {
+    throw new Error(`Claude session ${selector} exists in multiple accounts; resume its absolute transcript path to choose one.`);
+  }
+  if (otherMatches.length > 0 && sessionIdOption) {
+    throw new Error("Cross-account Claude resume cannot reuse an explicit session ID.");
+  }
+  return {
+    args: nativeArgs,
+    resumeOption,
+    sessionFork: otherMatches[0] ?? null,
+  };
+}
+
+function stagedClaudeResumeArgs(plan, staged) {
+  if (!staged) return plan.args;
+  const args = [...plan.args];
+  const { index, inline } = plan.resumeOption;
+  if (inline) args[index] = `${args[index].split("=")[0]}=${staged.targetTranscriptPath}`;
+  else args[index + 1] = staged.targetTranscriptPath;
+  if (!args.includes("--fork-session")) args.push("--fork-session");
+  if (!args.includes("--name") && !args.some((arg) => arg.startsWith("--name="))) {
+    args.push("--name", "Continued session");
+  }
+  return args;
+}
+
+function crossAccountClaudeEnvironment(env, staged) {
+  if (!staged) return env;
+  const safe = { ...(env ?? {}) };
+  delete safe.ANTHROPIC_CUSTOM_HEADERS;
+  delete safe.CLAUDE_CODE_EXTRA_BODY;
+  return safe;
+}
+
 async function renewClaudeCredentialLeaseWithinDeadline(lease) {
   let deadlineTimer = null;
   try {
@@ -106,11 +250,15 @@ async function renewClaudeCredentialLeaseWithinDeadline(lease) {
 function startClaudeCredentialLeaseHeartbeat({
   lease,
   abortController,
+  pauseForUncertainOwnership = null,
+  resumeAfterOwnershipRecovered = null,
+  reconnectAfterUnreachable = null,
 }) {
   let stopped = false;
   let timer = null;
   let inFlight = null;
   let lost = false;
+  let paused = false;
 
   const loseOwnership = () => {
     lost = true;
@@ -120,6 +268,40 @@ function startClaudeCredentialLeaseHeartbeat({
     if (stopped) return result;
     if (result === CLAUDE_LEASE_CONTENDED) {
       loseOwnership();
+      return result;
+    }
+    if (result === CLAUDE_LEASE_UNREACHABLE) {
+      if (!paused) {
+        paused = true;
+        try {
+          if (await pauseForUncertainOwnership?.() !== true) {
+            loseOwnership();
+            return result;
+          }
+        } catch {
+          // A live Claude process cannot continue while lease ownership is unknown.
+          loseOwnership();
+          return result;
+        }
+      }
+      try {
+        await reconnectAfterUnreachable?.();
+      } catch {
+        // Keep Claude paused; the next heartbeat retries with the old client.
+      }
+      return result;
+    }
+    if (paused) {
+      try {
+        if (await resumeAfterOwnershipRecovered?.() !== true) {
+          loseOwnership();
+          return CLAUDE_LEASE_UNREACHABLE;
+        }
+      } catch {
+        loseOwnership();
+        return CLAUDE_LEASE_UNREACHABLE;
+      }
+      paused = false;
     }
     return result;
   };
@@ -145,6 +327,9 @@ function startClaudeCredentialLeaseHeartbeat({
   return {
     get lost() {
       return lost;
+    },
+    get paused() {
+      return paused;
     },
     renewNow,
     async stop() {
@@ -179,7 +364,11 @@ async function assertClaudeCredentialLeaseOwned({
   return true;
 }
 
-async function acquireClaudeCredentialLeaseGuard(runtime, label) {
+async function acquireClaudeCredentialLeaseGuard(runtime, label, {
+  pauseForUncertainOwnership = null,
+  resumeAfterOwnershipRecovered = null,
+  reconnectAfterUnreachable = null,
+} = {}) {
   const lease = await acquireRedisCredentialLease(runtime.store, {
     provider: ANTHROPIC_PROVIDER,
     label,
@@ -196,6 +385,9 @@ async function acquireClaudeCredentialLeaseGuard(runtime, label) {
   const heartbeat = startClaudeCredentialLeaseHeartbeat({
     lease,
     abortController,
+    pauseForUncertainOwnership,
+    resumeAfterOwnershipRecovered,
+    reconnectAfterUnreachable,
   });
   try {
     await assertClaudeCredentialLeaseOwned({
@@ -304,6 +496,7 @@ function startClaudeActiveRotationPublisher({
       timer = null;
       inFlight = (async () => {
         try {
+          if (guard.heartbeat.paused) return;
           if (!await assertClaudeCredentialLeaseOwned({
             ...guard,
             phase: "before active-run rotation reconciliation",
@@ -607,9 +800,17 @@ async function runClaudeFromCleanOfflineCache(context, {
   });
   let stagedSessionFork = null;
   try {
-    if (sessionFork) {
+    const resumePlan = planCrossAccountClaudeResume({
+      homeDir,
+      label,
+      configDir: cache.configDir,
+      cwd: launchCwd,
+      args: opts.afterDoubleDash,
+      sessionFork,
+    });
+    if (resumePlan.sessionFork) {
       stagedSessionFork = stageManagedClaudeSessionFork({
-        session: sessionFork,
+        session: resumePlan.sessionFork,
         targetConfigDir: cache.configDir,
       });
     }
@@ -622,8 +823,8 @@ async function runClaudeFromCleanOfflineCache(context, {
       homeDir: cache.claudeHome,
       configDir: cache.configDir,
       cwd: launchCwd,
-      args: opts.afterDoubleDash,
-      env,
+      args: stagedClaudeResumeArgs(resumePlan, stagedSessionFork),
+      env: crossAccountClaudeEnvironment(env, stagedSessionFork),
       preparedLaunch,
     });
     if (result?.signal) {
@@ -692,9 +893,42 @@ async function handleRedisClaudeRun(context, {
   let processResult = null;
   let activeRotationPublisher = null;
   let stagedSessionFork = null;
+  let activeProcessControl = null;
   try {
     assertClaudeAccountCanLaunch(runtime, label);
-    guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
+    guard = await acquireClaudeCredentialLeaseGuard(runtime, label, {
+      pauseForUncertainOwnership: async () => {
+        const paused = activeProcessControl?.pause
+          ? await activeProcessControl.pause()
+          : false;
+        if (paused) stdout?.write?.(`AIM coordination=unreachable label=${label} claude=paused\n`);
+        return paused;
+      },
+      reconnectAfterUnreachable: () => reconnectClaudeRedisRuntime({
+        runtime,
+        connectRedisStoreImpl,
+      }),
+      resumeAfterOwnershipRecovered: async () => {
+        const priorFingerprint = buildClaudeTokenLineageFingerprint(
+          currentRedisClaudeRecord(runtime, label)?.credential,
+        );
+        await refreshRedisRuntimeState(runtime);
+        const currentFingerprint = buildClaudeTokenLineageFingerprint(
+          currentRedisClaudeRecord(runtime, label)?.credential,
+        );
+        if (!priorFingerprint || priorFingerprint !== currentFingerprint) {
+          stdout?.write?.(
+            `AIM Claude credential changed while label=${label} was disconnected; resume this session with \`aim claude resume\`.\n`,
+          );
+          return false;
+        }
+        const resumed = activeProcessControl?.resume
+          ? await activeProcessControl.resume()
+          : false;
+        if (resumed) stdout?.write?.(`AIM coordination=recovered label=${label} claude=resumed\n`);
+        return resumed;
+      },
+    });
     // A prior lease owner may have rotated this label between our initial read
     // and lease acquisition. Reload under the lease before inspecting local
     // projections or choosing the authoritative bundle.
@@ -729,9 +963,17 @@ async function handleRedisClaudeRun(context, {
     });
 
     const target = runtime.state.targets.claudeCli;
-    if (sessionFork) {
+    const resumePlan = planCrossAccountClaudeResume({
+      homeDir,
+      label,
+      configDir,
+      cwd: launchCwd,
+      args: opts.afterDoubleDash,
+      sessionFork,
+    });
+    if (resumePlan.sessionFork) {
       stagedSessionFork = stageManagedClaudeSessionFork({
-        session: sessionFork,
+        session: resumePlan.sessionFork,
         targetConfigDir: configDir,
       });
     }
@@ -768,13 +1010,18 @@ async function handleRedisClaudeRun(context, {
         homeDir: claudeHome,
         configDir,
         cwd: launchCwd,
-        args: opts.afterDoubleDash,
-        env,
+        args: stagedClaudeResumeArgs(resumePlan, stagedSessionFork),
+        env: crossAccountClaudeEnvironment(env, stagedSessionFork),
         signal: guard.abortController.signal,
+        registerProcessControl: (processControl) => {
+          activeProcessControl = processControl;
+        },
         preparedLaunch,
       });
     } catch (error) {
       launchError = error;
+    } finally {
+      activeProcessControl = null;
     }
     if (activeRotationPublisher) {
       await activeRotationPublisher.stop();
@@ -868,12 +1115,43 @@ async function handleRedisClaudeRun(context, {
 // Scheduled Claude work uses the same account lease, native preflight, and
 // rotation publication as interactive runs. The callback owns the interactive
 // session from launch to exit, keeping credentials pinned through follow-up.
-export async function runAutomaticClaudeSession(context, { cwd, runSession }) {
+// When every usable account is held by an open session, stop the least recently
+// used idle AIM session to free its account (Amir, 2026-09-24) instead of failing.
+async function freeClaudeAccountForScheduledJob(context, { preset, jobName, stderr }) {
+  const usageStatus = await collectClaudeRedisAccountUsageStatus({
+    homeDir: context.homeDir,
+    fresh: false,
+    nowMs: context.nowMs,
+    fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl,
+    connectRedisStoreImpl: context.connectRedisStoreImpl,
+  });
+  const eligibleLabels = new Set(usageStatus.accounts
+    .filter((account) => account?.locked === true
+      && selectLeastUsedUnlockedClaudeAccount({ ...usageStatus, accounts: [{ ...account, locked: false }] }, { preset }))
+    .map((account) => account.label));
+  const target = (context.chooseClaudeAccountToFreeImpl ?? chooseClaudeAccountToFree)(
+    (context.listLocalAimClaudeSessionsImpl ?? listLocalAimClaudeSessions)({ homeDir: context.homeDir }),
+    eligibleLabels,
+  );
+  if (!target) return null;
+  const stopped = await (context.stopClaudeAccountSessionsImpl ?? stopClaudeAccountSessions)(target, { jobName });
+  stderr?.write?.(`AIM: no free Claude account; stopped ${stopped.length} idle session(s) on ${target.label} `
+    + `(${stopped.map((session) => session.sessionId ?? `pid ${session.pid}`).join(", ")}) for ${jobName}.\n`);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const selected = await selectAutomaticClaudeAccount(context, { preset });
+    if (selected) return selected;
+    await (context.sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(2_000);
+  }
+  return null;
+}
+
+export async function runAutomaticClaudeSession(context, { cwd, runSession, jobName = "a scheduled job" }) {
   if (!isRedisConfigured({ homeDir: context.homeDir })) {
     throw new Error("Claude routines require configured Redis account coordination.");
   }
-  const selected = await selectAutomaticClaudeAccount(context, { preset: "fable" });
-  if (!selected) throw new Error("No unlocked Claude account with readable five-hour usage is available.");
+  const selected = await selectAutomaticClaudeAccount(context, { preset: "fable" })
+    ?? await freeClaudeAccountForScheduledJob(context, { preset: "fable", jobName, stderr: context.stderr });
+  if (!selected) throw new Error("No unlocked Claude account with readable five-hour usage is available, and no idle AIM session could be stopped to free one.");
   await handleRedisClaudeRun({
     ...context,
     positional: ["claude", "run", selected.label],

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { HARNESS_MANAGED_PROVIDERS } from "./harness-auth.js";
+import { isPrimeKeyBackedProvider } from "../core/constants.js";
 import {
   expandHomeShorthandPath,
   resolveManagedPrimeAgentDir,
@@ -145,6 +146,7 @@ export function readPrimeSessionProfile({
   env = {},
   cwd = process.cwd(),
   requireThinking = false,
+  allowKeyBackedProvider = false,
 }) {
   const sessionPath = resolvePrimeSessionPath({ selector, homeDir, env, cwd });
   const { entries, activeBranch } = readPrimeActiveBranch(sessionPath);
@@ -198,23 +200,29 @@ export function readPrimeSessionProfile({
     }
   }
   if (!lastModel) throw new Error(`Prime session has no model metadata: ${sessionPath}`);
-  if (!HARNESS_MANAGED_PROVIDERS.includes(lastModel.provider)) {
+  // A key-backed provider is pinned by provider/model alone; it never carries an
+  // AIM account, so callers must opt in explicitly instead of relaxing the check.
+  const keyBacked = allowKeyBackedProvider && isPrimeKeyBackedProvider(lastModel.provider);
+  if (!keyBacked && !HARNESS_MANAGED_PROVIDERS.includes(lastModel.provider)) {
     throw new Error(`AIM cannot use unsupported Prime provider=${lastModel.provider}.`);
   }
-  const binding = bindings.get(lastModel.provider);
-  if (!binding) {
-    throw new Error(`Prime session has no AIM binding for provider=${lastModel.provider}.`);
-  }
-  if (!binding.binding || !binding.identityFingerprint) {
-    throw new Error(`Prime session has an incomplete AIM binding for provider=${lastModel.provider}.`);
+  const binding = bindings.get(lastModel.provider) ?? null;
+  if (!keyBacked) {
+    if (!binding) {
+      throw new Error(`Prime session has no AIM binding for provider=${lastModel.provider}.`);
+    }
+    if (!binding.binding || !binding.identityFingerprint) {
+      throw new Error(`Prime session has an incomplete AIM binding for provider=${lastModel.provider}.`);
+    }
   }
   if (requireThinking && !thinking) {
     throw new Error(`Prime session has no thinking metadata: ${sessionPath}`);
   }
   return {
     ...lastModel,
-    ...binding,
+    ...(binding ?? { binding: null, identityFingerprint: null }),
     bindingHistory: bindingHistoryByProvider.get(lastModel.provider) ?? [],
+    keyBacked,
     thinking,
     sessionId: sessionHeader.id,
     sessionPath,

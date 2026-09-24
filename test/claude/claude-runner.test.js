@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
 import {
   prepareClaudeCliLaunch,
@@ -390,10 +391,53 @@ test("direct noninteractive runner reports its bounded timeout without inventing
   );
 });
 
-test("pause-resume IPC and build qualification policy are absent from the runtime", () => {
+test("pause-resume IPC is present without build qualification policy", () => {
   const source = `${fs.readFileSync(RUNNER_SOURCE_PATH, "utf8")}\n${fs.readFileSync(SUPERVISOR_SOURCE_PATH, "utf8")}`;
-  assert.doesNotMatch(source, /aimgr:claude-process-control|registerProcessControl|SIGSTOP|SIGCONT/);
+  assert.match(source, /aimgr:claude-process-control/);
+  assert.match(source, /registerProcessControl/);
+  assert.match(source, /SIGSTOP/);
+  assert.match(source, /SIGCONT/);
   assert.doesNotMatch(source, /SUPPORTED_CLAUDE_BUILDS|codesign|sha256|sourceSha256|DISABLE_AUTOUPDATER/);
+});
+
+test("managed Claude runner waits for supervisor pause and resume acknowledgements", async () => {
+  const home = mkTempHome();
+  const prepared = preparedLaunch(home);
+  const child = new EventEmitter();
+  child.connected = true;
+  const sent = [];
+  child.send = (message, callback) => {
+    sent.push(message);
+    queueMicrotask(() => {
+      callback();
+      child.emit("message", {
+        type: "aimgr:claude-process-control-ack-v1",
+        requestId: message.requestId,
+        action: message.action,
+        ok: true,
+      });
+    });
+  };
+  let control = null;
+  const running = runClaudeCli({
+    command: process.execPath,
+    userHomeDir: home,
+    homeDir: prepared.homeDir,
+    configDir: prepared.configDir,
+    cwd: home,
+    preparedLaunch: prepared,
+    spawnImpl: () => child,
+    registerProcessControl(value) {
+      control = value;
+    },
+  });
+  assert.ok(control);
+  assert.equal(await control.pause(), true);
+  assert.equal(await control.resume(), true);
+  assert.deepEqual(sent.map((entry) => entry.action), ["pause", "resume"]);
+  child.emit("close", 0, null);
+  assert.deepEqual(await running, { status: 0, signal: null });
+  assert.equal(control, null);
 });
 
 

@@ -165,3 +165,27 @@ test("Claude routines preserve their agent, default to Fable xhigh, and reject i
   writeAimgrConfig({ homeDir: home, config: { routines: { report: { ...definition, thinking: "max" } } } });
   assert.equal(readRoutineDefinition({ homeDir: home, id: "report" }).routine.thinking, "max");
 });
+
+test("key-backed Prime routines pin a catalog model without a Codex or Claude agent", () => {
+  const home = mkTempHome();
+  const definition = {
+    agent: "prime", provider: "openrouter", model: "deepseek/deepseek-v4.1-flash", thinking: "low",
+    calendar: [{ hour: 3, minute: 0 }], cwd: "/tmp/work", promptFile: "/tmp/prompt.md",
+    herdrSession: "growth", spaceTitleFormat: "disk cleanup \u00b7 {scheduled_local}",
+  };
+  writeAimgrConfig({ homeDir: home, config: { routines: { cleanup: definition } } });
+  const { routine } = readRoutineDefinition({ homeDir: home, id: "cleanup" });
+  assert.equal(routine.agent, "prime");
+  assert.equal(routine.provider, "openrouter");
+  assert.equal(routine.model, "deepseek/deepseek-v4.1-flash");
+  assert.equal(routine.thinking, "low");
+  assert.equal(routine.profile, undefined);
+  for (const [overrides, error] of [
+    [{ provider: "sakana" }, /unsupported provider/],
+    [{ profile: "yolo" }, /profile is supported only with agent=codex/],
+    [{ thinking: "max" }, /unsupported thinking/],
+  ]) {
+    writeAimgrConfig({ homeDir: home, config: { routines: { cleanup: { ...definition, ...overrides } } } });
+    assert.throws(() => readRoutineDefinition({ homeDir: home, id: "cleanup" }), error);
+  }
+});

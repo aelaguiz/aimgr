@@ -5,7 +5,7 @@ export const CLAUDE_OPUS_RUN_PRESET_ARGS = Object.freeze([
   "--model",
   "opus",
   "--effort",
-  "max",
+  "xhigh",
 ]);
 
 export const CLAUDE_FABLE_RUN_PRESET_ARGS = Object.freeze([

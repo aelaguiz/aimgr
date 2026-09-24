@@ -408,9 +408,11 @@ test("managed Claude resume refuses to guess when exact runtime metadata is abse
   assert.equal(redisCalls, 0);
 });
 
-test("managed Claude session fork staging copies exact source data and cleans only its destination copy", () => {
+test("managed Claude session fork staging rekeys history and cleans only its destination copy", () => {
   const home = mkTempHome();
   const threadId = THREAD_IDS[0];
+  const toolId = "toolu_01SourceToolUseIdentifier";
+  const messageId = "msg_01SourceMessageIdentifier";
   const sourcePath = writeManagedSession({
     home,
     account: "pro10",
@@ -421,13 +423,26 @@ test("managed Claude session fork staging copies exact source data and cleans on
       type: "custom-title",
       customTitle: "Review puzzle quality",
       timestamp: new Date(NOW_MS).toISOString(),
+    }, {
+      type: "assistant",
+      sessionId: threadId,
+      uuid: "11111111-1111-4111-8111-111111111111",
+      parentUuid: "22222222-2222-4222-8222-222222222222",
+      requestId: "req_01SourceRequestIdentifier",
+      promptId: "33333333-3333-4333-8333-333333333333",
+      message: { id: messageId, content: [{ type: "tool_use", id: toolId, name: "Read", input: {} }] },
+    }, {
+      type: "user",
+      sessionId: threadId,
+      parentUuid: "11111111-1111-4111-8111-111111111111",
+      message: { content: [{ type: "tool_result", tool_use_id: toolId, content: "source tool result" }] },
     }],
   });
   const sourceCompanionPath = path.join(path.dirname(sourcePath), threadId);
   fs.mkdirSync(path.join(sourceCompanionPath, "tool-results"), { recursive: true });
   fs.writeFileSync(
     path.join(sourceCompanionPath, "tool-results", "result.txt"),
-    "source tool result\n",
+    `source tool result for ${toolId}\n`,
     "utf8",
   );
   const sourceContent = fs.readFileSync(sourcePath, "utf8");
@@ -442,14 +457,30 @@ test("managed Claude session fork staging copies exact source data and cleans on
 
   assert.equal(
     buildManagedClaudeSessionForkName(session),
-    `[fork from pro10/${threadId.slice(0, 8)}] Review puzzle quality`,
+    "Review puzzle quality",
+  );
+  assert.equal(
+    buildManagedClaudeSessionForkName({ ...session,
+      threadName: "[fork from old/aaaaaaaa] [fork from older/bbbbbbbb] Review puzzle quality" }),
+    "Review puzzle quality",
   );
   const staged = stageManagedClaudeSessionFork({ session, targetConfigDir });
+  assert.notEqual(staged.stagedSessionId, threadId);
+  assert.equal(path.basename(staged.targetTranscriptPath), `${staged.stagedSessionId}.jsonl`);
   assert.equal(fs.existsSync(staged.targetMarkerPath), true);
-  assert.equal(fs.readFileSync(staged.targetTranscriptPath, "utf8"), sourceContent);
+  const stagedContent = fs.readFileSync(staged.targetTranscriptPath, "utf8");
+  for (const sourceId of [threadId, toolId, messageId, "req_01SourceRequestIdentifier",
+    "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333"]) {
+    assert.equal(stagedContent.includes(sourceId), false, `staged transcript retained ${sourceId}`);
+  }
+  const stagedEntries = stagedContent.trim().split("\n").map(JSON.parse);
+  assert.equal(stagedEntries[0].sessionId, staged.stagedSessionId);
+  assert.equal(stagedEntries[2].message.content[0].id, stagedEntries[3].message.content[0].tool_use_id);
+  assert.equal(stagedEntries[2].uuid, stagedEntries[3].parentUuid);
   assert.equal(
     fs.readFileSync(path.join(staged.targetCompanionPath, "tool-results", "result.txt"), "utf8"),
-    "source tool result\n",
+    `source tool result for ${stagedEntries[2].message.content[0].id}\n`,
   );
   assert.deepEqual(
     readManagedClaudeSessions({ homeDir: home })
@@ -465,7 +496,7 @@ test("managed Claude session fork staging copies exact source data and cleans on
   assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
 });
 
-test("managed Claude session fork staging refuses an existing destination transcript", () => {
+test("managed Claude session fork staging leaves an existing destination transcript alone", () => {
   const home = mkTempHome();
   const threadId = THREAD_IDS[0];
   const sourcePath = writeManagedSession({
@@ -492,9 +523,8 @@ test("managed Claude session fork staging refuses an existing destination transc
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   fs.writeFileSync(targetPath, "existing destination\n", "utf8");
 
-  assert.throws(
-    () => stageManagedClaudeSessionFork({ session, targetConfigDir }),
-    /already exists in the selected destination account/,
-  );
+  const staged = stageManagedClaudeSessionFork({ session, targetConfigDir });
+  assert.notEqual(staged.targetTranscriptPath, targetPath);
+  staged.cleanup();
   assert.equal(fs.readFileSync(targetPath, "utf8"), "existing destination\n");
 });

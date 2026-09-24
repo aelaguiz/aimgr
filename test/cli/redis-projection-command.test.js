@@ -501,7 +501,7 @@ test("redis-configured claude run projects into a per-label home and publishes p
         "--model",
         "opus",
         "--effort",
-        "max",
+        "xhigh",
         "--resume",
       ]);
       assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
@@ -892,9 +892,14 @@ test("another machine accepts a centrally published Claude rotation from Redis",
   await closeRedisRuntime(m3Runtime);
 });
 
-test("managed Claude retries transient lease loss without pausing but aborts for a replacement owner", async () => {
+test("managed Claude pauses during uncertain ownership, resumes after recovery, and aborts for a replacement owner", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
+  const reconnectedClient = new FakeRedisClient();
+  reconnectedClient.values = client.values;
+  reconnectedClient.sets = client.sets;
+  reconnectedClient.expirations = client.expirations;
+  let connectionCount = 0;
   const credential = buildAnthropicClaudeCredential({
     access: "CLAUDE_ACCESS",
     refresh: "CLAUDE_REFRESH",
@@ -928,6 +933,8 @@ test("managed Claude retries transient lease loss without pausing but aborts for
   const rotationTimers = [];
   let resolveLaunch = null;
   let launchSignal = null;
+  let paused = false;
+  const processControls = [];
   let exitCode = null;
   let markLaunchStarted;
   const launchStarted = new Promise((resolve) => {
@@ -957,7 +964,10 @@ test("managed Claude retries transient lease loss without pausing but aborts for
       setExitCode: (value) => {
         exitCode = value;
       },
-      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+      connectRedisStoreImpl: () => connectRedisStore({
+        client: ++connectionCount === 1 ? client : reconnectedClient,
+        keyPrefix: PREFIX,
+      }),
       resolveExecutableOnPathImpl: buildTestClaudeResolver(),
       nowMs: Date.now(),
       setTimeoutImpl: (callback, delay) => {
@@ -970,7 +980,18 @@ test("managed Claude retries transient lease loss without pausing but aborts for
       },
       runClaudeCliImpl: ({ signal, registerProcessControl }) => {
         launchSignal = signal;
-        assert.equal(registerProcessControl, undefined);
+        registerProcessControl({
+          async pause() {
+            processControls.push("pause");
+            paused = true;
+            return true;
+          },
+          async resume() {
+            processControls.push("resume");
+            paused = false;
+            return true;
+          },
+        });
         markLaunchStarted();
         return new Promise((resolve) => {
           resolveLaunch = resolve;
@@ -989,6 +1010,14 @@ test("managed Claude retries transient lease loss without pausing but aborts for
     const originalEval = client.eval.bind(client);
     let rejectNextRecovery = true;
     let recoveryEvalCount = 0;
+    let reconnectedEvalCount = 0;
+    const originalReconnectedEval = reconnectedClient.eval.bind(reconnectedClient);
+    reconnectedClient.eval = async (script, options) => {
+      if (script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
+        reconnectedEvalCount += 1;
+      }
+      return originalReconnectedEval(script, options);
+    };
     client.eval = async (script, options) => {
       if (script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
         recoveryEvalCount += 1;
@@ -1004,18 +1033,24 @@ test("managed Claude retries transient lease loss without pausing but aborts for
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(launchSignal.aborted, false);
-    const recoveryCountAfterFailure = recoveryEvalCount;
+    assert.equal(paused, true);
+    assert.deepEqual(processControls, ["pause"]);
+    assert.equal(connectionCount, 2);
+    assert.equal(recoveryEvalCount, 1);
     const retryTimer = heartbeatTimers.find(
       (timer) => timer !== heartbeatTimer && timer.delay === 10_000 && timer.cleared === false,
     );
     assert.ok(retryTimer);
     client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    reconnectedClient.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
     retryTimer.callback();
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(launchSignal.aborted, false);
-    assert.ok(recoveryEvalCount > recoveryCountAfterFailure);
+    assert.equal(paused, false);
+    assert.deepEqual(processControls, ["pause", "resume"]);
+    assert.ok(reconnectedEvalCount > 0);
     assert.equal(
       [...client.values.keys()].some((key) => key.includes(":lease:credential:anthropic:claude")),
       true,
@@ -1031,6 +1066,7 @@ test("managed Claude retries transient lease loss without pausing but aborts for
     );
     assert.ok(contentionTimer);
     client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    reconnectedClient.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
     const replacement = await acquireRedisCredentialLease(store, {
       provider: "anthropic",
       label: "claude",
@@ -1045,6 +1081,128 @@ test("managed Claude retries transient lease loss without pausing but aborts for
     await command;
     assert.equal(exitCode, 1);
     assert.equal(await replacement.release(), true);
+  } finally {
+    resolveLaunch?.({ status: 1, signal: null });
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
+});
+
+test("managed Claude does not resume a stale credential after another owner refreshes it", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "claude",
+      credential: buildAnthropicClaudeCredential(),
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } },
+      health: { status: "ready", reason: null },
+    }],
+  });
+
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const timers = [];
+  globalThis.setTimeout = (callback, delay) => {
+    const timer = { callback, delay, cleared: false, unref() {} };
+    timers.push(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => { timer.cleared = true; };
+  let resolveLaunch = null;
+  let launchSignal = null;
+  let paused = false;
+  let resumed = false;
+  let exitCode = null;
+  const output = [];
+  let markLaunchStarted;
+  const launchStarted = new Promise((resolve) => { markLaunchStarted = resolve; });
+  try {
+    const command = handleClaude({
+      opts: { afterDoubleDash: [] },
+      positional: ["claude", "run", "claude"],
+      homeDir: home,
+      env: {},
+      stdout: { write: (value) => output.push(value) },
+      setExitCode: (value) => { exitCode = value; },
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+      nowMs: Date.now(),
+      runClaudeCliImpl: ({ signal, registerProcessControl }) => {
+        launchSignal = signal;
+        registerProcessControl({
+          async pause() { paused = true; return true; },
+          async resume() { resumed = true; return true; },
+        });
+        markLaunchStarted();
+        return new Promise((resolve) => {
+          resolveLaunch = resolve;
+          signal.addEventListener("abort", () => resolve({ status: 1, signal: null }), { once: true });
+        });
+      },
+    });
+    await launchStarted;
+    const originalEval = client.eval.bind(client);
+    let failOnce = true;
+    client.eval = async (script, options) => {
+      if (failOnce && script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
+        failOnce = false;
+        throw new Error("temporary Redis transport failure");
+      }
+      return originalEval(script, options);
+    };
+    const heartbeatTimer = timers.find((timer) => timer.delay === 10_000 && !timer.cleared);
+    heartbeatTimer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(paused, true);
+    assert.equal(launchSignal.aborted, false);
+
+    client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    const replacement = await acquireRedisCredentialLease(store, {
+      provider: "anthropic",
+      label: "claude",
+    });
+    assert.ok(replacement);
+    const record = (await readSnapshot(store)).credentials.find(
+      (entry) => entry.provider === "anthropic" && entry.label === "claude",
+    );
+    const published = await publishCredential(store, {
+      expectedVersion: record.version,
+      updatedBy: "other-owner",
+      observedAt: new Date().toISOString(),
+      credentialRecord: {
+        ...record,
+        credential: buildAnthropicClaudeCredential({
+          access: "NEW_ACCESS",
+          refresh: "NEW_REFRESH",
+          expiresAtMs: Date.now() + 7_200_000,
+        }),
+      },
+    });
+    assert.equal(published.ok, true);
+    assert.equal(await replacement.release(), true);
+
+    const retryTimer = timers.find((timer) => timer !== heartbeatTimer && timer.delay === 10_000 && !timer.cleared);
+    retryTimer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(launchSignal.aborted, true);
+    assert.equal(resumed, false);
+    assert.match(output.join(""), /credential changed.*resume this session/);
+    await command;
+    assert.equal(exitCode, 1);
   } finally {
     resolveLaunch?.({ status: 1, signal: null });
     globalThis.setTimeout = realSetTimeout;
@@ -1422,6 +1580,7 @@ test("claude resume by name selects the lowest five-hour account and honors an e
   };
   let launchedLabel = null;
   let targetConfigDir = null;
+  let stagedPath = null;
   const cliDeps = {
     env: { HOME: home },
     nowImpl: () => nowMs,
@@ -1452,15 +1611,15 @@ test("claude resume by name selects the lowest five-hour account and honors an e
       launchedLabel = path.basename(launchHome);
       targetConfigDir = configDir;
       assert.equal(cwd, launchCwd);
-      assert.equal(
-        fs.readFileSync(path.join(
-          configDir,
-          "projects",
-          "selected-project",
-          `${threadId}.jsonl`,
-        ), "utf8"),
-        sourceContent,
-      );
+      const resumeIndex = args.findIndex((arg) => arg === "--resume" || arg === "-r" || arg.startsWith("--resume="));
+      stagedPath = args[resumeIndex].startsWith("--resume=")
+        ? args[resumeIndex].slice("--resume=".length)
+        : args[resumeIndex + 1];
+      assert.equal(stagedPath.startsWith(path.join(configDir, "projects")), true);
+      assert.notEqual(path.basename(stagedPath), `${threadId}.jsonl`);
+      const stagedEntries = fs.readFileSync(stagedPath, "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(stagedEntries[0].cwd, launchCwd);
+      assert.notEqual(stagedEntries[0].sessionId, threadId);
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
@@ -1468,10 +1627,10 @@ test("claude resume by name selects the lowest five-hour account and honors an e
         "--effort",
         "xhigh",
         "--resume",
-        threadId,
+        stagedPath,
         "--fork-session",
         "--name",
-        "[fork from boss/66666666] Continue rate-limited work",
+        "Continue rate-limited work",
       ]);
       return { status: 0, signal: null };
     },
@@ -1489,10 +1648,11 @@ test("claude resume by name selects the lowest five-hour account and honors an e
   assert.equal(
     out,
     "Switching session from boss to opuslow using fable as "
-      + "\"[fork from boss/66666666] Continue rate-limited work\".\n",
+      + "\"Continue rate-limited work\".\n",
   );
   assert.equal(launchedLabel, "opuslow");
   assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+  assert.equal(fs.existsSync(stagedPath), false);
   assert.equal(
     fs.existsSync(path.join(
       targetConfigDir,
@@ -1517,10 +1677,11 @@ test("claude resume by name selects the lowest five-hour account and honors an e
   assert.equal(
     explicitOut,
     "Switching session from boss to specific using fable as "
-      + "\"[fork from boss/66666666] Continue rate-limited work\".\n",
+      + "\"Continue rate-limited work\".\n",
   );
   assert.equal(launchedLabel, "specific");
   assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+  assert.equal(fs.existsSync(stagedPath), false);
   assert.equal(
     fs.existsSync(path.join(
       targetConfigDir,
@@ -1628,6 +1789,7 @@ test(`claude resume preserves model, effort and history when the recorded accoun
   };
   let launchedLabel = null;
   let targetConfigDir = null;
+  let stagedPath = null;
 
   try {
     if (sourceState !== "busy") {
@@ -1671,19 +1833,11 @@ test(`claude resume preserves model, effort and history when the recorded accoun
       }) => {
         launchedLabel = path.basename(launchHome);
         targetConfigDir = configDir;
-        const stagedPath = path.join(
-          configDir,
-          "projects",
-          "selected-project",
-          `${threadId}.jsonl`,
-        );
-        const stagedMarkerPath = path.join(
-          configDir,
-          "projects",
-          "selected-project",
-          `${threadId}.aimgr-staged-fork`,
-        );
-        assert.equal(fs.readFileSync(stagedPath, "utf8"), sourceContent);
+        stagedPath = args[args.indexOf("--resume") + 1];
+        const stagedMarkerPath = stagedPath.replace(/\.jsonl$/, ".aimgr-staged-fork");
+        const stagedEntries = fs.readFileSync(stagedPath, "utf8").trim().split("\n").map(JSON.parse);
+        assert.equal(stagedEntries.length, 3);
+        assert.notEqual(stagedEntries[0].sessionId, threadId);
         assert.equal(fs.existsSync(stagedMarkerPath), true);
         assert.equal(cwd, launchCwd);
         assert.deepEqual(args, [
@@ -1693,10 +1847,10 @@ test(`claude resume preserves model, effort and history when the recorded accoun
           "--effort",
           "xhigh",
           "--resume",
-          threadId,
+          stagedPath,
           "--fork-session",
           "--name",
-          "[fork from boss/33333333] Review puzzle quality",
+          "Review puzzle quality",
         ]);
         fs.writeFileSync(
           path.join(configDir, "projects", "selected-project", `${forkThreadId}.jsonl`),
@@ -1707,7 +1861,7 @@ test(`claude resume preserves model, effort and history when the recorded accoun
             timestamp: "2026-07-24T18:00:00.000Z",
           })}\n${JSON.stringify({
             type: "custom-title",
-            customTitle: "[fork from boss/33333333] Review puzzle quality",
+            customTitle: "Review puzzle quality",
             timestamp: "2026-07-24T18:00:01.000Z",
           })}\n`,
           "utf8",
@@ -1718,10 +1872,11 @@ test(`claude resume preserves model, effort and history when the recorded accoun
 
     assert.equal(
       out,
-      `boss ${sourceState === "busy" ? "is busy" : "requires login"}; forking session onto low as "[fork from boss/33333333] Review puzzle quality".\n`,
+      `boss ${sourceState === "busy" ? "is busy" : "requires login"}; forking session onto low as "Review puzzle quality".\n`,
     );
     assert.equal(launchedLabel, "low");
     assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+    assert.equal(fs.existsSync(stagedPath), false);
     assert.equal(
       fs.existsSync(path.join(
         targetConfigDir,
@@ -1755,13 +1910,122 @@ test(`claude resume preserves model, effort and history when the recorded accoun
     assert.equal(fork.account, "low");
     assert.equal(
       fork.threadName,
-      "[fork from boss/33333333] Review puzzle quality",
+      "Review puzzle quality",
     );
   } finally {
     await sourceLease?.release();
   }
 });
 }
+
+test("raw Claude resume stages a cross-account transcript and keeps same-account resume direct", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const nowMs = Date.now();
+  const threadId = "77777777-7777-4777-8777-777777777777";
+  const toolId = "toolu_01RawResumeSourceToolABC";
+  const sourcePath = path.join(
+    home, ".aimgr", "claude-homes", "source", ".claude", "projects", "project", `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  const sourceContent = [
+    JSON.stringify({ type: "user", sessionId: threadId, cwd: process.cwd(), timestamp: new Date(nowMs).toISOString(),
+      message: { role: "user", content: "Continue this exact history" } }),
+    JSON.stringify({ type: "assistant", sessionId: threadId, cwd: process.cwd(),
+      message: { id: "msg_01RawResumeMessageABCDEF", content: [{ type: "tool_use", id: toolId, name: "Read", input: {} }] } }),
+    JSON.stringify({ type: "user", sessionId: threadId, cwd: process.cwd(),
+      message: { content: [{ type: "tool_result", tool_use_id: toolId, content: "prior result" }] } }),
+    "",
+  ].join("\n");
+  fs.writeFileSync(sourcePath, sourceContent, "utf8");
+  const record = (label) => {
+    const emailAddress = `${label}@example.com`;
+    const credential = buildAnthropicClaudeCredential({
+      access: `ACCESS_${label.toUpperCase()}`,
+      refresh: `REFRESH_${label.toUpperCase()}`,
+      expiresAtMs: nowMs + 3_600_000,
+      emailAddress,
+      organizationName: `${label} Org`,
+      organizationUuid: `org_${label}`,
+    });
+    credential.nativeClaudeBundle.oauthAccount.accountUuid = `acct_${label}`;
+    return {
+      provider: "anthropic", label, credential,
+      identity: { accountUuid: `acct_${label}`, emailAddress, organizationUuid: `org_${label}` },
+      policy: { expect: { email: emailAddress }, pool: { enabled: true } },
+      health: { status: "ready", reason: null },
+    };
+  };
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, { credentials: [record("source"), record("dest")] });
+  let stagedPath = null;
+  let launches = 0;
+  const deps = {
+    env: {
+      HOME: home,
+      ANTHROPIC_CUSTOM_HEADERS: "x-account-link: stable-id",
+      CLAUDE_CODE_EXTRA_BODY: '{"stable_id":"same-on-both-accounts"}',
+      AIMGR_TEST_SAFE_ENV: "keep",
+    },
+    nowImpl: () => nowMs,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: ({ homeDir: launchHome, args, env }) => {
+      launches += 1;
+      if (path.basename(launchHome) === "source") {
+        assert.deepEqual(args, ["--resume", sourcePath]);
+        assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, "x-account-link: stable-id");
+        return { status: 0, signal: null };
+      }
+      const resumeIndex = args.findIndex((arg) => arg === "--resume" || arg === "-r" || arg.startsWith("--resume="));
+      stagedPath = args[resumeIndex].startsWith("--resume=")
+        ? args[resumeIndex].slice("--resume=".length)
+        : args[resumeIndex + 1];
+      assert.equal(stagedPath.startsWith(path.join(home, ".aimgr", "claude-homes", "dest")), true);
+      assert.notEqual(stagedPath, sourcePath);
+      assert.equal(args.includes("--fork-session"), true);
+      assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, undefined);
+      assert.equal(env.CLAUDE_CODE_EXTRA_BODY, undefined);
+      assert.equal(env.AIMGR_TEST_SAFE_ENV, "keep");
+      const staged = fs.readFileSync(stagedPath, "utf8");
+      assert.equal(staged.includes(threadId), false);
+      assert.equal(staged.includes(toolId), false);
+      assert.equal(staged.includes("Continue this exact history"), true);
+      const entries = staged.trim().split("\n").map(JSON.parse);
+      assert.equal(entries[1].message.content[0].id, entries[2].message.content[0].tool_use_id);
+      return { status: 0, signal: null };
+    },
+  };
+
+  await runCli(["claude", "run", "dest", "--home", home, "--", "--resume", sourcePath], deps);
+  assert.equal(fs.existsSync(stagedPath), false);
+  assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+  await runCli(["claude", "run", "dest", "--home", home, "--", "--resume", threadId], deps);
+  assert.equal(fs.existsSync(stagedPath), false);
+  await runCli(["claude", "run", "dest", "--home", home, "--", `--resume=${sourcePath}`], deps);
+  assert.equal(fs.existsSync(stagedPath), false);
+  await runCli(["claude", "run", "source", "--home", home, "--", "--resume", sourcePath], deps);
+  const offline = await runCli(
+    ["claude", "run", "dest", "--home", home, "--", "-r", sourcePath],
+    { ...deps, connectRedisStoreImpl: async () => { throw new Error("simulated Redis outage"); } },
+  );
+  assert.equal(offline, "AIM coordination=offline label=dest cache=complete\n");
+  assert.equal(fs.existsSync(stagedPath), false);
+  await assert.rejects(
+    runCli(["claude", "run", "dest", "--home", home, "--", "--session-id", threadId], deps),
+    /belongs to another account.*fresh ID/,
+  );
+  await assert.rejects(
+    runCli(["claude", "run", "dest", "--home", home, "--", "--resume", sourcePath,
+      "--session-id", "99999999-9999-4999-8999-999999999999"], deps),
+    /Cross-account Claude resume cannot reuse an explicit session ID/,
+  );
+  assert.equal(launches, 5);
+});
 
 test("claude resume fails safely when the recorded account is busy and no destination is unlocked", async () => {
   const home = mkTempHome();

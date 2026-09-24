@@ -53,7 +53,7 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
     "--model",
     "opus",
     "--effort",
-    "max",
+    "xhigh",
     "--resume",
   ]);
 
@@ -95,7 +95,7 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
     "--model",
     "opus",
     "--effort",
-    "max",
+    "xhigh",
     "--resume",
   ]);
 

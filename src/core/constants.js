@@ -29,6 +29,17 @@ export const SAKANA_PROVIDER = "sakana";
 
 export const XAI_PROVIDER = "xai";
 
+export const OPENROUTER_PROVIDER = "openrouter";
+
+// Key-backed Prime providers hold no AIM account or OAuth label: the credential
+// lives in the managed Prime model catalog, so a routine pins provider/model and
+// records no AIM credential binding.
+export const PRIME_KEY_BACKED_PROVIDERS = Object.freeze([OPENROUTER_PROVIDER]);
+
+export function isPrimeKeyBackedProvider(provider) {
+  return PRIME_KEY_BACKED_PROVIDERS.includes(String(provider ?? ""));
+}
+
 export const OPENCLAW_ENFORCED_CODEX_MODEL = "openai-codex/gpt-5.4";
 
 export const OPENCLAW_ENFORCED_ANTHROPIC_MODEL = "anthropic/claude-opus-4-6";

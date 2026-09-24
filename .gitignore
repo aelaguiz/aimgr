@@ -17,3 +17,6 @@ docs/aelaguiz/I_HAVE_ADHD_AUTOMATIC_COMMUNICATION_ROOT_CAUSE_2026-08-13.md
 LIVE_HERDR_PRIME_SESSIONS_*.json
 docs/incidents/*/evidence/
 /download.html
+
+# Python bytecode.
+__pycache__/

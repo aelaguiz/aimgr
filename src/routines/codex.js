@@ -5,9 +5,11 @@ export function codexRoutineArgs(routine) {
     "--profile", routine.profile,
     "--model", routine.model,
     "-c", `model_reasoning_effort=${JSON.stringify(routine.thinking)}`,
-    "-c", 'model_provider="openai"',
-    "-c", 'forced_login_method="chatgpt"',
-    "-c", 'cli_auth_credentials_store="file"',
+    ...(routine.provider === "openai-codex" ? [
+      "-c", 'model_provider="openai"',
+      "-c", 'forced_login_method="chatgpt"',
+      "-c", 'cli_auth_credentials_store="file"',
+    ] : ["-c", `model_provider=${JSON.stringify(routine.provider)}`]),
     "--cd", routine.cwd,
   ];
 }

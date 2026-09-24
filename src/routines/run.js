@@ -20,6 +20,7 @@ import {
 } from "../targets/prime-sessions.js";
 import { preparePrimeInvocation, resolvePrimeLauncher } from "../targets/prime-launcher.js";
 import { resolveCodexCommand } from "../targets/codex-runner.js";
+import { isPrimeKeyBackedProvider } from "../core/constants.js";
 import { readRoutineDefinition } from "./config.js";
 import { deriveRoutineOccurrence } from "./schedule.js";
 import { codexRoutineArgs, startCodexRoutineTurn } from "./codex.js";
@@ -252,7 +253,41 @@ async function moveHerdrWorkspaceToTop({ routine, workspaceId, context }) {
   return { requested: "top", verified: true, position: 1 };
 }
 
+// A key-backed Prime provider is pinned by provider and model from the managed
+// Prime model catalog. It has no AIM account to select, so this lane verifies the
+// declared model and leaves credential failure to the pin turn, which fails closed.
+function selectKeyBackedPrimeAccount(routine, context) {
+  const modelsPath = path.join(
+    resolveManagedPrimeAgentDir({ homeDir: context.homeDir, env: context.env }),
+    "models.json",
+  );
+  let catalog;
+  try {
+    catalog = readJson(modelsPath);
+  } catch (error) {
+    throw new Error(`Prime provider ${routine.provider} needs a readable model catalog at ${modelsPath}.`);
+  }
+  const declaredModels = catalog?.providers?.[routine.provider]?.models;
+  const declared = Array.isArray(declaredModels)
+    && declaredModels.some((entry) => entry?.id === routine.model);
+  if (!declared) {
+    throw new Error(`Prime provider ${routine.provider} does not declare model ${routine.model} in ${modelsPath}.`);
+  }
+  return { binding: null, identityFingerprint: null, keyBacked: true };
+}
+
 function selectAccount(routine, context) {
+  if (routine.agent === "codex" && routine.provider === "deepseek") {
+    // Codex resolves this provider's API key from its existing profile/env.
+    // Never rotate or project an unrelated ChatGPT account for an API job.
+    return {
+      binding: null, keyBacked: true,
+      codexHome: resolveManagedCodexHomeDir({ homeDir: context.homeDir, env: context.env }),
+    };
+  }
+  if (routine.agent === "prime" && isPrimeKeyBackedProvider(routine.provider)) {
+    return selectKeyBackedPrimeAccount(routine, context);
+  }
   const [command, ...prefix] = resolveAimNodeCommand(context);
   const flavor = routine.provider === "anthropic" ? "claude" : "codex";
   const output = runJsonSync(command, [
@@ -648,12 +683,16 @@ function verifyPrimeProfile(profile, routine, selectedAccount) {
   if (profile.model !== routine.model) mismatches.push(`model=${profile.model}`);
   if (profile.thinking !== routine.thinking) mismatches.push(`thinking=${profile.thinking}`);
   if (path.resolve(profile.cwd ?? "") !== path.resolve(routine.cwd)) mismatches.push(`cwd=${profile.cwd}`);
-  if (profile.binding !== selectedAccount.binding) mismatches.push(`binding=${profile.binding}`);
-  if (
-    selectedAccount.identityFingerprint
-    && profile.identityFingerprint !== selectedAccount.identityFingerprint
-  ) {
-    mismatches.push(`identityFingerprint=${profile.identityFingerprint}`);
+  if (!selectedAccount.keyBacked) {
+    if (profile.binding !== selectedAccount.binding) mismatches.push(`binding=${profile.binding}`);
+    if (
+      selectedAccount.identityFingerprint
+      && profile.identityFingerprint !== selectedAccount.identityFingerprint
+    ) {
+      mismatches.push(`identityFingerprint=${profile.identityFingerprint}`);
+    }
+  } else if (profile.binding !== null || profile.keyBacked !== true) {
+    mismatches.push(`keyBacked=${profile.binding ?? profile.keyBacked}`);
   }
   if (mismatches.length) {
     throw new Error(`Prime pin mismatch: ${mismatches.join(", ")}.`);
@@ -816,7 +855,7 @@ export async function executeRoutineWorker(context) {
       const sessionId = randomUUID();
       const eventsPath = receiptPath.replace(/\.json$/, ".claude.jsonl");
       const runSession = context.routineClaudeSessionImpl ?? runClaudeRoutineSession;
-      await runSession(context, { cwd: routine.cwd, async runSession(launch) {
+      await runSession(context, { cwd: routine.cwd, jobName: receipt.routineId, async runSession(launch) {
         const interactiveLaunch = prepareInteractiveClaudeRoutine({ launch, routine, sessionId, eventsPath });
         bootstrapLease.assertHealthy();
         await bootstrapLease.release();
@@ -1075,6 +1114,7 @@ export async function executeRoutineWorker(context) {
       env: primeEnv,
       cwd: routine.cwd,
       requireThinking: true,
+      allowKeyBackedProvider: isPrimeKeyBackedProvider(routine.provider),
     });
     verifyPrimeProfile(profile, routine, receipt.selectedAccount);
     bootstrapLease.assertHealthy();
@@ -1160,6 +1200,7 @@ export async function executeRoutineWorker(context) {
       env: primeEnv,
       cwd: routine.cwd,
       requireThinking: true,
+      allowKeyBackedProvider: isPrimeKeyBackedProvider(routine.provider),
     });
     verifyPrimeProfile(liveProfile, routine, receipt.selectedAccount);
     if (liveProfile.sessionId !== profile.sessionId) {
@@ -1196,6 +1237,7 @@ export async function executeRoutineWorker(context) {
       env: primeEnv,
       cwd: routine.cwd,
       requireThinking: true,
+      allowKeyBackedProvider: isPrimeKeyBackedProvider(routine.provider),
     });
     verifyPrimeProfile(finalProfile, routine, receipt.selectedAccount);
     const finalPrompt = readLatestPrimeUserText(finalProfile.sessionPath);

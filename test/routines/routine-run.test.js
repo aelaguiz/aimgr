@@ -213,12 +213,14 @@ function writePinSession(sessionPath, {
   provider = "anthropic",
   model = "claude-fable-5",
   binding = "fable-a",
+  thinking = "xhigh",
 }) {
   const entries = [
     { type: "session", version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd },
     { type: "model_change", id: "model", parentId: null, timestamp: new Date().toISOString(), provider, modelId: model },
-    { type: "thinking_level_change", id: "thinking", parentId: "model", timestamp: new Date().toISOString(), thinkingLevel: "xhigh" },
-    {
+    { type: "thinking_level_change", id: "thinking", parentId: "model", timestamp: new Date().toISOString(), thinkingLevel: thinking },
+    // A key-backed provider records no AIM credential binding at all.
+    ...(binding === null ? [] : [{
       type: "custom",
       customType: "aimgr_credential_binding_v1",
       id: "binding",
@@ -230,8 +232,8 @@ function writePinSession(sessionPath, {
         binding,
         identityFingerprint: `fingerprint:${binding}`,
       },
-    },
-    { type: "message", id: "pin-user", parentId: "binding", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "pin" }] } },
+    }]),
+    { type: "message", id: "pin-user", parentId: binding === null ? "thinking" : "binding", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "pin" }] } },
     {
       type: "message",
       id: "pin-assistant",
@@ -264,6 +266,7 @@ function makeInteractiveRuntime({
   provider = "anthropic",
   pinModel = "claude-fable-5",
   binding = "fable-a",
+  primeThinking = "xhigh",
   appendPrompt = true,
   assistantStopReason = "stop",
 } = {}) {
@@ -288,7 +291,7 @@ function makeInteractiveRuntime({
       child.stderr = new PassThrough();
       child.stdin = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
       assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), true);
-      writePinSession(sessionPath, { sessionId, cwd, provider, model: pinModel, binding });
+      writePinSession(sessionPath, { sessionId, cwd, provider, model: pinModel, binding, thinking: primeThinking });
       child.stdout.end(`${JSON.stringify({ type: "session", id: sessionId })}\n`);
       child.stderr.end();
       setImmediate(() => child.emit("close", 0));
@@ -471,6 +474,93 @@ test("worker supports the exact Sol X High pin and interactive same-session resu
   assert.equal(completed.observed.model, "gpt-5.6-sol");
   assert.equal(completed.prime.binding, "sol-a");
   assert.equal(runtime.primeArgvs[1][runtime.primeArgvs[1].indexOf("--resume") + 1], runtime.sessionPath);
+});
+
+function keyBackedDefinition(home, overrides = {}) {
+  return routineDefinition(home, {
+    provider: "openrouter",
+    model: "deepseek/deepseek-v4.1-flash",
+    thinking: "low",
+    ...overrides,
+  });
+}
+
+function writePrimeModelCatalog(home, { provider = "openrouter", models = ["deepseek/deepseek-v4.1-flash"] } = {}) {
+  const catalogPath = path.join(home, ".prime", "agent", "models.json");
+  fs.mkdirSync(path.dirname(catalogPath), { recursive: true });
+  fs.writeFileSync(catalogPath, JSON.stringify({
+    providers: { [provider]: { apiKey: "test-key-source", models: models.map((id) => ({ id })) } },
+  }));
+  return catalogPath;
+}
+
+function withoutAccountSelection(runtime) {
+  const spawnSync = runtime.spawnSyncImpl;
+  runtime.spawnSyncImpl = (command, args) => {
+    if (command === "fake-aim") {
+      throw new Error(`unexpected AIM account selection: ${args.join(" ")}`);
+    }
+    return spawnSync(command, args);
+  };
+  return runtime;
+}
+
+test("worker runs a key-backed Prime provider without AIM account selection", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, keyBackedDefinition(home));
+  writePrimeModelCatalog(home);
+  const runtime = withoutAccountSelection(makeInteractiveRuntime({
+    home,
+    cwd: receipt.configured.cwd,
+    provider: "openrouter",
+    pinModel: "deepseek/deepseek-v4.1-flash",
+    binding: null,
+    primeThinking: "low",
+  }));
+  const worker = executeRoutineWorker(workerContext(home, receipt, runtime));
+  await waitUntil(
+    () => JSON.parse(fs.readFileSync(receipt.receiptPath, "utf8")).outcome === "completed",
+    "key-backed initial turn did not settle",
+  );
+  runtime.closeTui();
+  const completed = await worker;
+  assert.equal(completed.selectedAccount.keyBacked, true);
+  assert.equal(completed.selectedAccount.binding, null);
+  assert.equal(completed.observed.provider, "openrouter");
+  assert.equal(completed.observed.model, "deepseek/deepseek-v4.1-flash");
+  assert.equal(completed.observed.thinking, "low");
+  assert.equal(completed.prime.binding, null);
+  assert.equal(completed.prime.identityFingerprint, null);
+  assert.equal(completed.interactiveTui.status, "exited");
+  assert.equal(runtime.promptSubmissions.length, 1);
+  assert.equal(runtime.primeArgvs[0][runtime.primeArgvs[0].indexOf("--provider") + 1], "openrouter");
+  assert.equal(runtime.primeArgvs[0][runtime.primeArgvs[0].indexOf("--model") + 1], "deepseek/deepseek-v4.1-flash");
+  assert.equal(runtime.primeArgvs[0][runtime.primeArgvs[0].indexOf("--thinking") + 1], "low");
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
+});
+
+test("key-backed Prime routine fails closed when the catalog lacks the pinned model", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, keyBackedDefinition(home));
+  writePrimeModelCatalog(home, { models: ["some/other-model"] });
+  const runtime = withoutAccountSelection(makeInteractiveRuntime({
+    home,
+    cwd: receipt.configured.cwd,
+    provider: "openrouter",
+    pinModel: "deepseek/deepseek-v4.1-flash",
+    binding: null,
+    primeThinking: "low",
+  }));
+  await assert.rejects(
+    () => executeRoutineWorker(workerContext(home, receipt, runtime)),
+    /does not declare model deepseek\/deepseek-v4.1-flash/,
+  );
+  const failed = JSON.parse(fs.readFileSync(receipt.receiptPath, "utf8"));
+  assert.equal(failed.outcome, "failed_before_prompt");
+  assert.equal(failed.prompt.admittedAt, null);
+  assert.equal(failed.exitCode, 1);
+  assert.equal(runtime.pinCalls(), 0);
+  assert.equal(runtime.promptSubmissions.length, 0);
 });
 
 test("worker fails closed before prompt admission when the pinned model mismatches", async () => {
@@ -659,6 +749,33 @@ test("Codex routine executes the prompt once, saves events, and resumes that ses
   const result = await worker;
   assert.equal(result.interactiveTui.status, "exited");
   assert.equal(context.getExitCode(), 0);
+});
+
+test("DeepSeek Codex routine uses the API profile without selecting a ChatGPT account", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home, {
+    provider: "deepseek", profile: "dsflash", model: "deepseek-flash", thinking: "high",
+  }));
+  const runtime = makeCodexRuntime(home);
+  runtime.spawnSyncImpl = () => { throw new Error("API profile must not select an AIM account"); };
+  const context = workerContext(home, receipt, runtime);
+  context.env.DEEPSEEK_API_KEY = "test-provider-key";
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.calls.length === 2, "DeepSeek TUI did not open");
+  const saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
+  assert.equal(saved.outcome, "completed");
+  assert.equal(saved.selectedAccount.binding, null);
+  assert.equal(saved.selectedAccount.keyBacked, true);
+  for (const call of runtime.calls) {
+    assert.deepEqual(call.args.slice(0, 8), [
+      "--profile", "dsflash", "--model", "deepseek-flash",
+      "-c", 'model_reasoning_effort="high"', "-c", 'model_provider="deepseek"',
+    ]);
+    assert.equal(call.args.some((arg) => arg.startsWith("forced_login_method=")), false);
+    assert.equal(call.options.env.DEEPSEEK_API_KEY, "test-provider-key");
+  }
+  runtime.closeTui();
+  await worker;
 });
 
 for (const [name, options, error, outcome] of [

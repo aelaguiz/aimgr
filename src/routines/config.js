@@ -1,9 +1,19 @@
 import path from "node:path";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { isObject } from "../core/normalize.js";
-import { DEFAULT_CLAUDE_FABLE_MODEL } from "../core/constants.js";
+import {
+  ANTHROPIC_PROVIDER,
+  DEFAULT_CLAUDE_FABLE_MODEL,
+  OPENAI_CODEX_PROVIDER,
+  PRIME_KEY_BACKED_PROVIDERS,
+} from "../core/constants.js";
 
-export const ROUTINE_PROVIDERS = new Set(["anthropic", "openai-codex"]);
+export const ROUTINE_PROVIDERS = new Set([
+  ANTHROPIC_PROVIDER,
+  OPENAI_CODEX_PROVIDER,
+  ...PRIME_KEY_BACKED_PROVIDERS,
+  "deepseek",
+]);
 export const ROUTINE_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const CODEX_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const CLAUDE_THINKING_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -61,8 +71,11 @@ export function validateRoutineDefinition(id, value) {
   if (!ROUTINE_PROVIDERS.has(provider)) {
     throw new Error(`Routine ${id} has unsupported provider=${provider}.`);
   }
-  if (agent === "codex" && provider !== "openai-codex") {
-    throw new Error(`Routine ${id} agent=codex requires provider=openai-codex.`);
+  if (agent === "codex" && !["openai-codex", "deepseek"].includes(provider)) {
+    throw new Error(`Routine ${id} agent=codex requires provider=openai-codex or deepseek.`);
+  }
+  if (provider === "deepseek" && agent !== "codex") {
+    throw new Error(`Routine ${id} provider=deepseek requires agent=codex.`);
   }
   if (agent === "claude" && provider !== "anthropic") {
     throw new Error(`Routine ${id} agent=claude requires provider=anthropic.`);

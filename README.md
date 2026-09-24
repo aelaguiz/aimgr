@@ -92,6 +92,22 @@ aim status --json
 aim status --compact
 ```
 
+Hourly usage and agent activity history (foreground process, stop with Ctrl-C):
+
+```bash
+node scripts/snapshot-aim-usage.mjs --watch
+```
+
+The first capture runs immediately when no recent snapshot exists. On restart it waits until
+one hour after the last completed capture. `--once` captures a single sample, and `--rebuild`
+regenerates the CSV files from saved JSON without contacting providers. Private files under
+`~/.aimgr/usage-snapshots/` include
+timestamped JSON snapshots, `usage-samples.csv` with within-window drain rates, and
+`activity-sessions.csv` with recent Codex and Claude sessions on the current host and `home`.
+Codex account labels inferred from matching weekly reset times are marked as inferred;
+Claude managed-home labels are exact. Process matches and recent transcript activity are
+separate columns, so a recently changed session is not automatically called live.
+
 Target projections:
 
 ```bash
@@ -135,7 +151,13 @@ Type a displayed number and press Enter to resume; `n` shows older sessions,
 resumes in its own working directory with its recorded model and effort, using
 the original account when available. If that account is busy or requires login,
 AIM forks the conversation onto another available account while preserving the
-recorded model and effort. Login failures require a successful live usage check
+recorded model and effort. Cross-account forks stage a temporary copy with new
+session, message, request, and tool IDs, then resume the full history under a
+fresh destination session. The original transcript stays untouched. Exact
+conversation text and tool output still cross to the destination account and
+can correlate the accounts by content. Raw `aim claude run <label> -- --resume`
+also stages a source transcript when it belongs to a different account.
+Login failures require a successful live usage check
 on the replacement account before launch. `--account` and `--switch-account` also work with
 the picker. For scripts, use `aim claude list --json` and an explicit selector.
 
