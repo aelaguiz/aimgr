@@ -62,6 +62,7 @@ import {
 } from "../../targets/claude-cli.js";
 import { runSharedClaudePreRunPreflight } from "../../targets/claude-preflight.js";
 import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
+import { inheritClaudeProjectConsent } from "../../targets/claude-project-consent.js";
 import {
   buildManagedClaudeSessionForkName,
   listRecentManagedClaudeSessions,
@@ -800,6 +801,7 @@ async function runClaudeFromCleanOfflineCache(context, {
   });
   let stagedSessionFork = null;
   try {
+    inheritClaudeProjectConsent({ userHomeDir: homeDir, configDir: cache.configDir, cwd: launchCwd });
     const resumePlan = planCrossAccountClaudeResume({
       homeDir,
       label,
@@ -984,6 +986,7 @@ async function handleRedisClaudeRun(context, {
       credential,
       nowMs,
     });
+    inheritClaudeProjectConsent({ userHomeDir: homeDir, configDir, cwd: launchCwd });
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before native Claude launch" });
     target.lastRunLabel = label;
     delete target.claudeDir;

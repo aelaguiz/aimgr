@@ -235,6 +235,9 @@ export function syncManagedClaudeUserSettings({
   const payload = {
     ...(hooks === null ? {} : { hooks }),
     ...(statusLine === null ? {} : { statusLine }),
+    ...(settings?.skipDangerousModePermissionPrompt === true
+      ? { skipDangerousModePermissionPrompt: true }
+      : {}),
   };
   return syncPrivateJsonOverlay(
     path.join(resolvedConfigDir, USER_HOOKS_OVERLAY_FILE),

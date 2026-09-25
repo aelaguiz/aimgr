@@ -114,6 +114,7 @@ test("preflight shares generic customizations but excludes credentials, trust, c
   writeJson(path.join(claudeDir, "settings.json"), {
     hooks,
     statusLine,
+    skipDangerousModePermissionPrompt: true,
     enabledPlugins: { "zeta@market": true, "disabled@market": false, "alpha@market": true },
     theme: "must-not-copy",
   });
@@ -157,6 +158,7 @@ test("preflight shares generic customizations but excludes credentials, trust, c
   assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userHooksPath, "utf8")), {
     hooks,
     statusLine,
+    skipDangerousModePermissionPrompt: true,
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userMcpConfigPath, "utf8")), { mcpServers });
   assert.equal(fs.statSync(prepared.userHooksPath).mode & 0o777, 0o600);
@@ -177,6 +179,25 @@ test("preflight shares generic customizations but excludes credentials, trust, c
   const overlays = `${fs.readFileSync(prepared.userHooksPath)}${fs.readFileSync(prepared.userMcpConfigPath)}`;
   assert.doesNotMatch(overlays, /SYNTHETIC_MUST_NOT_COPY|projects|theme|enabledPlugins/);
   assert.equal(fs.existsSync(path.join(projectDir, ".claude", "skills", "project-skill")), true);
+});
+
+test("bypass acknowledgement reaches a managed account even without hooks", async () => {
+  const home = mkTempHome();
+  const { homeDir, configDir } = launchPaths(home);
+  writeJson(path.join(home, ".claude", "settings.json"), {
+    skipDangerousModePermissionPrompt: true,
+    theme: "must-not-copy",
+  });
+  const prepared = await prepareClaudeCliLaunch({
+    command: process.execPath,
+    userHomeDir: home,
+    homeDir,
+    configDir,
+    platform: "linux",
+  });
+  assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userHooksPath, "utf8")), {
+    skipDangerousModePermissionPrompt: true,
+  });
 });
 
 test("one optional customization failure warns and leaves the other categories usable", async () => {
