@@ -351,15 +351,12 @@ function copyRekeyedClaudeCompanion(sourceDir, targetDir, mapping) {
     } else if (stat.isFile()) {
       if (COMPANION_TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
         const original = fs.readFileSync(sourcePath);
-        let decoded;
-        try {
-          decoded = new TextDecoder("utf-8", { fatal: true }).decode(original);
-        } catch {
-          throw new Error("Managed Claude session companion contains invalid UTF-8 text.");
-        }
+        // Captured tool output can contain arbitrary bytes even in .txt files.
+        // IDs are ASCII; a Latin-1 byte view preserves all other bytes losslessly.
+        const rewritten = replaceClaudeTranscriptIdentifiers(original.toString("latin1"), mapping);
         fs.writeFileSync(
           targetPath,
-          replaceClaudeTranscriptIdentifiers(decoded, mapping),
+          Buffer.from(rewritten, "latin1"),
           { flag: "wx", mode: stat.mode & 0o777 },
         );
       } else {

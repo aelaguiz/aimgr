@@ -1009,6 +1009,13 @@ function findFiveHourWindow(usage) {
     : null;
 }
 
+function findOverallWeeklyWindow(usage) {
+  return Array.isArray(usage?.windows)
+    ? usage.windows.find((window) => window?.kind === "weekly_all")
+      ?? findWindow(usage, ["Week", "Weekly"])
+    : null;
+}
+
 export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
   if (preset !== "fable" && preset !== "opus") {
     throw new Error("Claude automatic selection requires the fable or opus preset.");
@@ -1028,6 +1035,7 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
     .map((account) => {
       const fiveHourWindow = findFiveHourWindow(account?.usage);
       const usedPercent = Number(fiveHourWindow?.usedPercent);
+      const weeklyUsedPercent = findOverallWeeklyWindow(account?.usage)?.usedPercent;
       let label;
       try {
         label = normalizeLabel(account?.label);
@@ -1037,12 +1045,20 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
       return Number.isFinite(usedPercent)
         && usedPercent >= 0
         && usedPercent < 100
-        ? { label, usedPercent }
+        ? {
+            label,
+            usedPercent,
+            // Unknown weekly usage sorts after known usage when five-hour usage ties.
+            weeklyUsedPercent: Number.isFinite(weeklyUsedPercent) && weeklyUsedPercent >= 0
+              ? weeklyUsedPercent
+              : Number.POSITIVE_INFINITY,
+          }
         : null;
     })
     .filter(Boolean)
     .sort((left, right) => (
       left.usedPercent - right.usedPercent
+      || left.weeklyUsedPercent - right.weeklyUsedPercent
       || left.label.localeCompare(right.label)
     ));
   const selected = candidates[0];

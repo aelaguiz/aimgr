@@ -396,15 +396,17 @@ test("managed Claude resume refuses to guess when exact runtime metadata is abse
     config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:test:" } },
   });
   let redisCalls = 0;
-  await assert.rejects(
-    runCli(["claude", "resume", "Missing runtime metadata", "--home", home], {
-      connectRedisStoreImpl: () => {
-        redisCalls += 1;
-        throw new Error("resume must fail before Redis I/O");
-      },
-    }),
-    /does not record an exact model and effort; refusing to guess/,
-  );
+  for (const options of [[], ["--account", "qa"], ["--switch-account", "opus"], ["--switch-account", "fable"]]) {
+    await assert.rejects(
+      runCli(["claude", "resume", "Missing runtime metadata", ...options, "--home", home], {
+        connectRedisStoreImpl: () => {
+          redisCalls += 1;
+          throw new Error("resume must fail before Redis I/O");
+        },
+      }),
+      /does not record an exact model and effort; refusing to guess/,
+    );
+  }
   assert.equal(redisCalls, 0);
 });
 
@@ -494,6 +496,49 @@ test("managed Claude session fork staging rekeys history and cleans only its des
   assert.equal(fs.existsSync(staged.targetTranscriptPath), false);
   assert.equal(fs.existsSync(staged.targetCompanionPath), false);
   assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+});
+
+test("managed Claude session fork preserves non-UTF-8 tool output while rekeying identifiers", () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  const sourcePath = writeManagedSession({
+    home,
+    account: "pro15",
+    threadId,
+    cwd: path.join(home, "workspace", "psbrain"),
+    timestamp: new Date(NOW_MS).toISOString(),
+  });
+  const sourceContent = fs.readFileSync(sourcePath);
+  const sourceResults = path.join(path.dirname(sourcePath), threadId, "tool-results");
+  fs.mkdirSync(sourceResults, { recursive: true });
+  const toolOutput = (sessionId) => Buffer.concat([
+    Buffer.from(`\uFEFFRésumé 日本語 ${sessionId}\n`),
+    Buffer.from([0xe2, 0x0a, 0xff, 0x00, 0x80]),
+    Buffer.from(`\n${sessionId} finished\n`),
+  ]);
+  const sourceOutput = toolOutput(threadId);
+  const sourceOutputPath = path.join(sourceResults, `${threadId}.txt`);
+  fs.writeFileSync(sourceOutputPath, sourceOutput);
+  const image = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0xff, 0xd9]);
+  fs.writeFileSync(path.join(sourceResults, "capture.jpg"), image);
+  const session = resolveManagedClaudeSession({ homeDir: home, selector: threadId });
+  const targetConfigDir = path.join(home, ".aimgr", "claude-homes", "qa", ".claude");
+
+  const staged = stageManagedClaudeSessionFork({ session, targetConfigDir });
+  try {
+    const copied = fs.readFileSync(path.join(
+      staged.targetCompanionPath, "tool-results", `${staged.stagedSessionId}.txt`,
+    ));
+    assert.deepEqual(copied, toolOutput(staged.stagedSessionId));
+    assert.equal(copied.includes(Buffer.from(threadId)), false);
+    assert.deepEqual(fs.readFileSync(path.join(staged.targetCompanionPath, "tool-results", "capture.jpg")), image);
+  } finally {
+    staged.cleanup();
+  }
+  assert.deepEqual(fs.readFileSync(sourcePath), sourceContent);
+  assert.deepEqual(fs.readFileSync(sourceOutputPath), sourceOutput);
+  assert.equal(fs.existsSync(staged.targetCompanionPath), false);
+  assert.equal(fs.existsSync(staged.targetTranscriptPath), false);
 });
 
 test("managed Claude session fork staging leaves an existing destination transcript alone", () => {

@@ -89,7 +89,7 @@ export async function pickClaudeSession({
         stdout.write(`  ${rank}. ${displayText(title, width)}\n`);
         stdout.write(`     ${age} ago · ${displayText(session.account, 40)} · ${displayText(cwd, width)}\n`);
         if (!session.model || !session.effort) {
-          stdout.write("     No saved model/effort; requires --switch-account fable or opus.\n");
+          stdout.write("     No saved model/effort; AIM cannot preserve this session's settings.\n");
         }
       }
       const canNext = start + PAGE_SIZE < sessions.length || hasMore;

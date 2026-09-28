@@ -1255,7 +1255,7 @@ export async function handleClaude(context) {
         session.effort,
       ]
       : null;
-    if (!requestedSwitchPreset && !preservedResumeArgs) {
+    if (!preservedResumeArgs) {
       throw new Error(
         `Claude session ${session.threadId} does not record an exact model and effort; refusing to guess.`,
       );
@@ -1287,13 +1287,14 @@ export async function handleClaude(context) {
 
     const forkPreset = requestedSwitchPreset
       ?? (session.model.toLowerCase().includes("fable") ? "fable" : "opus");
-    const forkResumeArgs = requestedSwitchPreset
-      ? (
-        forkPreset === "fable"
-          ? CLAUDE_FABLE_RUN_PRESET_ARGS
-          : CLAUDE_OPUS_RUN_PRESET_ARGS
-      )
-      : preservedResumeArgs;
+    const forkResumeArgs = [...preservedResumeArgs];
+    if (requestedSwitchPreset) {
+      const presetArgs = forkPreset === "fable"
+        ? CLAUDE_FABLE_RUN_PRESET_ARGS
+        : CLAUDE_OPUS_RUN_PRESET_ARGS;
+      // Switching presets changes the model, never the saved session effort.
+      forkResumeArgs[forkResumeArgs.indexOf("--model") + 1] = presetArgs[presetArgs.indexOf("--model") + 1];
+    }
     const selected = requestedAccountLabel
       ? { label: requestedAccountLabel }
       : await selectAutomaticClaudeAccount(context, {

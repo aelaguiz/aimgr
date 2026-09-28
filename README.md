@@ -447,14 +447,19 @@ refresh writers; it is not isolation from another process running as the same
 OS user, which can invoke the helper with the user's authority.
 
 The label-free Claude presets select only unlocked readable accounts. Both
-`fable` and `opus` rank eligible accounts only by shared five-hour usage;
-provider-blocked or exhausted accounts remain ineligible.
+`fable` and `opus` rank eligible accounts by shared five-hour usage, breaking
+ties by lowest overall weekly usage, then account name. Missing weekly usage
+ranks after known weekly usage when five-hour usage ties. Provider-blocked or
+exhausted accounts remain ineligible.
 
 Claude resume uses the session's recorded account by default. Add
 `--account <label>` to fork onto an exact account; combine it with
-`--switch-account fable|opus` to override the resumed model preset. Session
-names are exact, case-insensitive matches and must be quoted when they contain
-spaces; ambiguous names require a row number or thread ID.
+`--switch-account fable|opus` to override the resumed model preset. Every
+`aim claude resume` preserves the session's last recorded thinking effort,
+including account switches and automatic forks: a `max` session stays `max`.
+Missing saved model/effort stops the resume instead of substituting preset defaults.
+Session names are exact, case-insensitive matches and must be quoted when they
+contain spaces; ambiguous names require a row number or thread ID.
 
 `aim claude inventory` is the instant account-coverage view for Redis-backed Claude labels. It reads
 the configured AIM Redis credential records once and makes zero Anthropic, BrowserOS, Keychain,

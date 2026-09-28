@@ -1502,7 +1502,9 @@ test(`claude resume ${picker ? "picker" : "row selector"} reuses the exact recor
 });
 }
 
-test("claude resume by name selects the lowest five-hour account and honors an exact destination account", async () => {
+for (const preset of ["fable", "opus"]) {
+for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+test(`claude resume --switch-account ${preset} preserves ${effort} effort with automatic and exact account selection`, async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -1531,6 +1533,13 @@ test("claude resume by name selects the lowest five-hour account and honors an e
       type: "custom-title",
       customTitle: "Continue rate-limited work",
       timestamp: "2026-07-24T17:00:01.000Z",
+    }),
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: false,
+      message: { model: "claude-opus-5-5" },
+      effort,
+      timestamp: "2026-07-24T17:00:02.000Z",
     }),
     "",
   ].join("\n");
@@ -1623,9 +1632,9 @@ test("claude resume by name selects the lowest five-hour account and honors an e
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
-        "claude-fable-5-1",
+        preset === "fable" ? "claude-fable-5-1" : "opus",
         "--effort",
-        "xhigh",
+        effort,
         "--resume",
         stagedPath,
         "--fork-session",
@@ -1640,14 +1649,14 @@ test("claude resume by name selects the lowest five-hour account and honors an e
     "resume",
     "Continue rate-limited work",
     "--switch-account",
-    "fable",
+    preset,
     "--home",
     home,
   ], cliDeps);
 
   assert.equal(
     out,
-    "Switching session from boss to opuslow using fable as "
+    `Switching session from boss to opuslow using ${preset} as `
       + "\"Continue rate-limited work\".\n",
   );
   assert.equal(launchedLabel, "opuslow");
@@ -1670,13 +1679,13 @@ test("claude resume by name selects the lowest five-hour account and honors an e
     "--account",
     "specific",
     "--switch-account",
-    "fable",
+    preset,
     "--home",
     home,
   ], cliDeps);
   assert.equal(
     explicitOut,
-    "Switching session from boss to specific using fable as "
+    `Switching session from boss to specific using ${preset} as `
       + "\"Continue rate-limited work\".\n",
   );
   assert.equal(launchedLabel, "specific");
@@ -1692,6 +1701,8 @@ test("claude resume by name selects the lowest five-hour account and honors an e
     false,
   );
 });
+}
+}
 
 for (const sourceState of ["busy", "reauth_required", "incomplete"]) {
 test(`claude resume preserves model, effort and history when the recorded account is ${sourceState}`, async () => {

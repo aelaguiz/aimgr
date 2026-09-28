@@ -90,7 +90,7 @@ function successSnapshot(percent = 12, resetAt = NOW_MS + 60 * 60_000) {
   };
 }
 
-test("Claude automatic selection uses only five-hour usage for every model preset", () => {
+test("Claude automatic selection prioritizes five-hour usage for every model preset", () => {
   const account = (label, fiveHourUsedPercent, fableUsedPercent, options = {}) => ({
     label,
     authState: options.authState ?? "usage_readable",
@@ -150,6 +150,45 @@ test("Claude automatic selection uses only five-hour usage for every model prese
     () => selectLeastUsedUnlockedClaudeAccount(result),
     /requires the fable or opus preset/,
   );
+});
+
+test("Claude automatic selection breaks five-hour ties by overall weekly usage, then label", () => {
+  const account = (label, fiveHourUsedPercent, weeklyUsedPercent) => ({
+    label,
+    authState: "usage_readable",
+    locked: false,
+    usage: {
+      ok: true,
+      windows: [
+        { label: "5h", kind: "session", usedPercent: fiveHourUsedPercent },
+        ...(weeklyUsedPercent === undefined ? [] : [
+          { label: "Week", kind: "weekly_all", usedPercent: weeklyUsedPercent },
+        ]),
+      ],
+    },
+  });
+  const legacy = account("legacy", 0, 10);
+  legacy.usage.windows[1] = { label: "Weekly", usedPercent: 10 };
+  const scoped = account("pro15", 0, 92);
+  scoped.usage.windows.unshift({ label: "Fable", kind: "weekly_scoped", usedPercent: 0 });
+  scoped.usage.windows[2].label = "All models";
+
+  for (const preset of ["opus", "fable"]) {
+    for (const { accounts, label, usedPercent = 0 } of [
+      { accounts: [account("pro15", 0, 92), account("product_growth", 0, 19)], label: "product_growth" },
+      { accounts: [account("pro15", 1, 92), account("product_growth", 2, 19)], label: "pro15", usedPercent: 1 },
+      { accounts: [account("zulu", 0, 19), account("alpha", 0, 19)], label: "alpha" },
+      { accounts: [account("alpha", 0), account("known", 0, 19)], label: "known" },
+      { accounts: [account("zulu", 0), account("alpha", 0)], label: "alpha" },
+      { accounts: [account("alpha", 0, 92), legacy], label: "legacy" },
+      { accounts: [scoped, account("product_growth", 0, 19)], label: "product_growth" },
+    ]) {
+      assert.deepEqual(selectLeastUsedUnlockedClaudeAccount({ accounts }, { preset }), {
+        label,
+        usedPercent,
+      }, `${preset}: ${accounts.map((entry) => entry.label).join(" vs ")}`);
+    }
+  }
 });
 
 test("Redis Claude inventory is provider-filtered, offline, candidate-safe, and strictly allowlisted", async () => {
