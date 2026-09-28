@@ -48,8 +48,8 @@ qa                 NEEDS YOU  --   --     --    --     --     --     --       ai
 **How to choose:** prefer a `READY` row with low `week` and low `Fable`. In the
 sample, `boss` is a better pick than `coder2`, whose weekly window is spent.
 
-In practice you rarely choose by hand — `aim claude run fable` and
-`aim claude run opus` apply this same ranking and select for you. Read the
+In practice you rarely choose by hand — `aim claude run fable`,
+`aim claude run opus`, and `aim claude run sonnet` apply this same ranking and select for you. Read the
 table to report what is available, to honor a user's preference, or to explain
 why a launch was blocked.
 

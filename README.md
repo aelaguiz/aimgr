@@ -122,19 +122,19 @@ aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--verbose] [--json]
 aim claude usage [account...] [--fresh] [--verbose] [--json]
 aim claude list [count] [--json]
-aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus]
-aim claude run (opus|fable) [--resume]
-aim claude run <label> (opus|fable) [--resume]
+aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus|sonnet]
+aim claude run (opus|fable|sonnet) [--resume]
+aim claude run <label> (opus|fable|sonnet) [--resume]
 aim claude run <label> [-- <claude args...>]
 aim claude capture-native <label> [--source-home <dir>] [--source-config-dir <dir>]
 aim claude export-live --out <file> [--source-home <dir>]
 aim claude import-native <label> --in <file>
 aim pi use
 # Explicit provider bindings; omitted providers remain unchanged
-aim pi use --codex <auto|label|off> --claude <fable|opus|label|off>
+aim pi use --codex <auto|label|off> --claude <fable|opus|sonnet|label|off>
 aim pi status
 aim pi uninstall [--provider <openai-codex|anthropic>]
-aim prime use --codex <auto|label|off> --claude <fable|opus|label|off> --grok <auto|label|off>
+aim prime use --codex <auto|label|off> --claude <fable|opus|sonnet|label|off> --grok <auto|label|off>
 aim prime run codex
 aim prime run claude
 aim prime run grok
@@ -446,15 +446,15 @@ This boundary prevents accidental persistent secret copies and competing
 refresh writers; it is not isolation from another process running as the same
 OS user, which can invoke the helper with the user's authority.
 
-The label-free Claude presets select only unlocked readable accounts. Both
-`fable` and `opus` rank eligible accounts by shared five-hour usage, breaking
+The label-free Claude presets select only unlocked readable accounts. All
+of `fable`, `opus`, and `sonnet` rank eligible accounts by shared five-hour usage, breaking
 ties by lowest overall weekly usage, then account name. Missing weekly usage
 ranks after known weekly usage when five-hour usage ties. Provider-blocked or
 exhausted accounts remain ineligible.
 
 Claude resume uses the session's recorded account by default. Add
 `--account <label>` to fork onto an exact account; combine it with
-`--switch-account fable|opus` to override the resumed model preset. Every
+`--switch-account fable|opus|sonnet` to override the resumed model preset. Every
 `aim claude resume` preserves the session's last recorded thinking effort,
 including account switches and automatic forks: a `max` session stays `max`.
 Missing saved model/effort stops the resume instead of substituting preset defaults.

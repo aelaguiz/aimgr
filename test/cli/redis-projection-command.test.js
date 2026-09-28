@@ -1502,7 +1502,7 @@ test(`claude resume ${picker ? "picker" : "row selector"} reuses the exact recor
 });
 }
 
-for (const preset of ["fable", "opus"]) {
+for (const preset of ["fable", "opus", "sonnet"]) {
 for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
 test(`claude resume --switch-account ${preset} preserves ${effort} effort with automatic and exact account selection`, async () => {
   const home = mkTempHome();
@@ -1632,7 +1632,7 @@ test(`claude resume --switch-account ${preset} preserves ${effort} effort with a
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
-        preset === "fable" ? "claude-fable-5-1" : "opus",
+        { fable: "claude-fable-5-1", opus: "opus", sonnet: "claude-sonnet-5-5" }[preset],
         "--effort",
         effort,
         "--resume",

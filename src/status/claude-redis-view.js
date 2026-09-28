@@ -8,7 +8,7 @@ import {
 } from "../coordination/redis-store.js";
 import { readHeldRedisCredentialLeaseLabels } from "../coordination/redis-credential-lease.js";
 import { buildStableIdentityForCredential } from "../coordination/login-publish.js";
-import { ANTHROPIC_PROVIDER } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, isClaudeModelPreset } from "../core/constants.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import {
@@ -1017,8 +1017,8 @@ function findOverallWeeklyWindow(usage) {
 }
 
 export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
-  if (preset !== "fable" && preset !== "opus") {
-    throw new Error("Claude automatic selection requires the fable or opus preset.");
+  if (!isClaudeModelPreset(preset)) {
+    throw new Error("Claude automatic selection requires the fable, opus, or sonnet preset.");
   }
   const candidates = (Array.isArray(result?.accounts) ? result.accounts : [])
     .filter((account) => (

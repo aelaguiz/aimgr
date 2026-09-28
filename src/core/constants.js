@@ -25,6 +25,16 @@ export const ANTHROPIC_PROVIDER = "anthropic";
 
 export const DEFAULT_CLAUDE_FABLE_MODEL = "claude-fable-5-1";
 
+export const DEFAULT_CLAUDE_SONNET_MODEL = "claude-sonnet-5-5";
+
+// Label-free `aim claude run <preset>` names. Sonnet shares the Fable-scoped
+// weekly window (Anthropic reports it as `seven_day_sonnet`).
+export const CLAUDE_MODEL_PRESETS = Object.freeze(["fable", "opus", "sonnet"]);
+
+export function isClaudeModelPreset(value) {
+  return CLAUDE_MODEL_PRESETS.includes(value);
+}
+
 export const SAKANA_PROVIDER = "sakana";
 
 export const XAI_PROVIDER = "xai";

@@ -1,4 +1,8 @@
-import { DEFAULT_CLAUDE_FABLE_MODEL } from "../core/constants.js";
+import {
+  DEFAULT_CLAUDE_FABLE_MODEL,
+  DEFAULT_CLAUDE_SONNET_MODEL,
+  isClaudeModelPreset,
+} from "../core/constants.js";
 
 export const CLAUDE_OPUS_RUN_PRESET_ARGS = Object.freeze([
   "--dangerously-skip-permissions",
@@ -16,9 +20,18 @@ export const CLAUDE_FABLE_RUN_PRESET_ARGS = Object.freeze([
   "xhigh",
 ]);
 
-function claudeRunPresetArgs(value) {
+export const CLAUDE_SONNET_RUN_PRESET_ARGS = Object.freeze([
+  "--dangerously-skip-permissions",
+  "--model",
+  DEFAULT_CLAUDE_SONNET_MODEL,
+  "--effort",
+  "xhigh",
+]);
+
+export function claudeRunPresetArgs(value) {
   if (value === "opus") return CLAUDE_OPUS_RUN_PRESET_ARGS;
   if (value === "fable") return CLAUDE_FABLE_RUN_PRESET_ARGS;
+  if (value === "sonnet") return CLAUDE_SONNET_RUN_PRESET_ARGS;
   return null;
 }
 
@@ -160,7 +173,7 @@ export function parseArgs(argv) {
           arg === "--codex"
             ? "--codex requires auto, an exact label, or off."
             : arg === "--claude"
-              ? "--claude requires fable, opus, an exact label, or off."
+              ? "--claude requires fable, opus, sonnet, an exact label, or off."
               : "--grok requires auto, an exact label, or off.",
         );
       }
@@ -329,8 +342,8 @@ export function parseArgs(argv) {
         throw new Error("Unknown option: --switch-account");
       }
       const preset = argv[i + 1];
-      if (preset !== "fable" && preset !== "opus") {
-        throw new Error("--switch-account requires fable or opus.");
+      if (!isClaudeModelPreset(preset)) {
+        throw new Error("--switch-account requires fable, opus, or sonnet.");
       }
       opts.claudeResumeSwitchAccountPreset = preset;
       i += 1;

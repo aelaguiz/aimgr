@@ -30,10 +30,10 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   assert.match(out, /aim auth maintain\s+# refresh due Redis-backed Claude and Codex OAuth credentials once/);
   assert.match(
     out,
-    /aim claude resume \[<row-or-thread-id-or-name>\] \[--account <label>\] \[--switch-account fable\|opus\]/,
+    /aim claude resume \[<row-or-thread-id-or-name>\] \[--account <label>\] \[--switch-account fable\|opus\|sonnet\]/,
   );
-  assert.match(out, /aim claude run \(opus\|fable\) \[--resume\]/);
-  assert.match(out, /aim claude run <label> \(opus\|fable\) \[--resume\]/);
+  assert.match(out, /aim claude run \(opus\|fable\|sonnet\) \[--resume\]/);
+  assert.match(out, /aim claude run <label> \(opus\|fable\|sonnet\) \[--resume\]/);
   assert.match(out, /aim claude status \[account\.\.\.\] \[--fresh\] \[--verbose\] \[--json\]/);
   assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
@@ -84,6 +84,31 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
     "--effort",
     "xhigh",
     "--version",
+  ]);
+
+  const automaticSonnet = parseArgs(["claude", "run", "sonnet", "--resume"]);
+  assert.deepEqual(automaticSonnet.positional, ["claude", "run"]);
+  assert.equal(automaticSonnet.opts.claudeAutoSelect, true);
+  assert.equal(automaticSonnet.opts.claudeAutoSelectPreset, "sonnet");
+  assert.deepEqual(automaticSonnet.opts.afterDoubleDash, [
+    "--dangerously-skip-permissions",
+    "--model",
+    "claude-sonnet-5-5",
+    "--effort",
+    "xhigh",
+    "--resume",
+  ]);
+
+  const sonnet = parseArgs(["claude", "run", "pro6", "sonnet"]);
+  assert.deepEqual(sonnet.positional, ["claude", "run", "pro6"]);
+  assert.equal(sonnet.opts.claudeAutoSelect, false);
+  assert.equal(sonnet.opts.claudeAutoSelectPreset, null);
+  assert.deepEqual(sonnet.opts.afterDoubleDash, [
+    "--dangerously-skip-permissions",
+    "--model",
+    "claude-sonnet-5-5",
+    "--effort",
+    "xhigh",
   ]);
 
   const opus = parseArgs(["claude", "run", "pro7", "opus", "--resume"]);
@@ -140,13 +165,22 @@ test("Claude resume accepts an exact destination account and only supported mode
   ]);
   assert.equal(opus.opts.claudeResumeSwitchAccountPreset, "opus");
 
+  const sonnet = parseArgs([
+    "claude",
+    "resume",
+    "thread-id",
+    "--switch-account",
+    "sonnet",
+  ]);
+  assert.equal(sonnet.opts.claudeResumeSwitchAccountPreset, "sonnet");
+
   assert.throws(
-    () => parseArgs(["claude", "resume", "36", "--switch-account", "sonnet"]),
-    /--switch-account requires fable or opus/,
+    () => parseArgs(["claude", "resume", "36", "--switch-account", "haiku"]),
+    /--switch-account requires fable, opus, or sonnet/,
   );
   assert.throws(
     () => parseArgs(["claude", "resume", "36", "--switch-account"]),
-    /--switch-account requires fable or opus/,
+    /--switch-account requires fable, opus, or sonnet/,
   );
   assert.throws(
     () => parseArgs(["claude", "run", "pro7", "--switch-account", "fable"]),

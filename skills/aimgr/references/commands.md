@@ -6,18 +6,21 @@ disagree, the CLI is right.
 ## Claude
 
 ```bash
-aim claude run fable                      # let aim choose; ranked by Fable-scoped usage
-aim claude run opus                       # let aim choose; ranked by shared 5h usage
+aim claude run fable                      # let aim choose; Fable model
+aim claude run opus                       # let aim choose; Opus model
+aim claude run sonnet                     # let aim choose; Sonnet model
 aim claude run fable --resume             # same, resuming the account's last session
 
 aim claude run <label> fable              # exact account, Fable preset
 aim claude run <label> opus               # exact account, Opus preset
+aim claude run <label> sonnet             # exact account, Sonnet preset
 aim claude run <label> -- <claude args>   # exact account, raw Claude arguments
 ```
 
-`fable` and `opus` are **usage-ranking presets**, not just model names. Both
-select an unlocked, eligible account; they differ in which usage window they
-rank by. Use `fable` unless the user asked for Opus.
+`fable`, `opus`, and `sonnet` are **usage-ranking presets**, not just model
+names. Each selects the unlocked, eligible account with the lowest shared 5h
+usage, then launches that model. Use `fable` unless the user asked for Opus or
+Sonnet.
 
 ### Resuming a Claude session
 
@@ -27,7 +30,7 @@ aim claude resume <row-number>            # pick by the row the picker showed
 aim claude resume <thread-id>             # pick by exact session id
 aim claude resume "<session name>"        # exact, case-insensitive; quote if it has spaces
 aim claude resume <selector> --account <label>            # fork onto another account
-aim claude resume <selector> --switch-account fable|opus  # override the model preset
+aim claude resume <selector> --switch-account fable|opus|sonnet  # override the model preset
 ```
 
 The picker lists saved title, age, account, and working directory. `n` pages
@@ -126,5 +129,5 @@ aim prime run grok
 | Sol | `gpt-6-sol` (select explicitly for Prime) |
 | Grok | `grok-4.6` |
 
-For Claude launches, prefer the `fable` / `opus` presets over passing a model
+For Claude launches, prefer the `fable` / `opus` / `sonnet` presets over passing a model
 flag; the preset also picks the account.

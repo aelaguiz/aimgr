@@ -66,8 +66,9 @@ named it, or when you are continuing an exact session.
 3. **Launch, letting `aim` choose the account.**
 
    ```bash
-   aim claude run fable          # Claude, ranked by Fable-scoped usage
-   aim claude run opus           # Claude, ranked by shared 5h usage
+   aim claude run fable          # Claude Fable, least-used unlocked account
+   aim claude run opus           # Claude Opus, least-used unlocked account
+   aim claude run sonnet         # Claude Sonnet, least-used unlocked account
    aim codex run                 # Codex, selects then launches `codex -p yolo`
    aim codex resume-fresh <id>   # Codex, selects then continues on a NEW thread id (rotated account, prior turns copied)
    aim prime run codex           # Prime on Codex

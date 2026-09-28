@@ -125,7 +125,7 @@ test("Claude automatic selection prioritizes five-hour usage for every model pre
     ],
   };
 
-  for (const preset of ["fable", "opus"]) {
+  for (const preset of ["fable", "opus", "sonnet"]) {
     assert.deepEqual(selectLeastUsedUnlockedClaudeAccount(result, { preset }), {
       label: "lowest-five-hour",
       usedPercent: 2,
@@ -148,7 +148,7 @@ test("Claude automatic selection prioritizes five-hour usage for every model pre
   }, { preset: "fable" }), null);
   assert.throws(
     () => selectLeastUsedUnlockedClaudeAccount(result),
-    /requires the fable or opus preset/,
+    /requires the fable, opus, or sonnet preset/,
   );
 });
 
@@ -173,7 +173,7 @@ test("Claude automatic selection breaks five-hour ties by overall weekly usage, 
   scoped.usage.windows.unshift({ label: "Fable", kind: "weekly_scoped", usedPercent: 0 });
   scoped.usage.windows[2].label = "All models";
 
-  for (const preset of ["opus", "fable"]) {
+  for (const preset of ["opus", "fable", "sonnet"]) {
     for (const { accounts, label, usedPercent = 0 } of [
       { accounts: [account("pro15", 0, 92), account("product_growth", 0, 19)], label: "product_growth" },
       { accounts: [account("pro15", 1, 92), account("product_growth", 2, 19)], label: "pro15", usedPercent: 1 },

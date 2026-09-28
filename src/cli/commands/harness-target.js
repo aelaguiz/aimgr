@@ -7,6 +7,7 @@ import {
   DEFAULT_CLAUDE_FABLE_MODEL,
   OPENAI_CODEX_PROVIDER,
   XAI_PROVIDER,
+  isClaudeModelPreset,
 } from "../../core/constants.js";
 import { resolveManagedPrimeAgentDir } from "../../io/paths.js";
 import { readPrimeSessionProfile } from "../../targets/prime-sessions.js";
@@ -206,7 +207,7 @@ async function resolveUseSelections({
         : typeof targetState?.providers?.[ANTHROPIC_PROVIDER]?.binding === "string"
           ? targetState.providers[ANTHROPIC_PROVIDER].binding
           : null;
-      const isPreset = claudeSelection === "fable" || claudeSelection === "opus";
+      const isPreset = isClaudeModelPreset(claudeSelection);
       const label = isPreset
         ? await selectClaudePreset({
             runtime,
@@ -464,7 +465,8 @@ function runPrimeLauncher(context, args, { ensureSessionIdentity = true, stdio =
 
 function claudePresetForModel(model) {
   const normalized = String(model).toLowerCase();
-  if (normalized.includes("fable") || normalized.includes("sonnet")) return "fable";
+  if (normalized.includes("fable")) return "fable";
+  if (normalized.includes("sonnet")) return "sonnet";
   if (normalized.includes("opus")) return "opus";
   throw new Error(`AIM cannot automatically rotate unsupported Claude model=${model}.`);
 }

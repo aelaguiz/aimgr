@@ -2,10 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pickClaudeSession } from "../claude-session-picker.js";
 import { chooseClaudeAccountToFree, listLocalAimClaudeSessions, stopClaudeAccountSessions } from "../../targets/claude-idle-stop.js";
-import {
-  CLAUDE_FABLE_RUN_PRESET_ARGS,
-  CLAUDE_OPUS_RUN_PRESET_ARGS,
-} from "../args.js";
+import { claudeRunPresetArgs } from "../args.js";
 import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, ANTHROPIC_PROVIDER } from "../../core/constants.js";
 import {
   DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
@@ -415,6 +412,13 @@ async function releaseClaudeCredentialLeaseGuard(guard) {
   if (await guard.lease.release() !== true && !guard.heartbeat.lost) {
     throw new Error("Claude credential lease release failed.");
   }
+}
+
+function claudePresetForSessionModel(model) {
+  const normalized = String(model ?? "").toLowerCase();
+  if (normalized.includes("fable")) return "fable";
+  if (normalized.includes("sonnet")) return "sonnet";
+  return "opus";
 }
 
 async function selectAutomaticClaudeAccount(context, {
@@ -1179,7 +1183,7 @@ export async function handleClaude(context) {
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
     throw new Error(
-      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus] | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
+      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus|sonnet] | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
     );
   }
   if (subcmd === "list") {
@@ -1220,7 +1224,7 @@ export async function handleClaude(context) {
   if (subcmd === "resume") {
     if (positional.length > 3) {
       throw new Error(
-        "Usage: aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus]",
+        "Usage: aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus|sonnet]",
       );
     }
     let picked;
@@ -1285,13 +1289,10 @@ export async function handleClaude(context) {
       }
     }
 
-    const forkPreset = requestedSwitchPreset
-      ?? (session.model.toLowerCase().includes("fable") ? "fable" : "opus");
+    const forkPreset = requestedSwitchPreset ?? claudePresetForSessionModel(session.model);
     const forkResumeArgs = [...preservedResumeArgs];
     if (requestedSwitchPreset) {
-      const presetArgs = forkPreset === "fable"
-        ? CLAUDE_FABLE_RUN_PRESET_ARGS
-        : CLAUDE_OPUS_RUN_PRESET_ARGS;
+      const presetArgs = claudeRunPresetArgs(forkPreset);
       // Switching presets changes the model, never the saved session effort.
       forkResumeArgs[forkResumeArgs.indexOf("--model") + 1] = presetArgs[presetArgs.indexOf("--model") + 1];
     }
@@ -1344,7 +1345,7 @@ export async function handleClaude(context) {
   if (subcmd === "run") {
     if (positional.length > 3) {
       throw new Error(
-        `Unknown Claude run preset: ${positional[3]}. Use opus, fable, or -- <claude args...>.`,
+        `Unknown Claude run preset: ${positional[3]}. Use opus, fable, sonnet, or -- <claude args...>.`,
       );
     }
     if (!isRedisConfigured({ homeDir })) {
