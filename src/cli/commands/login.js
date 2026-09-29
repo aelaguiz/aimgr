@@ -410,7 +410,11 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
         writeImpl,
       });
     }
-    const anthropicRecord = currentAnthropicRecord(snapshot, normalizedLabel);
+    // Many labels hold both a Claude and a Codex credential; an explicit
+    // `--provider codex` must reach the Codex login instead of defaulting to Claude.
+    const anthropicRecord = requestedProvider === OPENAI_CODEX_PROVIDER
+      ? null
+      : currentAnthropicRecord(snapshot, normalizedLabel);
     if (anthropicRecord) {
       if (manualCallbackAutomation) {
         throw new Error("Anthropic login does not use the Codex manual-callback JSONL protocol.");
