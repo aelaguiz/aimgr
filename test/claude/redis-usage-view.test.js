@@ -18,6 +18,7 @@ import {
   collectClaudeRedisAccountUsageStatus,
   renderClaudeRedisAccountInventory,
   renderClaudeRedisAccountUsageStatus,
+  selectClaudeAccountForSession,
   selectLeastUsedUnlockedClaudeAccount,
 } from "../../src/status/claude-redis-view.js";
 import {
@@ -1232,4 +1233,42 @@ test("Claude OAuth usage never falls back to claude.ai cookies", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.missingScope, true);
   assert.doesNotMatch(JSON.stringify(result), /ACCESS_SECRET|COOKIE_SECRET/);
+});
+
+test("Claude session selection shares this machine's accounts by headroom per session", () => {
+  const account = (label, { fiveHour, weekly, locked = false, localSessions = 0 }) => ({
+    label,
+    authState: "usage_readable",
+    locked,
+    localSessions,
+    usage: {
+      ok: true,
+      windows: [
+        { label: "5h", kind: "session", usedPercent: fiveHour },
+        { label: "Week", kind: "weekly_all", usedPercent: weekly },
+      ],
+    },
+  });
+
+  for (const preset of ["fable", "opus", "sonnet"]) {
+    assert.equal(selectClaudeAccountForSession({
+      accounts: [account("other-machine", { fiveHour: 0, weekly: 0, locked: true })],
+    }, { preset }), null, "an account held by another machine is never shared");
+    assert.deepEqual(selectClaudeAccountForSession({
+      accounts: [
+        account("nearly-spent", { fiveHour: 0, weekly: 95 }),
+        account("shared", { fiveHour: 10, weekly: 10, locked: true, localSessions: 1 }),
+      ],
+    }, { preset }), { label: "shared", usedPercent: 10 });
+    assert.deepEqual(selectClaudeAccountForSession({
+      accounts: [
+        account("busy", { fiveHour: 0, weekly: 0, locked: true, localSessions: 1 }),
+        account("free", { fiveHour: 50, weekly: 0 }),
+      ],
+    }, { preset }), { label: "free", usedPercent: 50 }, "equal headroom goes to fewer sessions");
+    assert.equal(selectClaudeAccountForSession({
+      accounts: [account("spent", { fiveHour: 100, weekly: 10, locked: true, localSessions: 2 })],
+    }, { preset }), null, "an exhausted account is never shared");
+  }
+  assert.throws(() => selectClaudeAccountForSession({ accounts: [] }), /requires the fable, opus, or sonnet preset/);
 });

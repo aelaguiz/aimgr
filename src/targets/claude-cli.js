@@ -192,6 +192,7 @@ export async function projectClaudeNativeBundleToManagedConfig({
   descriptor,
   credential,
   nowMs = Date.now(),
+  preserveNewerLocal = false,
   fsImpl = fs,
   writeJsonFileIfChangedImpl = writeJsonFileIfChanged,
   writeTextFileIfChangedImpl = writeTextFileIfChanged,
@@ -214,6 +215,29 @@ export async function projectClaudeNativeBundleToManagedConfig({
   });
   if (candidatePlan.ok !== true) {
     throw new Error(`Managed Claude projection blocked: ${candidatePlan.reason}.`);
+  }
+  if (preserveNewerLocal) {
+    // Other sessions on this machine may be using the local login. Replace it
+    // only when Redis is strictly newer: an equal or older write could put a
+    // refresh token a sibling already spent back into the shared file.
+    const local = readManagedClaudeNativeBundleFromFiles({ descriptor, fsImpl });
+    if (local.ok === true) {
+      const localPlan = planClaudeNativeBundleReplacement({
+        currentBundle: local.nativeClaudeBundle,
+        candidateBundle: credential,
+        expectedEmail: descriptor.expectedEmail,
+        nowMs,
+        allowExpiredCandidate: true,
+      });
+      if (localPlan.action === "noop" || localPlan.reason === "stale_candidate") {
+        return {
+          ok: true,
+          action: "kept_local",
+          storageMode: CLAUDE_MANAGED_FILE_STORAGE_MODE,
+          wrote: { credentials: false, appState: false },
+        };
+      }
+    }
   }
 
   const projection = writeClaudeNativeProjectionPair({

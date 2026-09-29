@@ -4,7 +4,9 @@ import { connectRedisStore } from "../../src/coordination/redis-store.js";
 import {
   acquireRedisCredentialLease,
   DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
+  joinRedisCredentialLease,
   readHeldRedisCredentialLeaseLabels,
+  readRedisCredentialLeaseToken,
   renewOrReacquireRedisCredentialLease,
 } from "../../src/coordination/redis-credential-lease.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
@@ -248,4 +250,30 @@ test("credential lease failures do not expose Redis error details or ownership t
     (error) => error.message === "Redis credential lease recovery failed.",
   );
   await assert.rejects(lease.release(), (error) => error.message === "Redis credential lease release failed.");
+});
+
+test("a known lease token joins, reclaims an absent key, and never takes another owner's key", async () => {
+  const client = new FakeRedisClient();
+  const store = await connectRedisStore({ client, keyPrefix: "aimgr:test" });
+  const lease = { provider: "anthropic", label: "pro7" };
+  const first = await acquireRedisCredentialLease(store, lease);
+  const token = readRedisCredentialLeaseToken(first);
+
+  const joined = await joinRedisCredentialLease(store, { ...lease, token });
+  assert.ok(joined);
+  assert.equal(readRedisCredentialLeaseToken(joined), token);
+  assert.equal(client.values.get(leaseKey(client)), token);
+  assert.equal(await joinRedisCredentialLease(store, { ...lease, token: "another-owner" }), null);
+  assert.equal(client.values.get(leaseKey(client)), token);
+
+  assert.equal(await joined.release(), true);
+  assert.equal(leaseKey(client), undefined);
+  const reclaimed = await joinRedisCredentialLease(store, { ...lease, token });
+  assert.ok(reclaimed);
+  assert.equal(client.values.get(leaseKey(client)), token);
+  await assert.rejects(
+    () => joinRedisCredentialLease(store, { ...lease, token: "" }),
+    /Invalid Redis credential lease token/,
+  );
+  assert.throws(() => readRedisCredentialLeaseToken({}), /Invalid Redis credential lease/);
 });

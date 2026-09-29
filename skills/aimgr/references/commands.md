@@ -18,8 +18,9 @@ aim claude run <label> -- <claude args>   # exact account, raw Claude arguments
 ```
 
 `fable`, `opus`, and `sonnet` are **usage-ranking presets**, not just model
-names. Each selects the unlocked, eligible account with the lowest shared 5h
-usage, then launches that model. Use `fable` unless the user asked for Opus or
+names. Each selects the eligible account with the most usage left per session,
+then launches that model. Sessions on one machine share accounts, so a busy
+pool does not block a launch. Use `fable` unless the user asked for Opus or
 Sonnet.
 
 ### Resuming a Claude session

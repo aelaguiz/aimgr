@@ -347,7 +347,7 @@ stays open for follow-up; there is no print-mode run or resume handoff.
 Account isolation, credential leases, native identity preflight, user
 skills/hooks/plugins, and token rotation use the same managed launcher as
 `aim claude run`. The account lease stays held for the interactive session;
-later occurrences choose an unlocked account. Redis must be reachable for
+later occurrences may share its account on the same machine. Redis must be reachable for
 selection. No eligible account fails before prompt submission. The configured
 project's existing trust decision in your normal Claude config carries over to
 the selected account, so MCP header helpers retain that permission. AIM also
@@ -446,11 +446,19 @@ This boundary prevents accidental persistent secret copies and competing
 refresh writers; it is not isolation from another process running as the same
 OS user, which can invoke the helper with the user's authority.
 
-The label-free Claude presets select only unlocked readable accounts. All
-of `fable`, `opus`, and `sonnet` rank eligible accounts by shared five-hour usage, breaking
-ties by lowest overall weekly usage, then account name. Missing weekly usage
-ranks after known weekly usage when five-hour usage ties. Provider-blocked or
-exhausted accounts remain ineligible.
+Claude sessions on one machine share accounts. The first `aim claude run` on
+an account takes its Redis lease, later sessions on the same machine join that
+lease, and the last one to exit releases it. They share the account's folder
+and login file, and Claude Code serializes their token refreshes there. An
+account held by another machine is never shared, because only one machine may
+hold a refresh token.
+
+The label-free Claude presets pick the account with the most usage left per
+session. All of `fable`, `opus`, and `sonnet` score each eligible account by the
+tighter of its remaining five-hour and weekly usage, divided by the sessions
+that would share it on this machine. Ties go to fewer sessions, then lower
+weekly usage, then account name. Provider-blocked or exhausted accounts remain
+ineligible.
 
 Claude resume uses the session's recorded account by default. Add
 `--account <label>` to fork onto an exact account; combine it with

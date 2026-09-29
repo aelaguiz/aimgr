@@ -57,6 +57,11 @@ import {
   projectClaudeNativeBundleToManagedConfig,
   publishClaudeRotationIfNeeded,
 } from "../../targets/claude-cli.js";
+import {
+  joinMachineClaudeLease,
+  leaveMachineClaudeLease,
+  readMachineClaudeSessionCounts,
+} from "../../targets/claude-machine-lease.js";
 import { runSharedClaudePreRunPreflight } from "../../targets/claude-preflight.js";
 import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
 import { inheritClaudeProjectConsent } from "../../targets/claude-project-consent.js";
@@ -73,6 +78,7 @@ import {
   collectClaudeRedisAccountUsageStatus,
   renderClaudeRedisAccountInventory,
   renderClaudeRedisAccountUsageStatus,
+  selectClaudeAccountForSession,
   selectLeastUsedUnlockedClaudeAccount,
 } from "../../status/claude-redis-view.js";
 
@@ -366,11 +372,25 @@ async function acquireClaudeCredentialLeaseGuard(runtime, label, {
   pauseForUncertainOwnership = null,
   resumeAfterOwnershipRecovered = null,
   reconnectAfterUnreachable = null,
+  shareOnMachine = null,
 } = {}) {
-  const lease = await acquireRedisCredentialLease(runtime.store, {
-    provider: ANTHROPIC_PROVIDER,
-    label,
-  });
+  // Interactive runs share the account with other sessions on this machine;
+  // capture and import still need the account to themselves.
+  const shared = shareOnMachine
+    ? await joinMachineClaudeLease({
+      homeDir: shareOnMachine.homeDir,
+      store: runtime.store,
+      provider: ANTHROPIC_PROVIDER,
+      label,
+      pid: shareOnMachine.pid,
+    })
+    : null;
+  const lease = shareOnMachine
+    ? shared?.lease ?? null
+    : await acquireRedisCredentialLease(runtime.store, {
+      provider: ANTHROPIC_PROVIDER,
+      label,
+    });
   if (!lease) {
     const error = new Error(
       `Claude account "${label}" is busy: another AIM process or machine is using or refreshing it. `
@@ -387,29 +407,45 @@ async function acquireClaudeCredentialLeaseGuard(runtime, label, {
     resumeAfterOwnershipRecovered,
     reconnectAfterUnreachable,
   });
+  const guard = {
+    lease,
+    heartbeat,
+    abortController,
+    sharedLabel: shareOnMachine
+      ? { homeDir: shareOnMachine.homeDir, label, pid: shareOnMachine.pid }
+      : null,
+  };
   try {
     await assertClaudeCredentialLeaseOwned({
-      lease,
-      heartbeat,
-      abortController,
+      ...guard,
       phase: "immediately after acquisition",
     });
   } catch (error) {
     await heartbeat.stop();
     try {
-      await lease.release();
+      await releaseClaudeCredentialLease(guard);
     } catch {
       // The ownership assertion is the actionable failure.
     }
     throw error;
   }
-  return { lease, heartbeat, abortController };
+  return guard;
+}
+
+// A machine-shared lease is released only by the last session on this machine.
+async function releaseClaudeCredentialLease(guard) {
+  if (!guard.sharedLabel) return guard.lease.release();
+  const { released, remaining } = await leaveMachineClaudeLease({
+    ...guard.sharedLabel,
+    lease: guard.lease,
+  });
+  return released || remaining > 0;
 }
 
 async function releaseClaudeCredentialLeaseGuard(guard) {
   if (!guard) return;
   await guard.heartbeat.stop();
-  if (await guard.lease.release() !== true && !guard.heartbeat.lost) {
+  if (await releaseClaudeCredentialLease(guard) !== true && !guard.heartbeat.lost) {
     throw new Error("Claude credential lease release failed.");
   }
 }
@@ -440,12 +476,15 @@ async function selectAutomaticClaudeAccount(context, {
     fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl,
   });
-  return selectLeastUsedUnlockedClaudeAccount({
+  const localSessions = readMachineClaudeSessionCounts({ homeDir });
+  return selectClaudeAccountForSession({
     ...usageStatus,
-    accounts: usageStatus.accounts.filter(
-      (account) => !excluded.has(account.label)
-        && (!requireLive || (account.source === "live" && account.credentialReady && account.usage?.ok)),
-    ),
+    accounts: usageStatus.accounts
+      .filter(
+        (account) => !excluded.has(account.label)
+          && (!requireLive || (account.source === "live" && account.credentialReady && account.usage?.ok)),
+      )
+      .map((account) => ({ ...account, localSessions: localSessions.get(account.label) ?? 0 })),
   }, { preset });
 }
 
@@ -480,6 +519,27 @@ function assertClaudeAccountCanLaunch(runtime, label) {
   }
 }
 
+// Another session on this machine may already have published the rotation in
+// the shared login file, so compare against current Redis before calling the
+// file a new candidate.
+async function readClaudeRotationCandidate({ runtime, label, descriptor, nowMs }) {
+  const sync = () => syncLiveClaudeRotationBackToLabelFromStorage({
+    state: runtime.state,
+    label,
+    descriptor,
+    nowMs,
+  });
+  const first = await sync();
+  if (first.status !== "candidate") return first;
+  try {
+    await refreshRedisRuntimeState(runtime);
+  } catch {
+    // Unreachable Redis: the publication attempt reports the failure.
+    return first;
+  }
+  return sync();
+}
+
 function startClaudeActiveRotationPublisher({
   runtime,
   homeDir,
@@ -508,8 +568,8 @@ function startClaudeActiveRotationPublisher({
             tolerateUnreachable: true,
           })) return;
           const nowMs = Date.now();
-          const result = await syncLiveClaudeRotationBackToLabelFromStorage({
-            state: runtime.state,
+          const result = await readClaudeRotationCandidate({
+            runtime,
             label,
             descriptor,
             nowMs,
@@ -900,9 +960,11 @@ async function handleRedisClaudeRun(context, {
   let activeRotationPublisher = null;
   let stagedSessionFork = null;
   let activeProcessControl = null;
+  let managedDescriptor = null;
   try {
     assertClaudeAccountCanLaunch(runtime, label);
     guard = await acquireClaudeCredentialLeaseGuard(runtime, label, {
+      shareOnMachine: { homeDir, pid: context.processId ?? process.pid },
       pauseForUncertainOwnership: async () => {
         const paused = activeProcessControl?.pause
           ? await activeProcessControl.pause()
@@ -922,7 +984,18 @@ async function handleRedisClaudeRun(context, {
         const currentFingerprint = buildClaudeTokenLineageFingerprint(
           currentRedisClaudeRecord(runtime, label)?.credential,
         );
-        if (!priorFingerprint || priorFingerprint !== currentFingerprint) {
+        // Another session on this machine may have refreshed and published
+        // the shared login; that is the login this session's file holds.
+        const local = managedDescriptor
+          ? readManagedClaudeNativeBundleFromFiles({ descriptor: managedDescriptor })
+          : null;
+        const localFingerprint = local?.ok === true
+          ? buildClaudeTokenLineageFingerprint({ nativeClaudeBundle: local.nativeClaudeBundle })
+          : null;
+        if (
+          !priorFingerprint
+          || (priorFingerprint !== currentFingerprint && currentFingerprint !== localFingerprint)
+        ) {
           stdout?.write?.(
             `AIM Claude credential changed while label=${label} was disconnected; resume this session with \`aim claude resume\`.\n`,
           );
@@ -958,6 +1031,7 @@ async function handleRedisClaudeRun(context, {
       command: discoveredCommand,
       observedAt,
     } = preflight;
+    managedDescriptor = descriptor;
     const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
       ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl
       : prepareClaudeCliLaunch;
@@ -989,6 +1063,7 @@ async function handleRedisClaudeRun(context, {
       descriptor,
       credential,
       nowMs,
+      preserveNewerLocal: true,
     });
     inheritClaudeProjectConsent({ userHomeDir: homeDir, configDir, cwd: launchCwd });
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before native Claude launch" });
@@ -1043,8 +1118,8 @@ async function handleRedisClaudeRun(context, {
           : 1,
       signal: typeof launched?.signal === "string" ? launched.signal : null,
     };
-    const postRunSync = await syncLiveClaudeRotationBackToLabelFromStorage({
-      state: runtime.state,
+    const postRunSync = await readClaudeRotationCandidate({
+      runtime,
       label,
       descriptor,
       nowMs: Date.now(),
@@ -1094,7 +1169,7 @@ async function handleRedisClaudeRun(context, {
     }
     if (guard?.lease) {
       try {
-        const released = await guard.lease.release();
+        const released = await releaseClaudeCredentialLease(guard);
         if (released !== true && !guard.heartbeat.lost) {
           cleanupError = new Error("Claude credential lease release failed.");
         }

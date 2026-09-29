@@ -1067,6 +1067,55 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
     : null;
 }
 
+/**
+ * Picks the account for a new `aim claude run` session. Sessions on one
+ * machine share an account, so an account this machine already holds stays
+ * selectable (`account.localSessions` > 0). Ranks by usage left per session:
+ * the tighter of the five-hour and weekly windows, divided by the sessions
+ * that would share it.
+ */
+export function selectClaudeAccountForSession(result, { preset } = {}) {
+  if (!isClaudeModelPreset(preset)) {
+    throw new Error("Claude automatic selection requires the fable, opus, or sonnet preset.");
+  }
+  const candidates = (Array.isArray(result?.accounts) ? result.accounts : [])
+    .map((account) => {
+      const sessions = Number.isSafeInteger(account?.localSessions) && account.localSessions > 0
+        ? account.localSessions
+        : 0;
+      if (account?.locked !== false && sessions === 0) return null;
+      // Reuse the unlocked-account eligibility rules unchanged.
+      const eligible = selectLeastUsedUnlockedClaudeAccount({
+        accounts: [{ ...account, locked: false }],
+      }, { preset });
+      if (!eligible) return null;
+      const weeklyUsedPercent = Number(findOverallWeeklyWindow(account?.usage)?.usedPercent);
+      const knownWeekly = Number.isFinite(weeklyUsedPercent) && weeklyUsedPercent >= 0;
+      const remaining = Math.min(
+        100 - eligible.usedPercent,
+        knownWeekly ? 100 - weeklyUsedPercent : 100,
+      );
+      return {
+        label: eligible.label,
+        usedPercent: eligible.usedPercent,
+        weeklyUsedPercent: knownWeekly ? weeklyUsedPercent : Number.POSITIVE_INFINITY,
+        sessions,
+        score: remaining / (sessions + 1),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => (
+      right.score - left.score
+      || left.sessions - right.sessions
+      || left.weeklyUsedPercent - right.weeklyUsedPercent
+      || left.label.localeCompare(right.label)
+    ));
+  const selected = candidates[0];
+  return selected
+    ? { label: selected.label, usedPercent: selected.usedPercent }
+    : null;
+}
+
 function formatPercent(window) {
   const value = Number(window?.usedPercent);
   return Number.isFinite(value) ? `${Math.round(value)}%` : "--";

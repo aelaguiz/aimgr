@@ -7,6 +7,7 @@ export const DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS = 30_000;
 const MAX_REDIS_CREDENTIAL_LEASE_TTL_MS = 3_600_000;
 const leaseGuardedDeleteCapabilities = new WeakMap();
 const leaseRecoveryCapabilities = new WeakMap();
+const leaseTokenCapabilities = new WeakMap();
 
 // The ownership check and expiry extension must remain one Redis operation.
 const RENEW_CREDENTIAL_LEASE_SCRIPT = `
@@ -112,6 +113,22 @@ export async function renewOrReacquireRedisCredentialLease(lease) {
 }
 
 /**
+ * Returns a lease's opaque ownership token. Only the machine-shared Claude
+ * lease uses it, so later sessions on the same machine can join the lease.
+ */
+export function readRedisCredentialLeaseToken(lease) {
+  const capability = leaseTokenCapabilities.get(lease);
+  if (!capability) throw new Error("Invalid Redis credential lease.");
+  return capability();
+}
+
+function assertLeaseStore(store) {
+  if (typeof store?.client?.set !== "function" || typeof store?.client?.eval !== "function") {
+    throw new Error("Invalid Redis store for credential lease.");
+  }
+}
+
+/**
  * Atomically acquires one provider/label lease in an already-connected store.
  *
  * The returned object deliberately exposes no key or ownership token. A null
@@ -123,12 +140,9 @@ export async function acquireRedisCredentialLease(store, {
   label,
   ttlMs = DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
 } = {}) {
-  if (typeof store?.client?.set !== "function" || typeof store?.client?.eval !== "function") {
-    throw new Error("Invalid Redis store for credential lease.");
-  }
+  assertLeaseStore(store);
   const boundedTtlMs = normalizeLeaseTtlMs(ttlMs);
   const key = buildCredentialLeaseKey(store, { provider, label });
-  const keyPrefix = normalizeKeyPrefix(store.keyPrefix);
   const token = randomUUID();
 
   let acquired;
@@ -143,7 +157,41 @@ export async function acquireRedisCredentialLease(store, {
 
   if (acquired === null) return null;
   if (acquired !== "OK") throw redisLeaseError("acquisition");
+  return createCredentialLease(store, { key, token, boundedTtlMs });
+}
 
+/**
+ * Joins a lease held under a known token: renews it while the key still holds
+ * that token, or reclaims it when the key is absent. A null result means
+ * another owner holds the key.
+ */
+export async function joinRedisCredentialLease(store, {
+  provider,
+  label,
+  token,
+  ttlMs = DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
+} = {}) {
+  assertLeaseStore(store);
+  if (typeof token !== "string" || token.length === 0) {
+    throw new Error("Invalid Redis credential lease token.");
+  }
+  const boundedTtlMs = normalizeLeaseTtlMs(ttlMs);
+  const key = buildCredentialLeaseKey(store, { provider, label });
+  let result;
+  try {
+    result = await store.client.eval(RENEW_OR_REACQUIRE_CREDENTIAL_LEASE_SCRIPT, {
+      keys: [key],
+      arguments: [token, String(boundedTtlMs)],
+    });
+  } catch {
+    throw redisLeaseError("join");
+  }
+  if (!succeeded(result)) return null;
+  return createCredentialLease(store, { key, token, boundedTtlMs });
+}
+
+function createCredentialLease(store, { key, token, boundedTtlMs }) {
+  const keyPrefix = normalizeKeyPrefix(store.keyPrefix);
   let active = true;
   const lease = {
     async renew() {
@@ -219,6 +267,7 @@ export async function acquireRedisCredentialLease(store, {
     }
     return succeeded(result);
   });
+  leaseTokenCapabilities.set(lease, () => token);
   return Object.freeze(lease);
 }
 

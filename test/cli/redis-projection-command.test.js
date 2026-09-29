@@ -951,7 +951,7 @@ test("managed Claude pauses during uncertain ownership, resumes after recovery, 
     return timer;
   };
   globalThis.clearTimeout = (timer) => {
-    timer.cleared = true;
+    if (timer) timer.cleared = true;
   };
 
   try {
@@ -1119,7 +1119,7 @@ test("managed Claude does not resume a stale credential after another owner refr
     timers.push(timer);
     return timer;
   };
-  globalThis.clearTimeout = (timer) => { timer.cleared = true; };
+  globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
   let resolveLaunch = null;
   let launchSignal = null;
   let paused = false;
@@ -3272,4 +3272,188 @@ test("redis-configured claude import-native clears the escalation marker and fai
   assert.equal(reauth.blockedReason, undefined);
   assert.equal(reauth.maintenance, undefined);
   assert.equal(snapshot.credentials[0].health.status, "ready");
+});
+
+async function seedSharedClaudeLabel(home, client) {
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+  });
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  await importCredentialsSnapshot(store, {
+    credentials: [{
+      provider: "anthropic",
+      label: "claude",
+      credential: buildAnthropicClaudeCredential({ access: "CLAUDE_ACCESS", refresh: "CLAUDE_REFRESH" }),
+      identity: {
+        accountUuid: "acct_boss",
+        emailAddress: "boss@example.com",
+        organizationUuid: "org_boss",
+      },
+      policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } },
+      health: { status: "ready", reason: null },
+    }],
+  });
+  return store;
+}
+
+test("two Claude sessions on one machine share an account without rewriting its newer login", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const store = await seedSharedClaudeLabel(home, client);
+  const configDir = path.join(resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" }), ".claude");
+  const leaseHeld = () => [...client.values.keys()].some((key) => key.includes(":lease:credential:anthropic:claude"));
+  const deps = {
+    env: { HOME: home },
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+  };
+  let secondSawRefreshToken = null;
+
+  const out = await runCli(["claude", "run", "claude"], {
+    ...deps,
+    runClaudeCliImpl: async () => {
+      // The first session's Claude refreshes the shared login.
+      rotateProjectedClaudeCredential(configDir, {
+        accessToken: "CLAUDE_ACCESS_ROTATED",
+        refreshToken: "CLAUDE_REFRESH_ROTATED",
+      });
+      const secondOut = await runCli(["claude", "run", "claude"], {
+        ...deps,
+        processId: process.ppid,
+        // It refreshes again between the second launch's pre-run check and
+        // its login write; that write must not put the older login back.
+        resolveExecutableOnPathImpl: buildTestClaudeResolver((options) => {
+          rotateProjectedClaudeCredential(configDir, {
+            accessToken: "CLAUDE_ACCESS_ROTATED_AGAIN",
+            refreshToken: "CLAUDE_REFRESH_ROTATED_AGAIN",
+            expiresAt: Date.now() + 9_000_000,
+          });
+          return prepareTestClaudeLaunch(options);
+        }),
+        runClaudeCliImpl: () => {
+          secondSawRefreshToken = JSON.parse(
+            fs.readFileSync(resolveClaudeAuthFilePath(configDir), "utf8"),
+          ).claudeAiOauth.refreshToken;
+          return { status: 0, signal: null };
+        },
+      });
+      assert.doesNotMatch(secondOut, /busy|degraded/);
+      assert.equal(leaseHeld(), true, "the first session still holds the account");
+      return { status: 0, signal: null };
+    },
+  });
+
+  assert.doesNotMatch(out, /busy|degraded/);
+  assert.equal(secondSawRefreshToken, "CLAUDE_REFRESH_ROTATED_AGAIN");
+  assert.equal(leaseHeld(), false);
+  const record = (await readSnapshot(store)).credentials.find(
+    (entry) => entry.provider === "anthropic" && entry.label === "claude",
+  );
+  assertCanonicalAnthropicCredential(record, "CLAUDE_REFRESH_ROTATED_AGAIN");
+});
+
+test("managed Claude resumes after an outage when a sibling session refreshed the shared login", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  const store = await seedSharedClaudeLabel(home, client);
+  const configDir = path.join(resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" }), ".claude");
+
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const timers = [];
+  globalThis.setTimeout = (callback, delay) => {
+    const timer = { callback, delay, cleared: false, unref() {} };
+    timers.push(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+  let resolveLaunch = null;
+  let launchSignal = null;
+  let paused = false;
+  let resumed = false;
+  let exitCode = null;
+  let markLaunchStarted;
+  const launchStarted = new Promise((resolve) => { markLaunchStarted = resolve; });
+  try {
+    const command = handleClaude({
+      opts: { afterDoubleDash: [] },
+      positional: ["claude", "run", "claude"],
+      homeDir: home,
+      env: {},
+      stdout: { write: () => {} },
+      setExitCode: (value) => { exitCode = value; },
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+      nowMs: Date.now(),
+      runClaudeCliImpl: ({ signal, registerProcessControl }) => {
+        launchSignal = signal;
+        registerProcessControl({
+          async pause() { paused = true; return true; },
+          async resume() { resumed = true; return true; },
+        });
+        markLaunchStarted();
+        return new Promise((resolve) => {
+          resolveLaunch = resolve;
+          signal.addEventListener("abort", () => resolve({ status: 1, signal: null }), { once: true });
+        });
+      },
+    });
+    await launchStarted;
+    const originalEval = client.eval.bind(client);
+    let failOnce = true;
+    client.eval = async (script, options) => {
+      if (failOnce && script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
+        failOnce = false;
+        throw new Error("temporary Redis transport failure");
+      }
+      return originalEval(script, options);
+    };
+    const heartbeatTimer = timers.find((timer) => timer.delay === 10_000 && !timer.cleared);
+    heartbeatTimer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(paused, true);
+
+    // During the outage a sibling on this machine refreshes the shared login
+    // and publishes it; the lease key expires but nobody else takes it.
+    client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
+    const expiresAt = Date.now() + 7_200_000;
+    rotateProjectedClaudeCredential(configDir, {
+      accessToken: "SIBLING_ACCESS",
+      refreshToken: "SIBLING_REFRESH",
+      expiresAt,
+    });
+    const record = (await readSnapshot(store)).credentials.find(
+      (entry) => entry.provider === "anthropic" && entry.label === "claude",
+    );
+    const published = await publishCredential(store, {
+      expectedVersion: record.version,
+      updatedBy: "sibling-session",
+      observedAt: new Date().toISOString(),
+      credentialRecord: {
+        ...record,
+        credential: buildAnthropicClaudeCredential({
+          access: "SIBLING_ACCESS",
+          refresh: "SIBLING_REFRESH",
+          expiresAtMs: expiresAt,
+        }),
+      },
+    });
+    assert.equal(published.ok, true);
+
+    const retryTimer = timers.find((timer) => timer !== heartbeatTimer && timer.delay === 10_000 && !timer.cleared);
+    retryTimer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(resumed, true);
+    assert.equal(launchSignal.aborted, false);
+    resolveLaunch({ status: 0, signal: null });
+    await command;
+    assert.equal(exitCode, null);
+  } finally {
+    resolveLaunch?.({ status: 1, signal: null });
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
 });
