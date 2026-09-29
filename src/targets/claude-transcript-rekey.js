@@ -7,6 +7,46 @@ const IDENTIFIER_TOKEN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 const IDENTIFIER_FIELD = /(?:^|_)(?:id|uuid)$|(?:Id|ID|Uuid|UUID)$/;
 const PREFIXED_ID_PATTERN = /^([A-Za-z][A-Za-z0-9]*_)[A-Za-z0-9_-]{8,}$/;
 const CONTENT_FIELDS = new Set(["message", "toolUseResult", "attachment", "wireToolInputs"]);
+const THINKING_BLOCK_TYPES = new Set(["thinking", "redacted_thinking"]);
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+// Thinking blocks carry server-signed blobs bound to the account that produced
+// them, so a fork staged for another account must not send them. Claude thinks
+// afresh from the visible history instead. The entry itself stays, even when
+// its content becomes empty, so parent chains and compaction references hold.
+function stripThinkingBlocks(entry) {
+  const content = entry?.message?.content;
+  if (!Array.isArray(content) || !content.some((block) => THINKING_BLOCK_TYPES.has(block?.type))) {
+    return entry;
+  }
+  return {
+    ...entry,
+    message: {
+      ...entry.message,
+      content: content.filter((block) => !THINKING_BLOCK_TYPES.has(block?.type)),
+    },
+  };
+}
+
+// Companion JSONL (subagent transcripts) is copied byte for byte, so only lines
+// that hold thinking blocks are re-serialized; unparseable lines stay verbatim.
+export function stripClaudeTranscriptThinkingBytes(buffer) {
+  let changed = false;
+  const lines = buffer.toString("latin1").split("\n").map((line) => {
+    if (!line.includes("thinking")) return line;
+    let entry;
+    try {
+      entry = JSON.parse(UTF8.decode(Buffer.from(line, "latin1")));
+    } catch {
+      return line;
+    }
+    const stripped = stripThinkingBlocks(entry);
+    if (stripped === entry) return line;
+    changed = true;
+    return Buffer.from(JSON.stringify(stripped), "utf8").toString("latin1");
+  });
+  return changed ? Buffer.from(lines.join("\n"), "latin1") : buffer;
+}
 
 function newIdentifier(oldId) {
   if (UUID_PATTERN.test(oldId)) return randomUUID();
@@ -109,7 +149,7 @@ export function rekeyClaudeTranscript(content, {
     recordIdentifier(match[0], mapping, reserved);
   }
   const rewritten = entries.map((entry) => {
-    const copy = rewriteValue(entry, mapping);
+    const copy = rewriteValue(stripThinkingBlocks(entry), mapping);
     if (copy.type === "custom-title" && typeof copy.customTitle === "string") {
       copy.customTitle = copy.customTitle.replace(/^(?:\[fork from [^\]]+\]\s*)+/i, "") || "Continued session";
     }

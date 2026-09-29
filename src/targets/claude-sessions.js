@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { rekeyClaudeTranscript, replaceClaudeTranscriptIdentifiers } from "./claude-transcript-rekey.js";
+import {
+  rekeyClaudeTranscript,
+  replaceClaudeTranscriptIdentifiers,
+  stripClaudeTranscriptThinkingBytes,
+} from "./claude-transcript-rekey.js";
 import { normalizeLabel } from "../core/normalize.js";
 import { formatDurationRough } from "../core/time.js";
 import { resolveAimgrStateDir } from "../io/paths.js";
@@ -349,8 +353,10 @@ function copyRekeyedClaudeCompanion(sourceDir, targetDir, mapping) {
     if (stat.isDirectory()) {
       copyRekeyedClaudeCompanion(sourcePath, targetPath, mapping);
     } else if (stat.isFile()) {
-      if (COMPANION_TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-        const original = fs.readFileSync(sourcePath);
+      const extension = path.extname(entry.name).toLowerCase();
+      if (COMPANION_TEXT_EXTENSIONS.has(extension)) {
+        const source = fs.readFileSync(sourcePath);
+        const original = extension === ".jsonl" ? stripClaudeTranscriptThinkingBytes(source) : source;
         // Captured tool output can contain arbitrary bytes even in .txt files.
         // IDs are ASCII; a Latin-1 byte view preserves all other bytes losslessly.
         const rewritten = replaceClaudeTranscriptIdentifiers(original.toString("latin1"), mapping);

@@ -521,11 +521,23 @@ test("managed Claude session fork preserves non-UTF-8 tool output while rekeying
   fs.writeFileSync(sourceOutputPath, sourceOutput);
   const image = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0xff, 0xd9]);
   fs.writeFileSync(path.join(sourceResults, "capture.jpg"), image);
+  const sourceSubagents = path.join(path.dirname(sourcePath), threadId, "subagents");
+  fs.mkdirSync(sourceSubagents, { recursive: true });
+  fs.writeFileSync(path.join(sourceSubagents, "agent-a1.jsonl"), `${JSON.stringify({
+    type: "assistant", sessionId: threadId,
+    message: { content: [{ type: "thinking", thinking: "", signature: "SUBAGENTSIGBLOB" },
+      { type: "text", text: "subagent answer" }] },
+  })}\n`);
   const session = resolveManagedClaudeSession({ homeDir: home, selector: threadId });
   const targetConfigDir = path.join(home, ".aimgr", "claude-homes", "qa", ".claude");
 
   const staged = stageManagedClaudeSessionFork({ session, targetConfigDir });
   try {
+    const subagent = JSON.parse(fs.readFileSync(
+      path.join(staged.targetCompanionPath, "subagents", "agent-a1.jsonl"), "utf8",
+    ));
+    assert.deepEqual(subagent.message.content, [{ type: "text", text: "subagent answer" }]);
+    assert.equal(subagent.sessionId, staged.stagedSessionId);
     const copied = fs.readFileSync(path.join(
       staged.targetCompanionPath, "tool-results", `${staged.stagedSessionId}.txt`,
     ));
