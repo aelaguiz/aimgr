@@ -41,3 +41,9 @@ that the thread is about to continue under a different account (Amir, 2026-09-18
 "add a warning ... so I can still do it manually if I want"). `scripts/install-codex-shortcuts.sh` removes `crr` and the inline
 `cr() { command aim codex resume "$@"; }` line from `.zshrc` on install.
 Background: `docs/CODEX_CR_INTENT_VS_BUILT_2026-09-18.md`.
+
+## Codex account bans
+
+When an OpenAI (Codex) pool account is banned, start with
+`docs/CODEX_BAN_LEDGER.md`: follow its checklist, add a ledger row, score its
+predictions, and update the thesis. Helpers: `scripts/codex-ban-forensics/`.
