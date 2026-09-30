@@ -675,7 +675,7 @@ function makeCodexRuntime(home, options = {}) {
     spawnSyncImpl(command, args) {
       assert.equal(command, "fake-aim");
       assert.deepEqual(args, ["codex", "use", "--home", home]);
-      const authPath = path.join(home, ".codex", "auth.json");
+      const authPath = path.join(home, ".aimgr", "codex-cli", "auth.json");
       fs.mkdirSync(path.dirname(authPath), { recursive: true });
       fs.writeFileSync(authPath, JSON.stringify({ tokens: { account_id: options.wrongAccount ? "wrong" : "acct-test" } }));
       return { status: 0, stdout: JSON.stringify({ ok: true, activated: { receipt: { label: "test", accountId: "acct-test" } } }) };
@@ -739,7 +739,7 @@ test("Codex routine executes the prompt once, saves events, and resumes that ses
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
   for (const call of runtime.calls) {
     assert.equal(call.options.cwd, receipt.configured.cwd);
-    assert.equal(call.options.env.CODEX_HOME, path.join(home, ".codex"));
+    assert.equal(call.options.env.CODEX_HOME, path.join(home, ".aimgr", "codex-cli"));
     assert.equal(call.options.env.CODEX_API_KEY, undefined);
     assert.equal(call.options.env.OPENAI_API_KEY, undefined);
     assert.deepEqual(call.args.slice(0, 6), ["--profile", "yolo", "--model", "gpt-6-astra", "-c", 'model_reasoning_effort="xhigh"']);

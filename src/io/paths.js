@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_AGENTS_REPO_ROOT } from "../core/constants.js";
 import { normalizeAbsolutePath } from "../core/normalize.js";
+import { linkManagedCodexHome } from "./codex-home-links.js";
 
 export function resolveHomeDir(cliHome, { env = {} } = {}) {
   const resolved = cliHome ? path.resolve(cliHome) : env.HOME;
@@ -130,12 +131,21 @@ export function resolveExplicitHermesAuthFilePath(value) {
   return authPath;
 }
 
+export function resolveNativeCodexHomeDir({ homeDir }) {
+  return path.join(homeDir, ".codex");
+}
+
+// The ChatGPT desktop app owns ~/.codex and its login. AIM's rotating Codex
+// work runs from its own home, linked back to ~/.codex for shared settings and
+// history, so switching pool accounts never changes the desktop app's account.
 export function resolveManagedCodexHomeDir({ homeDir, env = {} }) {
   const override = String(env.CODEX_HOME ?? "").trim();
   if (override) {
     return path.resolve(override);
   }
-  return path.join(homeDir, ".codex");
+  const managedHome = path.join(resolveAimgrStateDir({ homeDir }), "codex-cli");
+  linkManagedCodexHome({ managedHome, nativeHome: resolveNativeCodexHomeDir({ homeDir }) });
+  return managedHome;
 }
 
 export function resolveManagedPiAgentDir({ homeDir, env = {} }) {

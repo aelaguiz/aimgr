@@ -171,6 +171,14 @@ export function resolveCodexGoalsDbPath({ codexHome, fsImpl = fs } = {}) {
   return highestVersionedDb({ codexHome, prefix: "goals", fsImpl });
 }
 
+function isRegularFile(filePath, fsImpl) {
+  try {
+    return fsImpl.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function highestVersionedDb({ codexHome, prefix, fsImpl = fs } = {}) {
   let entries = [];
   try {
@@ -181,7 +189,9 @@ function highestVersionedDb({ codexHome, prefix, fsImpl = fs } = {}) {
   }
   const pattern = new RegExp(`^${prefix}_(\\d+)\\.sqlite$`);
   const candidates = entries
-    .filter((entry) => entry.isFile() && pattern.test(entry.name))
+    // AIM's managed Codex home links these databases back to ~/.codex.
+    .filter((entry) => pattern.test(entry.name) && (entry.isFile()
+      || (entry.isSymbolicLink() && isRegularFile(path.join(codexHome, entry.name), fsImpl))))
     .map((entry) => ({ name: entry.name, version: Number(entry.name.match(pattern)[1]) }))
     .sort((a, b) => b.version - a.version);
   return candidates.length > 0 ? path.join(codexHome, candidates[0].name) : null;
