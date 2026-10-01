@@ -136,7 +136,7 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     assert.equal(result.activated.receipt.label, "coder2");
     assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used"]);
 
-    const auth = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
+    const auth = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "codex-cli", "auth.json"), "utf8"));
     assert.equal(auth.tokens.account_id, "acct_coder2");
 
     const status = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));

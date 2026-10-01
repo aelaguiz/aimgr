@@ -43,7 +43,7 @@ function stateFor(credentials) {
 }
 
 function writeAuth(home, value) {
-  writeJson(path.join(home, ".codex", "auth.json"), {
+  writeJson(path.join(home, ".aimgr", "codex-cli", "auth.json"), {
     OPENAI_API_KEY: null,
     tokens: {
       id_token: value.idToken,
@@ -88,7 +88,7 @@ test("Codex reconciliation chooses identical, newer-local, newer-Redis, and conf
     writeAuth(home, local);
     const result = reconcileCodexCliAuth({ state, homeDir: home });
     assert.equal(result.status, "redis_newer");
-    const projected = JSON.parse(fs.readFileSync(path.join(home, ".codex", "auth.json"), "utf8"));
+    const projected = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "codex-cli", "auth.json"), "utf8"));
     assert.equal(projected.tokens.refresh_token, "REFRESH_new");
   }
 
@@ -129,7 +129,7 @@ test("reselecting the current Codex account is a true file no-op", () => {
   const state = stateFor({ boss });
 
   const first = activateCodexLabelSelection({ state, homeDir: home, label: "boss" });
-  const authPath = path.join(home, ".codex", "auth.json");
+  const authPath = path.join(home, ".aimgr", "codex-cli", "auth.json");
   const before = fs.readFileSync(authPath, "utf8");
   const second = activateCodexLabelSelection({ state, homeDir: home, label: "boss" });
 
@@ -208,7 +208,7 @@ test("automatic Codex choice keeps a valid projected target when telemetry and c
   const boss = credential("acct_boss", Date.now() + 4 * 3_600_000, "boss");
   const state = stateFor({ boss });
   assert.notEqual(activateCodexLabelSelection({ state, homeDir: home, label: "boss" }).status, "blocked");
-  const authPath = path.join(home, ".codex", "auth.json");
+  const authPath = path.join(home, ".aimgr", "codex-cli", "auth.json");
   const before = fs.readFileSync(authPath, "utf8");
 
   const result = await activateCodexPoolSelection({

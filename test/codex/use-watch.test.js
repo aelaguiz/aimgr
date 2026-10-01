@@ -109,6 +109,34 @@ test("codex run rotates before launching the default yolo command", async () => 
   assert.equal(JSON.parse(fs.readFileSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home })), "utf8")).tokens.account_id, "acct_2");
 });
 
+test("codex run leaves the desktop app's ~/.codex login alone and launches from AIM's linked home", async () => {
+  const { home, connectRedisStoreImpl } = await setup();
+  const nativeHome = path.join(home, ".codex");
+  fs.mkdirSync(path.join(nativeHome, "sessions"), { recursive: true });
+  fs.writeFileSync(path.join(nativeHome, "config.toml"), 'cli_auth_credentials_store = "file"\n');
+  const desktopAuth = `${JSON.stringify({ tokens: { account_id: "acct_desktop" } })}\n`;
+  fs.writeFileSync(path.join(nativeHome, "auth.json"), desktopAuth);
+  let launch;
+  await runCli(["codex", "run", "--home", home], {
+    connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => ({
+      "openai-codex": { boss: usage("boss", 20), writer: usage("writer", 10) },
+      anthropic: {},
+    }),
+    runCodexInteractiveImpl: async (request) => {
+      launch = request;
+      return { code: 0, signal: null };
+    },
+  });
+
+  const managedHome = path.join(home, ".aimgr", "codex-cli");
+  assert.equal(launch.env.CODEX_HOME, managedHome);
+  assert.equal(fs.readFileSync(path.join(nativeHome, "auth.json"), "utf8"), desktopAuth);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(managedHome, "auth.json"), "utf8")).tokens.account_id, "acct_2");
+  assert.equal(fs.readlinkSync(path.join(managedHome, "config.toml")), path.join(nativeHome, "config.toml"));
+  assert.equal(fs.readlinkSync(path.join(managedHome, "sessions")), path.join(nativeHome, "sessions"));
+});
+
 test("codex run with an explicit label preserves selection and exact Codex arguments", async (t) => {
   const cases = [
     { name: "default command", initialLabel: "writer", args: [], expected: ["-p", "yolo"] },

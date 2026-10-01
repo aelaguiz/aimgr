@@ -96,6 +96,15 @@ function codexRunArgs({ positional, afterDoubleDash }) {
   return passthrough.length > 0 ? passthrough : ["-p", "yolo"];
 }
 
+// Every Codex process AIM launches runs from AIM's managed home, never from the
+// desktop app's ~/.codex.
+function codexLaunchEnv(context) {
+  return {
+    ...(context.env ?? {}),
+    CODEX_HOME: resolveManagedCodexHomeDir({ homeDir: context.homeDir, env: context.env }),
+  };
+}
+
 async function handleRedisCodexRun(context) {
   const { stdout, setExitCode, runCodexInteractiveImpl } = context;
   const args = codexRunArgs({
@@ -123,7 +132,7 @@ async function handleRedisCodexRun(context) {
   const launched = await runCodexInteractiveImpl({
     homeDir: context.homeDir,
     cwd: process.cwd(),
-    env: context.env,
+    env: codexLaunchEnv(context),
     args,
   });
   if (launched?.code !== 0) setExitCode(Number.isInteger(launched?.code) ? launched.code : 1);
@@ -441,14 +450,17 @@ async function handleRedisCodexResumeFresh(context) {
   const launched = await runCodexInteractiveImpl({
     homeDir,
     cwd: process.cwd(),
-    env,
+    env: { ...(env ?? {}), CODEX_HOME: codexHome },
     args,
   });
   if (archiveSource) {
     try {
       const command = resolveCodexCommand({ homeDir, spawnImpl: spawnSyncImpl ?? spawnSync });
       const run = spawnSyncImpl ?? spawnSync;
-      const archived = run(command, ["archive", plan.sourceId], { encoding: "utf8" });
+      const archived = run(command, ["archive", plan.sourceId], {
+        encoding: "utf8",
+        env: { ...process.env, ...(env ?? {}), CODEX_HOME: codexHome },
+      });
       if (archived?.status !== 0 && stdout.isTTY) {
         stdout.write(`[aim] could not archive source thread ${plan.sourceId}\n`);
       }
