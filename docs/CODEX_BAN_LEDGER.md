@@ -106,11 +106,13 @@ These are the changes that affect how a later ban should be read.
 | 09-29 ~18:47 | laptop: `aim hermes watch` cron removed (backup `~/.aimgr/backups/crontab-20260929T184737.txt`); `aim auth maintain` launchd job disabled. It had been retrying dead accounts about 1,100–1,250 times a day each. |
 | 09-29 ~18:52 | studio: `aim hermes watch` LaunchDaemon booted out and disabled by Amir. This ended the 5-minute all-account polling and the Hermes rotation. |
 | 09-30 ~17:55 | M5 only: AIM Codex runs moved to `~/.aimgr/codex-cli` (branch `codex-desktop-split`, not on `main`), so `c` no longer writes the desktop app's login. The old `c` had put pro17 in the desktop app at 17:37. |
+| 10-01 ~06:00 | studio: the 7 Poker Skill Hermes gateways booted out and disabled, and their 13 cron jobs paused. The Camofox browser service and the Poker Skill `db_mcp` toolbox were turned off; Camofox was deleted. |
+| 10-01 ~07:15 | studio: 9 idle Cratejoy Hermes gateways turned off (no human Slack message in 40+ days): arthur_sterling, boss, coder, designer, merch_bot, paid_media, pilot, seo, writer. |
+| 10-01 ~07:20 | All five nightly disk cleanups moved off pooled ChatGPT accounts to DeepSeek (`codex exec -p dsflash`; on M5, routine provider `deepseek`). Studio's had failed with 401 on 09-30 and 10-01. |
 
-**Still running as of 09-30:**
-- Nightly `codex exec` cleanups: studio 01:15, home 01:45, laptop 02:15, amir-m3-36gb 02:45, M5 03:00.
+**Still on pooled ChatGPT accounts as of 10-01:**
 - M5 `chief-daily-maintenance` at 02:00.
-- Hermes cron jobs on studio, now pinned to the accounts they last held.
+- 3 Cratejoy Hermes agents on studio (buyer_experience_sentinel, support, zara) and their 13 cron jobs, pinned to the accounts they last held. Zara's sweep runs every 4 hours.
 - AIM's all-account usage check on every `aim codex use` or `run`.
 
 ## Watch list: load per account (computed 2026-09-30)
