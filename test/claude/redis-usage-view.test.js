@@ -1272,3 +1272,55 @@ test("Claude session selection shares this machine's accounts by headroom per se
   }
   assert.throws(() => selectClaudeAccountForSession({ accounts: [] }), /requires the fable, opus, or sonnet preset/);
 });
+
+test("Claude automatic selection keeps idle accounts whose expired token hides their usage, ranked after known usage", () => {
+  const unknownUsage = (label, { authState = "credential_expired", locked = false } = {}) => ({
+    label,
+    authState,
+    credentialState: authState,
+    credentialReady: false,
+    locked,
+    usage: { ok: false, windows: [] },
+  });
+  const known = (label, { fiveHour, weekly, authState = "usage_readable" }) => ({
+    label,
+    authState,
+    credentialState: "credential_ready",
+    credentialReady: true,
+    locked: false,
+    usage: {
+      ok: true,
+      windows: [
+        { label: "5h", kind: "session", usedPercent: fiveHour, active: true },
+        { label: "Week", kind: "weekly_all", usedPercent: weekly, active: true },
+      ],
+    },
+  });
+
+  for (const preset of ["fable", "opus", "sonnet"]) {
+    for (const select of [selectLeastUsedUnlockedClaudeAccount, selectClaudeAccountForSession]) {
+      assert.deepEqual(
+        select({ accounts: [unknownUsage("idle")] }, { preset }),
+        { label: "idle", usedPercent: null },
+        "a saved login whose access token lapsed still launches",
+      );
+      assert.deepEqual(
+        select({ accounts: [unknownUsage("idle"), known("busy-ish", { fiveHour: 80, weekly: 50 })] }, { preset }),
+        { label: "busy-ish", usedPercent: 80 },
+        "known usage ranks before unknown usage",
+      );
+      assert.deepEqual(
+        select({
+          accounts: [
+            known("week-spent", { fiveHour: 9, weekly: 100, authState: "usage_limited" }),
+            unknownUsage("idle"),
+          ],
+        }, { preset }),
+        { label: "idle", usedPercent: null },
+        "an idle account beats one whose week is spent",
+      );
+      assert.equal(select({ accounts: [unknownUsage("needs-login", { authState: "reauth_required" })] }, { preset }), null);
+      assert.equal(select({ accounts: [unknownUsage("elsewhere", { locked: true })] }, { preset }), null);
+    }
+  }
+});

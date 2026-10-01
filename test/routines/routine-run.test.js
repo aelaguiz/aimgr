@@ -895,7 +895,7 @@ function makeClaudeRuntime(home, options = {}) {
       fs.appendFileSync(eventsPath, `${JSON.stringify({ type, sessionId, at: new Date().toISOString(), ...extra })}\n`);
     },
     async routineClaudeSessionImpl(context, { cwd, runSession }) {
-      if (options.accountError) throw new Error("No unlocked Claude account with readable five-hour usage is available.");
+      if (options.accountError) throw new Error("No unlocked Claude account with usage left is available.");
       leaseHeld = true;
       try {
         const result = await runSession({

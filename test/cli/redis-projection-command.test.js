@@ -2142,7 +2142,7 @@ test("claude resume fails safely when the recorded account is busy and no destin
       "--home",
       home,
     ], cliDeps),
-    /No other unlocked Claude account with readable five-hour usage is available/,
+    /No other unlocked Claude account with usage left is available/,
   );
 });
 

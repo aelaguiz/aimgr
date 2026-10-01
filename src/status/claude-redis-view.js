@@ -1034,7 +1034,7 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
     ))
     .map((account) => {
       const fiveHourWindow = findFiveHourWindow(account?.usage);
-      const usedPercent = Number(fiveHourWindow?.usedPercent);
+      const fiveHourUsed = fiveHourWindow ? Number(fiveHourWindow.usedPercent) : Number.NaN;
       const weeklyUsedPercent = findOverallWeeklyWindow(account?.usage)?.usedPercent;
       let label;
       try {
@@ -1042,22 +1042,24 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
       } catch {
         return null;
       }
-      return Number.isFinite(usedPercent)
-        && usedPercent >= 0
-        && usedPercent < 100
-        ? {
-            label,
-            usedPercent,
-            // Unknown weekly usage sorts after known usage when five-hour usage ties.
-            weeklyUsedPercent: Number.isFinite(weeklyUsedPercent) && weeklyUsedPercent >= 0
-              ? weeklyUsedPercent
-              : Number.POSITIVE_INFINITY,
-          }
-        : null;
+      const knownFiveHour = Number.isFinite(fiveHourUsed) && fiveHourUsed >= 0;
+      if (knownFiveHour && fiveHourUsed >= 100) return null;
+      // An idle account's access token expires, so its usage cannot be read
+      // until a launch refreshes it. Its saved login still launches, so it stays
+      // a candidate with unknown usage and ranks after every account whose usage
+      // is known.
+      return {
+        label,
+        usedPercent: knownFiveHour ? fiveHourUsed : null,
+        // Unknown weekly usage sorts after known usage when five-hour usage ties.
+        weeklyUsedPercent: Number.isFinite(weeklyUsedPercent) && weeklyUsedPercent >= 0
+          ? weeklyUsedPercent
+          : Number.POSITIVE_INFINITY,
+      };
     })
     .filter(Boolean)
     .sort((left, right) => (
-      left.usedPercent - right.usedPercent
+      (left.usedPercent ?? Number.POSITIVE_INFINITY) - (right.usedPercent ?? Number.POSITIVE_INFINITY)
       || left.weeklyUsedPercent - right.weeklyUsedPercent
       || left.label.localeCompare(right.label)
     ));
@@ -1072,7 +1074,7 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
  * machine share an account, so an account this machine already holds stays
  * selectable (`account.localSessions` > 0). Ranks by usage left per session:
  * the tighter of the five-hour and weekly windows, divided by the sessions
- * that would share it.
+ * that would share it. Accounts whose usage is unknown come last.
  */
 export function selectClaudeAccountForSession(result, { preset } = {}) {
   if (!isClaudeModelPreset(preset)) {
@@ -1092,7 +1094,7 @@ export function selectClaudeAccountForSession(result, { preset } = {}) {
       const weeklyUsedPercent = Number(findOverallWeeklyWindow(account?.usage)?.usedPercent);
       const knownWeekly = Number.isFinite(weeklyUsedPercent) && weeklyUsedPercent >= 0;
       const remaining = Math.min(
-        100 - eligible.usedPercent,
+        eligible.usedPercent === null ? 100 : 100 - eligible.usedPercent,
         knownWeekly ? 100 - weeklyUsedPercent : 100,
       );
       return {
@@ -1100,7 +1102,8 @@ export function selectClaudeAccountForSession(result, { preset } = {}) {
         usedPercent: eligible.usedPercent,
         weeklyUsedPercent: knownWeekly ? weeklyUsedPercent : Number.POSITIVE_INFINITY,
         sessions,
-        score: remaining / (sessions + 1),
+        // Unknown usage ranks after every account whose usage is known.
+        score: eligible.usedPercent === null ? -1 : remaining / (sessions + 1),
       };
     })
     .filter(Boolean)

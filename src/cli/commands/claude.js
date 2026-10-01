@@ -1233,7 +1233,7 @@ export async function runAutomaticClaudeSession(context, { cwd, runSession, jobN
   }
   const selected = await selectAutomaticClaudeAccount(context, { preset: "fable" })
     ?? await freeClaudeAccountForScheduledJob(context, { preset: "fable", jobName, stderr: context.stderr });
-  if (!selected) throw new Error("No unlocked Claude account with readable five-hour usage is available, and no idle AIM session could be stopped to free one.");
+  if (!selected) throw new Error("No unlocked Claude account with usage left is available, and no idle AIM session could be stopped to free one.");
   await handleRedisClaudeRun({
     ...context,
     positional: ["claude", "run", selected.label],
@@ -1381,11 +1381,11 @@ export async function handleClaude(context) {
     if (!selected) {
       if (requestedSwitchPreset) {
         throw new Error(
-          `No other unlocked Claude account with readable five-hour usage is available for --switch-account ${forkPreset}.`,
+          `No other unlocked Claude account with usage left is available for --switch-account ${forkPreset}.`,
         );
       }
       throw new Error(
-        `Claude label=${session.account} ${unavailableReason === "busy" ? "is busy" : "requires login"} and no other unlocked Claude account with readable five-hour usage is available.`,
+        `Claude label=${session.account} ${unavailableReason === "busy" ? "is busy" : "requires login"} and no other unlocked Claude account with usage left is available.`,
       );
     }
     const forkName = buildManagedClaudeSessionForkName(session);
@@ -1432,7 +1432,7 @@ export async function handleClaude(context) {
       });
       if (!selected) {
         throw new Error(
-          "No unlocked Claude account with readable five-hour usage is available.",
+          "No unlocked Claude account with usage left is available.",
         );
       }
       await handleRedisClaudeRun({
