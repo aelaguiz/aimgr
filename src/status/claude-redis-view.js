@@ -18,6 +18,7 @@ import {
 import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { resolveAimgrRedisCachePath } from "../io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../pool/usage.js";
+import { readClaudeSessionUsage } from "./claude-session-usage.js";
 import {
   averageStatusNumbers,
   formatStatusDeltaMsCell,
@@ -31,7 +32,11 @@ import {
 } from "./redis-cache.js";
 
 export const CLAUDE_REDIS_USAGE_FRESH_MS = 5 * 60_000;
-export const CLAUDE_REDIS_USAGE_STALE_MAX_MS = 60 * 60_000;
+// Usage inside a window only rises, and only through use, so a reading stays a
+// true lower bound until that window resets. An idle account's access token
+// expires and AIM no longer refreshes idle accounts, so its last reading is
+// kept this long (the longest window is a week) instead of going blank.
+export const CLAUDE_REDIS_USAGE_STALE_MAX_MS = 8 * 24 * 60 * 60_000;
 export const CLAUDE_REDIS_USAGE_CONCURRENCY = 3;
 export const CLAUDE_REDIS_READ_TIMEOUT_MS = 2_000;
 
@@ -157,6 +162,22 @@ function filterUnexpiredUsage(value, nowMs) {
   const windows = normalized.windows.filter((window) => {
     const resetAt = Number(window.resetAt);
     return !Number.isFinite(resetAt) || resetAt > nowMs;
+  });
+  return {
+    provider: ANTHROPIC_PROVIDER,
+    ok: windows.length > 0,
+    windows,
+  };
+}
+
+// Last-known usage projected to now: a window whose reset time has passed has
+// started over at zero, so it reads 0% with no pending reset.
+function projectLastKnownUsage(value, nowMs) {
+  const windows = normalizeUsage(value).windows.map((window) => {
+    const resetAt = Number(window.resetAt);
+    if (!Number.isFinite(resetAt) || resetAt > nowMs) return window;
+    const { resetAt: _resetAt, severity: _severity, ...rest } = window;
+    return { ...rest, usedPercent: 0, active: false };
   });
   return {
     provider: ANTHROPIC_PROVIDER,
@@ -495,6 +516,45 @@ function cacheEntryForFacts(cacheEntries, facts) {
   return entry && facts.identityBinding && entry.identityBinding === facts.identityBinding ? entry : null;
 }
 
+function windowSlot(window) {
+  const label = String(window?.label ?? "").toLowerCase();
+  if (window?.kind === "session" || label === "5h" || label === "session") return "session";
+  if (window?.kind === "weekly_all" || label === "week" || label === "weekly") return "weekly_all";
+  return `scoped:${label}`;
+}
+
+// A running session's own reading (see claude-session-usage.js) replaces an
+// older cached one: it is at least as new and cost no provider request.
+// Windows the session does not report, such as per-model weekly limits, keep
+// their last-known values.
+function foldSessionUsage(cacheEntries, facts, sessionUsage) {
+  for (const entry of facts) {
+    const reading = sessionUsage.get(entry.record.label);
+    if (!reading || !entry.identityBinding) continue;
+    if (!entry.credentialReady && entry.state !== "credential_expired") continue;
+    const cached = cacheEntryForFacts(cacheEntries, entry);
+    if (cached?.usage?.ok && Number(cached.usageObservedAtMs) > reading.observedAtMs) continue;
+    const reported = new Set(reading.windows.map(windowSlot));
+    const usage = normalizeUsage({
+      windows: [
+        ...reading.windows,
+        ...(cached?.usage?.windows ?? []).filter((window) => !reported.has(windowSlot(window))),
+      ],
+    });
+    cacheEntries.set(entry.record.label, {
+      identityBinding: entry.identityBinding,
+      subscriptionType: cached?.subscriptionType ?? entry.subscriptionType,
+      rateLimitTier: cached?.rateLimitTier ?? entry.rateLimitTier,
+      authState: hasExhaustedActiveWindow(usage) ? "usage_limited" : "usage_readable",
+      errorKind: null,
+      usageObservedAtMs: reading.observedAtMs,
+      lastAttemptAtMs: Math.max(reading.observedAtMs, Number(cached?.lastAttemptAtMs) || 0),
+      usage,
+      origin: "session",
+    });
+  }
+}
+
 function shouldUseCachedEntry(entry, { fresh, nowMs }) {
   if (fresh || !entry) return false;
   if (HEALTHY_USAGE_STATES.has(entry.authState) && hasExpiredActiveWindow(entry, nowMs)) return false;
@@ -506,7 +566,7 @@ function usableStaleUsage(entry, nowMs) {
   if (ageFrom(nowMs, entry.usageObservedAtMs) > CLAUDE_REDIS_USAGE_STALE_MAX_MS) {
     return { usage: emptyUsage(), observedAtMs: null };
   }
-  const usage = filterUnexpiredUsage(entry.usage, nowMs);
+  const usage = projectLastKnownUsage(entry.usage, nowMs);
   return usage.ok
     ? { usage, observedAtMs: entry.usageObservedAtMs }
     : { usage: emptyUsage(), observedAtMs: null };
@@ -548,7 +608,7 @@ function buildCachedAccount(facts, entry, nowMs) {
     lastAttemptAtMs: entry.lastAttemptAtMs,
     usage: staleUsage.usage,
     stale,
-    source: stale ? "stale-cache" : "cache",
+    source: stale ? "stale-cache" : entry.origin === "session" ? "session" : "cache",
     ageMs: Number.isFinite(usageAgeMs) ? usageAgeMs : null,
   };
 }
@@ -704,6 +764,7 @@ export async function collectClaudeRedisAccountInventory({
   cachePath = resolveAimgrRedisCachePath({ homeDir }),
   connectRedisStoreImpl = connectRedisStore,
   readCredentialRecordsByProviderImpl = readCredentialRecordsByProvider,
+  readClaudeSessionUsageImpl = readClaudeSessionUsage,
 } = {}) {
   const { records } = await readAnthropicRedisData({
     homeDir,
@@ -713,6 +774,11 @@ export async function collectClaudeRedisAccountInventory({
   const facts = selectFacts(records, [], nowMs);
   const cached = readCachedProviderUsage({ homeDir, cachePath, provider: ANTHROPIC_PROVIDER });
   const cacheEntries = normalizeCacheEntries(cached.entries, nowMs);
+  foldSessionUsage(cacheEntries, facts, readClaudeSessionUsageImpl({
+    homeDir,
+    labels: facts.map((entry) => entry.record.label),
+    nowMs,
+  }));
   const accounts = facts.map((entry) => {
     const cachedEntry = entry.credentialReady || entry.state === "credential_expired"
       ? cacheEntryForFacts(cacheEntries, entry)
@@ -782,6 +848,7 @@ export async function collectClaudeRedisAccountUsageStatus({
   fetchJsonWithTimeoutImpl,
   acquireRedisCacheLockImpl = acquireRedisCacheLock,
   writeCachedProviderUsageImpl = writeCachedProviderUsage,
+  readClaudeSessionUsageImpl = readClaudeSessionUsage,
 } = {}) {
   const normalizedLabels = normalizeSelectedLabels(selectedLabels);
   let authoritativeRecords;
@@ -840,6 +907,12 @@ export async function collectClaudeRedisAccountUsageStatus({
   for (const label of cacheEntries.keys()) {
     if (!authoritativeLabels.has(label)) cacheEntries.delete(label);
   }
+  const sessionUsage = readClaudeSessionUsageImpl({
+    homeDir,
+    labels: facts.map((entry) => entry.record.label),
+    nowMs,
+  });
+  foldSessionUsage(cacheEntries, facts, sessionUsage);
   const accountsByLabel = new Map();
   let pending = [];
 
@@ -908,6 +981,7 @@ export async function collectClaudeRedisAccountUsageStatus({
     for (const label of cacheEntries.keys()) {
       if (!authoritativeLabels.has(label)) cacheEntries.delete(label);
     }
+    foldSessionUsage(cacheEntries, facts, sessionUsage);
     if (cacheRead.state === "unsafe") {
       for (const pendingEntry of pending) {
         accountsByLabel.set(
@@ -1196,7 +1270,18 @@ function usageColumns(accounts, nowMs) {
   return { headers, values, averageValues };
 }
 
-function describeClaudeOperatorState(account) {
+// When an account with a full window frees up: the latest reset among its
+// full windows, or null when that reset time is unknown.
+function limitedUntilMs(usage) {
+  const full = (Array.isArray(usage?.windows) ? usage.windows : []).filter((window) => (
+    window?.active !== false
+    && (Number(window?.usedPercent) >= 100 || ["exceeded", "blocked"].includes(window?.severity))
+  ));
+  const resets = full.map((window) => Number(window.resetAt));
+  return resets.length > 0 && resets.every(Number.isFinite) ? Math.max(...resets) : null;
+}
+
+function describeClaudeOperatorState(account, nowMs) {
   const authState = typeof account?.authState === "string" ? account.authState : "";
   const credentialState = typeof account?.credentialState === "string" ? account.credentialState : "";
   const label = typeof account?.label === "string" ? account.label : "account";
@@ -1218,6 +1303,13 @@ function describeClaudeOperatorState(account) {
       || credentialState === "credential_expired"
     )
   ) {
+    if (hasExhaustedActiveWindow(account?.usage)) {
+      const untilMs = limitedUntilMs(account.usage);
+      return {
+        status: "LIMITED",
+        next: untilMs === null ? "wait for reset" : `free in ${formatReset({ resetAt: untilMs }, nowMs)}`,
+      };
+    }
     return { status: "READY", next: "use now" };
   }
   return { status: "UNKNOWN", next: "retry status" };
@@ -1302,7 +1394,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
   const columns = usageColumns(accounts, nowMs);
   const describedAccounts = accounts.map((account) => ({
     account,
-    operator: describeClaudeOperatorState(account),
+    operator: describeClaudeOperatorState(account, nowMs),
   }));
   const countStatus = (status) => describedAccounts.filter((entry) => entry.operator.status === status).length;
   const rows = [["account", "status", ...columns.headers, "updated", "next"]];
@@ -1325,7 +1417,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
     ]);
   }
   return `${[
-    `CLAUDE: ${countStatus("READY")} ready · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
+    `CLAUDE: ${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
     ...formatStatusTable(rows),
   ].join("\n")}\n`;
 }

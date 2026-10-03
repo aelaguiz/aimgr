@@ -4,7 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import {
+  buildManagedClaudeStatusLine,
   prepareClaudeCliLaunch,
   resolveInstalledClaudeSecurityAdapter,
   runClaudeCli,
@@ -19,6 +21,10 @@ const RUNNER_SOURCE_PATH = fileURLToPath(new URL(
 ));
 const SUPERVISOR_SOURCE_PATH = fileURLToPath(new URL(
   "../../src/targets/claude-supervisor.js",
+  import.meta.url,
+));
+const STATUSLINE_TAP_PATH = fileURLToPath(new URL(
+  "../../src/targets/claude-statusline-tap.sh",
   import.meta.url,
 ));
 
@@ -157,7 +163,7 @@ test("preflight shares generic customizations but excludes credentials, trust, c
   ]);
   assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userHooksPath, "utf8")), {
     hooks,
-    statusLine,
+    statusLine: buildManagedClaudeStatusLine(statusLine),
     skipDangerousModePermissionPrompt: true,
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userMcpConfigPath, "utf8")), { mcpServers });
@@ -196,8 +202,50 @@ test("bypass acknowledgement reaches a managed account even without hooks", asyn
     platform: "linux",
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(prepared.userHooksPath, "utf8")), {
+    statusLine: buildManagedClaudeStatusLine(null),
     skipDangerousModePermissionPrompt: true,
   });
+});
+
+test("managed status lines run the usage tap and keep the user's command and options", () => {
+  const tap = `/bin/sh '${STATUSLINE_TAP_PATH}'`;
+  assert.deepEqual(buildManagedClaudeStatusLine(null), { type: "command", command: tap });
+  assert.deepEqual(
+    buildManagedClaudeStatusLine({ type: "command", command: "bash ~/it's.sh", padding: 1 }),
+    { type: "command", command: `${tap} 'bash ~/it'"'"'s.sh'`, padding: 1 },
+  );
+  const other = { type: "static", text: "left alone" };
+  assert.equal(buildManagedClaudeStatusLine(other), other);
+});
+
+test("the usage tap saves readings privately and still renders the user's status line", () => {
+  const home = mkTempHome();
+  const configDir = path.join(home, "config");
+  fs.mkdirSync(configDir);
+  const usagePath = path.join(configDir, ".aimgr-session-usage.json");
+  const run = (input, args = []) => spawnSync("/bin/sh", [STATUSLINE_TAP_PATH, ...args], {
+    input,
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, CLAUDE_CONFIG_DIR: configDir },
+  });
+
+  const withUsage = JSON.stringify({
+    model: { display_name: "Fable" },
+    rate_limits: { five_hour: { used_percentage: 42, resets_at: 1_790_000_000 } },
+  });
+  const rendered = run(withUsage, [`cat > '${path.join(home, "seen.json")}'; printf 'line'`]);
+  assert.equal(rendered.status, 0);
+  assert.equal(rendered.stdout, "line");
+  assert.equal(fs.readFileSync(path.join(home, "seen.json"), "utf8"), withUsage);
+  assert.equal(fs.readFileSync(usagePath, "utf8"), withUsage);
+  assert.equal(fs.statSync(usagePath).mode & 0o777, 0o600);
+
+  // Input without usage leaves the last reading in place; no command prints nothing.
+  const bare = run(JSON.stringify({ model: { display_name: "Fable" } }));
+  assert.equal(bare.status, 0);
+  assert.equal(bare.stdout, "");
+  assert.equal(fs.readFileSync(usagePath, "utf8"), withUsage);
+  assert.deepEqual(fs.readdirSync(configDir), [".aimgr-session-usage.json"]);
 });
 
 test("one optional customization failure warns and leaves the other categories usable", async () => {

@@ -10,7 +10,12 @@ import {
 } from "../../src/coordination/redis-store.js";
 import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../../src/core/constants.js";
-import { resolveAimgrLocalStatePath, resolveAimgrRedisCachePath } from "../../src/io/paths.js";
+import path from "node:path";
+import {
+  resolveAimgrClaudeSessionUsagePath,
+  resolveAimgrLocalStatePath,
+  resolveAimgrRedisCachePath,
+} from "../../src/io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../../src/pool/usage.js";
 import {
   CLAUDE_REDIS_USAGE_FRESH_MS,
@@ -369,7 +374,7 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   const serializedCache = fs.readFileSync(cachePath, "utf8");
   assert.doesNotMatch(serializedCache, /ACCESS_SECRET|REFRESH_SECRET|private\.example|acct-private|org-private/i);
   const rendered = renderClaudeRedisAccountUsageStatus(first);
-  assert.match(rendered, /^CLAUDE: 0 ready · 1 in use · 1 needs you · 0 unknown/m);
+  assert.match(rendered, /^CLAUDE: 0 ready · 0 limited · 1 in use · 1 needs you · 0 unknown/m);
   assert.match(rendered, /candidate\s+NEEDS YOU.*aim login candidate/);
   assert.match(rendered, /ready\s+IN USE.*session active/);
   assert.doesNotMatch(rendered, /max\/max_20x|usage_readable/);
@@ -426,7 +431,7 @@ test("Redis Claude status surfaces the maintenance streak without local recovery
   // The default table is untouched by the new diagnostics.
   const rendered = renderClaudeRedisAccountUsageStatus(result);
   assert.doesNotMatch(rendered, /failing_for|maintenance stuck/);
-  assert.match(rendered, /^CLAUDE: \d+ ready · \d+ in use · \d+ needs you · \d+ unknown$/m);
+  assert.match(rendered, /^CLAUDE: \d+ ready · \d+ limited · \d+ in use · \d+ needs you · \d+ unknown$/m);
 });
 
 test("Claude human status renders the four launch states with frozen precedence", () => {
@@ -464,7 +469,7 @@ test("Claude human status renders the four launch states with frozen precedence"
     ],
   });
 
-  assert.match(rendered, /^CLAUDE: 2 ready · 1 in use · 1 needs you · 1 unknown/m);
+  assert.match(rendered, /^CLAUDE: 2 ready · 0 limited · 1 in use · 1 needs you · 1 unknown/m);
   assert.match(rendered, /ready\s+READY.*2m\s+use now/);
   assert.match(rendered, /active\s+IN USE.*session active/);
   assert.match(rendered, /fixing\s+READY.*use now/);
@@ -568,7 +573,7 @@ test("fleet reset averages count free accounts as zero wait instead of dropping 
   assert.match(rendered, /average\s+--\s+47%\s+1\.0h\s+--\s+--\s+67%\s+2\.7d\s+--\s+--/);
 });
 
-test("failed refresh keeps one-hour stale usage and caches provider backoff without re-aging it", async () => {
+test("failed refresh keeps last-known usage and caches provider backoff without re-aging it", async () => {
   const { homeDir, connectRedisStoreImpl } = await setup([anthropicRecord("ready")]);
   let calls = 0;
   const success = await collectClaudeRedisAccountUsageStatus({
@@ -626,10 +631,29 @@ test("failed refresh keeps one-hour stale usage and caches provider backoff with
   assert.equal(offlineInventory.accounts[0].usage.ok, true);
   assert.equal(offlineInventory.accounts[0].stale, true);
 
-  const tooOld = await collectClaudeRedisAccountUsageStatus({
+  // Past the five-hour reset the window reads 0%; the weekly reading still holds.
+  const afterReset = await collectClaudeRedisAccountUsageStatus({
     homeDir,
     selectedLabels: ["ready"],
     nowMs: NOW_MS + 61 * 60_000,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: async () => ({ provider: ANTHROPIC_PROVIDER, ok: false, status: 429 }),
+  });
+  assert.equal(afterReset.accounts[0].usage.ok, true);
+  assert.equal(afterReset.accounts[0].usageObservedAtMs, NOW_MS);
+  assert.deepEqual(afterReset.accounts[0].usage.windows.map((window) => [
+    window.label,
+    window.usedPercent,
+    window.resetAt ?? null,
+  ]), [
+    ["5h", 0, null],
+    ["Week", 31, NOW_MS + 24 * 60 * 60_000],
+  ]);
+
+  const tooOld = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    selectedLabels: ["ready"],
+    nowMs: NOW_MS + 9 * 24 * 60 * 60_000,
     connectRedisStoreImpl,
     fetchClaudeUsageSnapshotImpl: async () => ({ provider: ANTHROPIC_PROVIDER, ok: false, status: 429 }),
   });
@@ -1323,4 +1347,130 @@ test("Claude automatic selection keeps idle accounts whose expired token hides t
       assert.equal(select({ accounts: [unknownUsage("elsewhere", { locked: true })] }, { preset }), null);
     }
   }
+});
+
+test("idle accounts keep last-known usage for days and read LIMITED until the full window resets", async () => {
+  const { homeDir, connectRedisStoreImpl } = await setup([anthropicRecord("idle")]);
+  const DAY_MS = 24 * 60 * 60_000;
+  await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: NOW_MS,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: async () => ({
+      provider: ANTHROPIC_PROVIDER,
+      ok: true,
+      windows: [
+        { label: "5h", kind: "session", usedPercent: 40, resetAt: NOW_MS + 60 * 60_000, active: true },
+        { label: "Week", kind: "weekly_all", usedPercent: 100, resetAt: NOW_MS + 3 * DAY_MS, active: true },
+      ],
+    }),
+  });
+  const noRequests = async () => {
+    throw new Error("an idle account must not reach the provider");
+  };
+
+  // Two days later the access token has expired; the reading is still shown.
+  const limited = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: NOW_MS + 2 * DAY_MS,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: noRequests,
+  });
+  assert.equal(limited.requestCount, 0);
+  assert.equal(limited.accounts[0].credentialState, "credential_expired");
+  assert.equal(limited.accounts[0].authState, "usage_limited");
+  assert.equal(limited.accounts[0].ageMs, 2 * DAY_MS);
+  const limitedText = renderClaudeRedisAccountUsageStatus(limited);
+  assert.match(limitedText, /^CLAUDE: 0 ready · 1 limited · 0 in use · 0 needs you · 0 unknown$/m);
+  assert.match(limitedText, /idle\s+LIMITED\s+0%\s+--\s+100%\s+24\.0h\s.*2\.0d\s+free in 24\.0h/);
+  assert.equal(selectLeastUsedUnlockedClaudeAccount(limited, { preset: "opus" }), null);
+
+  // After the weekly reset the account is free again.
+  const free = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: NOW_MS + 4 * DAY_MS,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: noRequests,
+  });
+  assert.equal(free.requestCount, 0);
+  assert.equal(free.accounts[0].authState, "usage_readable");
+  assert.match(renderClaudeRedisAccountUsageStatus(free), /idle\s+READY\s+0%\s+--\s+0%\s+--\s.*use now/);
+  assert.deepEqual(selectLeastUsedUnlockedClaudeAccount(free, { preset: "opus" }), { label: "idle", usedPercent: 0 });
+});
+
+test("a running session's own usage reading replaces the provider request and keeps per-model windows", async () => {
+  const { homeDir, connectRedisStoreImpl } = await setup([anthropicRecord("busy")]);
+  const fableWindow = {
+    label: "Fable",
+    kind: "weekly_scoped",
+    usedPercent: 50,
+    resetAt: NOW_MS + 2 * 24 * 60 * 60_000,
+    active: true,
+  };
+  let calls = 0;
+  await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: NOW_MS,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: async () => {
+      calls += 1;
+      return { ...successSnapshot(12), windows: [...successSnapshot(12).windows, fableWindow] };
+    },
+  });
+
+  const usagePath = resolveAimgrClaudeSessionUsagePath({ homeDir, label: "busy" });
+  fs.mkdirSync(path.dirname(usagePath), { recursive: true });
+  fs.writeFileSync(usagePath, JSON.stringify({
+    session_id: "irrelevant",
+    rate_limits: {
+      five_hour: { used_percentage: 60, resets_at: (NOW_MS + 2 * 60 * 60_000) / 1000 },
+      seven_day: { used_percentage: 40, resets_at: (NOW_MS + 24 * 60 * 60_000) / 1000 },
+    },
+  }));
+  const readAtMs = NOW_MS + 6 * 60_000;
+  fs.utimesSync(usagePath, new Date(readAtMs), new Date(readAtMs));
+
+  const fromSession = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: NOW_MS + 7 * 60_000,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: async () => {
+      calls += 1;
+      throw new Error("a fresh session reading must replace the provider request");
+    },
+  });
+  assert.equal(fromSession.requestCount, 0);
+  assert.equal(fromSession.accounts[0].source, "session");
+  assert.equal(fromSession.accounts[0].usageObservedAtMs, readAtMs);
+  assert.deepEqual(fromSession.accounts[0].usage.windows.map((window) => [window.label, window.usedPercent]), [
+    ["5h", 60],
+    ["Week", 40],
+    ["Fable", 50],
+  ]);
+
+  // Once the session reading is older than the cache window, one request
+  // refreshes the account, and the newer provider reading then wins.
+  const probed = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: NOW_MS + 20 * 60_000,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: async () => {
+      calls += 1;
+      return successSnapshot(70);
+    },
+  });
+  assert.equal(probed.requestCount, 1);
+  assert.equal(probed.accounts[0].source, "live");
+  const cached = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    nowMs: NOW_MS + 21 * 60_000,
+    connectRedisStoreImpl,
+    fetchClaudeUsageSnapshotImpl: async () => {
+      calls += 1;
+      throw new Error("cached");
+    },
+  });
+  assert.equal(cached.accounts[0].source, "cache");
+  assert.equal(cached.accounts[0].usage.windows[0].usedPercent, 70);
+  assert.equal(calls, 2);
 });

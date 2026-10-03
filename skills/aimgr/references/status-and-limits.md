@@ -18,7 +18,7 @@ last Claude label used.
 ## Claude availability
 
 ```bash
-aim claude status                       # cached read, no provider calls
+aim claude status                       # cached read; idle accounts never reach the provider
 aim claude status <account> [<account>] # limit to specific accounts
 aim claude status --fresh               # force live provider checks
 aim claude status --json                # machine-readable
@@ -29,21 +29,21 @@ aim claude status --json                # machine-readable
 Sample output:
 
 ```
-CLAUDE: 10 ready · 15 in use · 3 needs you · 0 unknown
+CLAUDE: 9 ready · 1 limited · 15 in use · 3 needs you · 0 unknown
 account            status     5h   5h_in  week  wk_in  Fable  Fb_in  updated  next
 boss               READY      0%   --     60%   2.2d   100%   2.2d   now      use now
 coder              IN USE     0%   4.9h   37%   4.6d   40%    4.6d   now      session active
-coder2             READY      0%   --     100%  7.6h   13%    7.6h   now      use now
+coder2             LIMITED    0%   --     100%  7.6h   13%    7.6h   9.2h     free in 7.6h
 qa                 NEEDS YOU  --   --     --    --     --     --     --       aim login qa
 ```
 
 | Column | Meaning |
 |---|---|
-| `status` | `READY` — unlocked and usable. `IN USE` — a session holds it. `NEEDS YOU` — a human must reauthenticate. `UNKNOWN` — state could not be read; retry. |
+| `status` | `READY` — unlocked and usable. `LIMITED` — unlocked, but a window is full; `next` says when it frees up. `IN USE` — a session holds it. `NEEDS YOU` — a human must reauthenticate. `UNKNOWN` — state could not be read; retry. |
 | `next` | The literal next action for that account. Trust this column. |
 | `5h` / `week` / `Fable` | Percentage of that window **used**, not remaining. Lower is better. |
 | `5h_in` / `wk_in` / `Fb_in` | When that window resets. |
-| `updated` | `now` means a live reading; anything else is the cache age. |
+| `updated` | Age of the reading. `now` is current. An idle account keeps its last reading for up to eight days; it stays true until its window resets, and a window past its reset reads `0%`. |
 
 **How to choose:** prefer a `READY` row with low `week` and low `Fable`. In the
 sample, `boss` is a better pick than `coder2`, whose weekly window is spent.

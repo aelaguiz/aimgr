@@ -486,8 +486,21 @@ model, rotate credentials, or fall back to `claude.ai`. A normal run reuses the 
 provider-usage section in AIM's existing `~/.aimgr/redis-cache.json`. An uncached run makes exactly
 one no-retry OAuth usage `GET` per selected ready account, with at most three requests in flight;
 `--fresh` bypasses a fresh success entry while preserving the one-request-per-account limit.
-Transient failures are briefly backed off, and usage observed within the prior hour may be shown
-only when clearly marked stale. The cache is written atomically with owner-only (`0600`) permissions.
+Transient failures are briefly backed off. The cache is written atomically with owner-only (`0600`)
+permissions.
+
+Accounts whose access token has expired are never sent to Anthropic, and AIM does not refresh idle
+accounts. Their last reading is shown for up to eight days with its age in `updated`: usage inside a
+window only rises through use, so the reading holds until the window resets, and a window whose
+reset time has passed reads `0%`. An unlocked account with a full window reads `LIMITED` with the
+time until it frees up, and automatic selection skips it.
+
+Each managed Claude session also records its own usage. AIM wraps the session's status line with
+`src/targets/claude-statusline-tap.sh`, which saves the five-hour and weekly usage Claude Code reads
+from each response's headers to `.aimgr-session-usage.json` in that label's config directory, then
+runs the user's own status-line command unchanged. A reading under five minutes old replaces the
+usage request for that account (`source=session` in `--verbose`), so accounts in use on this machine
+cost no provider request. Sessions launched before this change pick up the tap on their next launch.
 
 Human output uses an `account` column, and JSON uses `accounts[].label` plus `missingAccounts`.
 Neither schema nor the provider-usage cache contains tokens, authorization headers, raw Redis

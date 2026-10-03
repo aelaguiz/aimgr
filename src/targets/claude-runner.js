@@ -8,6 +8,7 @@ import {
 } from "./claude-supervisor.js";
 
 const SUPERVISOR_PATH = fileURLToPath(new URL("./claude-supervisor.js", import.meta.url));
+const STATUSLINE_TAP_PATH = fileURLToPath(new URL("./claude-statusline-tap.sh", import.meta.url));
 const USER_HOOKS_OVERLAY_FILE = ".aimgr-user-hooks.json";
 const USER_MCP_OVERLAY_FILE = ".aimgr-user-mcp.json";
 const SECURITY_ADAPTER_RELATIVE_PATH = path.join(
@@ -213,6 +214,22 @@ export function ensureManagedClaudePersonalSkillsLink({
   return { linked: true, path: destination };
 }
 
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", `'"'"'`)}'`;
+}
+
+// Every managed session's status line runs through the usage tap, which records
+// the usage Claude Code already reads from each response so `aim status` need
+// not ask the provider. A user command still renders after the tap; a status
+// line of another type is left as it is.
+export function buildManagedClaudeStatusLine(userStatusLine) {
+  const tap = `/bin/sh ${shellQuote(STATUSLINE_TAP_PATH)}`;
+  if (userStatusLine === null) return { type: "command", command: tap };
+  if (userStatusLine.type !== "command") return userStatusLine;
+  const command = typeof userStatusLine.command === "string" ? userStatusLine.command.trim() : "";
+  return { ...userStatusLine, command: command ? `${tap} ${shellQuote(command)}` : tap };
+}
+
 export function syncManagedClaudeUserSettings({
   userHomeDir,
   configDir,
@@ -234,14 +251,14 @@ export function syncManagedClaudeUserSettings({
   const statusLine = requireOptionalObjectField(settings, "statusLine", "user status-line settings");
   const payload = {
     ...(hooks === null ? {} : { hooks }),
-    ...(statusLine === null ? {} : { statusLine }),
+    statusLine: buildManagedClaudeStatusLine(statusLine),
     ...(settings?.skipDangerousModePermissionPrompt === true
       ? { skipDangerousModePermissionPrompt: true }
       : {}),
   };
   return syncPrivateJsonOverlay(
     path.join(resolvedConfigDir, USER_HOOKS_OVERLAY_FILE),
-    Object.keys(payload).length === 0 ? null : payload,
+    payload,
     { fsImpl, description: "managed Claude user-settings overlay" },
   );
 }

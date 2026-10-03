@@ -104,6 +104,11 @@ export function resolveAimgrClaudeLabelHomeDir({ homeDir, label }) {
   return path.join(resolveAimgrStateDir({ homeDir }), "claude-homes", safeLabel);
 }
 
+// Written by the status-line tap inside each running managed Claude session.
+export function resolveAimgrClaudeSessionUsagePath({ homeDir, label }) {
+  return path.join(resolveAimgrClaudeLabelHomeDir({ homeDir, label }), ".claude", ".aimgr-session-usage.json");
+}
+
 export function resolveHermesProfilesRoot(homeDir) {
   return path.join(homeDir, ".hermes", "profiles");
 }
