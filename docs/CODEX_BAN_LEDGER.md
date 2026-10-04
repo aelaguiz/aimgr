@@ -22,7 +22,7 @@ The full evidence for each round is in [the 09-29 analysis](CODEX_PRO11_PRO13_DE
 
 ## When an account gets banned: checklist (about 30 min)
 
-1. **Confirm and record.** `aim status` shows `blocked`. Also record when Redis marked it `openai_account_deactivated`.
+1. **Confirm it is a ban, then record it.** A `blocked` account is not necessarily banned: Amir is cancelling plans and letting others lapse to shrink the pool, and those show `blocked` too. Amir says which accounts are banned. Redis also records why: read only the health fields of `aimgr:v1:credential:openai-codex:<label>` (a read-only query; never return token fields). `openai_account_deactivated` is a ban; `expired_by_choice` is a plan that ended. A plan ending also shows as a 400 "model not supported when using Codex with a ChatGPT account" and a 30-day window at 0%. A 401 `token_revoked` alone proves nothing: pro6 got one after its plan was cancelled. Record when Redis marked it and the raw error of the first failed request; nothing in aimgr or Hermes source is known to write the reason field.
 2. **Find the death window.**
    - Last proof alive: run `cache_reads.py` on every host.
    - First proof dead: the first failed request. Look in the nightly cleanup run logs:
@@ -60,27 +60,28 @@ The scripts depend only on the Python standard library and never read tokens. Ge
 | 7 | lessons | Mar or older | 09-30 07:05 | 09-29 19:44 → 09-30 01:16 | 19:44 (Amir's TUI `01a0ef43`, 328 responses, 3%) | Amir's `cr` all-account checks at 17:33; investigation probe bursts at 17:40 and 17:46; studio nightly job at 01:16 found it already dead | 79% of its 09-19 → 09-26 week |
 | 8 | pro17 | Aug 16–17 | 10-01 06:37 | 09-30 21:09 → 10-01 06:37 | 09-30 19:18 (M5 psagentspace thread `01a0f2ee`) | desktop app signed into it from 17:37 (M5 still ran the old `c`); last night's nightly jobs picked other accounts | quiet 09-25 to 09-29, then 09-30: laptop and amir-m3-36gb nightly jobs (02:16, 02:45) plus four M5 threads (~2,200 responses, 13% of week). Aug batch now 5 of 6 |
 | 9 | pro16 | Aug 16–17 | 10-02 08:12 (laptop's first `aim` run on the `codex-desktop-split` build found it dead) | 10-02 07:13 → 08:12 | 10-02 05:22–05:28 (M5 TUI `01a0fc22`, typed, 18 responses) | nothing: no usage reads, threads or Hermes agents on it | **First daytime death.** This week: 688 M5 responses over 11 typed TUIs plus the 09-28 disk-cleanup routine; Poker Skill Hermes agent_ads_analyst and agent_writer about 27 calls, last 09-30. Hottest use 09-20 to 09-22 (week 10% → 77%), so it died 10–12 days later. Aug batch now 6 of 6 |
+| 10 | pro10 | May 28 | 10-04 06:35 (laptop `aim` run found it dead) | 10-03 22:07:57 → 23:22:56 (exec `01a10526` got 401 `token_revoked`, `refresh_token_invalidated`) | 10-03 21:51 (M5 TUI `01a0fcd9` in aimgr) | the idle TUI's once-a-minute rate-limit polls; one all-account usage check at 22:07:57 | **Evening death**, 16–91 minutes after its last working session. Burned to 100% in its 09-19 → 09-26 week, so it died 7–9 days after its hottest use; about 1,425 responses this week, all on M5, peaks about 320 on 10-01 and 318 on 10-02. That morning (07:24–08:00) fleet TUI `01a101b8-98e8` ran on it as one of 13 TUIs launched on 13 accounts within 5 minutes. paperclip-codex on studio failed its refresh for 41 days until 09-29. May 28 pair now 2 of 2. Predicted by P6 |
 
-## Current thesis (v2, 2026-10-02)
+## Current thesis (v3, 2026-10-04)
 
-OpenAI runs automated per-account decisions over a rolling window of recent activity and applies them in batches. So far the batches land between about 02:00 and 08:15 Central; pro16 died between 07:13 and 08:12 with nothing touching it, so "overnight" was too narrow. It treats the pool as one operator: the accounts are linked by shared IPs, one email domain, all-account usage checks, and conversations resumed across accounts.
+OpenAI makes automated per-account decisions over a rolling window of recent activity. They do not land on a fixed overnight schedule: the narrowest death windows are 03:33–04:49, 07:13–08:12 and 22:08–23:23 Central. Since all-account polling stopped on 09-29, each of the four bans (lessons, pro17, pro16, pro10) died within hours of a real working session on that account, so the review may run when an account becomes active. What decides the outcome looks like the account's history, not that day's use. It treats the pool as one operator: the accounts are linked by shared IPs, one email domain, all-account usage checks, and conversations resumed across accounts.
 - **Which account dies is probabilistic.** The banned accounts were mid-pack on load, while heavier accounts survive.
-- **Young accounts are over-represented.** The whole August batch is gone (6 of 6).
-- **The trigger is not what the account does that day**, and not one switch flipped by a single action.
+- **Young accounts are over-represented.** The whole August batch is gone (6 of 6), and so is the May 28 pair (2 of 2).
+- **Activity may trigger the review; history decides it.** Older accounts in daily use (boss, pro9, coder, coder2) are alive.
 
-**Confidence: medium.** The data is 9 bans. OpenAI never states a reason.
+**Confidence: medium.** The data is 10 bans. OpenAI never states a reason.
 
 ## Hypothesis scorecard
 
 | Hypothesis | Status | Evidence |
 |---|---|---|
-| Rolling-window review, applied in batches | **Supported, but the lag and the timing are wider than v1 said** | The first 8 died 0–8 days after their hottest use, in windows covering late-night hours (narrowest: 02:14–04:38 and 03:33–04:49). pro16 died 10–12 days after its hottest use, in a daytime window (07:13–08:12) |
-| Account age raises the odds | **Supported** | Aug batch: 6 of 6 banned (pro17 10-01, pro16 10-02); March-or-older: 2 of 17; Apr–May: 0 of 5; May 28 pair: 1 of 2 |
+| Rolling-window review | **Supported; fixed-hour batches are not** | The first 8 died 0–8 days after their hottest use, in windows covering late-night hours (narrowest: 02:14–04:38 and 03:33–04:49). pro16 died 10–12 days after its hottest use, in a daytime window (07:13–08:12); pro10 7–9 days after, in an evening window (22:08–23:23) |
+| Account age raises the odds | **Supported** | Aug batch: 6 of 6 banned (pro17 10-01, pro16 10-02); March-or-older: 2 of 17; Apr–May: 0 of 5 (pro6 and pro7 have since lapsed by choice); May 28 pair: 2 of 2 (pro10 10-03). Denominators shrink as Amir lets plans lapse |
 | Pure volume decides | **Rejected** (for 09-19 to 09-24) | Banned accounts ranked 11th, 14th, 15th by load; pro2 (29,693), pro8 (17,043) and 8 others heavier and alive; pro16 and pro17 matched pro13's load and outlived it by 4–5 days |
 | Cross-account resume is the trigger | **Weak**; maybe a linking signal | All 7 had it, but so did at least 5 survivors (boss, pro4, pro7, pro8, pro9) |
 | Hermes or third-party harness detection | **Weak** | Hermes has used nearly every account since March, but bans began in mid-September; banned accounts had tiny Hermes volume (89 and 53 calls in 2 weeks) |
 | Banned when first reused, or at token refresh | **Rejected** | First requests after idle failed at once (already dead); pro11 died with no use and no refresh |
-| Activity-triggered review: an account is scored, and banned if its recent history is bad, when it shows activity (usage polling counted until 09-29) | **Emerging** | Since polling stopped (09-29 ~18:50), both deaths (lessons, pro17) were accounts used the evening before after quiet days; quiet heavy accounts (coder, pro1, coder2) are alive. Before that, pro11 and pro13 died while only polled. pro16 fits (typed use 10-01 and 10-02 05:28, dead by 08:12), but boss and pro9 are not quiet as v1 assumed: Zara has made about 420 calls on boss since 09-30, chief-daily-maintenance picked boss on 10-01 and 10-02, and Cratejoy support runs on pro9. Both are alive |
+| Activity-triggered review: an account is scored, and banned if its recent history is bad, when it shows activity (usage polling counted until 09-29) | **Supported (4 of 4 since polling stopped)** | Since polling stopped (09-29 ~18:50), every ban died within hours of a working session: lessons (last use 19:44, dead by 01:16), pro17 (19:18, dead 21:09–06:37), pro16 (05:28, dead 07:13–08:12), pro10 (21:51, dead 22:08–23:23); quiet heavy accounts (coder, pro1, coder2) are alive. Before that, pro11 and pro13 died while only polled. pro16 fits (typed use 10-01 and 10-02 05:28, dead by 08:12), but boss and pro9 are not quiet as v1 assumed: Zara has made about 420 calls on boss since 09-30, chief-daily-maintenance picked boss on 10-01 and 10-02, and Cratejoy support runs on pro9. Both are alive |
 | A script working through an old backlog from weeks ago | **Weakened** | The heaviest early-September accounts (pro1: 1,144 agents on 09-12; cfo: two burns on 09-14) are alive |
 
 ## Predictions to score on the next ban
@@ -89,10 +90,12 @@ OpenAI runs automated per-account decisions over a rolling window of recent acti
 |---|---|---|
 | P1 | pro16 and pro17 are the most at risk | **Hit twice: pro17 10-01, pro16 10-02.** Closed; the Aug batch is gone |
 | P2 | If the window is about a week, bans thin out after about 10-01 to 10-03 for accounts quiet since 09-24 | A ban after 10-03 on an account quiet since 09-24 means a longer window, or pool-level enforcement. pro16 did not test it (not quiet) |
-| P3 | Bans keep landing overnight | **Miss: pro16 died 07:13–08:12 Central.** Revised: bans land in the 02:00–08:15 range |
+| P3 | Bans keep landing overnight | **Retired.** pro16 (07:13–08:12) and pro10 (22:08–23:23) died outside the night hours; bans can land at any hour |
 | P4 | Mop-up versus new behavior can be read off the watch list | See the rules under the watch list. Count nightly jobs too: they leave no rollouts, so pro17 looked quiet when it was not. pro16 was "mixed", so it told us nothing |
-| P5 | Under activity-triggered review, a quiet account survives until it is used again | **Weak hit: pro16 was used 10-01 and 10-02.** A ban on an account untouched since 09-25 (coder, pro1, coder2) weakens this. boss and pro9 are in daily automated use and alive, which also weakens it |
-| P6 | If account age drives the odds, pro10 (the other May 28 account; pro11 is banned) is the next most at risk | The next ban's batch |
+| P5 | Under activity-triggered review, a quiet account survives until it is used again | **Weak hit: pro16 was used 10-01 and 10-02.** **pro10 also used that evening, dead hours later.** A ban on an account untouched since 09-25 (pro1) weakens this. coder, coder2, boss and pro9 are in use and alive, which fits only if their history is clean |
+| P6 | If account age drives the odds, pro10 (the other May 28 account; pro11 is banned) is the next most at risk | **Hit: pro10 banned 10-03.** Closed |
+| P7 | If account age drives the odds, the Apr–May accounts still paid for (claudalyst, pro8, pro9) die before the March accounts | The next ban's batch. Ignore accounts whose plans lapsed |
+| P8 | If activity triggers the review, the next ban follows a working session on that account within hours | Last real use versus the death window |
 
 ## Variables log
 
@@ -113,10 +116,16 @@ These are the changes that affect how a later ban should be read.
 | 10-01 ~07:20 | All five nightly disk cleanups moved off pooled ChatGPT accounts to DeepSeek (`codex exec -p dsflash`; on M5, routine provider `deepseek`). Studio's had failed with 401 on 09-30 and 10-01. |
 | by 10-02 08:12 | `codex-desktop-split` merged into `main` (`544ebd2`) and running on the laptop; its first `aim` run there created `~/.aimgr/codex-cli` at 08:12:26 and marked pro16 blocked. |
 | 10-02 08:12:55 | Investigation `aim status --json` on M5 polled every account, 29 seconds after pro16 was marked. Not a confounder for pro16; it is one for any account that dies in the next day. |
+| 10-02 14:07–16:36 | Every live account got a new weekly window with reset credits unchanged: OpenAI reset limits. Weekly reset times before and after this moment belong to the same account. |
+| from 10-02 | Amir is shrinking the pool: pro6's plan cancelled, pro7's lapsed (Redis `expired_by_choice`, 10-03 and 10-04), more to follow. Neither is a ban. |
+| correction to 10-01 ~07:20 | The DeepSeek runs no longer spend pooled usage, but Codex still loads the ChatGPT login in their Codex home and refreshes its token at startup: studio's 01:15 run refreshed pro7's token on 10-03, and M5's routine carried boss's login. |
+| found 10-04 | laptop: Hermes gateways `maxrivers` and `personal` call Codex daily at 02:00, 07:00 and 09:00. Not on any banned account. |
 
-**Still on pooled ChatGPT accounts as of 10-02:**
+**Still touching pooled ChatGPT accounts as of 10-04:**
 - M5 `chief-daily-maintenance` at 02:00 (picked boss on 10-01 and 10-02) and the Codex routine `psmobile-staging-build` (its 07:00 run made the last good read of pro16). Most other M5 routines are Claude routines.
 - 3 Cratejoy Hermes agents on studio and their 13 cron jobs: buyer_experience_sentinel on product_growth, support on pro9, zara on boss. Zara's sweep runs every 4 hours.
+- laptop Hermes gateways `maxrivers` and `personal`.
+- The DeepSeek cleanup runs' token refresh of whatever login sits in their Codex home.
 - AIM's all-account usage check on every `aim codex use` or `run`.
 
 ## Watch list: load per account (computed 2026-09-30)
@@ -128,7 +137,7 @@ These are Codex responses on M5 and home, attributed by weekly reset time. About
 | pro2 | Mar | 29,693 | 859 | mixed |
 | pro8 | May | 17,043 | 106 | mixed |
 | product_growth | Mar | 11,244 | 54 | mixed |
-| pro10 | May 28 | 11,015 | 359 | mixed |
+| pro10 | May 28 | 11,015 | 359 | banned 10-03 |
 | pro5 | Mar | 10,506 | 76 | mixed |
 | pro9 | May | 9,818 | 0 | quiet in rollouts, but Cratejoy support has run on it since 09-30 |
 | claudalyst | Apr | 8,548 | 555 | mixed |
@@ -136,7 +145,7 @@ These are Codex responses on M5 and home, attributed by weekly reset time. About
 | cfo | Mar | 7,161 | 302 | mixed |
 | growth | Mar | 6,935 | 376 | mixed |
 | pro11 | May 28 | 6,770+ | 0 | banned 09-26 |
-| pro6 | May | 6,043 | 379 | mixed |
+| pro6 | May | 6,043 | 379 | plan cancelled 10-03 (not a ban) |
 | pro17 | Aug | 5,078 | 0 | banned 10-01 (was used 09-30, after this table was computed) |
 | lessons | Mar | 4,960 | 488 | banned 09-30 |
 | pro13 | Aug | 4,951 | 0 | banned 09-27 |
@@ -148,7 +157,7 @@ These are Codex responses on M5 and home, attributed by weekly reset time. About
 | qa | Mar | 3,649 | 481 | mixed |
 | illustrator | Mar | 3,275 | 168 | mixed |
 | amir_personal | Mar | 2,969 | 241 | mixed |
-| pro7 | May | 1,719 | 18 | mixed |
+| pro7 | May | 1,719 | 18 | plan lapsed 10-03 (not a ban) |
 | pro3 | Mar | 436 | 183 | **mostly recent** |
 | coder2 | Mar | 312 | 0 | quiet since 09-25 |
 
