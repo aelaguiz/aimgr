@@ -524,6 +524,20 @@ at launch time. AIM passes field-only MCP/hook overlays through Claude's native
 options; credentials, sessions, project trust, and unrelated user settings
 remain label-isolated.
 
+Saved memories are shared across accounts. Claude Code normally keeps a
+project's memories inside the config directory, which would give every managed
+account its own copy. AIM launches each account with
+`CLAUDE_CODE_REMOTE_MEMORY_DIR` set to the normal `~/.claude`, so every account
+(and plain `claude`) reads and saves to `~/.claude/projects/<project>/memory/`.
+Each launch also moves in anything a session saved in its own account home,
+such as a session that was already running before this existed. A same-named
+memory with different text is kept beside the shared one as
+`<name>--<label>.md`; nothing is overwritten. `aim claude memory` shows the
+store, moves stragglers in on demand, and flags a project whose `MEMORY.md`
+is past the 200 lines or 25 KB that Claude loads at session start. The store is
+per machine. Claude does not document this variable: if a Claude Code update
+stops honoring it, the move-in notice will print on every launch.
+
 Sakana Fugu / Fugu Ultra are API-key accounts (no OAuth). Configure one account name plus its API
 key per Sakana subscription. Keys are stored only in the shared Redis credential store; status/list
 output shows a redacted fingerprint, never the raw key:

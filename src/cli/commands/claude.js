@@ -66,6 +66,11 @@ import { runSharedClaudePreRunPreflight } from "../../targets/claude-preflight.j
 import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
 import { inheritClaudeProjectConsent } from "../../targets/claude-project-consent.js";
 import {
+  foldManagedClaudeMemories,
+  renderClaudeSharedMemoryReport,
+  summarizeClaudeSharedMemory,
+} from "../../targets/claude-shared-memory.js";
+import {
   buildManagedClaudeSessionForkName,
   listRecentManagedClaudeSessions,
   readManagedClaudeSessions,
@@ -1258,7 +1263,7 @@ export async function handleClaude(context) {
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (!subcmd) {
     throw new Error(
-      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus|sonnet] | aim claude inventory [--json] | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
+      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus|sonnet] | aim claude inventory [--json] | aim claude memory | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
     );
   }
   if (subcmd === "list") {
@@ -1465,6 +1470,17 @@ export async function handleClaude(context) {
     if (result.ok !== true) {
       setExitCode(1);
     }
+    return;
+  }
+  if (subcmd === "memory") {
+    if (positional.length > 2) {
+      throw new Error("`aim claude memory` does not accept positional arguments.");
+    }
+    const fold = foldManagedClaudeMemories({ userHomeDir: homeDir });
+    stdout.write(renderClaudeSharedMemoryReport({
+      summary: summarizeClaudeSharedMemory({ userHomeDir: homeDir }),
+      fold,
+    }));
     return;
   }
   if (subcmd === "inventory") {

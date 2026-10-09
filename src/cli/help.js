@@ -43,6 +43,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim claude run <label> (opus|fable|sonnet) [--resume]  # common one-line managed Claude launch presets",
     "  aim claude run <label> [-- <claude args...>]  # project the Redis-backed Claude label into a per-label home and launch Claude",
     "  aim claude inventory [--json]  # Redis-backed Claude account coverage; zero provider requests",
+    "  aim claude memory  # show the memory store every managed Claude account shares; moves in anything saved in one account's own folder",
     "  aim claude status [account...] [--fresh] [--verbose] [--json]  # human account availability; --verbose shows technical state",
     "  aim claude usage [account...] [--fresh] [--verbose] [--json]   # exact alias for `aim claude status`",
     "  aim claude capture-native <label> [--source-home <dir>] [--source-config-dir <dir>]",

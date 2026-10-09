@@ -421,6 +421,7 @@ test("direct noninteractive runner uses contained roots and adapter without cust
         HOME: home,
         CLAUDE_CONFIG_DIR: configDir,
         CLAUDE_SECURESTORAGE_CONFIG_DIR: configDir,
+        CLAUDE_CODE_REMOTE_MEMORY_DIR: path.join(home, ".claude"),
       },
       cwd: projectDir,
       detached: true,

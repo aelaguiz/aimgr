@@ -6,6 +6,12 @@ import {
   CLAUDE_PROCESS_CONTROL_ACK_TYPE,
   CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
 } from "./claude-supervisor.js";
+import {
+  CLAUDE_SHARED_MEMORY_ENV_KEY,
+  describeFoldedClaudeMemories,
+  foldManagedClaudeMemories,
+  resolveClaudeSharedMemoryBase,
+} from "./claude-shared-memory.js";
 
 const SUPERVISOR_PATH = fileURLToPath(new URL("./claude-supervisor.js", import.meta.url));
 const STATUSLINE_TAP_PATH = fileURLToPath(new URL("./claude-statusline-tap.sh", import.meta.url));
@@ -546,6 +552,11 @@ export async function prepareClaudeCliLaunch({
       configDir: resolvedConfigDir,
       fsImpl,
     }), null, warn);
+    optionalCustomization("shared memory", () => {
+      const { folded } = foldManagedClaudeMemories({ userHomeDir: resolvedUserHome, fsImpl });
+      const notice = describeFoldedClaudeMemories(folded);
+      if (notice) warn?.(notice);
+    }, null, warn);
   }
 
   return Object.freeze({
@@ -562,6 +573,9 @@ export function buildContainedLaunchEnvironment({ preparedLaunch, env }) {
   launchEnv.HOME = preparedLaunch.userHomeDir;
   launchEnv.CLAUDE_CONFIG_DIR = preparedLaunch.configDir;
   launchEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR = preparedLaunch.configDir;
+  launchEnv[CLAUDE_SHARED_MEMORY_ENV_KEY] = resolveClaudeSharedMemoryBase({
+    userHomeDir: preparedLaunch.userHomeDir,
+  });
   if (preparedLaunch.adapterDir) {
     const inheritedPath = typeof launchEnv.PATH === "string" ? launchEnv.PATH : "";
     launchEnv.PATH = inheritedPath
