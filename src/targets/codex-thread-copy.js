@@ -31,6 +31,12 @@ import {
 //     fields, which are retired and remapped like every other id. Children are never resumed.
 //   * Window ids must be UUIDv7: `parse_uuid_v7` silently discards anything else.
 //   * `create_time` is a join key and is stripped unconditionally, even when blobs are kept.
+//   * Codex 0.163 sends every item id back to the server. Server-minted ids (`msg_`, `ctc_`,
+//     `fc_` plus 50 hex) are checked by the server: a random hex lookalike is rejected with
+//     "Supplied input item IDs require persisted-item lookup" (400). They are rebuilt as
+//     `<prefix>_<uuidv7>`, the shape Codex mints for its own items, which the server accepts.
+//   * Codex 0.163 writes the creating account into the header (`creator_user_id`,
+//     `creator_account_id`); both are stripped so the copy does not name the old account.
 
 export const REASONING_ITEM_TYPES = new Set(["reasoning"]);
 export const COMPACTION_ITEM_TYPES = new Set(["compaction", "context_compaction"]);
@@ -119,6 +125,7 @@ export const LINEAGE_KEYS = [
   "agent_role",
   "agent_path",
 ];
+export const CREATOR_KEYS = ["creator_user_id", "creator_account_id"];
 export const ID_KEYS = new Set([
   "id",
   "call_id",
@@ -199,9 +206,9 @@ function hexOfLength(length, { nowMs, randomBytesImpl }) {
 
 /**
  * Rebuild an id with the same prefix and the same suffix shape.
- * A bare UUID becomes a fresh UUIDv7. `msg_<uuid>` stays a uuid, `rs_<hex>` stays hex of the
- * same length, `call_<base62>` stays base62. No suffix-length rule: real rollouts contain
- * short ids like `msg_00f3a1`.
+ * A bare UUID becomes a fresh UUIDv7. `msg_<uuid>` stays a uuid, a server-minted `rs_<50 hex>`
+ * becomes `rs_<uuidv7>`, `call_<base62>` stays base62. No suffix-length rule: real rollouts
+ * contain short ids like `msg_00f3a1`.
  */
 const SEPARATOR_PATTERN = /^([A-Za-z][A-Za-z0-9]{0,31})([_-])(.+)$/;
 
@@ -239,11 +246,14 @@ export function isIdentifyingId(value) {
   return ID_PREFIXES.has(prefix.toLowerCase());
 }
 
+/** Server-minted item ids: `msg_`, `ctc_`, `fc_`, `rs_`, `cmp_` followed by 50 hex characters. */
+const SERVER_ITEM_ID_SUFFIX = /^[0-9a-f]{40,}$/i;
+
 /**
  * Rebuild an id, keeping the prefix and the separator and the suffix shape.
- * `msg_<uuid>` stays a uuid, `rs_<hex>` stays hex of the same length, `exec-<uuid>` stays a
- * dash-separated uuid, `call_<base62>` stays base62. No suffix-length rule: real rollouts
- * contain short ids like `msg_00f3a1`.
+ * `msg_<uuid>` stays a uuid, `exec-<uuid>` stays a dash-separated uuid, `call_<base62>` stays
+ * base62, short hex like `msg_00f3a1` stays hex of the same length. A server-minted item id
+ * (`ctc_<50 hex>`) becomes `ctc_<uuidv7>`: the server rejects a hex lookalike it did not mint.
  */
 export function remapIdValue(value, { nowMs, randomBytesImpl } = {}) {
   const text = String(value);
@@ -251,7 +261,8 @@ export function remapIdValue(value, { nowMs, randomBytesImpl } = {}) {
   const match = text.match(SEPARATOR_PATTERN);
   if (!match) return null;
   const [, prefix, separator, suffix] = match;
-  if (UUID_PATTERN.test(suffix)) {
+  if (UUID_PATTERN.test(suffix)
+    || (separator === "_" && SERVER_ITEM_ID_SUFFIX.test(suffix))) {
     return `${prefix}${separator}${generateUuidV7({ nowMs, randomBytesImpl })}`;
   }
   if (/^[0-9a-f]+$/i.test(suffix)) {
@@ -594,6 +605,7 @@ export function rewriteRecord(record, map, { dropServerBlobs, keepReasoning, dro
 function rewriteHeader({ meta, newId, nowMs, map }) {
   const payload = JSON.parse(JSON.stringify(meta.raw ?? {}));
   for (const key of LINEAGE_KEYS) delete payload[key];
+  for (const key of CREATOR_KEYS) delete payload[key];
   const sessionId = String(payload.session_id ?? "").trim().toLowerCase();
   if (sessionId && sessionId !== String(meta.id).toLowerCase()) {
     throw new CodexThreadCopyError(
@@ -855,6 +867,9 @@ export function verifyCopiedRollout({
     if (!isUuidV7(payload.id)) failures.push({ check: "uuidv7", path: "payload.id", message: "thread id is not a UUIDv7" });
     for (const key of LINEAGE_KEYS) {
       if (payload[key] !== undefined) failures.push({ check: "lineage-field", path: `payload.${key}`, message: "lineage field survived" });
+    }
+    for (const key of CREATOR_KEYS) {
+      if (payload[key] !== undefined) failures.push({ check: "creator-field", path: `payload.${key}`, message: "creator account survived" });
     }
     const windowId = payload.context_window?.window_id;
     if (windowId && !isUuidV7(windowId)) {

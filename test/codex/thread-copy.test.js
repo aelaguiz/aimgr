@@ -41,6 +41,8 @@ function rolloutLines({ includeSpawnEvent = false, includeSpawnItem = false, con
         id: THREAD,
         forked_from_id: OTHER_THREAD,
         forked_from_ordinal_exclusive: 12,
+        creator_user_id: "user-OldAccountUser0000000",
+        creator_account_id: "dc43b39a-6aea-4e08-8c8b-c19cef99d9c3",
         timestamp: "2026-09-17T09:59:59.000Z",
         cwd: "/tmp/project",
         originator: "codex-tui",
@@ -254,10 +256,12 @@ test("remapIdValue keeps the prefix and the suffix shape, including short ids", 
   const short = remapIdValue(SHORT_ID, { nowMs: NOW, randomBytesImpl: bytes });
   assert.match(short, /^msg_[0-9a-f]{6}$/);
   assert.notEqual(short, SHORT_ID);
+  // The server rejects a hex lookalike of an id it minted, so server ids take Codex's own shape.
   const sourceHex = "086c64c19dfa8c6e016aac9421ad3487d193d5a151e24a2780";
-  const long = remapIdValue(`rs_${sourceHex}`, { nowMs: NOW, randomBytesImpl: bytes });
-  assert.equal(long.length, `rs_${sourceHex}`.length);
-  assert.notEqual(long, `rs_${sourceHex}`);
+  const server = remapIdValue(`ctc_${sourceHex}`, { nowMs: NOW, randomBytesImpl: bytes });
+  assert.match(server, /^ctc_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  const hexCall = remapIdValue("call_3427dcb554be4d53bf8b0111ffc4b458", { nowMs: NOW, randomBytesImpl: bytes });
+  assert.match(hexCall, /^call_[0-9a-f]{32}$/, "shorter hex call ids keep their shape");
   const call = remapIdValue("call_S3eqf9BvKhZ1SmhvyUCoUvIV", { nowMs: NOW, randomBytesImpl: bytes });
   assert.match(call, /^call_[A-Za-z0-9]{24}$/);
   const bare = remapIdValue(WINDOW_A, { nowMs: NOW, randomBytesImpl: bytes });
@@ -303,7 +307,8 @@ test("copy retires ids, blanks response_id, and keeps the transcript decodable",
   const header = written[0];
   assert.equal(header.payload.id, plan.newId);
   assert.equal(header.payload.session_id, plan.newId);
-  for (const key of ["forked_from_id", "forked_from_ordinal_exclusive", "parent_thread_id", "history_base"]) {
+  for (const key of ["forked_from_id", "forked_from_ordinal_exclusive", "parent_thread_id", "history_base",
+    "creator_user_id", "creator_account_id"]) {
     assert.equal(header.payload[key], undefined, key);
   }
   assert.equal(isUuidV7(header.payload.context_window.window_id), true);
