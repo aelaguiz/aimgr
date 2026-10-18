@@ -23,6 +23,8 @@ import {
   averageStatusNumbers,
   formatStatusDeltaMsCell,
   formatStatusTable,
+  formatWeeklyCapacityFreeingNextDayLine,
+  summarizeWeeklyCapacityFreeingNextDay,
 } from "./table.js";
 import {
   acquireRedisCacheLock,
@@ -1419,6 +1421,9 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
   return `${[
     `CLAUDE: ${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
     ...formatStatusTable(rows),
+    formatWeeklyCapacityFreeingNextDayLine(
+      summarizeWeeklyCapacityFreeingNextDay(accounts.map((account) => findOverallWeeklyWindow(account.usage)), nowMs),
+    ),
   ].join("\n")}\n`;
 }
 

@@ -1,7 +1,7 @@
 import { isObject } from "../core/normalize.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { renderClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
-import { buildStatusAccountFlags, buildStatusAverageAccountTableRow, formatInteractiveLoginSummary, formatStatusAccountExpiryCell, formatStatusAccountResetCell, formatStatusAccountResetCreditsCell, formatStatusAccountUsedCell, formatStatusTable, renderCurrentCodexUsageText } from "./table.js";
+import { buildStatusAccountFlags, buildStatusAverageAccountTableRow, formatInteractiveLoginSummary, formatStatusAccountExpiryCell, formatStatusAccountResetCell, formatStatusAccountResetCreditsCell, formatStatusAccountUsedCell, formatStatusTable, formatWeeklyCapacityFreeingNextDayLine, renderCurrentCodexUsageText, summarizeWeeklyCapacityFreeingNextDay } from "./table.js";
 
 function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }) {
   lines.push(`${heading} (${accounts.length})`);
@@ -29,6 +29,18 @@ function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }
     ...(averageAccountRow ? [averageAccountRow] : []),
   ];
   lines.push(...formatStatusTable(accountRows));
+  // Blocked accounts have no usable credential or are out of the pool, so
+  // their resets give the pool nothing.
+  const poolAccounts = accounts.filter((account) => account?.operator?.status !== "blocked");
+  const blocked = accounts.length - poolAccounts.length;
+  const weeklyIndex = codex ? 0 : 1;
+  lines.push(formatWeeklyCapacityFreeingNextDayLine(
+    summarizeWeeklyCapacityFreeingNextDay(
+      poolAccounts.map((account) => (account?.usage?.ok === true ? account.usage.windows?.[weeklyIndex] ?? null : null)),
+      now,
+    ),
+    { excluded: blocked > 0 ? `${blocked} blocked not in pool` : "" },
+  ));
 }
 
 export function renderStatusText(view, {

@@ -143,6 +143,54 @@ export function buildStatusAverageAccountTableRow(accounts, now = Date.now(), { 
   ];
 }
 
+const NEXT_DAY_MS = 24 * 3_600_000;
+
+// How much of the pool's weekly capacity comes back over the next 24 hours.
+// Each measured account is 100% of one account's week, so a 100%-used account
+// resetting tomorrow frees 1/N of the pool. A window whose reset already passed
+// has started over at zero; a window with no reset time frees nothing.
+export function summarizeWeeklyCapacityFreeingNextDay(windows, now = Date.now()) {
+  const list = Array.isArray(windows) ? windows : [];
+  let measured = 0;
+  let usedTotal = 0;
+  let freedTotal = 0;
+  let resetting = 0;
+  for (const window of list) {
+    const used = Number(window?.usedPercent);
+    if (!Number.isFinite(used)) continue;
+    measured += 1;
+    const resetAt = Number(window?.resetAt);
+    const deltaMs = Number.isFinite(resetAt) ? resetAt - now : null;
+    if (deltaMs !== null && deltaMs <= 0) continue;
+    const usedPct = Math.max(0, Math.min(100, used));
+    usedTotal += usedPct;
+    if (deltaMs !== null && deltaMs <= NEXT_DAY_MS && usedPct > 0) {
+      resetting += 1;
+      freedTotal += usedPct;
+    }
+  }
+  return {
+    accounts: list.length,
+    measured,
+    resetting,
+    freeNowPct: measured > 0 ? 100 - usedTotal / measured : null,
+    freedPct: measured > 0 ? freedTotal / measured : null,
+  };
+}
+
+export function formatWeeklyCapacityFreeingNextDayLine(summary, { excluded = "" } = {}) {
+  if (!summary || summary.measured === 0) return "Next 24h: no weekly usage readings in the pool";
+  const unmeasured = summary.accounts - summary.measured;
+  const scope = [
+    `${summary.resetting} of ${summary.measured} accounts reset`,
+    ...(unmeasured > 0 ? [`${unmeasured} without a reading not counted`] : []),
+    ...(excluded ? [excluded] : []),
+  ].join(", ");
+  const freeNow = Math.round(summary.freeNowPct);
+  const freeAfter = Math.round(summary.freeNowPct + summary.freedPct);
+  return `Next 24h: ${Math.round(summary.freedPct)}% of pool weekly capacity frees up (${scope}); ${freeNow}% free now, ${freeAfter}% after`;
+}
+
 export function buildStatusAccountFlags(account) {
   const flags = [];
   const detailReason = String(account?.operator?.detailReason ?? "").trim();

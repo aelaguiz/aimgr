@@ -92,6 +92,12 @@ aim status --json
 aim status --compact
 ```
 
+Under the Codex and Claude tables, a `Next 24h` line says how much of that pool's weekly
+capacity comes back in the next 24 hours: the weekly usage on accounts whose weekly limit
+resets by then, as a share of every measured account's full week. It also shows how much of
+the pool is free now and how much will be free after those resets, before any new use.
+Blocked Codex accounts are not in the pool and are left out.
+
 Hourly usage and agent activity history (foreground process, stop with Ctrl-C):
 
 ```bash
