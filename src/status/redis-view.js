@@ -1,3 +1,4 @@
+import { redactRedisEndpoint } from "../core/sanitize.js";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { parseExpiresAtToMs, formatExpiresIn } from "../core/time.js";
@@ -44,16 +45,6 @@ function safeTimestamp(value) {
   const raw = typeof value === "string" ? value.trim() : "";
   const parsed = raw ? Date.parse(raw) : Number.NaN;
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
-}
-
-function redactRedisEndpoint(value) {
-  try {
-    const parsed = new URL(String(value ?? ""));
-    if (!new Set(["redis:", "rediss:"]).has(parsed.protocol) || !parsed.hostname) return "configured";
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`;
-  } catch {
-    return value ? "configured" : "unconfigured";
-  }
 }
 
 function projectUsage(value, provider) {
