@@ -106,7 +106,7 @@ export function getRedisConfig({ homeDir, requireConfigured = true }) {
   const redis = read.config.redis;
   if (requireConfigured && !redis.url) {
     throw new Error(
-      `AIM is not attached to Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`,
+      `AIM is not attached to Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`,
     );
   }
   return { ...read, redis };

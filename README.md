@@ -1,41 +1,31 @@
 # aimgr
 
-`aimgr` coordinates AI account credentials across the three-machine pool.
+`aimgr` coordinates AI account credentials across the host fleet.
 
-The shared source of truth is Redis on `agents` at Amir's Mac Studio over Tailscale. Local tool files are projections only:
+The shared source of truth is Redis Cloud Essentials. Every configured host, including the Mac Studio, connects directly over TLS and password authentication. Fly workloads use the same public TLS endpoint.
 
-- Redis URL for remote clients: `redis://amirs-mac-studio:6380`
-- Redis URL on `agents@amirs-mac-studio` itself: `redis://127.0.0.1:6380`
-- fallback Tailnet IP: `redis://100.96.80.106:6380`
-- local config: `~/.aimgr/config.yaml`
-- local-only adjunct state: `~/.aimgr/local-state.json`
-- legacy `~/.aimgr/secrets.json`: backup artifact only; runtime commands ignore it
+- Managed endpoint: `measure-permissible-test-42143.db.redis.io:12453`
+- Database: `aimgr`, ID `14706401`, 250 MB in AWS Ohio (`us-east-2`), $5/month
+- Replication, persistence, and remote backups: off
+- Local private connection config: `~/.aimgr/config.yaml` (mode `600`)
+- Local-only adjunct state: `~/.aimgr/local-state.json`
+- Legacy `~/.aimgr/secrets.json`: old artifact only; runtime commands ignore it
 
-The Redis cutover is intentionally breaking and non-reverse-compatible. Runtime credential coordination no longer has file ownership, SSH authority pulls, or promote-back flows.
+The credential pool is in Redis. Local tool files are projections only. There is no Redis VM or container to maintain.
 
 ## Setup
 
-Configure each machine to point at the same Redis primary and key prefix:
-
-Remote clients use the Tailscale hostname:
+Configure every machine with the same authenticated TLS URL and key prefix. Obtain the password from the Redis Cloud console or copy the private Redis configuration from an already attached host. The placeholder below is not a working password; never commit the real URL.
 
 ```bash
 aim redis configure \
-  --url redis://amirs-mac-studio:6380 \
+  --url 'rediss://default:<password>@measure-permissible-test-42143.db.redis.io:12453' \
   --key-prefix aimgr:v1: \
-  --primary-host agents@amirs-mac-studio \
-  --transport tailscale
+  --primary-host measure-permissible-test-42143.db.redis.io \
+  --transport tls
 ```
 
-The Redis host itself, `agents@amirs-mac-studio`, connects to its own container over localhost:
-
-```bash
-aim redis configure \
-  --url redis://127.0.0.1:6380 \
-  --key-prefix aimgr:v1: \
-  --primary-host agents@amirs-mac-studio \
-  --transport tailscale
-```
+Normal certificate verification works with the system trust store; no custom CA or client certificate is required. The Mac Studio uses this same configuration. The temporary relay for sessions started before the October 20 migration removes itself after those connections finish. See the [migration record](docs/REDIS_CLOUD_MIGRATION_2026-10-20.md) for its status path and the offline old M1 follow-up.
 
 Check the attachment:
 
@@ -75,7 +65,7 @@ bash scripts/install-auth-maintainer.sh --uninstall
 Redis administration and repair:
 
 ```bash
-aim redis configure --url <redis-url> [--key-prefix <prefix>] [--primary-host <host>] [--transport tailscale]
+aim redis configure --url <redis-url> [--key-prefix <prefix>] [--primary-host <host>] [--transport tls]
 aim redis config
 aim redis ping
 aim redis snapshot

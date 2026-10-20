@@ -24,7 +24,7 @@ const SAKANA_USAGE =
 function requireRedis(homeDir) {
   if (!isRedisConfigured({ homeDir })) {
     throw new Error(
-      `\`aim sakana\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`,
+      `\`aim sakana\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`,
     );
   }
 }

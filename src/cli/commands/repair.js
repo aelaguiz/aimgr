@@ -9,7 +9,7 @@ async function withConfiguredRedis(context, fn) {
   const { homeDir } = context;
   const redis = readAimgrConfig({ homeDir }).config.redis;
   if (!redis.url) {
-    throw new Error(`AIM Redis is not configured. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+    throw new Error(`AIM Redis is not configured. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
   }
   const connectImpl = context.connectRedisStoreImpl ?? connectRedisStore;
   const store = await connectImpl({ url: redis.url, keyPrefix: redis.keyPrefix });
