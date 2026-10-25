@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Deploy what's on main to the fleet. M5 is the dev box; run this FROM M5 after pushing.
+# Fleet inventory: docs/FLEET.md. The retired old M1 is not a deployment target.
 # Per box: ff-only pull of ~/workspace/aimgr and ~/workspace/prime-agent, npm install,
 # refresh aim/aimgr wrappers and the prime-agent wrapper. NEVER touches daemons,
 # sessions, dist bundles, or snapshots. Diverged/dirty checkouts fail LOUD, no force.

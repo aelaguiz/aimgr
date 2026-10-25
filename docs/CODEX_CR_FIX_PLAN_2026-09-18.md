@@ -112,7 +112,9 @@ if the Codex binary honours it) and assert no retired id appears in headers, `cl
 
 1. Commit on `main`, push.
 2. `bash scripts/install-local-bin.sh` here; on home, studio, laptop, M3 Max: `git pull` then the same script.
-   `amirs-m3-36gb` and `old-m1` were unreachable on 2026-09-18; do them when they are up.
+   `amirs-m3-36gb` and `old-m1` were unreachable on 2026-09-18. The M3 36 GB is
+   now updated. Amir retired the old M1 on 2026-10-25; it has no pending rollout.
+   Use the current [fleet inventory](FLEET.md) for future deployments.
 3. Confirm with `cr --dry-run` on one host.
 
 Effort: about one working day. Changes 1 and 2 about 2 hours, change 3 about 3 hours, change 4 about 2 hours, tests

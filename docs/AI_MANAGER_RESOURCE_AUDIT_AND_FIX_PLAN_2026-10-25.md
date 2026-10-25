@@ -233,9 +233,9 @@ remain local and must survive deployment. The Redis-specific help-test change
 is excluded from this release because its corresponding migration is not in
 main. The clean release passes 600 tests with two workers in 15.5 seconds.
 
-The fleet inventory consists of the M5, home server, Mac Studio, M3 Max and
-M3 36 GB. All five are reachable. The old M1 is offline in Tailscale and its SSH
-connection times out. Deployment updates AI Manager source and installed
+The [fleet inventory](FLEET.md) consists of the M5, home server, Mac Studio,
+M3 Max and M3 36 GB. All five are updated and verified. Amir retired the old
+M1 on October 25; it is not an outstanding rollout target. Deployment updates AI Manager source and installed
 wrappers/extensions, preserves existing local changes, and leaves running
 agent processes intact. Per-host completion is verified from the installed
 command and source hashes.
