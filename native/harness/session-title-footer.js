@@ -292,8 +292,16 @@ export default function sessionIdentityExtension(pi) {
   let manualTitle = false;
   let lastRenderedWidget;
   let lastTerminalTitle;
+  let lastRenderedRevision;
   let refreshTimer;
   let titleUpdate = Promise.resolve();
+
+  const sessionRevision = (ctx) => {
+    if (typeof ctx.sessionManager?.getLeafId !== "function") return undefined;
+    // Messages, recaps, renames and credential bindings all append entries and
+    // advance the leaf. Reading it is O(1); getEntries/getSessionName are O(n).
+    return JSON.stringify([currentSessionId(ctx), ctx.sessionManager.getLeafId(), ctx.model?.provider, ctx.cwd]);
+  };
 
   const appendIdentity = () => {
     if (!identity) return false;
@@ -359,6 +367,7 @@ export default function sessionIdentityExtension(pi) {
       lastTerminalTitle = terminalTitle;
       ctx.ui.setTitle(terminalTitle);
     }
+    lastRenderedRevision = sessionRevision(ctx);
   };
 
   const applyAutoTitle = async (ctx, title, titleSource, recapMessageCount = 0) => {
@@ -438,6 +447,7 @@ export default function sessionIdentityExtension(pi) {
     branch = gitBranch(ctx.cwd);
     lastRenderedWidget = undefined;
     lastTerminalTitle = undefined;
+    lastRenderedRevision = undefined;
     manualTitle = false;
 
     const entries = ctx.sessionManager.getEntries();
@@ -469,9 +479,16 @@ export default function sessionIdentityExtension(pi) {
 
     update(ctx);
     refreshTimer = setInterval(() => {
-      void maybeUpgradeFromRecap(ctx);
       // Daemon extension UI is fire-and-forget rather than replayed state. Re-send
       // unchanged identity so a newly attached client receives the banner/title.
+      // An idle session can replay the rendered values without scanning history.
+      const revision = sessionRevision(ctx);
+      if (revision !== undefined && revision === lastRenderedRevision) {
+        ctx.ui.setWidget(WIDGET_KEY, lastRenderedWidget.split("\n"), { placement: "belowEditor" });
+        ctx.ui.setTitle(lastTerminalTitle);
+        return;
+      }
+      void maybeUpgradeFromRecap(ctx);
       update(ctx, false, true);
     }, 1000);
     refreshTimer.unref?.();

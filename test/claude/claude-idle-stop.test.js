@@ -51,11 +51,17 @@ test("lists only live Claude processes that AIM launched", () => {
   const write = (pid) => fs.writeFileSync(path.join(dir, `${pid}.json`),
     JSON.stringify({ pid, sessionId: `id-${pid}`, cwd: "/w", status: "idle", updatedAt: 42 }));
   [10, 11, 12].forEach(write);
+  let probes = 0;
   const exec = (cmd, args) => {
-    const pid = args.at(-1);
-    if (args[1] === "ppid=,tty=") return pid === "10" ? "100 ttys010" : "200 ??";
-    return pid === "100" ? "node /x/aimgr/src/targets/claude-supervisor.js /claude" : "timeout claude -p";
+    probes += 1;
+    assert.equal(cmd, "ps");
+    assert.deepEqual(args, ["-axo", "pid=,ppid=,tty=,command="]);
+    return "10 100 ttys010 /claude\n11 200 ?? /claude\n12 100 ttys012 /claude\n"
+      + "100 1 ?? node /x/aimgr/src/targets/claude-supervisor.js /claude\n200 1 ?? timeout claude -p\n";
   };
   const sessions = listLocalAimClaudeSessions({ homeDir: home, isAlive: (pid) => pid !== 12, execFileSyncImpl: exec });
   assert.deepEqual(sessions.map((s) => [s.label, s.pid, s.sessionId, s.tty, s.lastActiveMs]), [["pro9", 10, "id-10", "ttys010", 42]]);
+  assert.equal(probes, 1);
+  assert.deepEqual(listLocalAimClaudeSessions({ homeDir: home, isAlive: () => true,
+    execFileSyncImpl: () => { throw new Error("ps unavailable"); } }), []);
 });

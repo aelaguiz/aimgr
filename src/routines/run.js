@@ -13,6 +13,7 @@ import {
 } from "../io/paths.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
 import {
+  createPrimeSessionObserver,
   readLatestPrimeUserText,
   readPrimeLatestTurn,
   readPrimeSessionProfile,
@@ -27,7 +28,7 @@ import { codexRoutineArgs, startCodexRoutineTurn } from "./codex.js";
 import {
   formatClaudeRoutineParkNotice,
   prepareInteractiveClaudeRoutine,
-  readClaudeRoutineEvents,
+  createClaudeRoutineEventReader,
   runClaudeRoutineSession,
 } from "./claude.js";
 import { runClaudeCli } from "../targets/claude-runner.js";
@@ -773,9 +774,10 @@ async function waitForPromptAdmission({ context, sessionPath, baselineSha256, ef
   const pollMs = privateTimeout(context, "pollMs", LIFECYCLE_POLL_MS);
   const deadline = Date.now() + timeoutMs;
   let lastReadError = null;
+  const readPersistedPrompt = createPrimeSessionObserver(sessionPath, readLatestPrimeUserText);
   while (Date.now() < deadline) {
     try {
-      const persisted = readLatestPrimeUserText(sessionPath);
+      const persisted = readPersistedPrompt();
       const persistedSha256 = persisted === null ? null : sha256(persisted);
       if (persistedSha256 === effectiveSha256) return persistedSha256;
       if (persistedSha256 !== null && persistedSha256 !== baselineSha256) {
@@ -800,9 +802,10 @@ async function waitForInitialTurnSettlement({ context, sessionPath, effectiveSha
   const pollMs = privateTimeout(context, "pollMs", LIFECYCLE_POLL_MS);
   const deadline = Date.now() + timeoutMs;
   let lastReadError = null;
+  const readLatestTurn = createPrimeSessionObserver(sessionPath, readPrimeLatestTurn);
   while (Date.now() < deadline) {
     try {
-      const turn = readPrimeLatestTurn(sessionPath);
+      const turn = readLatestTurn();
       const userSha256 = turn.userText === null ? null : sha256(turn.userText);
       if (userSha256 !== effectiveSha256) {
         throw new Error("Prime active turn changed before the routine initial turn settled.");
@@ -940,7 +943,7 @@ export async function executeRoutineWorker(context) {
           return { status: 1, error };
         });
         let settled = false;
-        let consumed = 0;
+        const readNewEvents = createClaudeRoutineEventReader(eventsPath);
         let observerError = null;
         const timeoutMs = privateTimeout(context, "initialTurnMs", INITIAL_TURN_TIMEOUT_MS);
         const deadline = Date.now() + timeoutMs;
@@ -955,8 +958,7 @@ export async function executeRoutineWorker(context) {
             ...receipt, interactiveTui: { ...receipt.interactiveTui, status: "live" },
           });
           for (;;) {
-            for (const event of readClaudeRoutineEvents(eventsPath).slice(consumed)) {
-              consumed += 1;
+            for (const event of readNewEvents()) {
               if (event.sessionId !== sessionId) continue;
               lastEventMs = Date.now();
               if (event.type === "SessionStart") {

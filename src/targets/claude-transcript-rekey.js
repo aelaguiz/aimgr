@@ -1,9 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import { readFileLines } from "../io/file-lines.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GENERATED_ID_PATTERN = /^(?:toolu|msg|req)_[A-Za-z0-9_-]{8,}$/;
 const GENERATED_ID_TOKEN = /(?:toolu|msg|req)_[A-Za-z0-9_-]{8,}/g;
-const IDENTIFIER_TOKEN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_-]{8,}/gi;
+// Anchor prefixed IDs at the start of an alphanumeric run. Without this,
+// a long payload with no underscore retries the greedy prefix at every byte
+// and makes replacement quadratic. Preserve numeric text before an ID.
+const IDENTIFIER_TOKEN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<![A-Za-z0-9])([0-9]*)([A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_-]{8,})/gi;
 const IDENTIFIER_FIELD = /(?:^|_)(?:id|uuid)$|(?:Id|ID|Uuid|UUID)$/;
 const PREFIXED_ID_PATTERN = /^([A-Za-z][A-Za-z0-9]*_)[A-Za-z0-9_-]{8,}$/;
 const CONTENT_FIELDS = new Set(["message", "toolUseResult", "attachment", "wireToolInputs"]);
@@ -84,7 +89,9 @@ function collectStructuredIdentifiers(value, mapping, reserved, insideContent = 
 
 export function replaceClaudeTranscriptIdentifiers(value, mapping) {
   if (typeof value !== "string" || mapping.size === 0) return value;
-  return value.replace(IDENTIFIER_TOKEN, (match) => mapping.get(match) ?? match);
+  return value.replace(IDENTIFIER_TOKEN, (match, digits, prefixedId) => (
+    prefixedId ? `${digits}${mapping.get(prefixedId) ?? prefixedId}` : mapping.get(match) ?? match
+  ));
 }
 
 function rewriteValue(value, mapping) {
@@ -122,6 +129,75 @@ function parseTranscriptLines(content) {
   return entries;
 }
 
+function* readTranscriptEntries(sourcePath) {
+  let lineNumber = 0;
+  let malformedLine = null;
+  for (const bytes of readFileLines(sourcePath)) {
+    lineNumber += 1;
+    const line = UTF8.decode(bytes);
+    if (!line.trim()) continue;
+    if (malformedLine !== null) {
+      throw new Error(`Claude source transcript has malformed JSONL at line ${malformedLine}.`);
+    }
+    let entry;
+    try {
+      entry = JSON.parse(line);
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("invalid record");
+    } catch {
+      malformedLine = lineNumber;
+      continue;
+    }
+    yield { entry, line };
+  }
+}
+
+function rewriteEntry(entry, mapping) {
+  const copy = rewriteValue(stripThinkingBlocks(entry), mapping);
+  if (copy.type === "custom-title" && typeof copy.customTitle === "string") {
+    copy.customTitle = copy.customTitle.replace(/^(?:\[fork from [^\]]+\]\s*)+/i, "") || "Continued session";
+  }
+  return JSON.stringify(copy);
+}
+
+// A first pass validates the history and collects identifiers, including forward
+// references. A second pass rewrites one record at a time. Keep only the mapping,
+// never the source, parsed history and rewritten history together in memory.
+export function rekeyClaudeTranscriptFile({
+  sourcePath, targetPath, expectedSessionId = null, stagedSessionId = randomUUID(),
+}) {
+  if (!UUID_PATTERN.test(stagedSessionId)) throw new Error("Cannot rekey an invalid Claude transcript.");
+  const observedSessionIds = new Set();
+  const mapping = new Map();
+  const reserved = new Set([stagedSessionId]);
+  let count = 0;
+  for (const { entry, line } of readTranscriptEntries(sourcePath)) {
+    count += 1;
+    if (typeof entry.sessionId === "string" && UUID_PATTERN.test(entry.sessionId)) observedSessionIds.add(entry.sessionId);
+    collectStructuredIdentifiers(entry, mapping, reserved);
+    for (const match of line.matchAll(GENERATED_ID_TOKEN)) recordIdentifier(match[0], mapping, reserved);
+  }
+  if (!count) throw new Error("Claude source transcript has no readable records.");
+  const normalizedIds = new Set([...observedSessionIds].map((value) => value.toLowerCase()));
+  const sourceSessionId = expectedSessionId?.toLowerCase() ?? [...normalizedIds][0];
+  if (!UUID_PATTERN.test(sourceSessionId ?? "") || !normalizedIds.has(sourceSessionId) || normalizedIds.size !== 1) {
+    throw new Error("Claude source transcript does not have one consistent session ID.");
+  }
+  for (const value of observedSessionIds) mapping.set(value, stagedSessionId);
+  mapping.set(sourceSessionId, stagedSessionId);
+  const fd = fs.openSync(targetPath, "wx", 0o600);
+  let complete = false;
+  try {
+    for (const { entry } of readTranscriptEntries(sourcePath)) {
+      fs.writeFileSync(fd, `${rewriteEntry(entry, mapping)}\n`);
+    }
+    complete = true;
+  } finally {
+    fs.closeSync(fd);
+    if (!complete) fs.unlinkSync(targetPath);
+  }
+  return Object.freeze({ sourceSessionId, stagedSessionId, mapping });
+}
+
 export function rekeyClaudeTranscript(content, {
   expectedSessionId = null,
   stagedSessionId = randomUUID(),
@@ -148,13 +224,7 @@ export function rekeyClaudeTranscript(content, {
   for (const match of content.matchAll(GENERATED_ID_TOKEN)) {
     recordIdentifier(match[0], mapping, reserved);
   }
-  const rewritten = entries.map((entry) => {
-    const copy = rewriteValue(stripThinkingBlocks(entry), mapping);
-    if (copy.type === "custom-title" && typeof copy.customTitle === "string") {
-      copy.customTitle = copy.customTitle.replace(/^(?:\[fork from [^\]]+\]\s*)+/i, "") || "Continued session";
-    }
-    return JSON.stringify(copy);
-  });
+  const rewritten = entries.map((entry) => rewriteEntry(entry, mapping));
   return Object.freeze({
     sourceSessionId,
     stagedSessionId,

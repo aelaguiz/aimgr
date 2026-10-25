@@ -6,7 +6,7 @@ import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
 import { resolveCodexAuthFilePath, resolveManagedCodexHomeDir } from "../../src/io/paths.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
-import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
+import { makeFakeJwt, mkTempHome, withEnv } from "../helpers/files.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 
 const KEY_PREFIX = "aimgr:codex-command-test";
@@ -69,6 +69,19 @@ function usage(label, usedPercent, weeklyUsedPercent = Math.min(99, usedPercent 
     ],
   };
 }
+
+test("CLI fixtures never inherit the developer's managed Codex auth directory", async () => {
+  const { home, connectRedisStoreImpl } = await setup();
+  const outsideHome = mkTempHome();
+  const outsideAuth = path.join(outsideHome, "auth.json");
+  fs.writeFileSync(outsideAuth, "developer credentials must remain untouched");
+  await withEnv({ CODEX_HOME: outsideHome }, async () => {
+    await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
+  });
+  assert.equal(fs.readFileSync(outsideAuth, "utf8"), "developer credentials must remain untouched");
+  const fixtureAuth = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
+  assert.equal(JSON.parse(fs.readFileSync(fixtureAuth, "utf8")).tokens.account_id, "acct_1");
+});
 
 test("explicit Redis-backed Codex use reconciles and activates without usage", async () => {
   const { home, connectRedisStoreImpl } = await setup();

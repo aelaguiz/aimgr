@@ -22,22 +22,22 @@ function readAppState(filePath, { required = false } = {}) {
   }
 }
 
-function sourceAppStatePaths(userHomeDir, selectedConfigDir) {
-  const paths = [path.join(userHomeDir, ".claude.json")];
+function* sourceAppStatePaths(userHomeDir, selectedConfigDir) {
+  yield path.join(selectedConfigDir, ".claude.json");
+  yield path.join(userHomeDir, ".claude.json");
   const homesDir = path.join(userHomeDir, ".aimgr", "claude-homes");
   let labels;
   try {
     labels = fs.readdirSync(homesDir, { withFileTypes: true });
   } catch (error) {
-    if (error?.code === "ENOENT") return paths;
+    if (error?.code === "ENOENT") return;
     throw error;
   }
   for (const label of labels) {
     if (!label.isDirectory()) continue;
     const configDir = path.join(homesDir, label.name, ".claude");
-    if (configDir !== selectedConfigDir) paths.push(path.join(configDir, ".claude.json"));
+    if (configDir !== selectedConfigDir) yield path.join(configDir, ".claude.json");
   }
-  return paths;
 }
 
 // Only the user's positive decisions for this exact directory cross label
@@ -48,13 +48,14 @@ export function inheritClaudeProjectConsent({ userHomeDir, configDir, cwd }) {
   const selected = readAppState(selectedPath, { required: true });
   let trusted = false;
   let externalImportsApproved = false;
-  for (const filePath of [selectedPath, ...sourceAppStatePaths(userHomeDir, configDir)]) {
+  for (const filePath of sourceAppStatePaths(userHomeDir, configDir)) {
     const state = filePath === selectedPath ? selected : readAppState(filePath);
     for (const projectPath of projectPaths) {
       const project = state?.projects?.[projectPath];
       if (project?.hasTrustDialogAccepted === true) trusted = true;
       if (project?.hasClaudeMdExternalIncludesApproved === true) externalImportsApproved = true;
     }
+    if (trusted && externalImportsApproved) break;
   }
   if (!trusted && !externalImportsApproved) return { wrote: false, trusted, externalImportsApproved };
 

@@ -1929,7 +1929,7 @@ test(`claude resume preserves model, effort and history when the recorded accoun
 });
 }
 
-test("raw Claude resume stages a cross-account transcript and keeps same-account resume direct", async () => {
+test("raw Claude resume stages a cross-account transcript and keeps same-account resume direct", async (t) => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -1949,6 +1949,15 @@ test("raw Claude resume stages a cross-account transcript and keeps same-account
     "",
   ].join("\n");
   fs.writeFileSync(sourcePath, sourceContent, "utf8");
+  const unrelated = path.join(path.dirname(sourcePath), "88888888-8888-4888-8888-888888888888.jsonl");
+  fs.writeFileSync(unrelated, sourceContent);
+  for (const method of ["readFileSync", "openSync"]) {
+    const original = fs[method];
+    t.mock.method(fs, method, (...args) => {
+      assert.notEqual(args[0], unrelated, "native resume opened unrelated history");
+      return original(...args);
+    });
+  }
   const record = (label) => {
     const emailAddress = `${label}@example.com`;
     const credential = buildAnthropicClaudeCredential({

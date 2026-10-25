@@ -72,3 +72,17 @@ test("managed Claude leaves a new project unapproved until the user accepts it",
   });
   assert.equal(fs.readFileSync(targetPath, "utf8"), before);
 });
+
+test("existing project approvals do not read other account homes", (t) => {
+  const home = mkTempHome();
+  const cwd = path.join(fs.realpathSync(home), "work");
+  fs.mkdirSync(cwd);
+  const selected = accountConfig(home, "selected");
+  writeJson(path.join(selected, ".claude.json"), { projects: { [cwd]: {
+    hasTrustDialogAccepted: true, hasClaudeMdExternalIncludesApproved: true,
+    hasClaudeMdExternalIncludesWarningShown: true,
+  } } });
+  t.mock.method(fs, "readdirSync", () => { throw new Error("already-approved project scanned other accounts"); });
+  assert.deepEqual(inheritClaudeProjectConsent({ userHomeDir: home, configDir: selected, cwd }),
+    { wrote: false, trusted: true, externalImportsApproved: true });
+});

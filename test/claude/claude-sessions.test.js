@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   buildManagedClaudeSessionForkName,
+  findManagedClaudeSessionFiles,
   listRecentManagedClaudeSessions,
   readManagedClaudeSessions,
   renderRecentManagedClaudeSessions,
@@ -211,22 +212,43 @@ test("managed Claude session listing stops reading after the recent bound closes
     });
   }
 
-  const originalReadFileSync = fs.readFileSync;
+  const originalOpenSync = fs.openSync;
   const reads = [];
-  fs.readFileSync = (...args) => {
+  fs.openSync = (...args) => {
     reads.push(String(args[0]));
-    return originalReadFileSync(...args);
+    return originalOpenSync(...args);
   };
   let sessions;
   try {
     sessions = listRecentManagedClaudeSessions({ homeDir: home, limit: 1 });
   } finally {
-    fs.readFileSync = originalReadFileSync;
+    fs.openSync = originalOpenSync;
   }
 
   assert.equal(sessions[0].threadId, THREAD_IDS[0]);
-  assert.equal(reads.length, 4);
+  assert.equal(new Set(reads).size, 4);
   assert.equal(reads.some((filePath) => filePath.endsWith(`${THREAD_IDS[9]}.jsonl`)), false);
+});
+
+test("Claude metadata streams large history and keeps old titles, latest runtime, and malformed-tail tolerance", (t) => {
+  const home = mkTempHome();
+  const transcript = writeManagedSession({ home, account: "pro5", threadId: THREAD_IDS[0],
+    cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS).toISOString(),
+    events: [{ type: "custom-title", customTitle: "Keep this old title" },
+      ...Array.from({ length: 80 }, () => ({ type: "progress", data: "x".repeat(32 * 1024) })),
+      { type: "assistant", message: { model: "claude-opus-4-8" }, effort: "xhigh",
+        cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS + 1_000).toISOString() }],
+    malformedTail: true });
+  const original = fs.readFileSync;
+  t.mock.method(fs, "readFileSync", (...args) => {
+    assert.notEqual(args[0], transcript, "metadata loaded a complete transcript");
+    return original(...args);
+  });
+  const result = resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[0] });
+  assert.equal(result.threadName, "Keep this old title");
+  assert.equal(result.model, "claude-opus-4-8");
+  assert.equal(result.effort, "xhigh");
+  assert.equal(result.lastUsedMs, NOW_MS + 1_000);
 });
 
 test("untitled sessions get a short user prompt preview without tool results or injected context", () => {
@@ -374,6 +396,40 @@ test("managed Claude thread ID resolution ignores an invalid duplicate transcrip
     resolveManagedClaudeSession({ homeDir: home, selector: threadId }).account,
     "pro5",
   );
+});
+
+test("exact and missing Claude IDs never open unrelated transcripts", (t) => {
+  const home = mkTempHome();
+  const target = writeManagedSession({ home, account: "pro5", threadId: THREAD_IDS[0],
+    cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS).toISOString() });
+  const unrelated = writeManagedSession({ home, account: "qa", threadId: THREAD_IDS[1],
+    cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS).toISOString() });
+  for (const method of ["readFileSync", "openSync"]) {
+    const original = fs[method];
+    t.mock.method(fs, method, (...args) => {
+      assert.notEqual(args[0], unrelated, "an ID lookup opened unrelated history");
+      return original(...args);
+    });
+  }
+  assert.equal(resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[0] }).transcriptPath, target);
+  assert.deepEqual(readManagedClaudeSessions({ homeDir: home, threadId: THREAD_IDS[2] }), []);
+  assert.throws(() => resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[2] }), /was not found/);
+});
+
+test("native Claude ownership lookup opens no transcript bodies", (t) => {
+  const home = mkTempHome();
+  const target = writeManagedSession({ home, account: "pro5", threadId: THREAD_IDS[0],
+    cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS).toISOString() });
+  for (const method of ["readFileSync", "openSync"]) {
+    const original = fs[method];
+    t.mock.method(fs, method, (...args) => {
+      assert.notEqual(args[0], target, "ownership lookup opened the transcript");
+      return original(...args);
+    });
+  }
+  assert.deepEqual(findManagedClaudeSessionFiles({ homeDir: home, threadId: THREAD_IDS[0] }),
+    [{ transcriptPath: target, account: "pro5", threadId: THREAD_IDS[0] }]);
+  assert.deepEqual(findManagedClaudeSessionFiles({ homeDir: home, threadId: THREAD_IDS[1] }), []);
 });
 
 test("managed Claude resume refuses to guess when exact runtime metadata is absent", async () => {

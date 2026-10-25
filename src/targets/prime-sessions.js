@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { readFileLines } from "../io/file-lines.js";
 import { HARNESS_MANAGED_PROVIDERS } from "./harness-auth.js";
 import { isPrimeKeyBackedProvider } from "../core/constants.js";
 import {
@@ -56,15 +57,31 @@ export function resolvePrimeSessionPath({ selector, homeDir, env = {}, cwd = pro
 
 export function readPrimeSessionEntries(sessionPath) {
   const entries = [];
-  for (const line of fs.readFileSync(sessionPath, "utf8").split(/\r?\n/)) {
-    if (!line) continue;
+  for (const bytes of readFileLines(sessionPath)) {
+    if (!bytes.length) continue;
     try {
-      entries.push(JSON.parse(line));
+      entries.push(JSON.parse(bytes.toString("utf8")));
     } catch {
       // Ignore a concurrently appended partial tail; it cannot be the active leaf.
     }
   }
   return entries;
+}
+
+// Scope the cache to one observation loop, retaining only its small result.
+// A changed/replaced/truncated file is read again; failed reads are never cached.
+export function createPrimeSessionObserver(sessionPath, read) {
+  let signature;
+  let result;
+  return () => {
+    const stat = fs.statSync(sessionPath);
+    const current = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    if (current !== signature) {
+      result = read(sessionPath);
+      signature = current;
+    }
+    return result;
+  };
 }
 
 export function readPrimeActiveBranch(sessionPath) {

@@ -26,7 +26,7 @@ function createCaptureStdout(chunks, stdout = {}) {
 }
 
 export async function runCli(argv, deps = {}) {
-  deps = { ...fixtureDepsForArgv(argv, deps), ...deps };
+  deps = testDeps(argv, deps);
   const chunks = [];
   const stdout = createCaptureStdout(chunks, deps.stdout);
   const wrappedDeps =
@@ -47,7 +47,7 @@ export async function runCli(argv, deps = {}) {
 }
 
 export async function runCliWithExitCode(argv, deps = {}) {
-  deps = { ...fixtureDepsForArgv(argv, deps), ...deps };
+  deps = testDeps(argv, deps);
   const chunks = [];
   let exitCode = 0;
   const stdout = createCaptureStdout(chunks, deps.stdout);
@@ -72,4 +72,21 @@ export async function runCliWithExitCode(argv, deps = {}) {
     },
   });
   return { stdout: chunks.join(""), exitCode };
+}
+
+function testDeps(argv, deps) {
+  const merged = { ...fixtureDepsForArgv(argv, deps), ...deps };
+  // A developer often runs tests from an AIM-managed session. Never let its
+  // real auth-directory overrides escape the test's --home fixture. Tests that
+  // exercise an override must supply it explicitly through deps.env.
+  return {
+    ...merged,
+    env: merged.env ?? {
+      ...process.env,
+      CODEX_HOME: "",
+      PI_CODING_AGENT_DIR: "",
+      PRIME_AGENT_CODING_AGENT_DIR: "",
+      CLAUDE_CONFIG_DIR: "",
+    },
+  };
 }

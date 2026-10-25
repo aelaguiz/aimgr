@@ -7,6 +7,7 @@ import { mkTempHome } from "../helpers/files.js";
 import { recordClaudeRoutineHook } from "../../src/routines/claude-hook.js";
 import {
   claudeRoutineArgs,
+  createClaudeRoutineEventReader,
   inheritClaudeRoutineTrust,
   parseClaudeRoutineJobStatus,
   prepareInteractiveClaudeRoutine,
@@ -17,6 +18,31 @@ function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(value));
 }
+
+test("routine monitor reads only appended bytes and waits for complete records", (t) => {
+  const file = path.join(mkTempHome(), "events.jsonl");
+  fs.writeFileSync(file, '{"type":"start"}\n{bad}\n[]\n');
+  const read = createClaudeRoutineEventReader(file);
+  let bytes = 0;
+  const original = fs.readSync;
+  t.mock.method(fs, "readSync", (...args) => { const n = original(...args); bytes += n; return n; });
+  assert.deepEqual(read(), [{ type: "start" }]);
+  bytes = 0;
+  assert.deepEqual(read(), []);
+  assert.equal(bytes, 0);
+  fs.appendFileSync(file, '{"type":"');
+  assert.deepEqual(read(), []);
+  fs.appendFileSync(file, 'stop"}\n');
+  bytes = 0;
+  assert.deepEqual(read(), [{ type: "stop" }]);
+  assert.equal(bytes, Buffer.byteLength('{"type":"stop"}\n'));
+  fs.writeFileSync(file, '{}\n');
+  assert.deepEqual(read(), [{}]);
+  const replacement = `${file}.new`;
+  fs.writeFileSync(replacement, '{"type":"replacement"}\n');
+  fs.renameSync(replacement, file);
+  assert.deepEqual(read(), [{ type: "replacement" }]);
+});
 
 test("Claude hooks record lifecycle and prompt hashes without logging prompt or assistant contents", () => {
   const eventsPath = path.join(mkTempHome(), "events.jsonl");

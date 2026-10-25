@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { mkTempHome } from "../helpers/files.js";
 import {
   rekeyClaudeTranscript,
+  rekeyClaudeTranscriptFile,
+  replaceClaudeTranscriptIdentifiers,
   stripClaudeTranscriptThinkingBytes,
 } from "../../src/targets/claude-transcript-rekey.js";
 
@@ -9,6 +14,52 @@ const SESSION = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ENTRY = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const TOOL = "toolu_01ReusedToolIdentifierAB";
 const DOMAIN_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+test("identifier replacement preserves numeric prefixes and large non-identifier text", () => {
+  const mapping = new Map([[TOOL, "toolu_newIdentifier123456"], [SESSION, "new-session"]]);
+  const padding = "x".repeat(512 * 1024);
+  assert.equal(replaceClaudeTranscriptIdentifiers(`${padding} 123${TOOL} /${SESSION}`, mapping),
+    `${padding} 123toolu_newIdentifier123456 /new-session`);
+});
+
+test("file rekey streams large history, forward references, thinking removal and incomplete tails", (t) => {
+  const home = mkTempHome();
+  const sourcePath = path.join(home, "source.jsonl");
+  const targetPath = path.join(home, "target.jsonl");
+  const records = [
+    { type: "user", sessionId: SESSION, parentUuid: ENTRY, message: { content: `Read ${TOOL}` } },
+    ...Array.from({ length: 80 }, () => ({ type: "progress", sessionId: SESSION, data: "x".repeat(32 * 1024) })),
+    { type: "assistant", sessionId: SESSION, uuid: ENTRY, message: { content: [
+      { type: "thinking", signature: "account-bound" }, { type: "tool_use", id: TOOL, name: "Read", input: {} }] } },
+  ];
+  fs.writeFileSync(sourcePath, records.map(JSON.stringify).join("\n") + "\n{unfinished\n");
+  const original = fs.readFileSync;
+  t.mock.method(fs, "readFileSync", (...args) => {
+    assert.notEqual(args[0], sourcePath, "file rekey loaded the complete source");
+    return original(...args);
+  });
+  const result = rekeyClaudeTranscriptFile({ sourcePath, targetPath, expectedSessionId: SESSION });
+  const text = fs.readFileSync(targetPath, "utf8");
+  const copied = text.trim().split("\n").map(JSON.parse);
+  assert.equal(copied.length, records.length);
+  assert.equal(copied[0].parentUuid, copied.at(-1).uuid);
+  assert.equal(copied[0].message.content, `Read ${copied.at(-1).message.content[0].id}`);
+  assert.equal(copied[0].sessionId, result.stagedSessionId);
+  for (const old of [SESSION, ENTRY, TOOL, "account-bound", "unfinished"]) assert.equal(text.includes(old), false);
+});
+
+test("file rekey rejects corrupt or mixed-account history without leaving output", () => {
+  const home = mkTempHome();
+  const sourcePath = path.join(home, "source.jsonl");
+  const targetPath = path.join(home, "target.jsonl");
+  const valid = JSON.stringify({ type: "user", sessionId: SESSION });
+  for (const content of [`${valid}\n{broken\n${valid}\n`,
+    `${valid}\n${JSON.stringify({ type: "user", sessionId: ENTRY })}\n`]) {
+    fs.writeFileSync(sourcePath, content);
+    assert.throws(() => rekeyClaudeTranscriptFile({ sourcePath, targetPath }), /malformed JSONL|consistent session ID/);
+    assert.equal(fs.existsSync(targetPath), false);
+  }
+});
 
 test("Claude transcript rekey preserves tool relationships and rewrites structured references", () => {
   const records = [

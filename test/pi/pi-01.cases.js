@@ -85,7 +85,9 @@ test("Redis-backed pi use writes auth.json and preserves non-openai providers", 
         PI_CODING_AGENT_DIR: piAgentDir,
       },
       async () => {
-        const out = JSON.parse(await runCli(["pi", "use", "--home", home], { fetchImpl }));
+        const out = JSON.parse(await runCli(["pi", "use", "--home", home], {
+          fetchImpl, env: { PI_CODING_AGENT_DIR: piAgentDir },
+        }));
         assert.equal(out.ok, true);
         assert.equal(out.receipt.status, "updated");
         assert.equal(out.receipt.providers[0].binding, "boss");
