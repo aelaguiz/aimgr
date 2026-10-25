@@ -72,6 +72,7 @@ import {
 } from "../../targets/claude-shared-memory.js";
 import {
   buildManagedClaudeSessionForkName,
+  findManagedClaudeSessionFiles,
   listRecentManagedClaudeSessions,
   readManagedClaudeSessions,
   renderRecentManagedClaudeSessions,
@@ -176,11 +177,11 @@ function planCrossAccountClaudeResume({ homeDir, label, configDir, cwd, args, se
     };
   }
 
-  const managedSessions = readManagedClaudeSessions({ homeDir });
-  if (sessionIdOption?.value && managedSessions.some((candidate) => (
-    candidate.threadId.toLowerCase() === sessionIdOption.value.toLowerCase()
-    && candidate.account !== label
-  ))) {
+  // Check filenames before opening transcripts. A resume of one ID must never
+  // parse the entire account pool's history, including when that ID is absent.
+  if (sessionIdOption?.value && findManagedClaudeSessionFiles({
+    homeDir, threadId: sessionIdOption.value,
+  }).some((candidate) => candidate.account !== label)) {
     throw new Error(
       `Claude session ID ${sessionIdOption.value} belongs to another account; use \`aim claude resume ${sessionIdOption.value} --account ${label}\` to continue it with a fresh ID.`,
     );
@@ -188,6 +189,12 @@ function planCrossAccountClaudeResume({ homeDir, label, configDir, cwd, args, se
   if (!selector) {
     return { args: nativeArgs, resumeOption: null, sessionFork: null };
   }
+
+  const exactId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selector);
+  const localMatches = exactId ? findManagedClaudeSessionFiles({ homeDir, threadId: selector, account: label }) : [];
+  const managedSessions = exactId
+    ? (localMatches.length ? localMatches : findManagedClaudeSessionFiles({ homeDir, threadId: selector }))
+    : readManagedClaudeSessions({ homeDir });
 
   const sameAccount = managedSessions.some((candidate) => (
     candidate.account === label

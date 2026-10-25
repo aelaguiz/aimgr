@@ -9,15 +9,21 @@ import { resolveAimgrStateDir } from "../io/paths.js";
 // failing. The pane stays open and gets a note saying what was stopped and how
 // to resume it.
 
-function processInfo(pid, execFileSyncImpl) {
+function processTable(execFileSyncImpl) {
   try {
-    const out = execFileSyncImpl("ps", ["-o", "ppid=,tty=", "-p", String(pid)], { encoding: "utf8" }).trim();
-    if (!out) return null;
-    const [ppid, tty] = out.split(/\s+/);
-    const parent = execFileSyncImpl("ps", ["-o", "command=", "-p", ppid], { encoding: "utf8" }).trim();
-    return { ppid: Number(ppid), tty: tty && tty !== "??" ? tty : null, parent };
+    const out = execFileSyncImpl("ps", ["-axo", "pid=,ppid=,tty=,command="], {
+      encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 5_000,
+    });
+    const table = new Map();
+    for (const line of out.split("\n")) {
+      const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+      if (match) table.set(Number(match[1]), {
+        ppid: Number(match[2]), tty: ["??", "?", "-"].includes(match[3]) ? null : match[3], command: match[4],
+      });
+    }
+    return table;
   } catch {
-    return null;
+    return new Map();
   }
 }
 
@@ -46,6 +52,7 @@ export function listLocalAimClaudeSessions({
     return [];
   }
   const sessions = [];
+  let processes;
   for (const label of labels) {
     const dir = path.join(homesRoot, label, ".claude", "sessions");
     let files = [];
@@ -63,8 +70,9 @@ export function listLocalAimClaudeSessions({
       }
       const pid = Number(record?.pid);
       if (!Number.isSafeInteger(pid) || pid < 1 || !isAlive(pid)) continue;
-      const info = processInfo(pid, execFileSyncImpl);
-      if (!info || !info.parent.includes("claude-supervisor.js")) continue;
+      processes ??= processTable(execFileSyncImpl);
+      const info = processes.get(pid);
+      if (!info || !processes.get(info.ppid)?.command.includes("claude-supervisor.js")) continue;
       sessions.push({
         label,
         pid,

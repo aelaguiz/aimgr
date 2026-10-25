@@ -5,6 +5,7 @@ import path from "node:path";
 import { parseAnthropicAuthorizationPaste } from "../../src/credentials/oauth.js";
 import { derivePoolAccountStatus } from "../../src/pool/account-status.js";
 import { parseArgs } from "../../src/cli/args.js";
+import { AIMGR_REDIS_PRIMARY_HOST } from "../../src/core/constants.js";
 import { buildAnthropicClaudeCredential, writeClaudeNativeBundle } from "../helpers/claude.js";
 import { runCli } from "../helpers/cli-runner.js";
 import { mkTempHome, writeJson } from "../helpers/files.js";
@@ -37,8 +38,8 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   assert.match(out, /aim claude status \[account\.\.\.\] \[--fresh\] \[--verbose\] \[--json\]/);
   assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
-  assert.match(out, /--primary-host <host>\s+Human-readable Redis primary host, e\.g\. agents@amirs-mac-studio/);
-  assert.match(out, /redis:\/\/amirs-mac-studio:6380/);
+  assert.ok(out.includes(`Human-readable Redis primary host, e.g. ${AIMGR_REDIS_PRIMARY_HOST}.`));
+  assert.match(out, /\[--transport tls\]/);
   assert.doesNotMatch(out, /Examples: agents@amirs-mac-studio/);
   assert.doesNotMatch(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
 });

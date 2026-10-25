@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
+import { readFileLines } from "../io/file-lines.js";
 
 const HOOK_PATH = fileURLToPath(new URL("./claude-hook.js", import.meta.url));
 
@@ -126,11 +127,30 @@ export function prepareInteractiveClaudeRoutine({ launch, routine, sessionId, ev
 // Observation must never terminate the interactive session. Ignore incomplete
 // writes, unrelated messages, and malformed observer records; Claude owns its UI.
 export function readClaudeRoutineEvents(eventsPath) {
-  const source = fs.readFileSync(eventsPath, "utf8");
-  return source.slice(0, source.lastIndexOf("\n") + 1).split("\n").flatMap((line) => {
-    try {
-      const value = line ? JSON.parse(line) : null;
-      return value && typeof value === "object" && !Array.isArray(value) ? [value] : [];
-    } catch { return []; }
-  });
+  return createClaudeRoutineEventReader(eventsPath)();
+}
+
+export function createClaudeRoutineEventReader(eventsPath) {
+  let offset = 0;
+  let identity = null;
+  return () => {
+    const stat = fs.statSync(eventsPath);
+    const currentIdentity = `${stat.dev}:${stat.ino}`;
+    if (identity !== currentIdentity || stat.size < offset) offset = 0;
+    identity = currentIdentity;
+    if (stat.size === offset) return [];
+    const events = [];
+    let position = offset;
+    for (const line of readFileLines(eventsPath, { start: offset, end: stat.size })) {
+      position += line.length;
+      if (position >= stat.size) break; // Retry this unfinished record after its newline arrives.
+      position += 1;
+      offset = position;
+      try {
+        const value = JSON.parse(line.toString("utf8"));
+        if (value && typeof value === "object" && !Array.isArray(value)) events.push(value);
+      } catch { /* Ignore malformed observer records, as before. */ }
+    }
+    return events;
+  };
 }

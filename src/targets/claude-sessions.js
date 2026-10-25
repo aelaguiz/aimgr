@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { readFileLines } from "../io/file-lines.js";
 import {
-  rekeyClaudeTranscript,
+  rekeyClaudeTranscriptFile,
   replaceClaudeTranscriptIdentifiers,
   stripClaudeTranscriptThinkingBytes,
 } from "./claude-transcript-rekey.js";
@@ -17,8 +19,6 @@ const SESSION_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SESSION_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const STAGED_FORK_MARKER_SUFFIX = ".aimgr-staged-fork";
 const RECENT_SESSION_CANDIDATE_MARGIN = 3;
-const INVALID_JSON_LINE = Symbol("invalid-json-line");
-const JSON_LINE_BREAK = 10;
 // Search raw bytes first; only decode metadata hits or an untitled prompt preview.
 // Every hit is still validated by parsing its complete containing JSONL record.
 const SESSION_JSON_MARKERS = Object.freeze({
@@ -46,44 +46,14 @@ function normalizeThreadName(value) {
   return name || null;
 }
 
-function parseJsonLineAt(content, markerIndex, cache) {
-  const start = content.lastIndexOf(JSON_LINE_BREAK, markerIndex - 1) + 1;
-  if (cache.has(start)) return { start, entry: cache.get(start) };
-  const newlineIndex = content.indexOf(JSON_LINE_BREAK, markerIndex);
-  const end = newlineIndex < 0 ? content.length : newlineIndex;
-  let entry;
-  try {
-    entry = JSON.parse(content.toString("utf8", start, end));
-  } catch {
-    entry = INVALID_JSON_LINE;
-  }
-  cache.set(start, entry);
-  return { start, entry };
+function parseJsonLine(line) {
+  try { return JSON.parse(line.toString("utf8")); } catch { return null; }
 }
 
-function findLatestSessionValue(content, marker, cache, selectValue) {
-  let searchBefore = content.length;
-  while (searchBefore > 0) {
-    const markerIndex = content.lastIndexOf(marker, searchBefore - 1);
-    if (markerIndex < 0) return null;
-    const { start, entry } = parseJsonLineAt(content, markerIndex, cache);
-    if (entry !== INVALID_JSON_LINE) {
-      const value = selectValue(entry);
-      if (value !== undefined) return value;
-    }
-    searchBefore = start;
-  }
-  return null;
-}
-
-function firstUserPromptPreview(content, cache) {
-  let cursor = 0;
-  while (cursor < content.length) {
-    const markerIndex = content.indexOf(SESSION_JSON_MARKERS.message, cursor);
-    if (markerIndex < 0) break;
-    const { entry } = parseJsonLineAt(content, markerIndex, cache);
-    const newline = content.indexOf(JSON_LINE_BREAK, markerIndex);
-    cursor = newline < 0 ? content.length : newline + 1;
+function firstUserPromptPreview(filePath) {
+  for (const line of readFileLines(filePath)) {
+    if (!line.includes(SESSION_JSON_MARKERS.message)) continue;
+    const entry = parseJsonLine(line);
     if (entry?.type !== "user" || entry.isMeta || entry.isSidechain) continue;
     const contentValue = entry.message?.content;
     const text = typeof contentValue === "string" ? contentValue
@@ -97,82 +67,53 @@ function firstUserPromptPreview(content, cache) {
 }
 
 function parseSessionFile({ filePath, account, threadId, fallbackTimestampMs }) {
-  let content;
+  let cwd = null;
+  let lastUsedMs = null;
+  let customTitle = null;
+  let aiTitle = null;
+  let runtime = null;
   try {
-    content = fs.readFileSync(filePath);
+    for (const line of readFileLines(filePath, { reverse: true })) {
+      if (!((!cwd && line.includes(SESSION_JSON_MARKERS.cwd))
+        || (lastUsedMs === null && line.includes(SESSION_JSON_MARKERS.timestamp))
+        || (!customTitle && line.includes(SESSION_JSON_MARKERS.customTitle))
+        || (!customTitle && !aiTitle && line.includes(SESSION_JSON_MARKERS.aiTitle))
+        || (!runtime && line.includes(SESSION_JSON_MARKERS.effort)))) continue;
+      const entry = parseJsonLine(line);
+      if (!cwd && typeof entry?.cwd === "string" && path.isAbsolute(entry.cwd)) {
+        cwd = path.normalize(entry.cwd);
+      }
+      if (lastUsedMs === null) {
+        const timestamp = Date.parse(String(entry?.timestamp ?? ""));
+        if (Number.isFinite(timestamp)) lastUsedMs = timestamp;
+      }
+      if (!customTitle && entry?.type === "custom-title") customTitle = normalizeThreadName(entry.customTitle);
+      if (!aiTitle && entry?.type === "ai-title") aiTitle = normalizeThreadName(entry.aiTitle);
+      if (!runtime && entry?.type === "assistant" && entry.isSidechain !== true) {
+        const model = typeof entry.message?.model === "string" ? entry.message.model.trim() : "";
+        const effort = typeof entry.effort === "string" ? entry.effort.trim().toLowerCase() : "";
+        if (SESSION_MODEL_PATTERN.test(model) && SESSION_EFFORT_LEVELS.has(effort)) runtime = { model, effort };
+      }
+      if (cwd && lastUsedMs !== null && customTitle && runtime) break;
+    }
+    if (!cwd) return null;
+    const observedAtMs = lastUsedMs ?? fallbackTimestampMs;
+    if (!Number.isFinite(observedAtMs)) return null;
+    const threadName = customTitle ?? aiTitle;
+    const description = threadName ?? firstUserPromptPreview(filePath);
+    return {
+      account, threadId, threadName, description,
+      thread: threadName ?? threadId,
+      cwd,
+      model: runtime?.model ?? null,
+      effort: runtime?.effort ?? null,
+      transcriptPath: filePath,
+      lastUsedAt: new Date(observedAtMs).toISOString(),
+      lastUsedMs: observedAtMs,
+    };
   } catch {
     throw new Error("Could not read managed Claude sessions.");
   }
-
-  const parsedLines = new Map();
-  const cwd = findLatestSessionValue(content, SESSION_JSON_MARKERS.cwd, parsedLines, (entry) => (
-    typeof entry?.cwd === "string" && path.isAbsolute(entry.cwd)
-      ? path.normalize(entry.cwd)
-      : undefined
-  ));
-  const lastUsedMs = findLatestSessionValue(
-    content,
-    SESSION_JSON_MARKERS.timestamp,
-    parsedLines,
-    (entry) => {
-      const timestampMs = Date.parse(String(entry?.timestamp ?? ""));
-      return Number.isFinite(timestampMs) ? timestampMs : undefined;
-    },
-  );
-  const customTitle = findLatestSessionValue(
-    content,
-    SESSION_JSON_MARKERS.customTitle,
-    parsedLines,
-    (entry) => {
-      if (entry?.type !== "custom-title" || !Object.hasOwn(entry, "customTitle")) {
-        return undefined;
-      }
-      return normalizeThreadName(entry.customTitle) ?? undefined;
-    },
-  );
-  const aiTitle = customTitle ? null : findLatestSessionValue(
-    content,
-    SESSION_JSON_MARKERS.aiTitle,
-    parsedLines,
-    (entry) => {
-      if (entry?.type !== "ai-title" || !Object.hasOwn(entry, "aiTitle")) {
-        return undefined;
-      }
-      return normalizeThreadName(entry.aiTitle) ?? undefined;
-    },
-  );
-  const runtime = findLatestSessionValue(content, SESSION_JSON_MARKERS.effort, parsedLines, (entry) => {
-    const observedModel = typeof entry?.message?.model === "string"
-      ? entry.message.model.trim()
-      : "";
-    const observedEffort = typeof entry?.effort === "string"
-      ? entry.effort.trim().toLowerCase()
-      : "";
-    return entry?.type === "assistant"
-      && entry?.isSidechain !== true
-      && SESSION_MODEL_PATTERN.test(observedModel)
-      && SESSION_EFFORT_LEVELS.has(observedEffort)
-      ? { model: observedModel, effort: observedEffort }
-      : undefined;
-  });
-  if (!cwd) return null;
-  const observedAtMs = lastUsedMs ?? fallbackTimestampMs;
-  if (!Number.isFinite(observedAtMs)) return null;
-  const threadName = customTitle ?? aiTitle;
-  const description = threadName ?? firstUserPromptPreview(content, parsedLines);
-  return {
-    account,
-    threadId,
-    threadName,
-    description,
-    thread: threadName ?? threadId,
-    cwd,
-    model: runtime?.model ?? null,
-    effort: runtime?.effort ?? null,
-    transcriptPath: filePath,
-    lastUsedAt: new Date(observedAtMs).toISOString(),
-    lastUsedMs: observedAtMs,
-  };
 }
 
 function compareSessions(left, right) {
@@ -180,7 +121,7 @@ function compareSessions(left, right) {
     || left.threadId.localeCompare(right.threadId);
 }
 
-function discoverManagedClaudeSessionCandidates({ homeDir }) {
+function discoverManagedClaudeSessionCandidates({ homeDir, threadId: requestedId, account: requestedAccount }) {
   const homesRoot = path.join(resolveAimgrStateDir({ homeDir }), "claude-homes");
   const candidates = [];
   for (const labelEntry of readDirectory(homesRoot, { missingIsEmpty: true })) {
@@ -191,6 +132,7 @@ function discoverManagedClaudeSessionCandidates({ homeDir }) {
     } catch {
       continue;
     }
+    if (requestedAccount !== undefined && account !== requestedAccount) continue;
     const projectsRoot = path.join(homesRoot, labelEntry.name, ".claude", "projects");
     for (const projectEntry of readDirectory(projectsRoot, { missingIsEmpty: true })) {
       if (!projectEntry.isDirectory() || projectEntry.isSymbolicLink()) continue;
@@ -199,6 +141,7 @@ function discoverManagedClaudeSessionCandidates({ homeDir }) {
         if (!fileEntry.isFile() || !fileEntry.name.endsWith(".jsonl")) continue;
         const threadId = fileEntry.name.slice(0, -".jsonl".length);
         if (!SESSION_ID_PATTERN.test(threadId)) continue;
+        if (requestedId !== undefined && threadId.toLowerCase() !== requestedId.toLowerCase()) continue;
         if (fs.existsSync(path.join(projectDir, `${threadId}${STAGED_FORK_MARKER_SUFFIX}`))) {
           continue;
         }
@@ -255,11 +198,22 @@ function readRecentManagedClaudeSessions({ homeDir, limit }) {
   return sessions.slice(0, limit);
 }
 
-export function readManagedClaudeSessions({ homeDir }) {
-  return discoverManagedClaudeSessionCandidates({ homeDir })
+export function readManagedClaudeSessions({ homeDir, threadId, account }) {
+  return discoverManagedClaudeSessionCandidates({ homeDir, threadId, account })
     .map(parseSessionCandidate)
     .filter(Boolean)
     .sort(compareSessions);
+}
+
+// Native --resume/--session-id already supplies the identity. Ownership lives
+// in the managed directory and filename; inspecting conversation bodies adds
+// no evidence. Fork staging validates the selected history before launching.
+export function findManagedClaudeSessionFiles({ homeDir, threadId, account }) {
+  if (!SESSION_ID_PATTERN.test(threadId ?? "")) return [];
+  return discoverManagedClaudeSessionCandidates({ homeDir, threadId, account })
+    .map(({ filePath, account: owner, threadId: id }) => ({
+      transcriptPath: filePath, account: owner, threadId: id,
+    }));
 }
 
 export function listRecentManagedClaudeSessions({
@@ -285,17 +239,13 @@ export function resolveManagedClaudeSession({ homeDir, selector, account }) {
       ? readRecentManagedClaudeSessions({ homeDir, limit: rank })[rank - 1]
       : null;
   } else if (SESSION_ID_PATTERN.test(value)) {
-    const matches = discoverManagedClaudeSessionCandidates({ homeDir })
-      .filter((candidate) => candidate.threadId === value.toLowerCase())
-      .filter((candidate) => account === undefined || candidate.account === account)
-      .map(parseSessionCandidate)
-      .filter(Boolean);
+    const matches = readManagedClaudeSessions({ homeDir, threadId: value, account });
     if (matches.length > 1) {
       throw new Error(`Claude thread ID ${value} exists under more than one managed account.`);
     }
     selected = matches[0] ?? null;
   }
-  if (!selected && !/^\d+$/.test(value)) {
+  if (!selected && !/^\d+$/.test(value) && !SESSION_ID_PATTERN.test(value)) {
     const sessions = readManagedClaudeSessions({ homeDir });
     const normalizedName = normalizeThreadName(value)?.toLowerCase();
     const matches = normalizedName
@@ -355,16 +305,22 @@ function copyRekeyedClaudeCompanion(sourceDir, targetDir, mapping) {
     } else if (stat.isFile()) {
       const extension = path.extname(entry.name).toLowerCase();
       if (COMPANION_TEXT_EXTENSIONS.has(extension)) {
-        const source = fs.readFileSync(sourcePath);
-        const original = extension === ".jsonl" ? stripClaudeTranscriptThinkingBytes(source) : source;
-        // Captured tool output can contain arbitrary bytes even in .txt files.
-        // IDs are ASCII; a Latin-1 byte view preserves all other bytes losslessly.
-        const rewritten = replaceClaudeTranscriptIdentifiers(original.toString("latin1"), mapping);
-        fs.writeFileSync(
-          targetPath,
-          Buffer.from(rewritten, "latin1"),
-          { flag: "wx", mode: stat.mode & 0o777 },
-        );
+        const fd = fs.openSync(targetPath, "wx", stat.mode & 0o777);
+        try {
+          let position = 0;
+          for (const source of readFileLines(sourcePath, { end: stat.size })) {
+            position += source.length;
+            const newline = position < stat.size;
+            if (newline) position += 1;
+            const original = extension === ".jsonl" ? stripClaudeTranscriptThinkingBytes(source) : source;
+            // A Latin-1 byte view preserves captured tool output, including
+            // invalid UTF-8. Identifier tokens cannot cross a line boundary.
+            const rewritten = replaceClaudeTranscriptIdentifiers(original.toString("latin1"), mapping);
+            fs.writeFileSync(fd, Buffer.from(rewritten + (newline ? "\n" : ""), "latin1"));
+          }
+        } finally {
+          fs.closeSync(fd);
+        }
       } else {
         fs.copyFileSync(sourcePath, targetPath, fs.constants.COPYFILE_EXCL);
       }
@@ -402,18 +358,8 @@ export function stageManagedClaudeSessionFork({ session, targetConfigDir }) {
   if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
     throw new Error("Managed Claude source transcript is not a safe regular file.");
   }
-  let rekeyed;
-  try {
-    const sourceContent = new TextDecoder("utf-8", { fatal: true })
-      .decode(fs.readFileSync(sourcePath));
-    rekeyed = rekeyClaudeTranscript(sourceContent, {
-      expectedSessionId,
-    });
-  } catch (error) {
-    if (error?.message?.startsWith("Claude source transcript")) throw error;
-    throw new Error("Could not read and rekey the Claude source transcript.");
-  }
-  const { sourceSessionId, stagedSessionId } = rekeyed;
+  const stagedSessionId = randomUUID();
+  let sourceSessionId;
 
   const projectName = path.basename(path.dirname(sourcePath));
   if (!projectName || projectName === "." || projectName === path.sep) {
@@ -422,7 +368,6 @@ export function stageManagedClaudeSessionFork({ session, targetConfigDir }) {
   const targetProjectsRoot = path.join(resolvedTargetConfigDir, "projects");
   const targetProjectDir = path.join(targetProjectsRoot, projectName);
   const targetTranscriptPath = path.join(targetProjectDir, `${stagedSessionId}.jsonl`);
-  const sourceCompanionPath = path.join(path.dirname(sourcePath), sourceSessionId);
   const targetCompanionPath = path.join(targetProjectDir, stagedSessionId);
   const targetMarkerPath = path.join(
     targetProjectDir,
@@ -488,8 +433,11 @@ export function stageManagedClaudeSessionFork({ session, targetConfigDir }) {
     }
     fs.writeFileSync(targetMarkerPath, "", { flag: "wx", mode: 0o600 });
     markerCreated = true;
-    fs.writeFileSync(targetTranscriptPath, rekeyed.content, { flag: "wx", mode: 0o600 });
+    const rekeyed = rekeyClaudeTranscriptFile({ sourcePath, targetPath: targetTranscriptPath,
+      expectedSessionId, stagedSessionId });
     transcriptCreated = true;
+    sourceSessionId = rekeyed.sourceSessionId;
+    const sourceCompanionPath = path.join(path.dirname(sourcePath), sourceSessionId);
 
     if (fs.existsSync(sourceCompanionPath)) {
       const companionStat = fs.lstatSync(sourceCompanionPath);
@@ -517,7 +465,7 @@ export function stageManagedClaudeSessionFork({ session, targetConfigDir }) {
     } catch {
       throw new Error("Claude session fork staging failed and could not be cleaned safely.");
     }
-    if (error?.message?.startsWith("Managed Claude")) throw error;
+    if (error?.message?.startsWith("Managed Claude") || error?.message?.startsWith("Claude source transcript")) throw error;
     throw new Error("Could not stage the managed Claude session fork.");
   }
 

@@ -117,6 +117,7 @@ function createExtensionHarness(initialEntries = [], initialName = "", options =
     model: { provider: "openai-codex" },
     sessionManager: {
       getEntries: () => entries,
+      getLeafId: () => String(entries.length),
       getSessionName: () => sessionName || undefined,
       getSessionId: () => options.sessionId ?? "019fd96e-51cb-72ef-ae34-83ecf10c6a12",
       getCredentialBindings: () => new Map([
@@ -242,7 +243,7 @@ test("a same-text human rename remains authoritative over a later recap", async 
   await harness.handlers.get("session_shutdown")({ type: "session_shutdown" }, harness.ctx);
 });
 
-test("the refresh cadence re-broadcasts unchanged daemon UI for late attachments", async () => {
+test("idle refresh replays daemon UI without scanning history, and detects appended renames", async () => {
   const originalSetInterval = globalThis.setInterval;
   const originalClearInterval = globalThis.clearInterval;
   let refresh;
@@ -259,6 +260,8 @@ test("the refresh cadence re-broadcasts unchanged daemon UI for late attachments
     assert.equal(readIdentityState(harness.entries), undefined);
     const widgetCount = harness.widgets.length;
     const titleCount = harness.terminalTitles.length;
+    let historyReads = 0;
+    harness.ctx.sessionManager.getEntries = () => { historyReads += 1; return harness.entries; };
 
     refresh();
     assert.equal(harness.widgets.length, widgetCount + 1);
@@ -266,6 +269,12 @@ test("the refresh cadence re-broadcasts unchanged daemon UI for late attachments
     assert.equal(readIdentityState(harness.entries), undefined);
     assert.deepEqual(harness.widgets.at(-1).content, harness.widgets.at(-2).content);
     assert.match(harness.widgets.at(-1).content[1], /session-id: 019fd96e-51cb-72ef-ae34-83ecf10c6a12/);
+    assert.equal(historyReads, 0);
+
+    harness.setName("Manually renamed while idle");
+    refresh();
+    assert.match(harness.widgets.at(-1).content[0], /Manually renamed while idle/);
+    assert.ok(historyReads > 0);
 
     await harness.handlers.get("session_shutdown")({ type: "session_shutdown" }, harness.ctx);
   } finally {
