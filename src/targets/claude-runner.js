@@ -7,6 +7,11 @@ import {
   CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
 } from "./claude-supervisor.js";
 import {
+  CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE,
+  normalizeClaudeRecoverySession,
+  printClaudeResumeHint,
+} from "./claude-session-recovery.js";
+import {
   CLAUDE_SHARED_MEMORY_ENV_KEY,
   describeFoldedClaudeMemories,
   foldManagedClaudeMemories,
@@ -802,6 +807,7 @@ export async function runClaudeCli({
   preparedLaunch = null,
   prepareClaudeCliLaunchImpl = prepareClaudeCliLaunch,
   spawnImpl = spawn,
+  stdout = process.stdout,
 } = {}) {
   const resolvedCwd = normalizedAbsolute(cwd);
   if (!resolvedCwd) {
@@ -844,6 +850,17 @@ export async function runClaudeCli({
   if (!child || typeof child.once !== "function") {
     throw new Error("Claude launch did not return a process handle.");
   }
+
+  let recoverySession = null;
+  let resumeHintPrinted = false;
+  const onRecoverySession = (message) => {
+    if (message?.type !== CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE) return;
+    const observed = normalizeClaudeRecoverySession(message);
+    if (!observed) return;
+    recoverySession = observed;
+    resumeHintPrinted = message.printed === true;
+  };
+  child.on?.("message", onRecoverySession);
 
   let nextControlRequestId = 0;
   const sendProcessControl = (action) => new Promise((resolve) => {
@@ -891,6 +908,7 @@ export async function runClaudeCli({
     let settled = false;
     let forcedKillTimer = null;
     const cleanup = () => {
+      child.removeListener?.("message", onRecoverySession);
       signal?.removeEventListener?.("abort", onAbort);
       registerProcessControl?.(null);
       if (forcedKillTimer) clearTimeout(forcedKillTimer);
@@ -920,6 +938,11 @@ export async function runClaudeCli({
     child.once("error", (error) => finish(reject, error));
     child.once("close", (code, childSignal) => {
       const normalizedSignal = typeof childSignal === "string" ? childSignal : null;
+      // Normally the supervisor prints after Claude exits. If the supervisor
+      // itself is killed, AIM still has its last observed real session ID.
+      if (!resumeHintPrinted) {
+        printClaudeResumeHint(recoverySession, { stdout, signal: normalizedSignal });
+      }
       finish(resolve, {
         status: normalizedSignal ? null : Number.isInteger(code) ? code : 1,
         signal: normalizedSignal,

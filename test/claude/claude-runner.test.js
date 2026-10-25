@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   buildManagedClaudeStatusLine,
   prepareClaudeCliLaunch,
@@ -14,6 +14,7 @@ import {
   verifyInstalledClaudeExecutable,
 } from "../../src/targets/claude-runner.js";
 import { mkTempHome, writeJson } from "../helpers/files.js";
+import { CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE } from "../../src/targets/claude-session-recovery.js";
 
 const RUNNER_SOURCE_PATH = fileURLToPath(new URL(
   "../../src/targets/claude-runner.js",
@@ -508,6 +509,85 @@ test("managed Claude runner waits for supervisor pause and resume acknowledgemen
   child.emit("close", 0, null);
   assert.deepEqual(await running, { status: 0, signal: null });
   assert.equal(control, null);
+});
+
+test("AIM prints the latest fork ID if its supervisor is killed", async () => {
+  const home = mkTempHome();
+  const prepared = preparedLaunch(home);
+  const supervisor = new EventEmitter();
+  const output = [];
+  const running = runClaudeCli({
+    preparedLaunch: prepared,
+    cwd: home,
+    args: ["--resume", "11111111-1111-4111-8111-111111111111", "--fork-session"],
+    spawnImpl: () => supervisor,
+    stdout: { write: (text) => output.push(text) },
+  });
+  const sessionId = "22222222-2222-4222-8222-222222222222";
+  supervisor.emit("message", {
+    type: CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE, sessionId, printed: false,
+  });
+  supervisor.emit("close", null, "SIGKILL");
+  assert.deepEqual(await running, { status: null, signal: "SIGKILL" });
+  assert.equal(output.join(""), `\n[aim] Resume this session with:\naim claude resume ${sessionId}\n`);
+  assert.equal(supervisor.listenerCount("message"), 0);
+});
+
+test("AIM does not duplicate the supervisor's printed resume hint", async () => {
+  const home = mkTempHome();
+  const supervisor = new EventEmitter();
+  const output = [];
+  const running = runClaudeCli({
+    preparedLaunch: preparedLaunch(home),
+    cwd: home,
+    spawnImpl: () => supervisor,
+    stdout: { write: (text) => output.push(text) },
+  });
+  supervisor.emit("message", {
+    type: CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE,
+    sessionId: "22222222-2222-4222-8222-222222222222",
+    printed: true,
+  });
+  supervisor.emit("close", 0, null);
+  assert.deepEqual(await running, { status: 0, signal: null });
+  assert.deepEqual(output, []);
+});
+
+test("real managed runner prints one actual resume ID after normal exit or a killed Claude child", async (t) => {
+  for (const killed of [false, true]) {
+    const home = mkTempHome();
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const output = [];
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    const script = `
+      const fs = require("node:fs");
+      const dir = process.env.CLAUDE_CONFIG_DIR + "/sessions";
+      fs.mkdirSync(dir, { recursive: true });
+      const file = dir + "/" + process.pid + ".json";
+      fs.writeFileSync(file, JSON.stringify({ pid: process.pid, startedAt: Date.now(), sessionId: "${sessionId}" }));
+      setTimeout(() => {
+        ${killed ? 'process.kill(process.pid, "SIGKILL");' : 'fs.unlinkSync(file); process.exit(0);'}
+      }, 600);
+    `;
+    const result = await runClaudeCli({
+      preparedLaunch: preparedLaunch(home),
+      cwd: home,
+      args: ["-e", script],
+      stdout: { write: (text) => output.push(text) },
+      spawnImpl(command, args, options) {
+        const child = spawn(command, args, {
+          ...options, stdio: ["ignore", "pipe", "pipe", "ipc"],
+        });
+        child.stdout.on("data", (chunk) => output.push(chunk.toString()));
+        t.after(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+        });
+        return child;
+      },
+    });
+    assert.deepEqual(result, killed ? { status: null, signal: "SIGKILL" } : { status: 0, signal: null });
+    assert.equal(output.join(""), `\n[aim] Resume this session with:\naim claude resume ${sessionId}\n`);
+  }
 });
 
 

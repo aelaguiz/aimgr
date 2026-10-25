@@ -6,11 +6,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { finished } from "node:stream/promises";
 import {
   CLAUDE_PROCESS_CONTROL_ACK_TYPE,
   CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
   superviseClaudeProcess,
 } from "../../src/targets/claude-supervisor.js";
+import { CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE } from "../../src/targets/claude-session-recovery.js";
 
 const SUPERVISOR_PATH = fileURLToPath(new URL("../../src/targets/claude-supervisor.js", import.meta.url));
 
@@ -150,6 +152,81 @@ test("Claude supervisor refuses to launch after its AIM IPC channel is gone", as
 
   assert.equal(spawned, false);
   assert.deepEqual(result, { status: 1, signal: "SIGTERM" });
+});
+
+test("Claude supervisor prints the actual fork ID on both normal and signalled exits", async (t) => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimgr-claude-recovery-"));
+  t.after(() => fs.rmSync(configDir, { recursive: true, force: true }));
+  const sessionId = "22222222-2222-4222-8222-222222222222";
+  for (const signal of [null, "SIGINT", "SIGTERM", "SIGHUP", "SIGKILL"]) {
+    const parentProcess = new FakeParentProcess();
+    const child = new FakeChildProcess();
+    child.pid = 123;
+    fs.mkdirSync(path.join(configDir, "sessions"), { recursive: true });
+    fs.writeFileSync(path.join(configDir, "sessions", "123.json"), JSON.stringify({
+      pid: child.pid, startedAt: Date.now(), sessionId,
+    }));
+    const output = [];
+    const resultPromise = superviseClaudeProcess({
+      command: process.execPath,
+      args: ["--resume", "11111111-1111-4111-8111-111111111111", "--fork-session"],
+      env: { CLAUDE_CONFIG_DIR: configDir },
+      parentProcess,
+      spawnImpl: () => child,
+      stdout: { write: (text) => output.push(text) },
+    });
+    child.emit("close", signal ? null : 0, signal);
+    assert.deepEqual(await resultPromise, { status: signal ? 1 : 0, signal });
+    assert.equal(output.join(""), `\n[aim] Resume this session with:\naim claude resume ${sessionId}\n`);
+    assert.deepEqual(parentProcess.sent.at(-1), {
+      type: CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE, sessionId, printed: true,
+    });
+  }
+});
+
+test("real supervisor prints a cached fork ID after AIM disconnects and Claude deletes its record", async (t) => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimgr-claude-recovery-"));
+  t.after(() => fs.rmSync(configDir, { recursive: true, force: true }));
+  const sessionId = "22222222-2222-4222-8222-222222222222";
+  const supervisor = spawn(process.execPath, [
+    SUPERVISOR_PATH, process.execPath, "-e", `
+      const fs = require("node:fs");
+      const dir = process.env.CLAUDE_CONFIG_DIR + "/sessions";
+      fs.mkdirSync(dir, { recursive: true });
+      const file = dir + "/" + process.pid + ".json";
+      fs.writeFileSync(file, JSON.stringify({ pid: process.pid, startedAt: Date.now(), sessionId: "${sessionId}" }));
+      process.on("SIGTERM", () => { fs.unlinkSync(file); process.exit(0); });
+      setInterval(() => {}, 1000);
+    `,
+  ], {
+    stdio: ["ignore", "pipe", "ignore", "ipc"],
+    env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+  });
+  t.after(() => {
+    if (supervisor.exitCode === null && supervisor.signalCode === null) supervisor.kill("SIGTERM");
+  });
+  let output = "";
+  supervisor.stdout.on("data", (chunk) => { output += chunk.toString(); });
+  const exited = new Promise((resolve) => supervisor.once("exit", (code, signal) => resolve({ code, signal })));
+  const outputFinished = finished(supervisor.stdout);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("No actual session ID received")), 3_000);
+    const onMessage = (message) => {
+      if (message?.type !== CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE) return;
+      clearTimeout(timer);
+      supervisor.removeListener("message", onMessage);
+      assert.equal(message.sessionId, sessionId);
+      resolve();
+    };
+    supervisor.on("message", onMessage);
+    supervisor.once("error", (error) => { clearTimeout(timer); reject(error); });
+  });
+  supervisor.disconnect();
+  const result = await exited;
+  await outputFinished;
+  assert.equal(result.signal, "SIGTERM");
+  assert.equal(output, `\n[aim] Resume this session with:\naim claude resume ${sessionId}\n`);
+  assert.deepEqual(fs.readdirSync(path.join(configDir, "sessions")), []);
 });
 
 test("standalone Claude supervisor observes a real Node IPC disconnect", async () => {

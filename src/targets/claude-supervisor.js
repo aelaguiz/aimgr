@@ -1,6 +1,11 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE,
+  printClaudeResumeHint,
+  trackClaudeRecoverySession,
+} from "./claude-session-recovery.js";
 
 const MODULE_PATH = fileURLToPath(import.meta.url);
 const TERMINATION_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
@@ -39,6 +44,7 @@ export async function superviseClaudeProcess({
   childKillGraceMs = DEFAULT_CHILD_KILL_GRACE_MS,
   setTimeoutImpl = setTimeout,
   clearTimeoutImpl = clearTimeout,
+  stdout = process.stdout,
 } = {}) {
   const rawCommand = typeof command === "string" ? command.trim() : "";
   if (!rawCommand || !path.isAbsolute(rawCommand)) {
@@ -59,6 +65,19 @@ export async function superviseClaudeProcess({
   let forcedKillTimer = null;
   let requestedSignal = null;
   let childPaused = false;
+  let recoveryTracker = null;
+  const reportSession = (session, printed = false) => {
+    if (parentProcess.connected !== true) return;
+    try {
+      parentProcess.send?.({
+        type: CLAUDE_SESSION_RECOVERY_MESSAGE_TYPE,
+        ...session,
+        printed,
+      }, () => {});
+    } catch {
+      // Printing the exit hint must also work after AIM has disappeared.
+    }
+  };
 
   const clearForcedKillTimer = () => {
     if (!forcedKillTimer) return;
@@ -141,6 +160,7 @@ export async function superviseClaudeProcess({
     return normalizedResult(null, null, requestedSignal);
   }
 
+  const startedAt = Date.now();
   try {
     child = spawnImpl(resolvedCommand, resolvedArgs, {
       stdio: "inherit",
@@ -158,9 +178,16 @@ export async function superviseClaudeProcess({
     removeParentListeners();
     throw new Error("Claude supervisor did not receive a process handle.");
   }
+  recoveryTracker = trackClaudeRecoverySession({
+    pid: child.pid,
+    configDir: env.CLAUDE_CONFIG_DIR,
+    startedAt,
+    onSession: reportSession,
+  });
 
   return await new Promise((resolve, reject) => {
     const cleanup = () => {
+      recoveryTracker.stop();
       removeParentListeners();
       clearForcedKillTimer();
       child.removeListener?.("error", onError);
@@ -168,6 +195,14 @@ export async function superviseClaudeProcess({
     };
     const finish = (fn, value) => {
       if (settled) return;
+      const session = recoveryTracker.stop();
+      if (session) {
+        const printed = printClaudeResumeHint(session, {
+          stdout,
+          signal: value?.signal ?? requestedSignal,
+        });
+        reportSession(session, printed);
+      }
       settled = true;
       cleanup();
       fn(value);

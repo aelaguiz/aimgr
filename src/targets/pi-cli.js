@@ -86,7 +86,7 @@ export async function selectNextBestPiCodexLabel({
   if (poolStatus.labels.length === 0) {
     throw new Error(
       "No Redis-backed Codex pool labels are available on this machine yet. "
-        + `Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then enroll a Codex label.`,
+        + `Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then enroll a Codex label.`,
     );
   }
   if (poolStatus.eligibleLabels.length === 0) {
