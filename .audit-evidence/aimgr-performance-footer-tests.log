@@ -1,0 +1,19 @@
+✔ automatic title helpers produce bounded useful names from prompts and Prime recaps (1.506041ms)
+✔ identity state, prompt, recap, and ANSI banner helpers preserve the session color (0.770041ms)
+✔ session identity rendering preserves the full canonical UUID without suffix collisions (0.101708ms)
+✔ extension names the first request, upgrades once from a native recap, and respects manual rename (77.710333ms)
+✔ automatic naming adds a stable session suffix when Prime rejects a duplicate root name (24.848791ms)
+✔ a same-text human rename remains authoritative over a later recap (51.883833ms)
+✔ idle refresh replays daemon UI without scanning history, and detects appended renames (26.362791ms)
+✔ the identity banner follows the session binding after a live credential handoff (55.74575ms)
+✔ an explicit name command remains human-owned from the first input (77.988458ms)
+✔ extension restores an existing automatic name and exact color on resume (23.999334ms)
+✔ managed extension projection is atomic, idempotent, adopts the legacy footer, and refuses conflicts (5.173041ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 423.645125

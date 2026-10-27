@@ -1,0 +1,587 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import {
+  buildManagedClaudeSessionForkName,
+  listRecentManagedClaudeSessions,
+  readManagedClaudeSessions,
+  renderRecentManagedClaudeSessions,
+  resolveManagedClaudeSession,
+  stageManagedClaudeSessionFork,
+} from "../../src/targets/claude-sessions.js";
+import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
+import { runCli } from "../helpers/cli-runner.js";
+import { mkTempHome } from "../helpers/files.js";
+
+const NOW_MS = Date.parse("2026-07-24T18:00:00.000Z");
+const THREAD_IDS = Array.from(
+  { length: 51 },
+  (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+);
+
+function writeManagedSession({
+  home,
+  account,
+  threadId,
+  cwd,
+  timestamp,
+  events = [],
+  malformedTail = false,
+  mtimeMs,
+}) {
+  fs.mkdirSync(cwd, { recursive: true });
+  const sessionPath = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    account,
+    ".claude",
+    "projects",
+    "project",
+    `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+  const entries = [
+    {
+      type: "user",
+      sessionId: threadId,
+      cwd,
+      ...(timestamp ? { timestamp } : {}),
+    },
+    ...events,
+  ];
+  const lines = entries.map((entry) => JSON.stringify(entry));
+  if (malformedTail) lines.push("{still-being-written");
+  fs.writeFileSync(sessionPath, `${lines.join("\n")}\n`, "utf8");
+  if (Number.isFinite(mtimeMs)) {
+    const mtime = new Date(mtimeMs);
+    fs.utimesSync(sessionPath, mtime, mtime);
+  }
+  return sessionPath;
+}
+
+function seedFiftyOneSessions(home) {
+  for (let index = 0; index < THREAD_IDS.length; index += 1) {
+    const timestampMs = NOW_MS - ((index + 1) * 3_600_000);
+    const timestamp = index === THREAD_IDS.length - 1
+      ? null
+      : new Date(timestampMs).toISOString();
+    const events = [];
+    if (index === 0) {
+      events.push(
+        {
+          type: "ai-title",
+          aiTitle: "Automatic title",
+          timestamp,
+        },
+        {
+          type: "custom-title",
+          customTitle: "  Current\nrelease  ",
+          timestamp,
+        },
+        {
+          type: "custom-title",
+          customTitle: "   ",
+          timestamp,
+        },
+        {
+          type: "assistant",
+          isSidechain: false,
+          message: { model: "claude-opus-4-8" },
+          effort: "medium",
+          timestamp,
+        },
+        {
+          type: "assistant",
+          isSidechain: true,
+          message: { model: "claude-fable-5" },
+          effort: "xhigh",
+          timestamp,
+        },
+      );
+    }
+    if (index === 1) {
+      events.push({
+        type: "ai-title",
+        aiTitle: "Investigate tokens",
+        timestamp,
+      });
+    }
+    writeManagedSession({
+      home,
+      account: index % 2 === 0 ? "pro5" : "qa",
+      threadId: THREAD_IDS[index],
+      cwd: path.join(home, "workspace", `project-${index + 1}`),
+      timestamp,
+      events,
+      malformedTail: index === 0,
+      mtimeMs: index === THREAD_IDS.length - 1 ? timestampMs : undefined,
+    });
+  }
+}
+
+test("managed Claude sessions list the newest 50 with persisted name and ID fallbacks", async () => {
+  const home = mkTempHome();
+  seedFiftyOneSessions(home);
+
+  const allSessions = readManagedClaudeSessions({ homeDir: home });
+  assert.equal(allSessions.length, 51);
+  assert.deepEqual(allSessions.map((session) => session.threadId), THREAD_IDS);
+
+  const sessions = listRecentManagedClaudeSessions({ homeDir: home });
+  assert.equal(sessions.length, 50);
+  assert.deepEqual(
+    sessions.map((session) => session.rank),
+    Array.from({ length: 50 }, (_, index) => index + 1),
+  );
+  assert.equal(sessions[0].account, "pro5");
+  assert.equal(sessions[0].threadName, "Current release");
+  assert.equal(sessions[0].thread, "Current release");
+  assert.equal(sessions[0].model, "claude-opus-4-8");
+  assert.equal(sessions[0].effort, "medium");
+  assert.equal(sessions[1].threadName, "Investigate tokens");
+  assert.equal(sessions[2].threadName, null);
+  assert.equal(sessions[2].thread, THREAD_IDS[2]);
+
+  const allListedSessions = listRecentManagedClaudeSessions({
+    homeDir: home,
+    limit: 51,
+  });
+  assert.equal(allListedSessions.length, 51);
+  assert.equal(allListedSessions[50].rank, 51);
+  assert.throws(
+    () => listRecentManagedClaudeSessions({ homeDir: home, limit: 0 }),
+    /positive integer/,
+  );
+
+  const rendered = renderRecentManagedClaudeSessions(sessions, {
+    homeDir: home,
+    nowMs: NOW_MS,
+  });
+  assert.match(rendered, /#\s+last_used\s+account\s+thread\s+working_directory/);
+  assert.match(rendered, /1\s+1h ago\s+pro5\s+Current release\s+~\/workspace\/project-1/);
+  assert.match(rendered, new RegExp(THREAD_IDS[2]));
+  assert.doesNotMatch(rendered, new RegExp(THREAD_IDS[50]));
+
+  let redisCalls = 0;
+  const json = JSON.parse(await runCli(
+    ["claude", "list", "--json", "--home", home],
+    {
+      nowImpl: () => NOW_MS,
+      connectRedisStoreImpl: () => {
+        redisCalls += 1;
+        throw new Error("list must not connect to Redis");
+      },
+    },
+  ));
+  assert.equal(redisCalls, 0);
+  assert.equal(json.sessions.length, 50);
+  assert.deepEqual(json.sessions[0], {
+    rank: 1,
+    lastUsedAt: "2026-07-24T17:00:00.000Z",
+    account: "pro5",
+    threadName: "Current release",
+    threadId: THREAD_IDS[0],
+    cwd: path.join(home, "workspace", "project-1"),
+  });
+
+  const expandedJson = JSON.parse(await runCli(
+    ["claude", "list", "51", "--json", "--home", home],
+    { nowImpl: () => NOW_MS },
+  ));
+  assert.equal(expandedJson.sessions.length, 51);
+  await assert.rejects(
+    runCli(["claude", "list", "0", "--home", home]),
+    /Usage: aim claude list \[count\]/,
+  );
+});
+
+test("managed Claude session listing stops reading after the recent bound closes", () => {
+  const home = mkTempHome();
+  for (let index = 0; index < 10; index += 1) {
+    const timestampMs = NOW_MS - (index * 3_600_000);
+    writeManagedSession({
+      home,
+      account: "pro5",
+      threadId: THREAD_IDS[index],
+      cwd: path.join(home, "workspace", `bounded-${index}`),
+      timestamp: new Date(timestampMs).toISOString(),
+      mtimeMs: timestampMs,
+    });
+  }
+
+  const originalReadFileSync = fs.readFileSync;
+  const reads = [];
+  fs.readFileSync = (...args) => {
+    reads.push(String(args[0]));
+    return originalReadFileSync(...args);
+  };
+  let sessions;
+  try {
+    sessions = listRecentManagedClaudeSessions({ homeDir: home, limit: 1 });
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
+
+  assert.equal(sessions[0].threadId, THREAD_IDS[0]);
+  assert.equal(reads.length, 4);
+  assert.equal(reads.some((filePath) => filePath.endsWith(`${THREAD_IDS[9]}.jsonl`)), false);
+});
+
+test("untitled sessions get a short user prompt preview without tool results or injected context", () => {
+  const home = mkTempHome();
+  writeManagedSession({
+    home, account: "pro5", threadId: THREAD_IDS[0], cwd: path.join(home, "project"),
+    timestamp: new Date(NOW_MS).toISOString(),
+    events: [
+      { type: "user", isMeta: true, message: { content: "injected context" } },
+      { type: "user", isSidechain: true, message: { content: "child task" } },
+      { type: "user", message: { content: [{ type: "tool_result", content: "tool output" }] } },
+      { type: "user", message: { content: [{ type: "text", text: "Fix\n the login flow " + "x".repeat(200) }] } },
+      { type: "user", message: { content: "later follow-up" } },
+    ],
+  });
+  const [session] = listRecentManagedClaudeSessions({ homeDir: home });
+  assert.match(session.description, /^Fix the login flow /);
+  assert.equal(session.description.length, 160);
+  assert.equal(session.threadName, null);
+  assert.doesNotMatch(session.description, /injected|child|tool output|later/);
+});
+
+test("picker account plus ID resolves the exact copy when the same ID exists in two homes", () => {
+  const home = mkTempHome();
+  for (const account of ["pro5", "pro7"]) {
+    writeManagedSession({ home, account, threadId: THREAD_IDS[0], cwd: path.join(home, account), timestamp: new Date(NOW_MS).toISOString() });
+  }
+  assert.throws(() => resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[0] }), /more than one/);
+  assert.equal(resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[0], account: "pro7" }).account, "pro7");
+});
+
+test("managed Claude recent ordering continues across equal mtime boundaries", () => {
+  const home = mkTempHome();
+  const tiedTimestamp = new Date(NOW_MS).toISOString();
+  const laterCandidateIds = [
+    "90000000-0000-4000-8000-000000000001",
+    "90000000-0000-4000-8000-000000000002",
+    "90000000-0000-4000-8000-000000000003",
+    "90000000-0000-4000-8000-000000000004",
+  ];
+  for (let index = 0; index < laterCandidateIds.length; index += 1) {
+    writeManagedSession({
+      home,
+      account: "pro5",
+      threadId: laterCandidateIds[index],
+      cwd: path.join(home, "workspace", `mtime-${index}`),
+      timestamp: tiedTimestamp,
+      mtimeMs: NOW_MS + ((laterCandidateIds.length - index) * 1_000),
+    });
+  }
+  const winningThreadId = "10000000-0000-4000-8000-000000000001";
+  writeManagedSession({
+    home,
+    account: "qa",
+    threadId: winningThreadId,
+    cwd: path.join(home, "workspace", "mtime-winner"),
+    timestamp: tiedTimestamp,
+    mtimeMs: NOW_MS,
+  });
+
+  assert.equal(
+    listRecentManagedClaudeSessions({ homeDir: home, limit: 1 })[0].threadId,
+    winningThreadId,
+  );
+});
+
+test("managed Claude sessions resolve a row, thread ID, or unique exact name", () => {
+  const home = mkTempHome();
+  seedFiftyOneSessions(home);
+
+  assert.equal(
+    resolveManagedClaudeSession({ homeDir: home, selector: "2" }).threadId,
+    THREAD_IDS[1],
+  );
+  assert.equal(
+    resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[50] }).threadId,
+    THREAD_IDS[50],
+  );
+  assert.equal(
+    resolveManagedClaudeSession({ homeDir: home, selector: "51" }).threadId,
+    THREAD_IDS[50],
+  );
+  assert.equal(
+    resolveManagedClaudeSession({ homeDir: home, selector: " current RELEASE " }).threadId,
+    THREAD_IDS[0],
+  );
+  assert.throws(
+    () => resolveManagedClaudeSession({ homeDir: home, selector: "52" }),
+    /was not found/,
+  );
+  assert.throws(
+    () => resolveManagedClaudeSession({ homeDir: home, selector: "not-a-thread" }),
+    /was not found/,
+  );
+
+  writeManagedSession({
+    home,
+    account: "pro7",
+    threadId: "99999999-9999-4999-8999-999999999999",
+    cwd: path.join(home, "workspace", "duplicate-name"),
+    timestamp: new Date(NOW_MS - 100_000_000).toISOString(),
+    events: [{
+      type: "custom-title",
+      customTitle: "Current release",
+      timestamp: new Date(NOW_MS - 100_000_000).toISOString(),
+    }],
+  });
+  assert.throws(
+    () => resolveManagedClaudeSession({ homeDir: home, selector: "Current release" }),
+    /session name "Current release" is ambiguous; use a row number or thread ID/,
+  );
+
+  fs.rmdirSync(path.join(home, "workspace", "project-2"));
+  assert.throws(
+    () => resolveManagedClaudeSession({ homeDir: home, selector: "2" }),
+    /working directory is unavailable/,
+  );
+  assert.deepEqual(listRecentManagedClaudeSessions({ homeDir: mkTempHome() }), []);
+});
+
+test("managed Claude thread ID resolution ignores an invalid duplicate transcript", () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  writeManagedSession({
+    home,
+    account: "pro5",
+    threadId,
+    cwd: path.join(home, "workspace", "valid-duplicate"),
+    timestamp: new Date(NOW_MS).toISOString(),
+  });
+  const invalidPath = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "qa",
+    ".claude",
+    "projects",
+    "project",
+    `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(invalidPath), { recursive: true });
+  fs.writeFileSync(invalidPath, "{still-being-written\n", "utf8");
+
+  assert.equal(
+    resolveManagedClaudeSession({ homeDir: home, selector: threadId }).account,
+    "pro5",
+  );
+});
+
+test("managed Claude resume refuses to guess when exact runtime metadata is absent", async () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  writeManagedSession({
+    home,
+    account: "pro5",
+    threadId,
+    cwd: path.join(home, "workspace", "project"),
+    timestamp: new Date(NOW_MS).toISOString(),
+    events: [{
+      type: "custom-title",
+      customTitle: "Missing runtime metadata",
+      timestamp: new Date(NOW_MS).toISOString(),
+    }],
+  });
+  writeAimgrConfig({
+    homeDir: home,
+    config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:test:" } },
+  });
+  let redisCalls = 0;
+  for (const options of [[], ["--account", "qa"], ["--switch-account", "opus"], ["--switch-account", "fable"]]) {
+    await assert.rejects(
+      runCli(["claude", "resume", "Missing runtime metadata", ...options, "--home", home], {
+        connectRedisStoreImpl: () => {
+          redisCalls += 1;
+          throw new Error("resume must fail before Redis I/O");
+        },
+      }),
+      /does not record an exact model and effort; refusing to guess/,
+    );
+  }
+  assert.equal(redisCalls, 0);
+});
+
+test("managed Claude session fork staging rekeys history and cleans only its destination copy", () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  const toolId = "toolu_01SourceToolUseIdentifier";
+  const messageId = "msg_01SourceMessageIdentifier";
+  const sourcePath = writeManagedSession({
+    home,
+    account: "pro10",
+    threadId,
+    cwd: path.join(home, "workspace", "puzzledb"),
+    timestamp: new Date(NOW_MS).toISOString(),
+    events: [{
+      type: "custom-title",
+      customTitle: "Review puzzle quality",
+      timestamp: new Date(NOW_MS).toISOString(),
+    }, {
+      type: "assistant",
+      sessionId: threadId,
+      uuid: "11111111-1111-4111-8111-111111111111",
+      parentUuid: "22222222-2222-4222-8222-222222222222",
+      requestId: "req_01SourceRequestIdentifier",
+      promptId: "33333333-3333-4333-8333-333333333333",
+      message: { id: messageId, content: [{ type: "tool_use", id: toolId, name: "Read", input: {} }] },
+    }, {
+      type: "user",
+      sessionId: threadId,
+      parentUuid: "11111111-1111-4111-8111-111111111111",
+      message: { content: [{ type: "tool_result", tool_use_id: toolId, content: "source tool result" }] },
+    }],
+  });
+  const sourceCompanionPath = path.join(path.dirname(sourcePath), threadId);
+  fs.mkdirSync(path.join(sourceCompanionPath, "tool-results"), { recursive: true });
+  fs.writeFileSync(
+    path.join(sourceCompanionPath, "tool-results", "result.txt"),
+    `source tool result for ${toolId}\n`,
+    "utf8",
+  );
+  const sourceContent = fs.readFileSync(sourcePath, "utf8");
+  const session = resolveManagedClaudeSession({ homeDir: home, selector: threadId });
+  const targetConfigDir = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "pro11",
+    ".claude",
+  );
+
+  assert.equal(
+    buildManagedClaudeSessionForkName(session),
+    "Review puzzle quality",
+  );
+  assert.equal(
+    buildManagedClaudeSessionForkName({ ...session,
+      threadName: "[fork from old/aaaaaaaa] [fork from older/bbbbbbbb] Review puzzle quality" }),
+    "Review puzzle quality",
+  );
+  const staged = stageManagedClaudeSessionFork({ session, targetConfigDir });
+  assert.notEqual(staged.stagedSessionId, threadId);
+  assert.equal(path.basename(staged.targetTranscriptPath), `${staged.stagedSessionId}.jsonl`);
+  assert.equal(fs.existsSync(staged.targetMarkerPath), true);
+  const stagedContent = fs.readFileSync(staged.targetTranscriptPath, "utf8");
+  for (const sourceId of [threadId, toolId, messageId, "req_01SourceRequestIdentifier",
+    "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333"]) {
+    assert.equal(stagedContent.includes(sourceId), false, `staged transcript retained ${sourceId}`);
+  }
+  const stagedEntries = stagedContent.trim().split("\n").map(JSON.parse);
+  assert.equal(stagedEntries[0].sessionId, staged.stagedSessionId);
+  assert.equal(stagedEntries[2].message.content[0].id, stagedEntries[3].message.content[0].tool_use_id);
+  assert.equal(stagedEntries[2].uuid, stagedEntries[3].parentUuid);
+  assert.equal(
+    fs.readFileSync(path.join(staged.targetCompanionPath, "tool-results", "result.txt"), "utf8"),
+    `source tool result for ${stagedEntries[2].message.content[0].id}\n`,
+  );
+  assert.deepEqual(
+    readManagedClaudeSessions({ homeDir: home })
+      .filter((candidate) => candidate.threadId === threadId)
+      .map((candidate) => candidate.account),
+    ["pro10"],
+  );
+
+  staged.cleanup();
+  assert.equal(fs.existsSync(staged.targetMarkerPath), false);
+  assert.equal(fs.existsSync(staged.targetTranscriptPath), false);
+  assert.equal(fs.existsSync(staged.targetCompanionPath), false);
+  assert.equal(fs.readFileSync(sourcePath, "utf8"), sourceContent);
+});
+
+test("managed Claude session fork preserves non-UTF-8 tool output while rekeying identifiers", () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  const sourcePath = writeManagedSession({
+    home,
+    account: "pro15",
+    threadId,
+    cwd: path.join(home, "workspace", "psbrain"),
+    timestamp: new Date(NOW_MS).toISOString(),
+  });
+  const sourceContent = fs.readFileSync(sourcePath);
+  const sourceResults = path.join(path.dirname(sourcePath), threadId, "tool-results");
+  fs.mkdirSync(sourceResults, { recursive: true });
+  const toolOutput = (sessionId) => Buffer.concat([
+    Buffer.from(`\uFEFFRésumé 日本語 ${sessionId}\n`),
+    Buffer.from([0xe2, 0x0a, 0xff, 0x00, 0x80]),
+    Buffer.from(`\n${sessionId} finished\n`),
+  ]);
+  const sourceOutput = toolOutput(threadId);
+  const sourceOutputPath = path.join(sourceResults, `${threadId}.txt`);
+  fs.writeFileSync(sourceOutputPath, sourceOutput);
+  const image = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0xff, 0xd9]);
+  fs.writeFileSync(path.join(sourceResults, "capture.jpg"), image);
+  const sourceSubagents = path.join(path.dirname(sourcePath), threadId, "subagents");
+  fs.mkdirSync(sourceSubagents, { recursive: true });
+  fs.writeFileSync(path.join(sourceSubagents, "agent-a1.jsonl"), `${JSON.stringify({
+    type: "assistant", sessionId: threadId,
+    message: { content: [{ type: "thinking", thinking: "", signature: "SUBAGENTSIGBLOB" },
+      { type: "text", text: "subagent answer" }] },
+  })}\n`);
+  const session = resolveManagedClaudeSession({ homeDir: home, selector: threadId });
+  const targetConfigDir = path.join(home, ".aimgr", "claude-homes", "qa", ".claude");
+
+  const staged = stageManagedClaudeSessionFork({ session, targetConfigDir });
+  try {
+    const subagent = JSON.parse(fs.readFileSync(
+      path.join(staged.targetCompanionPath, "subagents", "agent-a1.jsonl"), "utf8",
+    ));
+    assert.deepEqual(subagent.message.content, [{ type: "text", text: "subagent answer" }]);
+    assert.equal(subagent.sessionId, staged.stagedSessionId);
+    const copied = fs.readFileSync(path.join(
+      staged.targetCompanionPath, "tool-results", `${staged.stagedSessionId}.txt`,
+    ));
+    assert.deepEqual(copied, toolOutput(staged.stagedSessionId));
+    assert.equal(copied.includes(Buffer.from(threadId)), false);
+    assert.deepEqual(fs.readFileSync(path.join(staged.targetCompanionPath, "tool-results", "capture.jpg")), image);
+  } finally {
+    staged.cleanup();
+  }
+  assert.deepEqual(fs.readFileSync(sourcePath), sourceContent);
+  assert.deepEqual(fs.readFileSync(sourceOutputPath), sourceOutput);
+  assert.equal(fs.existsSync(staged.targetCompanionPath), false);
+  assert.equal(fs.existsSync(staged.targetTranscriptPath), false);
+});
+
+test("managed Claude session fork staging leaves an existing destination transcript alone", () => {
+  const home = mkTempHome();
+  const threadId = THREAD_IDS[0];
+  const sourcePath = writeManagedSession({
+    home,
+    account: "pro10",
+    threadId,
+    cwd: path.join(home, "workspace", "puzzledb"),
+    timestamp: new Date(NOW_MS).toISOString(),
+  });
+  const session = resolveManagedClaudeSession({ homeDir: home, selector: threadId });
+  const targetConfigDir = path.join(
+    home,
+    ".aimgr",
+    "claude-homes",
+    "pro11",
+    ".claude",
+  );
+  const targetPath = path.join(
+    targetConfigDir,
+    "projects",
+    path.basename(path.dirname(sourcePath)),
+    `${threadId}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, "existing destination\n", "utf8");
+
+  const staged = stageManagedClaudeSessionFork({ session, targetConfigDir });
+  assert.notEqual(staged.targetTranscriptPath, targetPath);
+  staged.cleanup();
+  assert.equal(fs.readFileSync(targetPath, "utf8"), "existing destination\n");
+});

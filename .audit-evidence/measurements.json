@@ -1,0 +1,48 @@
+{
+  "corpus": {
+    "accounts": 40,
+    "projects": 3421,
+    "transcripts": 7009,
+    "bytes": 79530414694
+  },
+  "native_lookup_selected_account": {
+    "ms": 31,
+    "transcript_bytes": 0,
+    "max_rss_mib": 59
+  },
+  "native_lookup_all_accounts": {
+    "ms": 788,
+    "transcript_bytes": 0,
+    "max_rss_mib": 70
+  },
+  "managed_metadata_lookup": {
+    "ms": 1116,
+    "bytes": 106409502,
+    "max_rss_mib": 164
+  },
+  "copy_benchmark": {
+    "bytes": 33595904,
+    "records": 256,
+    "before": {
+      "ms": 2747,
+      "max_rss_mib": 318
+    },
+    "after": {
+      "ms": 1570,
+      "max_rss_mib": 81
+    }
+  },
+  "memory_discovery": {
+    "ms": 507,
+    "bytes": 0,
+    "readdir": 167,
+    "lstat": 3424
+  },
+  "tests": {
+    "files": 75,
+    "passed": 609,
+    "failed": 0,
+    "duration_ms": 16873.871417,
+    "concurrency": 2
+  }
+}

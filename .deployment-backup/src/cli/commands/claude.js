@@ -1,0 +1,1654 @@
+import fs from "node:fs";
+import path from "node:path";
+import { pickClaudeSession } from "../claude-session-picker.js";
+import { chooseClaudeAccountToFree, listLocalAimClaudeSessions, stopClaudeAccountSessions } from "../../targets/claude-idle-stop.js";
+import { claudeRunPresetArgs } from "../args.js";
+import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, ANTHROPIC_PROVIDER } from "../../core/constants.js";
+import {
+  DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS,
+  acquireRedisCredentialLease,
+  renewOrReacquireRedisCredentialLease,
+} from "../../coordination/redis-credential-lease.js";
+import {
+  closeRedisRuntime,
+  isRedisConfigured,
+  loadRedisRuntime,
+  refreshRedisRuntimeState,
+  writeRedisLocalStateFromView,
+} from "../../coordination/runtime.js";
+import { connectRedisStore, REDIS_CONNECTION_POLICY_LEASED } from "../../coordination/redis-store.js";
+import { publishMaintainedCredential } from "../../coordination/login-publish.js";
+import { isObject, normalizeLabel } from "../../core/normalize.js";
+import { recordAccountMaintenanceAttempt, recordAccountMaintenanceFailure, recordAccountMaintenanceSuccess } from "../../credentials/anthropic-maintenance.js";
+import {
+  assertNoAnthropicSnapshotIdentityConflict,
+  captureAnthropicNativeBundleForLabel,
+  exportLiveClaudeNativeBundle,
+  importAnthropicNativeBundleForLabel,
+  persistAnthropicNativeBundleForLabel,
+  readClaudeNativeBundleExportFile,
+  resolveAnthropicMaintenanceBlockedReason,
+  syncLiveClaudeRotationBackToLabelFromStorage,
+} from "../../credentials/claude-native.js";
+import {
+  buildClaudeNativeStorageDescriptor,
+  buildManagedClaudeNativeStorageDescriptor,
+  captureClaudeNativeBundleFromKeychain,
+  ensureSafeManagedClaudeStorage,
+  readManagedClaudeNativeBundleFromFiles,
+} from "../../credentials/claude-native-storage.js";
+import { writeJsonFileWithBackup } from "../../io/json-store.js";
+import {
+  resolveAimgrClaudeLabelHomeDir,
+  resolveAimgrStateDir,
+  resolveCliPath,
+  resolveManagedClaudeDir,
+  resolveOptionalSourceHome,
+} from "../../io/paths.js";
+import { markImportedAnthropicLabelDirtyState } from "../../state/authority-anthropic.js";
+import { loadAimgrState } from "../../state/schema.js";
+import { sanitizeForStatus } from "../../core/sanitize.js";
+import { hasCompleteClaudeNativeBundle, readClaudeAppStateFile } from "../../credentials/claude-bundle.js";
+import {
+  activateClaudeLabelSelection,
+  activateClaudePoolSelection,
+  buildClaudeTokenLineageFingerprint,
+  currentRedisClaudeRecord,
+  projectClaudeNativeBundleToManagedConfig,
+  publishClaudeRotationIfNeeded,
+} from "../../targets/claude-cli.js";
+import {
+  joinMachineClaudeLease,
+  leaveMachineClaudeLease,
+  readMachineClaudeSessionCounts,
+} from "../../targets/claude-machine-lease.js";
+import { runSharedClaudePreRunPreflight } from "../../targets/claude-preflight.js";
+import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
+import { inheritClaudeProjectConsent } from "../../targets/claude-project-consent.js";
+import {
+  foldManagedClaudeMemories,
+  renderClaudeSharedMemoryReport,
+  summarizeClaudeSharedMemory,
+} from "../../targets/claude-shared-memory.js";
+import {
+  buildManagedClaudeSessionForkName,
+  listRecentManagedClaudeSessions,
+  readManagedClaudeSessions,
+  renderRecentManagedClaudeSessions,
+  resolveManagedClaudeSession,
+  stageManagedClaudeSessionFork,
+} from "../../targets/claude-sessions.js";
+import {
+  collectClaudeRedisAccountInventory,
+  collectClaudeRedisAccountUsageStatus,
+  renderClaudeRedisAccountInventory,
+  renderClaudeRedisAccountUsageStatus,
+  selectClaudeAccountForSession,
+  selectLeastUsedUnlockedClaudeAccount,
+} from "../../status/claude-redis-view.js";
+
+const CLAUDE_LEASE_RENEW_INTERVAL_MS = Math.floor(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS / 3);
+const CLAUDE_LEASE_RENEW_DEADLINE_MS = 5_000;
+const CLAUDE_ACTIVE_ROTATION_SYNC_INTERVAL_MS = 30_000;
+const CLAUDE_LEASE_RENEWED = "renewed";
+const CLAUDE_LEASE_CONTENDED = "contended";
+const CLAUDE_LEASE_UNREACHABLE = "unreachable";
+
+async function reconnectClaudeRedisRuntime({ runtime, connectRedisStoreImpl }) {
+  const replacement = await (connectRedisStoreImpl ?? connectRedisStore)({
+    ...runtime.redis,
+    connectionPolicy: REDIS_CONNECTION_POLICY_LEASED,
+  });
+  if (replacement.keyPrefix !== runtime.store.keyPrefix) {
+    replacement.client?.destroy?.();
+    throw new Error("Claude Redis reconnection changed the credential key prefix.");
+  }
+  const previousClient = runtime.store.client;
+  if (replacement.client === previousClient) return false;
+  runtime.store.client = replacement.client;
+  runtime.store.ownsClient = replacement.ownsClient;
+  try {
+    previousClient?.destroy?.();
+  } catch {
+    // The new client is authoritative even if the old socket resists teardown.
+  }
+  return true;
+}
+
+function nativeClaudeOption(args, names) {
+  const matches = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--") break;
+    if (names.includes(arg)) {
+      const next = args[index + 1];
+      matches.push({ index, inline: false, value: next && !next.startsWith("-") ? next : null });
+    } else {
+      const name = names.find((candidate) => arg.startsWith(`${candidate}=`));
+      if (name) matches.push({ index, inline: true, value: arg.slice(name.length + 1) || null });
+    }
+  }
+  if (matches.length > 1) throw new Error("Claude native arguments contain more than one resume or session-ID option.");
+  return matches[0] ?? null;
+}
+
+function isPathWithin(parent, candidate) {
+  let canonicalParent;
+  try {
+    canonicalParent = fs.realpathSync(parent);
+  } catch {
+    canonicalParent = path.resolve(parent);
+  }
+  const relative = path.relative(canonicalParent, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function planCrossAccountClaudeResume({ homeDir, label, configDir, cwd, args, sessionFork }) {
+  const nativeArgs = Array.isArray(args) ? [...args] : [];
+  const resumeOption = nativeClaudeOption(nativeArgs, ["--resume", "-r"]);
+  const sessionIdOption = nativeClaudeOption(nativeArgs, ["--session-id"]);
+  if (sessionFork) {
+    if (!resumeOption?.value) throw new Error("Cross-account Claude resume requires a source transcript.");
+    if (sessionIdOption) throw new Error("Cross-account Claude resume cannot reuse an explicit session ID.");
+    return { args: nativeArgs, resumeOption, sessionFork };
+  }
+  if (!resumeOption?.value && !sessionIdOption?.value) {
+    return { args: nativeArgs, resumeOption: null, sessionFork: null };
+  }
+
+  const selector = resumeOption?.value;
+  if (selector && (path.isAbsolute(selector) || selector.endsWith(".jsonl"))) {
+    let sourcePath;
+    try {
+      sourcePath = fs.realpathSync(path.resolve(cwd, selector));
+    } catch {
+      // Preserve native Claude's existing error for a path that does not exist.
+      return { args: nativeArgs, resumeOption, sessionFork: null };
+    }
+    if (isPathWithin(configDir, sourcePath)) {
+      return { args: nativeArgs, resumeOption, sessionFork: null };
+    }
+    if (sessionIdOption) throw new Error("Cross-account Claude resume cannot reuse an explicit session ID.");
+    return {
+      args: nativeArgs,
+      resumeOption,
+      sessionFork: { transcriptPath: sourcePath },
+    };
+  }
+
+  const managedSessions = readManagedClaudeSessions({ homeDir });
+  if (sessionIdOption?.value && managedSessions.some((candidate) => (
+    candidate.threadId.toLowerCase() === sessionIdOption.value.toLowerCase()
+    && candidate.account !== label
+  ))) {
+    throw new Error(
+      `Claude session ID ${sessionIdOption.value} belongs to another account; use \`aim claude resume ${sessionIdOption.value} --account ${label}\` to continue it with a fresh ID.`,
+    );
+  }
+  if (!selector) {
+    return { args: nativeArgs, resumeOption: null, sessionFork: null };
+  }
+
+  const sameAccount = managedSessions.some((candidate) => (
+    candidate.account === label
+    && (candidate.threadId.toLowerCase() === selector.toLowerCase()
+      || candidate.threadName?.toLowerCase() === selector.toLowerCase())
+  ));
+  if (sameAccount) return { args: nativeArgs, resumeOption, sessionFork: null };
+  const otherMatches = managedSessions.filter((candidate) => (
+    candidate.account !== label
+    && (candidate.threadId.toLowerCase() === selector.toLowerCase()
+      || candidate.threadName?.toLowerCase() === selector.toLowerCase())
+  ));
+  if (otherMatches.length > 1) {
+    throw new Error(`Claude session ${selector} exists in multiple accounts; resume its absolute transcript path to choose one.`);
+  }
+  if (otherMatches.length > 0 && sessionIdOption) {
+    throw new Error("Cross-account Claude resume cannot reuse an explicit session ID.");
+  }
+  return {
+    args: nativeArgs,
+    resumeOption,
+    sessionFork: otherMatches[0] ?? null,
+  };
+}
+
+function stagedClaudeResumeArgs(plan, staged) {
+  if (!staged) return plan.args;
+  const args = [...plan.args];
+  const { index, inline } = plan.resumeOption;
+  if (inline) args[index] = `${args[index].split("=")[0]}=${staged.targetTranscriptPath}`;
+  else args[index + 1] = staged.targetTranscriptPath;
+  if (!args.includes("--fork-session")) args.push("--fork-session");
+  if (!args.includes("--name") && !args.some((arg) => arg.startsWith("--name="))) {
+    args.push("--name", "Continued session");
+  }
+  return args;
+}
+
+function crossAccountClaudeEnvironment(env, staged) {
+  if (!staged) return env;
+  const safe = { ...(env ?? {}) };
+  delete safe.ANTHROPIC_CUSTOM_HEADERS;
+  delete safe.CLAUDE_CODE_EXTRA_BODY;
+  return safe;
+}
+
+async function renewClaudeCredentialLeaseWithinDeadline(lease) {
+  let deadlineTimer = null;
+  try {
+    const renewal = Promise.resolve()
+      .then(() => renewOrReacquireRedisCredentialLease(lease))
+      .then(
+        (renewed) => renewed === true ? CLAUDE_LEASE_RENEWED : CLAUDE_LEASE_CONTENDED,
+        () => CLAUDE_LEASE_UNREACHABLE,
+      );
+    const deadline = new Promise((resolve) => {
+      deadlineTimer = setTimeout(
+        () => resolve(CLAUDE_LEASE_UNREACHABLE),
+        CLAUDE_LEASE_RENEW_DEADLINE_MS,
+      );
+      deadlineTimer.unref?.();
+    });
+    return await Promise.race([renewal, deadline]);
+  } finally {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+  }
+}
+
+function startClaudeCredentialLeaseHeartbeat({
+  lease,
+  abortController,
+  pauseForUncertainOwnership = null,
+  resumeAfterOwnershipRecovered = null,
+  reconnectAfterUnreachable = null,
+}) {
+  let stopped = false;
+  let timer = null;
+  let inFlight = null;
+  let lost = false;
+  let paused = false;
+
+  const loseOwnership = () => {
+    lost = true;
+    abortController.abort();
+  };
+  const applyRenewalResult = async (result) => {
+    if (stopped) return result;
+    if (result === CLAUDE_LEASE_CONTENDED) {
+      loseOwnership();
+      return result;
+    }
+    if (result === CLAUDE_LEASE_UNREACHABLE) {
+      if (!paused) {
+        paused = true;
+        try {
+          if (await pauseForUncertainOwnership?.() !== true) {
+            loseOwnership();
+            return result;
+          }
+        } catch {
+          // A live Claude process cannot continue while lease ownership is unknown.
+          loseOwnership();
+          return result;
+        }
+      }
+      try {
+        await reconnectAfterUnreachable?.();
+      } catch {
+        // Keep Claude paused; the next heartbeat retries with the old client.
+      }
+      return result;
+    }
+    if (paused) {
+      try {
+        if (await resumeAfterOwnershipRecovered?.() !== true) {
+          loseOwnership();
+          return CLAUDE_LEASE_UNREACHABLE;
+        }
+      } catch {
+        loseOwnership();
+        return CLAUDE_LEASE_UNREACHABLE;
+      }
+      paused = false;
+    }
+    return result;
+  };
+  const renewNow = () => {
+    if (inFlight) return inFlight;
+    inFlight = renewClaudeCredentialLeaseWithinDeadline(lease)
+      .then(applyRenewalResult)
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
+
+  const schedule = () => {
+    if (stopped || lost) return;
+    timer = setTimeout(() => {
+      timer = null;
+      void renewNow().finally(schedule);
+    }, CLAUDE_LEASE_RENEW_INTERVAL_MS);
+    timer.unref?.();
+  };
+  schedule();
+  return {
+    get lost() {
+      return lost;
+    },
+    get paused() {
+      return paused;
+    },
+    renewNow,
+    async stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      if (inFlight) await inFlight;
+    },
+  };
+}
+
+async function assertClaudeCredentialLeaseOwned({
+  lease,
+  heartbeat,
+  abortController,
+  phase,
+  tolerateUnreachable = false,
+}) {
+  const renewal = heartbeat?.renewNow
+    ? await heartbeat.renewNow()
+    : await renewClaudeCredentialLeaseWithinDeadline(lease);
+  if (
+    tolerateUnreachable
+    && renewal === CLAUDE_LEASE_UNREACHABLE
+    && !heartbeat?.lost
+  ) {
+    return false;
+  }
+  if (heartbeat?.lost || renewal !== CLAUDE_LEASE_RENEWED) {
+    abortController?.abort();
+    throw new Error(`Claude credential lease was lost ${phase}.`);
+  }
+  return true;
+}
+
+async function acquireClaudeCredentialLeaseGuard(runtime, label, {
+  pauseForUncertainOwnership = null,
+  resumeAfterOwnershipRecovered = null,
+  reconnectAfterUnreachable = null,
+  shareOnMachine = null,
+} = {}) {
+  // Interactive runs share the account with other sessions on this machine;
+  // capture and import still need the account to themselves.
+  const shared = shareOnMachine
+    ? await joinMachineClaudeLease({
+      homeDir: shareOnMachine.homeDir,
+      store: runtime.store,
+      provider: ANTHROPIC_PROVIDER,
+      label,
+      pid: shareOnMachine.pid,
+    })
+    : null;
+  const lease = shareOnMachine
+    ? shared?.lease ?? null
+    : await acquireRedisCredentialLease(runtime.store, {
+      provider: ANTHROPIC_PROVIDER,
+      label,
+    });
+  if (!lease) {
+    const error = new Error(
+      `Claude account "${label}" is busy: another AIM process or machine is using or refreshing it. `
+        + "Nothing started here. Wait up to one minute, then try again.",
+    );
+    error.code = "AIMGR_CREDENTIAL_BUSY";
+    throw error;
+  }
+  const abortController = new AbortController();
+  const heartbeat = startClaudeCredentialLeaseHeartbeat({
+    lease,
+    abortController,
+    pauseForUncertainOwnership,
+    resumeAfterOwnershipRecovered,
+    reconnectAfterUnreachable,
+  });
+  const guard = {
+    lease,
+    heartbeat,
+    abortController,
+    sharedLabel: shareOnMachine
+      ? { homeDir: shareOnMachine.homeDir, label, pid: shareOnMachine.pid }
+      : null,
+  };
+  try {
+    await assertClaudeCredentialLeaseOwned({
+      ...guard,
+      phase: "immediately after acquisition",
+    });
+  } catch (error) {
+    await heartbeat.stop();
+    try {
+      await releaseClaudeCredentialLease(guard);
+    } catch {
+      // The ownership assertion is the actionable failure.
+    }
+    throw error;
+  }
+  return guard;
+}
+
+// A machine-shared lease is released only by the last session on this machine.
+async function releaseClaudeCredentialLease(guard) {
+  if (!guard.sharedLabel) return guard.lease.release();
+  const { released, remaining } = await leaveMachineClaudeLease({
+    ...guard.sharedLabel,
+    lease: guard.lease,
+  });
+  return released || remaining > 0;
+}
+
+async function releaseClaudeCredentialLeaseGuard(guard) {
+  if (!guard) return;
+  await guard.heartbeat.stop();
+  if (await releaseClaudeCredentialLease(guard) !== true && !guard.heartbeat.lost) {
+    throw new Error("Claude credential lease release failed.");
+  }
+}
+
+function claudePresetForSessionModel(model) {
+  const normalized = String(model ?? "").toLowerCase();
+  if (normalized.includes("fable")) return "fable";
+  if (normalized.includes("sonnet")) return "sonnet";
+  return "opus";
+}
+
+async function selectAutomaticClaudeAccount(context, {
+  preset,
+  excludeLabels = [],
+  requireLive = false,
+} = {}) {
+  const {
+    homeDir,
+    nowMs,
+    fetchJsonWithTimeoutImpl,
+    connectRedisStoreImpl,
+  } = context;
+  const excluded = new Set(excludeLabels.map((label) => normalizeLabel(label)));
+  const usageStatus = await collectClaudeRedisAccountUsageStatus({
+    homeDir,
+    fresh: requireLive,
+    nowMs,
+    fetchJsonWithTimeoutImpl,
+    connectRedisStoreImpl,
+  });
+  const localSessions = readMachineClaudeSessionCounts({ homeDir });
+  return selectClaudeAccountForSession({
+    ...usageStatus,
+    accounts: usageStatus.accounts
+      .filter(
+        (account) => !excluded.has(account.label)
+          && (!requireLive || (account.source === "live" && account.credentialReady && account.usage?.ok)),
+      )
+      .map((account) => ({ ...account, localSessions: localSessions.get(account.label) ?? 0 })),
+  }, { preset });
+}
+
+function requireExpectedClaudeEmail(state, label) {
+  const expectedEmail = typeof state?.accounts?.[label]?.expect?.email === "string"
+    ? state.accounts[label].expect.email.trim().toLowerCase()
+    : "";
+  if (!expectedEmail) {
+    throw new Error(`Claude label=${label} is missing its canonical expected-email policy in Redis.`);
+  }
+  return expectedEmail;
+}
+
+function requireRedisClaudeCredential(state, label) {
+  const credential = state?.credentials?.[ANTHROPIC_PROVIDER]?.[label];
+  if (!isObject(credential)) {
+    throw new Error(`Claude label=${label} does not have a credential-ready Redis record.`);
+  }
+  return credential;
+}
+
+function assertClaudeAccountCanLaunch(runtime, label) {
+  const record = currentRedisClaudeRecord(runtime, label);
+  if (
+    record?.policy?.reauth?.blockedReason === "oauth_reauth_required"
+    || record?.health?.status === "reauth_required"
+    || !hasCompleteClaudeNativeBundle(record?.credential)
+  ) {
+    const error = new Error(`Claude account "${label}" requires login. Run \`aim login ${label} --provider anthropic\`, or resume on another account.`);
+    error.code = "AIMGR_CLAUDE_AUTH_UNAVAILABLE";
+    throw error;
+  }
+}
+
+// Another session on this machine may already have published the rotation in
+// the shared login file, so compare against current Redis before calling the
+// file a new candidate.
+async function readClaudeRotationCandidate({ runtime, label, descriptor, nowMs }) {
+  const sync = () => syncLiveClaudeRotationBackToLabelFromStorage({
+    state: runtime.state,
+    label,
+    descriptor,
+    nowMs,
+  });
+  const first = await sync();
+  if (first.status !== "candidate") return first;
+  try {
+    await refreshRedisRuntimeState(runtime);
+  } catch {
+    // Unreachable Redis: the publication attempt reports the failure.
+    return first;
+  }
+  return sync();
+}
+
+function startClaudeActiveRotationPublisher({
+  runtime,
+  homeDir,
+  label,
+  descriptor,
+  guard,
+  setTimeoutImpl,
+  clearTimeoutImpl,
+}) {
+  let stopped = false;
+  let failed = false;
+  let degraded = false;
+  let timer = null;
+  let inFlight = null;
+
+  const schedule = () => {
+    if (stopped || failed) return;
+    timer = setTimeoutImpl(() => {
+      timer = null;
+      inFlight = (async () => {
+        try {
+          if (guard.heartbeat.paused) return;
+          if (!await assertClaudeCredentialLeaseOwned({
+            ...guard,
+            phase: "before active-run rotation reconciliation",
+            tolerateUnreachable: true,
+          })) return;
+          const nowMs = Date.now();
+          const result = await readClaudeRotationCandidate({
+            runtime,
+            label,
+            descriptor,
+            nowMs,
+          });
+          if (result.status !== "candidate") return;
+          if (result.label !== label) {
+            throw new Error("Claude managed-storage rotation resolved to an unexpected account label.");
+          }
+          const currentFingerprint = buildClaudeTokenLineageFingerprint(
+            currentRedisClaudeRecord(runtime, label)?.credential,
+          );
+          const candidateFingerprint = buildClaudeTokenLineageFingerprint(
+            result.candidateCredential,
+          );
+          if (candidateFingerprint && candidateFingerprint === currentFingerprint) return;
+          if (!await assertClaudeCredentialLeaseOwned({
+            ...guard,
+            phase: "before active-run rotation publication",
+            tolerateUnreachable: true,
+          })) return;
+          const record = await publishClaudeRotationIfNeeded({
+            runtime,
+            reconciliation: result,
+            label,
+            observedAt: new Date(nowMs).toISOString(),
+          });
+          if (record) {
+            writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+          }
+        } catch {
+          if (guard.heartbeat.lost) {
+            failed = true;
+            guard.abortController.abort();
+          } else {
+            degraded = true;
+          }
+        }
+      })().finally(() => {
+        inFlight = null;
+        schedule();
+      });
+      return inFlight;
+    }, CLAUDE_ACTIVE_ROTATION_SYNC_INTERVAL_MS);
+    timer.unref?.();
+  };
+
+  schedule();
+  return {
+    get failed() {
+      return failed;
+    },
+    get degraded() {
+      return degraded;
+    },
+    async stop() {
+      stopped = true;
+      if (timer) {
+        clearTimeoutImpl(timer);
+        timer = null;
+      }
+      if (inFlight) await inFlight;
+    },
+  };
+}
+
+async function handleRedisClaudeCaptureNative(context, { label, sourceHome, sourceConfigDir }) {
+  const {
+    homeDir,
+    stdout,
+    connectRedisStoreImpl,
+    readClaudeNativeKeychainOauthImpl,
+    nowMs,
+  } = context;
+  const runtime = await loadRedisRuntime({
+    homeDir,
+    connectRedisStoreImpl,
+    provider: ANTHROPIC_PROVIDER,
+  });
+  let guard = null;
+  let attemptedAt = null;
+  try {
+    guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
+    await refreshRedisRuntimeState(runtime);
+    await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before native capture" });
+    attemptedAt = recordAccountMaintenanceAttempt(runtime.state, label, { providerHint: ANTHROPIC_PROVIDER });
+    const expectedEmail = requireExpectedClaudeEmail(runtime.state, label);
+    const defaultConfigDir = resolveManagedClaudeDir({ homeDir: sourceHome });
+    const configDir = sourceConfigDir ?? defaultConfigDir;
+    const descriptor = buildClaudeNativeStorageDescriptor({
+      configDir,
+      defaultConfigDir,
+      appStatePath: sourceConfigDir
+        ? path.join(configDir, ".claude.json")
+        : path.join(sourceHome, ".claude.json"),
+      expectedEmail,
+    });
+    const captured = await captureClaudeNativeBundleFromKeychain({
+      descriptor,
+      nowMs,
+      allowExpired: true,
+      readClaudeNativeKeychainOauthImpl,
+    });
+    if (captured.ok !== true) {
+      throw new Error(`Claude native capture blocked: ${captured.errorKind || "native_storage_unavailable"}.`);
+    }
+    assertNoAnthropicSnapshotIdentityConflict(runtime.snapshot, {
+      nativeClaudeBundle: captured.nativeClaudeBundle,
+      excludeLabel: label,
+    });
+    const persisted = persistAnthropicNativeBundleForLabel({
+      state: runtime.state,
+      label,
+      nativeClaudeBundle: captured.nativeClaudeBundle,
+      allowExpiredAccess: true,
+    });
+    recordAccountMaintenanceSuccess(runtime.state, label, { homeDir, observedAt: attemptedAt });
+    await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before native capture publication" });
+    const published = await publishMaintainedCredential({
+      store: runtime.store,
+      snapshot: runtime.snapshot,
+      state: runtime.state,
+      label,
+      provider: ANTHROPIC_PROVIDER,
+      observedAt: attemptedAt,
+    });
+    if (!published.ok) {
+      throw new Error(`Redis stale_version while publishing Claude native bundle for label=${label}; reload and retry.`);
+    }
+    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+    stdout.write(
+      `${JSON.stringify(
+        sanitizeForStatus({
+          ok: true,
+          captured: {
+            label,
+            source: "keychain",
+            identityPolicyMatched: true,
+            credentialReady: true,
+            action: persisted.action,
+            redisVersion: published.credential?.record?.version ?? null,
+          },
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+  } catch (err) {
+    const message = String(err?.message ?? err);
+    if (attemptedAt) {
+      recordAccountMaintenanceFailure(runtime.state, label, {
+        observedAt: attemptedAt,
+        ...(resolveAnthropicMaintenanceBlockedReason(message)
+          ? { blockedReason: resolveAnthropicMaintenanceBlockedReason(message) }
+          : {}),
+      });
+    }
+    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+    throw err;
+  } finally {
+    try {
+      await releaseClaudeCredentialLeaseGuard(guard);
+    } finally {
+      await closeRedisRuntime(runtime);
+    }
+  }
+}
+
+async function handleRedisClaudeImportNative(context, { label, inFile }) {
+  const { homeDir, stdout, connectRedisStoreImpl } = context;
+  const runtime = await loadRedisRuntime({
+    homeDir,
+    connectRedisStoreImpl,
+    provider: ANTHROPIC_PROVIDER,
+  });
+  let guard = null;
+  let attemptedAt = null;
+  try {
+    guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
+    await refreshRedisRuntimeState(runtime);
+    await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before native import" });
+    attemptedAt = recordAccountMaintenanceAttempt(runtime.state, label, { providerHint: ANTHROPIC_PROVIDER });
+    requireExpectedClaudeEmail(runtime.state, label);
+    const imported = readClaudeNativeBundleExportFile({ filePath: inFile });
+    assertNoAnthropicSnapshotIdentityConflict(runtime.snapshot, {
+      nativeClaudeBundle: imported.payload.nativeClaudeBundle,
+      excludeLabel: label,
+    });
+    persistAnthropicNativeBundleForLabel({
+      state: runtime.state,
+      label,
+      nativeClaudeBundle: imported.payload.nativeClaudeBundle,
+      allowExpiredAccess: true,
+    });
+    recordAccountMaintenanceSuccess(runtime.state, label, { homeDir, observedAt: attemptedAt });
+    await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before native import publication" });
+    const published = await publishMaintainedCredential({
+      store: runtime.store,
+      snapshot: runtime.snapshot,
+      state: runtime.state,
+      label,
+      provider: ANTHROPIC_PROVIDER,
+      observedAt: attemptedAt,
+    });
+    if (!published.ok) {
+      throw new Error(`Redis stale_version while publishing Claude native bundle for label=${label}; reload and retry.`);
+    }
+    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+    stdout.write(
+      `${JSON.stringify(
+        sanitizeForStatus({
+          ok: true,
+          imported: {
+            label,
+            identityPolicyMatched: true,
+            credentialReady: true,
+            redisVersion: published.credential?.record?.version ?? null,
+          },
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+  } catch (err) {
+    const message = String(err?.message ?? err);
+    if (attemptedAt) {
+      recordAccountMaintenanceFailure(runtime.state, label, {
+        observedAt: attemptedAt,
+        ...(resolveAnthropicMaintenanceBlockedReason(message)
+          ? { blockedReason: resolveAnthropicMaintenanceBlockedReason(message) }
+          : {}),
+      });
+    }
+    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+    throw err;
+  } finally {
+    try {
+      await releaseClaudeCredentialLeaseGuard(guard);
+    } finally {
+      await closeRedisRuntime(runtime);
+    }
+  }
+}
+
+function readCleanOfflineClaudeCache({ homeDir, label }) {
+  const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label });
+  const configDir = resolveManagedClaudeDir({ homeDir: claudeHome });
+  const appState = readClaudeAppStateFile({ homeDir: configDir });
+  const expectedEmail = typeof appState?.emailAddress === "string" ? appState.emailAddress.trim().toLowerCase() : "";
+  if (!expectedEmail) {
+    throw new Error(`Claude label=${label} local cache has no complete native identity.`);
+  }
+  const descriptor = buildManagedClaudeNativeStorageDescriptor({
+    configDir,
+    defaultConfigDir: resolveManagedClaudeDir({ homeDir }),
+    expectedEmail,
+    managedRootDir: resolveAimgrStateDir({ homeDir }),
+  });
+  ensureSafeManagedClaudeStorage({ descriptor });
+  const cached = readManagedClaudeNativeBundleFromFiles({ descriptor });
+  if (cached.ok !== true) {
+    throw new Error(`Claude label=${label} local cache is incomplete or unreadable.`);
+  }
+  return { claudeHome, configDir, descriptor };
+}
+
+async function runClaudeFromCleanOfflineCache(context, {
+  label,
+  launchCwd,
+  sessionFork,
+}) {
+  const {
+    homeDir,
+    stdout,
+    env,
+    opts,
+    setExitCode,
+    runClaudeCliImpl = runClaudeCli,
+    resolveExecutableOnPathImpl,
+  } = context;
+  const cache = readCleanOfflineClaudeCache({ homeDir, label });
+  const discoveredCommand = resolveExecutableOnPathImpl?.("claude");
+  if (!discoveredCommand || !path.isAbsolute(discoveredCommand)) {
+    throw new Error("Could not resolve the installed Claude executable for offline managed launch.");
+  }
+  const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
+    ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl
+    : prepareClaudeCliLaunch;
+  const preparedLaunch = await prepareLaunchImpl({
+    command: discoveredCommand,
+    userHomeDir: homeDir,
+    homeDir: cache.claudeHome,
+    configDir: cache.configDir,
+  });
+  let stagedSessionFork = null;
+  try {
+    inheritClaudeProjectConsent({ userHomeDir: homeDir, configDir: cache.configDir, cwd: launchCwd });
+    const resumePlan = planCrossAccountClaudeResume({
+      homeDir,
+      label,
+      configDir: cache.configDir,
+      cwd: launchCwd,
+      args: opts.afterDoubleDash,
+      sessionFork,
+    });
+    if (resumePlan.sessionFork) {
+      stagedSessionFork = stageManagedClaudeSessionFork({
+        session: resumePlan.sessionFork,
+        targetConfigDir: cache.configDir,
+      });
+    }
+    stdout?.write?.(
+      `AIM coordination=offline label=${label} cache=complete\n`,
+    );
+    const result = await runClaudeCliImpl({
+      command: preparedLaunch.command,
+      userHomeDir: homeDir,
+      homeDir: cache.claudeHome,
+      configDir: cache.configDir,
+      cwd: launchCwd,
+      args: stagedClaudeResumeArgs(resumePlan, stagedSessionFork),
+      env: crossAccountClaudeEnvironment(env, stagedSessionFork),
+      preparedLaunch,
+    });
+    if (result?.signal) {
+      process.kill(process.pid, result.signal);
+      return;
+    }
+    if (result?.status !== 0) {
+      setExitCode(Number.isInteger(result?.status) ? result.status : 1);
+    }
+  } finally {
+    stagedSessionFork?.cleanup();
+  }
+}
+
+async function handleRedisClaudeRun(context, {
+  launchCwd = process.cwd(),
+  sessionFork = null,
+  allowOffline = true,
+} = {}) {
+  const {
+    opts,
+    positional,
+    homeDir,
+    env,
+    stdout,
+    setExitCode,
+    connectRedisStoreImpl,
+    runClaudeCliImpl = runClaudeCli,
+    resolveExecutableOnPathImpl,
+    nowMs,
+  } = context;
+  const setRotationTimer = context.setTimeoutImpl ?? setTimeout;
+  const clearRotationTimer = context.clearTimeoutImpl ?? clearTimeout;
+  const label = normalizeLabel(positional[2]);
+  const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label });
+  const configDir = resolveManagedClaudeDir({ homeDir: claudeHome });
+  let runtime;
+  try {
+    runtime = await loadRedisRuntime({
+      homeDir,
+      connectRedisStoreImpl,
+      provider: ANTHROPIC_PROVIDER,
+      connectionPolicy: REDIS_CONNECTION_POLICY_LEASED,
+    });
+  } catch (redisError) {
+    if (allowOffline) {
+      try {
+        await runClaudeFromCleanOfflineCache(context, {
+          label,
+          launchCwd,
+          sessionFork,
+        });
+        return;
+      } catch (cacheError) {
+        throw new Error(
+          `Claude coordination is offline and label=${label} has no safe clean-cache launch: ${cacheError.message}`,
+          { cause: redisError },
+        );
+      }
+    }
+    throw redisError;
+  }
+  let guard = null;
+  let operationError = null;
+  let cleanupError = null;
+  let processResult = null;
+  let activeRotationPublisher = null;
+  let stagedSessionFork = null;
+  let activeProcessControl = null;
+  let managedDescriptor = null;
+  try {
+    assertClaudeAccountCanLaunch(runtime, label);
+    guard = await acquireClaudeCredentialLeaseGuard(runtime, label, {
+      shareOnMachine: { homeDir, pid: context.processId ?? process.pid },
+      pauseForUncertainOwnership: async () => {
+        const paused = activeProcessControl?.pause
+          ? await activeProcessControl.pause()
+          : false;
+        if (paused) stdout?.write?.(`AIM coordination=unreachable label=${label} claude=paused\n`);
+        return paused;
+      },
+      reconnectAfterUnreachable: () => reconnectClaudeRedisRuntime({
+        runtime,
+        connectRedisStoreImpl,
+      }),
+      resumeAfterOwnershipRecovered: async () => {
+        const priorFingerprint = buildClaudeTokenLineageFingerprint(
+          currentRedisClaudeRecord(runtime, label)?.credential,
+        );
+        await refreshRedisRuntimeState(runtime);
+        const currentFingerprint = buildClaudeTokenLineageFingerprint(
+          currentRedisClaudeRecord(runtime, label)?.credential,
+        );
+        // Another session on this machine may have refreshed and published
+        // the shared login; that is the login this session's file holds.
+        const local = managedDescriptor
+          ? readManagedClaudeNativeBundleFromFiles({ descriptor: managedDescriptor })
+          : null;
+        const localFingerprint = local?.ok === true
+          ? buildClaudeTokenLineageFingerprint({ nativeClaudeBundle: local.nativeClaudeBundle })
+          : null;
+        if (
+          !priorFingerprint
+          || (priorFingerprint !== currentFingerprint && currentFingerprint !== localFingerprint)
+        ) {
+          stdout?.write?.(
+            `AIM Claude credential changed while label=${label} was disconnected; resume this session with \`aim claude resume\`.\n`,
+          );
+          return false;
+        }
+        const resumed = activeProcessControl?.resume
+          ? await activeProcessControl.resume()
+          : false;
+        if (resumed) stdout?.write?.(`AIM coordination=recovered label=${label} claude=resumed\n`);
+        return resumed;
+      },
+    });
+    // A prior lease owner may have rotated this label between our initial read
+    // and lease acquisition. Reload under the lease before inspecting local
+    // projections or choosing the authoritative bundle.
+    await refreshRedisRuntimeState(runtime);
+    assertClaudeAccountCanLaunch(runtime, label);
+    await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before managed Claude preflight" });
+    const expectedEmail = requireExpectedClaudeEmail(runtime.state, label);
+    const preflight = await runSharedClaudePreRunPreflight({
+      runtime,
+      label,
+      homeDir,
+      configDir,
+      expectedEmail,
+      nowMs,
+      resolveCommandImpl: resolveExecutableOnPathImpl,
+      lease: guard.lease,
+      assertLeaseOwned: (phase) => assertClaudeCredentialLeaseOwned({ ...guard, phase }),
+    });
+    const {
+      descriptor,
+      command: discoveredCommand,
+      observedAt,
+    } = preflight;
+    managedDescriptor = descriptor;
+    const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
+      ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl
+      : prepareClaudeCliLaunch;
+    const preparedLaunch = await prepareLaunchImpl({
+      command: discoveredCommand,
+      userHomeDir: homeDir,
+      homeDir: claudeHome,
+      configDir,
+    });
+
+    const target = runtime.state.targets.claudeCli;
+    const resumePlan = planCrossAccountClaudeResume({
+      homeDir,
+      label,
+      configDir,
+      cwd: launchCwd,
+      args: opts.afterDoubleDash,
+      sessionFork,
+    });
+    if (resumePlan.sessionFork) {
+      stagedSessionFork = stageManagedClaudeSessionFork({
+        session: resumePlan.sessionFork,
+        targetConfigDir: configDir,
+      });
+    }
+
+    const credential = requireRedisClaudeCredential(runtime.state, label);
+    await projectClaudeNativeBundleToManagedConfig({
+      descriptor,
+      credential,
+      nowMs,
+      preserveNewerLocal: true,
+    });
+    inheritClaudeProjectConsent({ userHomeDir: homeDir, configDir, cwd: launchCwd });
+    await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before native Claude launch" });
+    target.lastRunLabel = label;
+    delete target.claudeDir;
+    delete target.credentialsPath;
+    delete target.appStatePath;
+    target.lastAppliedAt = observedAt;
+    writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+
+    activeRotationPublisher = startClaudeActiveRotationPublisher({
+      runtime,
+      homeDir,
+      label,
+      descriptor,
+      guard,
+      setTimeoutImpl: setRotationTimer,
+      clearTimeoutImpl: clearRotationTimer,
+    });
+    let launched = null;
+    let launchError = null;
+    try {
+      launched = await runClaudeCliImpl({
+        command: preparedLaunch.command,
+        userHomeDir: homeDir,
+        homeDir: claudeHome,
+        configDir,
+        cwd: launchCwd,
+        args: stagedClaudeResumeArgs(resumePlan, stagedSessionFork),
+        env: crossAccountClaudeEnvironment(env, stagedSessionFork),
+        signal: guard.abortController.signal,
+        registerProcessControl: (processControl) => {
+          activeProcessControl = processControl;
+        },
+        preparedLaunch,
+      });
+    } catch (error) {
+      launchError = error;
+    } finally {
+      activeProcessControl = null;
+    }
+    if (activeRotationPublisher) {
+      await activeRotationPublisher.stop();
+      activeRotationPublisher = null;
+    }
+
+    const safeLaunch = {
+      status: Number.isInteger(launched?.status)
+        ? launched.status
+        : typeof launched?.signal === "string"
+          ? null
+          : 1,
+      signal: typeof launched?.signal === "string" ? launched.signal : null,
+    };
+    const postRunSync = await readClaudeRotationCandidate({
+      runtime,
+      label,
+      descriptor,
+      nowMs: Date.now(),
+    });
+    let publicationFailed = false;
+    if (postRunSync.status === "candidate" && !guard.heartbeat.lost) {
+      try {
+        await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before post-run rotation publication" });
+        await publishClaudeRotationIfNeeded({
+          runtime,
+          reconciliation: postRunSync,
+          label,
+          observedAt: new Date().toISOString(),
+        });
+      } catch {
+        publicationFailed = true;
+      }
+    }
+    if (publicationFailed) {
+      stdout?.write?.(
+        `AIM coordination=degraded label=${label} publication=retryable local_candidate=retained\n`,
+      );
+    }
+    if (launchError) throw launchError;
+    processResult = safeLaunch;
+  } catch (error) {
+    operationError = error;
+  } finally {
+    if (stagedSessionFork) {
+      try {
+        stagedSessionFork.cleanup();
+      } catch {
+        cleanupError = new Error("Could not clean the staged Claude session fork.");
+      }
+    }
+    if (activeRotationPublisher) {
+      try {
+        await activeRotationPublisher.stop();
+      } catch {
+        cleanupError = new Error("Claude active-run rotation publisher shutdown failed.");
+      }
+    }
+    try {
+      await guard?.heartbeat.stop();
+    } catch {
+      cleanupError = new Error("Claude credential lease heartbeat shutdown failed.");
+    }
+    if (guard?.lease) {
+      try {
+        const released = await releaseClaudeCredentialLease(guard);
+        if (released !== true && !guard.heartbeat.lost) {
+          cleanupError = new Error("Claude credential lease release failed.");
+        }
+      } catch {
+        cleanupError = new Error("Claude credential lease release failed.");
+      }
+    }
+    try {
+      await closeRedisRuntime(runtime);
+    } catch {
+      cleanupError ??= new Error("Could not close the Redis runtime safely.");
+    }
+  }
+  if (operationError) throw operationError;
+  if (cleanupError) throw cleanupError;
+  if (processResult?.signal) {
+    process.kill(process.pid, processResult.signal);
+    return;
+  }
+  if (processResult?.status !== 0) {
+    setExitCode(Number.isInteger(processResult?.status) ? processResult.status : 1);
+  }
+}
+
+// Scheduled Claude work uses the same account lease, native preflight, and
+// rotation publication as interactive runs. The callback owns the interactive
+// session from launch to exit, keeping credentials pinned through follow-up.
+// When every usable account is held by an open session, stop the least recently
+// used idle AIM session to free its account (Amir, 2026-09-24) instead of failing.
+async function freeClaudeAccountForScheduledJob(context, { preset, jobName, stderr }) {
+  const usageStatus = await collectClaudeRedisAccountUsageStatus({
+    homeDir: context.homeDir,
+    fresh: false,
+    nowMs: context.nowMs,
+    fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl,
+    connectRedisStoreImpl: context.connectRedisStoreImpl,
+  });
+  const eligibleLabels = new Set(usageStatus.accounts
+    .filter((account) => account?.locked === true
+      && selectLeastUsedUnlockedClaudeAccount({ ...usageStatus, accounts: [{ ...account, locked: false }] }, { preset }))
+    .map((account) => account.label));
+  const target = (context.chooseClaudeAccountToFreeImpl ?? chooseClaudeAccountToFree)(
+    (context.listLocalAimClaudeSessionsImpl ?? listLocalAimClaudeSessions)({ homeDir: context.homeDir }),
+    eligibleLabels,
+  );
+  if (!target) return null;
+  const stopped = await (context.stopClaudeAccountSessionsImpl ?? stopClaudeAccountSessions)(target, { jobName });
+  stderr?.write?.(`AIM: no free Claude account; stopped ${stopped.length} idle session(s) on ${target.label} `
+    + `(${stopped.map((session) => session.sessionId ?? `pid ${session.pid}`).join(", ")}) for ${jobName}.\n`);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const selected = await selectAutomaticClaudeAccount(context, { preset });
+    if (selected) return selected;
+    await (context.sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(2_000);
+  }
+  return null;
+}
+
+export async function runAutomaticClaudeSession(context, { cwd, runSession, jobName = "a scheduled job" }) {
+  if (!isRedisConfigured({ homeDir: context.homeDir })) {
+    throw new Error("Claude routines require configured Redis account coordination.");
+  }
+  const selected = await selectAutomaticClaudeAccount(context, { preset: "fable" })
+    ?? await freeClaudeAccountForScheduledJob(context, { preset: "fable", jobName, stderr: context.stderr });
+  if (!selected) throw new Error("No unlocked Claude account with usage left is available, and no idle AIM session could be stopped to free one.");
+  await handleRedisClaudeRun({
+    ...context,
+    positional: ["claude", "run", selected.label],
+    runClaudeCliImpl: (launch) => runSession({ ...launch, label: selected.label }),
+  }, { launchCwd: cwd, allowOffline: false });
+}
+
+export async function handleClaude(context) {
+  const {
+    opts,
+    positional,
+    statePath,
+    homeDir,
+    env,
+    stdout,
+    setExitCode,
+    probeUsageSnapshotsByProviderImpl,
+    fetchJsonWithTimeoutImpl,
+    connectRedisStoreImpl,
+    nowMs,
+  } = context;
+  const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+  if (!subcmd) {
+    throw new Error(
+      "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus|sonnet] | aim claude inventory [--json] | aim claude memory | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
+    );
+  }
+  if (subcmd === "list") {
+    const requestedCount = positional[2];
+    if (
+      positional.length > 3
+      || (
+        requestedCount !== undefined
+        && (
+          !/^\d+$/.test(requestedCount)
+          || !Number.isSafeInteger(Number(requestedCount))
+          || Number(requestedCount) < 1
+        )
+      )
+    ) {
+      throw new Error("Usage: aim claude list [count] [--json]");
+    }
+    const sessions = listRecentManagedClaudeSessions({
+      homeDir,
+      ...(requestedCount === undefined ? {} : { limit: Number(requestedCount) }),
+    });
+    if (opts.json) {
+      stdout.write(`${JSON.stringify({
+        sessions: sessions.map((session) => ({
+          rank: session.rank,
+          lastUsedAt: session.lastUsedAt,
+          account: session.account,
+          threadName: session.threadName,
+          threadId: session.threadId,
+          cwd: session.cwd,
+        })),
+      }, null, 2)}\n`);
+    } else {
+      stdout.write(renderRecentManagedClaudeSessions(sessions, { homeDir, nowMs }));
+    }
+    return;
+  }
+  if (subcmd === "resume") {
+    if (positional.length > 3) {
+      throw new Error(
+        "Usage: aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus|sonnet]",
+      );
+    }
+    let picked;
+    if (positional[2] === undefined) {
+      if (opts.json) throw new Error("Use `aim claude list --json` to list sessions, or `aim claude resume` in an interactive terminal to choose one.");
+      picked = await pickClaudeSession(context);
+      if (!picked) return;
+    }
+    const session = resolveManagedClaudeSession({
+      homeDir,
+      selector: picked?.threadId ?? positional[2],
+      ...(picked ? { account: picked.account } : {}),
+    });
+    if (!isRedisConfigured({ homeDir })) {
+      throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+    }
+    const requestedSwitchPreset = opts.claudeResumeSwitchAccountPreset;
+    const requestedAccountLabel = opts.claudeResumeAccountLabel
+      ? normalizeLabel(opts.claudeResumeAccountLabel)
+      : null;
+    if (requestedAccountLabel === session.account) {
+      throw new Error(
+        `Claude session already belongs to label=${session.account}; omit --account to resume it directly.`,
+      );
+    }
+    const preservedResumeArgs = session.model && session.effort
+      ? [
+        "--dangerously-skip-permissions",
+        "--model",
+        session.model,
+        "--effort",
+        session.effort,
+      ]
+      : null;
+    if (!preservedResumeArgs) {
+      throw new Error(
+        `Claude session ${session.threadId} does not record an exact model and effort; refusing to guess.`,
+      );
+    }
+    let unavailableReason = "busy";
+    if (!requestedSwitchPreset && !requestedAccountLabel) {
+      const directContext = {
+        ...context,
+        positional: ["claude", "run", session.account],
+        opts: {
+          ...opts,
+          afterDoubleDash: [
+            ...preservedResumeArgs,
+            "--resume",
+            session.threadId,
+          ],
+        },
+      };
+      try {
+        await handleRedisClaudeRun(directContext, {
+          launchCwd: session.cwd,
+        });
+        return;
+      } catch (error) {
+        if (error?.code === "AIMGR_CLAUDE_AUTH_UNAVAILABLE") unavailableReason = "requires login";
+        else if (error?.code !== "AIMGR_CREDENTIAL_BUSY") throw error;
+      }
+    }
+
+    const forkPreset = requestedSwitchPreset ?? claudePresetForSessionModel(session.model);
+    const forkResumeArgs = [...preservedResumeArgs];
+    if (requestedSwitchPreset) {
+      const presetArgs = claudeRunPresetArgs(forkPreset);
+      // Switching presets changes the model, never the saved session effort.
+      forkResumeArgs[forkResumeArgs.indexOf("--model") + 1] = presetArgs[presetArgs.indexOf("--model") + 1];
+    }
+    const selected = requestedAccountLabel
+      ? { label: requestedAccountLabel }
+      : await selectAutomaticClaudeAccount(context, {
+          preset: forkPreset,
+          excludeLabels: [session.account],
+          requireLive: unavailableReason === "requires login",
+        });
+    if (!selected) {
+      if (requestedSwitchPreset) {
+        throw new Error(
+          `No other unlocked Claude account with usage left is available for --switch-account ${forkPreset}.`,
+        );
+      }
+      throw new Error(
+        `Claude label=${session.account} ${unavailableReason === "busy" ? "is busy" : "requires login"} and no other unlocked Claude account with usage left is available.`,
+      );
+    }
+    const forkName = buildManagedClaudeSessionForkName(session);
+    const forkReason = requestedAccountLabel
+      ? `Switching session from ${session.account} to ${selected.label}`
+        + (requestedSwitchPreset ? ` using ${forkPreset}` : "")
+      : requestedSwitchPreset
+        ? `Switching session from ${session.account} to ${selected.label} using ${forkPreset}`
+        : `${session.account} ${unavailableReason === "busy" ? "is busy" : "requires login"}; forking session onto ${selected.label}`;
+    stdout.write(`${forkReason} as "${forkName}".\n`);
+    await handleRedisClaudeRun({
+      ...context,
+      positional: ["claude", "run", selected.label],
+      opts: {
+        ...opts,
+        afterDoubleDash: [
+          ...forkResumeArgs,
+          "--resume",
+          session.threadId,
+          "--fork-session",
+          "--name",
+          forkName,
+        ],
+      },
+    }, {
+      launchCwd: session.cwd,
+      sessionFork: session,
+      allowOffline: Boolean(requestedAccountLabel),
+    });
+    return;
+  }
+  if (subcmd === "run") {
+    if (positional.length > 3) {
+      throw new Error(
+        `Unknown Claude run preset: ${positional[3]}. Use opus, fable, sonnet, or -- <claude args...>.`,
+      );
+    }
+    if (!isRedisConfigured({ homeDir })) {
+      throw new Error(`\`aim claude run\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+    }
+    if (opts.claudeAutoSelect === true) {
+      const selected = await selectAutomaticClaudeAccount(context, {
+        preset: opts.claudeAutoSelectPreset,
+      });
+      if (!selected) {
+        throw new Error(
+          "No unlocked Claude account with usage left is available.",
+        );
+      }
+      await handleRedisClaudeRun({
+        ...context,
+        positional: ["claude", "run", selected.label],
+      }, { allowOffline: false });
+      return;
+    }
+    await handleRedisClaudeRun(context);
+    return;
+  }
+  if (subcmd === "status" || subcmd === "usage") {
+    if (!isRedisConfigured({ homeDir })) {
+      throw new Error(`\`aim claude ${subcmd}\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+    }
+    const selectedLabels = positional.slice(2);
+    const result = await collectClaudeRedisAccountUsageStatus({
+      homeDir,
+      selectedLabels,
+      fresh: opts.fresh === true,
+      nowMs,
+      fetchJsonWithTimeoutImpl,
+      connectRedisStoreImpl,
+    });
+    stdout.write(
+      opts.json
+        ? `${JSON.stringify(result, null, 2)}\n`
+        : renderClaudeRedisAccountUsageStatus(result, { verbose: opts.verbose === true }),
+    );
+    if (result.ok !== true) {
+      setExitCode(1);
+    }
+    return;
+  }
+  if (subcmd === "memory") {
+    if (positional.length > 2) {
+      throw new Error("`aim claude memory` does not accept positional arguments.");
+    }
+    const fold = foldManagedClaudeMemories({ userHomeDir: homeDir });
+    stdout.write(renderClaudeSharedMemoryReport({
+      summary: summarizeClaudeSharedMemory({ userHomeDir: homeDir }),
+      fold,
+    }));
+    return;
+  }
+  if (subcmd === "inventory") {
+    if (positional.length > 2) {
+      throw new Error("`aim claude inventory` does not accept positional arguments.");
+    }
+    if (opts.fresh === true) {
+      throw new Error("`aim claude inventory` is always offline and does not accept --fresh.");
+    }
+    if (!isRedisConfigured({ homeDir })) {
+      throw new Error(`\`aim claude inventory\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+    }
+    const result = await collectClaudeRedisAccountInventory({
+      homeDir,
+      nowMs,
+      connectRedisStoreImpl,
+    });
+    stdout.write(opts.json ? `${JSON.stringify(result, null, 2)}\n` : renderClaudeRedisAccountInventory(result));
+    if (result.ok !== true) {
+      setExitCode(1);
+    }
+    return;
+  }
+  if (subcmd === "capture-native") {
+    const label = normalizeLabel(positional[2]);
+    const sourceHome = resolveOptionalSourceHome(opts.sourceHome, { homeDir });
+    const sourceConfigDir = opts.sourceConfigDir === undefined
+      ? null
+      : resolveCliPath(opts.sourceConfigDir, {
+          homeDir: sourceHome,
+          optionName: "--source-config-dir",
+        });
+    if (isRedisConfigured({ homeDir })) {
+      await handleRedisClaudeCaptureNative(context, { label, sourceHome, sourceConfigDir });
+      return;
+    }
+    if (sourceConfigDir) {
+      throw new Error("`--source-config-dir` requires Redis-backed Claude capture.");
+    }
+    const state = loadAimgrState(statePath);
+    const attemptedAt = recordAccountMaintenanceAttempt(state, label, { providerHint: ANTHROPIC_PROVIDER });
+    try {
+      const captured = captureAnthropicNativeBundleForLabel({
+        state,
+        label,
+        sourceHome,
+      });
+      recordAccountMaintenanceSuccess(state, label, { homeDir, observedAt: attemptedAt });
+      markImportedAnthropicLabelDirtyState(state, label, { observedAt: attemptedAt });
+      writeJsonFileWithBackup(statePath, state);
+      stdout.write(
+        `${JSON.stringify(
+          sanitizeForStatus({
+            ok: true,
+            captured: {
+              label,
+              sourceHome: captured.sourceHome,
+              emailAddress: captured.summary.emailAddress,
+              organizationName: captured.summary.organizationName,
+              organizationUuid: captured.summary.organizationUuid,
+            },
+          }),
+          null,
+          2,
+        )}\n`,
+      );
+      return;
+    } catch (err) {
+      const message = String(err?.message ?? err);
+      recordAccountMaintenanceFailure(state, label, {
+        observedAt: attemptedAt,
+        ...(resolveAnthropicMaintenanceBlockedReason(message)
+          ? { blockedReason: resolveAnthropicMaintenanceBlockedReason(message) }
+          : {}),
+      });
+      writeJsonFileWithBackup(statePath, state);
+      throw err;
+    }
+  }
+  if (subcmd === "export-live") {
+    const outFile = resolveCliPath(opts.outFile, { homeDir, optionName: "--out" });
+    const sourceHome = resolveOptionalSourceHome(opts.sourceHome, { homeDir });
+    const exported = exportLiveClaudeNativeBundle({
+      filePath: outFile,
+      sourceHome,
+    });
+    stdout.write(
+      `${JSON.stringify(
+        sanitizeForStatus({
+          ok: true,
+          exported: {
+            filePath: exported.filePath,
+            sourceHome: exported.sourceHome,
+            emailAddress: exported.summary.emailAddress,
+            organizationName: exported.summary.organizationName,
+            organizationUuid: exported.summary.organizationUuid,
+            wrote: exported.wrote,
+          },
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+    return;
+  }
+  if (subcmd === "import-native") {
+    const label = normalizeLabel(positional[2]);
+    const inFile = resolveCliPath(opts.inFile, { homeDir, optionName: "--in" });
+    if (isRedisConfigured({ homeDir })) {
+      await handleRedisClaudeImportNative(context, { label, inFile });
+      return;
+    }
+    const state = loadAimgrState(statePath);
+    const attemptedAt = recordAccountMaintenanceAttempt(state, label, { providerHint: ANTHROPIC_PROVIDER });
+    try {
+      const imported = importAnthropicNativeBundleForLabel({
+        state,
+        label,
+        filePath: inFile,
+      });
+      recordAccountMaintenanceSuccess(state, label, { homeDir, observedAt: attemptedAt });
+      markImportedAnthropicLabelDirtyState(state, label, { observedAt: attemptedAt });
+      writeJsonFileWithBackup(statePath, state);
+      stdout.write(
+        `${JSON.stringify(
+          sanitizeForStatus({
+            ok: true,
+            imported: {
+              label,
+              filePath: imported.filePath,
+              sourceHome: imported.sourceHome,
+              emailAddress: imported.summary.emailAddress,
+              organizationName: imported.summary.organizationName,
+              organizationUuid: imported.summary.organizationUuid,
+            },
+          }),
+          null,
+          2,
+        )}\n`,
+      );
+      return;
+    } catch (err) {
+      const message = String(err?.message ?? err);
+      recordAccountMaintenanceFailure(state, label, {
+        observedAt: attemptedAt,
+        ...(resolveAnthropicMaintenanceBlockedReason(message)
+          ? { blockedReason: resolveAnthropicMaintenanceBlockedReason(message) }
+          : {}),
+      });
+      writeJsonFileWithBackup(statePath, state);
+      throw err;
+    }
+  }
+  if (subcmd !== "use") {
+    throw new Error(`Unsupported claude subcommand: ${subcmd} (supported: list, resume, inventory, status, usage, run, use, capture-native, export-live, import-native).`);
+  }
+  if (isRedisConfigured({ homeDir })) {
+    throw new Error("`aim claude use` was retired for Redis installs. Use `aim claude run <label> [-- <claude args...>]`.");
+  }
+  const state = loadAimgrState(statePath);
+  const explicitLabel = String(positional[2] ?? "").trim() ? normalizeLabel(positional[2]) : null;
+  const activated = explicitLabel
+    ? activateClaudeLabelSelection({ state, homeDir, env, label: explicitLabel })
+    : await activateClaudePoolSelection({ state, homeDir, env, probeUsageSnapshotsByProviderImpl });
+  writeJsonFileWithBackup(statePath, state);
+  stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);
+  if (activated.status === "blocked") {
+    setExitCode(1);
+  }
+  return;
+}

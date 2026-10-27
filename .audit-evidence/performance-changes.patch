@@ -1,0 +1,1677 @@
+diff --git a/docs/AI_MANAGER_RESOURCE_AUDIT_AND_FIX_PLAN_2026-10-25.md b/docs/AI_MANAGER_RESOURCE_AUDIT_AND_FIX_PLAN_2026-10-25.md
+new file mode 100644
+index 0000000..9f428c2
+--- /dev/null
++++ b/docs/AI_MANAGER_RESOURCE_AUDIT_AND_FIX_PLAN_2026-10-25.md
+@@ -0,0 +1,224 @@
++---
++title: AI Manager resource audit and fix plan
++date: 2026-10-25
++status: complete
++fallback_policy: forbidden
++doc_type: phased_refactor
++---
++
++# AI Manager's exact-ID resumes no longer read the Claude archive
++
++The performance fixes are installed on this Mac. All 609 tests in 75 test files
++pass. New AI Manager invocations load the updated source. Existing agent
++processes were left running; already-loaded routine monitors and Prime/Pi
++extensions adopt their changes on their next start or extension reload.
++
++The main defect was selection in the wrong order: native Claude resume loaded
++metadata from every managed transcript before checking the requested ID.
++On October 25, this Mac held 7,009 top-level transcripts in 3,421 project
++directories across 40 managed Claude homes: 79,530,414,694 bytes, or 79.5 GB.
++Each concurrent launcher could repeat that work. One observed launcher grew
++from about 2.1 GiB to 4.45 GiB resident while consuming a CPU core. Amir also
++reported two launchers reading about 60 GB between 7:04 and 7:06 a.m. Central.
++
++The corrected native ownership lookup for a real session took 31 ms with the
++account supplied and read zero transcript bytes. Looking for that ID across
++all accounts took 788 ms and also read zero transcript bytes. These measure
++session lookup, not Redis connection time or Claude's own startup.
++
++## How AI Manager spends resources
++
++The installed `aim` wrapper runs Node against this repository. CLI commands
++load lazily. Account selection reads Redis credential and policy records,
++prepares local account files, resolves any requested session, and starts the
++agent. Claude's parent process maintains credential ownership and rotation;
++a small supervisor manages its terminal and signals. Codex uses a shared local
++session store and streams a fresh-ID copy when continuing across accounts.
++Prime resolves the selected transcript and its active-branch account/model
++metadata, then uses the installed Prime launcher. Scheduled jobs add lifecycle
++observers. The managed Prime/Pi extension supplies the session title and footer.
++
++There are consequently several kinds of cost: one-time launch work, required
++live ownership, observation repeated while waiting, and the agent runtime's own
++work. The audit traced these separately. It does not attribute every process
++or this Mac's entire load average to AI Manager.
++
++## Findings and deployed changes
++
++| Cost | Previous behavior | Installed behavior |
++|---|---|---|
++| Native Claude resume | Read every managed transcript before selecting an ID | Check filenames in the selected account first; search other accounts only if needed |
++| Missing Claude UUID | Fall through into a full name search | Return the missing-ID result without reading unrelated transcripts |
++| Claude metadata | Allocate the entire transcript, including files approaching 1 GB | Read 256 KiB chunks and retain one JSONL record at a time |
++| Claude account switch | Hold source text, parsed records and rewritten output together | Validate and gather identifiers, then stream rewritten records in a second pass |
++| Identifier replacement | Retry a greedy pattern at every character in long non-ID text | Match the start of an identifier once and preserve numeric prefixes |
++| Claude idle discovery | Spawn two synchronous `ps` commands per live candidate | Take one process-table snapshot for the observation |
++| Claude job monitor | Reread and parse the whole event log on each poll | Read newly appended complete records; unchanged polls read zero bytes |
++| Prime job monitor | Reread the selected transcript every 250 ms while waiting | Cache the small observation result until file identity, size or timestamps change |
++| Prime/Pi footer | Scan history and rebuild an unchanged display every second | Check the current leaf and replay the cached display when unchanged |
++| Project consent | Read account configs after both approvals were already known | Stop as soon as both existing positive approvals are found |
++
++Claude companion text files also stream record by record, preserving arbitrary
++bytes and line endings. Account switching still generates fresh identifiers,
++removes account-bound thinking, preserves tool references, detects ambiguous
++ownership and validates source-file stability. Corrupt histories fail and
++partial staged output is cleaned up. Stream memory still includes the largest
++individual record and the identifier map; it is not a fixed memory ceiling.
++
++The Prime observer keeps only the result of the current observation. It
++invalidates on replacement and truncation and retries failed reads. It still
++parses a changed transcript to follow its actual branch. The Prime transcript
++reader now streams source records rather than allocating an additional
++whole-file string. The parsed branch history remains in memory during a read.
++
++The footer still sends its display to newly attached clients. The optimization
++uses the host's constant-time leaf ID, which changes on messages, renames,
++recaps and persisted credential bindings. Hosts without that API retain the
++existing refresh behavior. Copies in both local managed extension directories
++were updated without restarting workers.
++
++## Measurements
++
++All measurements were made on October 25 on this Mac. Transcript byte counts
++are application reads, which may be served from the OS cache; they are not
++claims about physical disk traffic.
++
++| Operation | Input | Result |
++|---|---|---|
++| Native ownership lookup, known account | Real session in `pro27` | 31 ms, 0 transcript bytes, 59 MiB process peak RSS |
++| Native ownership lookup, all accounts | Same real session | 788 ms, 0 transcript bytes, 70 MiB peak RSS |
++| Managed metadata lookup | Same selected session | 1,116 ms, 106.4 MB read, 164 MiB peak RSS |
++| Old account-switch rekey | Synthetic 33.6 MB JSONL, 256 records | 2,747 ms, 318 MiB peak RSS |
++| Streaming account-switch rekey | Same synthetic input in a fresh process | 1,570 ms, 81 MiB peak RSS |
++| Existing shared-memory discovery | Real managed homes, read-only instrumentation | 507 ms, 167 directory reads, 3,424 `lstat` calls, 0 content bytes |
++
++The copy benchmark reduces peak process memory by 237 MiB, about 75%, and
++elapsed time by 1.18 seconds, about 43%. It is one controlled synthetic
++comparison, not a prediction for every transcript. The old 79.5 GB archive
++scan was established from the code and file inventory; it was not replayed
++for a benchmark on the shared machine.
++
++A later process snapshot found 45 Claude supervisors using 934.5 MiB total
++and 33 Claude launcher parents using 2,039.8 MiB total, all reporting 0% CPU at
++that instant. This is evidence that idle wrappers have a standing memory cost,
++not a before/after measurement. Removing those processes would require moving
++credential ownership and terminal lifecycle responsibilities elsewhere. This
++change does not introduce a new central daemon to do that.
++
++## Costs retained and the next optimization threshold
++
++1. **Global title search still inspects session metadata.** Exact UUIDs and
++   native ownership checks now take the cheap path. A search by an arbitrary
++   title may still visit all transcripts, although reads stream. Recent-session
++   listing already limits candidate parsing. If title searches remain a real
++   load source, the next change is a stat-validated metadata cache populated
++   during selected-session reads, followed by an explicitly bounded initial
++   index. Do not put an unbounded archive rebuild back into resume.
++2. **Old account-specific memories still need discovery.** The measured
++   half-second walk found no pending memory content and read no transcript
++   bodies. Older running Claude builds can still write memories into account
++   homes, so removing the sweep could hide those memories. If this becomes a
++   measured bottleneck, coalesce concurrent discovery under the existing lock
++   before considering a cache or a longer migration interval.
++3. **Prime reads changed branch history.** Unchanged polling now does no
++   transcript I/O. If long active Prime sessions remain expensive, build a
++   branch-aware append observer that invalidates on rewrites. A tail-only read
++   would be incorrect after branching. That larger change belongs with evidence
++   of cost in the Prime workload, not in the Claude emergency fix.
++
++These are explicit remaining costs, not claims that all runtime work has been
++eliminated. The deployed plan removes the confirmed multiplicative work from
++exact-ID resumes and unchanged polling without adding persistent services.
++
++## Other paths checked
++
++| Area | Audit conclusion |
++|---|---|
++| CLI initialization | Command handlers already load lazily |
++| Claude preparation | Prepared launch state already passes to the runner; no second full preflight was added |
++| Redis | Credential snapshots use batched reads; lease renewal and rotation checks remain because they protect ownership |
++| Status | Provider-specific indexes, cached observations and coordinated refreshes already bound repeated provider work |
++| Codex resume | SQLite/filename discovery and a bounded header read already select the rollout |
++| Codex account switching | Chunked scan/copy/verification already exists; its extra passes protect fresh-thread identifier rules |
++| Prime resolution | Exact path/ID selection precedes reading that transcript; no Claude-style all-transcript body scan |
++| Prime launch | PATH resolution delegates execution to the installed launcher |
++| Grok | Status/inventory commands read credential metadata and usage; no transcript traversal |
++| Hermes | Watch loops sleep between observations and close Redis connections |
++| MCP execution | Commands use bounded subprocess execution; this audit did not identify an archive-reading polling loop there |
++| Recovery/status hooks | Small local state checks and bounded transcript-tail fallback; no full archive reads |
++
++The historical September Prime daemon audit remains separate. This work did
++not restart a supervisor, reclaim a live lock or restore any user session.
++
++## Implementation plan and completion
++
++1. **Select before reading. Complete and deployed first.** Filter exact IDs
++   and accounts before transcript reads; cover known IDs, absent IDs, native
++   resume arguments and cross-account ownership.
++2. **Stream selected history. Complete and deployed next.** Replace full-file
++   metadata and fork staging with one shared line reader; preserve validation,
++   fresh IDs, companion bytes and cleanup. Fix the quadratic identifier pattern.
++3. **Stop repeat observation work. Complete and deployed incrementally.** Use
++   one process snapshot, incremental Claude events, stat-validated Prime
++   observations, cached idle footer output and early consent completion.
++4. **Verify and install. Complete.** Run focused regressions, one final complete
++   passing suite with two test workers, syntax checks, controlled benchmarks,
++   installed-path checks and deployment hashes. Preserve unrelated live edits.
++
++## Verification and the test-isolation incident
++
++The final suite passes **609/609 tests in 75 files**, with no failures or skips,
++in 16.9 seconds using two test workers. `npm run lint`, checks of the final
++Prime/footer edits, and `git diff --check` pass. Regressions assert zero unrelated
++transcript opens for exact/missing IDs, zero transcript reads for native
++ownership, valid fresh-ID forks, preserved binary companion bytes, malformed
++history rejection, source-integrity cleanup, one `ps` call, incremental event
++reads, Prime cache invalidation and manual footer renames.
++
++The first full run exposed an existing test-helper leak: CLI tests inherited
++this Codex session's real `CODEX_HOME`, wrote synthetic credentials to the
++local managed auth file and failed to find them in their temporary homes.
++The live selected account was restored from Redis under the selection lock,
++with its original account identity verified. Redis credentials were not
++replaced. The test helper now clears inherited agent-directory overrides;
++tests that need an override supply it explicitly. A regression protects an
++outside auth file, and the real auth file's digest was unchanged across the
++final suite. The help assertion now matches the existing Redis migration, and the Pi
++fixture now supplies its intended environment override explicitly.
++
++## Deployment, review and rollback
++
++The installed wrapper points to
++`/Users/aelaguiz/workspace/aimgr/bin/aimgr.js`. Verified source is installed in
++that checkout; both managed Prime/Pi extension copies match the new source.
++Running processes keep their loaded modules until their normal next start or
++reload. No existing agent session was terminated or resumed by this work.
++
++The live checkout contained unrelated unfinished work. The isolated worktree
++at `/Users/aelaguiz/workspace/aimgr/.tmp/performance-20261025` preserves the exact
++starting state in local baseline commit `7d68a47`. Each deployed destination
++was hash-checked against that baseline or this task's preceding deployment
++before atomic replacement. Backups are in that worktree's `.deployment-backup`
++and the deployed-file hashes are in `.deployed-sha256.json`. Do not publish the
++baseline or use a whole-checkout reset: it contains other work. Restore only a
++task file whose live hash still matches this deployment if rollback is needed.
++
++Test logs and synthetic benchmark results are retained with the audit evidence
++in the isolated worktree. The benchmark copied no user conversation content.
++
++<!-- project_flow:block:implementation_audit:start -->
++## Implementation audit
++
++Date: 2026-10-25. Code verdict: COMPLETE for the deployed plan. Runtime lookup
++and installation checks: complete. Existing sessions were not relaunched.
++
++The final call-site audit confirms both native and managed exact-ID routes
++filter before opening bodies; routine loops use their new readers; fork staging
++uses the streaming rekey function; the old pure string rekey helper remains
++only as a compatibility/testing API. Global title-search callers remain
++explicit and are recorded in the remaining-cost section. No new daemon,
++background indexer or parallel credential writer was introduced.
++
++No code blockers remain for this deployment. The three remaining optimization
++conditions are recorded above with their correctness constraints.
++<!-- project_flow:block:implementation_audit:end -->
+diff --git a/native/harness/session-title-footer.js b/native/harness/session-title-footer.js
+index 248d242..1bc79f9 100644
+--- a/native/harness/session-title-footer.js
++++ b/native/harness/session-title-footer.js
+@@ -292,9 +292,17 @@ export default function sessionIdentityExtension(pi) {
+   let manualTitle = false;
+   let lastRenderedWidget;
+   let lastTerminalTitle;
++  let lastRenderedRevision;
+   let refreshTimer;
+   let titleUpdate = Promise.resolve();
+ 
++  const sessionRevision = (ctx) => {
++    if (typeof ctx.sessionManager?.getLeafId !== "function") return undefined;
++    // Messages, recaps, renames and credential bindings all append entries and
++    // advance the leaf. Reading it is O(1); getEntries/getSessionName are O(n).
++    return JSON.stringify([currentSessionId(ctx), ctx.sessionManager.getLeafId(), ctx.model?.provider, ctx.cwd]);
++  };
++
+   const appendIdentity = () => {
+     if (!identity) return false;
+     try {
+@@ -359,6 +367,7 @@ export default function sessionIdentityExtension(pi) {
+       lastTerminalTitle = terminalTitle;
+       ctx.ui.setTitle(terminalTitle);
+     }
++    lastRenderedRevision = sessionRevision(ctx);
+   };
+ 
+   const applyAutoTitle = async (ctx, title, titleSource, recapMessageCount = 0) => {
+@@ -438,6 +447,7 @@ export default function sessionIdentityExtension(pi) {
+     branch = gitBranch(ctx.cwd);
+     lastRenderedWidget = undefined;
+     lastTerminalTitle = undefined;
++    lastRenderedRevision = undefined;
+     manualTitle = false;
+ 
+     const entries = ctx.sessionManager.getEntries();
+@@ -469,9 +479,16 @@ export default function sessionIdentityExtension(pi) {
+ 
+     update(ctx);
+     refreshTimer = setInterval(() => {
+-      void maybeUpgradeFromRecap(ctx);
+       // Daemon extension UI is fire-and-forget rather than replayed state. Re-send
+       // unchanged identity so a newly attached client receives the banner/title.
++      // An idle session can replay the rendered values without scanning history.
++      const revision = sessionRevision(ctx);
++      if (revision !== undefined && revision === lastRenderedRevision) {
++        ctx.ui.setWidget(WIDGET_KEY, lastRenderedWidget.split("\n"), { placement: "belowEditor" });
++        ctx.ui.setTitle(lastTerminalTitle);
++        return;
++      }
++      void maybeUpgradeFromRecap(ctx);
+       update(ctx, false, true);
+     }, 1000);
+     refreshTimer.unref?.();
+diff --git a/src/cli/commands/claude.js b/src/cli/commands/claude.js
+index 726d927..9fd4cfb 100644
+--- a/src/cli/commands/claude.js
++++ b/src/cli/commands/claude.js
+@@ -72,6 +72,7 @@ import {
+ } from "../../targets/claude-shared-memory.js";
+ import {
+   buildManagedClaudeSessionForkName,
++  findManagedClaudeSessionFiles,
+   listRecentManagedClaudeSessions,
+   readManagedClaudeSessions,
+   renderRecentManagedClaudeSessions,
+@@ -176,11 +177,11 @@ function planCrossAccountClaudeResume({ homeDir, label, configDir, cwd, args, se
+     };
+   }
+ 
+-  const managedSessions = readManagedClaudeSessions({ homeDir });
+-  if (sessionIdOption?.value && managedSessions.some((candidate) => (
+-    candidate.threadId.toLowerCase() === sessionIdOption.value.toLowerCase()
+-    && candidate.account !== label
+-  ))) {
++  // Check filenames before opening transcripts. A resume of one ID must never
++  // parse the entire account pool's history, including when that ID is absent.
++  if (sessionIdOption?.value && findManagedClaudeSessionFiles({
++    homeDir, threadId: sessionIdOption.value,
++  }).some((candidate) => candidate.account !== label)) {
+     throw new Error(
+       `Claude session ID ${sessionIdOption.value} belongs to another account; use \`aim claude resume ${sessionIdOption.value} --account ${label}\` to continue it with a fresh ID.`,
+     );
+@@ -189,6 +190,12 @@ function planCrossAccountClaudeResume({ homeDir, label, configDir, cwd, args, se
+     return { args: nativeArgs, resumeOption: null, sessionFork: null };
+   }
+ 
++  const exactId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selector);
++  const localMatches = exactId ? findManagedClaudeSessionFiles({ homeDir, threadId: selector, account: label }) : [];
++  const managedSessions = exactId
++    ? (localMatches.length ? localMatches : findManagedClaudeSessionFiles({ homeDir, threadId: selector }))
++    : readManagedClaudeSessions({ homeDir });
++
+   const sameAccount = managedSessions.some((candidate) => (
+     candidate.account === label
+     && (candidate.threadId.toLowerCase() === selector.toLowerCase()
+diff --git a/src/io/file-lines.js b/src/io/file-lines.js
+new file mode 100644
+index 0000000..6a6468b
+--- /dev/null
++++ b/src/io/file-lines.js
+@@ -0,0 +1,65 @@
++import fs from "node:fs";
++
++const CHUNK_BYTES = 256 * 1024;
++
++// Snapshot the file length at open and retain at most one record plus a chunk.
++// Yield bytes so callers can skip large tool records without decoding them.
++// Closing the iterator early also closes its file descriptor.
++export function* readFileLines(filePath, { reverse = false, start = 0, end } = {}) {
++  const fd = fs.openSync(filePath, "r");
++  try {
++    const size = Math.min(end ?? Infinity, fs.fstatSync(fd).size);
++    let position = reverse ? size : start;
++    let fragments = [];
++    let length = 0;
++    while (reverse ? position > start : position < size) {
++      const count = Math.min(CHUNK_BYTES, reverse ? position - start : size - position);
++      const offset = reverse ? position - count : position;
++      const chunk = Buffer.allocUnsafe(count);
++      let read = 0;
++      while (read < count) {
++        const n = fs.readSync(fd, chunk, read, count - read, offset + read);
++        if (n === 0) throw new Error("File changed while reading lines.");
++        read += n;
++      }
++      position = reverse ? offset : offset + count;
++      if (reverse) {
++        let boundary = chunk.length;
++        for (let newline = chunk.lastIndexOf(10); newline >= 0;
++          newline = newline > 0 ? chunk.lastIndexOf(10, newline - 1) : -1) {
++          const part = chunk.subarray(newline + 1, boundary);
++          yield fragments.length
++            ? Buffer.concat([part, ...fragments.reverse()], part.length + length)
++            : part;
++          fragments = [];
++          length = 0;
++          boundary = newline;
++        }
++        if (boundary > 0) {
++          const part = chunk.subarray(0, boundary);
++          fragments.push(part);
++          length += part.length;
++        }
++      } else {
++        let boundary = 0;
++        for (let newline = chunk.indexOf(10); newline >= 0; newline = chunk.indexOf(10, newline + 1)) {
++          const part = chunk.subarray(boundary, newline);
++          yield fragments.length
++            ? Buffer.concat([...fragments, part], length + part.length)
++            : part;
++          fragments = [];
++          length = 0;
++          boundary = newline + 1;
++        }
++        if (boundary < chunk.length) {
++          const part = chunk.subarray(boundary);
++          fragments.push(part);
++          length += part.length;
++        }
++      }
++    }
++    if (fragments.length) yield Buffer.concat(reverse ? fragments.reverse() : fragments, length);
++  } finally {
++    fs.closeSync(fd);
++  }
++}
+diff --git a/src/routines/claude.js b/src/routines/claude.js
+index 2e4a46a..f403713 100644
+--- a/src/routines/claude.js
++++ b/src/routines/claude.js
+@@ -2,6 +2,7 @@ import fs from "node:fs";
+ import path from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { writeJsonFileIfChanged } from "../io/json-store.js";
++import { readFileLines } from "../io/file-lines.js";
+ 
+ const HOOK_PATH = fileURLToPath(new URL("./claude-hook.js", import.meta.url));
+ 
+@@ -126,11 +127,30 @@ export function prepareInteractiveClaudeRoutine({ launch, routine, sessionId, ev
+ // Observation must never terminate the interactive session. Ignore incomplete
+ // writes, unrelated messages, and malformed observer records; Claude owns its UI.
+ export function readClaudeRoutineEvents(eventsPath) {
+-  const source = fs.readFileSync(eventsPath, "utf8");
+-  return source.slice(0, source.lastIndexOf("\n") + 1).split("\n").flatMap((line) => {
+-    try {
+-      const value = line ? JSON.parse(line) : null;
+-      return value && typeof value === "object" && !Array.isArray(value) ? [value] : [];
+-    } catch { return []; }
+-  });
++  return createClaudeRoutineEventReader(eventsPath)();
++}
++
++export function createClaudeRoutineEventReader(eventsPath) {
++  let offset = 0;
++  let identity = null;
++  return () => {
++    const stat = fs.statSync(eventsPath);
++    const currentIdentity = `${stat.dev}:${stat.ino}`;
++    if (identity !== currentIdentity || stat.size < offset) offset = 0;
++    identity = currentIdentity;
++    if (stat.size === offset) return [];
++    const events = [];
++    let position = offset;
++    for (const line of readFileLines(eventsPath, { start: offset, end: stat.size })) {
++      position += line.length;
++      if (position >= stat.size) break; // Retry this unfinished record after its newline arrives.
++      position += 1;
++      offset = position;
++      try {
++        const value = JSON.parse(line.toString("utf8"));
++        if (value && typeof value === "object" && !Array.isArray(value)) events.push(value);
++      } catch { /* Ignore malformed observer records, as before. */ }
++    }
++    return events;
++  };
+ }
+diff --git a/src/routines/run.js b/src/routines/run.js
+index 3dd56fe..c96d450 100644
+--- a/src/routines/run.js
++++ b/src/routines/run.js
+@@ -13,6 +13,7 @@ import {
+ } from "../io/paths.js";
+ import { writeJsonFileIfChanged } from "../io/json-store.js";
+ import {
++  createPrimeSessionObserver,
+   readLatestPrimeUserText,
+   readPrimeLatestTurn,
+   readPrimeSessionProfile,
+@@ -27,7 +28,7 @@ import { codexRoutineArgs, startCodexRoutineTurn } from "./codex.js";
+ import {
+   formatClaudeRoutineParkNotice,
+   prepareInteractiveClaudeRoutine,
+-  readClaudeRoutineEvents,
++  createClaudeRoutineEventReader,
+   runClaudeRoutineSession,
+ } from "./claude.js";
+ import { runClaudeCli } from "../targets/claude-runner.js";
+@@ -773,9 +774,10 @@ async function waitForPromptAdmission({ context, sessionPath, baselineSha256, ef
+   const pollMs = privateTimeout(context, "pollMs", LIFECYCLE_POLL_MS);
+   const deadline = Date.now() + timeoutMs;
+   let lastReadError = null;
++  const readPersistedPrompt = createPrimeSessionObserver(sessionPath, readLatestPrimeUserText);
+   while (Date.now() < deadline) {
+     try {
+-      const persisted = readLatestPrimeUserText(sessionPath);
++      const persisted = readPersistedPrompt();
+       const persistedSha256 = persisted === null ? null : sha256(persisted);
+       if (persistedSha256 === effectiveSha256) return persistedSha256;
+       if (persistedSha256 !== null && persistedSha256 !== baselineSha256) {
+@@ -800,9 +802,10 @@ async function waitForInitialTurnSettlement({ context, sessionPath, effectiveSha
+   const pollMs = privateTimeout(context, "pollMs", LIFECYCLE_POLL_MS);
+   const deadline = Date.now() + timeoutMs;
+   let lastReadError = null;
++  const readLatestTurn = createPrimeSessionObserver(sessionPath, readPrimeLatestTurn);
+   while (Date.now() < deadline) {
+     try {
+-      const turn = readPrimeLatestTurn(sessionPath);
++      const turn = readLatestTurn();
+       const userSha256 = turn.userText === null ? null : sha256(turn.userText);
+       if (userSha256 !== effectiveSha256) {
+         throw new Error("Prime active turn changed before the routine initial turn settled.");
+@@ -940,7 +943,7 @@ export async function executeRoutineWorker(context) {
+           return { status: 1, error };
+         });
+         let settled = false;
+-        let consumed = 0;
++        const readNewEvents = createClaudeRoutineEventReader(eventsPath);
+         let observerError = null;
+         const timeoutMs = privateTimeout(context, "initialTurnMs", INITIAL_TURN_TIMEOUT_MS);
+         const deadline = Date.now() + timeoutMs;
+@@ -955,8 +958,7 @@ export async function executeRoutineWorker(context) {
+             ...receipt, interactiveTui: { ...receipt.interactiveTui, status: "live" },
+           });
+           for (;;) {
+-            for (const event of readClaudeRoutineEvents(eventsPath).slice(consumed)) {
+-              consumed += 1;
++            for (const event of readNewEvents()) {
+               if (event.sessionId !== sessionId) continue;
+               lastEventMs = Date.now();
+               if (event.type === "SessionStart") {
+diff --git a/src/targets/claude-idle-stop.js b/src/targets/claude-idle-stop.js
+index 94b778c..d483d9a 100644
+--- a/src/targets/claude-idle-stop.js
++++ b/src/targets/claude-idle-stop.js
+@@ -9,15 +9,21 @@ import { resolveAimgrStateDir } from "../io/paths.js";
+ // failing. The pane stays open and gets a note saying what was stopped and how
+ // to resume it.
+ 
+-function processInfo(pid, execFileSyncImpl) {
++function processTable(execFileSyncImpl) {
+   try {
+-    const out = execFileSyncImpl("ps", ["-o", "ppid=,tty=", "-p", String(pid)], { encoding: "utf8" }).trim();
+-    if (!out) return null;
+-    const [ppid, tty] = out.split(/\s+/);
+-    const parent = execFileSyncImpl("ps", ["-o", "command=", "-p", ppid], { encoding: "utf8" }).trim();
+-    return { ppid: Number(ppid), tty: tty && tty !== "??" ? tty : null, parent };
++    const out = execFileSyncImpl("ps", ["-axo", "pid=,ppid=,tty=,command="], {
++      encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 5_000,
++    });
++    const table = new Map();
++    for (const line of out.split("\n")) {
++      const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
++      if (match) table.set(Number(match[1]), {
++        ppid: Number(match[2]), tty: ["??", "?", "-"].includes(match[3]) ? null : match[3], command: match[4],
++      });
++    }
++    return table;
+   } catch {
+-    return null;
++    return new Map();
+   }
+ }
+ 
+@@ -46,6 +52,7 @@ export function listLocalAimClaudeSessions({
+     return [];
+   }
+   const sessions = [];
++  let processes;
+   for (const label of labels) {
+     const dir = path.join(homesRoot, label, ".claude", "sessions");
+     let files = [];
+@@ -63,8 +70,9 @@ export function listLocalAimClaudeSessions({
+       }
+       const pid = Number(record?.pid);
+       if (!Number.isSafeInteger(pid) || pid < 1 || !isAlive(pid)) continue;
+-      const info = processInfo(pid, execFileSyncImpl);
+-      if (!info || !info.parent.includes("claude-supervisor.js")) continue;
++      processes ??= processTable(execFileSyncImpl);
++      const info = processes.get(pid);
++      if (!info || !processes.get(info.ppid)?.command.includes("claude-supervisor.js")) continue;
+       sessions.push({
+         label,
+         pid,
+diff --git a/src/targets/claude-project-consent.js b/src/targets/claude-project-consent.js
+index e29343e..65570ed 100644
+--- a/src/targets/claude-project-consent.js
++++ b/src/targets/claude-project-consent.js
+@@ -22,22 +22,22 @@ function readAppState(filePath, { required = false } = {}) {
+   }
+ }
+ 
+-function sourceAppStatePaths(userHomeDir, selectedConfigDir) {
+-  const paths = [path.join(userHomeDir, ".claude.json")];
++function* sourceAppStatePaths(userHomeDir, selectedConfigDir) {
++  yield path.join(selectedConfigDir, ".claude.json");
++  yield path.join(userHomeDir, ".claude.json");
+   const homesDir = path.join(userHomeDir, ".aimgr", "claude-homes");
+   let labels;
+   try {
+     labels = fs.readdirSync(homesDir, { withFileTypes: true });
+   } catch (error) {
+-    if (error?.code === "ENOENT") return paths;
++    if (error?.code === "ENOENT") return;
+     throw error;
+   }
+   for (const label of labels) {
+     if (!label.isDirectory()) continue;
+     const configDir = path.join(homesDir, label.name, ".claude");
+-    if (configDir !== selectedConfigDir) paths.push(path.join(configDir, ".claude.json"));
++    if (configDir !== selectedConfigDir) yield path.join(configDir, ".claude.json");
+   }
+-  return paths;
+ }
+ 
+ // Only the user's positive decisions for this exact directory cross label
+@@ -48,13 +48,14 @@ export function inheritClaudeProjectConsent({ userHomeDir, configDir, cwd }) {
+   const selected = readAppState(selectedPath, { required: true });
+   let trusted = false;
+   let externalImportsApproved = false;
+-  for (const filePath of [selectedPath, ...sourceAppStatePaths(userHomeDir, configDir)]) {
++  for (const filePath of sourceAppStatePaths(userHomeDir, configDir)) {
+     const state = filePath === selectedPath ? selected : readAppState(filePath);
+     for (const projectPath of projectPaths) {
+       const project = state?.projects?.[projectPath];
+       if (project?.hasTrustDialogAccepted === true) trusted = true;
+       if (project?.hasClaudeMdExternalIncludesApproved === true) externalImportsApproved = true;
+     }
++    if (trusted && externalImportsApproved) break;
+   }
+   if (!trusted && !externalImportsApproved) return { wrote: false, trusted, externalImportsApproved };
+ 
+diff --git a/src/targets/claude-sessions.js b/src/targets/claude-sessions.js
+index f2c2a6a..40c2945 100644
+--- a/src/targets/claude-sessions.js
++++ b/src/targets/claude-sessions.js
+@@ -1,7 +1,9 @@
+ import fs from "node:fs";
+ import path from "node:path";
++import { randomUUID } from "node:crypto";
++import { readFileLines } from "../io/file-lines.js";
+ import {
+-  rekeyClaudeTranscript,
++  rekeyClaudeTranscriptFile,
+   replaceClaudeTranscriptIdentifiers,
+   stripClaudeTranscriptThinkingBytes,
+ } from "./claude-transcript-rekey.js";
+@@ -17,8 +19,6 @@ const SESSION_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+ const SESSION_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+ const STAGED_FORK_MARKER_SUFFIX = ".aimgr-staged-fork";
+ const RECENT_SESSION_CANDIDATE_MARGIN = 3;
+-const INVALID_JSON_LINE = Symbol("invalid-json-line");
+-const JSON_LINE_BREAK = 10;
+ // Search raw bytes first; only decode metadata hits or an untitled prompt preview.
+ // Every hit is still validated by parsing its complete containing JSONL record.
+ const SESSION_JSON_MARKERS = Object.freeze({
+@@ -46,44 +46,14 @@ function normalizeThreadName(value) {
+   return name || null;
+ }
+ 
+-function parseJsonLineAt(content, markerIndex, cache) {
+-  const start = content.lastIndexOf(JSON_LINE_BREAK, markerIndex - 1) + 1;
+-  if (cache.has(start)) return { start, entry: cache.get(start) };
+-  const newlineIndex = content.indexOf(JSON_LINE_BREAK, markerIndex);
+-  const end = newlineIndex < 0 ? content.length : newlineIndex;
+-  let entry;
+-  try {
+-    entry = JSON.parse(content.toString("utf8", start, end));
+-  } catch {
+-    entry = INVALID_JSON_LINE;
+-  }
+-  cache.set(start, entry);
+-  return { start, entry };
+-}
+-
+-function findLatestSessionValue(content, marker, cache, selectValue) {
+-  let searchBefore = content.length;
+-  while (searchBefore > 0) {
+-    const markerIndex = content.lastIndexOf(marker, searchBefore - 1);
+-    if (markerIndex < 0) return null;
+-    const { start, entry } = parseJsonLineAt(content, markerIndex, cache);
+-    if (entry !== INVALID_JSON_LINE) {
+-      const value = selectValue(entry);
+-      if (value !== undefined) return value;
+-    }
+-    searchBefore = start;
+-  }
+-  return null;
++function parseJsonLine(line) {
++  try { return JSON.parse(line.toString("utf8")); } catch { return null; }
+ }
+ 
+-function firstUserPromptPreview(content, cache) {
+-  let cursor = 0;
+-  while (cursor < content.length) {
+-    const markerIndex = content.indexOf(SESSION_JSON_MARKERS.message, cursor);
+-    if (markerIndex < 0) break;
+-    const { entry } = parseJsonLineAt(content, markerIndex, cache);
+-    const newline = content.indexOf(JSON_LINE_BREAK, markerIndex);
+-    cursor = newline < 0 ? content.length : newline + 1;
++function firstUserPromptPreview(filePath) {
++  for (const line of readFileLines(filePath)) {
++    if (!line.includes(SESSION_JSON_MARKERS.message)) continue;
++    const entry = parseJsonLine(line);
+     if (entry?.type !== "user" || entry.isMeta || entry.isSidechain) continue;
+     const contentValue = entry.message?.content;
+     const text = typeof contentValue === "string" ? contentValue
+@@ -97,82 +67,53 @@ function firstUserPromptPreview(content, cache) {
+ }
+ 
+ function parseSessionFile({ filePath, account, threadId, fallbackTimestampMs }) {
+-  let content;
++  let cwd = null;
++  let lastUsedMs = null;
++  let customTitle = null;
++  let aiTitle = null;
++  let runtime = null;
+   try {
+-    content = fs.readFileSync(filePath);
++    for (const line of readFileLines(filePath, { reverse: true })) {
++      if (!((!cwd && line.includes(SESSION_JSON_MARKERS.cwd))
++        || (lastUsedMs === null && line.includes(SESSION_JSON_MARKERS.timestamp))
++        || (!customTitle && line.includes(SESSION_JSON_MARKERS.customTitle))
++        || (!customTitle && !aiTitle && line.includes(SESSION_JSON_MARKERS.aiTitle))
++        || (!runtime && line.includes(SESSION_JSON_MARKERS.effort)))) continue;
++      const entry = parseJsonLine(line);
++      if (!cwd && typeof entry?.cwd === "string" && path.isAbsolute(entry.cwd)) {
++        cwd = path.normalize(entry.cwd);
++      }
++      if (lastUsedMs === null) {
++        const timestamp = Date.parse(String(entry?.timestamp ?? ""));
++        if (Number.isFinite(timestamp)) lastUsedMs = timestamp;
++      }
++      if (!customTitle && entry?.type === "custom-title") customTitle = normalizeThreadName(entry.customTitle);
++      if (!aiTitle && entry?.type === "ai-title") aiTitle = normalizeThreadName(entry.aiTitle);
++      if (!runtime && entry?.type === "assistant" && entry.isSidechain !== true) {
++        const model = typeof entry.message?.model === "string" ? entry.message.model.trim() : "";
++        const effort = typeof entry.effort === "string" ? entry.effort.trim().toLowerCase() : "";
++        if (SESSION_MODEL_PATTERN.test(model) && SESSION_EFFORT_LEVELS.has(effort)) runtime = { model, effort };
++      }
++      if (cwd && lastUsedMs !== null && customTitle && runtime) break;
++    }
++    if (!cwd) return null;
++    const observedAtMs = lastUsedMs ?? fallbackTimestampMs;
++    if (!Number.isFinite(observedAtMs)) return null;
++    const threadName = customTitle ?? aiTitle;
++    const description = threadName ?? firstUserPromptPreview(filePath);
++    return {
++      account, threadId, threadName, description,
++      thread: threadName ?? threadId,
++      cwd,
++      model: runtime?.model ?? null,
++      effort: runtime?.effort ?? null,
++      transcriptPath: filePath,
++      lastUsedAt: new Date(observedAtMs).toISOString(),
++      lastUsedMs: observedAtMs,
++    };
+   } catch {
+     throw new Error("Could not read managed Claude sessions.");
+   }
+-
+-  const parsedLines = new Map();
+-  const cwd = findLatestSessionValue(content, SESSION_JSON_MARKERS.cwd, parsedLines, (entry) => (
+-    typeof entry?.cwd === "string" && path.isAbsolute(entry.cwd)
+-      ? path.normalize(entry.cwd)
+-      : undefined
+-  ));
+-  const lastUsedMs = findLatestSessionValue(
+-    content,
+-    SESSION_JSON_MARKERS.timestamp,
+-    parsedLines,
+-    (entry) => {
+-      const timestampMs = Date.parse(String(entry?.timestamp ?? ""));
+-      return Number.isFinite(timestampMs) ? timestampMs : undefined;
+-    },
+-  );
+-  const customTitle = findLatestSessionValue(
+-    content,
+-    SESSION_JSON_MARKERS.customTitle,
+-    parsedLines,
+-    (entry) => {
+-      if (entry?.type !== "custom-title" || !Object.hasOwn(entry, "customTitle")) {
+-        return undefined;
+-      }
+-      return normalizeThreadName(entry.customTitle) ?? undefined;
+-    },
+-  );
+-  const aiTitle = customTitle ? null : findLatestSessionValue(
+-    content,
+-    SESSION_JSON_MARKERS.aiTitle,
+-    parsedLines,
+-    (entry) => {
+-      if (entry?.type !== "ai-title" || !Object.hasOwn(entry, "aiTitle")) {
+-        return undefined;
+-      }
+-      return normalizeThreadName(entry.aiTitle) ?? undefined;
+-    },
+-  );
+-  const runtime = findLatestSessionValue(content, SESSION_JSON_MARKERS.effort, parsedLines, (entry) => {
+-    const observedModel = typeof entry?.message?.model === "string"
+-      ? entry.message.model.trim()
+-      : "";
+-    const observedEffort = typeof entry?.effort === "string"
+-      ? entry.effort.trim().toLowerCase()
+-      : "";
+-    return entry?.type === "assistant"
+-      && entry?.isSidechain !== true
+-      && SESSION_MODEL_PATTERN.test(observedModel)
+-      && SESSION_EFFORT_LEVELS.has(observedEffort)
+-      ? { model: observedModel, effort: observedEffort }
+-      : undefined;
+-  });
+-  if (!cwd) return null;
+-  const observedAtMs = lastUsedMs ?? fallbackTimestampMs;
+-  if (!Number.isFinite(observedAtMs)) return null;
+-  const threadName = customTitle ?? aiTitle;
+-  const description = threadName ?? firstUserPromptPreview(content, parsedLines);
+-  return {
+-    account,
+-    threadId,
+-    threadName,
+-    description,
+-    thread: threadName ?? threadId,
+-    cwd,
+-    model: runtime?.model ?? null,
+-    effort: runtime?.effort ?? null,
+-    transcriptPath: filePath,
+-    lastUsedAt: new Date(observedAtMs).toISOString(),
+-    lastUsedMs: observedAtMs,
+-  };
+ }
+ 
+ function compareSessions(left, right) {
+@@ -180,7 +121,7 @@ function compareSessions(left, right) {
+     || left.threadId.localeCompare(right.threadId);
+ }
+ 
+-function discoverManagedClaudeSessionCandidates({ homeDir }) {
++function discoverManagedClaudeSessionCandidates({ homeDir, threadId: requestedId, account: requestedAccount }) {
+   const homesRoot = path.join(resolveAimgrStateDir({ homeDir }), "claude-homes");
+   const candidates = [];
+   for (const labelEntry of readDirectory(homesRoot, { missingIsEmpty: true })) {
+@@ -191,6 +132,7 @@ function discoverManagedClaudeSessionCandidates({ homeDir }) {
+     } catch {
+       continue;
+     }
++    if (requestedAccount !== undefined && account !== requestedAccount) continue;
+     const projectsRoot = path.join(homesRoot, labelEntry.name, ".claude", "projects");
+     for (const projectEntry of readDirectory(projectsRoot, { missingIsEmpty: true })) {
+       if (!projectEntry.isDirectory() || projectEntry.isSymbolicLink()) continue;
+@@ -199,6 +141,7 @@ function discoverManagedClaudeSessionCandidates({ homeDir }) {
+         if (!fileEntry.isFile() || !fileEntry.name.endsWith(".jsonl")) continue;
+         const threadId = fileEntry.name.slice(0, -".jsonl".length);
+         if (!SESSION_ID_PATTERN.test(threadId)) continue;
++        if (requestedId !== undefined && threadId.toLowerCase() !== requestedId.toLowerCase()) continue;
+         if (fs.existsSync(path.join(projectDir, `${threadId}${STAGED_FORK_MARKER_SUFFIX}`))) {
+           continue;
+         }
+@@ -255,13 +198,24 @@ function readRecentManagedClaudeSessions({ homeDir, limit }) {
+   return sessions.slice(0, limit);
+ }
+ 
+-export function readManagedClaudeSessions({ homeDir }) {
+-  return discoverManagedClaudeSessionCandidates({ homeDir })
++export function readManagedClaudeSessions({ homeDir, threadId, account }) {
++  return discoverManagedClaudeSessionCandidates({ homeDir, threadId, account })
+     .map(parseSessionCandidate)
+     .filter(Boolean)
+     .sort(compareSessions);
+ }
+ 
++// Native --resume/--session-id already supplies the identity. Ownership lives
++// in the managed directory and filename; inspecting conversation bodies adds
++// no evidence. Fork staging validates the selected history before launching.
++export function findManagedClaudeSessionFiles({ homeDir, threadId, account }) {
++  if (!SESSION_ID_PATTERN.test(threadId ?? "")) return [];
++  return discoverManagedClaudeSessionCandidates({ homeDir, threadId, account })
++    .map(({ filePath, account: owner, threadId: id }) => ({
++      transcriptPath: filePath, account: owner, threadId: id,
++    }));
++}
++
+ export function listRecentManagedClaudeSessions({
+   homeDir,
+   limit = CLAUDE_RECENT_SESSION_LIMIT,
+@@ -285,17 +239,13 @@ export function resolveManagedClaudeSession({ homeDir, selector, account }) {
+       ? readRecentManagedClaudeSessions({ homeDir, limit: rank })[rank - 1]
+       : null;
+   } else if (SESSION_ID_PATTERN.test(value)) {
+-    const matches = discoverManagedClaudeSessionCandidates({ homeDir })
+-      .filter((candidate) => candidate.threadId === value.toLowerCase())
+-      .filter((candidate) => account === undefined || candidate.account === account)
+-      .map(parseSessionCandidate)
+-      .filter(Boolean);
++    const matches = readManagedClaudeSessions({ homeDir, threadId: value, account });
+     if (matches.length > 1) {
+       throw new Error(`Claude thread ID ${value} exists under more than one managed account.`);
+     }
+     selected = matches[0] ?? null;
+   }
+-  if (!selected && !/^\d+$/.test(value)) {
++  if (!selected && !/^\d+$/.test(value) && !SESSION_ID_PATTERN.test(value)) {
+     const sessions = readManagedClaudeSessions({ homeDir });
+     const normalizedName = normalizeThreadName(value)?.toLowerCase();
+     const matches = normalizedName
+@@ -355,16 +305,22 @@ function copyRekeyedClaudeCompanion(sourceDir, targetDir, mapping) {
+     } else if (stat.isFile()) {
+       const extension = path.extname(entry.name).toLowerCase();
+       if (COMPANION_TEXT_EXTENSIONS.has(extension)) {
+-        const source = fs.readFileSync(sourcePath);
+-        const original = extension === ".jsonl" ? stripClaudeTranscriptThinkingBytes(source) : source;
+-        // Captured tool output can contain arbitrary bytes even in .txt files.
+-        // IDs are ASCII; a Latin-1 byte view preserves all other bytes losslessly.
+-        const rewritten = replaceClaudeTranscriptIdentifiers(original.toString("latin1"), mapping);
+-        fs.writeFileSync(
+-          targetPath,
+-          Buffer.from(rewritten, "latin1"),
+-          { flag: "wx", mode: stat.mode & 0o777 },
+-        );
++        const fd = fs.openSync(targetPath, "wx", stat.mode & 0o777);
++        try {
++          let position = 0;
++          for (const source of readFileLines(sourcePath, { end: stat.size })) {
++            position += source.length;
++            const newline = position < stat.size;
++            if (newline) position += 1;
++            const original = extension === ".jsonl" ? stripClaudeTranscriptThinkingBytes(source) : source;
++            // A Latin-1 byte view preserves captured tool output, including
++            // invalid UTF-8. Identifier tokens cannot cross a line boundary.
++            const rewritten = replaceClaudeTranscriptIdentifiers(original.toString("latin1"), mapping);
++            fs.writeFileSync(fd, Buffer.from(rewritten + (newline ? "\n" : ""), "latin1"));
++          }
++        } finally {
++          fs.closeSync(fd);
++        }
+       } else {
+         fs.copyFileSync(sourcePath, targetPath, fs.constants.COPYFILE_EXCL);
+       }
+@@ -402,18 +358,8 @@ export function stageManagedClaudeSessionFork({ session, targetConfigDir }) {
+   if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+     throw new Error("Managed Claude source transcript is not a safe regular file.");
+   }
+-  let rekeyed;
+-  try {
+-    const sourceContent = new TextDecoder("utf-8", { fatal: true })
+-      .decode(fs.readFileSync(sourcePath));
+-    rekeyed = rekeyClaudeTranscript(sourceContent, {
+-      expectedSessionId,
+-    });
+-  } catch (error) {
+-    if (error?.message?.startsWith("Claude source transcript")) throw error;
+-    throw new Error("Could not read and rekey the Claude source transcript.");
+-  }
+-  const { sourceSessionId, stagedSessionId } = rekeyed;
++  const stagedSessionId = randomUUID();
++  let sourceSessionId;
+ 
+   const projectName = path.basename(path.dirname(sourcePath));
+   if (!projectName || projectName === "." || projectName === path.sep) {
+@@ -422,7 +368,6 @@ export function stageManagedClaudeSessionFork({ session, targetConfigDir }) {
+   const targetProjectsRoot = path.join(resolvedTargetConfigDir, "projects");
+   const targetProjectDir = path.join(targetProjectsRoot, projectName);
+   const targetTranscriptPath = path.join(targetProjectDir, `${stagedSessionId}.jsonl`);
+-  const sourceCompanionPath = path.join(path.dirname(sourcePath), sourceSessionId);
+   const targetCompanionPath = path.join(targetProjectDir, stagedSessionId);
+   const targetMarkerPath = path.join(
+     targetProjectDir,
+@@ -488,8 +433,11 @@ export function stageManagedClaudeSessionFork({ session, targetConfigDir }) {
+     }
+     fs.writeFileSync(targetMarkerPath, "", { flag: "wx", mode: 0o600 });
+     markerCreated = true;
+-    fs.writeFileSync(targetTranscriptPath, rekeyed.content, { flag: "wx", mode: 0o600 });
++    const rekeyed = rekeyClaudeTranscriptFile({ sourcePath, targetPath: targetTranscriptPath,
++      expectedSessionId, stagedSessionId });
+     transcriptCreated = true;
++    sourceSessionId = rekeyed.sourceSessionId;
++    const sourceCompanionPath = path.join(path.dirname(sourcePath), sourceSessionId);
+ 
+     if (fs.existsSync(sourceCompanionPath)) {
+       const companionStat = fs.lstatSync(sourceCompanionPath);
+@@ -517,7 +465,7 @@ export function stageManagedClaudeSessionFork({ session, targetConfigDir }) {
+     } catch {
+       throw new Error("Claude session fork staging failed and could not be cleaned safely.");
+     }
+-    if (error?.message?.startsWith("Managed Claude")) throw error;
++    if (error?.message?.startsWith("Managed Claude") || error?.message?.startsWith("Claude source transcript")) throw error;
+     throw new Error("Could not stage the managed Claude session fork.");
+   }
+ 
+diff --git a/src/targets/claude-transcript-rekey.js b/src/targets/claude-transcript-rekey.js
+index cff9b29..06e10c3 100644
+--- a/src/targets/claude-transcript-rekey.js
++++ b/src/targets/claude-transcript-rekey.js
+@@ -1,9 +1,14 @@
+ import { randomBytes, randomUUID } from "node:crypto";
++import fs from "node:fs";
++import { readFileLines } from "../io/file-lines.js";
+ 
+ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+ const GENERATED_ID_PATTERN = /^(?:toolu|msg|req)_[A-Za-z0-9_-]{8,}$/;
+ const GENERATED_ID_TOKEN = /(?:toolu|msg|req)_[A-Za-z0-9_-]{8,}/g;
+-const IDENTIFIER_TOKEN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_-]{8,}/gi;
++// Anchor prefixed IDs at the start of an alphanumeric run. Without this,
++// a long payload with no underscore retries the greedy prefix at every byte
++// and makes replacement quadratic. Preserve numeric text before an ID.
++const IDENTIFIER_TOKEN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<![A-Za-z0-9])([0-9]*)([A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_-]{8,})/gi;
+ const IDENTIFIER_FIELD = /(?:^|_)(?:id|uuid)$|(?:Id|ID|Uuid|UUID)$/;
+ const PREFIXED_ID_PATTERN = /^([A-Za-z][A-Za-z0-9]*_)[A-Za-z0-9_-]{8,}$/;
+ const CONTENT_FIELDS = new Set(["message", "toolUseResult", "attachment", "wireToolInputs"]);
+@@ -84,7 +89,9 @@ function collectStructuredIdentifiers(value, mapping, reserved, insideContent =
+ 
+ export function replaceClaudeTranscriptIdentifiers(value, mapping) {
+   if (typeof value !== "string" || mapping.size === 0) return value;
+-  return value.replace(IDENTIFIER_TOKEN, (match) => mapping.get(match) ?? match);
++  return value.replace(IDENTIFIER_TOKEN, (match, digits, prefixedId) => (
++    prefixedId ? `${digits}${mapping.get(prefixedId) ?? prefixedId}` : mapping.get(match) ?? match
++  ));
+ }
+ 
+ function rewriteValue(value, mapping) {
+@@ -122,6 +129,75 @@ function parseTranscriptLines(content) {
+   return entries;
+ }
+ 
++function* readTranscriptEntries(sourcePath) {
++  let lineNumber = 0;
++  let malformedLine = null;
++  for (const bytes of readFileLines(sourcePath)) {
++    lineNumber += 1;
++    const line = UTF8.decode(bytes);
++    if (!line.trim()) continue;
++    if (malformedLine !== null) {
++      throw new Error(`Claude source transcript has malformed JSONL at line ${malformedLine}.`);
++    }
++    let entry;
++    try {
++      entry = JSON.parse(line);
++      if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("invalid record");
++    } catch {
++      malformedLine = lineNumber;
++      continue;
++    }
++    yield { entry, line };
++  }
++}
++
++function rewriteEntry(entry, mapping) {
++  const copy = rewriteValue(stripThinkingBlocks(entry), mapping);
++  if (copy.type === "custom-title" && typeof copy.customTitle === "string") {
++    copy.customTitle = copy.customTitle.replace(/^(?:\[fork from [^\]]+\]\s*)+/i, "") || "Continued session";
++  }
++  return JSON.stringify(copy);
++}
++
++// A first pass validates the history and collects identifiers, including forward
++// references. A second pass rewrites one record at a time. Keep only the mapping,
++// never the source, parsed history and rewritten history together in memory.
++export function rekeyClaudeTranscriptFile({
++  sourcePath, targetPath, expectedSessionId = null, stagedSessionId = randomUUID(),
++}) {
++  if (!UUID_PATTERN.test(stagedSessionId)) throw new Error("Cannot rekey an invalid Claude transcript.");
++  const observedSessionIds = new Set();
++  const mapping = new Map();
++  const reserved = new Set([stagedSessionId]);
++  let count = 0;
++  for (const { entry, line } of readTranscriptEntries(sourcePath)) {
++    count += 1;
++    if (typeof entry.sessionId === "string" && UUID_PATTERN.test(entry.sessionId)) observedSessionIds.add(entry.sessionId);
++    collectStructuredIdentifiers(entry, mapping, reserved);
++    for (const match of line.matchAll(GENERATED_ID_TOKEN)) recordIdentifier(match[0], mapping, reserved);
++  }
++  if (!count) throw new Error("Claude source transcript has no readable records.");
++  const normalizedIds = new Set([...observedSessionIds].map((value) => value.toLowerCase()));
++  const sourceSessionId = expectedSessionId?.toLowerCase() ?? [...normalizedIds][0];
++  if (!UUID_PATTERN.test(sourceSessionId ?? "") || !normalizedIds.has(sourceSessionId) || normalizedIds.size !== 1) {
++    throw new Error("Claude source transcript does not have one consistent session ID.");
++  }
++  for (const value of observedSessionIds) mapping.set(value, stagedSessionId);
++  mapping.set(sourceSessionId, stagedSessionId);
++  const fd = fs.openSync(targetPath, "wx", 0o600);
++  let complete = false;
++  try {
++    for (const { entry } of readTranscriptEntries(sourcePath)) {
++      fs.writeFileSync(fd, `${rewriteEntry(entry, mapping)}\n`);
++    }
++    complete = true;
++  } finally {
++    fs.closeSync(fd);
++    if (!complete) fs.unlinkSync(targetPath);
++  }
++  return Object.freeze({ sourceSessionId, stagedSessionId, mapping });
++}
++
+ export function rekeyClaudeTranscript(content, {
+   expectedSessionId = null,
+   stagedSessionId = randomUUID(),
+@@ -148,13 +224,7 @@ export function rekeyClaudeTranscript(content, {
+   for (const match of content.matchAll(GENERATED_ID_TOKEN)) {
+     recordIdentifier(match[0], mapping, reserved);
+   }
+-  const rewritten = entries.map((entry) => {
+-    const copy = rewriteValue(stripThinkingBlocks(entry), mapping);
+-    if (copy.type === "custom-title" && typeof copy.customTitle === "string") {
+-      copy.customTitle = copy.customTitle.replace(/^(?:\[fork from [^\]]+\]\s*)+/i, "") || "Continued session";
+-    }
+-    return JSON.stringify(copy);
+-  });
++  const rewritten = entries.map((entry) => rewriteEntry(entry, mapping));
+   return Object.freeze({
+     sourceSessionId,
+     stagedSessionId,
+diff --git a/src/targets/prime-sessions.js b/src/targets/prime-sessions.js
+index 6a77a2b..0fe4c6c 100644
+--- a/src/targets/prime-sessions.js
++++ b/src/targets/prime-sessions.js
+@@ -1,5 +1,6 @@
+ import fs from "node:fs";
+ import path from "node:path";
++import { readFileLines } from "../io/file-lines.js";
+ import { HARNESS_MANAGED_PROVIDERS } from "./harness-auth.js";
+ import { isPrimeKeyBackedProvider } from "../core/constants.js";
+ import {
+@@ -56,10 +57,10 @@ export function resolvePrimeSessionPath({ selector, homeDir, env = {}, cwd = pro
+ 
+ export function readPrimeSessionEntries(sessionPath) {
+   const entries = [];
+-  for (const line of fs.readFileSync(sessionPath, "utf8").split(/\r?\n/)) {
+-    if (!line) continue;
++  for (const bytes of readFileLines(sessionPath)) {
++    if (!bytes.length) continue;
+     try {
+-      entries.push(JSON.parse(line));
++      entries.push(JSON.parse(bytes.toString("utf8")));
+     } catch {
+       // Ignore a concurrently appended partial tail; it cannot be the active leaf.
+     }
+@@ -67,6 +68,22 @@ export function readPrimeSessionEntries(sessionPath) {
+   return entries;
+ }
+ 
++// Scope the cache to one observation loop, retaining only its small result.
++// A changed/replaced/truncated file is read again; failed reads are never cached.
++export function createPrimeSessionObserver(sessionPath, read) {
++  let signature;
++  let result;
++  return () => {
++    const stat = fs.statSync(sessionPath);
++    const current = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
++    if (current !== signature) {
++      result = read(sessionPath);
++      signature = current;
++    }
++    return result;
++  };
++}
++
+ export function readPrimeActiveBranch(sessionPath) {
+   const entries = readPrimeSessionEntries(sessionPath);
+   const byId = new Map(entries
+diff --git a/test/claude/claude-01.cases.js b/test/claude/claude-01.cases.js
+index 48dcd84..44c9449 100644
+--- a/test/claude/claude-01.cases.js
++++ b/test/claude/claude-01.cases.js
+@@ -5,6 +5,7 @@ import path from "node:path";
+ import { parseAnthropicAuthorizationPaste } from "../../src/credentials/oauth.js";
+ import { derivePoolAccountStatus } from "../../src/pool/account-status.js";
+ import { parseArgs } from "../../src/cli/args.js";
++import { AIMGR_REDIS_PRIMARY_HOST } from "../../src/core/constants.js";
+ import { buildAnthropicClaudeCredential, writeClaudeNativeBundle } from "../helpers/claude.js";
+ import { runCli } from "../helpers/cli-runner.js";
+ import { mkTempHome, writeJson } from "../helpers/files.js";
+@@ -37,8 +38,8 @@ test("help text prefers Redis primary-host setup over authority sync examples",
+   assert.match(out, /aim claude status \[account\.\.\.\] \[--fresh\] \[--verbose\] \[--json\]/);
+   assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
+   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
+-  assert.match(out, /--primary-host <host>\s+Human-readable Redis primary host, e\.g\. agents@amirs-mac-studio/);
+-  assert.match(out, /redis:\/\/amirs-mac-studio:6380/);
++  assert.ok(out.includes(`Human-readable Redis primary host, e.g. ${AIMGR_REDIS_PRIMARY_HOST}.`));
++  assert.match(out, /\[--transport tls\]/);
+   assert.doesNotMatch(out, /Examples: agents@amirs-mac-studio/);
+   assert.doesNotMatch(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
+ });
+diff --git a/test/claude/claude-idle-stop.test.js b/test/claude/claude-idle-stop.test.js
+index 80aa5d1..d69b614 100644
+--- a/test/claude/claude-idle-stop.test.js
++++ b/test/claude/claude-idle-stop.test.js
+@@ -51,11 +51,17 @@ test("lists only live Claude processes that AIM launched", () => {
+   const write = (pid) => fs.writeFileSync(path.join(dir, `${pid}.json`),
+     JSON.stringify({ pid, sessionId: `id-${pid}`, cwd: "/w", status: "idle", updatedAt: 42 }));
+   [10, 11, 12].forEach(write);
++  let probes = 0;
+   const exec = (cmd, args) => {
+-    const pid = args.at(-1);
+-    if (args[1] === "ppid=,tty=") return pid === "10" ? "100 ttys010" : "200 ??";
+-    return pid === "100" ? "node /x/aimgr/src/targets/claude-supervisor.js /claude" : "timeout claude -p";
++    probes += 1;
++    assert.equal(cmd, "ps");
++    assert.deepEqual(args, ["-axo", "pid=,ppid=,tty=,command="]);
++    return "10 100 ttys010 /claude\n11 200 ?? /claude\n12 100 ttys012 /claude\n"
++      + "100 1 ?? node /x/aimgr/src/targets/claude-supervisor.js /claude\n200 1 ?? timeout claude -p\n";
+   };
+   const sessions = listLocalAimClaudeSessions({ homeDir: home, isAlive: (pid) => pid !== 12, execFileSyncImpl: exec });
+   assert.deepEqual(sessions.map((s) => [s.label, s.pid, s.sessionId, s.tty, s.lastActiveMs]), [["pro9", 10, "id-10", "ttys010", 42]]);
++  assert.equal(probes, 1);
++  assert.deepEqual(listLocalAimClaudeSessions({ homeDir: home, isAlive: () => true,
++    execFileSyncImpl: () => { throw new Error("ps unavailable"); } }), []);
+ });
+diff --git a/test/claude/claude-project-consent.test.js b/test/claude/claude-project-consent.test.js
+index 5afd7b6..6779234 100644
+--- a/test/claude/claude-project-consent.test.js
++++ b/test/claude/claude-project-consent.test.js
+@@ -72,3 +72,17 @@ test("managed Claude leaves a new project unapproved until the user accepts it",
+   });
+   assert.equal(fs.readFileSync(targetPath, "utf8"), before);
+ });
++
++test("existing project approvals do not read other account homes", (t) => {
++  const home = mkTempHome();
++  const cwd = path.join(fs.realpathSync(home), "work");
++  fs.mkdirSync(cwd);
++  const selected = accountConfig(home, "selected");
++  writeJson(path.join(selected, ".claude.json"), { projects: { [cwd]: {
++    hasTrustDialogAccepted: true, hasClaudeMdExternalIncludesApproved: true,
++    hasClaudeMdExternalIncludesWarningShown: true,
++  } } });
++  t.mock.method(fs, "readdirSync", () => { throw new Error("already-approved project scanned other accounts"); });
++  assert.deepEqual(inheritClaudeProjectConsent({ userHomeDir: home, configDir: selected, cwd }),
++    { wrote: false, trusted: true, externalImportsApproved: true });
++});
+diff --git a/test/claude/claude-sessions.test.js b/test/claude/claude-sessions.test.js
+index 4a1b927..e16cce6 100644
+--- a/test/claude/claude-sessions.test.js
++++ b/test/claude/claude-sessions.test.js
+@@ -4,6 +4,7 @@ import fs from "node:fs";
+ import path from "node:path";
+ import {
+   buildManagedClaudeSessionForkName,
++  findManagedClaudeSessionFiles,
+   listRecentManagedClaudeSessions,
+   readManagedClaudeSessions,
+   renderRecentManagedClaudeSessions,
+@@ -211,24 +212,45 @@ test("managed Claude session listing stops reading after the recent bound closes
+     });
+   }
+ 
+-  const originalReadFileSync = fs.readFileSync;
++  const originalOpenSync = fs.openSync;
+   const reads = [];
+-  fs.readFileSync = (...args) => {
++  fs.openSync = (...args) => {
+     reads.push(String(args[0]));
+-    return originalReadFileSync(...args);
++    return originalOpenSync(...args);
+   };
+   let sessions;
+   try {
+     sessions = listRecentManagedClaudeSessions({ homeDir: home, limit: 1 });
+   } finally {
+-    fs.readFileSync = originalReadFileSync;
++    fs.openSync = originalOpenSync;
+   }
+ 
+   assert.equal(sessions[0].threadId, THREAD_IDS[0]);
+-  assert.equal(reads.length, 4);
++  assert.equal(new Set(reads).size, 4);
+   assert.equal(reads.some((filePath) => filePath.endsWith(`${THREAD_IDS[9]}.jsonl`)), false);
+ });
+ 
++test("Claude metadata streams large history and keeps old titles, latest runtime, and malformed-tail tolerance", (t) => {
++  const home = mkTempHome();
++  const transcript = writeManagedSession({ home, account: "pro5", threadId: THREAD_IDS[0],
++    cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS).toISOString(),
++    events: [{ type: "custom-title", customTitle: "Keep this old title" },
++      ...Array.from({ length: 80 }, () => ({ type: "progress", data: "x".repeat(32 * 1024) })),
++      { type: "assistant", message: { model: "claude-opus-4-8" }, effort: "xhigh",
++        cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS + 1_000).toISOString() }],
++    malformedTail: true });
++  const original = fs.readFileSync;
++  t.mock.method(fs, "readFileSync", (...args) => {
++    assert.notEqual(args[0], transcript, "metadata loaded a complete transcript");
++    return original(...args);
++  });
++  const result = resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[0] });
++  assert.equal(result.threadName, "Keep this old title");
++  assert.equal(result.model, "claude-opus-4-8");
++  assert.equal(result.effort, "xhigh");
++  assert.equal(result.lastUsedMs, NOW_MS + 1_000);
++});
++
+ test("untitled sessions get a short user prompt preview without tool results or injected context", () => {
+   const home = mkTempHome();
+   writeManagedSession({
+@@ -376,6 +398,40 @@ test("managed Claude thread ID resolution ignores an invalid duplicate transcrip
+   );
+ });
+ 
++test("exact and missing Claude IDs never open unrelated transcripts", (t) => {
++  const home = mkTempHome();
++  const target = writeManagedSession({ home, account: "pro5", threadId: THREAD_IDS[0],
++    cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS).toISOString() });
++  const unrelated = writeManagedSession({ home, account: "qa", threadId: THREAD_IDS[1],
++    cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS).toISOString() });
++  for (const method of ["readFileSync", "openSync"]) {
++    const original = fs[method];
++    t.mock.method(fs, method, (...args) => {
++      assert.notEqual(args[0], unrelated, "an ID lookup opened unrelated history");
++      return original(...args);
++    });
++  }
++  assert.equal(resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[0] }).transcriptPath, target);
++  assert.deepEqual(readManagedClaudeSessions({ homeDir: home, threadId: THREAD_IDS[2] }), []);
++  assert.throws(() => resolveManagedClaudeSession({ homeDir: home, selector: THREAD_IDS[2] }), /was not found/);
++});
++
++test("native Claude ownership lookup opens no transcript bodies", (t) => {
++  const home = mkTempHome();
++  const target = writeManagedSession({ home, account: "pro5", threadId: THREAD_IDS[0],
++    cwd: path.join(home, "workspace"), timestamp: new Date(NOW_MS).toISOString() });
++  for (const method of ["readFileSync", "openSync"]) {
++    const original = fs[method];
++    t.mock.method(fs, method, (...args) => {
++      assert.notEqual(args[0], target, "ownership lookup opened the transcript");
++      return original(...args);
++    });
++  }
++  assert.deepEqual(findManagedClaudeSessionFiles({ homeDir: home, threadId: THREAD_IDS[0] }),
++    [{ transcriptPath: target, account: "pro5", threadId: THREAD_IDS[0] }]);
++  assert.deepEqual(findManagedClaudeSessionFiles({ homeDir: home, threadId: THREAD_IDS[1] }), []);
++});
++
+ test("managed Claude resume refuses to guess when exact runtime metadata is absent", async () => {
+   const home = mkTempHome();
+   const threadId = THREAD_IDS[0];
+diff --git a/test/claude/claude-transcript-rekey.test.js b/test/claude/claude-transcript-rekey.test.js
+index 0e6b487..c09de03 100644
+--- a/test/claude/claude-transcript-rekey.test.js
++++ b/test/claude/claude-transcript-rekey.test.js
+@@ -1,7 +1,12 @@
+ import test from "node:test";
+ import assert from "node:assert/strict";
++import fs from "node:fs";
++import path from "node:path";
++import { mkTempHome } from "../helpers/files.js";
+ import {
+   rekeyClaudeTranscript,
++  rekeyClaudeTranscriptFile,
++  replaceClaudeTranscriptIdentifiers,
+   stripClaudeTranscriptThinkingBytes,
+ } from "../../src/targets/claude-transcript-rekey.js";
+ 
+@@ -10,6 +15,52 @@ const ENTRY = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+ const TOOL = "toolu_01ReusedToolIdentifierAB";
+ const DOMAIN_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+ 
++test("identifier replacement preserves numeric prefixes and large non-identifier text", () => {
++  const mapping = new Map([[TOOL, "toolu_newIdentifier123456"], [SESSION, "new-session"]]);
++  const padding = "x".repeat(512 * 1024);
++  assert.equal(replaceClaudeTranscriptIdentifiers(`${padding} 123${TOOL} /${SESSION}`, mapping),
++    `${padding} 123toolu_newIdentifier123456 /new-session`);
++});
++
++test("file rekey streams large history, forward references, thinking removal and incomplete tails", (t) => {
++  const home = mkTempHome();
++  const sourcePath = path.join(home, "source.jsonl");
++  const targetPath = path.join(home, "target.jsonl");
++  const records = [
++    { type: "user", sessionId: SESSION, parentUuid: ENTRY, message: { content: `Read ${TOOL}` } },
++    ...Array.from({ length: 80 }, () => ({ type: "progress", sessionId: SESSION, data: "x".repeat(32 * 1024) })),
++    { type: "assistant", sessionId: SESSION, uuid: ENTRY, message: { content: [
++      { type: "thinking", signature: "account-bound" }, { type: "tool_use", id: TOOL, name: "Read", input: {} }] } },
++  ];
++  fs.writeFileSync(sourcePath, records.map(JSON.stringify).join("\n") + "\n{unfinished\n");
++  const original = fs.readFileSync;
++  t.mock.method(fs, "readFileSync", (...args) => {
++    assert.notEqual(args[0], sourcePath, "file rekey loaded the complete source");
++    return original(...args);
++  });
++  const result = rekeyClaudeTranscriptFile({ sourcePath, targetPath, expectedSessionId: SESSION });
++  const text = fs.readFileSync(targetPath, "utf8");
++  const copied = text.trim().split("\n").map(JSON.parse);
++  assert.equal(copied.length, records.length);
++  assert.equal(copied[0].parentUuid, copied.at(-1).uuid);
++  assert.equal(copied[0].message.content, `Read ${copied.at(-1).message.content[0].id}`);
++  assert.equal(copied[0].sessionId, result.stagedSessionId);
++  for (const old of [SESSION, ENTRY, TOOL, "account-bound", "unfinished"]) assert.equal(text.includes(old), false);
++});
++
++test("file rekey rejects corrupt or mixed-account history without leaving output", () => {
++  const home = mkTempHome();
++  const sourcePath = path.join(home, "source.jsonl");
++  const targetPath = path.join(home, "target.jsonl");
++  const valid = JSON.stringify({ type: "user", sessionId: SESSION });
++  for (const content of [`${valid}\n{broken\n${valid}\n`,
++    `${valid}\n${JSON.stringify({ type: "user", sessionId: ENTRY })}\n`]) {
++    fs.writeFileSync(sourcePath, content);
++    assert.throws(() => rekeyClaudeTranscriptFile({ sourcePath, targetPath }), /malformed JSONL|consistent session ID/);
++    assert.equal(fs.existsSync(targetPath), false);
++  }
++});
++
+ test("Claude transcript rekey preserves tool relationships and rewrites structured references", () => {
+   const records = [
+     {
+diff --git a/test/cli/redis-projection-command.test.js b/test/cli/redis-projection-command.test.js
+index 09645d8..9d1aedb 100644
+--- a/test/cli/redis-projection-command.test.js
++++ b/test/cli/redis-projection-command.test.js
+@@ -1929,7 +1929,7 @@ test(`claude resume preserves model, effort and history when the recorded accoun
+ });
+ }
+ 
+-test("raw Claude resume stages a cross-account transcript and keeps same-account resume direct", async () => {
++test("raw Claude resume stages a cross-account transcript and keeps same-account resume direct", async (t) => {
+   const home = mkTempHome();
+   const client = new FakeRedisClient();
+   const nowMs = Date.now();
+@@ -1949,6 +1949,15 @@ test("raw Claude resume stages a cross-account transcript and keeps same-account
+     "",
+   ].join("\n");
+   fs.writeFileSync(sourcePath, sourceContent, "utf8");
++  const unrelated = path.join(path.dirname(sourcePath), "88888888-8888-4888-8888-888888888888.jsonl");
++  fs.writeFileSync(unrelated, sourceContent);
++  for (const method of ["readFileSync", "openSync"]) {
++    const original = fs[method];
++    t.mock.method(fs, method, (...args) => {
++      assert.notEqual(args[0], unrelated, "native resume opened unrelated history");
++      return original(...args);
++    });
++  }
+   const record = (label) => {
+     const emailAddress = `${label}@example.com`;
+     const credential = buildAnthropicClaudeCredential({
+diff --git a/test/codex/use-watch.test.js b/test/codex/use-watch.test.js
+index 577b395..f749da7 100644
+--- a/test/codex/use-watch.test.js
++++ b/test/codex/use-watch.test.js
+@@ -6,7 +6,7 @@ import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
+ import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
+ import { resolveCodexAuthFilePath, resolveManagedCodexHomeDir } from "../../src/io/paths.js";
+ import { FakeRedisClient } from "../helpers/fake-redis.js";
+-import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
++import { makeFakeJwt, mkTempHome, withEnv } from "../helpers/files.js";
+ import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
+ 
+ const KEY_PREFIX = "aimgr:codex-command-test";
+@@ -70,6 +70,19 @@ function usage(label, usedPercent, weeklyUsedPercent = Math.min(99, usedPercent
+   };
+ }
+ 
++test("CLI fixtures never inherit the developer's managed Codex auth directory", async () => {
++  const { home, connectRedisStoreImpl } = await setup();
++  const outsideHome = mkTempHome();
++  const outsideAuth = path.join(outsideHome, "auth.json");
++  fs.writeFileSync(outsideAuth, "developer credentials must remain untouched");
++  await withEnv({ CODEX_HOME: outsideHome }, async () => {
++    await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
++  });
++  assert.equal(fs.readFileSync(outsideAuth, "utf8"), "developer credentials must remain untouched");
++  const fixtureAuth = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
++  assert.equal(JSON.parse(fs.readFileSync(fixtureAuth, "utf8")).tokens.account_id, "acct_1");
++});
++
+ test("explicit Redis-backed Codex use reconciles and activates without usage", async () => {
+   const { home, connectRedisStoreImpl } = await setup();
+   let probes = 0;
+diff --git a/test/helpers/cli-runner.js b/test/helpers/cli-runner.js
+index 8d20aa4..4d869b6 100644
+--- a/test/helpers/cli-runner.js
++++ b/test/helpers/cli-runner.js
+@@ -26,7 +26,7 @@ function createCaptureStdout(chunks, stdout = {}) {
+ }
+ 
+ export async function runCli(argv, deps = {}) {
+-  deps = { ...fixtureDepsForArgv(argv, deps), ...deps };
++  deps = testDeps(argv, deps);
+   const chunks = [];
+   const stdout = createCaptureStdout(chunks, deps.stdout);
+   const wrappedDeps =
+@@ -47,7 +47,7 @@ export async function runCli(argv, deps = {}) {
+ }
+ 
+ export async function runCliWithExitCode(argv, deps = {}) {
+-  deps = { ...fixtureDepsForArgv(argv, deps), ...deps };
++  deps = testDeps(argv, deps);
+   const chunks = [];
+   let exitCode = 0;
+   const stdout = createCaptureStdout(chunks, deps.stdout);
+@@ -73,3 +73,20 @@ export async function runCliWithExitCode(argv, deps = {}) {
+   });
+   return { stdout: chunks.join(""), exitCode };
+ }
++
++function testDeps(argv, deps) {
++  const merged = { ...fixtureDepsForArgv(argv, deps), ...deps };
++  // A developer often runs tests from an AIM-managed session. Never let its
++  // real auth-directory overrides escape the test's --home fixture. Tests that
++  // exercise an override must supply it explicitly through deps.env.
++  return {
++    ...merged,
++    env: merged.env ?? {
++      ...process.env,
++      CODEX_HOME: "",
++      PI_CODING_AGENT_DIR: "",
++      PRIME_AGENT_CODING_AGENT_DIR: "",
++      CLAUDE_CONFIG_DIR: "",
++    },
++  };
++}
+diff --git a/test/io/file-lines.test.js b/test/io/file-lines.test.js
+new file mode 100644
+index 0000000..94832ca
+--- /dev/null
++++ b/test/io/file-lines.test.js
+@@ -0,0 +1,31 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import fs from "node:fs";
++import path from "node:path";
++import { readFileLines } from "../../src/io/file-lines.js";
++import { mkTempHome } from "../helpers/files.js";
++
++test("file lines preserve bytes across chunks, empty lines, CRLF, and unterminated records in both directions", () => {
++  const file = path.join(mkTempHome(), "lines");
++  for (const source of ["", "\n", "\n\n", "a\nb", "a\n\nb\n", "a\r\nb",
++    `${"a".repeat(256 * 1024 - 1)}\n日本語\n${"é".repeat(400_000)}\ntail`]) {
++    fs.writeFileSync(file, source);
++    const expected = source.split("\n").filter((line) => line !== "");
++    for (const reverse of [false, true]) {
++      const actual = [...readFileLines(file, { reverse })].map((bytes) => bytes.toString("utf8")).filter(Boolean);
++      assert.deepEqual(actual, reverse ? [...expected].reverse() : expected);
++    }
++  }
++});
++
++test("early termination of file line reading closes the descriptor", (t) => {
++  const file = path.join(mkTempHome(), "lines");
++  fs.writeFileSync(file, "first\nsecond\n");
++  const close = fs.closeSync;
++  const closed = [];
++  t.mock.method(fs, "closeSync", (fd) => { closed.push(fd); return close(fd); });
++  for (const reverse of [false, true]) {
++    for (const line of readFileLines(file, { reverse })) { if (line.length) break; }
++  }
++  assert.equal(closed.length, 2);
++});
+diff --git a/test/pi/pi-01.cases.js b/test/pi/pi-01.cases.js
+index 8c03bde..8be2ff1 100644
+--- a/test/pi/pi-01.cases.js
++++ b/test/pi/pi-01.cases.js
+@@ -85,7 +85,9 @@ test("Redis-backed pi use writes auth.json and preserves non-openai providers",
+         PI_CODING_AGENT_DIR: piAgentDir,
+       },
+       async () => {
+-        const out = JSON.parse(await runCli(["pi", "use", "--home", home], { fetchImpl }));
++        const out = JSON.parse(await runCli(["pi", "use", "--home", home], {
++          fetchImpl, env: { PI_CODING_AGENT_DIR: piAgentDir },
++        }));
+         assert.equal(out.ok, true);
+         assert.equal(out.receipt.status, "updated");
+         assert.equal(out.receipt.providers[0].binding, "boss");
+diff --git a/test/pi/prime-sessions.test.js b/test/pi/prime-sessions.test.js
+new file mode 100644
+index 0000000..9351c92
+--- /dev/null
++++ b/test/pi/prime-sessions.test.js
+@@ -0,0 +1,42 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import fs from "node:fs";
++import path from "node:path";
++import { createPrimeSessionObserver, readPrimeLatestTurn } from "../../src/targets/prime-sessions.js";
++import { mkTempHome } from "../helpers/files.js";
++
++test("Prime routine observation reads unchanged history once and follows appended turns and replacement", () => {
++  const file = path.join(mkTempHome(), "session.jsonl");
++  const user = { type: "message", id: "u1", parentId: null, message: { role: "user", content: "Continue" } };
++  fs.writeFileSync(file, `${JSON.stringify(user)}\n`);
++  let reads = 0;
++  const read = createPrimeSessionObserver(file, (p) => { reads += 1; return readPrimeLatestTurn(p); });
++  for (let i = 0; i < 20; i += 1) assert.equal(read().userText, "Continue");
++  assert.equal(reads, 1);
++  fs.appendFileSync(file, `${JSON.stringify({ type: "message", id: "a1", parentId: "u1",
++    message: { role: "assistant", content: "Done", stopReason: "stop" } })}\n`);
++  assert.equal(read().assistant.stopReason, "stop");
++  assert.equal(reads, 2);
++  fs.writeFileSync(`${file}.replacement`, `${JSON.stringify({ ...user, message: { role: "user", content: "New task" } })}\n`);
++  fs.renameSync(`${file}.replacement`, file);
++  assert.equal(read().userText, "New task");
++  assert.equal(reads, 3);
++  fs.writeFileSync(file, "");
++  assert.equal(read().userText, null);
++  assert.equal(reads, 4);
++});
++
++test("Prime observation retries failed reads and preserves active branch selection", () => {
++  const file = path.join(mkTempHome(), "session.jsonl");
++  const record = (id, parentId, content) => JSON.stringify({ type: "message", id, parentId, message: { role: "user", content } });
++  fs.writeFileSync(file, `${record("first", null, "First")}\n${record("abandoned", "first", "Other branch")}\n${record("active", "first", "Active branch")}\n{"partial":`);
++  let attempts = 0;
++  const read = createPrimeSessionObserver(file, (p) => {
++    attempts += 1;
++    if (attempts === 1) throw new Error("transient read error");
++    return readPrimeLatestTurn(p);
++  });
++  assert.throws(read, /transient read error/);
++  assert.equal(read().userText, "Active branch");
++  assert.equal(attempts, 2);
++});
+diff --git a/test/pi/session-identity-extension.test.js b/test/pi/session-identity-extension.test.js
+index f4b68bd..0846669 100644
+--- a/test/pi/session-identity-extension.test.js
++++ b/test/pi/session-identity-extension.test.js
+@@ -117,6 +117,7 @@ function createExtensionHarness(initialEntries = [], initialName = "", options =
+     model: { provider: "openai-codex" },
+     sessionManager: {
+       getEntries: () => entries,
++      getLeafId: () => String(entries.length),
+       getSessionName: () => sessionName || undefined,
+       getSessionId: () => options.sessionId ?? "019fd96e-51cb-72ef-ae34-83ecf10c6a12",
+       getCredentialBindings: () => new Map([
+@@ -242,7 +243,7 @@ test("a same-text human rename remains authoritative over a later recap", async
+   await harness.handlers.get("session_shutdown")({ type: "session_shutdown" }, harness.ctx);
+ });
+ 
+-test("the refresh cadence re-broadcasts unchanged daemon UI for late attachments", async () => {
++test("idle refresh replays daemon UI without scanning history, and detects appended renames", async () => {
+   const originalSetInterval = globalThis.setInterval;
+   const originalClearInterval = globalThis.clearInterval;
+   let refresh;
+@@ -259,6 +260,8 @@ test("the refresh cadence re-broadcasts unchanged daemon UI for late attachments
+     assert.equal(readIdentityState(harness.entries), undefined);
+     const widgetCount = harness.widgets.length;
+     const titleCount = harness.terminalTitles.length;
++    let historyReads = 0;
++    harness.ctx.sessionManager.getEntries = () => { historyReads += 1; return harness.entries; };
+ 
+     refresh();
+     assert.equal(harness.widgets.length, widgetCount + 1);
+@@ -266,6 +269,12 @@ test("the refresh cadence re-broadcasts unchanged daemon UI for late attachments
+     assert.equal(readIdentityState(harness.entries), undefined);
+     assert.deepEqual(harness.widgets.at(-1).content, harness.widgets.at(-2).content);
+     assert.match(harness.widgets.at(-1).content[1], /session-id: 019fd96e-51cb-72ef-ae34-83ecf10c6a12/);
++    assert.equal(historyReads, 0);
++
++    harness.setName("Manually renamed while idle");
++    refresh();
++    assert.match(harness.widgets.at(-1).content[0], /Manually renamed while idle/);
++    assert.ok(historyReads > 0);
+ 
+     await harness.handlers.get("session_shutdown")({ type: "session_shutdown" }, harness.ctx);
+   } finally {
+diff --git a/test/routines/claude-hook.test.js b/test/routines/claude-hook.test.js
+index af415dd..945ac20 100644
+--- a/test/routines/claude-hook.test.js
++++ b/test/routines/claude-hook.test.js
+@@ -7,6 +7,7 @@ import { mkTempHome } from "../helpers/files.js";
+ import { recordClaudeRoutineHook } from "../../src/routines/claude-hook.js";
+ import {
+   claudeRoutineArgs,
++  createClaudeRoutineEventReader,
+   inheritClaudeRoutineTrust,
+   parseClaudeRoutineJobStatus,
+   prepareInteractiveClaudeRoutine,
+@@ -18,6 +19,31 @@ function writeJson(filePath, value) {
+   fs.writeFileSync(filePath, JSON.stringify(value));
+ }
+ 
++test("routine monitor reads only appended bytes and waits for complete records", (t) => {
++  const file = path.join(mkTempHome(), "events.jsonl");
++  fs.writeFileSync(file, '{"type":"start"}\n{bad}\n[]\n');
++  const read = createClaudeRoutineEventReader(file);
++  let bytes = 0;
++  const original = fs.readSync;
++  t.mock.method(fs, "readSync", (...args) => { const n = original(...args); bytes += n; return n; });
++  assert.deepEqual(read(), [{ type: "start" }]);
++  bytes = 0;
++  assert.deepEqual(read(), []);
++  assert.equal(bytes, 0);
++  fs.appendFileSync(file, '{"type":"');
++  assert.deepEqual(read(), []);
++  fs.appendFileSync(file, 'stop"}\n');
++  bytes = 0;
++  assert.deepEqual(read(), [{ type: "stop" }]);
++  assert.equal(bytes, Buffer.byteLength('{"type":"stop"}\n'));
++  fs.writeFileSync(file, '{}\n');
++  assert.deepEqual(read(), [{}]);
++  const replacement = `${file}.new`;
++  fs.writeFileSync(replacement, '{"type":"replacement"}\n');
++  fs.renameSync(replacement, file);
++  assert.deepEqual(read(), [{ type: "replacement" }]);
++});
++
+ test("Claude hooks record lifecycle and prompt hashes without logging prompt or assistant contents", () => {
+   const eventsPath = path.join(mkTempHome(), "events.jsonl");
+   const sessionId = "11111111-1111-4111-8111-111111111111";

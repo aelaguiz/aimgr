@@ -1,0 +1,4 @@
+
+> aimgr@0.0.0 lint
+> find ./bin ./src ./test -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+

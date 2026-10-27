@@ -1,0 +1,54 @@
+{
+  "commit": "298cd2637405b9c13163ebf13ee94a5d79830ca5",
+  "branch": "main",
+  "remote": "git@github.com:aelaguiz/aimgr.git",
+  "verified_at": "2026-10-25T12:41:35.944518+00:00",
+  "release_tests": {
+    "passed": 600,
+    "failed": 0
+  },
+  "hosts": [
+    {
+      "host": "Amir-M5",
+      "status": "live",
+      "installed_source_verified": true,
+      "existing_local_changes_preserved": true
+    },
+    {
+      "host": "home",
+      "status": "live",
+      "installed_source_verified": true,
+      "smoke_tests_passed": 46,
+      "existing_local_changes_preserved": true
+    },
+    {
+      "host": "amirs-mac-studio",
+      "status": "live",
+      "installed_source_verified": true,
+      "smoke_tests_passed": 46,
+      "existing_local_changes_preserved": true
+    },
+    {
+      "host": "amirs-m3-max-new",
+      "status": "live",
+      "installed_source_verified": true,
+      "smoke_tests_passed": 46,
+      "existing_local_changes_preserved": true
+    },
+    {
+      "host": "amir-m3-36gb",
+      "status": "live",
+      "installed_source_verified": true,
+      "smoke_tests_passed": 46,
+      "existing_local_changes_preserved": true
+    }
+  ],
+  "sessions_restarted": false,
+  "retired_hosts": [
+    {
+      "host": "amirs-old-m1",
+      "date": "2026-10-25",
+      "reason": "Retired from fleet by Amir; no pending rollout"
+    }
+  ]
+}
