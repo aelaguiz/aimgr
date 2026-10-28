@@ -255,9 +255,14 @@ export function syncManagedClaudeUserSettings({
   }
   const hooks = requireOptionalObjectField(settings, "hooks", "user hooks");
   const statusLine = requireOptionalObjectField(settings, "statusLine", "user status-line settings");
+  const attribution = requireOptionalObjectField(settings, "attribution", "user attribution settings");
   const payload = {
     ...(hooks === null ? {} : { hooks }),
     statusLine: buildManagedClaudeStatusLine(statusLine),
+    ...(attribution === null ? {} : { attribution }),
+    ...(typeof settings?.includeCoAuthoredBy === "boolean"
+      ? { includeCoAuthoredBy: settings.includeCoAuthoredBy }
+      : {}),
     ...(settings?.skipDangerousModePermissionPrompt === true
       ? { skipDangerousModePermissionPrompt: true }
       : {}),
