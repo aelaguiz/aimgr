@@ -63,6 +63,7 @@ export function normalizeAimgrConfig(raw = {}) {
       transport,
     },
     routines: normalizeRoutineStorageMap(source.routines),
+    ...(isObject(source.claudeProxyProfiles) ? { claudeProxyProfiles: source.claudeProxyProfiles } : {}),
   };
 }
 

@@ -1,3 +1,7 @@
+import { resolveNativeAccountProfile, assertLocalClaudeProfileStopped } from "../../network/claude-native-route.js";
+import { readClaudeOfflineBinding, writeClaudeOfflineBinding, invalidateClaudeOfflineBinding, acquireClaudeAssignmentLock, rememberClaudeProtection } from "../../network/claude-offline-binding.js";
+import { readAimgrConfig } from "../../config/aimgr-config.js";
+import { normalizeEgressPolicy, resolveClaudeEgressProfile } from "../../network/claude-egress-policy.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pickClaudeSession } from "../claude-session-picker.js";
@@ -16,8 +20,8 @@ import {
   refreshRedisRuntimeState,
   writeRedisLocalStateFromView,
 } from "../../coordination/runtime.js";
-import { connectRedisStore, REDIS_CONNECTION_POLICY_LEASED } from "../../coordination/redis-store.js";
-import { publishMaintainedCredential } from "../../coordination/login-publish.js";
+import { connectRedisStore, publishCredential, REDIS_CONNECTION_POLICY_LEASED } from "../../coordination/redis-store.js";
+import { publishMaintainedCredential, buildStableIdentityForCredential, identitiesAreCompatible } from "../../coordination/login-publish.js";
 import { isObject, normalizeLabel } from "../../core/normalize.js";
 import { recordAccountMaintenanceAttempt, recordAccountMaintenanceFailure, recordAccountMaintenanceSuccess } from "../../credentials/anthropic-maintenance.js";
 import {
@@ -844,7 +848,14 @@ function readCleanOfflineClaudeCache({ homeDir, label }) {
   if (cached.ok !== true) {
     throw new Error(`Claude label=${label} local cache is incomplete or unreadable.`);
   }
-  return { claudeHome, configDir, descriptor };
+  const binding = readClaudeOfflineBinding(homeDir, label);
+  if (!binding) return { claudeHome, configDir, descriptor, egressProfile: null };
+  const identity = buildStableIdentityForCredential(ANTHROPIC_PROVIDER, { nativeClaudeBundle: cached.nativeClaudeBundle });
+  if (!binding?.identity?.accountUuid || !identitiesAreCompatible(binding.identity, identity)) {
+    throw new Error(`Claude ${label}: cached proxy assignment does not match the cached account identity.`);
+  }
+  const egressProfile = resolveNativeAccountProfile({ homeDir, label, state: { accounts: { [label]: { egress: binding.egress } } } });
+  return { claudeHome, configDir, descriptor, egressProfile };
 }
 
 async function runClaudeFromCleanOfflineCache(context, {
@@ -861,60 +872,68 @@ async function runClaudeFromCleanOfflineCache(context, {
     runClaudeCliImpl = runClaudeCli,
     resolveExecutableOnPathImpl,
   } = context;
-  const cache = readCleanOfflineClaudeCache({ homeDir, label });
-  const discoveredCommand = resolveExecutableOnPathImpl?.("claude");
-  if (!discoveredCommand || !path.isAbsolute(discoveredCommand)) {
-    throw new Error("Could not resolve the installed Claude executable for offline managed launch.");
-  }
-  const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
-    ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl
-    : prepareClaudeCliLaunch;
-  const preparedLaunch = await prepareLaunchImpl({
-    command: discoveredCommand,
-    userHomeDir: homeDir,
-    homeDir: cache.claudeHome,
-    configDir: cache.configDir,
-  });
-  let stagedSessionFork = null;
+  // Legacy cached launches keep their existing platform dependencies. The
+  // first opt-in is a stopped transition; protected caches use the shared lock.
+  const assignmentLock = readClaudeOfflineBinding(homeDir, label)
+    ? await acquireClaudeAssignmentLock(homeDir, label) : null;
   try {
-    inheritClaudeProjectConsent({ userHomeDir: homeDir, configDir: cache.configDir, cwd: launchCwd });
-    const resumePlan = planCrossAccountClaudeResume({
-      homeDir,
-      label,
-      configDir: cache.configDir,
-      cwd: launchCwd,
-      args: opts.afterDoubleDash,
-      sessionFork,
-    });
-    if (resumePlan.sessionFork) {
-      stagedSessionFork = stageManagedClaudeSessionFork({
-        session: resumePlan.sessionFork,
-        targetConfigDir: cache.configDir,
-      });
+    const cache = readCleanOfflineClaudeCache({ homeDir, label });
+    const discoveredCommand = resolveExecutableOnPathImpl?.("claude");
+    if (!discoveredCommand || !path.isAbsolute(discoveredCommand)) {
+      throw new Error("Could not resolve the installed Claude executable for offline managed launch.");
     }
-    stdout?.write?.(
-      `AIM coordination=offline label=${label} cache=complete\n`,
-    );
-    const result = await runClaudeCliImpl({
-      command: preparedLaunch.command,
+    const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
+      ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl
+      : prepareClaudeCliLaunch;
+    const preparedLaunch = await prepareLaunchImpl({
+      command: discoveredCommand,
       userHomeDir: homeDir,
       homeDir: cache.claudeHome,
       configDir: cache.configDir,
-      cwd: launchCwd,
-      args: stagedClaudeResumeArgs(resumePlan, stagedSessionFork),
-      env: crossAccountClaudeEnvironment(env, stagedSessionFork),
-      preparedLaunch,
     });
-    if (result?.signal) {
-      process.kill(process.pid, result.signal);
-      return;
+    let stagedSessionFork = null;
+    try {
+      inheritClaudeProjectConsent({ userHomeDir: homeDir, configDir: cache.configDir, cwd: launchCwd });
+      const resumePlan = planCrossAccountClaudeResume({
+        homeDir,
+        label,
+        configDir: cache.configDir,
+        cwd: launchCwd,
+        args: opts.afterDoubleDash,
+        sessionFork,
+      });
+      if (resumePlan.sessionFork) {
+        stagedSessionFork = stageManagedClaudeSessionFork({
+          session: resumePlan.sessionFork,
+          targetConfigDir: cache.configDir,
+        });
+      }
+      stdout?.write?.(
+        `AIM coordination=offline label=${label} cache=complete\n`,
+      );
+      const result = await runClaudeCliImpl({
+        signal: assignmentLock?.signal,
+        egressProfile: cache.egressProfile,
+        command: preparedLaunch.command,
+        userHomeDir: homeDir,
+        homeDir: cache.claudeHome,
+        configDir: cache.configDir,
+        cwd: launchCwd,
+        args: stagedClaudeResumeArgs(resumePlan, stagedSessionFork),
+        env: crossAccountClaudeEnvironment(env, stagedSessionFork),
+        preparedLaunch,
+      });
+      if (result?.signal) {
+        process.kill(process.pid, result.signal);
+        return;
+      }
+      if (result?.status !== 0) {
+        setExitCode(Number.isInteger(result?.status) ? result.status : 1);
+      }
+    } finally {
+      stagedSessionFork?.cleanup();
     }
-    if (result?.status !== 0) {
-      setExitCode(Number.isInteger(result?.status) ? result.status : 1);
-    }
-  } finally {
-    stagedSessionFork?.cleanup();
-  }
+  } finally { await assignmentLock?.release(); }
 }
 
 async function handleRedisClaudeRun(context, {
@@ -974,6 +993,10 @@ async function handleRedisClaudeRun(context, {
   let activeProcessControl = null;
   let managedDescriptor = null;
   try {
+    // Remember remote opt-in before any early return/profile error or credential
+    // projection; an unusable new profile must still fence the old ordinary cache.
+    // Regression: test/network/claude-optional-privacy.test.js.
+    rememberClaudeProtection(homeDir, label, runtime.state.accounts?.[label]);
     assertClaudeAccountCanLaunch(runtime, label);
     guard = await acquireClaudeCredentialLeaseGuard(runtime, label, {
       shareOnMachine: { homeDir, pid: context.processId ?? process.pid },
@@ -1024,7 +1047,12 @@ async function handleRedisClaudeRun(context, {
     // and lease acquisition. Reload under the lease before inspecting local
     // projections or choosing the authoritative bundle.
     await refreshRedisRuntimeState(runtime);
+    // Remember remote opt-in before any early return/profile error or credential
+    // projection; an unusable new profile must still fence the old ordinary cache.
+    // Regression: test/network/claude-optional-privacy.test.js.
+    rememberClaudeProtection(homeDir, label, runtime.state.accounts?.[label]);
     assertClaudeAccountCanLaunch(runtime, label);
+    const egressProfile = resolveNativeAccountProfile({ homeDir, state: runtime.state, label });
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before managed Claude preflight" });
     const expectedEmail = requireExpectedClaudeEmail(runtime.state, label);
     const preflight = await runSharedClaudePreRunPreflight({
@@ -1079,6 +1107,8 @@ async function handleRedisClaudeRun(context, {
     });
     inheritClaudeProjectConsent({ userHomeDir: homeDir, configDir, cwd: launchCwd });
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before native Claude launch" });
+    const routeRecord = currentRedisClaudeRecord(runtime, label);
+    if (egressProfile) writeClaudeOfflineBinding(homeDir, label, { egress: { profileRef: egressProfile.profileRef }, identity: structuredClone(routeRecord.identity), version: routeRecord.version });
     target.lastRunLabel = label;
     delete target.claudeDir;
     delete target.credentialsPath;
@@ -1099,6 +1129,7 @@ async function handleRedisClaudeRun(context, {
     let launchError = null;
     try {
       launched = await runClaudeCliImpl({
+        egressProfile,
         command: preparedLaunch.command,
         userHomeDir: homeDir,
         homeDir: claudeHome,
@@ -1272,6 +1303,49 @@ export async function handleClaude(context) {
     throw new Error(
       "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus|sonnet] | aim claude inventory [--json] | aim claude memory | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
     );
+  }
+  if (subcmd === "proxy") {
+    if (positional[2] !== "set" || positional.length !== 5) {
+      throw new Error("Usage: aim claude proxy set <label> <profileRef>");
+    }
+    const label = normalizeLabel(positional[3]);
+    const egress = normalizeEgressPolicy({ profileRef: positional[4] });
+    resolveClaudeEgressProfile({ label, account: { egress }, profiles: readAimgrConfig({ homeDir }).config.claudeProxyProfiles });
+    const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl, provider: ANTHROPIC_PROVIDER });
+    let guard, assignmentLock;
+    try {
+      // R4/R6: these guards cover distinct races. The local exclusive lock
+      // excludes cached launches; the Redis credential lease excludes online
+      // writers/sessions; the native stopped check catches surviving background
+      // work. Re-read under the lease, then invalidate before CAS. Even failed
+      // CAS leaves a tombstone so an old ordinary cache cannot bypass protection.
+      // Regressions: test/cli/redis-projection-command.test.js (setter races).
+      assignmentLock = await acquireClaudeAssignmentLock(homeDir, label, { exclusive: true });
+      guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
+      await refreshRedisRuntimeState(runtime);
+      const record = currentRedisClaudeRecord(runtime, label);
+      if (!record) throw new Error(`Unknown Claude account: ${label}`);
+      await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before proxy assignment" });
+      await (context.assertLocalClaudeProfileStoppedImpl ?? assertLocalClaudeProfileStopped)(record.policy?.egress?.profileRef);
+      // Invalidate before publication: if a local write fails, the assignment
+      // must not change while its old offline binding remains usable.
+      invalidateClaudeOfflineBinding(homeDir, label);
+      assignmentLock.assertOwned();
+      const result = await publishCredential(runtime.store, {
+        expectedVersion: record.version,
+        updatedBy: runtime.updatedBy,
+        credentialRecord: { ...record, policy: { ...record.policy, egress } },
+      });
+      if (!result.ok) throw new Error(`Claude ${label}: proxy assignment changed concurrently; reload and retry.`);
+      stdout.write(`Claude ${label} uses proxy ${egress.profileRef}.\n`);
+    } finally {
+      try { await releaseClaudeCredentialLeaseGuard(guard); }
+      finally {
+        try { await assignmentLock?.release(); }
+        finally { await closeRedisRuntime(runtime); }
+      }
+    }
+    return;
   }
   if (subcmd === "list") {
     const requestedCount = positional[2];

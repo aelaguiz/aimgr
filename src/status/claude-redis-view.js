@@ -1,3 +1,4 @@
+import { CLAUDE_ROUTE_ERROR_CODES, ClaudeRouteError } from "../network/claude-egress-policy.js";
 import crypto from "node:crypto";
 import { getRedisConfig } from "../config/aimgr-config.js";
 import {
@@ -68,6 +69,7 @@ const HUMAN_ACTION_CREDENTIAL_STATES = new Set([
   "duplicate_account",
 ]);
 const CACHEABLE_AUTH_STATES = new Set([
+  ...CLAUDE_ROUTE_ERROR_CODES,
   ...HEALTHY_USAGE_STATES,
   "scope_blocked",
   "stale_auth",
@@ -616,6 +618,7 @@ function buildCachedAccount(facts, entry, nowMs) {
 }
 
 function classifyUsageFailure(snapshot) {
+  if (snapshot?.routeError) return snapshot.routeError;
   const status = Number(snapshot?.status);
   if (snapshot?.ok === true) return "malformed_response";
   if (snapshot?.status === "malformed") return "malformed_response";
@@ -714,7 +717,7 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results;
 }
 
-async function settleWithin(promise, timeoutMs) {
+async function settleWithin(promise, timeoutMs, protectedAccount = false) {
   let timeout;
   try {
     return await Promise.race([
@@ -723,7 +726,7 @@ async function settleWithin(promise, timeoutMs) {
         timeout = setTimeout(() => {
           const error = new Error("Provider request timed out.");
           error.name = "TimeoutError";
-          reject(error);
+          reject(protectedAccount ? new ClaudeRouteError("proxy_unavailable", { cause: error }) : error);
         }, timeoutMs);
       }),
     ]);
@@ -1021,19 +1024,24 @@ export async function collectClaudeRedisAccountUsageStatus({
         try {
           snapshot = await settleWithin(
             fetchClaudeUsageSnapshotImpl({
-              accessToken: entry.accessToken,
+              record: entry.record,
+              homeDir,
               timeoutMs: 5000,
               env: {},
               allowWebFallback: false,
               ...(fetchJsonWithTimeoutImpl ? { fetchJsonWithTimeoutImpl } : {}),
             }),
-            5000,
+            // Allow the request deadline plus a bounded route-health check.
+            // The outer guard is indeterminate routing, never a fallback hint.
+            entry.record.policy?.egress === undefined ? 5000 : 11000,
+            entry.record.policy?.egress !== undefined,
           );
         } catch (error) {
           snapshot = {
             provider: ANTHROPIC_PROVIDER,
             ok: false,
             status: error?.name === "AbortError" || error?.name === "TimeoutError" ? "timeout" : "error",
+            ...(error instanceof ClaudeRouteError ? { routeError: error.code } : {}),
           };
         }
         return { facts: entry, account: buildLiveAccount(entry, snapshot, cachedEntry, nowMs) };
@@ -1092,7 +1100,16 @@ function findOverallWeeklyWindow(usage) {
     : null;
 }
 
+function assertClaudeUsageRoutes(result) {
+  for (const account of result?.accounts ?? []) {
+    if (CLAUDE_ROUTE_ERROR_CODES.has(account?.errorKind)) {
+      throw new ClaudeRouteError(account.errorKind, { label: account.label });
+    }
+  }
+}
+
 export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
+  assertClaudeUsageRoutes(result);
   if (!isClaudeModelPreset(preset)) {
     throw new Error("Claude automatic selection requires the fable, opus, or sonnet preset.");
   }
@@ -1153,6 +1170,7 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
  * that would share it. Accounts whose usage is unknown come last.
  */
 export function selectClaudeAccountForSession(result, { preset } = {}) {
+  assertClaudeUsageRoutes(result);
   if (!isClaudeModelPreset(preset)) {
     throw new Error("Claude automatic selection requires the fable, opus, or sonnet preset.");
   }
@@ -1288,6 +1306,7 @@ function describeClaudeOperatorState(account, nowMs) {
   const credentialState = typeof account?.credentialState === "string" ? account.credentialState : "";
   const label = typeof account?.label === "string" ? account.label : "account";
 
+  if (CLAUDE_ROUTE_ERROR_CODES.has(account?.errorKind)) return { status: "PROXY ERROR", next: "repair assigned proxy" };
   if (account?.locked === true) return { status: "IN USE", next: "session active" };
   if (
     authState === "reauth_required"
@@ -1419,7 +1438,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
     ]);
   }
   return `${[
-    `CLAUDE: ${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
+    `CLAUDE: ${countStatus("PROXY ERROR") ? `${countStatus("PROXY ERROR")} proxy errors · ` : ""}${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
     ...formatStatusTable(rows),
     formatWeeklyCapacityFreeingNextDayLine(
       summarizeWeeklyCapacityFreeingNextDay(accounts.map((account) => findOverallWeeklyWindow(account.usage)), nowMs),

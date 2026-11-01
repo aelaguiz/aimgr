@@ -27,6 +27,9 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "proper-lockfile": "^4.1.2",
     "redis": "^6.0.0",
+    "socks": "2.8.10",
+    "undici": "6.23.0",
+    "ws": "8.18.3",
     "yaml": "^2.8.3",
     "zod": "^4.4.3"
   }

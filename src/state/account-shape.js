@@ -1,3 +1,4 @@
+import { normalizeEgressPolicy } from "../network/claude-egress-policy.js";
 import path from "node:path";
 import {
   BROWSER_MODE_AGENT_BROWSER,
@@ -69,6 +70,7 @@ export function ensureAccountShape(account, { providerHint } = {}) {
   const nextProvider =
     normalizeProviderId(account?.provider ?? providerHint ?? OPENAI_CODEX_PROVIDER) || OPENAI_CODEX_PROVIDER;
   account.provider = nextProvider;
+  if (account.egress !== undefined) account.egress = normalizeEgressPolicy(account.egress);
   account.expect = isObject(account.expect) ? account.expect : {};
 
   const rawBrowser = isObject(account.browser) ? account.browser : null;

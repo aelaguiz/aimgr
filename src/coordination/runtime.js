@@ -125,6 +125,11 @@ export async function publishRedisCredentialPolicyFromState({
       identity: isObject(currentCredential?.identity) ? currentCredential.identity : {},
       credential,
       policy: {
+        // Credential-only publication preserves the fresh record's assignment,
+        // not a stale projected account. Existing CAS prevents an old writer
+        // restoring a route after reassignment; never replace this with account.egress.
+        // Regression: test/cli/redis-projection-command.test.js.
+        ...(currentCredential?.policy?.egress ? { egress: currentCredential.policy.egress } : {}),
         expect: isObject(account.expect) ? account.expect : {},
         reauth: isObject(account.reauth) ? account.reauth : {},
         browser: buildSharedBrowserPolicy(account.browser),
@@ -193,6 +198,11 @@ export async function publishRedisStateCredential({
       credential,
       identity,
       policy: {
+        // Credential-only publication preserves the fresh record's assignment,
+        // not a stale projected account. Existing CAS prevents an old writer
+        // restoring a route after reassignment; never replace this with account.egress.
+        // Regression: test/cli/redis-projection-command.test.js.
+        ...(currentCredential?.policy?.egress ? { egress: currentCredential.policy.egress } : {}),
         expect: isObject(account.expect) ? account.expect : {},
         reauth: isObject(account.reauth) ? account.reauth : {},
         browser: buildSharedBrowserPolicy(account.browser),

@@ -76,12 +76,13 @@ export function createFetchJsonWithTimeout({
   clearTimeoutImpl = clearTimeout,
   maxResponseBytes = FETCH_JSON_MAX_RESPONSE_BYTES,
 } = {}) {
-  return (url, init, timeoutMs) =>
+  return (url, init, timeoutMs, overrides = {}) =>
     fetchJsonWithTimeout(url, init, timeoutMs, {
       fetchImpl,
       setTimeoutImpl,
       clearTimeoutImpl,
       maxResponseBytes,
+      ...overrides,
     });
 }
 

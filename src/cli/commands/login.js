@@ -1,5 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveNativeAccountProfile } from "../../network/claude-native-route.js";
+import { closeClaudeLoginTabs, validateClaudeChrome } from "../../browser/claude-cdp.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import {
   acquireRedisCredentialLease,
@@ -221,17 +224,33 @@ async function performRedisClaudeLogin(context, {
       lease,
       phase: "before browser login",
     });
+    const currentSnapshot = await readSnapshot(store);
+    const currentState = buildCoordinationView(currentSnapshot, { provider: ANTHROPIC_PROVIDER });
+    const egressProfile = resolveNativeAccountProfile({ homeDir, state: currentState, label });
+    // Deny a wrong browser before native login/staging. The browser helper
+    // repeats admission when the OAuth URL arrives; this early check alone
+    // cannot cover a binding change while native login is waiting.
+    if (egressProfile) await (context.validateClaudeChromeImpl ?? validateClaudeChrome)(egressProfile);
     removeClaudeLoginStaging({ homeDir, label, stagingHome });
     ensureSafeManagedClaudeStorage({ descriptor });
 
     const loginEnv = { ...(env ?? {}) };
-    delete loginEnv.BROWSER;
+    const loginTabsPath = path.join(stagingHome, "login-tabs.jsonl");
+    if (egressProfile) {
+      loginEnv.BROWSER = fileURLToPath(new URL("../../../scripts/claude-login-browser.mjs", import.meta.url));
+      loginEnv.AIMGR_CLAUDE_LOGIN_PROFILE = JSON.stringify(egressProfile);
+      loginEnv.AIMGR_CLAUDE_LOGIN_TABS = loginTabsPath;
+    } else {
+      // Preserve the existing managed-login browser behavior.
+      delete loginEnv.BROWSER;
+    }
     delete loginEnv.DISPLAY;
     delete loginEnv.WAYLAND_DISPLAY;
     let launched = null;
     let launchError = null;
     try {
       launched = await runClaudeCliImpl({
+        egressProfile,
         command: preparedLaunch.command,
         userHomeDir: homeDir,
         homeDir: stagingHome,
@@ -243,6 +262,8 @@ async function performRedisClaudeLogin(context, {
       });
     } catch (error) {
       launchError = error;
+    } finally {
+      if (egressProfile) await closeClaudeLoginTabs(loginTabsPath);
     }
     const staged = readManagedClaudeNativeBundleFromFiles({ descriptor });
     if (launchError) {

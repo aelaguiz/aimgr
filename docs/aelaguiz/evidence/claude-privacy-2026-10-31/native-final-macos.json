@@ -1,0 +1,516 @@
+{
+  "checkedAt": "2026-11-01T14:02:45.110204+00:00",
+  "environment": {
+    "os": "macOS 15.8 (24H23) arm64",
+    "host": "rented AWS mac2.metal",
+    "node": "24.22.2",
+    "claude": "2.1.316",
+    "singBox": "1.14.4",
+    "syntheticChrome": "156.0.8078.80"
+  },
+  "sourceManifest": "native-tested-source-manifest.json",
+  "sourceFilesMatched": 63,
+  "finalSourceManifest": "native-final-source-manifest.json",
+  "commentOnlyBridge": "privacy-comment-equivalence.json",
+  "nativeMatrix": {
+    "status": "passed",
+    "durationMs": 355187.398916,
+    "log": "native-mac-final-v4.txt",
+    "command": "AIMGR_TEST_NATIVE_MAC=1 AIMGR_TEST_CLAUDE_BIN=<pinned rental Claude> node --test test/network/claude-native-macos.test.js",
+    "receipts": [
+      {
+        "nativeMacTransition": {
+          "failedInstallPreservedState": true,
+          "failedVerificationClosed": true,
+          "deniedChildDidNotStart": true,
+          "historyPreserved": true,
+          "oldWriterStayedStopped": true,
+          "explicitRepairRequired": true
+        }
+      },
+      {
+        "nativeNetwork": {
+          "ipv6AssignedRoute": true,
+          "hostnameAndLoopbackPreserved": true,
+          "defaultRouteAndResolversUnchanged": true
+        }
+      },
+      {
+        "nativeGui": {
+          "windowVisible": true,
+          "clipboardRoundTrip": true,
+          "ordinaryUserReadClipboard": true
+        }
+      },
+      {
+        "nativeTerminalCleanup": {
+          "case": "hard-exit",
+          "nativeExit": 137,
+          "fullTerminalRestored": true,
+          "backgroundJobStopped": false
+        }
+      },
+      {
+        "nativeTerminalCleanup": {
+          "case": "background",
+          "nativeExit": 0,
+          "fullTerminalRestored": true,
+          "backgroundJobStopped": false
+        }
+      },
+      {
+        "osScheduledRoutine": {
+          "scheduler": "launchd gui/501",
+          "expectedStart": "2026-11-01T13:51:00.000Z",
+          "actualStart": "2026-11-01T13:51:04.340Z",
+          "timezone": "+00:00",
+          "fireKey": "test-privacy-867--2026-11-01T13-51+0000",
+          "outcome": "completed",
+          "selectedAccount": "a",
+          "unattended": true,
+          "nativeToolCompleted": true,
+          "substituted": [
+            "Herdr UI",
+            "Redis wire",
+            "print mode instead of interactive follow-up"
+          ]
+        }
+      },
+      {
+        "interactiveRoutine": {
+          "initialTurnCompleted": true,
+          "followupCompleted": true,
+          "nativeExit": 0,
+          "terminalRestored": true,
+          "terminalCheckedBeforeAimExit": true,
+          "personJoinedAt": "2026-11-01T13:51:10.486Z",
+          "outcome": "completed",
+          "resizeRequested": true,
+          "inSessionScheduledWakeupCompleted": true
+        }
+      },
+      {
+        "unattendedMaintenance": {
+          "unavailable": false,
+          "activeLease": true,
+          "output": "provider=anthropic label=a outcome=skipped reason=lease_busy\nrefreshed=0 unchanged=0 reauth_required=0 retryable=0 skipped=1",
+          "assignmentAndIdentityPreserved": true,
+          "nativeCommand": "synthetic refresh exchange; actual AIM maintenance and native enforcement"
+        }
+      },
+      {
+        "scheduledConcurrency": {
+          "bCompletesWhileAWaits": true,
+          "duplicate": "duplicate",
+          "overlap": "overlap"
+        }
+      },
+      {
+        "startupFailure": {
+          "phase": "monitor-down",
+          "code": 125,
+          "message": "Claude account protected, proxy mac_a unavailable during run: native proxy is stopped. Repair the proxy/tunnel, then explicitly retry or resume.",
+          "protectedChildStarted": false,
+          "protectedRequests": 0,
+          "ordinaryAccountLaunched": true
+        }
+      },
+      {
+        "unattendedMaintenance": {
+          "unavailable": true,
+          "activeLease": false,
+          "output": "provider=anthropic label=a outcome=retryable reason=proxy_unavailable detail=\"claude /usage exited with status 125\"\nrefreshed=0 unchanged=0 reauth_required=0 retryable=1 skipped=0",
+          "assignmentAndIdentityPreserved": true,
+          "nativeCommand": "synthetic refresh exchange; actual AIM maintenance and native enforcement"
+        }
+      },
+      {
+        "scheduledStartupFailure": {
+          "phase": "down",
+          "persistedError": "Claude a exited with status 125 while using proxy mac_a. Check the job log; if the proxy/tunnel is unavailable, repair it, then explicitly retry or resume.",
+          "promptAdmitted": false,
+          "modelRequests": 0,
+          "exitCode": 1,
+          "healthyBCompleted": true,
+          "ordinaryCompleted": true,
+          "duplicate": "duplicate"
+        }
+      },
+      {
+        "unattendedMaintenance": {
+          "unavailable": false,
+          "activeLease": false,
+          "output": "provider=anthropic label=a outcome=refreshed reason=credential_rotated\nrefreshed=1 unchanged=0 reauth_required=0 retryable=0 skipped=0",
+          "assignmentAndIdentityPreserved": true,
+          "nativeCommand": "synthetic refresh exchange; actual AIM maintenance and native enforcement"
+        }
+      },
+      {
+        "interactiveRoutine": {
+          "initialTurnCompleted": true,
+          "followupCompleted": true,
+          "nativeExit": 125,
+          "terminalRestored": true,
+          "terminalCheckedBeforeAimExit": true,
+          "personJoinedAt": "2026-11-01T13:53:32.492Z",
+          "outcome": "completed",
+          "resizeRequested": true,
+          "inSessionScheduledWakeupCompleted": false
+        }
+      },
+      {
+        "inSessionScheduledFailure": {
+          "phase": "before",
+          "nativeExit": 125,
+          "repairedWithoutReplay": true,
+          "terminalRestored": true
+        }
+      },
+      {
+        "interactiveRoutine": {
+          "initialTurnCompleted": true,
+          "followupCompleted": true,
+          "nativeExit": 125,
+          "terminalRestored": true,
+          "terminalCheckedBeforeAimExit": true,
+          "personJoinedAt": "2026-11-01T13:53:45.155Z",
+          "outcome": "completed",
+          "resizeRequested": true,
+          "inSessionScheduledWakeupCompleted": false
+        }
+      },
+      {
+        "inSessionScheduledFailure": {
+          "phase": "during",
+          "nativeExit": 125,
+          "repairedWithoutReplay": true,
+          "terminalRestored": true
+        }
+      },
+      {
+        "startupFailure": {
+          "phase": "adapter-hung",
+          "code": 125,
+          "message": "Claude account unknown, proxy mac_a unavailable during probe: timeout. Repair the proxy/tunnel, then explicitly retry or resume.\nClaude account protected, proxy mac_a unavailable during run: native routing health check failed before launch. Repair the proxy/tunnel, then explicitly retry or resume.",
+          "protectedChildStarted": false,
+          "protectedRequests": 0,
+          "ordinaryAccountLaunched": true
+        }
+      },
+      {
+        "unattendedMaintenance": {
+          "unavailable": true,
+          "activeLease": false,
+          "output": "provider=anthropic label=a outcome=retryable reason=proxy_unavailable detail=\"connect ECONNREFUSED 127.0.0.1:49412\"\nrefreshed=0 unchanged=0 reauth_required=0 retryable=1 skipped=0",
+          "assignmentAndIdentityPreserved": true,
+          "nativeCommand": "synthetic refresh exchange; actual AIM maintenance and native enforcement"
+        }
+      },
+      {
+        "scheduledStartupFailure": {
+          "phase": "tunnel-down",
+          "persistedError": "Claude a: assigned proxy is unavailable. Claude cannot start or continue. Repair the proxy/tunnel, then explicitly retry or resume (mac_a).",
+          "promptAdmitted": false,
+          "modelRequests": 0,
+          "exitCode": 1,
+          "healthyBCompleted": true,
+          "ordinaryCompleted": true,
+          "duplicate": "duplicate"
+        }
+      },
+      {
+        "nativeMac": {
+          "concurrentRoutes": [
+            {
+              "id": "A2",
+              "exit": "127.0.0.2",
+              "uid": 501,
+              "gid": 64084,
+              "custom": "preserved",
+              "timezone": "America/Chicago",
+              "locale": "en_US.UTF-8"
+            },
+            {
+              "id": "B1",
+              "exit": "127.0.0.3",
+              "uid": 501,
+              "gid": 64085,
+              "custom": "preserved",
+              "timezone": "America/Chicago",
+              "locale": "en_US.UTF-8"
+            },
+            {
+              "id": "A1",
+              "exit": "127.0.0.2",
+              "uid": 501,
+              "gid": 64084,
+              "custom": "preserved",
+              "timezone": "America/Chicago",
+              "locale": "en_US.UTF-8"
+            },
+            {
+              "id": "A3",
+              "exit": "127.0.0.2",
+              "uid": 501,
+              "gid": 64084,
+              "custom": "preserved",
+              "timezone": "America/Chicago",
+              "locale": "en_US.UTF-8"
+            },
+            {
+              "id": "A4",
+              "exit": "127.0.0.2",
+              "uid": 501,
+              "gid": 64084,
+              "custom": "preserved",
+              "timezone": "America/Chicago",
+              "locale": "en_US.UTF-8"
+            }
+          ],
+          "ordinaryPreserved": true,
+          "assignmentLocksPassed": true,
+          "monitorLossStoppedAOnly": true,
+          "directOrWrongRouteRequests": 0,
+          "actualNativeRoutine": [
+            {
+              "fireKey": "native--2026-10-31T07-00+0000",
+              "outcome": "completed",
+              "selectedAccount": "a",
+              "promptAdmitted": true,
+              "initialTurn": "idle",
+              "exitCode": 0,
+              "nativeExit": 0,
+              "needsAttention": false
+            },
+            {
+              "fireKey": "native--2026-10-31T07-01+0000",
+              "outcome": "needs_attention",
+              "selectedAccount": "a",
+              "promptAdmitted": true,
+              "initialTurn": "uncertain",
+              "exitCode": 1,
+              "nativeExit": 125,
+              "needsAttention": true
+            },
+            {
+              "fireKey": "native--2026-10-31T07-02+0000",
+              "outcome": "completed",
+              "selectedAccount": "a",
+              "promptAdmitted": true,
+              "initialTurn": "idle",
+              "exitCode": 0,
+              "nativeExit": 0,
+              "needsAttention": false
+            }
+          ],
+          "nativeFeatures": {
+            "tools": [
+              "Agent",
+              "Bash",
+              "DeferredToolPlaceholder",
+              "Edit",
+              "ListAgents",
+              "Read",
+              "ReportFindings",
+              "ScheduleWakeup",
+              "Skill",
+              "ToolSearch",
+              "Workflow",
+              "Write",
+              "mcp__stdio__echo"
+            ],
+            "bash": true,
+            "hooks": true,
+            "instructions": true,
+            "historyResumeFork": true,
+            "stdioMcp": true,
+            "subagent": true
+          },
+          "immediateAdapterHangDenied": true,
+          "tunnelLossDuringAdmissionStoppedImmediately": true,
+          "inheritedGroups": {
+            "inheritedGroupCount": 16,
+            "existingGroupResources": true,
+            "createdSysvGid": 64084,
+            "ordinarySameUidConsumer": true
+          },
+          "environmentAndDescriptorsPreserved": true,
+          "osScheduled": {
+            "scheduler": "launchd gui/501",
+            "expectedStart": "2026-11-01T13:51:00.000Z",
+            "actualStart": "2026-11-01T13:51:04.340Z",
+            "timezone": "+00:00",
+            "fireKey": "test-privacy-867--2026-11-01T13-51+0000",
+            "outcome": "completed",
+            "selectedAccount": "a",
+            "unattended": true,
+            "nativeToolCompleted": true,
+            "substituted": [
+              "Herdr UI",
+              "Redis wire",
+              "print mode instead of interactive follow-up"
+            ]
+          },
+          "nestedAccountHandoff": true,
+          "interactiveRoutine": {
+            "initialTurnCompleted": true,
+            "followupCompleted": true,
+            "nativeExit": 0,
+            "terminalRestored": true,
+            "terminalCheckedBeforeAimExit": true,
+            "personJoinedAt": "2026-11-01T13:51:10.486Z",
+            "outcome": "completed",
+            "resizeRequested": true,
+            "inSessionScheduledWakeupCompleted": true
+          },
+          "processControl": {
+            "pauseAcknowledged": true,
+            "pausedWorkStopped": true,
+            "resumeAcknowledged": true,
+            "cancellationStoppedChild": true
+          }
+        }
+      }
+    ]
+  },
+  "detachedNativeBackground": {
+    "status": "passed",
+    "durationMs": 27340.896417,
+    "log": "native-mac-background-final.txt",
+    "receipt": {
+      "dispatchReturned": true,
+      "stoppedAOnly": true,
+      "ordinaryDaemonDenied": true,
+      "aliasedAccountDirectoryDenied": true,
+      "orphanedWorkersDenied": true,
+      "explicitStoppedTransitionPassed": true
+    }
+  },
+  "realConcurrency": {
+    "status": "passed",
+    "durationMs": 22858.097458,
+    "overlapMs": 20578,
+    "distinctSessions": 3,
+    "sessions": [
+      {
+        "label": "proxy5",
+        "name": "a1",
+        "startedAt": 1793541585148,
+        "finishedAt": 1793541605726,
+        "code": 0,
+        "signal": null,
+        "stopReason": "end_turn",
+        "isError": false,
+        "markerPresent": true,
+        "assignedExitPresent": true
+      },
+      {
+        "label": "proxy5",
+        "name": "a2",
+        "startedAt": 1793541585143,
+        "finishedAt": 1793541605939,
+        "code": 0,
+        "signal": null,
+        "stopReason": "end_turn",
+        "isError": false,
+        "markerPresent": true,
+        "assignedExitPresent": true
+      },
+      {
+        "label": "proxy6",
+        "name": "b1",
+        "startedAt": 1793541585145,
+        "finishedAt": 1793541607835,
+        "code": 0,
+        "signal": null,
+        "stopReason": "end_turn",
+        "isError": false,
+        "markerPresent": true,
+        "assignedExitPresent": true
+      }
+    ]
+  },
+  "realStartupDown": {
+    "checkedAt": "2026-11-01T13:58:55.909Z",
+    "label": "proxy5",
+    "proxy": "proxy5",
+    "exitCode": 1,
+    "error": "aim: Claude proxy5: assigned proxy is unavailable. Claude cannot start or continue. Repair the proxy/tunnel, then explicitly retry or resume (proxy5).",
+    "durationMs": 888,
+    "nativeOwnersAbsent": true,
+    "platform": "darwin",
+    "localChromeTunnelChanged": false
+  },
+  "realRefresh": {
+    "checkedAt": "2026-11-01T14:00:19.481Z",
+    "label": "proxy5",
+    "accessTokenChanged": true,
+    "refreshTokenChanged": true,
+    "expiryRenewed": true,
+    "assignmentPreserved": true,
+    "identityPreserved": true,
+    "versionBefore": 15,
+    "versionAfter": 17
+  },
+  "regression": {
+    "total": 639,
+    "passed": 630,
+    "failed": 0,
+    "skipped": 9,
+    "durationMs": 19242.436833,
+    "log": "final-mac-suite.txt",
+    "correctedDescendantDeadlineTest": {
+      "passed": 1,
+      "failed": 0,
+      "durationMs": 1727.263083,
+      "log": "timeout-descendant-final.txt"
+    }
+  },
+  "syntheticChrome": {
+    "passed": true,
+    "durationMs": 6286.629334,
+    "log": "mac-chrome-final.txt",
+    "covers": [
+      "existing fixture CDP/profile binding",
+      "first-request consent",
+      "simultaneous A/B login and callbacks",
+      "A tunnel outage leaves B functional",
+      "no direct request or replay",
+      "managed-tab cleanup only"
+    ]
+  },
+  "nativeAnalytics": {
+    "passed": true,
+    "durationMs": 20784.95925,
+    "log": "mac-telemetry.txt",
+    "positiveControlBatches": 2,
+    "optedOutBatches": 0,
+    "functionalModelPreserved": true
+  },
+  "nativeErrorReporter": {
+    "client": "Claude Code 2.1.316 darwin arm64",
+    "binarySha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "gateSourceSha256": "3011649b98caa0bfc99a1b9dafb4bb34cff0c2838c4c6753d7b9d73d4356b500",
+    "entrypoint": "abe \u2192 NSi \u2192 jts \u2192 eTn.sender \u2192 f",
+    "collector": "https://browser-intake-us5-datadoghq.com/api/v2/logs",
+    "positiveEligibleReporterEnabled": true,
+    "optedOutReporterEnabled": false,
+    "downstreamChecksAfterOptOut": 0,
+    "method": "Extract and execute the unchanged pinned reporter admission function with eligible prerequisite stubs; verify its collector call chain in shipped source. No live upload or binary modification."
+  },
+  "profileValidators": {
+    "passed": true,
+    "durationMs": 389.17075
+  },
+  "syntax": {
+    "javascript": "passed",
+    "log": "final-mac-lint-v4.txt"
+  },
+  "limits": {
+    "sleepWake": "Provider disables system sleep; actual request rejected. See macos-sleep-limitation.json.",
+    "realBrowser": "Original local Chrome profiles untouched; rental browser fixtures synthetic only. Earlier actual OAuth evidence remains in plan.",
+    "physicalDeviceIntegrations": "No physical Mac/device tests authorized; offsite GUI/clipboard and process/IPC coverage do not certify device-specific behavior.",
+    "errorReporter": "Pinned admission function instrumentation + collector linkage, not live crash upload."
+  },
+  "humanVerificationChallengeObserved": false
+}

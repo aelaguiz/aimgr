@@ -1,3 +1,6 @@
+import { rememberClaudeProtection, writeClaudeOfflineBinding } from "../network/claude-offline-binding.js";
+import { ClaudeRouteError } from "../network/claude-egress-policy.js";
+import { resolveNativeAccountProfile } from "../network/claude-native-route.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
@@ -43,6 +46,7 @@ const MAINTENANCE_ARGS = Object.freeze([
   "/usage",
 ]);
 const RETRY_REASONS = new Set([
+  "proxy_unavailable",
   "client_failed",
   "client_signaled",
   "client_timeout",
@@ -80,6 +84,7 @@ function maintenanceFailure(reason, cause) {
 }
 
 function classifyMaintenanceFailure(error) {
+  if (error instanceof ClaudeRouteError) return "proxy_unavailable";
   return RETRY_REASONS.has(error?.maintenanceReason)
     ? error.maintenanceReason
     : "maintenance_failed";
@@ -134,6 +139,7 @@ function overlayClaudeAccountFromRecord(runtime, label, record, localBrowserBind
   const policy = isObject(record?.policy) ? record.policy : {};
   const account = {
     provider: ANTHROPIC_PROVIDER,
+    ...(isObject(policy.egress) ? { egress: structuredClone(policy.egress) } : {}),
     expect: structuredClone(isObject(policy.expect) ? policy.expect : {}),
     reauth: structuredClone(isObject(policy.reauth) ? policy.reauth : {}),
     browser: {
@@ -398,6 +404,11 @@ export async function maintainRedisClaudeCredential(context, {
         );
         accountOverlayActive = true;
       }
+      // R0/R6: observing opt-in immediately fences an old ordinary cache, even
+      // when maintenance skips a blocked/incomplete account below. Keep this
+      // before all early exits and before projecting managed credentials.
+      // Regression: test/cli/auth-maintain-command.test.js (blocked opt-in).
+      if (record) rememberClaudeProtection(homeDir, normalizedLabel, record);
       const credentialLoaded = isObject(record?.credential)
         && Object.keys(record.credential).length > 0;
       if (!record) {
@@ -438,6 +449,7 @@ export async function maintainRedisClaudeCredential(context, {
     }
 
     if (!result) {
+      const egressProfile = resolveNativeAccountProfile({ homeDir, state: runtime.state, label: normalizedLabel });
       let preflight;
       try {
         preflight = await runSharedClaudePreRunPreflight({
@@ -470,6 +482,13 @@ export async function maintainRedisClaudeCredential(context, {
 
         const credential = requireCredential(runtime, normalizedLabel);
         const preRunCredentialComplete = hasCompleteClaudeNativeBundle(credential);
+        await assertLeaseOwned(lease);
+        // The adjacent fresh lease assertion is required: a stale owner must
+        // never turn an invalidated binding back into a usable offline route.
+        // Regression: test/cli/auth-maintain-command.test.js (lease loss).
+        if (egressProfile) writeClaudeOfflineBinding(homeDir, normalizedLabel, {
+          egress: { profileRef: egressProfile.profileRef }, identity: structuredClone(record.identity), version: record.version,
+        });
         await projectClaudeNativeBundleToManagedConfig({ descriptor, credential, nowMs });
         const target = runtime.state.targets.claudeCli;
         target.lastRunLabel = normalizedLabel;
@@ -489,6 +508,7 @@ export async function maintainRedisClaudeCredential(context, {
         let launchError = null;
         try {
           launchResult = await runNoninteractiveImpl({
+            egressProfile,
             command,
             userHomeDir: homeDir,
             homeDir: claudeHome,
@@ -523,8 +543,10 @@ export async function maintainRedisClaudeCredential(context, {
           });
         }
 
-        const launchRetryReason = launchError
-          ? "client_failed"
+        const launchRetryReason = launchError instanceof ClaudeRouteError || launchResult?.status === 125
+          ? "proxy_unavailable"
+          : launchError
+            ? "client_failed"
           : launchResult?.timedOut === true
             ? "client_timeout"
             : typeof launchResult?.signal === "string"

@@ -1,11 +1,13 @@
+import { ClaudeRouteError } from "../../src/network/claude-egress-policy.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
+import { execFileSync } from "node:child_process";
+import { writeAimgrConfig as writeConfig } from "../../src/config/aimgr-config.js";
 import {
   connectRedisStore,
-  importCredentialsSnapshot,
+  importCredentialsSnapshot as importSnapshot,
   publishCredential,
   readSnapshot,
 } from "../../src/coordination/redis-store.js";
@@ -18,6 +20,7 @@ import {
   loadRedisRuntime,
 } from "../../src/coordination/runtime.js";
 import { publishMaintainedCredential } from "../../src/coordination/login-publish.js";
+import { buildCoordinationView } from "../../src/coordination/snapshot.js";
 import {
   resolveAimgrLocalStatePath,
   resolveAimgrClaudeLabelHomeDir,
@@ -32,12 +35,197 @@ import { handleClaude } from "../../src/cli/commands/claude.js";
 import { maintainRedisClaudeCredential } from "../../src/credentials/claude-maintenance.js";
 import { buildClaudeTokenLineageFingerprint } from "../../src/targets/claude-cli.js";
 import { writeLocalState } from "../../src/state/local-state.js";
+import { readClaudeOfflineBinding, acquireClaudeAssignmentLock } from "../../src/network/claude-offline-binding.js";
+import { assertLocalClaudeProfileStopped } from "../../src/network/claude-native-route.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 
 const PREFIX = "aimgr:projection-test";
+
+async function proxyAssignmentFixture(t) {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const client = new FakeRedisClient();
+  const store = await connectRedisStore({ client, keyPrefix: PREFIX });
+  writeConfig({ homeDir: home, config: {
+    redis: { url: "redis://fake:6379", keyPrefix: PREFIX },
+    claudeProxyProfiles: {
+      a: { socksPort: 1085, expectedExits: ["127.0.0.2"] },
+      b: { socksPort: 1086, expectedExits: ["127.0.0.3"] },
+    },
+  } });
+  await importSnapshot(store, { credentials: [{
+    provider: "anthropic", label: "claude", credential: buildAnthropicClaudeCredential(),
+    identity: { accountUuid: "acct_boss", emailAddress: "boss@example.com", organizationUuid: "org_boss" },
+    policy: { expect: { email: "boss@example.com" }, pool: { enabled: true }, egress: { profileRef: "a" } },
+    health: { status: "ready", reason: null },
+  }] }, { updatedBy: "proxy-assignment-test" });
+  const deps = {
+    env: { HOME: home },
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+  };
+  return {
+    home, client, store,
+    set: overrides => runCli(["claude", "proxy", "set", "claude", "b"], { ...deps, assertLocalClaudeProfileStoppedImpl: async () => {}, ...overrides }),
+    run: runClaudeCliImpl => runCli(["claude", "run", "claude"], { ...deps, runClaudeCliImpl }),
+    offline: () => runCli(["claude", "run", "claude"], { ...deps,
+      connectRedisStoreImpl: async () => { throw new Error("Redis unavailable"); },
+      runClaudeCliImpl: () => { throw new Error("stale offline assignment reached spawn"); },
+    }),
+  };
+}
+
+test("proxy reassignment refuses surviving local children and invalidates its old offline binding", async t => {
+  const lane = await proxyAssignmentFixture(t);
+  await lane.run(() => ({ status: 0, signal: null }));
+  assert.equal(readClaudeOfflineBinding(lane.home, "claude").egress.profileRef, "a");
+  const root = path.join(lane.home, "cgroup");
+  fs.mkdirSync(path.join(root, "a"), { recursive: true });
+  const events = path.join(root, "a", "cgroup.events");
+  fs.writeFileSync(events, "populated 1\nfrozen 0\n");
+  const assertLocalClaudeProfileStoppedImpl = profileRef => assertLocalClaudeProfileStopped(profileRef, { cgroupRoot: root, platform: "linux" });
+  await assert.rejects(lane.set({ assertLocalClaudeProfileStoppedImpl }), /still has local native work/);
+  assert.equal((await readSnapshot(lane.store)).credentials[0].policy.egress.profileRef, "a");
+  assert.equal(readClaudeOfflineBinding(lane.home, "claude").egress.profileRef, "a");
+  fs.writeFileSync(events, "populated 0\nfrozen 0\n");
+  await lane.set({ assertLocalClaudeProfileStoppedImpl });
+  assert.equal((await readSnapshot(lane.store)).credentials[0].policy.egress.profileRef, "b");
+  assert.deepEqual(readClaudeOfflineBinding(lane.home, "claude"), { required: true, invalidated: true });
+  // An unrelated account can save a stale aggregate state without reviving A.
+  writeLocalState({ homeDir: lane.home, localState: { targets: { claudeCli: { egressByLabel: { claude: { egress: { profileRef: "a" } } } } } } });
+  await assert.rejects(lane.offline(), /proxy|binding|cache/i);
+});
+
+test("Darwin proxy reassignment refuses missing installed metadata before changing policy or cache", async t => {
+  const lane = await proxyAssignmentFixture(t);
+  await lane.run(() => ({ status: 0, signal: null }));
+  const before = await readSnapshot(lane.store);
+  const cached = readClaudeOfflineBinding(lane.home, "claude");
+  await assert.rejects(lane.set({ assertLocalClaudeProfileStoppedImpl: () => assertLocalClaudeProfileStopped("missing-reassignment-fixture", { platform: "darwin" }) }), /cannot verify stopped native work.*metadata.*Repair/);
+  assert.deepEqual((await readSnapshot(lane.store)).credentials, before.credentials);
+  assert.deepEqual(readClaudeOfflineBinding(lane.home, "claude"), cached);
+  await assertLocalClaudeProfileStopped(undefined, { platform: "darwin" });
+});
+
+test("proxy setter refuses an active launcher, preserves credential writes, and round-trips assignment", async t => {
+  const lane = await proxyAssignmentFixture(t);
+  const original = await readSnapshot(lane.store);
+  const started = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const running = lane.run(async ({ egressProfile }) => {
+    assert.equal(egressProfile.profileRef, "a");
+    started.resolve();
+    await finish.promise;
+    return { status: 0, signal: null };
+  });
+  try {
+    await started.promise;
+    await assert.rejects(lane.set(), { code: "AIMGR_CREDENTIAL_BUSY" });
+    assert.equal((await readSnapshot(lane.store)).credentials[0].policy.egress.profileRef, "a");
+  } finally { finish.resolve(); await running; }
+  await lane.set();
+  const assigned = await readSnapshot(lane.store);
+  assert.equal(assigned.credentials[0].policy.egress.profileRef, "b");
+  assert.deepEqual(assigned.credentials[0].credential, original.credentials[0].credential);
+  assert.deepEqual(assigned.credentials[0].policy.expect, original.credentials[0].policy.expect);
+  assert.deepEqual(assigned.credentials[0].policy.pool, original.credentials[0].policy.pool);
+
+  const staleState = buildCoordinationView(original);
+  const stale = await publishMaintainedCredential({ store: lane.store, snapshot: original,
+    state: staleState, label: "claude", provider: "anthropic" });
+  assert.equal(stale.ok, false, "stale credential publication must lose CAS");
+  // After re-reading Redis, even an old account view cannot restore route A.
+  const fresh = await publishMaintainedCredential({ store: lane.store, snapshot: assigned,
+    state: staleState, label: "claude", provider: "anthropic" });
+  assert.equal(fresh.ok, true);
+  const exported = await readSnapshot(lane.store);
+  assert.equal(exported.credentials[0].policy.egress.profileRef, "b");
+  const independent = await connectRedisStore({ client: new FakeRedisClient(), keyPrefix: "second-machine" });
+  await importSnapshot(independent, exported, { updatedBy: "restore-test" });
+  assert.deepEqual((await readSnapshot(independent)).credentials[0].policy.egress, { profileRef: "b" });
+  await lane.run(({ egressProfile }) => {
+    assert.equal(egressProfile.profileRef, "b");
+    return { status: 0, signal: null };
+  });
+});
+
+test("local assignment fence permits shared cached sessions and excludes only their account's setter", async t => {
+  const lane = await proxyAssignmentFixture(t);
+  const one = await acquireClaudeAssignmentLock(lane.home, "claude");
+  const two = await acquireClaudeAssignmentLock(lane.home, "claude");
+  const unrelated = await acquireClaudeAssignmentLock(lane.home, "other");
+  try {
+    await assert.rejects(lane.set(), /local assignment lock is unavailable/);
+    await one.release();
+    await assert.rejects(lane.set(), /local assignment lock is unavailable/);
+    await two.release();
+    await lane.set();
+    assert.equal((await readSnapshot(lane.store)).credentials[0].policy.egress.profileRef, "b");
+  } finally { await one.release(); await two.release(); await unrelated.release(); }
+});
+
+test("local assignment lock loss aborts its cached session and releases the holder", async t => {
+  const lane = await proxyAssignmentFixture(t);
+  const lock = await acquireClaudeAssignmentLock(lane.home, "claude");
+  const holder = Number(execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" }).split("\n")
+    .map(line => line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)).find(parts => parts && Number(parts[2]) === process.pid
+      && parts[3].includes(path.join(lane.home, ".aimgr/claude-egress/claude.json.lock")))?.[1]);
+  assert.ok(Number.isSafeInteger(holder) && holder > 1);
+  const aborted = new Promise(resolve => lock.signal.addEventListener("abort", resolve, { once: true }));
+  process.kill(holder, "SIGTERM");
+  await aborted;
+  assert.throws(lock.assertOwned, /assignment lock is unavailable/);
+  await lock.release();
+  const next = await acquireClaudeAssignmentLock(lane.home, "claude", { exclusive: true });
+  await next.release();
+});
+
+test("proxy setter winning the lease prevents admission until the new assignment is published", async t => {
+  const lane = await proxyAssignmentFixture(t);
+  await lane.run(() => ({ status: 0, signal: null }));
+  const acquired = Promise.withResolvers();
+  const publish = Promise.withResolvers();
+  const originalSet = lane.client.set.bind(lane.client);
+  let intercept = true;
+  lane.client.set = async (key, value, options) => {
+    const result = await originalSet(key, value, options);
+    if (intercept && key.includes(":lease:credential:") && result === "OK") {
+      intercept = false;
+      acquired.resolve();
+      await publish.promise;
+    }
+    return result;
+  };
+  const setting = lane.set();
+  try {
+    await acquired.promise;
+    await assert.rejects(lane.run(() => { throw new Error("busy launcher reached process spawn"); }),
+      { code: "AIMGR_CREDENTIAL_BUSY" });
+    await assert.rejects(lane.offline(), /local assignment lock is unavailable/);
+  } finally { publish.resolve(); await setting; }
+  await lane.run(({ egressProfile }) => {
+    assert.equal(egressProfile.profileRef, "b");
+    return { status: 0, signal: null };
+  });
+});
+
+// These projection tests inject the native launcher and HTTP responses. Supply
+// the required account assignment; the network suite exercises real routing.
+function writeAimgrConfig(options) {
+  return writeConfig({ ...options, config: { ...options.config,
+    claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } },
+  } });
+}
+function importCredentialsSnapshot(store, snapshot, options) {
+  return importSnapshot(store, { ...snapshot, credentials: snapshot.credentials.map(record =>
+    record.provider === "anthropic"
+      ? { ...record, policy: { ...record.policy, egress: { profileRef: "test" } } }
+      : record) }, options);
+}
+
 
 function token(accountId, exp = Math.floor(Date.now() / 1000) + 3600) {
   return makeFakeJwt({
@@ -3464,5 +3652,20 @@ test("managed Claude resumes after an outage when a sibling session refreshed th
     resolveLaunch?.({ status: 1, signal: null });
     globalThis.setTimeout = realSetTimeout;
     globalThis.clearTimeout = realClearTimeout;
+  }
+});
+
+
+test("Claude maintenance reports proxy failures without escalating them to account reauthentication", async () => {
+  const lane = await setupClaudeMaintenanceLane();
+  for (const elapsed of [0, 3 * 60 * 60_000]) {
+    const result = await runMaintenancePass(lane, buildMaintenanceContext(lane, {
+      nowMs: MAINTENANCE_NOW_MS + elapsed,
+      runClaudeCliNoninteractiveImpl: () => { throw new ClaudeRouteError("proxy_unavailable", { label: lane.label }); },
+    }));
+    assert.equal(result.outcome, "retryable");
+    assert.equal(result.reason, "proxy_unavailable");
+    const record = findSnapshotCredential(await readSnapshot(lane.store), "anthropic");
+    assert.notEqual(record.policy.reauth?.blockedReason, "oauth_reauth_required");
   }
 });

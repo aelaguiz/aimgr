@@ -1,3 +1,4 @@
+import { rememberClaudeProtection } from "../../network/claude-offline-binding.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import {
   closeRedisRuntime,
@@ -150,6 +151,10 @@ async function handleOAuthMaintain(context) {
   };
   try {
     for (const record of sortedMaintenanceRecords(runtime.snapshot)) {
+      // Fence old ordinary caches before skip decisions, not just before refresh.
+      // A remotely protected but blocked account must remain protected offline.
+      // Regression: test/cli/auth-maintain-command.test.js.
+      if (record.provider === ANTHROPIC_PROVIDER) rememberClaudeProtection(homeDir, record.label, record);
       let maintenanceResult = null;
       if (
         !hasLoadedCredential(record)

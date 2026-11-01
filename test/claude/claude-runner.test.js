@@ -62,6 +62,64 @@ function preparedLaunch(home, options = {}) {
   };
 }
 
+test("missing native launcher names the protected account and repair action while ordinary spawn errors stay unchanged", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const prepared = preparedLaunch(home);
+  const profile = { label: "protected", profileRef: "office" };
+  const missing = Object.assign(new Error("spawn fixture ENOENT"), { code: "ENOENT" });
+  for (const runner of [runClaudeCli, runClaudeCliNoninteractive]) {
+    for (const egressProfile of [undefined, profile]) {
+      for (const mode of ["throw", "event"]) {
+        await assert.rejects(runner({ ...prepared, preparedLaunch: prepared, cwd: home, egressProfile,
+          platform: "linux", prepareClaudeNativeRouteImpl: async () => ({ command: "/missing/native-helper", args: [] }),
+          spawnImpl: () => {
+            if (mode === "throw") throw missing;
+            const child = new EventEmitter();
+            process.nextTick(() => child.emit("error", missing));
+            return child;
+          },
+        }), error => {
+          if (!egressProfile) assert.equal(error, missing);
+          else {
+            assert.equal(error.code, "native_proxy_unavailable");
+            assert.equal(error.cause, missing);
+            assert.match(error.message, /protected.*unavailable.*Repair.*retry.*office/);
+          }
+          return true;
+        });
+      }
+    }
+  }
+});
+
+test("protected exit 125 retains job diagnostics without changing other process results", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const prepared = preparedLaunch(home);
+  for (const runner of [runClaudeCli, runClaudeCliNoninteractive]) {
+    for (const egressProfile of [undefined, { label: "protected", profileRef: "office" }]) {
+      for (const [status, signal] of [[125, null], [1, null], [0, null], [null, "SIGTERM"]]) {
+        for (const mode of ["sync", "async"]) {
+          const result = await runner({ ...prepared, preparedLaunch: prepared, cwd: home, egressProfile,
+            platform: "linux", prepareClaudeNativeRouteImpl: async () => ({ command: "/fixture/helper", args: [] }),
+            spawnImpl: () => {
+              if (mode === "sync") return { status, signal };
+              const child = new EventEmitter();
+              process.nextTick(() => child.emit("close", status, signal));
+              return child;
+            },
+          });
+          assert.equal(result.status, status);
+          assert.equal(result.signal, signal);
+          if (egressProfile && status === 125) assert.match(result.error.message, /protected.*125.*office.*repair.*retry or resume/);
+          else assert.equal(result.error, undefined);
+        }
+      }
+    }
+  }
+});
+
 test("executable preflight resolves the exact PATH selection once and requires only file plus X_OK", async () => {
   const selected = "/synthetic/bin/claude";
   const resolved = "/synthetic/share/claude/current";
@@ -501,6 +559,7 @@ test("managed Claude runner waits for supervisor pause and resume acknowledgemen
       control = value;
     },
   });
+  await new Promise(setImmediate);
   assert.ok(control);
   assert.equal(await control.pause(), true);
   assert.equal(await control.resume(), true);
@@ -534,7 +593,9 @@ test("noninteractive timeout kills the detached Claude process group including a
     cwd: home,
     args: [scriptPath, pidPath],
     platform: "linux",
-    timeoutMs: 300,
+    // Leave startup headroom on the two-core isolated VM; this checks
+    // descendant cleanup, not Node process startup latency.
+    timeoutMs: 1500,
     terminationGraceMs: 100,
   });
   assert.equal(result.timedOut, true);

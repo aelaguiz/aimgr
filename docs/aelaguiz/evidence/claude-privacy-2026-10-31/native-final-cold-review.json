@@ -1,0 +1,40 @@
+{
+  "reviewDate": "2026-11-01T14:08:47.062207+00:00",
+  "reviewer": "optional_privacy_cold_review",
+  "decision": "Approved: Linux and macOS implementation, applicable verification, workflow preservation and R10 privacy comments.",
+  "sourceManifest": "native-final-source-manifest.json",
+  "runtimeSourceManifest": "native-tested-source-manifest.json",
+  "commentBridge": "privacy-comment-equivalence.json",
+  "requirementScope": "R0\u2013R10, applicable T1\u2013T24",
+  "findingsRemaining": [],
+  "workflowVerdict": "No remaining implementation defect, unapproved workflow removal or unnecessary architecture requiring another code change.",
+  "independentEvidenceChecks": {
+    "linuxAndMacPublishedMatrixReceiptsMatchRawLogs": true,
+    "finalFiles": 64,
+    "runtimeTestedFiles": 63,
+    "commentOnlyFiles": 20,
+    "insertedWholeLineComments": 150,
+    "productionExecutableLinesChangedAfterRuntimeMatrix": false,
+    "additionalMaintenanceCases": "blocked and missing-credential remote opt-in must fence existing ordinary offline cache",
+    "finalMaintenanceTests": {
+      "linux": {
+        "passed": 10,
+        "failed": 0,
+        "durationMs": 2111.803553
+      },
+      "macos": {
+        "passed": 10,
+        "failed": 0,
+        "durationMs": 489.439833
+      }
+    }
+  },
+  "limits": [
+    "AWS rejects system sleep; sleep/wake not executed.",
+    "Original physical Chrome disruption and physical-device-specific integrations prohibited; offsite fixtures do not certify them.",
+    "Pinned error-reporter proof is admission-function instrumentation with collector linkage, not a live crash upload."
+  ],
+  "operationsAtReview": "Evidence export, publication/secret audit, rental credential-copy removal and instance termination remained to complete. Dedicated-host release is a bounded scheduled obligation; review does not claim it already happened.",
+  "formattingFollowup": "Approval reaffirmed after independently verifying removal of two spaces from a blank line outside any string in native-features-fixture.js. All64 current hashes match; no production/test behavior change or rerun required.",
+  "installerModeFollowup": "Approval reaffirmed: macOS installer changed from0644 to0755 for documented direct invocation. Content hash unchanged; isolated Linux direct invocation reaches intended platform/usage guard and exits2. Prior Mac bash-invoked installation tests cover unchanged behavior."
+}

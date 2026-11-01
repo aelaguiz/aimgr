@@ -1,0 +1,26 @@
+{
+  "checkedAt": "2026-11-01T13:37:00Z",
+  "host": "rented AWS mac2.metal, macOS 15.8 arm64",
+  "test": "T8 rental sleep/wake availability",
+  "observations": {
+    "pmset -g": "SleepDisabled 1",
+    "sudo pmset sleepnow": {
+      "exitCode": 71,
+      "output": "Unable to sleep system: error 0xe00002e2"
+    },
+    "kernelLog": {
+      "timestamp": "2026-11-01T13:37:33.468Z",
+      "message": "PMRD: System sleep prevented by kPMUserDisabledAllSleep"
+    }
+  },
+  "providerConfiguration": "https://github.com/aws/ec2-macos-init/blob/master/configuration/init.toml",
+  "providerSetting": "DisableSleep runs pmset -a disablesleep 1",
+  "conclusion": "The rental rejects a normal OS sleep request. Sleep/wake is not claimed tested; runtime component-loss/restart tests are separate evidence. Provider sleep settings were not overridden.",
+  "subsequentRentalOutage": {
+    "firstObserved": "approximately 2026-11-01T13:39Z",
+    "rebootRequested": "2026-11-01T13:41Z",
+    "sshRecovered": "2026-11-01T13:48:59Z",
+    "cause": "Not established. Kernel confirms sleep was prevented; no sleep/wake pass is inferred. Interrupted acceptance run must be repeated.",
+    "physicalMacUsed": false
+  }
+}

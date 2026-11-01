@@ -22,7 +22,7 @@ import { writeJsonFileIfChanged, writeTextFileIfChanged } from "../io/json-store
 import { resolveClaudeAppStatePath, resolveClaudeAuthFilePath, resolveManagedClaudeDir } from "../io/paths.js";
 import { appendAnthropicHistory, buildAnthropicExhaustionHistoryEntries, recordAnthropicBlockedSelectionHistory } from "../pool/history.js";
 import { collectAnthropicPoolStatus, getAnthropicPoolLabels, pickNextBestLocalCliPoolLabel, rankPoolCandidates } from "../pool/ranking.js";
-import { probeUsageSnapshotsByProvider } from "../pool/usage.js";
+import { assertNoClaudeRouteErrors, probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { getClaudeTargetState } from "../state/accounts.js";
 import { parseTimestampLikeToMs } from "../state/demand.js";
 import { ensureStateShape } from "../state/schema.js";
@@ -384,6 +384,7 @@ export async function activateClaudePoolSelection({
   const observedAt = new Date().toISOString();
   const usageByProvider = await probeUsageSnapshotsByProviderImpl(state, { env });
   const usageByLabel = usageByProvider[ANTHROPIC_PROVIDER];
+  assertNoClaudeRouteErrors(usageByLabel);
   const poolStatus = collectAnthropicPoolStatus({
     state,
     homeDir,

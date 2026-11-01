@@ -1,0 +1,259 @@
+{
+  "checkedAt": "2026-11-01T13:50:47.135995+00:00",
+  "baseRevision": "4ab4af1bf56fc01228c297f71c5bf68b7ff6d091",
+  "parentRevision": "60917e741b9d065b2ddb03151df963de6f4d0c5d",
+  "files": [
+    {
+      "path": "native/claude/darwin_identity.c",
+      "sha256": "5073ad28347611ba7204ca9e4d2be4e8d0dd2d4f4720272f2b1a05a81dd8926f"
+    },
+    {
+      "path": "native/claude/darwin_launch.c",
+      "sha256": "6fa2fc833c44922137630b672e99b327bed810939268d8d3d86314cea7fa4ee6"
+    },
+    {
+      "path": "native/claude/darwin_proxy.py",
+      "sha256": "6fdd11bd0ce8d2419d8f38ea6d71d6a74167c942679e93d1ba6015f8477bb785"
+    },
+    {
+      "path": "native/claude/linux_proxy.py",
+      "sha256": "d20a7dcbe604463d3337d79bff4fcd6c9e77b63307f8c9de5f4f0a807d1ee78f"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "a781b5c1c8a3c4dad7ea1a951e341a4210c1b2421f6c48a3b1599adee93aa23a"
+    },
+    {
+      "path": "package.json",
+      "sha256": "87e486d503ac457e9c07af18e968049f9fb9dda19c451376f851a131535e85d4"
+    },
+    {
+      "path": "scripts/claude-login-browser.mjs",
+      "sha256": "f95474602a5ab607db582cd862b6b0d51c22ed82410fe9ee07f033d25111056a"
+    },
+    {
+      "path": "scripts/claude-privacy-dev-bootstrap.sh",
+      "sha256": "23c8f570c7e0d931a076046f8246088f59c1f4d4c6f8d8b7fe24a35f6bd0262a"
+    },
+    {
+      "path": "scripts/install-claude-proxy-linux.sh",
+      "sha256": "230c5b9cbecd2470bb06d80a89b3983644229ba9a28667ec2439d2d8b9a2ef97"
+    },
+    {
+      "path": "scripts/install-claude-proxy-macos.sh",
+      "sha256": "917cec0410d2be0986dc12afd483415002b9377065ebabaca3b38f8415e130cc"
+    },
+    {
+      "path": "src/browser/claude-cdp.js",
+      "sha256": "14d3b1715e4f778aa8f5d20df9a2ba420f2843e8a80d97c15ada2625162411ee"
+    },
+    {
+      "path": "src/cli/commands/auth.js",
+      "sha256": "6d3e793124c2cc90be9f66b511fa07356311e9249e8c59af143c37b80111f297"
+    },
+    {
+      "path": "src/cli/commands/claude.js",
+      "sha256": "9222bbcf7dc07ed26bacb1f89b0fab67bd1feac7cf81d7c589434cd4e61c56d9"
+    },
+    {
+      "path": "src/cli/commands/login.js",
+      "sha256": "e0c0cfd45dc39c3e2e2c4cf5275ab121e3f8fc5a191ed2f0b7d364eb63079506"
+    },
+    {
+      "path": "src/cli/main.js",
+      "sha256": "298aea633b3273bcfb4b620a74b2b6fdbd075c6cf95cbc15b7eeaea3c1674a25"
+    },
+    {
+      "path": "src/config/aimgr-config.js",
+      "sha256": "c3fc25a3a6410906c5bc6e7889d91063e6af45d723fec82fa8b85726da8502c1"
+    },
+    {
+      "path": "src/coordination/login-publish.js",
+      "sha256": "0940a574c7f79b120db9b5e9473489ec5b94831729150dd024693643ca81ba60"
+    },
+    {
+      "path": "src/coordination/records.js",
+      "sha256": "f8ef12f5860165aee803155bf5661b5de5daf8060aaf3dcb45112f578b8b78fb"
+    },
+    {
+      "path": "src/coordination/runtime.js",
+      "sha256": "ef0925f3c1195918e4121cb6ed3825d1ac7c2a055d88ed8c53050db461492a3e"
+    },
+    {
+      "path": "src/coordination/snapshot.js",
+      "sha256": "af52f0f3242518b136011229f6880a40e130b4dfb1d6edfe2c64efd72d8e3cff"
+    },
+    {
+      "path": "src/credentials/claude-maintenance.js",
+      "sha256": "ce8454622c0cbbbfe393a08aed1953a45f5f0beea1c26e98649c5dada78311ba"
+    },
+    {
+      "path": "src/credentials/harness-access.js",
+      "sha256": "3372d85fa2eb6f55a816cc0a37cdc0edf55b35f809cf27848ba7f7200532c588"
+    },
+    {
+      "path": "src/io/fetch.js",
+      "sha256": "c56f89373cfcaf8c0422f55432649349bcf7f40741560cb92e0eb3297594fafe"
+    },
+    {
+      "path": "src/network/claude-egress-policy.js",
+      "sha256": "014b2b5c1bd43740dee7dca10afd5ab917cdd3cb050e0583c9601c820a3d46dc"
+    },
+    {
+      "path": "src/network/claude-native-route.js",
+      "sha256": "bdbb3287f66a1b50e125216720071a3e0a1cd72fd834b9447d30090d1fa6a919"
+    },
+    {
+      "path": "src/network/claude-offline-binding.js",
+      "sha256": "1e87d743dd25459555e5e8b155835a3d6017b0b50e21b3655671d141009b7a21"
+    },
+    {
+      "path": "src/network/claude-transport.js",
+      "sha256": "3e28d7462c2277bb7d275cecdf1c77dc06737568fe0b894994b1b8a3b9585a27"
+    },
+    {
+      "path": "src/pool/usage.js",
+      "sha256": "738463281500d81f9ce189ab384ce028deb9d2dc8edcee5ad25523474169d9a0"
+    },
+    {
+      "path": "src/state/account-shape.js",
+      "sha256": "83eb5e2a63b4e5b26650fa3eb0c372133df11f9b0fd666df3858746ca80b400b"
+    },
+    {
+      "path": "src/status/claude-redis-view.js",
+      "sha256": "958085bd62746d615e7ed5392d501ab9e6d176aca3964677dfd43342c5f99c0e"
+    },
+    {
+      "path": "src/targets/claude-cli.js",
+      "sha256": "920ae498fc005ebd35748561b9b49e662983e7312550d3245707c0329584fe0e"
+    },
+    {
+      "path": "src/targets/claude-runner.js",
+      "sha256": "0994123cc2370dea0315994bda27b3d9a0a3dba383c6570bec71fcb2eccbab22"
+    },
+    {
+      "path": "test/claude/claude-runner.test.js",
+      "sha256": "b00ae359b5da3924e2f2281648915c157c2271bbd5568c8580e4393e2f2ca2c0"
+    },
+    {
+      "path": "test/claude/redis-usage-view.test.js",
+      "sha256": "d802e5b9d8e297235caacbf20a1b99f11b037c39208515835d3bb6aa48852a78"
+    },
+    {
+      "path": "test/cli/auth-maintain-command.test.js",
+      "sha256": "127e0d930a323e3e7bbbb4d653f7c87818772433beb5698019cf7ea5234041ab"
+    },
+    {
+      "path": "test/cli/credential-helper.test.js",
+      "sha256": "e6b8e7faa824376e9e62bde5fcc14dba789cc3f8d4b4b274aef0745dcf312a4f"
+    },
+    {
+      "path": "test/cli/redis-login-command.test.js",
+      "sha256": "bd081fba23706dd6b28fe610131e8196b14728f1047cd85974eca3ba80146d6b"
+    },
+    {
+      "path": "test/cli/redis-projection-command.test.js",
+      "sha256": "18ca7079284b23d434febad6b0e53f7fc17b182a729ead0c93204d618dfff3a7"
+    },
+    {
+      "path": "test/network/claude-chrome.test.js",
+      "sha256": "ac102da22687b39db1c64b601685d399a2771edad29991c75ee0f8f0afc44e46"
+    },
+    {
+      "path": "test/network/claude-native-background.test.js",
+      "sha256": "caa5e6609dc52dfcb096717dca18bdca06ffab9a30d29288b99619fbae4ded32"
+    },
+    {
+      "path": "test/network/claude-native-macos.test.js",
+      "sha256": "3f0686dee9856bea4f6f345afb46f4e2b698a03d11d63c46a21616b8372b3cdf"
+    },
+    {
+      "path": "test/network/claude-native-route.test.js",
+      "sha256": "58fe943bcca968d7deee0538ccf4a4c0f5329dc60588eceb9cff84737ccbc881"
+    },
+    {
+      "path": "test/network/claude-optional-privacy.test.js",
+      "sha256": "59ea7bf4905700799a30cd7242b734ccc6fba4b5c742575d9eb7c77023fa1d2d"
+    },
+    {
+      "path": "test/network/claude-real-accounts.test.js",
+      "sha256": "2deca1f81cf631c42474548a6ab66c4679d6d04c1000683d0840f3fba1485825"
+    },
+    {
+      "path": "test/network/claude-ssh.test.js",
+      "sha256": "849a83c794ba02118aeb10429e537ec8f9458e46e26aff6ef928317263791bcf"
+    },
+    {
+      "path": "test/network/claude-telemetry.test.js",
+      "sha256": "9fbfb1dd51f1614d2109e91a1f40b20ea7c63ea633c36397ea2370dff28bfaee"
+    },
+    {
+      "path": "test/network/claude-transport.test.js",
+      "sha256": "4f797ef764423ada1d98a92e902a3e2fda88b4fcfd5dda3d2f34daa42c963037"
+    },
+    {
+      "path": "test/network/inspect-native-error-optout.mjs",
+      "sha256": "c9eb4495c859179ec950dc71a4df9104e62cef5fca5f00112a9453b0ebb50b03"
+    },
+    {
+      "path": "test/network/native-control-fixture.js",
+      "sha256": "05f93518f9affd2cba779d68f1aabe68d1a70b0e19b83efc395e5d4b44ed20f4"
+    },
+    {
+      "path": "test/network/native-features-fixture.js",
+      "sha256": "010bb9dab322bc8a0d8a527b47a7ace5cdbef1cb88c65dccbf7c162e8c1519e1"
+    },
+    {
+      "path": "test/network/native-macos-groups-fixture.c",
+      "sha256": "7ad62f708df06c7b9fdd7103ad9cf3686d0996422388c07d8a156eb8188ac963"
+    },
+    {
+      "path": "test/network/native-macos-gui-fixture.m",
+      "sha256": "d184c0a9730930b7a96229ee84487a8254e903259aabb2eee6933851ab16d855"
+    },
+    {
+      "path": "test/network/native-profile-validation.test.js",
+      "sha256": "c0e943849419f9a6a87e698358a998aa89a2634687809875c5fe562450927b35"
+    },
+    {
+      "path": "test/network/native-pty-driver.py",
+      "sha256": "2af72acedb1dc60c70b8394b997b0fe456175650b23757ea8fa3880bce5bd7b4"
+    },
+    {
+      "path": "test/network/native-pty-fixture.js",
+      "sha256": "340ce3dde6d11f5b5c100b3332c4d5a29a4a78de46f7242d897df9913bd393a6"
+    },
+    {
+      "path": "test/network/native-routine-fixture.js",
+      "sha256": "b2d25c4bdc9cb12a5b9a957795e2e1d0b53dd582369474501c35806729cc3221"
+    },
+    {
+      "path": "test/network/native-scheduled-failure-fixture.js",
+      "sha256": "b41a284a25de84308dc57f0930a4ee36af4d3e5d949c2c6054d7fb4a608848b7"
+    },
+    {
+      "path": "test/network/native-scheduled-fixture.js",
+      "sha256": "03d1e158dca06a0133964381563ee64a53151d71786c7e964323ddc1c95fc8e3"
+    },
+    {
+      "path": "test/network/native-scheduled-response.js",
+      "sha256": "3d34d21eda2e3f3afbc96cf9dc3247bcbaf1dbcfb8f07ec55706a9546c600589"
+    },
+    {
+      "path": "test/network/native-tty-fixture.py",
+      "sha256": "bc764c8a5edd98287c3783b00d4d585a4a284bf254533d0c9646a6e05ab09f50"
+    },
+    {
+      "path": "test/network/offsite-login-driver.mjs",
+      "sha256": "f71720cec67b07027db9ceab6b11cea1630d9a2658a3cefee98f98813ec792a6"
+    },
+    {
+      "path": "test/network/socks-fixture.js",
+      "sha256": "2202a65df5ade4bcf2749a44afc200e0bf32abf8c6eaf0d7f8a064b7854de12a"
+    },
+    {
+      "path": "test/status/redis-view.test.js",
+      "sha256": "876eb5799cb78e457091cb498f7b0a9b82495b0d041fe1603bb72f857c88f80b"
+    }
+  ]
+}

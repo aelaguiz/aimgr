@@ -426,13 +426,14 @@ test("credential-helper SIGTERM aborts Claude maintenance and releases the exact
     credential,
     identity: buildStableIdentityForCredential("anthropic", credential),
     policy: {
+      egress: { profileRef: "test" },
       expect: { email: "signal@example.test" },
       reauth: { mode: "native-claude" },
       pool: { enabled: true },
     },
     health: { status: "ready", reason: null },
   };
-  writeAimgrConfig({ homeDir, config: { redis: { url: "redis://fake:6379", keyPrefix } } });
+  writeAimgrConfig({ homeDir, config: { claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } }, redis: { url: "redis://fake:6379", keyPrefix } } });
   const store = await connectRedisStore({ client, keyPrefix });
   await importCredentialsSnapshot(store, { credentials: [record] }, { updatedBy: "test" });
   const snapshot = await readSnapshot(store);

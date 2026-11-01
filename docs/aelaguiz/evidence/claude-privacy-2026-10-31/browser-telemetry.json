@@ -1,0 +1,49 @@
+{
+  "functional": [
+    {
+      "mode": "positive",
+      "loginAvailable": true
+    },
+    {
+      "mode": "opt-out",
+      "loginAvailable": true
+    }
+  ],
+  "receipts": [
+    {
+      "mode": "positive",
+      "host": "claude.ai",
+      "path": "/api/event_logging/v2/batch"
+    },
+    {
+      "mode": "positive",
+      "host": "browser-intake-us5-datadoghq.com",
+      "path": "/api/v2/rum"
+    },
+    {
+      "mode": "positive",
+      "host": "browser-intake-us5-datadoghq.com",
+      "path": "/api/v2/rum"
+    },
+    {
+      "mode": "positive",
+      "host": "browser-intake-us5-datadoghq.com",
+      "path": "/api/v2/rum"
+    },
+    {
+      "mode": "positive",
+      "host": "browser-intake-us5-datadoghq.com",
+      "path": "/api/v2/rum"
+    },
+    {
+      "mode": "positive",
+      "host": "browser-intake-us5-datadoghq.com",
+      "path": "/api/v2/rum"
+    },
+    {
+      "mode": "positive",
+      "host": "browser-intake-us5-datadoghq.com",
+      "path": "/api/v2/rum"
+    }
+  ]
+}

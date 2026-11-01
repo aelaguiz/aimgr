@@ -1,0 +1,103 @@
+{
+  "checkedAt": "2026-11-01T14:14:27.772742+00:00",
+  "profile": "agent-macos-test",
+  "operatorRole": "MacOSTestOperator",
+  "cleanupRole": "MacOSTestCleanup",
+  "source": "Existing nonroot credential; no new access key",
+  "rootRequiredForRoutineUse": false,
+  "roleAssumptionPassed": true,
+  "readOperationsPassed": [
+    "EC2 inventory/subnets",
+    "Mac host offerings",
+    "AWS macOS image",
+    "Mac host quotas"
+  ],
+  "policyValidation": "All four role/trust policies passed AWS Access Analyzer without findings",
+  "policyBoundaryChecks": [
+    {
+      "case": "Allocate tagged Mac",
+      "action": "ec2:AllocateHosts",
+      "decision": "allowed"
+    },
+    {
+      "case": "Reject untagged host",
+      "action": "ec2:AllocateHosts",
+      "decision": "implicitDeny"
+    },
+    {
+      "case": "Terminate tagged test instance",
+      "action": "ec2:TerminateInstances",
+      "decision": "allowed"
+    },
+    {
+      "case": "Reject unrelated instance",
+      "action": "ec2:TerminateInstances",
+      "decision": "implicitDeny"
+    },
+    {
+      "case": "Reject IAM mutation",
+      "action": "iam:CreateRole",
+      "decision": "implicitDeny"
+    },
+    {
+      "case": "Reject attaching cleanup role to EC2",
+      "action": "iam:PassRole",
+      "decision": "implicitDeny"
+    }
+  ],
+  "coldAuthorizationReview": "Approved; complete rental cleanup still requires observed released state",
+  "actualOperationsPassed": [
+    "create tagged security group",
+    "restrict SSH ingress to GCP test VM",
+    "import task SSH public key",
+    "allocate one tagged mac2.metal host",
+    "create and read back recurring host release schedule",
+    "launch tagged Mac instance with encrypted EBS",
+    "create and read back exact-instance termination schedule",
+    "SSH to macOS from isolated GCP and bootstrap pinned test runtime",
+    "native and real-account macOS acceptance tests",
+    "remove task credential copies and stop task native services/tunnels"
+  ],
+  "cleanup": {
+    "terminationTime": "2026-11-02T11:38:49.524770+00:00",
+    "releaseStart": "2026-11-02T11:50:49.524770+00:00",
+    "releaseEnd": "2026-11-02T19:48:49.524770+00:00",
+    "releaseIntervalMinutes": 15,
+    "taskCredentialCopiesRemoved": true,
+    "rentalAutologinPasswordRemoved": true,
+    "instanceState": "shutting-down",
+    "remainingVolumeCount": 1,
+    "hostState": "available",
+    "cleanupCheckedAt": "2026-11-01T14:14:06.606580+00:00",
+    "securityGroupDeleted": null,
+    "keyDeleted": true,
+    "terminationScheduleDeleted": null,
+    "hostReleaseScheduleEnabled": true,
+    "gcpTemporaryMacAccessFilesRemoved": true,
+    "gcpRedisBridgeStopped": true,
+    "gcpTemporaryMacFirewallRuleDeleted": true,
+    "gcpDevelopmentVmRetained": true,
+    "securityGroupCleanupScheduleEnabled": true,
+    "releaseAndSecurityGroupSchedulesSelfDelete": true,
+    "providerTeardownPending": true
+  },
+  "macImplementationComplete": true,
+  "physicalMacTestsRun": false,
+  "launchPermissionDryRunPassed": true,
+  "hostRented": true,
+  "instanceState": "shutting-down",
+  "sshFromIsolatedGcpPassed": true,
+  "os": {
+    "version": "15.8",
+    "build": "24H23",
+    "architecture": "arm64"
+  },
+  "credentialFreeBootstrapPassed": true,
+  "runtime": {
+    "node": "24.22.2",
+    "python": "3.9.6",
+    "singBox": "1.14.4"
+  },
+  "applicationEvidence": "native-final-macos.json",
+  "finalReview": "native-final-cold-review.json"
+}
