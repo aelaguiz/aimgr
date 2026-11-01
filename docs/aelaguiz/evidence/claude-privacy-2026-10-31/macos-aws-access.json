@@ -53,7 +53,8 @@
     "allocate one tagged mac2.metal host",
     "create and read back recurring host release schedule",
     "launch tagged Mac instance with encrypted EBS",
-    "create and read back exact-instance termination schedule"
+    "create and read back exact-instance termination schedule",
+    "SSH to macOS from isolated GCP and bootstrap pinned test runtime"
   ],
   "cleanup": {
     "terminationTime": "2026-11-02T11:38:49.524770+00:00",
@@ -65,5 +66,17 @@
   "physicalMacTestsRun": false,
   "launchPermissionDryRunPassed": true,
   "hostRented": true,
-  "instanceState": "running"
+  "instanceState": "running",
+  "sshFromIsolatedGcpPassed": true,
+  "os": {
+    "version": "15.8",
+    "build": "24H23",
+    "architecture": "arm64"
+  },
+  "credentialFreeBootstrapPassed": true,
+  "runtime": {
+    "node": "24.22.2",
+    "python": "3.9.6",
+    "singBox": "1.14.4"
+  }
 }
