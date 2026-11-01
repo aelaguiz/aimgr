@@ -208,6 +208,7 @@ export async function publishMaintainedCredential({
       credential: storedCredential,
       identity: stableIdentity,
       policy: {
+        ...(currentCredential?.policy?.egress ? { egress: currentCredential.policy.egress } : {}),
         expect: isObject(account.expect) ? account.expect : {},
         reauth,
         browser: buildSharedBrowserPolicy(account.browser),

@@ -1,3 +1,4 @@
+import { prepareClaudeNativeRoute, nativeProxyEnvironment } from "../network/claude-native-route.js";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -663,6 +664,8 @@ export async function runClaudeCliNoninteractive({
   resolveInstalledClaudeSecurityAdapterImpl = resolveInstalledClaudeSecurityAdapter,
   spawnImpl = spawn,
   killProcessGroupImpl = process.kill,
+  egressProfile,
+  prepareClaudeNativeRouteImpl = prepareClaudeNativeRoute,
 } = {}) {
   const resolvedCwd = normalizedAbsolute(cwd);
   if (!resolvedCwd) {
@@ -699,10 +702,17 @@ export async function runClaudeCliNoninteractive({
     return Object.freeze({ status: null, signal: null, timedOut: true });
   }
   const effectiveTimeoutMs = Math.max(1, Math.min(timeoutMs, remaining));
+  const operationDeadline = Date.now() + effectiveTimeoutMs;
   const detached = platform !== "win32";
-  const child = spawnImpl(prepared.command, args, {
+  const invocation = egressProfile
+    ? await prepareClaudeNativeRouteImpl({ profile: egressProfile, command: prepared.command, args, platform, signal, deadlineMs: operationDeadline })
+    : { command: prepared.command, args };
+  if (signal?.aborted || Date.now() >= operationDeadline) return Object.freeze({ status: null, signal: null, timedOut: true });
+  const child = spawnImpl(invocation.command, invocation.args, {
     stdio: ["ignore", "pipe", "pipe"],
-    env: buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
+    env: egressProfile
+      ? nativeProxyEnvironment(buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }))
+      : buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
     cwd: resolvedCwd,
     detached,
     shell: false,
@@ -787,7 +797,7 @@ export async function runClaudeCliNoninteractive({
     timeoutTimer = setTimeout(() => {
       timedOut = true;
       terminate();
-    }, effectiveTimeoutMs);
+    }, Math.max(1, operationDeadline - Date.now()));
     timeoutTimer.unref?.();
     if (signal?.aborted) onAbort();
     else signal?.addEventListener?.("abort", onAbort, { once: true });
@@ -805,6 +815,8 @@ export async function runClaudeCli({
   signal = null,
   registerProcessControl = null,
   preparedLaunch = null,
+  egressProfile,
+  prepareClaudeNativeRouteImpl = prepareClaudeNativeRoute,
   prepareClaudeCliLaunchImpl = prepareClaudeCliLaunch,
   spawnImpl = spawn,
 } = {}) {
@@ -833,9 +845,15 @@ export async function runClaudeCli({
     throw new Error("Claude launch requires a completed managed preflight.");
   }
 
-  const child = spawnImpl(process.execPath, buildSupervisorArgs(prepared, args), {
+  const supervisorArgs = buildSupervisorArgs(prepared, args);
+  const invocation = egressProfile
+    ? await prepareClaudeNativeRouteImpl({ profile: egressProfile, command: process.execPath, args: supervisorArgs, signal })
+    : { command: process.execPath, args: supervisorArgs };
+  const child = spawnImpl(invocation.command, invocation.args, {
     stdio: ["inherit", "inherit", "inherit", "ipc"],
-    env: buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
+    env: egressProfile
+      ? nativeProxyEnvironment(buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }))
+      : buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
     cwd: resolvedCwd,
   });
   if (child?.error) throw child.error;

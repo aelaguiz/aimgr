@@ -1,0 +1,168 @@
+{
+  "checkedAt": "2026-11-01",
+  "platform": "Linux GCP test VM only",
+  "node": "24.22.2",
+  "claude": "2.1.316",
+  "fullRegression": {
+    "tests": 633,
+    "passed": 625,
+    "failed": 0,
+    "skipped": 8,
+    "durationMs": 129137.818846,
+    "log": "optional-full-suite.txt",
+    "skips": "7 opt-in cases covered separately (native and real accounts rerun; unchanged Chrome/SSH/telemetry evidence retained) and 1 Mac-only baseline case still unverified"
+  },
+  "focused": {
+    "passed": 143,
+    "failed": 0,
+    "log": "optional-focused-v5.txt"
+  },
+  "native": {
+    "passed": true,
+    "durationMs": 94093.72486,
+    "log": "optional-native-full-v2.txt",
+    "receipts": [
+      {
+        "transition": {
+          "oldWriterStopped": true,
+          "failedInstallClosed": true,
+          "failedVerificationClosed": true,
+          "historyPreserved": true
+        }
+      },
+      {
+        "startupFailure": {
+          "phase": "tunnel-down",
+          "code": 1,
+          "message": "aim: Claude protected: assigned proxy is unavailable. Claude cannot start or continue. Repair the proxy/tunnel, then explicitly retry or resume (test_a).",
+          "protectedChildStarted": false,
+          "protectedRequests": 0,
+          "ordinaryAccountLaunched": true
+        }
+      },
+      {
+        "nativeRoutineReceipts": [
+          {
+            "fireKey": "native--2026-10-31T07-00+0000",
+            "outcome": "completed",
+            "selectedAccount": "a",
+            "promptAdmitted": true,
+            "initialTurn": "idle",
+            "exitCode": 0,
+            "nativeExit": 0,
+            "needsAttention": false
+          },
+          {
+            "fireKey": "native--2026-10-31T07-01+0000",
+            "outcome": "needs_attention",
+            "selectedAccount": "a",
+            "promptAdmitted": true,
+            "initialTurn": "uncertain",
+            "exitCode": 1,
+            "nativeExit": 125,
+            "needsAttention": true
+          },
+          {
+            "fireKey": "native--2026-10-31T07-02+0000",
+            "outcome": "completed",
+            "selectedAccount": "a",
+            "promptAdmitted": true,
+            "initialTurn": "idle",
+            "exitCode": 0,
+            "nativeExit": 0,
+            "needsAttention": false
+          }
+        ]
+      },
+      {
+        "startupFailure": {
+          "phase": "adapter-down",
+          "code": 125,
+          "message": "Claude account protected, proxy test_a unavailable during run: CalledProcessError. Repair the proxy/tunnel, then explicitly retry or resume.",
+          "protectedChildStarted": false,
+          "protectedRequests": 0,
+          "ordinaryAccountLaunched": true
+        }
+      }
+    ]
+  },
+  "realStartup": {
+    "checkedAt": "2026-11-01T03:00:45.550Z",
+    "label": "proxy5",
+    "proxy": "proxy5",
+    "exitCode": 1,
+    "error": "aim: Claude proxy5: assigned proxy is unavailable. Claude cannot start or continue. Repair the proxy/tunnel, then explicitly retry or resume (proxy5).",
+    "durationMs": 1144,
+    "nativeCgroupEmpty": true,
+    "localChromeTunnelChanged": false
+  },
+  "realConcurrency": {
+    "allThreeOverlap": true,
+    "distinctSessions": 3,
+    "sessions": [
+      {
+        "label": "proxy5",
+        "name": "a2",
+        "code": 0,
+        "isError": false,
+        "markerPresent": true,
+        "assignedExitPresent": true,
+        "durationMs": 20597
+      },
+      {
+        "label": "proxy6",
+        "name": "b1",
+        "code": 0,
+        "isError": false,
+        "markerPresent": true,
+        "assignedExitPresent": true,
+        "durationMs": 22038
+      },
+      {
+        "label": "proxy5",
+        "name": "a1",
+        "code": 0,
+        "isError": false,
+        "markerPresent": true,
+        "assignedExitPresent": true,
+        "durationMs": 22052
+      }
+    ]
+  },
+  "realRefresh": {
+    "checkedAt": "2026-11-01T03:01:38.867Z",
+    "label": "proxy5",
+    "accessTokenChanged": true,
+    "refreshTokenChanged": true,
+    "expiryRenewed": true,
+    "assignmentPreserved": true,
+    "identityPreserved": true,
+    "versionBefore": 8,
+    "versionAfter": 10
+  },
+  "realUsage": {
+    "bothAccountsLiveAndSuccessful": true,
+    "assertedBy": "real native refresh preserves the assignment and fresh usage works"
+  },
+  "macOS": "not implemented or verified; rental access blocked",
+  "physicalMacTestsPerformed": false,
+  "humanVerificationChallengeEncountered": false,
+  "privateLogsExported": false,
+  "testLogSha256": {
+    "optional-focused-v5.txt": "d2fdadc7fcbdf0cabcbaeac021929d8752ba405988133b855f6fa9927c5a8230",
+    "optional-full-suite.txt": "d2c5af2ccb565ac116828c821a47921d1b26c609481a89aac0eefd0f59a03f2f",
+    "optional-native-full-v2.txt": "0f342f60054745494234e3b9ed963362d2f09cc24ea95ba3ae2cbc77fe9f19f0",
+    "optional-real-startup.txt": "81b3aed794433829ab511df357599c53083e5e2aa5f456c622fbb96895c4616e",
+    "optional-real-accounts.txt": "c8fe309d30d20a5b3c609f07f2b1a49626486cdfd3886c0a0867d01c99b1e7fc",
+    "optional-lint.txt": "288129b0a980d55ef7c3b31805e629a7e8c03e3539d10d46022a5e219d5a1407"
+  },
+  "postPublicationSanitizationCheck": {
+    "productionSourceChanged": false,
+    "testChange": "Real-account fixture obtains assigned exit and SSH target from private local config instead of hardcoding them.",
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0,
+    "log": "optional-real-private-config.txt",
+    "sha256": "57fe984a296af7726712e00461d3130a6cac8a96de849565203f7f6ee01836ca"
+  }
+}

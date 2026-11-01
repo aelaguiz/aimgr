@@ -1,3 +1,4 @@
+import { readClaudeOfflineBinding, invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -15,7 +16,7 @@ import {
   resolveAimgrClaudeLabelHomeDir,
   resolveClaudeAuthFilePath,
 } from "../../src/io/paths.js";
-import { runCliWithExitCode } from "../helpers/cli-runner.js";
+import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
@@ -73,6 +74,7 @@ function claudeRecord(label, { expiresAtMs = NOW_MS + 4 * 60_000 } = {}) {
     credential,
     identity: buildStableIdentityForCredential("anthropic", credential),
     policy: {
+      egress: { profileRef: "test" },
       expect: { email: emailAddress },
       reauth: { mode: "native-claude" },
       pool: { enabled: true },
@@ -110,7 +112,7 @@ async function setup(records) {
   const client = new FakeRedisClient();
   writeAimgrConfig({
     homeDir: home,
-    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX }, claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } } },
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
   await importCredentialsSnapshot(
@@ -396,7 +398,7 @@ test("auth maintain still fails the run when the coordination store is unavailab
   const home = mkTempHome();
   writeAimgrConfig({
     homeDir: home,
-    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX }, claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } } },
   });
 
   await assert.rejects(
@@ -441,4 +443,77 @@ test("auth maintain durably marks incomplete Codex refresh material under the sh
   const snapshot = await readSnapshot(runtime.store);
   assert.equal(snapshot.credentials[0].policy.reauth.blockedReason, "oauth_reauth_required");
   assert.equal(snapshot.credentials[0].version, 2);
+});
+
+
+test("ordinary Claude maintenance refreshes with no proxy configuration and preserves ordinary environment", async () => {
+  const record = claudeRecord("ordinary");
+  delete record.policy.egress;
+  const runtime = await setup([record]);
+  writeAimgrConfig({ homeDir: runtime.home, config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } } });
+  let runs = 0;
+  try {
+    const result = await runCliWithExitCode(["auth", "maintain", "--home", runtime.home], {
+      nowImpl: () => NOW_MS,
+      env: { HTTPS_PROXY: "http://ordinary.example:3128", DISABLE_TELEMETRY: "0" },
+      connectRedisStoreImpl: runtime.connectRedisStoreImpl,
+      resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+      runClaudeCliNoninteractiveImpl: ({ configDir, egressProfile, env }) => {
+        runs++;
+        assert.equal(egressProfile, null);
+        assert.equal(env.HTTPS_PROXY, "http://ordinary.example:3128");
+        assert.equal(env.DISABLE_TELEMETRY, "0");
+        rotateProjectedClaudeCredential(configDir, { accessToken: "ORDINARY_ROTATED", refreshToken: "ORDINARY_REFRESH_ROTATED", expiresAt: NOW_MS + 7_200_000 });
+        return { status: 0, signal: null, timedOut: false };
+      },
+    });
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /label=ordinary outcome=refreshed/);
+    assert.equal(runs, 1);
+    assert.equal((await readSnapshot(runtime.store)).credentials[0].policy.egress, undefined);
+  } finally { fs.rmSync(runtime.home, { recursive: true, force: true }); }
+});
+
+
+test("maintenance remembers a remotely opted-in account before a failing profile check can expose its old ordinary cache", async () => {
+  const record = claudeRecord("ordinary"); delete record.policy.egress;
+  const runtime = await setup([record]);
+  const deps = { nowImpl: () => NOW_MS, connectRedisStoreImpl: runtime.connectRedisStoreImpl, resolveExecutableOnPathImpl: buildTestClaudeResolver() };
+  try {
+    await runCli(["claude", "run", "ordinary", "--home", runtime.home], { ...deps, runClaudeCliImpl: () => ({ status: 0, signal: null }) });
+    assert.equal(readClaudeOfflineBinding(runtime.home, "ordinary"), null);
+    const current = (await readSnapshot(runtime.store)).credentials[0];
+    assert.equal((await publishCredential(runtime.store, { expectedVersion: current.version, credentialRecord: { ...current, policy: { ...current.policy, reauth: {}, egress: { profileRef: "not-installed" } } }, updatedBy: "explicit-opt-in" })).ok, true);
+    const result = await runCliWithExitCode(["auth", "maintain", "--home", runtime.home], {
+      ...deps, runClaudeCliNoninteractiveImpl: () => { throw new Error("invalid protected config reached child launch"); },
+    });
+    assert.match(result.stdout, /label=ordinary outcome=retryable reason=proxy_unavailable/);
+    assert.deepEqual(readClaudeOfflineBinding(runtime.home, "ordinary"), { required: true, invalidated: true });
+    await assert.rejects(runCli(["claude", "run", "ordinary", "--home", runtime.home], {
+      ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); },
+      runClaudeCliImpl: () => { throw new Error("protected cache reached ordinary child launch"); },
+    }), /cached proxy assignment/);
+  } finally { fs.rmSync(runtime.home, { recursive: true, force: true }); }
+});
+
+
+test("maintenance losing its lease during preflight cannot restore an invalidated protected cache", async () => {
+  const runtime = await setup([claudeRecord("protected")]);
+  let inspected = false;
+  try {
+    const result = await runCliWithExitCode(["auth", "maintain", "--home", runtime.home], {
+      nowImpl: () => NOW_MS,
+      connectRedisStoreImpl: runtime.connectRedisStoreImpl,
+      resolveExecutableOnPathImpl: () => {
+        inspected = true;
+        runtime.client.advanceTime(60_001);
+        invalidateClaudeOfflineBinding(runtime.home, "protected");
+        return process.execPath;
+      },
+      runClaudeCliNoninteractiveImpl: () => { throw new Error("lost lease reached native launch"); },
+    });
+    assert.equal(inspected, true);
+    assert.match(result.stdout, /outcome=retryable reason=lease_release_failed/);
+    assert.deepEqual(readClaudeOfflineBinding(runtime.home, "protected"), { required: true, invalidated: true });
+  } finally { fs.rmSync(runtime.home, { recursive: true, force: true }); }
 });

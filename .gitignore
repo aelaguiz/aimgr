@@ -20,3 +20,8 @@ docs/incidents/*/evidence/
 
 # Python bytecode.
 __pycache__/
+
+# Claude account credentials and private operational evidence.
+docs/aelaguiz/2026-10-31-proxy-claude-accounts-proxy5-proxy6.md
+docs/aelaguiz/CLAUDE_PRIVACY_PROXY_RUNTIME_PRIVATE.md
+docs/aelaguiz/claude-privacy-private-evidence/

@@ -203,7 +203,7 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   const nowMs = Date.now();
   writeAimgrConfig({
     homeDir: home,
-    config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-claude-test" } },
+    config: { claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } }, redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-claude-test" } },
   });
   const store = await connectRedisStore({ client, keyPrefix: "aimgr:status-claude-test" });
   const credential = buildAnthropicClaudeCredential({ expiresAtMs: nowMs + 3_600_000 });
@@ -217,7 +217,7 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
         emailAddress: "boss@example.com",
         organizationUuid: "org_boss",
       },
-      policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } },
+      policy: { egress: { profileRef: "test" }, expect: { email: "boss@example.com" }, pool: { enabled: true } },
       health: { status: "ready", reason: null },
     }],
   });

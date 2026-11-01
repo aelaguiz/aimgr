@@ -1,0 +1,47 @@
+{
+  "reviewDate": "2026-11-01",
+  "reviewer": "optional_privacy_cold_review",
+  "linuxDecision": "Approved for Linux correctness, testing and preservation of existing functionality.",
+  "fullPlanDecision": "Approval withheld: native macOS enforcement, locks, process inventory and acceptance tests are unimplemented/unverified; rental access unavailable.",
+  "ordinaryBaseline": "4ab4af1",
+  "sourceManifest": "optional-reviewed-source-manifest.json",
+  "independentChecks": {
+    "sourceFilesMatched": 46,
+    "verificationLogHashesMatched": 6,
+    "focusedPassed": 143,
+    "regressionTests": 633,
+    "regressionPassed": 625,
+    "regressionFailed": 0,
+    "regressionSkipped": 8,
+    "lintPassed": true,
+    "expandedNativeFixturePassed": true,
+    "realStartupDenialPassed": true,
+    "realConcurrentSessionsRefreshUsagePassed": true
+  },
+  "resolvedFindings": [
+    "ordinary accounts incorrectly required proxies",
+    "cache invalidation silently erased protection",
+    "maintenance projected credentials before remembering opt-in",
+    "lease loss could restore stale cache binding",
+    "same-label provider collisions could hide Claude assignment",
+    "telemetry overlay applied to ordinary accounts",
+    "startup error lacked account identity",
+    "startup child marker initially recorded too late"
+  ],
+  "workflowPreservation": "No remaining concrete Linux defect, material unproven Linux requirement or vetoed workflow reduction found. No unnecessary runtime machinery in optionality correction.",
+  "unverified": [
+    "macOS native routing independent of Claude proxy settings",
+    "macOS protected assignment locks and background process inventory",
+    "actual macOS ordinary installation and applicable T1\u2013T23 tests",
+    "original physical-Mac browser disruption and device-specific cases"
+  ],
+  "publication": "Draft PR only; no full-plan completion claim.",
+  "publicationFollowup": {
+    "reviewed": true,
+    "productionSourceChanged": false,
+    "privateConfigFixtureRerun": "3 passed, zero failed",
+    "knownOperationalMetadataAbsent": true,
+    "privateInventoryIgnored": true,
+    "priorPublicHistoryCleanup": "pending explicit approval; not claimed complete"
+  }
+}

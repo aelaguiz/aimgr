@@ -69,6 +69,7 @@ export async function main(argv, injectedDeps = {}) {
       ? (state, options = {}) => deps.probeUsageSnapshotsByProviderImpl(state, {
           ...options,
           fetchJsonWithTimeoutImpl,
+          homeDir,
           env: options.env ?? deps.env,
         })
       : undefined);

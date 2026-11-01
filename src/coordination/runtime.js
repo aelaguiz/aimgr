@@ -125,6 +125,7 @@ export async function publishRedisCredentialPolicyFromState({
       identity: isObject(currentCredential?.identity) ? currentCredential.identity : {},
       credential,
       policy: {
+        ...(currentCredential?.policy?.egress ? { egress: currentCredential.policy.egress } : {}),
         expect: isObject(account.expect) ? account.expect : {},
         reauth: isObject(account.reauth) ? account.reauth : {},
         browser: buildSharedBrowserPolicy(account.browser),
@@ -193,6 +194,7 @@ export async function publishRedisStateCredential({
       credential,
       identity,
       policy: {
+        ...(currentCredential?.policy?.egress ? { egress: currentCredential.policy.egress } : {}),
         expect: isObject(account.expect) ? account.expect : {},
         reauth: isObject(account.reauth) ? account.reauth : {},
         browser: buildSharedBrowserPolicy(account.browser),

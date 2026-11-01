@@ -1,0 +1,26 @@
+{
+  "checkedAt": "2026-11-01T02:58:00Z",
+  "status": "blocked",
+  "rentalCreated": false,
+  "charges": 0,
+  "service": "AWS EC2 Mac",
+  "profile": "configured AWS role",
+  "provisioningDecisions": {
+    "ec2:AllocateHosts": "implicitDeny",
+    "ec2:RunInstances": "implicitDeny",
+    "ec2:TerminateInstances": "implicitDeny",
+    "ec2:ReleaseHosts": "implicitDeny"
+  },
+  "cleanupRoleAttempt": "iam:CreateRole AccessDenied",
+  "rootProfile": "login expired",
+  "defaultProfile": "read-only",
+  "alternativeConfiguredRentalCredentialsFound": false,
+  "availableOffering": {
+    "type": "mac2.metal",
+    "region": "us-east-1",
+    "hostUsdPerHour": 0.65,
+    "minimumHours": 24
+  },
+  "physicalMacTestingPerformed": false,
+  "nativeMacImplementationComplete": false
+}

@@ -16,6 +16,7 @@ export const HARNESS_CREDENTIAL_SCHEMA_VERSION = 1;
 export const HARNESS_CREDENTIAL_FRESHNESS_FLOOR_MS = 5 * 60_000;
 
 export const HARNESS_CREDENTIAL_ERROR_DETAILS = Object.freeze({
+  proxy_unavailable: Object.freeze({ message: "The assigned Claude proxy is unavailable or not configured.", action: "Repair the assigned proxy, then explicitly resume this session." }),
   helper_unavailable: Object.freeze({
     message: "The AIM credential helper is unavailable.",
     action: "Verify the installed AIM executable and retry.",
@@ -326,6 +327,7 @@ function mapClaudeMaintenanceResult(result) {
   if (result?.outcome === "refreshed" || result?.outcome === "unchanged") return;
   if (result?.outcome === "reauth_required") fail("reauth_required");
   if (result?.reason === "lease_busy") fail("lease_busy");
+  if (result?.reason === "proxy_unavailable") fail("proxy_unavailable");
   if (result?.reason === "client_timeout" || result?.reason === "client_signaled") fail("helper_timeout");
   if (result?.reason === "credential_missing" || result?.reason === "refresh_material_missing") {
     fail("credential_incomplete");

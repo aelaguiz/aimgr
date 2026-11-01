@@ -21,11 +21,13 @@ export function buildCoordinationView(snapshot, { localState = null, provider = 
   const providerScope = normalizeProviderId(provider);
   state.targets = local.targets;
   state.pool = local.pool;
+  state.accountsByProvider = {};
 
   for (const record of snapshot?.credentials ?? []) {
     if (providerScope && record.provider !== providerScope) continue;
     state.accounts[record.label] = {
       provider: record.provider,
+      ...(record.policy?.egress ? { egress: structuredClone(record.policy.egress) } : {}),
       expect: record.policy?.expect ?? {},
       reauth: record.policy?.reauth ?? {},
       browser: {
@@ -34,6 +36,8 @@ export function buildCoordinationView(snapshot, { localState = null, provider = 
       },
       pool: record.policy?.pool ?? { enabled: true },
     };
+    state.accountsByProvider[record.provider] ??= {};
+    state.accountsByProvider[record.provider][record.label] = state.accounts[record.label];
     if (hasCredentialMaterial(record.credential)) {
       state.credentials[record.provider] = state.credentials[record.provider] ?? {};
       state.credentials[record.provider][record.label] = record.credential;

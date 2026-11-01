@@ -1,3 +1,4 @@
+import { rememberClaudeProtection } from "../../network/claude-offline-binding.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import {
   closeRedisRuntime,
@@ -150,6 +151,7 @@ async function handleOAuthMaintain(context) {
   };
   try {
     for (const record of sortedMaintenanceRecords(runtime.snapshot)) {
+      if (record.provider === ANTHROPIC_PROVIDER) rememberClaudeProtection(homeDir, record.label, record);
       let maintenanceResult = null;
       if (
         !hasLoadedCredential(record)

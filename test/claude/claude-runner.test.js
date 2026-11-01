@@ -501,6 +501,7 @@ test("managed Claude runner waits for supervisor pause and resume acknowledgemen
       control = value;
     },
   });
+  await new Promise(setImmediate);
   assert.ok(control);
   assert.equal(await control.pause(), true);
   assert.equal(await control.resume(), true);

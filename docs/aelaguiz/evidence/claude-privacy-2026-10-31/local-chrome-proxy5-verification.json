@@ -1,0 +1,14 @@
+{
+  "checkedAt": "2026-11-01T01:02:10.315Z",
+  "account": "proxy5",
+  "host": "existing local Mac",
+  "browser": "original Chrome instance; exact version retained privately",
+  "checkUrl": "https://api.ipify.org?format=json",
+  "existingClaudeTab": true,
+  "newLoginAttempt": false,
+  "newBrowserProcess": false,
+  "profileSettingsChanged": false,
+  "originalPageTargetsPreserved": true,
+  "temporaryCheckTabClosed": true,
+  "observedExitMatchedAssignment": true
+}

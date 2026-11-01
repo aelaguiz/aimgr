@@ -1,0 +1,41 @@
+{
+  "checkedAt": "2026-11-01T01:29:56.838Z",
+  "receipts": [
+    {
+      "label": "proxy5",
+      "name": "a1",
+      "startedAt": 1793496578775,
+      "finishedAt": 1793496596076,
+      "code": 0,
+      "signal": null,
+      "stopReason": "end_turn",
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true
+    },
+    {
+      "label": "proxy6",
+      "name": "b1",
+      "startedAt": 1793496578786,
+      "finishedAt": 1793496596829,
+      "code": 0,
+      "signal": null,
+      "stopReason": "end_turn",
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true
+    },
+    {
+      "label": "proxy5",
+      "name": "a2",
+      "startedAt": 1793496578780,
+      "finishedAt": 1793496596837,
+      "code": 0,
+      "signal": null,
+      "stopReason": "end_turn",
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true
+    }
+  ]
+}
