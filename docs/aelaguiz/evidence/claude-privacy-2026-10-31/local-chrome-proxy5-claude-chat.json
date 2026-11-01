@@ -1,0 +1,11 @@
+{
+  "checkedAt": "2026-11-01T01:05:53.958Z",
+  "account": "proxy5",
+  "browser": "Chrome/156.0.8078.74",
+  "browserHost": "existing local Mac",
+  "request": "Reply with exactly: proxy5 browser check passed.",
+  "response": "proxy5 browser check passed.",
+  "challengeObserved": false,
+  "originalBrowserReused": true,
+  "ownedTestTabClosed": true
+}

@@ -1,0 +1,11 @@
+{
+  "checkedAt": "2026-11-01T01:37:27.616974+00:00",
+  "request": "HEAD https://claude.com/cai/oauth/authorize",
+  "proxy": "proxy5",
+  "statusLine": "HTTP/2 307 ",
+  "redirectOrigin": "https://claude.ai",
+  "redirectPath": "/oauth/authorize",
+  "contentType": null,
+  "contentLength": null,
+  "method": "Unauthenticated public first-hop header check via assigned SOCKS; no account or OAuth query."
+}

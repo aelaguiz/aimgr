@@ -1,3 +1,5 @@
+import { ClaudeRouteError } from "../../src/network/claude-egress-policy.js";
+import { getAnthropicCredentialView } from "../../src/credentials/anthropic.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -931,7 +933,8 @@ test("canonical credential lineage, identity, and generation gate provider work"
 test("credential generation invalidates cached auth status after an authoritative Redis update", async () => {
   const { homeDir, client, connectRedisStoreImpl } = await setup([anthropicRecord("ready")]);
   const seenTokens = [];
-  const fetchClaudeUsageSnapshotImpl = async ({ accessToken }) => {
+  const fetchClaudeUsageSnapshotImpl = async ({ record }) => {
+      const accessToken = getAnthropicCredentialView(record.credential).access;
     seenTokens.push(accessToken);
     return successSnapshot();
   };
@@ -1037,7 +1040,8 @@ test("limited usage is readable and expired provider windows back off", async ()
     selectedLabels: ["limited", "expired-window"],
     nowMs: NOW_MS,
     connectRedisStoreImpl,
-    fetchClaudeUsageSnapshotImpl: async ({ accessToken }) => {
+    fetchClaudeUsageSnapshotImpl: async ({ record }) => {
+      const accessToken = getAnthropicCredentialView(record.credential).access;
       calls += 1;
       return accessToken.includes("limited")
         ? successSnapshot(100)
@@ -1236,7 +1240,8 @@ test("provider-index reads reject records stored under inconsistent Redis keys",
 test("Claude OAuth usage never falls back to claude.ai cookies", async () => {
   const calls = [];
   const result = await fetchClaudeUsageSnapshot({
-    accessToken: "ACCESS_SECRET_MUST_NOT_ESCAPE",
+    record: { ...anthropicRecord("ready"), policy: { egress: { profileRef: "proxy5" } } },
+    profiles: { proxy5: { socksPort: 1085, expectedExits: ["127.0.0.2"] } },
     timeoutMs: 1000,
     allowWebFallback: true,
     env: {
@@ -1473,4 +1478,32 @@ test("a running session's own usage reading replaces the provider request and ke
   assert.equal(cached.accounts[0].source, "cache");
   assert.equal(cached.accounts[0].usage.windows[0].usedPercent, 70);
   assert.equal(calls, 2);
+});
+
+
+test("cached route failures remain visible and cannot select another account", async () => {
+  const { homeDir, connectRedisStoreImpl } = await setup([anthropicRecord("a"), anthropicRecord("b")]);
+  const live = await collectClaudeRedisAccountUsageStatus({
+    homeDir, connectRedisStoreImpl, nowMs: NOW_MS, fresh: true,
+    fetchClaudeUsageSnapshotImpl: async ({ record }) => {
+      if (record.label === "a") throw new ClaudeRouteError("proxy_exit_mismatch", { label: "a" });
+      return successSnapshot();
+    },
+  });
+  const cached = await collectClaudeRedisAccountUsageStatus({
+    homeDir, connectRedisStoreImpl, nowMs: NOW_MS + 1,
+    fetchClaudeUsageSnapshotImpl: async () => { throw new Error("must use cache"); },
+  });
+  assert.equal(cached.requestCount, 0);
+  for (const result of [live, cached]) {
+    const a = result.accounts.find((account) => account.label === "a");
+    assert.equal(a.authState, "proxy_exit_mismatch");
+    assert.equal(a.errorKind, "proxy_exit_mismatch");
+    for (const select of [selectLeastUsedUnlockedClaudeAccount, selectClaudeAccountForSession]) {
+      assert.throws(() => select(result, { preset: "opus" }), { code: "proxy_exit_mismatch" });
+    }
+    assert.match(renderClaudeRedisAccountUsageStatus(result), /PROXY ERROR/);
+    a.locked = true;
+    assert.match(renderClaudeRedisAccountUsageStatus(result), /PROXY ERROR/);
+  }
 });

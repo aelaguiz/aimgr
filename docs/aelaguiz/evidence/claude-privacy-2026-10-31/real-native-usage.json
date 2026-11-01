@@ -1,0 +1,20 @@
+{
+  "sourceReceipt": "/home/aimdev/verification/real-refresh-bqGWeg/usage.private.json",
+  "checkedAtMs": 1793496986650,
+  "freshRequested": true,
+  "requestCount": 2,
+  "accounts": [
+    {
+      "label": "proxy5",
+      "source": "live",
+      "usageOk": true,
+      "errorKind": null
+    },
+    {
+      "label": "proxy6",
+      "source": "live",
+      "usageOk": true,
+      "errorKind": null
+    }
+  ]
+}

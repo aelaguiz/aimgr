@@ -1,0 +1,11 @@
+{
+  "client": "Claude Code 2.1.316 linux x64",
+  "binarySha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "gateSourceSha256": "12340198cecd2251282e7e3c6a8ace7fb1781af13e08ac794fe5dd2820538a21",
+  "entrypoint": "tSe → Z_i → mts → HTn.sender → f",
+  "collector": "https://browser-intake-us5-datadoghq.com/api/v2/logs",
+  "positiveEligibleReporterEnabled": true,
+  "optedOutReporterEnabled": false,
+  "downstreamChecksAfterOptOut": 0,
+  "method": "Extract and execute the unchanged pinned reporter admission function with eligible prerequisite stubs; verify its collector call chain in shipped source. No live upload or binary modification."
+}

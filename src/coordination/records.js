@@ -1,3 +1,4 @@
+import { normalizeEgressPolicy } from "../network/claude-egress-policy.js";
 import { AIMGR_REDIS_DEFAULT_KEY_PREFIX } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 
@@ -36,6 +37,8 @@ export function normalizeMetaRecord(record = {}, { now = new Date().toISOString(
 function normalizeCredentialPolicy(source) {
   const policy = isObject(source.policy) ? source.policy : {};
   return {
+    ...(policy.egress != null || source.egress != null
+      ? { egress: normalizeEgressPolicy(policy.egress ?? source.egress) } : {}),
     expect: isObject(policy.expect) ? policy.expect : isObject(source.expect) ? source.expect : {},
     reauth: isObject(policy.reauth) ? policy.reauth : isObject(source.reauth) ? source.reauth : {},
     browser: isObject(policy.browser) ? policy.browser : isObject(source.browser) ? source.browser : {},

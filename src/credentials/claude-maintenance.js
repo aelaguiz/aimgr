@@ -1,3 +1,5 @@
+import { ClaudeRouteError } from "../network/claude-egress-policy.js";
+import { resolveNativeAccountProfile } from "../network/claude-native-route.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { parseExpiresAtToMs } from "../core/time.js";
@@ -43,6 +45,7 @@ const MAINTENANCE_ARGS = Object.freeze([
   "/usage",
 ]);
 const RETRY_REASONS = new Set([
+  "proxy_unavailable",
   "client_failed",
   "client_signaled",
   "client_timeout",
@@ -134,6 +137,7 @@ function overlayClaudeAccountFromRecord(runtime, label, record, localBrowserBind
   const policy = isObject(record?.policy) ? record.policy : {};
   const account = {
     provider: ANTHROPIC_PROVIDER,
+    ...(isObject(policy.egress) ? { egress: structuredClone(policy.egress) } : {}),
     expect: structuredClone(isObject(policy.expect) ? policy.expect : {}),
     reauth: structuredClone(isObject(policy.reauth) ? policy.reauth : {}),
     browser: {
@@ -489,6 +493,7 @@ export async function maintainRedisClaudeCredential(context, {
         let launchError = null;
         try {
           launchResult = await runNoninteractiveImpl({
+            egressProfile: resolveNativeAccountProfile({ homeDir, state: runtime.state, label: normalizedLabel }),
             command,
             userHomeDir: homeDir,
             homeDir: claudeHome,
@@ -523,8 +528,10 @@ export async function maintainRedisClaudeCredential(context, {
           });
         }
 
-        const launchRetryReason = launchError
-          ? "client_failed"
+        const launchRetryReason = launchError instanceof ClaudeRouteError || launchResult?.status === 125
+          ? "proxy_unavailable"
+          : launchError
+            ? "client_failed"
           : launchResult?.timedOut === true
             ? "client_timeout"
             : typeof launchResult?.signal === "string"

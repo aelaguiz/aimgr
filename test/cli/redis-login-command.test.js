@@ -28,10 +28,11 @@ function token(accountId, exp = Math.floor(Date.now() / 1000) + 3600) {
 async function seedLoginRedis({ home, client, keyPrefix, credentialRecord }) {
   writeAimgrConfig({
     homeDir: home,
-    config: { redis: { url: "redis://fake:6379", keyPrefix } },
+    config: { redis: { url: "redis://fake:6379", keyPrefix }, claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"], chrome: { cdpPort: 9355, userDataDir: "/synthetic/chrome" } } } },
   });
   const store = await connectRedisStore({ client, keyPrefix });
   if (credentialRecord) {
+    if (credentialRecord.provider === "anthropic") credentialRecord.policy = { ...credentialRecord.policy, egress: { profileRef: "test" } };
     await importCredentialsSnapshot(
       store,
       { credentials: [credentialRecord] },
@@ -326,13 +327,15 @@ test("Redis generic Anthropic login uses contained file staging and publishes wi
       assert.equal(configDir, path.join(stagingHome, ".claude"));
       assert.equal(fs.existsSync(stagingHome), false);
     }),
+    validateClaudeChromeImpl: async () => {},
     runClaudeCliImpl: ({ userHomeDir, homeDir, configDir, args, env, preparedLaunch }) => {
       assert.equal(userHomeDir, home);
       assert.equal(homeDir, stagingHome);
       assert.equal(configDir, path.join(stagingHome, ".claude"));
       assert.equal(preparedLaunch.configDir, configDir);
       assert.deepEqual(args, ["auth", "login", "--claudeai"]);
-      assert.equal(env.BROWSER, undefined);
+      assert.match(env.BROWSER, /claude-login-browser\.mjs$/);
+      assert.equal(JSON.parse(env.AIMGR_CLAUDE_LOGIN_PROFILE).profileRef, "test");
       assert.equal(env.DISPLAY, undefined);
       assert.equal(env.WAYLAND_DISPLAY, undefined);
       writeStagedClaudeLogin(configDir, {
@@ -388,6 +391,7 @@ test("Redis generic Anthropic login enrolls an exact-empty policy candidate", as
       keyPrefix: "aimgr:claude-candidate-login-test",
     }),
     resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    validateClaudeChromeImpl: async () => {},
     runClaudeCliImpl: ({ configDir }) => {
       writeStagedClaudeLogin(configDir, {
         accessToken: "CANDIDATE_ACCESS",
@@ -417,7 +421,7 @@ test("Redis generic Anthropic login enrolls an exact-empty policy candidate", as
   assert.equal(snapshot.credentials[0].health.status, "ready");
 });
 
-test("Redis generic login enrolls an unknown Anthropic label in one flow", async () => {
+test("Redis generic login requires an explicit proxy assignment before a new Anthropic login", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedLoginRedis({
@@ -429,7 +433,7 @@ test("Redis generic login enrolls an unknown Anthropic label in one flow", async
   const answers = ["2", " New@Example.com "];
   const prompts = [];
 
-  const stdout = await runCli(["login", "fresh", "--home", home], {
+  const deps = {
     connectRedisStoreImpl: () => connectRedisStore({
       client,
       keyPrefix: "aimgr:claude-unknown-login-test",
@@ -439,6 +443,7 @@ test("Redis generic login enrolls an unknown Anthropic label in one flow", async
       return answers.shift();
     },
     resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    validateClaudeChromeImpl: async () => {},
     runClaudeCliImpl: ({ configDir }) => {
       writeStagedClaudeLogin(configDir, {
         accessToken: "UNKNOWN_ACCESS",
@@ -449,7 +454,10 @@ test("Redis generic login enrolls an unknown Anthropic label in one flow", async
       });
       return { status: 0, signal: null };
     },
-  });
+  };
+  await assert.rejects(runCli(["login", "fresh", "--home", home], deps), { code: "missing_proxy_assignment" });
+  await runCli(["claude", "proxy", "set", "fresh", "test", "--home", home], deps);
+  const stdout = await runCli(["login", "fresh", "--home", home], deps);
 
   const result = JSON.parse(stdout.slice(stdout.indexOf("{")));
   assert.equal(result.ok, true);
@@ -461,7 +469,7 @@ test("Redis generic login enrolls an unknown Anthropic label in one flow", async
   ]);
   const snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials.length, 1);
-  assert.equal(snapshot.credentials[0].version, 2);
+  assert.equal(snapshot.credentials[0].version, 3);
   assert.equal(snapshot.credentials[0].policy.expect.email, "new@example.com");
   assertCanonicalAnthropicCredential(snapshot.credentials[0], "UNKNOWN_REFRESH");
   assert.equal(fs.existsSync(resolveClaudeLoginStagingHome(home, "fresh")), false);
@@ -485,6 +493,7 @@ test("Redis generic Anthropic login repairs a partial candidate with a fresh log
       keyPrefix: "aimgr:claude-partial-login-test",
     }),
     resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    validateClaudeChromeImpl: async () => {},
     runClaudeCliImpl: ({ configDir }) => {
       writeStagedClaudeLogin(configDir, {
         accessToken: "REPAIRED_ACCESS",
@@ -518,7 +527,8 @@ test("Redis generic Anthropic enrollment rejects identity policy drift and clean
         keyPrefix: "aimgr:claude-candidate-drift-test",
       }),
       resolveExecutableOnPathImpl: buildTestClaudeResolver(),
-      runClaudeCliImpl: ({ configDir }) => {
+      validateClaudeChromeImpl: async () => {},
+    runClaudeCliImpl: ({ configDir }) => {
         writeStagedClaudeLogin(configDir, {
           accessToken: "DRIFT_ACCESS",
           refreshToken: "DRIFT_REFRESH",
@@ -570,6 +580,7 @@ test("Redis generic Anthropic enrollment cleans staging after publish uncertaint
       keyPrefix: "aimgr:claude-candidate-recovery-test",
     }),
     resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    validateClaudeChromeImpl: async () => {},
     runClaudeCliImpl: ({ configDir }) => {
       launchCalls += 1;
       writeStagedClaudeLogin(configDir, {
@@ -621,7 +632,8 @@ test("Redis generic Anthropic login rejects wrong identity and removes staging",
         keyPrefix: "aimgr:claude-login-identity-test",
       }),
       resolveExecutableOnPathImpl: buildTestClaudeResolver(),
-      runClaudeCliImpl: ({ configDir }) => {
+      validateClaudeChromeImpl: async () => {},
+    runClaudeCliImpl: ({ configDir }) => {
         writeStagedClaudeLogin(configDir, {
           accessToken: "OTHER_ACCESS",
           refreshToken: "OTHER_REFRESH",
@@ -674,7 +686,8 @@ test("Redis generic Anthropic login cancellation cleans staging", async () => {
         keyPrefix: "aimgr:claude-login-cancel-test",
       }),
       resolveExecutableOnPathImpl: buildTestClaudeResolver(),
-      runClaudeCliImpl: () => ({ status: 1, signal: null }),
+      validateClaudeChromeImpl: async () => {},
+    runClaudeCliImpl: () => ({ status: 1, signal: null }),
     }),
     /cancelled or failed/,
   );
@@ -717,6 +730,7 @@ test("Redis generic Anthropic login reacquires its lease after a long browser wa
       keyPrefix: "aimgr:claude-login-long-wait-test",
     }),
     resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    validateClaudeChromeImpl: async () => {},
     runClaudeCliImpl: ({ configDir }) => {
       client.advanceTime(DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS + 1);
       writeStagedClaudeLogin(configDir, {

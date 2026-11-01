@@ -1,0 +1,42 @@
+{
+  "reviewDateCentral": "2026-10-31",
+  "reviewer": "final_native_privacy_review",
+  "decision": "Approved: Linux implementation and testing complete for the agreed scope; ready to commit and push.",
+  "scope": [
+    "AI Manager",
+    "native Claude Code on the Linux development VM",
+    "existing local account-specific Chrome for real sign-in"
+  ],
+  "reviewedSourceManifestSha256": "d3fd6f77ddb140b6480cd3fb3a3fc1ac91e0555df034fb0b33e4e2f2081d7f6a",
+  "evidenceIndependentlyInspected": [
+    "612 regression tests passed; zero failed; seven skips accounted for by separate opt-in runs and the deferred Mac case",
+    "Six transport tests and five final assignment/cache/lock tests passed",
+    "Native integration passed model/tools, Agent subagent during A1/A2/B concurrency, instructions, hooks, stdio MCP, history/resume/fork, background work, outage shutdown, explicit recovery, schedules without duplicate replay, transition failure/recovery",
+    "Actual sacrificial accounts: original local Chrome OAuth, overlapping A1/A2/B model/Bash through assigned exits, refresh preserving identity/assignment, both fresh usage results live and successful without errors",
+    "Native analytics and browser collector positive controls; reproducible pinned native binary error-reporter suppression proof",
+    "Source/VM correspondence checked; the final assertion-only fresh-usage test change was reviewed and its assertions checked against the captured response"
+  ],
+  "resolvedFindings": [
+    "hung-proxy usage classification",
+    "local background/cached-session reassignment races",
+    "stale cache restoration",
+    "transition denial assertions requiring exit 125",
+    "activation commands stopping on failures and validating live usage JSON"
+  ],
+  "workflowPreservation": "Reviewer found no vetoed workflow reduction or excluded hardening. Concurrency, tools, context, history, resume/forks, hooks/MCP, routines and eligible cached launches are preserved.",
+  "excluded": [
+    "Pi",
+    "Prime",
+    "OpenClaw",
+    "extra Chrome firewall/controller and adversarial browser-bypass hardening"
+  ],
+  "deferred": [
+    "Native Mac verification and disruptive local browser tests together with Amir after commit/push",
+    "Final disposal/revocation of retained test credentials and environment under its separately authorized scope"
+  ],
+  "postReviewBookkeeping": {
+    "finalSourceManifestMatches": 44,
+    "sourceCodeChangesAfterApproval": false,
+    "evidenceAndPlanStatusUpdated": true
+  }
+}

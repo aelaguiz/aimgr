@@ -1,0 +1,161 @@
+{
+  "checkedAt": "2026-11-01T01:46:30.562316+00:00",
+  "baseRevision": "4ab4af1bf56fc01228c297f71c5bf68b7ff6d091",
+  "environment": {
+    "hostname": "aimgr-privacy-dev",
+    "os": "Ubuntu 24.04 x86_64",
+    "node": "24.22.2",
+    "claude": "2.1.316",
+    "singBox": "1.14.4",
+    "localAccountChrome": "156.0.8078.74"
+  },
+  "results": {
+    "aim-full-reviewed.txt": [
+      "\ufe63 launchBrowserBindingForUrl passes chrome profile-directory through to Google Chrome (0.29945ms) # SKIP",
+      "\ufe63 existing separate Chrome instances keep account routes/state and fail on tunnel loss (1.254785ms) # SKIP",
+      "\ufe63 native A1/A2/B route without proxy variables and stop when the tunnel process exits (1.390456ms) # SKIP",
+      "\ufe63 real native Claude keeps A1/A2/B concurrent through their assigned exits (1.28514ms) # SKIP",
+      "\ufe63 real native refresh preserves the assignment and fresh usage works (0.262025ms) # SKIP",
+      "\ufe63 actual OpenSSH preserves origin errors and stops the operation on tunnel loss (1.389393ms) # SKIP",
+      "\ufe63 native telemetry positive control and opt-out preserve functional requests (1.42001ms) # SKIP",
+      "\u2139 tests 619",
+      "\u2139 suites 0",
+      "\u2139 pass 612",
+      "\u2139 fail 0",
+      "\u2139 cancelled 0",
+      "\u2139 skipped 7",
+      "\u2139 todo 0",
+      "\u2139 duration_ms 60148.067677"
+    ],
+    "review-usage-final.txt": [
+      "\u2714 usage and automatic selection distinguish hung SOCKS from a healthy route with a stalled origin (2612.6518ms)",
+      "\u2714 usage preserves a tunnel failure after headers instead of reporting malformed JSON (89.542932ms)",
+      "\u2714 assignment survives Redis normalization and state projection without machine data (5.226513ms)",
+      "\u2714 concurrent A1/A2/B requests, remote DNS, streaming, outage and explicit recovery (583.392328ms)",
+      "\u2714 SOCKS receives standard HTTPS and explicit custom destination ports (24.466321ms)",
+      "\u2714 request cancellation interrupts the initial route check without poisoning another request (5.962951ms)",
+      "\u2139 tests 6",
+      "\u2139 suites 0",
+      "\u2139 pass 6",
+      "\u2139 fail 0",
+      "\u2139 cancelled 0",
+      "\u2139 skipped 0",
+      "\u2139 todo 0",
+      "\u2139 duration_ms 3884.510635"
+    ],
+    "review-assignment-final.txt": [
+      "\u2714 proxy reassignment refuses surviving local children and invalidates its old offline binding (552.165264ms)",
+      "\u2714 proxy setter refuses an active launcher, preserves credential writes, and round-trips assignment (262.91193ms)",
+      "\u2714 local assignment fence permits shared cached sessions and excludes only their account's setter (494.527575ms)",
+      "\u2714 local assignment lock loss aborts its cached session and releases the holder (213.093946ms)",
+      "\u2714 proxy setter winning the lease prevents admission until the new assignment is published (161.867669ms)",
+      "\u2139 tests 5",
+      "\u2139 suites 0",
+      "\u2139 pass 5",
+      "\u2139 fail 0",
+      "\u2139 cancelled 0",
+      "\u2139 skipped 0",
+      "\u2139 todo 0",
+      "\u2139 duration_ms 2681.604457"
+    ],
+    "native-complete-final.txt": [
+      "\u2714 native A1/A2/B route without proxy variables and stop when the tunnel process exits (101611.74195ms)",
+      "\u2139 tests 1",
+      "\u2139 suites 0",
+      "\u2139 pass 1",
+      "\u2139 fail 0",
+      "\u2139 cancelled 0",
+      "\u2139 skipped 0",
+      "\u2139 todo 0",
+      "\u2139 duration_ms 102144.883968"
+    ],
+    "ssh-telemetry.txt": [
+      "ok 1 - actual OpenSSH preserves origin errors and stops the operation on tunnel loss",
+      "ok 2 - native telemetry positive control and opt-out preserve functional requests",
+      "ok 3 - assignment survives Redis normalization and state projection without machine data",
+      "ok 4 - concurrent A1/A2/B requests, remote DNS, streaming, outage and explicit recovery",
+      "ok 5 - request cancellation interrupts the initial route check without poisoning another request",
+      "# tests 5",
+      "# pass 5",
+      "# fail 0",
+      "# skipped 0",
+      "# duration_ms 30440.329334"
+    ],
+    "resumed-native-chrome.txt": [
+      "\u2714 existing separate Chrome instances keep account routes/state and fail on tunnel loss (17760.722565ms)"
+    ],
+    "real-native-accounts.txt": [
+      "\u2714 real native Claude keeps A1/A2/B concurrent through their assigned exits (18099.280939ms)",
+      "\u2139 tests 1",
+      "\u2139 suites 0",
+      "\u2139 pass 1",
+      "\u2139 fail 0",
+      "\u2139 cancelled 0",
+      "\u2139 skipped 0",
+      "\u2139 todo 0",
+      "\u2139 duration_ms 18334.476983"
+    ],
+    "real-native-refresh.txt": [
+      "\u2714 real native refresh preserves the assignment and fresh usage works (6758.890131ms)",
+      "\u2139 tests 1",
+      "\u2139 suites 0",
+      "\u2139 pass 1",
+      "\u2139 fail 0",
+      "\u2139 cancelled 0",
+      "\u2139 skipped 0",
+      "\u2139 todo 0",
+      "\u2139 duration_ms 7502.588486"
+    ]
+  },
+  "nativeTransitionAndRoutines": [
+    {
+      "transition": {
+        "oldWriterStopped": true,
+        "failedInstallClosed": true,
+        "failedVerificationClosed": true,
+        "historyPreserved": true
+      }
+    },
+    {
+      "nativeRoutineReceipts": [
+        {
+          "fireKey": "native--2026-10-31T07-00+0000",
+          "outcome": "completed",
+          "selectedAccount": "a",
+          "promptAdmitted": true,
+          "initialTurn": "idle",
+          "exitCode": 0,
+          "nativeExit": 0,
+          "needsAttention": false
+        },
+        {
+          "fireKey": "native--2026-10-31T07-01+0000",
+          "outcome": "needs_attention",
+          "selectedAccount": "a",
+          "promptAdmitted": true,
+          "initialTurn": "uncertain",
+          "exitCode": 1,
+          "nativeExit": 125,
+          "needsAttention": true
+        },
+        {
+          "fireKey": "native--2026-10-31T07-02+0000",
+          "outcome": "completed",
+          "selectedAccount": "a",
+          "promptAdmitted": true,
+          "initialTurn": "idle",
+          "exitCode": 0,
+          "nativeExit": 0,
+          "needsAttention": false
+        }
+      ]
+    }
+  ],
+  "nativeAnalytics": {
+    "positiveCollectorRequests": 2,
+    "optOutCollectorRequests": 0,
+    "collector": "/api/event_logging/v2/batch",
+    "functionalRequestsPreserved": true,
+    "source": "ssh-telemetry.txt"
+  }
+}

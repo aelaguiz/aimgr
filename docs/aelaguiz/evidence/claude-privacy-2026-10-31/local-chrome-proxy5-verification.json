@@ -1,0 +1,21 @@
+{
+  "checkedAt": "2026-11-01T01:02:10.315Z",
+  "account": "proxy5",
+  "host": "existing local Mac",
+  "browser": "Chrome/156.0.8078.74",
+  "chromePid": 2938,
+  "userDataDir": "/Users/aelaguiz/Library/Application Support/Chrome proxy5",
+  "cdpEndpoint": "http://127.0.0.1:9355",
+  "socksEndpoint": "socks5://127.0.0.1:1085",
+  "sshPid": 8305,
+  "sshRemote": "34.1.26.166:22",
+  "checkUrl": "https://api.ipify.org?format=json",
+  "expectedExit": "34.1.26.166",
+  "browserObservedExit": "34.1.26.166",
+  "existingClaudeTab": true,
+  "newLoginAttempt": false,
+  "newBrowserProcess": false,
+  "profileSettingsChanged": false,
+  "originalPageTargetsPreserved": true,
+  "temporaryCheckTabClosed": true
+}

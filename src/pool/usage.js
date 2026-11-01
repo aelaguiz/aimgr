@@ -1,3 +1,7 @@
+import os from "node:os";
+import { readAimgrConfig } from "../config/aimgr-config.js";
+import { createClaudeAccountTransport } from "../network/claude-transport.js";
+import { ClaudeRouteError } from "../network/claude-egress-policy.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../core/constants.js";
 import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { buildCodexCredentialFingerprint } from "../credentials/codex.js";
@@ -278,6 +282,42 @@ export function buildClaudeUsageWindows(data) {
 }
 
 export async function fetchClaudeUsageSnapshot({
+  label,
+  state,
+  record,
+  homeDir = os.homedir(),
+  profiles = readAimgrConfig({ homeDir }).config.claudeProxyProfiles,
+  timeoutMs = 8000,
+  fetchJsonWithTimeoutImpl = fetchJsonWithTimeout,
+  createClaudeAccountTransportImpl = createClaudeAccountTransport,
+}) {
+  const operationState = record ? {
+    accounts: { [record.label]: { provider: record.provider, egress: record.policy?.egress } },
+    credentials: { anthropic: { [record.label]: record.credential } },
+  } : state;
+  const operation = createClaudeAccountTransportImpl({ label: record?.label ?? label, state: operationState, profiles, timeoutMs });
+  try {
+    const credential = getAnthropicCredentialView(operation.credential);
+    if (!credential?.access) throw new Error("Claude usage requires account credentials.");
+    const result = await fetchClaudeUsageWithTransport({
+      accessToken: credential.access,
+      timeoutMs,
+      fetchJsonWithTimeoutImpl: (url, init, timeout) => fetchJsonWithTimeoutImpl(url, init, timeout, { fetchImpl: operation.fetch }),
+    });
+    // JSON parsing also reports body-read errors. Preserve a terminal route
+    // failure even when the usage parser classified that error as malformed.
+    if (operation.failure) throw operation.failure;
+    return result;
+  } catch (error) {
+    // The request's own deadline can expire while SOCKS admission or route
+    // validation is still pending. Establish route health before classifying
+    // that as an ordinary API timeout, so selection cannot hide a proxy outage.
+    if (!operation.failure) await operation.check();
+    throw operation.failure ?? error;
+  } finally { await operation.close(); }
+}
+
+async function fetchClaudeUsageWithTransport({
   accessToken,
   timeoutMs,
   fetchJsonWithTimeoutImpl = fetchJsonWithTimeout,
@@ -305,7 +345,8 @@ export async function fetchClaudeUsageSnapshot({
       if (typeof raw === "string" && raw.trim()) {
         message = raw.trim();
       }
-    } catch {
+    } catch (error) {
+      if (error?.name === "AbortError" || error?.name === "TimeoutError" || error instanceof ClaudeRouteError) throw error;
       // ignore parse errors
     }
 
@@ -323,7 +364,8 @@ export async function fetchClaudeUsageSnapshot({
   let data;
   try {
     data = await res.json();
-  } catch {
+  } catch (error) {
+    if (error?.name === "AbortError" || error?.name === "TimeoutError" || error instanceof ClaudeRouteError) throw error;
     return {
       provider: ANTHROPIC_PROVIDER,
       ok: false,
@@ -360,7 +402,7 @@ export function getCodexUsagePercents(snapshot) {
   };
 }
 
-export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeoutImpl = fetchJsonWithTimeout } = {}) {
+export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeoutImpl = fetchJsonWithTimeout, homeDir = os.homedir(), profiles } = {}) {
   ensureStateShape(state);
   const usageByProvider = {
     [OPENAI_CODEX_PROVIDER]: {},
@@ -386,6 +428,7 @@ export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeou
             ok: false,
             status: "error",
             error: String(err?.message ?? err),
+            ...(err instanceof ClaudeRouteError ? { routeError: { code: err.code, label: err.label, profileRef: err.profileRef } } : {}),
           };
         }
       })(),
@@ -399,7 +442,7 @@ export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeou
       (async () => {
         try {
           usageByProvider[ANTHROPIC_PROVIDER][label] = await fetchClaudeUsageSnapshot({
-            accessToken: cred.access,
+            label, state, homeDir, profiles,
             timeoutMs: 8000,
             allowWebFallback: false,
             fetchJsonWithTimeoutImpl,
@@ -410,6 +453,7 @@ export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeou
             ok: false,
             status: "error",
             error: String(err?.message ?? err),
+            ...(err instanceof ClaudeRouteError ? { routeError: { code: err.code, label: err.label, profileRef: err.profileRef } } : {}),
           };
         }
       })(),
@@ -573,4 +617,10 @@ export async function collectCodexUsageSnapshots({
     [OPENAI_CODEX_PROVIDER]: resolvedCodex,
     [ANTHROPIC_PROVIDER]: {},
   };
+}
+
+export function assertNoClaudeRouteErrors(usageByLabel) {
+  for (const entry of Object.values(usageByLabel ?? {})) {
+    if (entry?.routeError) throw new ClaudeRouteError(entry.routeError.code, entry.routeError);
+  }
 }

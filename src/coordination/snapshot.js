@@ -26,6 +26,7 @@ export function buildCoordinationView(snapshot, { localState = null, provider = 
     if (providerScope && record.provider !== providerScope) continue;
     state.accounts[record.label] = {
       provider: record.provider,
+      ...(record.policy?.egress ? { egress: structuredClone(record.policy.egress) } : {}),
       expect: record.policy?.expect ?? {},
       reauth: record.policy?.reauth ?? {},
       browser: {

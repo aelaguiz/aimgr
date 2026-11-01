@@ -1,0 +1,561 @@
+# Claude privacy and per-account office proxies
+
+Created: 2026-10-30. Revised: 2026-10-31. Owner: AI Manager implementation owner. Status: Linux implementation and end-to-end testing complete; final cold review approved on 2026-10-31 Central. Real sign-in used the existing local Chrome instances. Stop immediately if the site actually presents a human-verification challenge; embedded CAPTCHA components alone do not trigger a stop. Native Mac verification remains deferred until the reviewed, verified Linux code is committed and pushed, then tested with Amir.
+
+**Current product scope: AI Manager, native Claude Code, and the existing account-specific Chrome instances.** Amir does not use Pi, Prime, or OpenClaw; their integrations, repositories, tests, and rollout are outside this project. Remove code added solely for those integrations. The earlier experimental consumer work is not a release dependency or a completion requirement.
+
+This is the single current plan. It replaces the earlier investigation's conflicting proposals and review amendments. Earlier recommendations to remove workflows are withdrawn, not deferred requirements.
+
+**Required browser workflow: existing local Chrome → existing local SSH SOCKS tunnel → assigned proxy VM → Claude.** The supplied accounts already use **Chrome Proxy 5 and Chrome Proxy 6 on Amir's Mac**, each with its own persistent data directory and CDP endpoint. Sign-in must use those exact existing instances. Preserve the browser host, profile, cookies, tabs, and settings; do not substitute fresh profiles, Linux Chrome, headless Chrome, or user-agent overrides. A matching proxy exit alone does not preserve the browser footprint. Section 4.3 records the configuration and the live check.
+
+**The GCP development VM and the proxy VMs have different jobs.** The development VM runs the Linux implementation and client tests. The existing proxy VMs carry the assigned outbound traffic. The development VM is not a replacement browser host. “Test on the GCP VM” does not relocate the user's existing sign-in browser. Linux synthetic browser fixtures may exercise mock services with fake accounts; they must never be promoted into real-account sign-in environments. The earlier shared-profile experiments and later real-account sign-ins from fresh VM browsers used the wrong baseline.
+
+**Scope correction agreed with Amir:** trust those configured Chrome instances to use their fixed SOCKS proxies. An additional Chrome OS firewall, cgroup/controller service, custom browser, and tests in which Chrome deliberately ignores its proxy are out of scope. Verify the existing route and its failure behavior, and use the correct CDP endpoint for login. Amir's distrust of Claude's own proxy configuration does not extend to this separately configured Chrome setup. This correction removes extra machinery, not the requirement to keep the normal/home IP away from Anthropic or to fail closed when a tunnel/proxy fails.
+
+The supplied [two sacrificial Claude accounts and their proxy5/proxy6 assignments](2026-10-31-proxy-claude-accounts-proxy5-proxy6.md) are the account inventory for this work. **Never use these accounts from Amir's normal/home IP, including browser sign-in, authentication, refresh, usage checks, or model requests.** Use each account only through its documented assigned proxy after the applicable route and fail-closed mock tests below pass. The inventory contains credentials: keep it out of source packages, logs, and mock-only test environments; it is locally excluded from Git staging. Moving the document does not authorize account use or connectivity checks.
+
+## 1. Requirements, assumptions, and non-requirements
+
+The intended result is to use Claude normally, with each account's Anthropic traffic forced through its assigned office proxy and unwanted Anthropic telemetry removed. **A tunnel, proxy, or enforcement failure must leave affected Claude sessions unable to communicate with Anthropic.** Stop those sessions and report the failure; never open another route.
+
+### Requirements
+
+| Requirement | Required outcome |
+| --- | --- |
+| R1 — Normal workflow | Preserve normal commands, execution machines, writable projects, permission mode, model/effort, terminal behavior, and account handoffs. Browser sign-in uses the existing local account-specific Chrome instance and its existing footprint. No daily proxy flags, exports, project copies, replacement browser environment, or new tool approvals. |
+| R2 — Sessions and integrations | Preserve simultaneous sessions, including multiple sessions on one account; subagents; existing history/resume/forks; memory/instructions; skills/hooks/MCP/plugins; routines; and status. |
+| R3 — Anthropic IP protection | Anthropic must not see the normal/home public IP through model, auth/refresh, usage, maintenance, enabled features, or native background processes and AI Manager HTTP requests. Browser sign-in is covered from its first Anthropic request. Vendor-hosted services collecting for Anthropic count as Anthropic recipients. |
+| R4 — Per-account assignment | Different accounts can use different proxies concurrently. Keep the assignment through login, refresh, resume, and machine handoff. Multiple accounts may intentionally share a proxy profile; there is no implicit default. |
+| R5 — Routing ownership | AI Manager owns account/transport pairing. Native Claude requires routing outside Claude's own proxy configuration. The existing Chrome instances are trusted to honor their fixed SOCKS configuration; validate their profile/CDP/tunnel binding before login. No extra Chrome firewall or hypothetical browser-bypass protection is required. |
+| R6 — Fail closed | On tunnel/proxy/enforcement failure, deny affected Anthropic communication through detection, session shutdown, component restart, and recovery. No direct fallback, alternate proxy/account, automatic switchover, silent reconnect, or replay of the interrupted work. Healthy routes continue. |
+| R7 — Telemetry and content | Suppress unwanted Anthropic telemetry. Preserve normal task context without redaction: paths, source, Git context, instructions, memories, conversations, and tool output. Accepting task context does not authorize background telemetry to upload it separately. |
+| R8 — Accepted simplifications | Use per-account transports in existing HTTP request functions, without new HTTP worker processes. Reuse existing account record versioning. Allow incidental proxy use by non-Anthropic traffic. Use one scheduled stop/update/resume transition. |
+| R9 — Development isolation | Run Linux implementation and client tests on the isolated GCP development VM, with its separate disposable Redis, synthetic content, and only the two supplied sacrificial accounts. Their real browser sign-ins retain the existing local Chrome instances and assigned proxy routes. The requested local browser/route check is authorized; native macOS implementation verification remains out of scope until Linux verification, cold review, commit, and push, followed by the joint Mac test. |
+
+The only accepted workflow exceptions are feature losses caused by telemetry opt-out, visible stops on proxy/tunnel/enforcement failure, and the scheduled transition. No other reduction is approved. Preserve the baseline that actually works today; the [Herdr compatibility plan](../AIMGR_HERDR_COMPATIBILITY_PLAN_2026-10-29.md) identifies unfinished restoration work that this project must not misrepresent as an existing feature.
+
+### Assumptions and engineering decisions
+
+- **Unwanted telemetry** means optional background analytics, operational/error reporting, and automatic diagnostic/transcript uploads for Anthropic. Model traffic, requested usage, login, and task results are functional. Explicit user-submitted feedback remains a deliberate action; it still uses the enforced route.
+- **Existing Redis-outage behavior stays.** Eligible cached launches use the last validated assignment. Existing lease uncertainty still pauses/reconciles sessions, and confirmed lease loss stops them. A disconnected machine cannot learn an assignment changed elsewhere; immediate offline revocation is not promised.
+- **The proxy must support the real workload.** Protocols, credentials, public exits, streaming, concurrency, latency, and proxy limits need staging measurements. No new concurrency cap, numerical latency promise, or recurring authorization lease is implied.
+- **Reuse the existing local account-specific Chrome instances and tunnels.** Chrome Proxy 5/6 already have separate process trees, data directories, and local SOCKS routes on Amir's Mac. Bind login to those CDP endpoints. Preserve existing browser state and the browser's normal environment; copying cookies to another host is not equivalent. AI Manager HTTP requests use account-bound transports. Native Mac runtime and disruptive local browser/tunnel tests belong to the later joint test.
+- **Implementation has resumed with the corrected browser workflow.** Amir authorized proceeding with full Linux implementation and verification using the existing local account Chrome instances. Use only the GCP development VM for Linux clients, its separate test Redis, and the two sacrificial accounts. No other Claude accounts, production Redis, or unrelated user sessions may be used. Finish end-to-end tests and cold review, commit/push, then test the Mac implementation together with Amir. Do not provision a hosted Mac. Production adoption remains the separately scheduled transition.
+- **Stop immediately when the site presents an actual human-verification challenge.** During browser checks, sign-in, or account tests, stop all implementation/test work and tell Amir what action preceded the challenge, which existing browser/account was used, and what appeared. Do not retry, switch browser/profile/host, try to clear the challenge, ask him to solve it while continuing other work, or continue unrelated implementation. Discuss the observation and wait for his direction. This applies to visible hCaptcha puzzles, Cloudflare requests to verify that the user is human, and similar challenges. Amir clarified that merely loading an hCaptcha script or iframe on an otherwise normal page is not a stop condition. Normal sign-in and consent may proceed until the site actually requests human verification.
+
+### Non-requirements and accepted risks
+
+- Preventing independent services such as Figma, GitHub, Redis, databases, and package registries from receiving their normal data is outside scope. Preserve their functionality; their precise prior route need not be preserved.
+- Malicious tools, deliberate credential theft, and privileged tampering are accepted risks. Do not add hostile-code sandboxes, a credential broker, a replacement credential store, or credential-export bans for those threats. Ordinary routing/configuration failures remain covered.
+- Chrome ignoring its validated fixed proxy, hostile browser extensions, and deliberate tampering with its settings are outside scope. Do not add a Chrome OS firewall, cgroup isolation, routing controller, custom browser, replacement profiles, or adversarial browser-bypass tests. Preserve the existing DNS/WebRTC/QUIC settings and test ordinary routing and tunnel loss.
+- Replacing the real sign-in browser with a VM browser, a headless browser, or a fresh profile is outside scope. No fingerprint-spoofing system is requested: retain the actual configured local browser. Synthetic Linux browser fixtures carry no real account credentials, cookies, or sign-in links.
+- Do not redact task content, anonymize paths, strip Git context, isolate shared memory, sanitize old conversations, or create neutral production workspaces. Preventing correlation through accepted content is not a goal.
+- Do not build global DNS privacy, universal SSH/Redis/UDP tunnels, arbitrary filesystem/IPC restrictions, or general data-loss prevention. DNS must not create an Anthropic bypass, but unrelated DNS disclosure is outside scope.
+- Do not build standby proxies, automatic failover, hot assignment migration, or extended mixed-version compatibility. The one scheduled transition does not become a permanent stop-all upgrade rule.
+- Do not require remote production execution, TLS interception, custom inspection CAs, API-body rewriting, or per-account HTTP workers. The separate prohibition on Anthropic artifacts remains in force.
+
+## 2. What must change in AI Manager
+
+The current launcher preserves the user's environment, project, memory, integrations, and permission mode. Keep those behaviors. The missing capability is a common account-bound network path, with native Claude routing outside its own configuration and reuse of the existing fixed-proxy Chrome instances.
+
+| Existing owner | Current behavior and planned responsibility |
+| --- | --- |
+| [Credential records](../../src/coordination/records.js), [snapshots](../../src/coordination/snapshot.js), [runtime publication](../../src/coordination/runtime.js), [login publication](../../src/coordination/login-publish.js) | Policy normalization retains a fixed set of fields. Add and preserve the route assignment through every reader/writer using the existing record version. |
+| [Account shape](../../src/state/account-shape.js), [state schema](../../src/state/schema.js), [local state](../../src/state/local-state.js) | Carry the validated non-secret assignment into the existing cache; preserve current eligible cached launches. |
+| [Claude runner](../../src/targets/claude-runner.js), [supervisor](../../src/targets/claude-supervisor.js), [Claude command](../../src/cli/commands/claude.js) | Keep argv, cwd, HOME, config directories, overlays, TTY, and transcripts; attach the route before launch and terminate affected sessions on route failure. |
+| [Machine leases](../../src/targets/claude-machine-lease.js), [native credential projection](../../src/targets/claude-cli.js) | Keep shared same-account sessions and freshness/refresh coordination; do not serialize conversation lifetimes. |
+| [Usage](../../src/pool/usage.js), [HTTP requests](../../src/io/fetch.js), [Claude status](../../src/status/claude-redis-view.js), [general status](../../src/status/redis-view.js) | Usage currently accepts a token and calls fetch separately from routing. Bind the token and request transport together; retain cached/fresh status behavior. |
+| [Harness selection](../../src/cli/commands/harness-target.js), [watcher](../../src/pool/watch.js), [Hermes rebalance](../../src/pool/hermes-rebalance.js) | Cover indirect Anthropic usage probes and propagate route errors without automatic substitution. |
+| [Login](../../src/cli/commands/login.js), [browser launch](../../src/browser/launch.js), [browser bindings](../../src/browser/bindings.js), [maintenance](../../src/credentials/claude-maintenance.js), [auth command](../../src/cli/commands/auth.js) | Bind login to the account's existing dedicated Chrome instance/CDP endpoint and tunnel. The current Claude login deletes `BROWSER`, while the generic browser-binding setter rejects Claude labels; repair this wiring rather than assuming the default browser is the intended account browser. Apply telemetry and enforced routing to native staging, handoff, refresh, and maintenance. |
+| [Shared memory](../../src/targets/claude-shared-memory.js), [project consent](../../src/targets/claude-project-consent.js), [sessions](../../src/targets/claude-sessions.js), [transcript rekeying](../../src/targets/claude-transcript-rekey.js), [recovery](../../src/targets/claude-session-recovery.js) | Preserve context, trust, old transcripts, account forks, and resume hints. |
+| [Routine launch](../../src/routines/run.js), [routine lifecycle](../../src/routines/claude.js), [session usage](../../src/status/claude-session-usage.js), [status-line tap](../../src/targets/claude-statusline-tap.sh) | Keep schedules, overlap rules, lifecycle hooks, interactive follow-up, and user status lines. |
+| [Redis operations](../../src/cli/commands/redis.js), [local installer](../../scripts/install-local-bin.sh), [fleet installer](../../scripts/sync-fleet.sh) | Preserve supported administration and use the coordinated transition in section 8. Existing installers do not already provide its activation guarantees. |
+
+The source inventory is for the current working tree, which includes unrelated edits. Implementation must use a reviewed source revision and preserve those changes. The request owners in scope are native Claude, account Chrome sign-in, and AI Manager’s own auth/maintenance/usage calls.
+
+## 3. Account and request contract
+
+### 3.1 One account assignment, no parallel policy system
+
+Proposed shared schema:
+
+```json
+{
+  "policy": {
+    "egress": {
+      "profileRef": "office-a"
+    }
+  }
+}
+```
+
+`profileRef` is a non-empty named local profile, normalized to lowercase and validated as `[a-z0-9][a-z0-9_-]*` everywhere; reserve `default` and `direct` so neither implies a fallback. Missing, malformed, or unresolved assignment is an error before any protected network request. There is no `required: false`, direct mode, shell-derived default, or fallback profile for participating Claude accounts. Non-Anthropic providers retain their existing behavior.
+
+A local profile resolves that name to exactly one assigned upstream route, its authentication secret reference, its required tunnel/interface, and its allowed public exit addresses. **The supplied routes are SSH SOCKS5 tunnels**, exposed locally on ports 1085 and 1086, with hostname resolution through the assigned proxy. Preserve those routes; an HTTP CONNECT-only schema would not describe the existing setup. Any transport adaptation needed by AI Manager must use the same assigned tunnel, preserve end-to-end TLS, and meet the existing prohibition on new HTTP worker processes. Use a set of approved IPv4/IPv6 addresses or CIDRs if a provider has several exits; do not learn and automatically trust a new exit after a mismatch. Profile installation must bind the logical name to the same approved upstream identity on each participating machine. Exact profile storage and enforcement fields must be recorded in section 4 before account integration.
+
+Proxy credentials stay in protected machine-local storage supported by that mechanism. They must not enter Redis, project files, transcripts, argv, or logs. If a local forwarder is needed, it owns upstream authentication and exposes a credential-free endpoint to clients. Use the existing account/config storage practices; do not invent a new credential platform. Keep end-to-end Anthropic TLS verification enabled.
+
+All policy writers preserve `egress`, including login, token refresh, maintenance, repair, import/export, backups/restores, and machine handoff. Use existing record CAS/version checks. Credential-only updates re-read and preserve the current assignment; stale writes cannot restore an old assignment. Cache only non-secret route data with the existing account identity and version. Do not derive a cache expiry or new policy revision from this feature.
+
+Assign existing accounts during the scheduled transition. For a new account afterward, use the existing `aim redis import --in <file>` policy-only enrollment path: create an Anthropic candidate record with the intended label, `policy.expect.email`, and `policy.egress.profileRef`, without credential or identity material. Install/validate its named local profile before normal `aim login <label>`. An unassigned tokenless label must fail before opening an Anthropic URL; login must not invent a default. Keep the importer's existing refusal to overwrite an existing record. This is one-time account setup, not a daily launch flag.
+
+For existing accounts, add the narrow administration command `aim claude proxy set <label> <profileRef>` in the existing Claude command owner. Validate the profile and update only `policy.egress` through existing record CAS, preserving credentials and other policy. Assignment changes require the agreed stop/update/resume procedure: stop affected native sessions and AI Manager background operations first. The setter’s existing credential lease refuses online native sessions. Its local shared/exclusive file lock also refuses active cached sessions, and its old-profile cgroup check refuses surviving local background work. Do not add a new session registry, lease system, remote termination service, or live stream migration. Resume explicitly after the change. Profile edits use the same procedure. A token-only version change does not stop sessions. Replacing the account identity invalidates old bindings and requires revalidation before new use.
+
+Hold the existing exclusive credential lease across the setter's native-session check, record re-read, and CAS update; do not join the shared session lease for this mutation. Native online launch must re-read the assignment after acquiring or joining its existing lease before creating a binding. A per-account local `flock` closes the cached-launch race: cached sessions take a shared lock before reading the binding, and the setter takes a nonwaiting exclusive lock through its cgroup check, cache invalidation, and publication. Shared locks preserve simultaneous sessions and do not involve unrelated accounts. There is no new distributed registry or policy version. If native launch wins, the setter refuses; if the setter wins, a subsequent admitted native launch sees only the new assignment. Shared clients remain stopped during this operation under the scheduled procedure. The existing cached-launch limitation below remains explicit.
+
+Offline sessions on a disconnected machine keep their last validated assignment under the accepted cache limitation; remote quiescence remains part of the scheduled procedure. A setter on the same machine invalidates its local binding before publication. Non-secret bindings live in per-account files under `~/.aimgr/claude-egress/`, carrying the existing identity and record version; unrelated stale aggregate-state saves cannot recreate them. An online validated launch repopulates the binding. Tests distinguish the accepted remote stale-cache limitation from a local reassignment or old writer restoring the wrong route.
+
+### 3.2 Bind credentials and transport in one operation
+
+Add one internal account-operation helper, owned beside existing coordination/target code, with this contract:
+
+1. Accept the exact account label, operation type, and existing cancellation/deadline context.
+2. Resolve the account identity, credential snapshot, record version, and profile together. Online launches re-read under their existing lease as specified above. Before login, use the intended label's configured profile without requiring a token.
+3. Resolve and check the assigned route before work. Native launch also checks its network boundary; browser login checks the existing Chrome/CDP/SOCKS configuration. Refuse missing or failed bindings.
+4. Give the existing request function a bound request capability, or give the existing native launcher its launch binding. Callers do not supply an unrelated bearer token and dispatcher pair.
+5. Release the operation's transport resources when complete. Native sessions keep a route reference until they exit; releasing one session must not tear down a route another session uses.
+
+For JavaScript HTTP requests, use an explicit proxy-capable fetch/dispatcher compatible with the repository's supported Node versions and the assigned SSH SOCKS5 route. Extend `fetchJsonWithTimeout` through its existing injected fetch interface; retain its timeout, cancellation, response-size limit, and parsing behavior. Choose and pin the supported transport dependency during implementation, and test SOCKS hostname forwarding, any required CONNECT adapter, and end-to-end TLS. Never mutate `process.env`, a process-global dispatcher, or global browser proxy settings to switch between concurrent accounts.
+
+Keep transport pools separated by account identity and resolved profile, so an HTTP/2 connection or cached agent cannot be reused across accounts with different routes. A credential refresh for the same account can reuse that account's healthy transport. Identity or assignment changes invalidate the old operation binding before further requests. Redirects stay on the bound route, retain TLS validation, and never forward authorization to a different origin unless the existing auth protocol explicitly requires it.
+
+**The bound-operation adapter is trusted AI Manager code.** It owns account/credential/profile pairing and does not accept unrelated token/dispatcher pairs. Mock tests establish that A's credential uses A's route and reject mismatches at the adapter boundary. External enforcement separately prevents direct or unapproved egress when client proxy configuration is absent or ignored; native account processes must also be unable to select another account's route. A shared request process may need access to several approved transports, so its OS rule alone cannot verify which bearer token is inside TLS. Do not claim that it can detect an arbitrary pairing bug inside the trusted adapter. Such bugs remain correctness defects to prevent and test, not accepted malicious-tool behavior. This is the trust boundary of the agreed per-request transport design; it does not require new HTTP workers.
+
+Section 4 must establish account attribution for the real browser, native Claude, and AI Manager HTTP operations. Plain proxy configuration supplied by Claude is never that adapter or the independent boundary. An AI Manager request without a reliable account binding must fail before network use.
+
+### 3.3 Launch and browser behavior
+
+The native launch overlay changes only routing and selected telemetry controls. Preserve normal argv, cwd, environment needed by tools, HOME/config locations, permissions, memory, customizations, and trust. Remove conflicting upper/lowercase proxy variables from the generated native environment and set the resolved route consistently in the generated settings. Retain necessary loopback callbacks without making loopback a path to arbitrary external relays. Do not edit project settings or the user's global settings to swap account routes.
+
+The network boundary must cover native self-spawns, subagents, process restarts, already-running background daemons, and Anthropic requests made by supported helpers. A PATH wrapper alone is insufficient: Claude documents background processes launched from a fixed executable and a shared supervisor. Its `processWrapper` integration is a possible launch hook, not an independent enforcement mechanism. Preserve its argument, environment, cwd, stdio, and nested-launch contract. [Claude corporate launcher documentation](https://code.claude.com/docs/en/corporate-launcher).
+
+Before `aim login` opens an Anthropic URL, select the intended account's existing Chrome instance on Amir's Mac and validate its user-data directory, local CDP endpoint, assigned tunnel, and fixed SOCKS configuration. This remains the browser when the test CLI runs on GCP. Do not open the URL in the operating system's default browser or a replacement VM browser. Protect preconnects, redirects, reloads, background browser requests, and collections made for Anthropic, including the very first connection. Preserve the browser host and account state, SSO/MFA/security keys, local callback, and concurrent sign-ins across the separate instances. Do not introduce a replacement profile, copy cookies, serialize logins, or allow a direct exception.
+
+An existing account-browser connection to Anthropic must not be reused for protected sign-in until it is on that account's correct assigned route. Canceling one login releases only that operation. Browser/helper processes may outlive the terminal: the restriction must remain until their protected requests end, or those requests must be blocked. Unrelated tabs remain usable. Reject a mismatched CDP/profile/tunnel binding before navigation; do not add a requirement to place different accounts in one browser profile.
+
+### 3.4 Traffic boundary
+
+| Recipient or activity | Required behavior |
+| --- | --- |
+| Anthropic API, auth, refresh, usage, enabled features | Enforced account route; never direct or another account's route. |
+| Vendor collecting telemetry for Anthropic | Suppress unwanted reports; any deliberate allowed submission remains on the account route. |
+| Independent Figma/Git/package/database/identity-provider request | Preserve functionality; direct or incidental proxy use is acceptable. |
+| A tool result used in the next model request | Preserve its content; send it through the account's enforced route. |
+| Browser, MCP, Docker, IDE, or another shared service contacting Anthropic | Cover the real request process even when it is not a Claude child. |
+
+Do not equate `*.anthropic.com` with the complete recipient set. The official inventory includes auth and feature hosts outside that suffix and vendor-hosted collectors. The selected design must cover unknown/new Anthropic endpoints without permitting an unclassified protected request to go direct. Routing more of an account process's traffic through its proxy is acceptable if tools remain functional. Selective destination routing is justified only when needed for working tools or correct account attribution. [Claude network configuration](https://code.claude.com/docs/en/network-config).
+
+## 4. Routing implementation
+
+Use the existing SSH SOCKS5 tunnels and separate Chrome instances. Integrate account-bound transports into existing JavaScript request functions. Native Claude still needs a network boundary independent of its own proxy settings; this does not justify adding a second boundary around Chrome or rebuilding general machine security. Preserve tools, local services, and the existing permission mode.
+
+### 4.1 Linux verification
+
+Use synthetic accounts A/B, two recording SOCKS proxies, a mock API/OAuth service, and two synthetic Chrome data directories on the GCP VM. These browsers are mock-only fixtures, never real-account browsers. Run A1/A2 concurrently on A and B1 on B. Test simultaneous mock sign-ins, the first request and redirects, preserved synthetic browser state, and wrong CDP/profile selection. Stop one fixture SOCKS listener and its established connections: its browser must fail without direct fallback while the other account continues. Restarting the tunnel must not replay interrupted managed operations. Real sign-in uses the existing local Chrome instances in section 4.3; Linux fixture results do not validate their browser footprint.
+
+Test concurrent A/B requests inside one Node process, including refresh and cancellation. The trusted adapter must keep credentials paired with the assigned transport without global proxy mutation. Test native Claude independently of its environment settings, as required by R5. No test requires Chrome to deliberately ignore its fixed proxy or to withstand hostile extensions or privileged tampering.
+
+### 4.2 Implementation record
+
+Record the selected transport dependency/version, local profile schema, native routing mechanism, AI Manager request owners, and the commands/results for route, concurrency, and outage tests here as implementation proceeds. Keep this practical: no separate feasibility approval, controller framework, or recurring design review is required before writing integration code. Mock verification remains a prerequisite to using the two sacrificial accounts.
+
+| Owner | Implementation requirement |
+| --- | --- |
+| Chrome login | Reuse the existing local Chrome instance's CDP endpoint and fixed SOCKS route, including when the test CLI runs on GCP. Check the binding before navigation and preserve the browser host, profile, cookies, and tabs. Test failures against synthetic fixtures first; disruptive local checks await the joint Mac test. No additional OS firewall or VM sign-in browser. |
+| AI Manager HTTP | Explicit per-account SOCKS transport in the existing request process; retain cancellation, streaming, limits, and TLS verification. |
+| Native Claude | Route independently of Claude's own proxy configuration, preserve subprocess/tool behavior, and stop affected sessions on route failure. |
+| Telemetry | Apply documented opt-outs and verify the reporting paths changed by this implementation. Record resulting feature effects. |
+
+The reviewed implementation is on AI Manager’s `claude-privacy-proxy` branch in `/tmp/aimgr-claude-privacy`. Only this repository is part of the reviewed release. Linux client runtime verification uses the GCP VM; the existing local browser remains the real sign-in surface. Local config uses `claudeProxyProfiles.<profileRef>.socksHost` (loopback), `socksPort`, `expectedExits` (approved public IP addresses), and `chrome: { userDataDir, cdpPort }`. Browser paths/ports identify the browser host's existing instance; the same port number on the development VM is not that instance. Account records store only `policy.egress.profileRef`. AI Manager pins `undici` 6.23.0, `socks` 2.8.10, and `ws` 8.18.3. Requests use SOCKS hostname forwarding and verified TLS in the existing process.
+
+Native Linux routing uses cgroup v2, nftables TCP redirection, and sing-box 1.14.4 connected to the existing SOCKS tunnel. Only native Claude and its descendants enter that cgroup. Chrome retains its existing fixed-proxy arrangement. The native launcher observes the tunnel/adapter process lifetime and terminates affected native sessions on failure; persistent routing has no direct fallback. Installation is a one-time administrative step. HTTP transports retain a local connection to their SOCKS listener so a tunnel restart cannot revive an interrupted operation, including one idle between requests.
+
+Linux evidence is complete for the agreed current scope; native Mac and disruptive local browser verification remain deferred. The automated tests use synthetic credentials and recording origins. Real sign-ins were incorrectly attempted using fresh Chrome profiles on the development VM, through the assigned proxies; both reached hCaptcha. Those attempts were abandoned and do not validate the intended browser workflow. Section 4.3 records the mistake and the subsequent check of the actual local browser. The existing local proxy5 browser chat passes. Both accounts completed actual native CLI OAuth through their existing local Chrome instances on 2026-11-01 UTC (2026-10-31 Central), without a human-verification challenge; identity validation and publication to test Redis passed. `real-native-accounts.txt`: three actual Claude Code sessions passed concurrently (two on proxy5, one on proxy6). Each ran a Bash command and observed its assigned public exit; all three completed successfully in 17–18 seconds. Their simultaneous lifetimes overlapped, with three distinct session IDs. Receipt: `/home/aimdev/verification/real-native-Tfqmv8/receipt.json`. Evidence files below are under `/home/aimdev/verification/` on the VM. Counts describe separate runs, not a combined end-to-end pass.
+
+| Verified behavior | Evidence and result |
+| --- | --- |
+| Real OAuth, model use, refresh and usage | Both actual CLI OAuth logins completed in the original local Chrome profiles. `real-native-accounts.txt` proves overlapping A1/A2/B model/Bash turns with assigned public exits. `real-native-refresh.txt` and `real-refresh-bqGWeg/receipt.json` prove real access/refresh-token rotation, renewed expiry, preserved identity/assignment, and fresh usage for both accounts. The test changes only the expiry hints in disposable Redis and its managed file to make refresh due. |
+| Final usage/reassignment corrections | `review-usage-final.txt`: six transport tests pass, including actual hung SOCKS through usage/status/selection, healthy-route origin stalls before and after headers, and explicit cancellation. Per-account cache/lock and background refusal tests are included in the final AIM regression run. |
+| OAuth first host | `oauth-entrypoint-redirect.json`: unauthenticated `HEAD https://claude.com/cai/oauth/authorize` through proxy5 returns HTTP/2 307 to `https://claude.ai/oauth/authorize`, before document rendering. The existing consent cookie covers the destination. |
+| AIM regression suite | `aim-full-reviewed.txt`: 612 passed, zero failed, seven skipped: six opt-in network/real-account cases exercised separately and one Mac-specific browser-launch case deferred. `aim-lint-final.txt`: syntax checks passed. `review-assignment-final.txt`: all five final assignment/cache/lock-loss tests passed after the full suite. Subsequent assignment-race coverage is in `proxy-setter-races.txt`: two passed. A launch holding the lease prevents reassignment; a setter holding it prevents admission until publication. Stale credential writes cannot restore the old assignment; export/import preserves the current assignment. |
+| HTTP routes | `transport-origin-errors.txt`: four passed. Concurrent A1/A2/B, remote DNS, cross-origin credential stripping, streaming, terminal outage/recovery, standard HTTPS/custom ports, and cancellation. Origin 401/429/503 and a stalled model stream do not terminate a healthy route. `ssh-telemetry.txt` separately includes real local OpenSSH forwarding, destination refusal, and hung-tunnel detection. |
+| Native boundary | `native-binding-adapter-final.txt`: cold installation, admission racing an install, A1/A2/B, real Claude Code 2.1.316 model/Bash round trip, preserved instructions/context, tunnel replacement, hung SSH, paused adapter, background-child cleanup, monitor loss, healthy B, and explicit recovery passed. `aim-installer-login-regression.txt`: 89 affected regression tests passed. `native-expanded-final.txt`: the expanded real-binary/mock-model test passes, including hooks, instructions, Bash, stdio MCP discovery/invocation, saved resume, fork, a three-second healthy exit lookup, A1/A2/B, tunnel and adapter failure, hung components, explicit recovery, and background-child cleanup. The synthetic model uses unique message/tool-call IDs; explicit repair restarts an adapter stopped by the outage monitor. |
+| Final native workflows and transition | `native-complete-final.txt`: passed in 102 seconds. Actual Claude 2.1.316 exercised Bash, instructions, hooks, stdio MCP, saved resume/fork, a real Agent subagent during A1/A2/B concurrency, explicit saved-session resume after repair, background descendants, and all native outage cases. The actual AIM scheduler/selection/lease/worker ran three occurrences against the mock model: completed, interrupted with native exit 125, then independently completed after repair. Duplicate firing did not replay the failed occurrence. Herdr UI and Redis wire are fixtures; unattended print mode is used only by this test. Transition tests stop an old periodic writer, reject an invalid install and a wrong post-install binding, require denied admission to exit 125, and preserve pre-change history. |
+| Synthetic Chrome integration | `chrome-managed-login-final.txt` and `routing-login-consent-final.txt`: Linux fixtures passed concurrent fixed-proxy instances, redirects/state, wrong binding, actual AIM BROWSER helper, loss/replacement of A's fixture tunnel, and cleanup of A's managed tab while other tabs and B remain usable. These are not tests of the existing local Chrome instances. Real Claude starts OAuth at `claude.com/cai/oauth/authorize`; the helper accepts the HTTPS URL supplied by Claude without a separate host allowlist. `resumed-native-chrome.txt`: the updated synthetic Chrome case, including that hostname, passed on 2026-11-01 UTC (2026-10-31 Central). |
+| Review corrections | `review-usage-fix.txt`: all 46 focused usage/routing/planner tests pass, including a real partial-body tunnel drop that remains a route error while malformed JSON and ordinary 401 keep their normal classifications. The old real-site VM browser telemetry script was removed because it retried verification challenges. |
+| Native analytics opt-out | `ssh-telemetry.txt`: real Claude 2.1.316 submitted two `/api/event_logging/v2/batch` batches in the positive control and zero with the selected opt-outs; functional model/settings/policy/MCP-registry requests remained. This proves the exercised analytics path. The distinct error reporter is also verified by `native-error-optout-gate-reproducible.json` and the checked-in `test/network/inspect-native-error-optout.mjs`: on the pinned shipped binary, its log-error/unhandled-rejection/uncaught-exception admission function returns true with eligible prerequisites and false immediately under `DISABLE_ERROR_REPORTING=1`. The script verifies the call chain to the Datadog collector. This is source/instrumentation evidence, not an observed live crash upload. Synthetic TLS fixtures never intercept real account traffic. |
+| Browser telemetry opt-out | `browser-telemetry-final.txt` and `.json`: public, unauthenticated sign-in pages produced seven collector requests in the positive control and zero after setting the site's analytics/marketing consent preferences before navigation. Functional forms, a synthetic JavaScript error, idle, and shutdown were exercised. Never run the positive control on authenticated account profiles. |
+
+Real native OAuth, A1/A2/B concurrency, token refresh, and fresh usage have passed. All implemented Linux acceptance checks pass, and the final cold reviewer approved completion and readiness to commit/push. The next testing step after the reviewed branch is committed and pushed is the joint Mac test. Completing the VM browser challenges is not the next step. The earlier cold review was not final completion approval and did not establish that a new browser footprint was acceptable. The source review found usage-body error classification and an obsolete challenge-retry script; both were corrected. Consumer-only review findings are outside the reduced scope. The expanded native, routine, transition, subagent, and recovery checks now pass; the final cold review approved Linux completion as recorded below.
+
+
+### Linux installation and client integration
+
+The Linux native installer is `scripts/install-claude-proxy-linux.sh`. It checks cgroup v2 and the required utilities, pins sing-box 1.14.4 with its release archive SHA-256, and calls the native installer. An optional second argument supplies the same verified archive for an offline install. Prerequisites on Ubuntu are Python 3, nftables, lsof, sudo/visudo, systemd, curl, tar, sha256sum, and flock. Install only while affected native sessions are stopped; it refuses an active managed cgroup.
+
+The one-time manifest contains the ordinary local username and each profile's loopback SOCKS and unique native redirect ports, for example:
+
+```json
+{"user":"aimdev","profiles":{"proxy5":{"socksHost":"127.0.0.1","socksPort":1085,"redirectPort":16085,"expectedExits":["34.1.26.166"]},"proxy6":{"socksHost":"127.0.0.1","socksPort":1086,"redirectPort":16086,"expectedExits":["35.215.116.120"]}}}
+```
+
+Run `sudo scripts/install-claude-proxy-linux.sh /absolute/path/manifest.json` from the reviewed AI Manager checkout. It installs `/opt/aimgr-claude-proxy`, `aimgr-claude-routing.service`, and one native SOCKS adapter service per profile. The adapters have `Restart=no`; a failure stops affected work. The existing native adapter service checks its complete cgroup → nftables → sing-box → SOCKS path while native work is active, including background descendants, and stops all native work on that profile when a health check fails or the adapter/monitor exits. Its health check has an eight-second deadline and runs every five seconds. Other profiles keep running. A shared/exclusive file lock prevents installation from changing a route while a native launch is being admitted or running. Admission compares the operation’s expected binding again under that lock. Installation stops old adapters before changing configuration/rules and releases its lock before systemd activation, so cold startup cannot deadlock on restore. The persistent nftables route has no direct fallback. Narrow sudoers entries permit the ordinary launcher to inspect its table and attach/stop its own managed cgroups without a daily password prompt. Existing SSH tunnel and Chrome launchers remain the owners of those processes.
+
+### 4.3 Existing local Chrome CDP and proxy configuration, checked 2026-10-31
+
+The supplied account inventory already specifies the relevant browser setup on Amir's Mac. Each account has a standalone **Google Chrome** instance launched with its own `--user-data-dir` and fixed local SOCKS proxy. These are separate Chrome process trees. The browser stays local; the remote proxy VM carries its outbound traffic. The development VM does not replace either local browser.
+
+| Existing component | proxy5 account | proxy6 account |
+| --- | --- | --- |
+| App | `~/Applications/Chrome Proxy 5.app` | `~/Applications/Chrome Proxy 6.app` |
+| Persistent data directory | `~/Library/Application Support/Chrome proxy5` | `~/Library/Application Support/Chrome proxy6` |
+| Local CDP endpoint | `127.0.0.1:9355` | `127.0.0.1:9356` |
+| Fixed browser proxy | `socks5://127.0.0.1:1085` | `socks5://127.0.0.1:1086` |
+| Tunnel | `ssh -N -D 127.0.0.1:1085 proxy5` | `ssh -N -D 127.0.0.1:1086 proxy6` |
+| launchd service | `com.funcountry.proxy5-tunnel` | `com.funcountry.proxy6-tunnel` |
+| Configured remote proxy IP | `34.1.26.166` | `35.215.116.120` |
+| Observed main Chrome PID | `2938` | `2940` |
+| Observed Chrome network-service PID | `2972`, child of `2938` | `2971`, child of `2940` |
+| Observed SSH listener PID | `8305` on `1085` | `8660` on `1086` |
+
+The live process arguments, app launch scripts, launchd plists, SSH host entries, and selected non-secret profile preferences agree on those bindings. Both CDP endpoints and SOCKS endpoints are listening on loopback. PIDs are inspection evidence, not stable configuration identifiers. The installed Chrome helper version is `156.0.8078.74`.
+
+The existing launch flags are configured to disable QUIC and non-proxied WebRTC UDP, disable Chrome sync, and prevent ordinary local DNS resolution while allowing the loopback SOCKS address. `Default/Preferences` also persists the fixed SOCKS proxy, WebRTC restrictions, disabled DNS prefetch, and disabled network prediction. Preserve each account's existing cookies, tabs, and state. CDP is the control endpoint; browser requests continue through that instance's assigned SOCKS tunnel.
+
+Sources: the [supplied account inventory](2026-10-31-proxy-claude-accounts-proxy5-proxy6.md), [proxy-browser runbook](/Users/aelaguiz/workspace/psbrain/knowledge/proxy-browser.md:7), [existing installer](/Users/aelaguiz/workspace/psbrain/scripts/proxy_browser/install_proxy_chrome.sh), and the installed app launchers [Chrome Proxy 5](</Users/aelaguiz/Applications/Chrome Proxy 5.app/Contents/MacOS/chrome-proxy>) and [Chrome Proxy 6](</Users/aelaguiz/Applications/Chrome Proxy 6.app/Contents/MacOS/chrome-proxy>).
+
+The initial inspection only read configuration and process state. At Amir's subsequent explicit request, the live check selected **proxy5** at **2026-10-31 20:02 CDT / 2026-11-01 01:02 UTC**. Chrome PID `2938` was listening on local CDP `9355` with its existing `Chrome proxy5` data directory and fixed SOCKS `1085`. SSH PID `8305` was listening on `1085` and had an established connection to `34.1.26.166:22`. An HTTPS request to `api.ipify.org` from a temporary tab inside that same running Chrome returned **`34.1.26.166`**, exactly the assigned exit. Its existing Claude tab was present. All original page targets and URLs were preserved, and the temporary check tab was closed. No browser was launched, no sign-in was attempted, and no browser settings or tunnel were changed. [Sanitized verification receipt](evidence/claude-privacy-2026-10-31/local-chrome-proxy5-verification.json).
+
+The subsequent Claude check at **2026-10-31 20:05 CDT / 2026-11-01 01:05 UTC** used a fresh chat in that same existing local Chrome Proxy 5. Claude returned `proxy5 browser check passed.` in response to the synthetic test prompt. No CAPTCHA or verification challenge appeared. The temporary test tab was closed and the existing tabs were preserved. [Claude response receipt](evidence/claude-privacy-2026-10-31/local-chrome-proxy5-claude-chat.json).
+
+These checks confirm that the selected existing browser, proxy route, and Claude chat work. They do not mark the deferred native Mac implementation or local tunnel-failure tests as passed. Disruptive tests remain for the later joint session; Linux browser fixtures are restricted to synthetic accounts and mock services.
+
+The separate Chrome instances already provide the required account separation. A custom browser build, new production profiles, shared-profile account routing, and serialized sign-in are outside scope.
+
+Connect managed login to these existing local CDP instances before navigation, including an OAuth flow initiated by a CLI on the development VM. For development, relay that CLI's authorization URL through the private test connection to the actual local browser helper; keep the CLI, token exchange, staging, and test Redis publication on GCP. This test handoff does not require a new production browser service or remote CDP exposure. Both actual cross-machine sign-ins passed. Chrome’s existing DNS settings rejected the `localhost` callback, so the development handoff relayed the completed callback privately to the waiting CLI on GCP, validating the original callback origin/path and OAuth state. No browser settings changed. Proxy5 used a temporary loopback/IAP forward; proxy6 used a private IAP file transfer and the VM’s loopback endpoint. Callback completion for native Mac login remains an explicit item for the deferred joint test, not a claimed pass. Do not copy cookies, create profiles, launch browsers on the VM, or change browser identity to make the test pass. Use synthetic fixtures for simultaneous mock A/B sign-ins, A1/A2 sessions, wrong bindings, existing connections, tunnel loss, and restart. Existing launchd services restart SSH tunnels; interrupted managed operations must remain terminal and require explicit resume after a tunnel returns.
+
+**Record of the incorrect VM-browser sign-in attempts:** fresh Linux Chrome profiles were created on the development VM with account-specific SOCKS routes. Headless Chrome first encountered a Cloudflare protection page; visible Chrome on a virtual display was then used. CLI OAuth attempts were restarted while correcting the helper's handling of Claude's authorization URL. CDP automation signed into the two Proton mailboxes, submitted the Claude emails, and followed the emailed magic links. Both accounts then reached hCaptcha. The exact request/retry count has not been reconstructed. The assigned exits remained proxy5/proxy6, but the browser host, profile state, and visible fingerprint differed from the intended local browsers. The challenge cause is undetermined; these observations are not evidence that the existing local browser workflow triggers hCaptcha. Do not resume those VM browser sign-ins or ask Amir to complete their challenges.
+
+## 5. Failures, recovery, and visibility
+
+### 5.1 Network lifecycle
+
+Track route availability separately from session/operation state. A route may become healthy after repair, but every session or operation binding that failed stays terminal. Restoring infrastructure never reopens that binding or replays its work.
+
+1. **Before launch:** bind the account to its configured route and verify that route. For native Claude, attach its independent network boundary; for Chrome, validate the existing fixed-proxy instance. Missing assignment, wrong route, or failed checks return a visible error before Anthropic contact.
+2. **While ready:** retain the operation's assigned transport and Chrome's fixed SOCKS configuration. Existing API retries keep existing behavior only while the route remains healthy; a routine model 429/5xx, auth rejection, tool failure, or slow model is not a proxy outage.
+3. **On actual route failure:** close the route and mark its current session/operation bindings terminal before notifying clients. Close existing Anthropic transports and reject new ones from those bindings. Abort pending operations, signal affected sessions through the existing supervisor, and preserve saved transcripts. A child retry cannot leave through another route or resume its failed work after repair.
+4. **On component restart:** keep failed bindings denied. A healthy restarted forwarder does not reopen their connections or replay work. An explicit new run/resume/login after repair creates a newly validated binding. A genuinely new scheduled occurrence may also validate the repaired route and obtain a fresh binding; it must have its own occurrence identity and cannot retry or reassign the failed occurrence. Never automatically continue an interrupted tool action.
+5. **On normal exit:** release only the exiting operation/session's ownership. Keep surviving sessions and the existing browser/tunnel usable. A missing SOCKS listener causes requests to fail; it must not select direct access.
+
+Use component-death/tunnel events immediately. A live but hung SSH or native adapter must also stop affected sessions. The implemented native adapter and HTTP transport check their assigned route every five seconds while they own work, with an eight-second deadline; no additional monitor service is introduced. This is a route check, not a timeout on the model's full streaming lifetime. A timeout to an Anthropic endpoint alone does not establish proxy failure: distinguish local listener/SOCKS negotiation/tunnel failure from an origin failure with a health operation through the same route. If route validity cannot be established, keep that operation denied and report the uncertainty; do not switch routes. The failure tests in section 4 cover a hung route separately from a slow model and ordinary API errors.
+
+Reuse the supervisor's existing graceful termination and force-kill behavior. Measure detection, error display, and exit times in staging and record them with the selected mechanism; no new product response-time promise is agreed. Independent network denial is immediate when the path disappears and must not depend on how quickly a session exits. A pure logging/collector failure marks diagnostics degraded and does not terminate a session; loss of enforcement does.
+
+### 5.2 Behavior by caller
+
+| Caller | Required failure behavior |
+| --- | --- |
+| Interactive sessions | Stop every session using the failed route; preserve history and a normal explicit resume hint. Sessions on healthy routes continue. |
+| Fresh status/usage | Mark the affected account's route error visibly; retain other accounts' results. Cached usage may be shown only as cached, never as a successful fresh probe. |
+| Automatic account selection | If a required candidate probe fails because of routing, return the route error; do not hide it by selecting a different account. Ordinary quota/scoring behavior on healthy routes remains unchanged. |
+| Login or maintenance | Return an account/profile error without browser direct fallback, credential substitution, or automatic route retry. Preserve valid existing credentials unless the normal auth lifecycle invalidates them. |
+| Routines | Record the occurrence as failed and stop its session. Do not replay or reassign that occurrence. Keep later independently scheduled occurrences under normal scheduling rules; each validates its route anew. |
+| Shared daemon or browser | Stop/block the affected account operation without killing unrelated sessions or tabs. If the mechanism cannot isolate affected operations, section 4 has failed compatibility. |
+| Redis outage | Preserve existing pause/reconcile/lease behavior and eligible cached launches; use the cached validated route. A Redis failure alone is not a proxy failure. |
+
+Use one typed route-error family in code, with causes for missing assignment, unavailable profile, tunnel/proxy failure, exit mismatch, or unavailable enforcement. Keep these distinct from auth/quota/API/tool errors so existing retry/rotation code cannot swallow them. The final names can follow repository conventions.
+
+User-facing example: `Claude account-a stopped: office-a tunnel failed. No alternate route was used. Saved conversation: <session id>. Resume after repairing office-a.`
+
+Log only the operation type, account label, profile name, component/error category, time, and process/session reference needed to debug it. Do not log tokens, proxy passwords, OAuth URL queries/codes, request bodies, or task content. Local labels and session references are not a new Anthropic telemetry stream.
+
+## 6. Telemetry controls and accepted feature effects
+
+Apply `DISABLE_TELEMETRY=1` and `DISABLE_ERROR_REPORTING=1` to every native entry path, including login/maintenance and background processes. These are the initial selected controls. They are narrower than the old bundle; do not add safe mode, update bans, no-history flags, memory/instruction suppression, or general environment scrubbing. Preserve independent non-Anthropic OpenTelemetry integrations. Identify their actual recipient before changing them.
+
+Anthropic documents that telemetry opt-out also stops feature-flag fetching. Documented effects include unavailable account-synced skills/plugins, `/restart` on subscription plans, imports, skill diagnostics, advisor and MCP-task features, and some background compaction and feedback behavior. Remote Control behavior depends on the particular control/account requirements. These causal losses are accepted; ordinary locally installed skills/plugins and unrelated features still require preservation tests. Record the exact effects for the tested release rather than promising all flag-dependent features survive. [Claude environment-variable reference](https://code.claude.com/docs/en/env-vars).
+
+The normal quality survey is suppressed by telemetry opt-out; explicitly submitted feedback is a separate user action. Do not invent a blanket ban on `/feedback`, WebFetch, Chrome integration, updates, or Remote Control. The broader nonessential-traffic switch is not selected because it changes additional behavior. [Claude data usage and telemetry controls](https://code.claude.com/docs/en/data-usage).
+
+The implementation owner records, for each client and browser login: collector/purpose, control applied, positive control showing the test can observe that reporting path, opted-out result, and resulting feature loss. Include startup, idle, error/crash, login/refresh, tool/subagent completion, and shutdown. Browser-side collection needs its own controls; native environment switches do not cover them.
+
+A proxy destination log cannot distinguish telemetry from functional requests sharing one host. Verify same-host suppression with documented controls plus inspectable client instrumentation or a mock collector using synthetic credentials/content; label any unobservable path unresolved. Do not intercept real OAuth/model TLS or infer absence from an empty sampled log. If a current client still emits unwanted telemetry, stop that reporting narrowly and list any causal feature loss; if this cannot be established without unrelated reductions, keep the implementation incomplete.
+
+Account training/retention policy and anonymous account identity are not claims made by this proxy plan. Normal functional content and identifying directories remain intact.
+
+## 7. Test plan and requirement coverage
+
+The following tests are required for the Linux implementation, with mock tests first and real sacrificial-account tests only after the applicable routing and failure tests pass. Linux clients run on the development VM; real browser sign-in uses the existing local account Chrome instance. Native macOS verification and disruptive local browser/tunnel tests remain deferred until the joint test with Amir. Every result records the tested source revision, dependency lock, OS/client/browser/enforcement versions, case, expected result, actual result, and evidence location. A missing result is pending, not a pass.
+
+### 7.1 Test environments and observations
+
+- **GCP:** isolated disposable Linux client environment with its own Redis deployment/credentials, mock API/OAuth/collectors, and recording proxies A/B. Chrome on this VM is permitted only as a synthetic fixture against mock services. No real-account browser sign-in, production Redis credentials, or normal private project data. Use only ordinary infrastructure isolation; do not rebuild hostile-tool containment.
+- **Existing local browser:** retain the real Chrome Proxy 5/6 instances for the two sacrificial accounts. The selected proxy5 process/configuration and browser-originated public-exit check passed as recorded in section 4.3. Future real sign-in must preserve those instances and their state, even when the CLI runs on GCP. Implementation and checks are now authorized to proceed through these existing browsers, subject to the immediate challenge stop rule.
+- **Native Mac verification and disruptive local browser tests — deferred:** after the Linux implementation passes end-to-end testing and cold review and is committed and pushed, test together with Amir on a Mac. Exercise permission mode, writable projects, memory/instructions/hooks/MCP/plugins, existing state, device integrations, and local tunnel-loss behavior. Do not label untested cases as passed or provision a hosted Mac. Preserving the existing local browser for sign-in is required now; it is not deferred Mac implementation testing.
+- **Two routes:** A/B proxies must produce distinguishable observer receipts and exit identities. Run A1/A2 simultaneously plus B1, then add a scheduled A occurrence. Keep all sessions active while usage/login/refresh tests execute. This is a minimum fixture, not a new concurrency limit.
+- **Observe both permitted and forbidden paths:** collect connection/packet metadata at the client/enforcement boundary and each proxy, plus mock-server account receipts and exit observations. Cover the protocols used by the implemented transports and existing connections. Do not turn this into general network penetration testing.
+- **Validate observations:** before and after each failure batch, send a permitted synthetic request and a deliberately denied direct/wrong-route request. Show the permitted request at the expected observer and no arrival from the denied attempt. Linux Chrome outage tests stop the fixture's fixed-proxy listener. Do not stop a local account's real tunnel during the non-disruptive browser check. Missing/broken observation invalidates the batch; it does not establish zero leakage.
+- **Keep real traffic opaque:** mock tokens and mock bodies establish account/content assertions. For disposable real accounts, use connection metadata, harmless operations, and the validated enforcement behavior. Never claim real SOCKS or CONNECT receipts reveal the bearer token inside TLS.
+
+### 7.2 Required cases
+
+Each row states its minimum setup/action and pass result. Run Linux native and AI Manager network cases on the test VM. Browser cases there use fake accounts and mock services, with the exact Linux browser version recorded. Real-account browser operations use the existing local Chrome instances; substituting a matching Linux topology is not a pass. Native Mac, device, and disruptive local browser cases are deferred to the joint test. Repeat fixture failure cases with active traffic and while idle followed by a new request.
+
+| Case | Setup and action | Pass result | Requirements |
+| --- | --- | --- | --- |
+| T1 — Assignment round trip | Start with an unassigned tokenless label, then enroll its policy through import; assign A/B; normalize, snapshot, cache, login, refresh, repair, backup/restore, and reconstruct in an independent machine-state fixture on the same VM; replace identity at the same label. Actual Mac handoff is deferred. | Unassigned login makes zero protected requests; explicit assignment enables login; identity replacement revalidates; existing profile persists through credential-only writes; no proxy secret serialized. | R4, R8 |
+| T2 — Missing or wrong configuration | Remove assignment/profile; use wrong upstream/exit, stale profile, conflicting settings, all proxy-variable casings, and `NO_PROXY=*`. | No protected request admitted under unresolved/wrong identity; visible error; no direct/wrong proxy arrival. | R3–R5 |
+| T3 — Shared-process attribution | Concurrent A/B synthetic usage/auth operations through the trusted adapter; attempt mismatched caller binding; reuse pools and rotate A's token. | Adapter rejects mismatch before request; mock origin sees A only via A and B only via B; no global mutation or HTTP worker. This tests pairing, not OS inspection of bearer tokens. | R4, R5, R8 |
+| T4 — Session concurrency | Keep A1/A2/B1 active; run fresh status, refresh, subagents, and a scheduled A run concurrently. | All remain usable without new serialization/cap; lease and refresh behavior preserved; each uses its assigned route. | R1, R2, R4 |
+| T5 — Native routing and browser binding | Native/mock Claude attempts a direct connection despite conflicting proxy variables. Separately, give browser login a mismatched CDP/profile/SOCKS binding. | Native boundary blocks the direct connection; browser integration rejects the mismatch before navigation. Chrome ignoring its fixed proxy is outside scope. T3 covers shared-process pairing. | R3, R5 |
+| T6 — First browser connection | Begin with a tokenless unassigned label, then explicitly assign it. Use already-running account browser instances with existing sockets/state. Exercise concurrent A/B sign-ins, preconnect, redirects, reload, callback, SSO/MFA/key flow, cancellation, and reopen. Linux fixtures use mock accounts only; real sign-ins use the existing local Chrome/CDP endpoints. | No Anthropic connection before assignment; first and later connections use intended routes; existing local browser host/profile/state preserved; no replacement VM browser, serialized sign-in, or cookie/profile copying. | R1–R5 |
+| T7 — Component loss | Break the actual components used: SSH tunnel, upstream proxy, and any native transport adapter; keep B healthy. No extra Chrome service is required. | A cannot communicate with Anthropic and affected sessions stop visibly; B continues unless it shares the failed component; shared-component failure affects exactly its dependents. | R6 |
+| T8 — Tunnel restart | During streaming/login stop the assigned tunnel, then restart it. Launch a new explicit operation afterward. Native routing must also remain closed when its routing component is unavailable. | No direct fallback or automatic replay; the failed managed operation stays failed, and the new operation uses the restored assigned route. Mac sleep/wake testing is deferred. | R3, R5, R6 |
+| T9 — Hang versus origin error | Black-hole proxy traffic; separately return origin 401/429/5xx, stall the model while route health succeeds, fail a tool, and stop only the log collector. | Actual/indeterminate route failure denied and explained; ordinary API/tool/logging failures do not masquerade as proxy outage; no fallback hidden by retries. | R1, R6 |
+| T10 — Explicit recovery | Restore A after T7; wait for queued retries; explicitly resume its saved session. Use a deterministic synthetic tool/counter to observe transport/supervisor-generated duplicate invocations. | Failed binding stays terminal; no recovery-generated request/tool replay; explicit resume uses validated A route and preserved history. This does not promise exactly-once model behavior after a user-requested resume. | R2, R6 |
+| T11 — Every request owner | Exercise run/auto-select, fresh/cached status, helper probes, login, maintenance, in-session refresh, manual update, enabled features, and native background sessions. | Each protected request has an account binding before network use; route errors propagate; non-Claude providers unchanged. | R1, R3–R5 |
+| T12 — Native background work | A managed native process spawns background work and exits; keep another account active, then fail its assigned route. | Background work remains usable while healthy, retains its native account route after the launcher exits, and stops on route failure while the other account continues. | R2–R6 |
+| T13 — History and context | Resume pre-change synthetic transcript; same/cross-account fork; compact; load/edit memory, instructions, Git context and files across repositories. | Existing identifiers/model/effort/title/cwd rules preserved; normal identifying content reaches mock model intact; no redaction or history loss. | R1, R2, R7 |
+| T14 — Tools and terminal | Skills/hooks/status line, local and HTTP MCP, plugins/LSP, Git HTTPS/SSH, packages, local servers, Docker, IDE/clipboard/browser/device flows, Herdr TTY/signals. | Existing baseline operations still work; record only verified telemetry-caused exceptions; no exact-route constraint on independent services. | R1, R2, R7, R8 |
+| T15 — Routine lifecycle | Schedule overlapping allowed occurrences and interactive follow-up; fail A mid-occurrence; allow a later scheduled occurrence after repair. | Existing overlap/hooks/completion behavior; failed occurrence recorded once without replay/reassignment; later occurrence independently validates route. | R2, R6 |
+| T16 — Redis and assignment changes | Disconnect Redis during active sessions and an eligible cached launch; refresh tokens; restore ownership; use the proxy setter while active and after stopping; race a stale credential writer and separately a new launch. | Existing lease/cache behavior; token refresh does not stop sessions; stale writer cannot restore old assignment. In the launch race, either launch wins and setter refuses, or setter wins and the admitted launch uses only the new assignment. | R2, R4, R8 |
+| T17 — Telemetry | Observe positive control then opt-out for all events in section 6, including the existing browser and AI Manager. Exercise functional requests on shared collector hosts. | Unwanted reports suppressed with adequate observation; functional requests/context preserved; exact causal feature losses recorded. | R3, R7 |
+| T18 — Proxy correctness | Verify SSH authentication and SOCKS5 hostname forwarding, any required CONNECT adapter, TLS, redirects, WebSockets/streaming and used browser protocols; check upstream headers at the synthetic origin and public exits through the same path. | Assigned office exit; no forwarded normal-IP metadata, disabled TLS checks, token-on-wrong-origin, or browser/UDP bypass. | R3–R5 |
+| T19 — Transition and failed install | Rehearse section 8 from pre-change state with an old scheduled writer and surviving background process; fail install before activation and verification after activation. | Old writers/processes cannot participate after transition; state/history preserved; failure leaves affected work stopped with no unprotected rollback. | R1, R4, R6, R8 |
+| T20 — Secrets and cleanup | Inspect generated settings/state/argv/logs using known synthetic canaries; finish or abort test environment. | No sensitive canary in forbidden outputs; only intended task canaries at mock model; revoke test credentials before disposing test resources. | R7, R9 |
+
+For T7–T8, a failure confined to A must not stop B. If accounts share a failed tunnel, both are affected. Include normal browser DNS, QUIC/WebRTC or other protocols actually attempted by supported flows; cover their Anthropic connections without adding a general UDP/DNS privacy project.
+
+### 7.3 Existing automated tests to extend
+
+Use existing fixtures and dependency injection. Add focused tests only for changed contracts. Browser/tunnel integration tests establish routing and tunnel-loss behavior in the environment actually tested. Synthetic Linux browser passes cannot establish the existing local browser's identity or state; real-account sign-in must use that local browser. Local disruptive tests remain deferred.
+
+| Area | Existing starting points |
+| --- | --- |
+| Policy/version/cache | [records](../../test/coordination/records.test.js), [runtime](../../test/coordination/runtime.test.js), [Redis store](../../test/coordination/redis-store.test.js) |
+| Launch/failure/concurrency | [runner](../../test/claude/claude-runner.test.js), [supervisor](../../test/claude/claude-supervisor.test.js), [machine lease](../../test/claude/claude-machine-lease.test.js), [native reconciliation](../../test/claude/native-reconciliation.test.js) |
+| HTTP/selection/status | [fetch](../../test/io/fetch.test.js), [pool cases](../../test/pool/pool-01.cases.js), [pool planners](../../test/pool/planners.test.js), [Redis usage](../../test/claude/redis-usage-view.test.js) |
+| Login/maintenance | [Redis login](../../test/cli/redis-login-command.test.js), [auth maintenance](../../test/cli/auth-maintain-command.test.js), [credential helper](../../test/cli/credential-helper.test.js), [harness access](../../test/credentials/harness-access.test.js), [harness auth](../../test/targets/harness-auth.test.js) |
+| Context/history/routines | [shared memory](../../test/claude/claude-shared-memory.test.js), [sessions](../../test/claude/claude-sessions.test.js), [transcript rekey](../../test/claude/claude-transcript-rekey.test.js), [routine run](../../test/routines/routine-run.test.js), [routine hooks](../../test/routines/claude-hook.test.js), [usage display](../../test/status/claude-session-usage.test.js) |
+
+Run focused files with `node --test <changed-area test files>` in the disposable checkout. The `.cases.js` files are fixture suites reached by their existing test entrypoints, not standalone commands. Run `npm run lint` and `npm test` once the integrated change is ready; repeat only for changed code or an investigated failure. Record the exact selected commands and results with the implementation evidence. CI is not the development test runner.
+
+### 7.4 Evidence for the implemented Linux scope
+
+The reviewed-source manifest records SHA-256 for every changed source/test/helper and both dependency manifests. The full regression run is supplemented by the named integration runs; skipped tests are not counted as passes. Existing baseline tests establish preservation of unchanged adapters, settings, session metadata, memory, and coordination behavior. The real-binary tests exercise those paths through the added route. This is not a claim that every third-party integration was installed on the disposable VM.
+
+| Cases / requirements | Passing evidence |
+| --- | --- |
+| T1/T16 — R4/R8 | Full AIM suite's policy normalization, import/login/repair, CAS, machine-lease and offline-cache cases; five final setter/cache/lock-loss cases; actual native refresh and fresh usage for both accounts. Identity and existing record versions accompany the binding; same-account shared locks remain concurrent. |
+| T2/T3/T5 — R3/R4/R5 | Six transport tests plus native and Chrome integration: missing/wrong assignment, conflicting proxy environment, direct/wrong-profile rejection, recording-origin attribution, remote DNS, and mismatched browser rejection. |
+| T4/T12 — R1/R2/R4/R6 | Actual sacrificial A1/A2/B model/Bash runs; native fixture keeps A1/A2/B active during scheduled work and an actual Claude Agent subagent. Detached background descendants survive a healthy parent exit and are stopped when A fails; B continues. |
+| T6 — R1–R5 | Synthetic concurrent Chrome sign-in/state/redirect/callback and cancellation tests; both actual native OAuth logins through the original local Chrome profiles; proxy5 browser chat and exit receipt. Development callback relay is documented in section 4.3. Native Mac callback and local disruptive tests remain deferred. |
+| T7–T10 — R3/R5/R6 | Native tunnel/adapter/monitor loss, hung SSH/adapter, idle failure, denied admission and explicit repair; actual OpenSSH test; transport origin 401/429/503 and stalled-stream controls; actual saved conversation resumed after repair. No interrupted work resumes automatically. |
+| T11 — R1/R3–R5 | Full suite covers ordinary run/selection/status/helper/maintenance/import owners; actual OAuth, refresh, usage, native model/tool use and background work verify their added routes. No new native updater or feature allowlist was introduced. |
+| T13/T14 — R1/R2/R7 | Full runner/session/transcript/shared-memory/status-line regressions preserve cwd, paths, credentials isolation, permission arguments, model/effort/title/history and user hooks/MCP/plugins; real native instructions/Bash/hooks/stdio MCP/resume/fork/subagent tests pass. IPC pause/resume and termination pass through the routing wrapper. Mac-native Herdr TTY, GUI/device/IDE/clipboard integration and disruptive local Chrome checks await the joint Mac test. |
+| T15 — R2/R6 | Real scheduler/worker/CLI/hook integration records completed/interrupted/later completed occurrences with distinct fire keys and no duplicate replay; existing routine lifecycle tests cover interactive follow-up, overlap and account release. |
+| T17 — R3/R7 | Native analytics collector 2→0, shipped native error-reporter gate enabled→disabled with collector linkage, browser collectors 7→0 with functional forms preserved; first OAuth host redirects to the consent-covered host. Functional real model/login/refresh/usage still passes. Telemetry-flag feature effects are the accepted exception in section 6. |
+| T18 — R3–R5 | SOCKS destination/remote-DNS and redirect credential tests, real OpenSSH host-key/forwarding test, real HTTPS public exits, actual opaque OAuth/model traffic, streamed synthetic model bodies and synthetic Chrome protocol tests. Real TLS was not intercepted. |
+| T19 — R1/R4/R6/R8 | Cold installation, install/admission lock race, old periodic writer stopped, invalid-install denial, wrong post-activation-binding denial and explicit stopped repair; saved pre-change state remains intact. Section 8 supplies the executable transition sequence. |
+| T20 — R7/R9 | Secret-redaction/state tests in the regression suite; release source matches the reviewed manifest and contains none of the two accounts' current access/refresh tokens. Only sanitized receipts are exported. Test children and managed test tabs close; VM/account/private-evidence retention is explicit until the joint test and separately authorized disposal. |
+
+Reproduce on the VM from `/home/aimdev/workspace/aimgr` with `umask 022` and `TMPDIR=/home/aimdev/verification/tmp`:
+
+```bash
+npm run lint
+npm test
+node --test test/network/claude-transport.test.js
+node --test --test-name-pattern='assignment|proxy setter|proxy reassignment' test/cli/redis-projection-command.test.js
+AIMGR_TEST_NATIVE_PROXY=1 AIMGR_TEST_CLAUDE_BIN=/home/aimdev/.local/bin/claude node --test test/network/claude-native-route.test.js
+AIMGR_TEST_CHROME=1 node --test test/network/claude-chrome.test.js
+AIMGR_TEST_SSH=1 node --test test/network/claude-ssh.test.js
+AIMGR_TEST_TELEMETRY=1 AIMGR_TEST_CLAUDE_BIN=/home/aimdev/.local/bin/claude node --test test/network/claude-telemetry.test.js
+node test/network/inspect-native-error-optout.mjs /home/aimdev/.local/bin/claude
+NODE_EXTRA_CA_CERTS=/opt/aimgr-privacy-dev/redis-ca.crt AIMGR_TEST_REAL_ACCOUNTS=1 node --test test/network/claude-real-accounts.test.js
+```
+
+Run native/Chrome/telemetry fixture batches sequentially: their installers deliberately require native work stopped. The actual-account test is guarded to this hostname/home/test Redis prefix and proxy5/proxy6. Never run real-account cases during mock TLS/hosts overrides. Real browser OAuth uses only the existing local profiles and the private offsite handoff, never a fresh VM browser. Repeating the browser telemetry positive control on authenticated profiles is prohibited.
+
+## 8. Implementation order and scheduled transition
+
+### Phase 1 — Implement and verify the existing routes
+
+**Work:** Exercise the Chrome/CDP/SOCKS contract with synthetic Linux fixtures and mock services, implement account assignments and transports, and verify routing, concurrent use, and tunnel loss against mocks. Keep real sign-in bound to the existing local browser; never enroll real accounts in a fixture browser. Implement native routing outside Claude's own settings while preserving its tool environment. Record exact dependency/client versions and test results in this document.
+
+**Exit:** The applicable mock route and outage checks pass before any sacrificial account is used. Account integration and its unit tests can proceed alongside these checks; there is no architecture approval gate. A concrete failed requirement is fixed in the implementation, not converted into a new hardening project.
+
+### Phase 2 — Integrate all request owners and preserve workflows
+
+**Work:** Implement section 3's assignment/persistence and bound request operation. Attach native routing, the existing Chrome CDP binding, and AI Manager HTTP transports, telemetry controls, errors, and existing supervision. Cover every owner in section 2, including imports/repairs. Preserve account concurrency, context, routines, caches, and ordinary tool environment. Add targeted tests and complete all mock cases T1–T20 applicable before real-account enrollment.
+
+**Exit:** Each source owner has a tested route; all native and AI Manager request owners integrated; all mock acceptance cases pass. The selected transport and profile/enforcement schema are concrete. Installation activates only after helpers/configurations build and verify. Remaining real-account checks are individually identified.
+
+**On failure:** Fix in the disposable environment; no temporary direct path or reduced-feature implementation counts as completion.
+
+### Phase 3 — Verify the release and prepare adoption
+
+**Work:** use the two supplied accounts and assigned proxies from the [sacrificial account inventory](2026-10-31-proxy-claude-accounts-proxy5-proxy6.md), only after the applicable mock routing and failure tests pass. Complete browser sign-in in the account's existing local Chrome instance over its existing tunnel; no account operation may use Amir's normal/home IP. Keep browser state on that host while the Linux CLI and API clients run on GCP. Repeat the relevant T1–T20 workflows using synthetic tasks and opaque real TLS. Fresh installation applies to the reviewed Linux code and locked dependencies, never to the user's browser profile. Measure concurrency, latency, error/exit times, and actual telemetry effects. Rehearse the transition and cleanup.
+
+**Exit:** All current-scope Linux requirements have passing evidence, actual supported Linux clients pass with real sign-in through the existing local Chrome, all feature losses are telemetry-caused or specifically accepted, and the reproducible installation/transition instructions below are filled for the selected mechanism. Passing route and outage tests are required; a successful proxy request alone does not establish fail-closed behavior. Native Mac verification and disruptive local browser tests are deferred and cannot be reported as passed.
+
+**On failure with live test credentials:** Stop affected tests and close routing. Revoke potentially exposed disposable credentials using a known working enforced route before destroying the last environment able to revoke them. If revocation cannot be completed, retain that cleanup obligation explicitly. Return to clean mock-only state for an enforcement failure; do not continue mock experiments with live test tokens lying around.
+
+### One scheduled stop/update/resume transition
+
+This is an accepted adoption method; the actual time, purchases, and operational execution still require the later concrete rollout approval. The implementation owner produces exact commands for the chosen mechanism and participating machines from this ordered procedure:
+
+1. Inventory participating account sessions, native daemons and AI Manager background jobs, browser activity, scheduled launches, maintainers, other credential writers, and installation paths. Identify disconnected machines that can reconnect later. Preserve transcripts, state backups, and exact session resume information.
+2. Prepare the reviewed source revision, locked dependencies, native helpers, enforcement components, account/profile assignments, and one-time installation approvals before the stop window. Build/validate before activating wrappers. Do not promote test Redis/accounts/browser state or private captures.
+3. During the scheduled window, stop affected sessions and background requests, pause scheduled starts/maintainers, and quiesce all participating old writers. Require every participating machine to check in, confirm those processes are stopped, and update every scheduled/autostart entrypoint before activation. If a machine is offline and cannot be checked, postpone activation; do not assume it is excluded. A deliberately retired machine must have its launchers/maintainers disabled before exclusion is recorded. This coordinated procedure avoids a permanent second version system.
+4. Install and validate enforcement first, then atomically activate the prepared AI Manager integration and assignments. Exercise the installed entrypoint with mock route checks before releasing protected requests. The current fleet script following mutable `main` and warning through failures is not this procedure.
+5. Validate the assigned routes and telemetry controls, then resume the recorded sessions through their normal workflows as part of the approved transition. Restore schedules/maintainers only after their route checks pass. This planned resume is distinct from forbidden automatic outage recovery.
+6. If any step fails, leave affected work stopped and preserve state/history for repair. Revert only to a release/configuration already proven to enforce the same requirements; never restart the old unprotected path as rollback. Healthy unrelated accounts/services need not be stopped.
+
+After exporting sanitized evidence, close test processes and managed test tabs. Keep the development VM, its two test credentials, and private evidence available for the agreed joint Mac test; retention is an explicit remaining cleanup obligation, not a claim that credentials were revoked. At final environment disposal, revoke test sessions through a known working assigned route, remove disposable Redis/access credentials, and dispose temporary compute/disks/snapshots/logs within provider controls. Destructive disposal requires its separately authorized scope.
+
+### Concrete Linux installation and transition commands
+
+These commands describe the test VM and the reviewed AIM release only. The later joint Mac test determines native macOS installation commands. They do not replace the original local Chrome profiles or SSH tunnel launchers.
+
+Prepare a release from the committed development branch on the source machine:
+
+```bash
+cd /tmp/aimgr-claude-privacy
+release_revision=$(git rev-parse HEAD)
+git archive --format=tar.gz --output=/tmp/aimgr-claude-release.tar.gz "$release_revision"
+gcloud compute scp /tmp/aimgr-claude-release.tar.gz aimdev@aimgr-privacy-dev:/home/aimdev/verification/ --project=aimgr-privacy-dev-20261031 --account=amir@fun.country --zone=us-central1-a --tunnel-through-iap --scp-flag='-oForwardAgent=no'
+```
+
+On the VM, unpack into a fresh release directory, install the locked dependencies from the prepared npm cache, and check syntax before touching the installed entrypoint. `npm ci --offline` must succeed before the stop window; an absent cached dependency is a preparation failure, never a reason to enable unrestricted web egress while test credentials are present.
+
+```bash
+release_dir=$(mktemp -d /home/aimdev/workspace/aimgr-release-XXXXXX)
+tar -xzf /home/aimdev/verification/aimgr-claude-release.tar.gz -C "$release_dir"
+cd "$release_dir"
+npm ci --offline --ignore-scripts --no-audit --no-fund
+npm run lint
+```
+
+Inventory and record affected launchers before the scheduled window with `aim claude list --json`, `systemctl --user list-timers --all`, `systemctl list-timers --all`, and `crontab -l`. Record the exact enabled units/crontab entries and original executable paths in that machine's transition receipt; the test VM has no recurring AIM maintenance or routine timer to migrate. Stop each recorded job owner and disable its scheduled/autostart entrypoint for the window. Stop the recorded Claude sessions and their background work; `sudo python3 "$release_dir/native/claude/linux_proxy.py" check-stopped` must return zero before installation. Do not kill a fleet by process-name pattern. A missing participating machine postpones this step.
+
+Create this non-secret manifest on the VM as `/home/aimdev/verification/native-accounts.json`:
+
+```json
+{"user":"aimdev","profiles":{"proxy5":{"socksHost":"127.0.0.1","socksPort":1085,"redirectPort":16085,"expectedExits":["34.1.26.166"]},"proxy6":{"socksHost":"127.0.0.1","socksPort":1086,"redirectPort":16086,"expectedExits":["35.215.116.120"]}}}
+```
+
+Preserve a private copy of the participating machine's AIM configuration/state and native transcript directories before activation. Leave the existing Chrome profile data on its original machine. Then run this block in Bash to install the native route, verify both installed paths, and atomically point the AIM wrapper at the prepared checkout. Any failed command stops the block and stops both affected adapters:
+
+```bash
+set -e
+trap 'sudo systemctl stop aimgr-claude-proxy-proxy5.service aimgr-claude-proxy-proxy6.service' ERR
+sudo scripts/install-claude-proxy-linux.sh /home/aimdev/verification/native-accounts.json
+python3 native/claude/linux_proxy.py probe proxy5
+python3 native/claude/linux_proxy.py probe proxy6
+printf '#!/bin/sh
+export NODE_EXTRA_CA_CERTS=/opt/aimgr-privacy-dev/redis-ca.crt
+exec /usr/bin/env node %s/bin/aimgr.js "$@"
+' "$release_dir" > /home/aimdev/.local/bin/aim.next
+chmod 0755 /home/aimdev/.local/bin/aim.next
+mv /home/aimdev/.local/bin/aim.next /home/aimdev/.local/bin/aim
+aim claude status proxy5 proxy6 --fresh --json > /home/aimdev/verification/release-usage.private.json
+node --input-type=module -e 'import fs from "node:fs"; import assert from "node:assert/strict"; const r=JSON.parse(fs.readFileSync(process.argv[1])); assert.deepEqual(r.accounts.map(a=>a.label).sort(),["proxy5","proxy6"]); assert.ok(r.accounts.every(a=>a.source==="live" && a.usage?.ok===true && !a.errorKind));' /home/aimdev/verification/release-usage.private.json
+trap - ERR
+```
+
+The manifest installer retains other installed profiles and refuses active native work. Existing account assignments must already match the reviewed configuration; use `aim claude proxy set <label> <profileRef>` only during this stopped window if an assignment actually needs changing. For a new tokenless label use the policy-only enrollment described in section 3.1. No tokens, cookies, passwords, or proxy keys belong in the manifest or source archive.
+
+If installation, either probe, or the fresh-status verification fails, keep the recorded writers/schedules stopped and run `sudo systemctl stop aimgr-claude-proxy-proxy5.service aimgr-claude-proxy-proxy6.service` for this two-account transition. Preserve the failure receipt and saved state; repair and repeat the failed verification. Never switch the AIM wrapper back to an unprotected release. After successful verification, explicitly resume recorded sessions using their normal `aim claude resume <session-id>` commands, then restore the recorded schedules pointing at the reviewed AIM entrypoint. A later proxy outage requires explicit repair/resume again.
+
+## 9. Completion and review
+
+The current Linux implementation is complete only when R1–R9 have passing evidence for their Linux scope in section 7, native routing and the existing Chrome and AI Manager HTTP integrations are demonstrated, telemetry controls and actual feature effects are recorded, and the scheduled transition is concretely specified. A fresh cold reviewer must agree that the code is implemented correctly, the end-to-end evidence and coverage are adequate, and none of the vetoed functionality reductions was introduced. Repair findings and repeat the affected checks/review before declaring completion. Commit and push the verified, reviewed changes to a development branch.
+
+**The next step after that commit and push is a Mac test together with Amir.** Native macOS verification and disruptive local browser/tunnel tests remain deferred. Do not independently begin those tests or provision a hosted Mac. The existing local Chrome sign-in workflow and the explicitly requested non-disruptive route check are distinct from this deferred implementation verification. Joint Mac testing precedes any claim that the Mac implementation has passed and is separate from the scheduled production transition. Accepted risks are not new work items.
+
+This revision removes the former safe-mode lane, neutral production workspace, memory/context suppression, no-resume/no-routine/offline bans, same-account serialization, per-account HTTP workers, separate proxy revision, hostile-tool containment, universal network restrictions, and extended mixed-version rollout. None remains an alternative instruction elsewhere in this plan.
+
+### Review status
+
+The final cold reviewer independently inspected the source, the VM receipts and the plan, and approved Linux completion and readiness to commit/push on 2026-10-31 Central. The reviewer confirmed no remaining concrete defect or material unproven Linux requirement. The review repaired hung-proxy usage classification, local background/cached-session reassignment races, stale cache restoration, and two transition-test assertions; all affected checks passed. It verified actual concurrent sessions, OAuth/refresh/fresh usage, scheduled-job failure/recovery, native subagents/history, telemetry controls, and the transition. Earlier reviews of removed consumers or additional browser enforcement are superseded by the agreed scope. See the [sanitized Linux verification](evidence/claude-privacy-2026-10-31/linux-verification.json), [reviewed source manifest](evidence/claude-privacy-2026-10-31/reviewed-source-manifest.json), and [cold-review receipt](evidence/claude-privacy-2026-10-31/cold-review.json).
+
+## 10. Offsite GCP development environment
+
+**Linux implementation is verified and cold-review approved; real sign-in used the existing local browsers.** After mock routing tests, real-account sign-ins were incorrectly attempted from fresh Chrome profiles on this VM through the assigned proxies. Both reached hCaptcha; those attempts must not resume. The real browser belongs on Amir's Mac as specified in section 4.3. The development VM runs Linux clients and synthetic tests. The two sacrificial accounts' private access files and proxy SSH keys were copied here; no production Redis credentials or other Claude accounts were introduced. The two mistaken VM account browsers have been closed; their private files remain for controlled cleanup.
+
+| Resource | Configuration |
+| --- | --- |
+| Project | `aimgr-privacy-dev-20261031` (project number `795409483026`) |
+| Organization and billing | `fun.country`; FC Billing Account |
+| Administration identity | `amir@fun.country`, passed explicitly to every `gcloud` command; existing local gcloud defaults are unchanged |
+| VM | `aimgr-privacy-dev`, `us-central1-a`, `e2-standard-2` (2 vCPU, 8 GiB RAM), running |
+| Disk and OS | 50-GiB balanced persistent boot disk; Ubuntu 24.04, pinned image `ubuntu-2404-noble-amd64-v20261024`; Secure Boot, vTPM, integrity monitoring enabled |
+| Network | Dedicated `aimgr-privacy-dev` VPC; `aimgr-privacy-dev-us-central1` subnet, `10.203.0.0/24`; private IP `10.203.0.2`; IPv4-only interface; ephemeral public IPv4 for the two permitted SSH destinations; no Cloud NAT or production peering |
+| Access | SSH/SCP through Google IAP; port 22 admitted only from `35.235.240.0/20`; no forwarded local SSH agent |
+| Google identity on VM | No attached service account or application-default credentials |
+| Workspace | `/home/aimdev/workspace/aimgr`, local Git branch `privacy-dev`; `/home/aimdev/.local/bin/aim` invokes that checkout |
+| Source baseline | Clean committed revision `4ab4af1bf56fc01228c297f71c5bf68b7ff6d091`; unrelated local working-tree edits excluded; no Git remote credentials transferred |
+| Runtime | Node `v24.22.2`, npm `11.19.1`; 304 lockfile dependencies installed with `npm ci --ignore-scripts --no-audit --no-fund` |
+| Linux browser status | Chrome `156.0.8078.79`; official package SHA-256 `be1a1e161419f5c8272432f6860912550d8e29985e925913fa800493a0d0c955`. Synthetic routing/state/concurrency/tunnel-loss fixtures passed. VM browsers are mock-only going forward; earlier real sign-ins were a workflow error. No additional Chrome firewall installed. |
+| Test database | Independent Redis 7.0.15, TLS only on `127.0.0.1:6380` and `[::1]:6380`; no plaintext port; authentication required; 512-MiB memory limit |
+
+### Access and working paths
+
+```sh
+gcloud compute ssh aimdev@aimgr-privacy-dev \
+  --project=aimgr-privacy-dev-20261031 \
+  --account=amir@fun.country --zone=us-central1-a \
+  --tunnel-through-iap --ssh-flag='-oForwardAgent=no'
+```
+
+On the VM, work in `/home/aimdev/workspace/aimgr`. Use the same explicit project/account/zone and `--tunnel-through-iap` for `gcloud compute scp`; use `--scp-flag='-oForwardAgent=no'`. The `aimdev` user has sudo for disposable network experiments. Only the two approved proxy keys/known-host files and sacrificial-account access files were copied into a private directory; no existing browser state, normal Claude account store, or general developer credentials were copied. IAP authorization is attached to `amir@fun.country` in this project.
+
+The [bootstrap script](../../scripts/claude-privacy-dev-bootstrap.sh) installs the pinned Node archive with checksum verification, Linux development/network tools, and the separate test Redis. Its installed startup metadata returns without changing state once `/opt/aimgr-privacy-dev/bootstrap-complete` exists. Bootstrap log: `/var/log/aimgr-privacy-dev-bootstrap.log`. Source archive SHA-256: `b6fa5125aef10a0d89df1e4514aa13ee47dd87209d04af7875caabb4e9e8b89f`; manifest: `/home/aimdev/workspace/source-manifest.json`. Before implementation, reconcile required source changes against the reviewed local working tree; this snapshot does not incorporate unrelated uncommitted work.
+
+Synthetic Chrome fixtures run as `aimdev` under `/home/aimdev/verification/` and trust only their fixture certificates. Real model traffic uses normal TLS verification. The mistaken VM account-browser setup used CDP 9355/9356 and SOCKS 1085/1086; those matching numbers do not identify the existing local browsers. Its remote screen was created for those mistaken sign-ins and is not part of the approved workflow. Do not ask for challenge completion there. Real sign-in uses the existing Mac Chrome/CDP instances and local tunnels; the development VM remains the Linux client/test host.
+
+Redis service: `aimgr-privacy-redis.service` (enabled at boot). Configuration and local TLS key: `/etc/aimgr-privacy-dev/`; data: `/var/lib/aimgr-privacy-redis/`; public test CA: `/opt/aimgr-privacy-dev/redis-ca.crt`. The generated database credential is only in `/home/aimdev/.aimgr/config.yaml` (mode 0600); key prefix `aimgr-privacy-dev:`. Login shells and the `aim` wrapper set `NODE_EXTRA_CA_CERTS` for this test database. This CA is not an Anthropic inspection CA.
+
+Check Redis without printing its URL/password:
+
+```sh
+systemctl is-active aimgr-privacy-redis.service
+/home/aimdev/.local/bin/aim redis ping | python3 -c \
+  'import json,sys; d=json.load(sys.stdin); print({"ok":d.get("ok"),"pong":d.get("pong")}); assert d.get("ok") is True'
+```
+
+The baseline CLI's full `redis ping` JSON includes the connection URL; retain the output filter. Keep private account access material separate from source archives and evidence logs.
+
+### Network state and maintenance
+
+| Firewall rule | Current behavior |
+| --- | --- |
+| `aimgr-privacy-dev-iap-ssh` | Ingress TCP 22 from IAP range only, priority 1000 |
+| `aimgr-privacy-dev-deny-egress-v4` | Deny all outbound to `0.0.0.0/0`, priority 2000 |
+| `aimgr-privacy-dev-deny-egress-v6` | Deny all outbound to `::/0`, priority 2000 |
+| `aimgr-privacy-dev-proxy-ssh` | Outbound TCP 22 only to `34.1.26.166/32` and `35.215.116.120/32`, priority 1000 |
+| `aimgr-privacy-dev-bootstrap-web` | **Disabled**; temporary TCP 80/443 package-download exception, priority 1000 |
+
+The temporary public access configuration was removed after bootstrap and restored for the two narrow SSH proxy paths after mock verification. Both tunnels now run on the VM at loopback 1085/1086; SOCKS public-exit checks returned their assigned IPs. Direct web egress remains denied. Only these two SSH keys/host-key files and the two sacrificial-account Proton access files were transferred into the VM’s private verification directory; no existing Chrome cookies/profiles or production credentials were copied. The cloud firewall is independent of VM processes; killing a local controller does not remove it. IAP SSH and loopback Redis remain usable. Google platform metadata/DNS are not a claim of universal network isolation, and this VM-wide rule does not establish the final per-account/native-macOS/browser enforcement architecture.
+
+Keep this initial restriction during mock tests. Future dependency installation may use a temporary bootstrap window while no real account credentials are present, followed by reclosure and verification. Actual account tests require narrowly permitted assigned-proxy paths and verified fail-closed behavior; never enable general egress while test credentials are present. These development restrictions do not change the promised production workflow for independent services.
+
+Stop/start this VM with `gcloud compute instances stop aimgr-privacy-dev` or `gcloud compute instances start aimgr-privacy-dev`, always passing `--project=aimgr-privacy-dev-20261031 --account=amir@fun.country --zone=us-central1-a`. Stopping preserves the disk, workspace, and Redis; management uses IAP; the public access configuration exists only to reach the assigned SSH proxies. Do not delete the VM/disk while it holds unexported work.
+
+At the published on-demand rates, continuous operation for 730 hours is approximately **$53.92/month**: $48.92 for the VM and $5.00 for 50 GiB of balanced disk, before taxes or transfer. Stopped compute leaves approximately $5/month in disk charges. The temporary external IPv4 address used for proxy SSH adds its normal active-IP charge; there is no Cloud NAT gateway. [Google E2 prices](https://cloud.google.com/products/compute/pricing/general-purpose), [disk prices](https://cloud.google.com/compute/disks-image-pricing).
+
+### Initial setup evidence and completed Linux verification
+
+| Check on 2026-10-31 | Result |
+| --- | --- |
+| SSH through IAP after removing public IP | Passed; fresh session reached `aimdev` and local services |
+| Source transfer | Archive checksum matched the clean source manifest; no account inventory in the VM checkout |
+| Runtime/dependencies | Node/npm start; locked packages installed; 45 GiB free after setup |
+| Redis | TLS authenticated `PONG`; unauthenticated TLS request rejected with `NOAUTH`; bound only to loopback; boot service enabled |
+| Existing unit tests | 14 passed, 0 failed: `test/io/fetch.test.js`, `test/coordination/records.test.js`, `test/coordination/redis-store.test.js`, and `test/claude/claude-machine-lease.test.js`; receipts under `/home/aimdev/verification/` |
+| External network positive control | Before closure, `https://example.com` returned HTTP 200 and TCP `1.1.1.1:443` connected |
+| Independent network denial | After disabling bootstrap allowance, the same TCP target failed while the temporary public IP was still present; public IP then removed; configured IPv4/IPv6 deny rules verified |
+| Initial account-use check | At bootstrap, no Claude account or office-proxy connection was attempted. Later proxy-only connectivity and public unauthenticated browser checks are recorded above; later real native OAuth, concurrent model/tool turns, refresh, and fresh usage passed as recorded in section 4.2. |
+
+These are environment checks, not passes for T1–T20. Use the existing local Chrome/CDP/SOCKS arrangement for browser sign-in, account-bound API transports, and native Claude routing for the Linux clients. Extra Chrome firewall/controller work and replacement sign-in browsers are outside scope. Section 4.3 records the actual local configuration and successful proxy5 browser exit check. Native Mac verification remains deferred until the Linux code is verified, cold-reviewed, committed, and pushed, followed by testing with Amir. Final completion requires a fresh cold reviewer to inspect behavior, runtime evidence, preservation of the existing browser environment, and all vetoed functionality reductions.

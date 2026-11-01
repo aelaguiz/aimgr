@@ -1,5 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveNativeAccountProfile } from "../../network/claude-native-route.js";
+import { closeClaudeLoginTabs, validateClaudeChrome } from "../../browser/claude-cdp.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import {
   acquireRedisCredentialLease,
@@ -221,17 +224,25 @@ async function performRedisClaudeLogin(context, {
       lease,
       phase: "before browser login",
     });
+    const currentSnapshot = await readSnapshot(store);
+    const currentState = buildCoordinationView(currentSnapshot);
+    const egressProfile = resolveNativeAccountProfile({ homeDir, state: currentState, label });
+    await (context.validateClaudeChromeImpl ?? validateClaudeChrome)(egressProfile);
     removeClaudeLoginStaging({ homeDir, label, stagingHome });
     ensureSafeManagedClaudeStorage({ descriptor });
 
     const loginEnv = { ...(env ?? {}) };
-    delete loginEnv.BROWSER;
+    loginEnv.BROWSER = fileURLToPath(new URL("../../../scripts/claude-login-browser.mjs", import.meta.url));
+    loginEnv.AIMGR_CLAUDE_LOGIN_PROFILE = JSON.stringify(egressProfile);
+    const loginTabsPath = path.join(stagingHome, "login-tabs.jsonl");
+    loginEnv.AIMGR_CLAUDE_LOGIN_TABS = loginTabsPath;
     delete loginEnv.DISPLAY;
     delete loginEnv.WAYLAND_DISPLAY;
     let launched = null;
     let launchError = null;
     try {
       launched = await runClaudeCliImpl({
+        egressProfile,
         command: preparedLaunch.command,
         userHomeDir: homeDir,
         homeDir: stagingHome,
@@ -243,6 +254,8 @@ async function performRedisClaudeLogin(context, {
       });
     } catch (error) {
       launchError = error;
+    } finally {
+      await closeClaudeLoginTabs(loginTabsPath);
     }
     const staged = readManagedClaudeNativeBundleFromFiles({ descriptor });
     if (launchError) {

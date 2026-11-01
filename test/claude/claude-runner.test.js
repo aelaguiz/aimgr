@@ -309,6 +309,7 @@ test("interactive runner preserves cwd, stdio, PATH, and developer env while cle
   });
   const calls = [];
   const result = await runClaudeCli({
+    prepareClaudeNativeRouteImpl: async ({ command, args }) => ({ command, args }),
     command: prepared.command,
     userHomeDir: home,
     homeDir: prepared.homeDir,
@@ -391,6 +392,7 @@ test("direct noninteractive runner uses contained roots and adapter without cust
   fs.writeFileSync(path.join(home, ".claude", "settings.json"), "malformed");
   const calls = [];
   const result = await runClaudeCliNoninteractive({
+    prepareClaudeNativeRouteImpl: async ({ command, args }) => ({ command, args }),
     command: process.execPath,
     userHomeDir: home,
     homeDir,
@@ -418,6 +420,8 @@ test("direct noninteractive runner uses contained roots and adapter without cust
       env: {
         PATH: `${adapter.adapterDir}:/developer/bin:/usr/bin:/bin`,
         ANTHROPIC_CUSTOM_HEADERS: "preserve",
+        DISABLE_TELEMETRY: "1",
+        DISABLE_ERROR_REPORTING: "1",
         HOME: home,
         CLAUDE_CONFIG_DIR: configDir,
         CLAUDE_SECURESTORAGE_CONFIG_DIR: configDir,
@@ -437,6 +441,7 @@ test("direct noninteractive runner reports its bounded timeout without inventing
   const controller = new AbortController();
   controller.abort();
   const result = await runClaudeCliNoninteractive({
+    prepareClaudeNativeRouteImpl: async ({ command, args }) => ({ command, args }),
     command: process.execPath,
     userHomeDir: home,
     homeDir,
@@ -449,6 +454,7 @@ test("direct noninteractive runner reports its bounded timeout without inventing
   assert.deepEqual(result, { status: null, signal: null, timedOut: true });
   await assert.rejects(
     runClaudeCliNoninteractive({
+    prepareClaudeNativeRouteImpl: async ({ command, args }) => ({ command, args }),
       command: process.execPath,
       userHomeDir: home,
       homeDir,
@@ -490,6 +496,7 @@ test("managed Claude runner waits for supervisor pause and resume acknowledgemen
   };
   let control = null;
   const running = runClaudeCli({
+    prepareClaudeNativeRouteImpl: async ({ command, args }) => ({ command, args }),
     command: process.execPath,
     userHomeDir: home,
     homeDir: prepared.homeDir,
@@ -501,6 +508,7 @@ test("managed Claude runner waits for supervisor pause and resume acknowledgemen
       control = value;
     },
   });
+  await new Promise(setImmediate);
   assert.ok(control);
   assert.equal(await control.pause(), true);
   assert.equal(await control.resume(), true);
@@ -527,6 +535,7 @@ test("noninteractive timeout kills the detached Claude process group including a
   `);
 
   const result = await runClaudeCliNoninteractive({
+    prepareClaudeNativeRouteImpl: async ({ command, args }) => ({ command, args }),
     command: process.execPath,
     userHomeDir: home,
     homeDir,

@@ -73,6 +73,7 @@ function claudeRecord(label, { expiresAtMs = NOW_MS + 4 * 60_000 } = {}) {
     credential,
     identity: buildStableIdentityForCredential("anthropic", credential),
     policy: {
+      egress: { profileRef: "test" },
       expect: { email: emailAddress },
       reauth: { mode: "native-claude" },
       pool: { enabled: true },
@@ -110,7 +111,7 @@ async function setup(records) {
   const client = new FakeRedisClient();
   writeAimgrConfig({
     homeDir: home,
-    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX }, claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } } },
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
   await importCredentialsSnapshot(
@@ -396,7 +397,7 @@ test("auth maintain still fails the run when the coordination store is unavailab
   const home = mkTempHome();
   writeAimgrConfig({
     homeDir: home,
-    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
+    config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX }, claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } } },
   });
 
   await assert.rejects(
