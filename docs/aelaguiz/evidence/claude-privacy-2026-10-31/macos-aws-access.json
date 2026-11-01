@@ -1,0 +1,69 @@
+{
+  "checkedAt": "2026-11-01T11:49:54.953894+00:00",
+  "profile": "agent-macos-test",
+  "operatorRole": "MacOSTestOperator",
+  "cleanupRole": "MacOSTestCleanup",
+  "source": "Existing nonroot credential; no new access key",
+  "rootRequiredForRoutineUse": false,
+  "roleAssumptionPassed": true,
+  "readOperationsPassed": [
+    "EC2 inventory/subnets",
+    "Mac host offerings",
+    "AWS macOS image",
+    "Mac host quotas"
+  ],
+  "policyValidation": "All four role/trust policies passed AWS Access Analyzer without findings",
+  "policyBoundaryChecks": [
+    {
+      "case": "Allocate tagged Mac",
+      "action": "ec2:AllocateHosts",
+      "decision": "allowed"
+    },
+    {
+      "case": "Reject untagged host",
+      "action": "ec2:AllocateHosts",
+      "decision": "implicitDeny"
+    },
+    {
+      "case": "Terminate tagged test instance",
+      "action": "ec2:TerminateInstances",
+      "decision": "allowed"
+    },
+    {
+      "case": "Reject unrelated instance",
+      "action": "ec2:TerminateInstances",
+      "decision": "implicitDeny"
+    },
+    {
+      "case": "Reject IAM mutation",
+      "action": "iam:CreateRole",
+      "decision": "implicitDeny"
+    },
+    {
+      "case": "Reject attaching cleanup role to EC2",
+      "action": "iam:PassRole",
+      "decision": "implicitDeny"
+    }
+  ],
+  "coldAuthorizationReview": "Approved; complete rental cleanup still requires observed released state",
+  "actualOperationsPassed": [
+    "create tagged security group",
+    "restrict SSH ingress to GCP test VM",
+    "import task SSH public key",
+    "allocate one tagged mac2.metal host",
+    "create and read back recurring host release schedule",
+    "launch tagged Mac instance with encrypted EBS",
+    "create and read back exact-instance termination schedule"
+  ],
+  "cleanup": {
+    "terminationTime": "2026-11-02T11:38:49.524770+00:00",
+    "releaseStart": "2026-11-02T11:50:49.524770+00:00",
+    "releaseEnd": "2026-11-02T19:48:49.524770+00:00",
+    "releaseIntervalMinutes": 15
+  },
+  "macImplementationComplete": false,
+  "physicalMacTestsRun": false,
+  "launchPermissionDryRunPassed": true,
+  "hostRented": true,
+  "instanceState": "running"
+}

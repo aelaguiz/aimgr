@@ -22,5 +22,6 @@
     "minimumHours": 24
   },
   "physicalMacTestingPerformed": false,
-  "nativeMacImplementationComplete": false
+  "nativeMacImplementationComplete": false,
+  "supersededBy": "macos-aws-access.json"
 }
