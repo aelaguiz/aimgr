@@ -41,7 +41,8 @@
     },
     {
       "path": "scripts/install-claude-proxy-macos.sh",
-      "sha256": "a6c64fbe9b3097adc2054499d7888f2465bfa72512f9b9bc5c8285d3238b83cd"
+      "sha256": "a6c64fbe9b3097adc2054499d7888f2465bfa72512f9b9bc5c8285d3238b83cd",
+      "gitMode": "100755"
     },
     {
       "path": "src/browser/claude-cdp.js",
@@ -265,5 +266,6 @@
     "beforeSha256": "010bb9dab322bc8a0d8a527b47a7ace5cdbef1cb88c65dccbf7c162e8c1519e1",
     "afterSha256": "4a342e136fc4002a255658aff3a13549f86d87ff93d9a119ba12cdf7b3884a68",
     "change": "Remove two trailing spaces from an otherwise blank line outside any string; no test behavior change."
-  }
+  },
+  "installerModeCorrection": "macOS installer is executable for the documented direct sudo invocation; its script contents are unchanged from the tested bash invocation."
 }

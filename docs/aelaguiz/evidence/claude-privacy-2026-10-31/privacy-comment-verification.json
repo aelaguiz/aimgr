@@ -50,5 +50,11 @@
     "beforeSha256": "010bb9dab322bc8a0d8a527b47a7ace5cdbef1cb88c65dccbf7c162e8c1519e1",
     "afterSha256": "4a342e136fc4002a255658aff3a13549f86d87ff93d9a119ba12cdf7b3884a68",
     "change": "Remove two trailing spaces from an otherwise blank line outside any string; no test behavior change."
+  },
+  "installerExecutableCheck": {
+    "gitMode": "100755",
+    "executedOn": "isolated GCP VM",
+    "exitCode": 2,
+    "expectedResult": "Starts directly and rejects non-Darwin/invalid invocation with usage; Mac installer contents unchanged from native matrix."
   }
 }

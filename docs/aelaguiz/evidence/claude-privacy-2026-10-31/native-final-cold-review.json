@@ -35,5 +35,6 @@
     "Pinned error-reporter proof is admission-function instrumentation with collector linkage, not a live crash upload."
   ],
   "operationsAtReview": "Evidence export, publication/secret audit, rental credential-copy removal and instance termination remained to complete. Dedicated-host release is a bounded scheduled obligation; review does not claim it already happened.",
-  "formattingFollowup": "Approval reaffirmed after independently verifying removal of two spaces from a blank line outside any string in native-features-fixture.js. All64 current hashes match; no production/test behavior change or rerun required."
+  "formattingFollowup": "Approval reaffirmed after independently verifying removal of two spaces from a blank line outside any string in native-features-fixture.js. All64 current hashes match; no production/test behavior change or rerun required.",
+  "installerModeFollowup": "Approval reaffirmed: macOS installer changed from0644 to0755 for documented direct invocation. Content hash unchanged; isolated Linux direct invocation reaches intended platform/usage guard and exits2. Prior Mac bash-invoked installation tests cover unchanged behavior."
 }

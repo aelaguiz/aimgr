@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-11-01T14:12:22.859401+00:00",
+  "checkedAt": "2026-11-01T14:14:27.772742+00:00",
   "profile": "agent-macos-test",
   "operatorRole": "MacOSTestOperator",
   "cleanupRole": "MacOSTestCleanup",
@@ -68,15 +68,18 @@
     "instanceState": "shutting-down",
     "remainingVolumeCount": 1,
     "hostState": "available",
-    "cleanupCheckedAt": "2026-11-01T14:12:01.452123+00:00",
+    "cleanupCheckedAt": "2026-11-01T14:14:06.606580+00:00",
     "securityGroupDeleted": null,
-    "keyDeleted": null,
+    "keyDeleted": true,
     "terminationScheduleDeleted": null,
     "hostReleaseScheduleEnabled": true,
     "gcpTemporaryMacAccessFilesRemoved": true,
     "gcpRedisBridgeStopped": true,
     "gcpTemporaryMacFirewallRuleDeleted": true,
-    "gcpDevelopmentVmRetained": true
+    "gcpDevelopmentVmRetained": true,
+    "securityGroupCleanupScheduleEnabled": true,
+    "releaseAndSecurityGroupSchedulesSelfDelete": true,
+    "providerTeardownPending": true
   },
   "macImplementationComplete": true,
   "physicalMacTestsRun": false,
