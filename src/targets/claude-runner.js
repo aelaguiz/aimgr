@@ -1,5 +1,6 @@
 import { prepareClaudeNativeRoute, nativeProxyEnvironment } from "../network/claude-native-route.js";
 import fs from "node:fs";
+import { ClaudeRouteError } from "../network/claude-egress-policy.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -645,6 +646,27 @@ function drainBoundedChildOutput(stream, { maxBytes, onOverflow }) {
   stream.resume?.();
 }
 
+function nativeSpawnError(error, profile) {
+  return profile ? new ClaudeRouteError("native_proxy_unavailable", { ...profile, cause: error }) : error;
+}
+
+function nativeExitContext(status, signal, profile) {
+  if (!profile || signal || status !== 125) return {};
+  // The native wrapper uses 125 for admission/outage failures, but also
+  // forwards the child's status. Keep the diagnostic factual in both cases.
+  return { error: new Error(`Claude ${profile.label} exited with status 125 while using proxy ${profile.profileRef}. Check the job log; if the proxy/tunnel is unavailable, repair it, then explicitly retry or resume.`) };
+}
+
+function spawnClaude(invocation, options, spawnImpl, profile) {
+  try {
+    const child = spawnImpl(invocation.command, invocation.args, options);
+    if (child?.error) throw child.error;
+    return child;
+  } catch (error) {
+    throw nativeSpawnError(error, profile);
+  }
+}
+
 export async function runClaudeCliNoninteractive({
   command,
   userHomeDir,
@@ -702,13 +724,17 @@ export async function runClaudeCliNoninteractive({
     return Object.freeze({ status: null, signal: null, timedOut: true });
   }
   const effectiveTimeoutMs = Math.max(1, Math.min(timeoutMs, remaining));
+  // Maintenance and other noninteractive work share the same admission as
+  // interactive Claude. Never spawn first and validate afterward. Ordinary
+  // accounts retain their existing environment and have no helper dependency.
+  // Regressions: test/network/claude-optional-privacy.test.js and native fixtures.
   const operationDeadline = Date.now() + effectiveTimeoutMs;
   const detached = platform !== "win32";
   const invocation = egressProfile
     ? await prepareClaudeNativeRouteImpl({ profile: egressProfile, command: prepared.command, args, platform, signal, deadlineMs: operationDeadline })
     : { command: prepared.command, args };
   if (signal?.aborted || Date.now() >= operationDeadline) return Object.freeze({ status: null, signal: null, timedOut: true });
-  const child = spawnImpl(invocation.command, invocation.args, {
+  const child = spawnClaude(invocation, {
     stdio: ["ignore", "pipe", "pipe"],
     env: egressProfile
       ? nativeProxyEnvironment(buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }))
@@ -716,14 +742,14 @@ export async function runClaudeCliNoninteractive({
     cwd: resolvedCwd,
     detached,
     shell: false,
-  });
-  if (child?.error) throw child.error;
+  }, spawnImpl, egressProfile);
   if (Number.isInteger(child?.status) || typeof child?.signal === "string") {
     const childSignal = typeof child.signal === "string" ? child.signal : null;
     return Object.freeze({
       status: childSignal ? null : Number.isInteger(child.status) ? child.status : 1,
       signal: childSignal,
       timedOut: false,
+      ...nativeExitContext(child.status, childSignal, egressProfile),
     });
   }
   if (!child || typeof child.once !== "function") {
@@ -775,13 +801,14 @@ export async function runClaudeCliNoninteractive({
 
     drainBoundedChildOutput(child.stdout, { maxBytes: maxOutputBytes, onOverflow });
     drainBoundedChildOutput(child.stderr, { maxBytes: maxOutputBytes, onOverflow });
-    child.once("error", (error) => finish(reject, error));
+    child.once("error", (error) => finish(reject, nativeSpawnError(error, egressProfile)));
     child.once("close", (code, childSignal) => {
       const normalizedSignal = typeof childSignal === "string" ? childSignal : null;
       closeResult = Object.freeze({
         status: normalizedSignal ? null : Number.isInteger(code) ? code : 1,
         signal: normalizedSignal,
         timedOut,
+        ...nativeExitContext(code, normalizedSignal, egressProfile),
       });
       // A direct child can exit on TERM while a descendant in its detached
       // process group ignores it. Keep the grace timer alive and KILL the
@@ -845,23 +872,28 @@ export async function runClaudeCli({
     throw new Error("Claude launch requires a completed managed preflight.");
   }
 
+  // Route the supervisor and inherited children before Claude can execute.
+  // Still identify the real Claude binary to the existing-background-owner guard;
+  // checking Node alone misses a native daemon that predates enrollment.
+  // Preserve IPC/TTY descriptors: routing must not remove pause/resume or tools.
+  // Regressions: claude-native-background.test.js and native-pty-fixture.js.
   const supervisorArgs = buildSupervisorArgs(prepared, args);
   const invocation = egressProfile
-    ? await prepareClaudeNativeRouteImpl({ profile: egressProfile, command: process.execPath, args: supervisorArgs, signal })
+    ? await prepareClaudeNativeRouteImpl({ profile: egressProfile, command: process.execPath, args: supervisorArgs, nativeCommand: prepared.command, signal })
     : { command: process.execPath, args: supervisorArgs };
-  const child = spawnImpl(invocation.command, invocation.args, {
+  const child = spawnClaude(invocation, {
     stdio: ["inherit", "inherit", "inherit", "ipc"],
     env: egressProfile
       ? nativeProxyEnvironment(buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }))
       : buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
     cwd: resolvedCwd,
-  });
-  if (child?.error) throw child.error;
+  }, spawnImpl, egressProfile);
   if (Number.isInteger(child?.status) || typeof child?.signal === "string") {
     const childSignal = typeof child?.signal === "string" ? child.signal : null;
     return {
       status: childSignal ? null : Number.isInteger(child.status) ? child.status : 1,
       signal: childSignal,
+      ...nativeExitContext(child.status, childSignal, egressProfile),
     };
   }
   if (!child || typeof child.once !== "function") {
@@ -940,12 +972,13 @@ export async function runClaudeCli({
       }, 5_000);
       forcedKillTimer.unref?.();
     };
-    child.once("error", (error) => finish(reject, error));
+    child.once("error", (error) => finish(reject, nativeSpawnError(error, egressProfile)));
     child.once("close", (code, childSignal) => {
       const normalizedSignal = typeof childSignal === "string" ? childSignal : null;
       finish(resolve, {
         status: normalizedSignal ? null : Number.isInteger(code) ? code : 1,
         signal: normalizedSignal,
+        ...nativeExitContext(code, normalizedSignal, egressProfile),
       });
     });
     if (signal?.aborted) onAbort();

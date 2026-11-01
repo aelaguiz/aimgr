@@ -51,6 +51,11 @@ export async function connectCdp(url, { timeoutMs = 8000 } = {}) {
   };
 }
 
+// R1/R5: use the already configured local account Chrome. Failure must not
+// fall back to the default browser, launch a replacement, or copy its cookies.
+// Chrome honoring its validated fixed proxy is the agreed trust boundary;
+// adding another browser firewall or changing its fingerprint is out of scope.
+// Regression: test/network/claude-chrome.test.js.
 export async function validateClaudeChrome(profile) {
   const chrome = profile.chrome;
   const reject = (field) => { throw new ClaudeRouteError("chrome_binding_mismatch", { ...profile, cause: new Error(field ?? "configuration") }); };
@@ -96,6 +101,8 @@ export async function openClaudeLoginInChrome(profile, url, { receiptPath } = {}
   if (destination.protocol !== "https:") {
     throw new ClaudeRouteError("invalid_login_url", profile);
   }
+  // Login validated before starting native staging; validate again now because
+  // its OAuth URL can arrive later, after a browser/tunnel binding has changed.
   const validated = await validateClaudeChrome(profile);
   const cdp = await connectCdp(validated.webSocketDebuggerUrl);
   try {
@@ -109,6 +116,9 @@ export async function openClaudeLoginInChrome(profile, url, { receiptPath } = {}
       sameSite: "Lax", expires: Math.floor(Date.now() / 1000) + 365 * 86400,
     }] });
     // A tab in the existing account instance preserves its cookies and SSO state.
+    // Never create this target at the OAuth URL. Consent must already be set,
+    // and cleanup ownership recorded before the first account-bearing navigation.
+    // The fixture checks first-request consent and zero origin requests on denial.
     const target = await cdp.call("Target.createTarget", { url: "about:blank" });
     try {
       if (receiptPath) await fs.appendFile(receiptPath, JSON.stringify({ endpoint: validated.webSocketDebuggerUrl, targetId: target.targetId }) + "\n", { mode: 0o600 });

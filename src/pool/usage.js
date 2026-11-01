@@ -636,6 +636,9 @@ export async function collectCodexUsageSnapshots({
   };
 }
 
+// R6: route failures must stop automatic account selection, not look like an
+// exhausted/unavailable account that silently rotates to another credential.
+// Regression: test/network/claude-optional-privacy.test.js (mixed accounts).
 export function assertNoClaudeRouteErrors(usageByLabel) {
   for (const entry of Object.values(usageByLabel ?? {})) {
     if (entry?.routeError) throw new ClaudeRouteError(entry.routeError.code, entry.routeError);

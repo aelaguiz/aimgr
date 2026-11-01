@@ -12,12 +12,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { listen } from "./socks-fixture.js";
 import { prepareClaudeNativeRoute, assertLocalClaudeProfileStopped } from "../../src/network/claude-native-route.js";
+import { verifyOsScheduledRoutine } from "./native-scheduled-fixture.js";
 import { createNativeRoutineFixture, verifyStartupDenied } from "./native-routine-fixture.js";
+import { verifyRoutineConcurrency, verifyScheduledStartupFailure, assertScheduledModelRoutes } from "./native-scheduled-failure-fixture.js";
+import { scheduledResponse } from "./native-scheduled-response.js";
+import { verifyInteractiveRoutine, verifyScheduledInterruption, verifyNativeTerminalCleanup } from "./native-pty-fixture.js";
 
 const exec = promisify(execFile);
 const helper = fileURLToPath(new URL("../../native/claude/linux_proxy.py", import.meta.url));
 
-test("native A1/A2/B route without proxy variables and stop when the tunnel process exits", { skip: process.env.AIMGR_TEST_NATIVE_PROXY !== "1", timeout: 180000 }, async (t) => {
+test("native A1/A2/B route without proxy variables and stop when the tunnel process exits", { skip: process.env.AIMGR_TEST_NATIVE_PROXY !== "1", timeout: 600000 }, async (t) => {
   assert.equal(process.platform, "linux");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aimgr-native-runner-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -29,7 +33,7 @@ test("native A1/A2/B route without proxy variables and stop when the tunnel proc
   let nativeTurn, savedNativeSessionId;
   let exitCheckDelayMs = 0;
   const origin = http.createServer(async (req, res) => {
-    received.push({ route: req.socket.remoteAddress, path: req.url, issuedAt: Number(req.headers["x-issued-at"]) });
+    received.push({ route: req.socket.remoteAddress, path: req.url, ordinaryLane: Boolean(req.ordinaryLane), issuedAt: Number(req.headers["x-issued-at"]) });
     if (req.url.startsWith("/v1/messages")) {
       let raw = "";
       for await (const chunk of req) raw += chunk;
@@ -53,8 +57,9 @@ test("native A1/A2/B route without proxy variables and stop when the tunnel proc
           : { command: isChild ? "printf subagent-ok > child-proof.txt" : "printf native-tool-ok > tool-proof.txt", description: "Write synthetic test proof" };
       // The CLI deduplicates tool calls by id. Discovery and invocation must
       // have separate ids, just as separate real model responses do.
-      const content = alreadyRan ? { type: "text", text: routine ? "NATIVE_MOCK_DONE\nAIM-JOB: done" : "NATIVE_MOCK_DONE" } : { type: "tool_use", id: `tool_fixture_${modelRequests.length}`, name: toolName, input };
-      const message = { id: `msg_native_${modelRequests.length}`, type: "message", role: "assistant", model: body.model, content: [content], stop_reason: alreadyRan ? "end_turn" : "tool_use", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10 } };
+      const content = scheduledResponse(body, modelRequests.length) ?? (alreadyRan ? { type: "text", text: routine ? "NATIVE_MOCK_DONE\nAIM-JOB: done" : "NATIVE_MOCK_DONE" } : { type: "tool_use", id: `tool_fixture_${modelRequests.length}`, name: toolName, input });
+      if (content.hold) return;
+      const message = { id: `msg_native_${modelRequests.length}`, type: "message", role: "assistant", model: body.model, content: [content], stop_reason: content.type === "text" ? "end_turn" : "tool_use", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10 } };
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
         const events = [
@@ -74,7 +79,12 @@ test("native A1/A2/B route without proxy variables and stop when the tunnel proc
     else res.end(req.socket.remoteAddress);
   });
   const originPort = await listen(origin, "0.0.0.0");
+  const ordinaryOrigin = http.createServer((req, res) => { req.ordinaryLane = true; origin.emit("request", req, res); });
+  const ordinaryPort = await listen(ordinaryOrigin, "0.0.0.0");
+  const ordinaryDestination = `http://198.18.0.10:${ordinaryPort}`;
   t.after(async () => {
+    ordinaryOrigin.closeAllConnections();
+    await new Promise(resolve => ordinaryOrigin.close(resolve));
     origin.closeAllConnections();
     await new Promise((resolve) => origin.close(resolve));
   });
@@ -167,6 +177,7 @@ test("native A1/A2/B route without proxy variables and stop when the tunnel proc
   assert.equal(await fs.readFile(oldWrites, "utf8"), writesAtStop, "old scheduled writer stays stopped throughout failure and repair");
   await exec("sudo", ["systemctl", "start", services[0]]);
   console.log(JSON.stringify({ transition: { oldWriterStopped: true, failedInstallClosed: true, failedVerificationClosed: true, historyPreserved: true } }));
+  await verifyNativeTerminalCleanup(profile);
   const controller = new AbortController();
   let control;
   const running = runClaudeCli({ command: fixtureCommand, userHomeDir: root, homeDir: path.dirname(configDir), configDir, cwd: root, env: { ...process.env, ORDINARY_TOOL_TOKEN: "synthetic-tool-value" }, egressProfile: profile, signal: controller.signal, registerProcessControl: (value) => { control = value; } });
@@ -282,6 +293,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     assert.equal(completed.needsAttention, false, JSON.stringify(completed));
     assert.equal(completed.selectedAccount.binding, "a");
     assert.equal(await fs.readFile(path.join(routines.cwd, "tool-proof.txt"), "utf8"), "native-tool-ok");
+    await verifyOsScheduledRoutine({ root, profile, destination, claudeBin: process.env.AIMGR_TEST_CLAUDE_BIN });
+    await verifyInteractiveRoutine({ root, profile, destination, claudeBin: process.env.AIMGR_TEST_CLAUDE_BIN });
     const subagent = await nativeTurn("Delegate the synthetic child task. NATIVE_SUBAGENT_PARENT.");
     assert.equal(subagent.status, 0, JSON.stringify(subagent));
     assert.equal(JSON.parse(subagent.stdout).subagent_stats.spawned, 1);
@@ -296,13 +309,18 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   const partialExit = once(partial, "exit");
   partial.stdin.end(JSON.stringify({ ...manifest, profiles: { test_b: manifest.profiles.test_b } }));
   assert.equal((await partialExit)[0], 125);
-  const wrongRoute = `import { SocksClient } from "socks"; try { await SocksClient.createConnection({ proxy: { host: "127.0.0.1", port: ${b.port}, type: 5 }, command: "connect", destination: { host: "198.18.0.10", port: ${originPort} }, timeout: 500 }); process.exit(9); } catch { process.exit(0); }`;
-  await exec("python3", [helper, "run", "test_a", binding("test_a"), "--", process.execPath, "--input-type=module", "-e", wrongRoute]);
+  const nestedB = { profileRef: "test_b", label: "b", socksHost: "127.0.0.1", socksPort: b.port, expectedExits: ["127.0.0.3"], exitCheckUrl: `${destination}/exit` };
+  if (failedOccurrence) await verifyRoutineConcurrency({ root, profileB: nestedB, destination, claudeBin: process.env.AIMGR_TEST_CLAUDE_BIN, runningA: failedOccurrence, routineA: routines, modelRequests });
+  const nestedCode = `import {prepareClaudeNativeRoute} from ${JSON.stringify(new URL("../../src/network/claude-native-route.js", import.meta.url).href)};import {execFile} from 'node:child_process';import {promisify} from 'node:util';const next=await prepareClaudeNativeRoute({profile:${JSON.stringify(nestedB)},command:process.execPath,args:['--input-type=module','-e',${JSON.stringify(`console.log(await (await fetch(${JSON.stringify(destination + "/nested-B")})).text())`)}]});process.stdout.write((await promisify(execFile)(next.command,next.args)).stdout);`;
+  assert.equal((await exec(process.execPath, ["--input-type=module", "-e", nestedCode])).stdout.trim(), "127.0.0.3");
+  assert.equal((await exec("python3", [helper, "run", "test_a", binding("test_a"), "--", process.execPath, "--input-type=module", "-e", nestedCode])).stdout.trim(), "127.0.0.3");
   const a1Exit = once(a1.child, "exit"), a2Exit = once(a2.child, "exit");
   const tunnelExit = once(a.child, "exit");
   a.child.kill("SIGTERM");
   await tunnelExit;
   await verifyStartupDenied({ root, profile, destination, phase: "tunnel-down", received });
+  const failedStartup = routines ? await verifyScheduledStartupFailure({ root, profile, profileB: nestedB, destination,
+    ordinaryDestination, claudeBin: process.env.AIMGR_TEST_CLAUDE_BIN, modelRequests }) : null;
   const repaired = await startProxy("127.0.0.2", a.port);
   assert.equal((await a1Exit)[0], 125);
   assert.equal((await a2Exit)[0], 125);
@@ -319,6 +337,13 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   // The health monitor may observe the same tunnel outage and stop the
   // adapter. Explicit recovery repairs both components before a new launch.
   await exec("sudo", ["systemctl", "restart", services[0]]);
+  if (routines) await routines.maintain();
+  if (failedStartup) assert.equal((await failedStartup.duplicate()).outcome, "duplicate");
+  const scheduledNoReplay = [];
+  if (routines) for (const phase of ["before", "during"]) scheduledNoReplay.push(await verifyScheduledInterruption({ root, profile, destination,
+    claudeBin: process.env.AIMGR_TEST_CLAUDE_BIN, modelRequests, phase,
+    stopRoute: () => exec("sudo", ["systemctl", "stop", services[0]]),
+    repairRoute: () => exec("sudo", ["systemctl", "start", services[0]]) }));
   if (routines) {
     const recovered = await nativeTurn("Continue the saved conversation after explicit proxy repair.", ["--resume", savedNativeSessionId]);
     assert.equal(recovered.status, 0, JSON.stringify(recovered));
@@ -335,6 +360,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   await exec("sudo", ["systemctl", "stop", services[0]]);
   assert.equal((await explicitExit)[0], 125, "adapter loss also stops the account");
   await verifyStartupDenied({ root, profile, destination, phase: "adapter-down", received });
+  if (routines) await verifyScheduledStartupFailure({ root, profile, profileB: nestedB, destination,
+    ordinaryDestination, claudeBin: process.env.AIMGR_TEST_CLAUDE_BIN, modelRequests, phase: "adapter-down" });
   await assert.rejects(exec("python3", [helper, "run", "test_a", binding("test_a"), "--", process.execPath, "-e", "process.exit(9)"]), error => error.code === 125);
   await exec("sudo", ["systemctl", "start", services[0]]);
   const orphanScript = `setInterval(async () => { try { await fetch(${JSON.stringify(destination + "/orphan-a")}, { headers: { "x-issued-at": String(Date.now()) } }); } catch {} }, 100);`;
@@ -375,6 +402,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   const { stdout: adapterPid } = await exec("lsof", ["-nP", "-t", "-iTCP:15085", "-sTCP:LISTEN"]);
   const adapterHangStart = Date.now();
   process.kill(Number(adapterPid.trim()), "SIGSTOP");
+  await verifyStartupDenied({ root, profile, destination, phase: "adapter-hung", received });
   assert.equal((await adapterExit)[0], 125, "a live but unresponsive adapter stops native work");
   assert.ok(Date.now() - adapterHangStart < 20000);
   assert.equal(b1.child.exitCode, null, "healthy B continues while A's adapter hangs");
@@ -390,5 +418,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   const healthyCount = b1.lines.length;
   await delay(250);
   assert.ok(b1.lines.length > healthyCount);
-  assert.equal(received.filter((r) => !["/control", "/startup-ordinary"].includes(r.path)).every((r) => ["127.0.0.2", "127.0.0.3"].includes(r.route)), true);
+  for (const assertNoReplay of scheduledNoReplay) assertNoReplay();
+  assertScheduledModelRoutes(modelRequests, modelRoutes, "198.18.0.10");
+  assert.ok(received.some(row => row.ordinaryLane && row.route === "198.18.0.10"));
+  assert.deepEqual(received.filter(r => !["/control", "/startup-ordinary"].includes(r.path) && !r.ordinaryLane && !["127.0.0.2", "127.0.0.3"].includes(r.route)), []);
 });

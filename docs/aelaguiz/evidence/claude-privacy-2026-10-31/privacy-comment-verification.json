@@ -1,0 +1,54 @@
+{
+  "checkedAt": "2026-11-01T14:09:13.400261+00:00",
+  "finalSourceManifest": "native-final-source-manifest.json",
+  "finalFilesMatchedBothHosts": 64,
+  "syntax": {
+    "javascriptBothHosts": "PASS",
+    "pythonBothHosts": "PASS",
+    "darwinCHelpers": "clang -fsyntax-only PASS"
+  },
+  "focusedLinux": {
+    "tests": 101,
+    "passed": 101,
+    "failed": 0,
+    "durationMs": 16583.000975
+  },
+  "focusedMac": {
+    "tests": 101,
+    "passedInitially": 96,
+    "failedInitially": 5,
+    "cause": "Missing synthetic loopback aliases 127.0.0.2/.3 after native fixture cleanup; confirmed via ifconfig.",
+    "affectedFilesRerun": {
+      "tests": 14,
+      "passed": 14,
+      "failed": 0,
+      "durationMs": 3164.272541,
+      "aliasesRemovedAfterward": true
+    }
+  },
+  "newMaintenanceCases": {
+    "linux": {
+      "passed": 10,
+      "failed": 0,
+      "durationMs": 2111.803553
+    },
+    "macos": {
+      "passed": 10,
+      "failed": 0,
+      "durationMs": 489.439833
+    }
+  },
+  "logHashes": {
+    "final-cache-regression-linux.txt": "7fad112705ec938d48a017123532ded0926b49e232f2e4339d9a1f4116e5cc3b",
+    "post-comments-linux.txt": "c52c5063034c610c9c7839e5ce7152017e593eddd32f56c72c36e70202183dc3",
+    "final-cache-regression-mac.txt": "fd6319e6ea86b5a363b5a9e95e5f12967746c02122de1be24e0a304556cc367c",
+    "post-comments-mac-route-rerun.txt": "6d239581ff5de6e3ce97f8c104fcb10e387157d951751a23574a90ccdc6e06fb",
+    "post-comments-mac.txt": "c54e6d3bd6db039fd2fe461a0b037b2b45308df7a2164c8b2730997ea62f32e6"
+  },
+  "postVerificationFormatting": {
+    "path": "test/network/native-features-fixture.js",
+    "beforeSha256": "010bb9dab322bc8a0d8a527b47a7ace5cdbef1cb88c65dccbf7c162e8c1519e1",
+    "afterSha256": "4a342e136fc4002a255658aff3a13549f86d87ff93d9a119ba12cdf7b3884a68",
+    "change": "Remove two trailing spaces from an otherwise blank line outside any string; no test behavior change."
+  }
+}

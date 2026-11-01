@@ -21,6 +21,10 @@ export function buildCoordinationView(snapshot, { localState = null, provider = 
   const providerScope = normalizeProviderId(provider);
   state.targets = local.targets;
   state.pool = local.pool;
+  // A different provider may reuse the same label and overwrite the legacy map
+  // while Claude credentials remain. Protected request owners use this qualified
+  // map so that collision cannot erase the Claude account's route assignment.
+  // Regression: test/network/claude-optional-privacy.test.js (provider collision).
   state.accountsByProvider = {};
 
   for (const record of snapshot?.credentials ?? []) {

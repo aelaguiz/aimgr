@@ -42,6 +42,9 @@ function watchSocksListener(profile, timeoutMs, onFailure) {
   return { ready, close() { stopped = true; socket.destroy(); } };
 }
 
+// The probe carries no account token and uses the same assigned SOCKS path.
+// expectedExits is approved configuration: never learn/trust the observed IP
+// here, which would turn a wrong-route result into successful admission.
 export async function checkClaudeRouteExit(profile, { timeoutMs = 8000, signal } = {}) {
   signal?.throwIfAborted();
   const probe = createClaudeTransport(profile, { timeoutMs, isProbe: true });
@@ -63,6 +66,10 @@ export function createClaudeTransport(profile, { timeoutMs = 8000, healthInterva
   let watcher = null;
   let healthTimer = null;
   const requests = new AbortController();
+  // R6: latch failure for this operation forever, including in-flight reads.
+  // A repaired/restarted tunnel must not revive pooled sockets or replay work.
+  // Only an explicitly requested new operation gets a new transport.
+  // Regression: test/network/claude-transport.test.js (outage and recovery).
   const fail = (cause) => {
     if (!terminalError) {
       terminalError = cause instanceof ClaudeRouteError ? cause
@@ -133,6 +140,9 @@ export function createClaudeTransport(profile, { timeoutMs = 8000, healthInterva
     }, healthIntervalMs);
     healthTimer.unref();
   };
+  // A healthy route leaves destination errors as destination errors. Conversely,
+  // an outage after response headers must still report a routing failure, not
+  // become a generic stream/JSON error that selection might treat as retryable.
   const classifyFailure = async (error) => {
     if (terminalError) return terminalError;
     if (isProbe) return error;
@@ -206,6 +216,10 @@ export function createClaudeTransport(profile, { timeoutMs = 8000, healthInterva
 }
 
 // Resolve account and route together; callers cannot supply a token/dispatcher pair.
+// R4/R5: credential and immutable route come from the same provider-qualified
+// snapshot; this operation owns its connection pool. Do not introduce a global
+// dispatcher or independently selected token. Concurrent A/B must stay separate.
+// Regression: test/network/claude-transport.test.js (concurrent accounts).
 export function createClaudeAccountTransport({ label, state, profiles, ...options }) {
   const account = state?.accounts?.[label];
   if (account?.provider !== "anthropic") throw new ClaudeRouteError("invalid_account", { label });

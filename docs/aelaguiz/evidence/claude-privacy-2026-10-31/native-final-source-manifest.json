@@ -1,0 +1,269 @@
+{
+  "checkedAt": "2026-11-01T14:03:33.879039+00:00",
+  "baseRevision": "4ab4af1bf56fc01228c297f71c5bf68b7ff6d091",
+  "parentRevision": "60917e741b9d065b2ddb03151df963de6f4d0c5d",
+  "files": [
+    {
+      "path": "native/claude/darwin_identity.c",
+      "sha256": "4e8e69229ea7c39f0facb57a800ecea2981276330a5a042f766bcb157a96f900"
+    },
+    {
+      "path": "native/claude/darwin_launch.c",
+      "sha256": "fcb41b61cab9d839d87278629798162d59d116815c4a8b9daa7b3552b53f392d"
+    },
+    {
+      "path": "native/claude/darwin_proxy.py",
+      "sha256": "080f1dc661462c9147211180f21911adc6fa18607c14aec3df7dbb3baa9bfff6"
+    },
+    {
+      "path": "native/claude/linux_proxy.py",
+      "sha256": "0b9d66181350d3b74fd8475654b296284a2797d02eb54028c422bbaa781c0214"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "a781b5c1c8a3c4dad7ea1a951e341a4210c1b2421f6c48a3b1599adee93aa23a"
+    },
+    {
+      "path": "package.json",
+      "sha256": "87e486d503ac457e9c07af18e968049f9fb9dda19c451376f851a131535e85d4"
+    },
+    {
+      "path": "scripts/claude-login-browser.mjs",
+      "sha256": "6bc6f8b9f616e9a08e3ce1d92a9a17802aa85773edd2120cd4592599390e68f9"
+    },
+    {
+      "path": "scripts/claude-privacy-dev-bootstrap.sh",
+      "sha256": "23c8f570c7e0d931a076046f8246088f59c1f4d4c6f8d8b7fe24a35f6bd0262a"
+    },
+    {
+      "path": "scripts/install-claude-proxy-linux.sh",
+      "sha256": "230c5b9cbecd2470bb06d80a89b3983644229ba9a28667ec2439d2d8b9a2ef97"
+    },
+    {
+      "path": "scripts/install-claude-proxy-macos.sh",
+      "sha256": "a6c64fbe9b3097adc2054499d7888f2465bfa72512f9b9bc5c8285d3238b83cd"
+    },
+    {
+      "path": "src/browser/claude-cdp.js",
+      "sha256": "213795ed8547f869d2b7d5716a0874977117f2abc23ac632e5c0f44263fc1e10"
+    },
+    {
+      "path": "src/cli/commands/auth.js",
+      "sha256": "dcf4ca2e15caa178d8ea9277ef5f14205b3660c68ea66a0cb5168f2e5c3c56bb"
+    },
+    {
+      "path": "src/cli/commands/claude.js",
+      "sha256": "4322d7ba409d09540404221e61bbc56964b7f30e58a8f54a1e2e11155b83fa35"
+    },
+    {
+      "path": "src/cli/commands/login.js",
+      "sha256": "1b29a3f23d97b7115edbb502f3863e9a686efb9945828ac0338202f8f90b163a"
+    },
+    {
+      "path": "src/cli/main.js",
+      "sha256": "298aea633b3273bcfb4b620a74b2b6fdbd075c6cf95cbc15b7eeaea3c1674a25"
+    },
+    {
+      "path": "src/config/aimgr-config.js",
+      "sha256": "c3fc25a3a6410906c5bc6e7889d91063e6af45d723fec82fa8b85726da8502c1"
+    },
+    {
+      "path": "src/coordination/login-publish.js",
+      "sha256": "02a8e379e3895f8b8e3d6d71b86a73f448dd1cad0bdf5048c3b915b62b464367"
+    },
+    {
+      "path": "src/coordination/records.js",
+      "sha256": "f8ef12f5860165aee803155bf5661b5de5daf8060aaf3dcb45112f578b8b78fb"
+    },
+    {
+      "path": "src/coordination/runtime.js",
+      "sha256": "febbca20a6d66ae0b0dd84b54725114575525400d2939b8f3304ed3f99617814"
+    },
+    {
+      "path": "src/coordination/snapshot.js",
+      "sha256": "92f8670f05414d2a32eb7c54f34a3f64784ba626e8520eaaf2473b6c604b0c53"
+    },
+    {
+      "path": "src/credentials/claude-maintenance.js",
+      "sha256": "81283ee9c315791f0a186521f982a0a6bbb3786a4980d3790f5db143e4cb0394"
+    },
+    {
+      "path": "src/credentials/harness-access.js",
+      "sha256": "3372d85fa2eb6f55a816cc0a37cdc0edf55b35f809cf27848ba7f7200532c588"
+    },
+    {
+      "path": "src/io/fetch.js",
+      "sha256": "c56f89373cfcaf8c0422f55432649349bcf7f40741560cb92e0eb3297594fafe"
+    },
+    {
+      "path": "src/network/claude-egress-policy.js",
+      "sha256": "23c2816520f8a773e0de48602e56a75aa99c219b06b080c5d2e369c7f9fd3878"
+    },
+    {
+      "path": "src/network/claude-native-route.js",
+      "sha256": "75c20406407670f63f8a0ede04b070ec55617a384d948ddb44b7baa9a6365c1c"
+    },
+    {
+      "path": "src/network/claude-offline-binding.js",
+      "sha256": "1e87d743dd25459555e5e8b155835a3d6017b0b50e21b3655671d141009b7a21"
+    },
+    {
+      "path": "src/network/claude-transport.js",
+      "sha256": "10dc317fdf7af7959d7ae448024754b98a341a0a8c7cc2128d3711452d41523c"
+    },
+    {
+      "path": "src/pool/usage.js",
+      "sha256": "24041fc21ad90959c70601c9262cea96ad5383d54279355699fa56b6e5a0f7e7"
+    },
+    {
+      "path": "src/routines/claude.js",
+      "sha256": "ece50f2f8d324cf71641be3cc053c943f3641951e95e8c51853475b68d3d405c"
+    },
+    {
+      "path": "src/state/account-shape.js",
+      "sha256": "83eb5e2a63b4e5b26650fa3eb0c372133df11f9b0fd666df3858746ca80b400b"
+    },
+    {
+      "path": "src/status/claude-redis-view.js",
+      "sha256": "958085bd62746d615e7ed5392d501ab9e6d176aca3964677dfd43342c5f99c0e"
+    },
+    {
+      "path": "src/targets/claude-cli.js",
+      "sha256": "920ae498fc005ebd35748561b9b49e662983e7312550d3245707c0329584fe0e"
+    },
+    {
+      "path": "src/targets/claude-runner.js",
+      "sha256": "636469c31e991f9d40711b26e5e7c529a0866086f14aac10d1c2e3044de76c77"
+    },
+    {
+      "path": "test/claude/claude-runner.test.js",
+      "sha256": "b00ae359b5da3924e2f2281648915c157c2271bbd5568c8580e4393e2f2ca2c0"
+    },
+    {
+      "path": "test/claude/redis-usage-view.test.js",
+      "sha256": "d802e5b9d8e297235caacbf20a1b99f11b037c39208515835d3bb6aa48852a78"
+    },
+    {
+      "path": "test/cli/auth-maintain-command.test.js",
+      "sha256": "a09e0360d90bdb3265a58d3d383154508109fb9a225b5a384c2657a7004a8c72"
+    },
+    {
+      "path": "test/cli/credential-helper.test.js",
+      "sha256": "e6b8e7faa824376e9e62bde5fcc14dba789cc3f8d4b4b274aef0745dcf312a4f"
+    },
+    {
+      "path": "test/cli/redis-login-command.test.js",
+      "sha256": "bd081fba23706dd6b28fe610131e8196b14728f1047cd85974eca3ba80146d6b"
+    },
+    {
+      "path": "test/cli/redis-projection-command.test.js",
+      "sha256": "18ca7079284b23d434febad6b0e53f7fc17b182a729ead0c93204d618dfff3a7"
+    },
+    {
+      "path": "test/network/claude-chrome.test.js",
+      "sha256": "ac102da22687b39db1c64b601685d399a2771edad29991c75ee0f8f0afc44e46"
+    },
+    {
+      "path": "test/network/claude-native-background.test.js",
+      "sha256": "caa5e6609dc52dfcb096717dca18bdca06ffab9a30d29288b99619fbae4ded32"
+    },
+    {
+      "path": "test/network/claude-native-macos.test.js",
+      "sha256": "3f0686dee9856bea4f6f345afb46f4e2b698a03d11d63c46a21616b8372b3cdf"
+    },
+    {
+      "path": "test/network/claude-native-route.test.js",
+      "sha256": "58fe943bcca968d7deee0538ccf4a4c0f5329dc60588eceb9cff84737ccbc881"
+    },
+    {
+      "path": "test/network/claude-optional-privacy.test.js",
+      "sha256": "59ea7bf4905700799a30cd7242b734ccc6fba4b5c742575d9eb7c77023fa1d2d"
+    },
+    {
+      "path": "test/network/claude-real-accounts.test.js",
+      "sha256": "2deca1f81cf631c42474548a6ab66c4679d6d04c1000683d0840f3fba1485825"
+    },
+    {
+      "path": "test/network/claude-ssh.test.js",
+      "sha256": "849a83c794ba02118aeb10429e537ec8f9458e46e26aff6ef928317263791bcf"
+    },
+    {
+      "path": "test/network/claude-telemetry.test.js",
+      "sha256": "9fbfb1dd51f1614d2109e91a1f40b20ea7c63ea633c36397ea2370dff28bfaee"
+    },
+    {
+      "path": "test/network/claude-transport.test.js",
+      "sha256": "4f797ef764423ada1d98a92e902a3e2fda88b4fcfd5dda3d2f34daa42c963037"
+    },
+    {
+      "path": "test/network/inspect-native-error-optout.mjs",
+      "sha256": "c9eb4495c859179ec950dc71a4df9104e62cef5fca5f00112a9453b0ebb50b03"
+    },
+    {
+      "path": "test/network/native-control-fixture.js",
+      "sha256": "05f93518f9affd2cba779d68f1aabe68d1a70b0e19b83efc395e5d4b44ed20f4"
+    },
+    {
+      "path": "test/network/native-features-fixture.js",
+      "sha256": "4a342e136fc4002a255658aff3a13549f86d87ff93d9a119ba12cdf7b3884a68"
+    },
+    {
+      "path": "test/network/native-macos-groups-fixture.c",
+      "sha256": "7ad62f708df06c7b9fdd7103ad9cf3686d0996422388c07d8a156eb8188ac963"
+    },
+    {
+      "path": "test/network/native-macos-gui-fixture.m",
+      "sha256": "d184c0a9730930b7a96229ee84487a8254e903259aabb2eee6933851ab16d855"
+    },
+    {
+      "path": "test/network/native-profile-validation.test.js",
+      "sha256": "c0e943849419f9a6a87e698358a998aa89a2634687809875c5fe562450927b35"
+    },
+    {
+      "path": "test/network/native-pty-driver.py",
+      "sha256": "2af72acedb1dc60c70b8394b997b0fe456175650b23757ea8fa3880bce5bd7b4"
+    },
+    {
+      "path": "test/network/native-pty-fixture.js",
+      "sha256": "340ce3dde6d11f5b5c100b3332c4d5a29a4a78de46f7242d897df9913bd393a6"
+    },
+    {
+      "path": "test/network/native-routine-fixture.js",
+      "sha256": "b2d25c4bdc9cb12a5b9a957795e2e1d0b53dd582369474501c35806729cc3221"
+    },
+    {
+      "path": "test/network/native-scheduled-failure-fixture.js",
+      "sha256": "b41a284a25de84308dc57f0930a4ee36af4d3e5d949c2c6054d7fb4a608848b7"
+    },
+    {
+      "path": "test/network/native-scheduled-fixture.js",
+      "sha256": "03d1e158dca06a0133964381563ee64a53151d71786c7e964323ddc1c95fc8e3"
+    },
+    {
+      "path": "test/network/native-scheduled-response.js",
+      "sha256": "3d34d21eda2e3f3afbc96cf9dc3247bcbaf1dbcfb8f07ec55706a9546c600589"
+    },
+    {
+      "path": "test/network/native-tty-fixture.py",
+      "sha256": "bc764c8a5edd98287c3783b00d4d585a4a284bf254533d0c9646a6e05ab09f50"
+    },
+    {
+      "path": "test/network/offsite-login-driver.mjs",
+      "sha256": "f71720cec67b07027db9ceab6b11cea1630d9a2658a3cefee98f98813ec792a6"
+    },
+    {
+      "path": "test/network/socks-fixture.js",
+      "sha256": "2202a65df5ade4bcf2749a44afc200e0bf32abf8c6eaf0d7f8a064b7854de12a"
+    },
+    {
+      "path": "test/status/redis-view.test.js",
+      "sha256": "876eb5799cb78e457091cb498f7b0a9b82495b0d041fe1603bb72f857c88f80b"
+    }
+  ],
+  "postVerificationFormatting": {
+    "path": "test/network/native-features-fixture.js",
+    "beforeSha256": "010bb9dab322bc8a0d8a527b47a7ace5cdbef1cb88c65dccbf7c162e8c1519e1",
+    "afterSha256": "4a342e136fc4002a255658aff3a13549f86d87ff93d9a119ba12cdf7b3884a68",
+    "change": "Remove two trailing spaces from an otherwise blank line outside any string; no test behavior change."
+  }
+}

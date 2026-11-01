@@ -1,0 +1,141 @@
+{
+  "checkedAt": "2026-11-01T14:00:31.990213+00:00",
+  "requirement": "R10",
+  "result": "PASS",
+  "method": "Exact line diff: no deletions or replacements; every insertion is a whole-line // comment in JavaScript/C, or # comment in Python/shell. C preprocessor directives are not ignored.",
+  "runtimeTestsSourceManifest": "native-tested-source-manifest.json",
+  "finalSourceManifest": "native-final-source-manifest.json",
+  "files": [
+    {
+      "path": "native/claude/darwin_identity.c",
+      "beforeSha256": "5073ad28347611ba7204ca9e4d2be4e8d0dd2d4f4720272f2b1a05a81dd8926f",
+      "afterSha256": "4e8e69229ea7c39f0facb57a800ecea2981276330a5a042f766bcb157a96f900",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "native/claude/darwin_launch.c",
+      "beforeSha256": "6fa2fc833c44922137630b672e99b327bed810939268d8d3d86314cea7fa4ee6",
+      "afterSha256": "fcb41b61cab9d839d87278629798162d59d116815c4a8b9daa7b3552b53f392d",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "native/claude/darwin_proxy.py",
+      "beforeSha256": "6fdd11bd0ce8d2419d8f38ea6d71d6a74167c942679e93d1ba6015f8477bb785",
+      "afterSha256": "080f1dc661462c9147211180f21911adc6fa18607c14aec3df7dbb3baa9bfff6",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "native/claude/linux_proxy.py",
+      "beforeSha256": "d20a7dcbe604463d3337d79bff4fcd6c9e77b63307f8c9de5f4f0a807d1ee78f",
+      "afterSha256": "0b9d66181350d3b74fd8475654b296284a2797d02eb54028c422bbaa781c0214",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "scripts/claude-login-browser.mjs",
+      "beforeSha256": "f95474602a5ab607db582cd862b6b0d51c22ed82410fe9ee07f033d25111056a",
+      "afterSha256": "6bc6f8b9f616e9a08e3ce1d92a9a17802aa85773edd2120cd4592599390e68f9",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "scripts/install-claude-proxy-macos.sh",
+      "beforeSha256": "917cec0410d2be0986dc12afd483415002b9377065ebabaca3b38f8415e130cc",
+      "afterSha256": "a6c64fbe9b3097adc2054499d7888f2465bfa72512f9b9bc5c8285d3238b83cd",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/browser/claude-cdp.js",
+      "beforeSha256": "14d3b1715e4f778aa8f5d20df9a2ba420f2843e8a80d97c15ada2625162411ee",
+      "afterSha256": "213795ed8547f869d2b7d5716a0874977117f2abc23ac632e5c0f44263fc1e10",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/cli/commands/auth.js",
+      "beforeSha256": "6d3e793124c2cc90be9f66b511fa07356311e9249e8c59af143c37b80111f297",
+      "afterSha256": "dcf4ca2e15caa178d8ea9277ef5f14205b3660c68ea66a0cb5168f2e5c3c56bb",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/cli/commands/claude.js",
+      "beforeSha256": "9222bbcf7dc07ed26bacb1f89b0fab67bd1feac7cf81d7c589434cd4e61c56d9",
+      "afterSha256": "4322d7ba409d09540404221e61bbc56964b7f30e58a8f54a1e2e11155b83fa35",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/cli/commands/login.js",
+      "beforeSha256": "e0c0cfd45dc39c3e2e2c4cf5275ab121e3f8fc5a191ed2f0b7d364eb63079506",
+      "afterSha256": "1b29a3f23d97b7115edbb502f3863e9a686efb9945828ac0338202f8f90b163a",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/coordination/login-publish.js",
+      "beforeSha256": "0940a574c7f79b120db9b5e9473489ec5b94831729150dd024693643ca81ba60",
+      "afterSha256": "02a8e379e3895f8b8e3d6d71b86a73f448dd1cad0bdf5048c3b915b62b464367",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/coordination/runtime.js",
+      "beforeSha256": "ef0925f3c1195918e4121cb6ed3825d1ac7c2a055d88ed8c53050db461492a3e",
+      "afterSha256": "febbca20a6d66ae0b0dd84b54725114575525400d2939b8f3304ed3f99617814",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/coordination/snapshot.js",
+      "beforeSha256": "af52f0f3242518b136011229f6880a40e130b4dfb1d6edfe2c64efd72d8e3cff",
+      "afterSha256": "92f8670f05414d2a32eb7c54f34a3f64784ba626e8520eaaf2473b6c604b0c53",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/credentials/claude-maintenance.js",
+      "beforeSha256": "ce8454622c0cbbbfe393a08aed1953a45f5f0beea1c26e98649c5dada78311ba",
+      "afterSha256": "81283ee9c315791f0a186521f982a0a6bbb3786a4980d3790f5db143e4cb0394",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/network/claude-egress-policy.js",
+      "beforeSha256": "014b2b5c1bd43740dee7dca10afd5ab917cdd3cb050e0583c9601c820a3d46dc",
+      "afterSha256": "23c2816520f8a773e0de48602e56a75aa99c219b06b080c5d2e369c7f9fd3878",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/network/claude-native-route.js",
+      "beforeSha256": "bdbb3287f66a1b50e125216720071a3e0a1cd72fd834b9447d30090d1fa6a919",
+      "afterSha256": "75c20406407670f63f8a0ede04b070ec55617a384d948ddb44b7baa9a6365c1c",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/network/claude-transport.js",
+      "beforeSha256": "3e28d7462c2277bb7d275cecdf1c77dc06737568fe0b894994b1b8a3b9585a27",
+      "afterSha256": "10dc317fdf7af7959d7ae448024754b98a341a0a8c7cc2128d3711452d41523c",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/pool/usage.js",
+      "beforeSha256": "738463281500d81f9ce189ab384ce028deb9d2dc8edcee5ad25523474169d9a0",
+      "afterSha256": "24041fc21ad90959c70601c9262cea96ad5383d54279355699fa56b6e5a0f7e7",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/routines/claude.js",
+      "beforeSha256": "801e7c8bafa151da1f88151b735b85a851d466e4dcd041402a545d5e0964100e",
+      "afterSha256": "ece50f2f8d324cf71641be3cc053c943f3641951e95e8c51853475b68d3d405c",
+      "onlyWholeLineCommentsAdded": true
+    },
+    {
+      "path": "src/targets/claude-runner.js",
+      "beforeSha256": "0994123cc2370dea0315994bda27b3d9a0a3dba383c6570bec71fcb2eccbab22",
+      "afterSha256": "636469c31e991f9d40711b26e5e7c529a0866086f14aac10d1c2e3044de76c77",
+      "onlyWholeLineCommentsAdded": true
+    }
+  ],
+  "additionalTestOnlyChange": {
+    "path": "test/cli/auth-maintain-command.test.js",
+    "change": "Expand remote opt-in regression to separately assert missing profile, reauthentication-blocked and missing-credential early exits; each must invalidate the old ordinary offline cache and deny a disconnected launch.",
+    "productionCodeChanged": false
+  },
+  "postVerificationFormatting": {
+    "path": "test/network/native-features-fixture.js",
+    "beforeSha256": "010bb9dab322bc8a0d8a527b47a7ace5cdbef1cb88c65dccbf7c162e8c1519e1",
+    "afterSha256": "4a342e136fc4002a255658aff3a13549f86d87ff93d9a119ba12cdf7b3884a68",
+    "change": "Remove two trailing spaces from an otherwise blank line outside any string; no test behavior change."
+  }
+}

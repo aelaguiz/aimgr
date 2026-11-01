@@ -475,26 +475,40 @@ test("ordinary Claude maintenance refreshes with no proxy configuration and pres
 });
 
 
-test("maintenance remembers a remotely opted-in account before a failing profile check can expose its old ordinary cache", async () => {
-  const record = claudeRecord("ordinary"); delete record.policy.egress;
-  const runtime = await setup([record]);
-  const deps = { nowImpl: () => NOW_MS, connectRedisStoreImpl: runtime.connectRedisStoreImpl, resolveExecutableOnPathImpl: buildTestClaudeResolver() };
-  try {
-    await runCli(["claude", "run", "ordinary", "--home", runtime.home], { ...deps, runClaudeCliImpl: () => ({ status: 0, signal: null }) });
-    assert.equal(readClaudeOfflineBinding(runtime.home, "ordinary"), null);
-    const current = (await readSnapshot(runtime.store)).credentials[0];
-    assert.equal((await publishCredential(runtime.store, { expectedVersion: current.version, credentialRecord: { ...current, policy: { ...current.policy, reauth: {}, egress: { profileRef: "not-installed" } } }, updatedBy: "explicit-opt-in" })).ok, true);
-    const result = await runCliWithExitCode(["auth", "maintain", "--home", runtime.home], {
-      ...deps, runClaudeCliNoninteractiveImpl: () => { throw new Error("invalid protected config reached child launch"); },
-    });
-    assert.match(result.stdout, /label=ordinary outcome=retryable reason=proxy_unavailable/);
-    assert.deepEqual(readClaudeOfflineBinding(runtime.home, "ordinary"), { required: true, invalidated: true });
-    await assert.rejects(runCli(["claude", "run", "ordinary", "--home", runtime.home], {
-      ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); },
-      runClaudeCliImpl: () => { throw new Error("protected cache reached ordinary child launch"); },
-    }), /cached proxy assignment/);
-  } finally { fs.rmSync(runtime.home, { recursive: true, force: true }); }
-});
+for (const scenario of ["missing-profile", "blocked", "missing-credential"]) {
+  // Each case starts with a usable ordinary cache, then observes a remote opt-in.
+  // Even paths that skip maintenance must leave that cache unable to launch direct.
+  test(`maintenance remembers remote opt-in before ${scenario} can expose its old ordinary cache`, async () => {
+    const record = claudeRecord("ordinary"); delete record.policy.egress;
+    const runtime = await setup([record]);
+    const deps = { nowImpl: () => NOW_MS, connectRedisStoreImpl: runtime.connectRedisStoreImpl, resolveExecutableOnPathImpl: buildTestClaudeResolver() };
+    try {
+      await runCli(["claude", "run", "ordinary", "--home", runtime.home], { ...deps, runClaudeCliImpl: () => ({ status: 0, signal: null }) });
+      assert.equal(readClaudeOfflineBinding(runtime.home, "ordinary"), null);
+      const current = (await readSnapshot(runtime.store)).credentials[0];
+      const protectedRecord = { ...current,
+        credential: scenario === "missing-credential" ? {} : current.credential,
+        policy: { ...current.policy,
+          reauth: scenario === "blocked" ? { blockedReason: "oauth_reauth_required" } : {},
+          egress: { profileRef: "not-installed" } },
+      };
+      assert.equal((await publishCredential(runtime.store, { expectedVersion: current.version,
+        credentialRecord: protectedRecord, updatedBy: "explicit-opt-in" })).ok, true);
+      const result = await runCliWithExitCode(["auth", "maintain", "--home", runtime.home], {
+        ...deps, runClaudeCliNoninteractiveImpl: () => { throw new Error("invalid protected config reached child launch"); },
+      });
+      const expected = scenario === "missing-profile" ? "outcome=retryable reason=proxy_unavailable"
+        : scenario === "blocked" ? "outcome=skipped reason=reauth_already_required"
+        : "outcome=skipped reason=credential_missing";
+      assert.ok(result.stdout.includes(`label=ordinary ${expected}`), result.stdout);
+      assert.deepEqual(readClaudeOfflineBinding(runtime.home, "ordinary"), { required: true, invalidated: true });
+      await assert.rejects(runCli(["claude", "run", "ordinary", "--home", runtime.home], {
+        ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); },
+        runClaudeCliImpl: () => { throw new Error("protected cache reached ordinary child launch"); },
+      }), /cached proxy assignment/);
+    } finally { fs.rmSync(runtime.home, { recursive: true, force: true }); }
+  });
+}
 
 
 test("maintenance losing its lease during preflight cannot restore an invalidated protected cache", async () => {

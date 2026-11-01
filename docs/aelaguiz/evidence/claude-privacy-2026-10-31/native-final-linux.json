@@ -1,0 +1,389 @@
+{
+  "checkedAt": "2026-11-01T13:48:49.073458+00:00",
+  "environment": {
+    "os": "Ubuntu 24.04 x86_64",
+    "node": "24.22.2",
+    "claude": "2.1.316",
+    "singBox": "1.14.4",
+    "testHost": "isolated GCP development VM"
+  },
+  "sourceManifest": "native-tested-source-manifest.json",
+  "nativeMatrix": {
+    "command": "AIMGR_TEST_NATIVE_PROXY=1 AIMGR_TEST_CLAUDE_BIN=/home/aimdev/.local/bin/claude node --test test/network/claude-native-route.test.js",
+    "log": "native-scheduled-final-v3.txt",
+    "status": "passed",
+    "durationMs": 413544.559335,
+    "receipts": [
+      {
+        "transition": {
+          "oldWriterStopped": true,
+          "failedInstallClosed": true,
+          "failedVerificationClosed": true,
+          "historyPreserved": true
+        }
+      },
+      {
+        "nativeTerminalCleanup": {
+          "hardKilledChild": true,
+          "nativeExit": 137,
+          "fullTerminalRestored": true
+        }
+      },
+      {
+        "osScheduledRoutine": {
+          "scheduler": "systemd transient timer",
+          "expectedStart": "2026-11-01T13:42:00.000Z",
+          "actualStart": "2026-11-01T13:42:01.066Z",
+          "timezone": "UTC",
+          "fireKey": "test-privacy-181320--2026-11-01T13-42+0000",
+          "outcome": "completed",
+          "selectedAccount": "a",
+          "unattended": true,
+          "nativeToolCompleted": true,
+          "substituted": [
+            "Herdr UI",
+            "Redis wire",
+            "print mode instead of interactive follow-up"
+          ]
+        }
+      },
+      {
+        "interactiveRoutine": {
+          "initialTurnCompleted": true,
+          "followupCompleted": true,
+          "nativeExit": 0,
+          "terminalRestored": true,
+          "terminalCheckedBeforeAimExit": true,
+          "personJoinedAt": "2026-11-01T13:42:14.464Z",
+          "outcome": "completed",
+          "resizeRequested": true,
+          "inSessionScheduledWakeupCompleted": true
+        }
+      },
+      {
+        "unattendedMaintenance": {
+          "unavailable": false,
+          "activeLease": true,
+          "output": "provider=anthropic label=a outcome=skipped reason=lease_busy\nrefreshed=0 unchanged=0 reauth_required=0 retryable=0 skipped=1",
+          "assignmentAndIdentityPreserved": true,
+          "nativeCommand": "synthetic refresh exchange; actual AIM maintenance and native enforcement"
+        }
+      },
+      {
+        "scheduledConcurrency": {
+          "bCompletesWhileAWaits": true,
+          "duplicate": "duplicate",
+          "overlap": "overlap"
+        }
+      },
+      {
+        "startupFailure": {
+          "phase": "tunnel-down",
+          "code": 1,
+          "message": "aim: Claude protected: assigned proxy is unavailable. Claude cannot start or continue. Repair the proxy/tunnel, then explicitly retry or resume (test_a).",
+          "protectedChildStarted": false,
+          "protectedRequests": 0,
+          "ordinaryAccountLaunched": true
+        }
+      },
+      {
+        "unattendedMaintenance": {
+          "unavailable": true,
+          "activeLease": false,
+          "output": "provider=anthropic label=a outcome=retryable reason=proxy_unavailable detail=\"connect ECONNREFUSED 127.0.0.1:40613\"\nrefreshed=0 unchanged=0 reauth_required=0 retryable=1 skipped=0",
+          "assignmentAndIdentityPreserved": true,
+          "nativeCommand": "synthetic refresh exchange; actual AIM maintenance and native enforcement"
+        }
+      },
+      {
+        "scheduledStartupFailure": {
+          "phase": "down",
+          "persistedError": "Claude a: assigned proxy is unavailable. Claude cannot start or continue. Repair the proxy/tunnel, then explicitly retry or resume (test_a).",
+          "promptAdmitted": false,
+          "modelRequests": 0,
+          "exitCode": 1,
+          "healthyBCompleted": true,
+          "ordinaryCompleted": true,
+          "duplicate": "duplicate"
+        }
+      },
+      {
+        "unattendedMaintenance": {
+          "unavailable": false,
+          "activeLease": false,
+          "output": "provider=anthropic label=a outcome=refreshed reason=credential_rotated\nrefreshed=1 unchanged=0 reauth_required=0 retryable=0 skipped=0",
+          "assignmentAndIdentityPreserved": true,
+          "nativeCommand": "synthetic refresh exchange; actual AIM maintenance and native enforcement"
+        }
+      },
+      {
+        "interactiveRoutine": {
+          "initialTurnCompleted": true,
+          "followupCompleted": true,
+          "nativeExit": 125,
+          "terminalRestored": true,
+          "terminalCheckedBeforeAimExit": true,
+          "personJoinedAt": "2026-11-01T13:44:40.058Z",
+          "outcome": "completed",
+          "resizeRequested": true,
+          "inSessionScheduledWakeupCompleted": false
+        }
+      },
+      {
+        "inSessionScheduledFailure": {
+          "phase": "before",
+          "nativeExit": 125,
+          "repairedWithoutReplay": true,
+          "terminalRestored": true
+        }
+      },
+      {
+        "interactiveRoutine": {
+          "initialTurnCompleted": true,
+          "followupCompleted": true,
+          "nativeExit": 125,
+          "terminalRestored": true,
+          "terminalCheckedBeforeAimExit": true,
+          "personJoinedAt": "2026-11-01T13:44:54.036Z",
+          "outcome": "completed",
+          "resizeRequested": true,
+          "inSessionScheduledWakeupCompleted": false
+        }
+      },
+      {
+        "inSessionScheduledFailure": {
+          "phase": "during",
+          "nativeExit": 125,
+          "repairedWithoutReplay": true,
+          "terminalRestored": true
+        }
+      },
+      {
+        "nativeRoutineReceipts": [
+          {
+            "fireKey": "native--2026-10-31T07-00+0000",
+            "outcome": "completed",
+            "selectedAccount": "a",
+            "promptAdmitted": true,
+            "initialTurn": "idle",
+            "exitCode": 0,
+            "nativeExit": 0,
+            "needsAttention": false
+          },
+          {
+            "fireKey": "native--2026-10-31T07-01+0000",
+            "outcome": "needs_attention",
+            "selectedAccount": "a",
+            "promptAdmitted": true,
+            "initialTurn": "uncertain",
+            "exitCode": 1,
+            "nativeExit": 125,
+            "needsAttention": true
+          },
+          {
+            "fireKey": "native--2026-10-31T07-02+0000",
+            "outcome": "completed",
+            "selectedAccount": "a",
+            "promptAdmitted": true,
+            "initialTurn": "idle",
+            "exitCode": 0,
+            "nativeExit": 0,
+            "needsAttention": false
+          }
+        ]
+      },
+      {
+        "startupFailure": {
+          "phase": "adapter-down",
+          "code": 125,
+          "message": "Claude account unknown, proxy test_a unavailable during probe: ConnectionRefusedError. Repair the proxy/tunnel, then explicitly retry or resume.\nClaude account protected, proxy test_a unavailable during run: CalledProcessError. Repair the proxy/tunnel, then explicitly retry or resume.",
+          "protectedChildStarted": false,
+          "protectedRequests": 0,
+          "ordinaryAccountLaunched": true
+        }
+      },
+      {
+        "unattendedMaintenance": {
+          "unavailable": true,
+          "activeLease": false,
+          "output": "provider=anthropic label=a outcome=retryable reason=proxy_unavailable detail=\"claude /usage exited with status 125\"\nrefreshed=0 unchanged=0 reauth_required=0 retryable=1 skipped=0",
+          "assignmentAndIdentityPreserved": true,
+          "nativeCommand": "synthetic refresh exchange; actual AIM maintenance and native enforcement"
+        }
+      },
+      {
+        "scheduledStartupFailure": {
+          "phase": "adapter-down",
+          "persistedError": "Claude a exited with status 125 while using proxy test_a. Check the job log; if the proxy/tunnel is unavailable, repair it, then explicitly retry or resume.",
+          "promptAdmitted": false,
+          "modelRequests": 0,
+          "exitCode": 1,
+          "healthyBCompleted": true,
+          "ordinaryCompleted": true,
+          "duplicate": "duplicate"
+        }
+      },
+      {
+        "startupFailure": {
+          "phase": "adapter-hung",
+          "code": 125,
+          "message": "Claude account unknown, proxy test_a unavailable during probe: TimeoutError. Repair the proxy/tunnel, then explicitly retry or resume.\nClaude account protected, proxy test_a unavailable during run: CalledProcessError. Repair the proxy/tunnel, then explicitly retry or resume.",
+          "protectedChildStarted": false,
+          "protectedRequests": 0,
+          "ordinaryAccountLaunched": true
+        }
+      }
+    ],
+    "subsequentChange": "Foreground-only terminal restoration. Both installed-wrapper modes rechecked below; no networking change."
+  },
+  "finalTerminalChecks": [
+    {
+      "nativeTerminalCleanup": {
+        "case": "hard-exit",
+        "nativeExit": 137,
+        "fullTerminalRestored": true,
+        "backgroundJobStopped": false
+      }
+    },
+    {
+      "nativeTerminalCleanup": {
+        "case": "background",
+        "nativeExit": 0,
+        "fullTerminalRestored": true,
+        "backgroundJobStopped": false
+      }
+    }
+  ],
+  "regressionSuite": {
+    "total": 639,
+    "passed": 628,
+    "failed": 1,
+    "skipped": 10,
+    "log": "final-linux-suite.txt",
+    "failure": "300ms test deadline expired before Node child wrote tree-pids.json on the busy two-core VM",
+    "correction": "Allow 1500ms startup/run interval in test only; retain 100ms termination grace and descendant-death assertions",
+    "focusedRerun": {
+      "log": "timeout-descendant-final.txt",
+      "passed": 1,
+      "failed": 0,
+      "durationMs": 1957.337171
+    },
+    "interpretation": "All executed regression cases pass with the focused corrected-case rerun; opt-in skips require their separate runtime evidence."
+  },
+  "realSacrificialAccounts": {
+    "passed": 3,
+    "failed": 0,
+    "durationMs": 24281.091548,
+    "log": "real-final-linux.txt",
+    "receipts": [
+      {
+        "realProxyStartup": {
+          "checkedAt": "2026-11-01T13:47:57.908Z",
+          "label": "proxy5",
+          "proxy": "proxy5",
+          "exitCode": 1,
+          "error": "aim: Claude proxy5: assigned proxy is unavailable. Claude cannot start or continue. Repair the proxy/tunnel, then explicitly retry or resume (proxy5).",
+          "durationMs": 832,
+          "nativeOwnersAbsent": true,
+          "platform": "linux",
+          "localChromeTunnelChanged": false
+        }
+      },
+      {
+        "realNativeConcurrency": [
+          {
+            "label": "proxy5",
+            "name": "a2",
+            "startedAt": 1793540878719,
+            "finishedAt": 1793540893895,
+            "code": 0,
+            "signal": null,
+            "stopReason": "end_turn",
+            "isError": false,
+            "markerPresent": true,
+            "assignedExitPresent": true
+          },
+          {
+            "label": "proxy6",
+            "name": "b1",
+            "startedAt": 1793540878735,
+            "finishedAt": 1793540895820,
+            "code": 0,
+            "signal": null,
+            "stopReason": "end_turn",
+            "isError": false,
+            "markerPresent": true,
+            "assignedExitPresent": true
+          },
+          {
+            "label": "proxy5",
+            "name": "a1",
+            "startedAt": 1793540878702,
+            "finishedAt": 1793540895843,
+            "code": 0,
+            "signal": null,
+            "stopReason": "end_turn",
+            "isError": false,
+            "markerPresent": true,
+            "assignedExitPresent": true
+          }
+        ],
+        "distinctSessions": 3
+      },
+      {
+        "checkedAt": "2026-11-01T13:48:19.361Z",
+        "label": "proxy5",
+        "accessTokenChanged": true,
+        "refreshTokenChanged": true,
+        "expiryRenewed": true,
+        "assignmentPreserved": true,
+        "identityPreserved": true,
+        "versionBefore": 13,
+        "versionAfter": 15
+      }
+    ]
+  },
+  "syntaxChecks": {
+    "javascript": "npm run lint passed",
+    "python": "AST parse of both native wrappers and PTY drivers passed"
+  },
+  "additionalIntegrationRuns": [
+    {
+      "log": "chrome-final-linux.txt",
+      "passed": 1,
+      "failed": 0,
+      "durationMs": 20633.359108
+    },
+    {
+      "log": "telemetry-final-linux.txt",
+      "passed": 1,
+      "failed": 0,
+      "durationMs": 31205.961031,
+      "analyticsRequests": {
+        "positive": 2,
+        "opt-out": 0
+      },
+      "modelRequestPresentInBothModes": true,
+      "allRequestsThroughAssignedRoute": true
+    },
+    {
+      "log": "native-background-aliased-owner.txt",
+      "passed": 1,
+      "failed": 0,
+      "durationMs": 45513.920443,
+      "coverage": [
+        "actual native A1/A2/B background dispatch",
+        "route retained after launcher exits",
+        "A-only outage stops detached owners",
+        "B continues",
+        "pre-enrollment old binary and aliased-config owners refused",
+        "orphan workers refused",
+        "repair creates new work without replay"
+      ],
+      "subsequentChange": "Terminal restoration only; non-TTY background path unchanged. Direct background PTY case rechecked separately."
+    }
+  ],
+  "sourceFilesMatchedOnVm": 63,
+  "finalSourceManifest": "native-final-source-manifest.json",
+  "commentOnlyBridge": "privacy-comment-equivalence.json"
+}

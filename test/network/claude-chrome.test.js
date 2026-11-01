@@ -22,7 +22,9 @@ import { runCli } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 
 test("existing separate Chrome instances keep account routes/state and fail on tunnel loss", { skip: process.env.AIMGR_TEST_CHROME !== "1", timeout: 90000 }, async (t) => {
-  assert.equal(process.platform, "linux", "this phase runs only on the Linux test VM");
+  assert.ok(["linux", "darwin"].includes(process.platform));
+  const mac = process.platform === "darwin";
+  if (mac) assert.equal(os.homedir(), "/Users/ec2-user", "Mac runtime testing is rental-only");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aimgr-chrome-test-"));
   const children = [];
   const controls = [];
@@ -52,7 +54,8 @@ test("existing separate Chrome instances keep account routes/state and fail on t
   const originPort = await listen(origin);
   const tlsPort = await listen(tlsOrigin);
 
-  await exec("sudo", ["ip", "address", "add", "198.18.0.13/32", "dev", "lo"]);
+  const addresses = mac ? ["127.0.0.2", "127.0.0.3", "198.18.0.13"] : ["198.18.0.13"];
+  for (const ip of addresses) await exec("sudo", mac ? ["ifconfig", "lo0", "alias", ip, "up"] : ["ip", "address", "add", `${ip}/32`, "dev", "lo"]);
   const destinations = { "login.mock.test": originPort, "198.18.0.13": originPort, "claude.ai": tlsPort, "claude.com": tlsPort, "api.ipify.org": tlsPort };
   const startProxy = async (sourceAddress, port = 0) => {
     const script = `import { startSocks } from ${JSON.stringify(new URL("./socks-fixture.js", import.meta.url).href)}; const proxy = await startSocks(${JSON.stringify({ sourceAddress, destinations, port })}); console.log(proxy.port);`;
@@ -63,7 +66,8 @@ test("existing separate Chrome instances keep account routes/state and fail on t
   let a = await startProxy("127.0.0.2");
   const b = await startProxy("127.0.0.3");
   t.after(async () => {
-    if (units.length) await exec("sudo", ["systemctl", "stop", ...units]);
+    if (mac) for (const unit of units) await exec("sudo", ["launchctl", "bootout", `system/com.aimgr.claude-proxy.${unit}`]).catch(() => {});
+    else if (units.length) await exec("sudo", ["systemctl", "stop", ...units]);
     await Promise.all(managed);
     for (const cdp of controls) cdp.close();
     for (const child of children) {
@@ -76,7 +80,7 @@ test("existing separate Chrome instances keep account routes/state and fail on t
       }
     }
     await a.stop(); await b.stop();
-    await exec("sudo", ["ip", "address", "del", "198.18.0.13/32", "dev", "lo"]);
+    for (const ip of addresses) await exec("sudo", mac ? ["ifconfig", "lo0", "-alias", ip] : ["ip", "address", "del", `${ip}/32`, "dev", "lo"]);
     for (const server of [origin, tlsOrigin]) {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
@@ -95,7 +99,7 @@ test("existing separate Chrome instances keep account routes/state and fail on t
       webrtc: { ip_handling_policy: "disable_non_proxied_udp", multiple_routes_enabled: false, nonproxied_udp_enabled: false },
       dns_prefetching: { enabled: false }, net: { network_prediction_options: 2 },
     }));
-    const child = spawn("google-chrome", [
+    const child = spawn(process.env.AIMGR_TEST_CHROME_BIN ?? "google-chrome", [
       `--ignore-certificate-errors-spki-list=${spki}`, "--headless=new", `--user-data-dir=${userDataDir}`, `--remote-debugging-port=${cdpPort}`,
       `--proxy-server=${proxy}`, "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
       "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-quic", "--disable-sync",
@@ -111,7 +115,7 @@ test("existing separate Chrome instances keep account routes/state and fail on t
       catch { await delay(100); }
     }
     assert.ok(version, `Chrome CDP did not start: ${stderr}`);
-    const profile = { label, profileRef: `login_${label}`, socksHost: "127.0.0.1", socksPort: socks.port, expectedExits: [label === "a" ? "127.0.0.2" : "127.0.0.3"], exitCheckUrl: `http://198.18.0.13:${originPort}/exit`, chrome: { userDataDir, cdpPort } };
+    const profile = { label, profileRef: `${mac ? "mac" : "login"}_${label}`, socksHost: "127.0.0.1", socksPort: socks.port, expectedExits: [label === "a" ? "127.0.0.2" : "127.0.0.3"], exitCheckUrl: `http://198.18.0.13:${originPort}/exit`, chrome: { userDataDir, cdpPort } };
     await validateClaudeChrome(profile);
     const cdp = await connectCdp(version.webSocketDebuggerUrl);
     controls.push(cdp);
@@ -153,20 +157,22 @@ test("existing separate Chrome instances keep account routes/state and fail on t
   const home = path.join(root, "managed-home");
   const client = new FakeRedisClient();
   const keyPrefix = "aimgr:browser-native-login";
-  const profiles = { login_a: chromeA.profile, login_b: chromeB.profile };
+  const profiles = Object.fromEntries([chromeA, chromeB].map(chrome => [chrome.profile.profileRef, chrome.profile]));
   writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix }, claudeProxyProfiles: profiles } });
   const store = await connectRedisStore({ client, keyPrefix });
   await importCredentialsSnapshot(store, { credentials: ["a", "b"].map(label => ({
     provider: "anthropic", label, identity: {}, credential: {},
-    policy: { expect: { email: `${label}@example.test` }, egress: { profileRef: `login_${label}` } },
+    policy: { expect: { email: `${label}@example.test` }, egress: { profileRef: `${mac ? "mac" : "login"}_${label}` } },
     health: { status: "candidate", reason: "credential_missing" },
   })) }, { updatedBy: "synthetic-login-test" });
   const manifestPath = path.join(root, "native-manifest.json");
   await fs.writeFile(manifestPath, JSON.stringify({ user: process.env.USER, profiles: Object.fromEntries(
-    Object.entries(profiles).map(([name, profile], index) => [name, { ...profile, redirectPort: 15088 + index }]),
+    Object.entries(profiles).map(([name, profile], index) => [name, { ...profile, ...(mac
+      ? { gid: 64084 + index, interface: `utun${84 + index}`, subnetIndex: 84 + index }
+      : { redirectPort: 15088 + index }) }]),
   ) }));
-  units = Object.keys(profiles).map(name => `aimgr-claude-proxy-${name}.service`);
-  await exec("sudo", ["bash", fileURLToPath(new URL("../../scripts/install-claude-proxy-linux.sh", import.meta.url)), manifestPath]);
+  units = Object.keys(profiles).map(name => mac ? name : `aimgr-claude-proxy-${name}.service`);
+  await exec("sudo", ["bash", fileURLToPath(new URL(`../../scripts/install-claude-proxy-${mac ? "macos" : "linux"}.sh`, import.meta.url)), manifestPath]);
   const loginFixture = path.join(root, "synthetic-claude-login.mjs");
   const finish = path.join(root, "finish-login");
   // The actual 2.1.316 client starts OAuth at claude.com, then redirects to
@@ -190,10 +196,9 @@ test("existing separate Chrome instances keep account routes/state and fail on t
   const receiptPath = chromeA.receiptPath;
   const oldPort = a.port;
   await a.stop();
-  const before = arrivals.length;
   const failed = await chromeA.navigate("/after-tunnel-loss");
   assert.match(failed.error, /PROXY_CONNECTION_FAILED|SOCKS_CONNECTION_FAILED/);
-  assert.equal(arrivals.length, before, "dead tunnel produces no origin request");
+  assert.equal(arrivals.filter(row => row.path === "/after-tunnel-loss").length, 0, "failed navigation produces no origin request; B health checks may continue");
   assert.equal((await chromeB.navigate("/still-works")).text, "127.0.0.3");
   a = await startProxy("127.0.0.2", oldPort);
   assert.match((await managed[0]).message, /cancelled or failed/);
@@ -211,4 +216,5 @@ test("existing separate Chrome instances keep account routes/state and fail on t
   const targets = await chromeA.cdp.call("Target.getTargets");
   assert.equal(targets.targetInfos.some((target) => target.targetId === chromeA.targetId), false, "failed login tab stays closed after the tunnel returns");
   assert.equal((await chromeB.navigate("/after-repair")).text, "127.0.0.3");
+  assert.ok(arrivals.every(row => ["127.0.0.2", "127.0.0.3"].includes(row.source)), "no browser request reaches the origin directly");
 });

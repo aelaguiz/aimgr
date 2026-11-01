@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# One-time native setup; existing Chrome and SSH tunnel owners stay in place.
+# Protected accounts only; ordinary installations never require this helper.
+# The Python installer owns the stopped transition and leaves failed activation
+# closed. launchd KeepAlive stays false: repair is explicit, never failover.
+# Regression: test/network/claude-native-macos.test.js (installation failures).
+set -euo pipefail
+if [[ $EUID -ne 0 || $(uname -s) != Darwin || $# -ne 1 ]]; then
+  echo 'Usage on macOS: sudo scripts/install-claude-proxy-macos.sh MANIFEST.json' >&2
+  exit 2
+fi
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+for dependency in /usr/bin/python3 /usr/bin/clang /sbin/pfctl /bin/launchctl /usr/sbin/lsof /usr/local/bin/sing-box; do
+  [[ -x $dependency ]] || { echo "Install missing dependency: $dependency" >&2; exit 1; }
+done
+[[ $(/usr/local/bin/sing-box version | head -1) == 'sing-box version 1.14.4' ]] || {
+  echo 'Install sing-box 1.14.4 before native Mac setup.' >&2
+  exit 1
+}
+/usr/bin/python3 -I "$repo_dir/native/claude/darwin_proxy.py" install < "$1"

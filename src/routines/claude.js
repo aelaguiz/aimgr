@@ -58,6 +58,12 @@ export function formatClaudeRoutineParkNotice({ routineId, reason, detail, label
   ].join("\n");
 }
 
+// Scheduled jobs must enter through normal account selection/admission so they
+// receive the same credential/route pairing and loud proxy failures as manual
+// launches. Do not introduce a direct Claude subprocess or retry an interrupted
+// occurrence after route repair; a distinct later occurrence validates anew.
+// Regressions: test/network/native-scheduled-fixture.js and
+// native-scheduled-failure-fixture.js, run by both native platform matrices.
 export async function runClaudeRoutineSession(context, options) {
   const [{ loadCommandDefaultDeps }, { runAutomaticClaudeSession }] = await Promise.all([
     import("../cli/deps.js"),

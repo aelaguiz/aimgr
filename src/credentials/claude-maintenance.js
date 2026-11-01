@@ -404,6 +404,10 @@ export async function maintainRedisClaudeCredential(context, {
         );
         accountOverlayActive = true;
       }
+      // R0/R6: observing opt-in immediately fences an old ordinary cache, even
+      // when maintenance skips a blocked/incomplete account below. Keep this
+      // before all early exits and before projecting managed credentials.
+      // Regression: test/cli/auth-maintain-command.test.js (blocked opt-in).
       if (record) rememberClaudeProtection(homeDir, normalizedLabel, record);
       const credentialLoaded = isObject(record?.credential)
         && Object.keys(record.credential).length > 0;
@@ -479,6 +483,9 @@ export async function maintainRedisClaudeCredential(context, {
         const credential = requireCredential(runtime, normalizedLabel);
         const preRunCredentialComplete = hasCompleteClaudeNativeBundle(credential);
         await assertLeaseOwned(lease);
+        // The adjacent fresh lease assertion is required: a stale owner must
+        // never turn an invalidated binding back into a usable offline route.
+        // Regression: test/cli/auth-maintain-command.test.js (lease loss).
         if (egressProfile) writeClaudeOfflineBinding(homeDir, normalizedLabel, {
           egress: { profileRef: egressProfile.profileRef }, identity: structuredClone(record.identity), version: record.version,
         });

@@ -227,6 +227,9 @@ async function performRedisClaudeLogin(context, {
     const currentSnapshot = await readSnapshot(store);
     const currentState = buildCoordinationView(currentSnapshot, { provider: ANTHROPIC_PROVIDER });
     const egressProfile = resolveNativeAccountProfile({ homeDir, state: currentState, label });
+    // Deny a wrong browser before native login/staging. The browser helper
+    // repeats admission when the OAuth URL arrives; this early check alone
+    // cannot cover a binding change while native login is waiting.
     if (egressProfile) await (context.validateClaudeChromeImpl ?? validateClaudeChrome)(egressProfile);
     removeClaudeLoginStaging({ homeDir, label, stagingHome });
     ensureSafeManagedClaudeStorage({ descriptor });

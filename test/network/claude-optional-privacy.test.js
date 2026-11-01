@@ -21,6 +21,7 @@ import { runCli } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { mkTempHome } from "../helpers/files.js";
+import { installFixtureSecurityAdapter } from "./native-routine-fixture.js";
 
 const prefix = "optional-privacy-test:";
 const forbidden = () => { throw new Error("ordinary account reached privacy machinery"); };
@@ -30,6 +31,8 @@ function paths(home) {
 }
 async function fixture(t) {
   const home = mkTempHome();
+  // Existing macOS credential storage dependency, unrelated to proxy opt-in.
+  installFixtureSecurityAdapter(home);
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix: prefix } } });
   const client = new FakeRedisClient();
@@ -45,7 +48,8 @@ async function fixture(t) {
 test("ordinary account opts in only through an explicit valid policy, not local profile availability", () => {
   const profiles = { office: { socksPort: 1085, expectedExits: ["127.0.0.2"] } };
   assert.equal(resolveOptionalClaudeEgressProfile({ account: {}, profiles }), null);
-  for (const egress of [null, {}, { profileRef: "" }, { profileRef: "direct" }, false]) {
+  for (const egress of [null, {}, { profileRef: "" }, { profileRef: "direct" }, false,
+    ...["manifest", "install", "a-sing-box", "a".repeat(129)].map(profileRef => ({ profileRef }))]) {
     assert.throws(() => normalizeCredentialRecord({ provider: "anthropic", label: "a", policy: { egress } }), { code: "invalid_proxy_assignment" });
     assert.throws(() => resolveOptionalClaudeEgressProfile({ account: { egress }, profiles }), { code: "invalid_proxy_assignment" });
   }
@@ -73,7 +77,7 @@ test("ordinary interactive and Darwin noninteractive launch preserve environment
     verifyInstalledClaudeExecutableImpl: async () => process.execPath,
     resolveInstalledClaudeSecurityAdapterImpl: () => null,
     prepareClaudeNativeRouteImpl: forbidden, spawnImpl: inspect });
-  await assert.rejects(prepareClaudeNativeRoute({ profile: { label: "protected", profileRef: "office" }, platform: "darwin", command: process.execPath, args: [] }), { code: "native_proxy_platform_unverified" });
+  await assert.rejects(prepareClaudeNativeRoute({ profile: { label: "protected", profileRef: "missing-optional-test-profile" }, platform: "darwin", command: process.execPath, args: [] }), { code: "native_proxy_unavailable" });
 });
 
 test("ordinary actual CLI launch and pre-change offline cache work with no privacy files or helper", async t => {

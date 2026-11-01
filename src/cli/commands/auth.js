@@ -151,6 +151,9 @@ async function handleOAuthMaintain(context) {
   };
   try {
     for (const record of sortedMaintenanceRecords(runtime.snapshot)) {
+      // Fence old ordinary caches before skip decisions, not just before refresh.
+      // A remotely protected but blocked account must remain protected offline.
+      // Regression: test/cli/auth-maintain-command.test.js.
       if (record.provider === ANTHROPIC_PROVIDER) rememberClaudeProtection(homeDir, record.label, record);
       let maintenanceResult = null;
       if (

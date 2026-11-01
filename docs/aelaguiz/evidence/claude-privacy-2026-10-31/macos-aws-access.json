@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-11-01T11:49:54.953894+00:00",
+  "checkedAt": "2026-11-01T14:12:22.859401+00:00",
   "profile": "agent-macos-test",
   "operatorRole": "MacOSTestOperator",
   "cleanupRole": "MacOSTestCleanup",
@@ -54,19 +54,35 @@
     "create and read back recurring host release schedule",
     "launch tagged Mac instance with encrypted EBS",
     "create and read back exact-instance termination schedule",
-    "SSH to macOS from isolated GCP and bootstrap pinned test runtime"
+    "SSH to macOS from isolated GCP and bootstrap pinned test runtime",
+    "native and real-account macOS acceptance tests",
+    "remove task credential copies and stop task native services/tunnels"
   ],
   "cleanup": {
     "terminationTime": "2026-11-02T11:38:49.524770+00:00",
     "releaseStart": "2026-11-02T11:50:49.524770+00:00",
     "releaseEnd": "2026-11-02T19:48:49.524770+00:00",
-    "releaseIntervalMinutes": 15
+    "releaseIntervalMinutes": 15,
+    "taskCredentialCopiesRemoved": true,
+    "rentalAutologinPasswordRemoved": true,
+    "instanceState": "shutting-down",
+    "remainingVolumeCount": 1,
+    "hostState": "available",
+    "cleanupCheckedAt": "2026-11-01T14:12:01.452123+00:00",
+    "securityGroupDeleted": null,
+    "keyDeleted": null,
+    "terminationScheduleDeleted": null,
+    "hostReleaseScheduleEnabled": true,
+    "gcpTemporaryMacAccessFilesRemoved": true,
+    "gcpRedisBridgeStopped": true,
+    "gcpTemporaryMacFirewallRuleDeleted": true,
+    "gcpDevelopmentVmRetained": true
   },
-  "macImplementationComplete": false,
+  "macImplementationComplete": true,
   "physicalMacTestsRun": false,
   "launchPermissionDryRunPassed": true,
   "hostRented": true,
-  "instanceState": "running",
+  "instanceState": "shutting-down",
   "sshFromIsolatedGcpPassed": true,
   "os": {
     "version": "15.8",
@@ -78,5 +94,7 @@
     "node": "24.22.2",
     "python": "3.9.6",
     "singBox": "1.14.4"
-  }
+  },
+  "applicationEvidence": "native-final-macos.json",
+  "finalReview": "native-final-cold-review.json"
 }

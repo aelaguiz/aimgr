@@ -167,6 +167,22 @@ Login failures require a successful live usage check
 on the replacement account before launch. `--account` and `--switch-account` also work with
 the picker. For scripts, use `aim claude list --json` and an explicit selector.
 
+Claude proxy protection is optional and configured per account. Accounts without
+an assignment keep the existing launch, login, maintenance and usage behavior;
+they do not need the privacy helpers or a proxy. For an enrolled account, native
+Claude and AIM requests use its assigned route, and login uses its existing
+account-specific Chrome/CDP instance. A failed tunnel or proxy stops affected
+work with a repair/retry message. Repair does not automatically resume a session
+or replay a failed scheduled job; later independent scheduled occurrences retain
+the normal scheduling rules. Same-account sessions remain concurrent.
+
+Follow the [Claude privacy setup and transition plan](docs/aelaguiz/CLAUDE_PRIVACY_PROXY_WORKLOG_2026-10-30.md#8-implementation-order-and-scheduled-transition)
+to install the Linux or macOS helper and configure the local profile before
+enrolling a stopped account with `aim claude proxy set <label> <profileRef>`.
+After enrollment, use the normal commands and schedules without a daily proxy
+flag. The plan also records the telemetry opt-outs, acceptance tests and verified
+platform limits.
+
 `aim codex use` rotates away from the current Codex account on every successful
 call. It prefers labels that have not been selected recently, then uses the
 current weekly usage as the tie-breaker, so repeated launches walk the

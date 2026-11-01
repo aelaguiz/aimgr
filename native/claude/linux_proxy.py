@@ -18,6 +18,7 @@ import sys
 import shutil
 import fcntl
 import time
+import termios
 import http.client
 import urllib.parse
 from contextlib import contextmanager
@@ -43,6 +44,10 @@ def installation_lock(exclusive=False):
         yield
 
 
+# R6: kill this entire account cgroup, including orphan/background descendants.
+# Keep its redirect rules installed during failure; deleting them could make a
+# surviving process use the normal route. Other account cgroups stay usable.
+# Regression: test/network/claude-native-route.test.js (owner/outage cases).
 def stop_profile(name):
     validate_name(name)
     target = CGROUP / name / "cgroup.kill"
@@ -101,7 +106,7 @@ def command(args, **kwargs):
 
 
 def validate_name(name):
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name) or name in ("direct", "default"):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", name) or name in ("direct", "default", "manifest", "install") or name.endswith("-sing-box"):
         raise ValueError("invalid proxy profile")
     return name
 
@@ -110,25 +115,19 @@ def apply_routes(manifest):
     user = pwd.getpwnam(manifest["user"])
     profiles = manifest["profiles"]
     rules = ["table inet aimgr_claude {", "chain output { type nat hook output priority dstnat; policy accept;"]
-    blocked_routes = []
     CGROUP.mkdir(exist_ok=True)
     for name, profile in profiles.items():
         group = CGROUP / name
         group.mkdir(exist_ok=True)
         os.chown(group / "cgroup.procs", user.pw_uid, user.pw_gid)
         match = f'socket cgroupv2 level 2 "aimgr-claude/{name}"'
-        other_ports = sorted({p[k] for other, p in profiles.items() if other != name for k in ("socksPort", "redirectPort")})
-        if other_ports:
-            ports = ", ".join(str(port) for port in other_ports)
-            blocked_routes += [
-                f'{match} ip daddr 127.0.0.0/8 tcp dport {{ {ports} }} reject',
-                f'{match} ip6 daddr ::1 tcp dport {{ {ports} }} reject',
-            ]
         rules += [
             f'{match} ip daddr != 127.0.0.0/8 meta l4proto tcp redirect to :{profile["redirectPort"]} comment "{name}"',
             f'{match} ip6 daddr != ::1 meta l4proto tcp redirect to :{profile["redirectPort"]} comment "{name}"',
         ]
-    rules += ["}", "chain route_binding { type filter hook output priority filter; policy accept;", *blocked_routes, "}", "}"]
+    # Keep ordinary local services, including trusted AIM transports for a
+    # different explicitly selected account. Hostile local relays are out of scope.
+    rules += ["}", "}"]
     exists = subprocess.run(["nft", "list", "table", "inet", "aimgr_claude"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     batch = ("delete table inet aimgr_claude\n" if exists else "") + "\n".join(rules) + "\n"
     command(["nft", "-f", "-"], input=batch, text=True)
@@ -151,6 +150,8 @@ def install():
         previous = json.loads(manifest_path.read_text())
         if previous["user"] != manifest["user"]:
             raise ValueError("existing native routes belong to another user")
+        # An omitted existing account is not an opt-out. Preserve its installed
+        # routing when adding/updating another profile during the stopped transition.
         manifest["profiles"] = {**previous["profiles"], **profiles}
     profiles = manifest["profiles"]
     ports = set()
@@ -262,7 +263,78 @@ def listener_pid(port):
     return int(pids.pop())
 
 
+def require_existing_native_owners_routed(name, executable):
+    """A new dispatcher must not reuse an unprotected, pre-enrollment daemon.
+
+    Inspect the actual pinned executable and inherited account directory rather
+    than trusting a roster PID: workers can outlive their supervisor. Dead
+    records and unrelated accounts do not interfere with admission.
+    """
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if not config_dir:
+        return
+    executable = pathlib.Path(shutil.which(executable) or executable).resolve()
+    expected = f"0::/aimgr-claude/{name}"
+    recorded = set()
+    try:
+        roster = json.loads((pathlib.Path(config_dir) / "daemon/roster.json").read_text())
+        recorded.add(roster.get("supervisorPid"))
+        for worker in roster.get("workers", {}).values():
+            recorded.update([worker.get("pid"), worker.get("replPid")])
+    except (FileNotFoundError, ValueError, AttributeError):
+        pass  # Stale/partial rosters are not authority; inspect live owners.
+    for process in pathlib.Path("/proc").iterdir():
+        if not process.name.isdecimal():
+            continue
+        try:
+            if process.stat().st_uid != os.getuid():
+                continue
+            native_name = (process / "comm").read_text().strip().startswith("claude")
+            candidate = native_name or int(process.name) in recorded
+            try:
+                actual_executable = pathlib.Path(os.readlink(process / "exe").removesuffix(" (deleted)")).resolve()
+            except PermissionError:
+                if not native_name:
+                    # A stale roster PID can now belong to an unrelated
+                    # nondumpable sshd/systemd owner. It proves no native work.
+                    continue
+                raise RuntimeError("cannot verify an existing native Claude owner; stop this account's existing work before retrying")
+            if not candidate and actual_executable != executable:
+                continue
+            environment = (process / "environ").read_bytes().split(b"\0")
+            same_account = False
+            for value in environment:
+                if value.startswith(b"CLAUDE_CONFIG_DIR="):
+                    candidate_path = os.fsdecode(value.split(b"=", 1)[1])
+                    try:
+                        same_account = os.path.samefile(candidate_path, config_dir)
+                    except OSError:
+                        same_account = os.path.realpath(candidate_path) == os.path.realpath(config_dir)
+                    break
+            if not same_account:
+                continue
+            if expected not in (process / "cgroup").read_text().splitlines():
+                raise RuntimeError("this account still has native Claude work outside its assigned proxy; "
+                                   "stop its existing sessions and background daemon before retrying")
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+
+
 def run(name, expected_binding, argv):
+    terminal = termios.tcgetattr(0) if os.isatty(0) else None
+    try:
+        return run_child(name, expected_binding, argv)
+    finally:
+        if terminal is not None:
+            try:
+                # A background shell job must not receive SIGTTOU here.
+                if os.tcgetpgrp(0) == os.getpgrp():
+                    termios.tcsetattr(0, termios.TCSANOW, terminal)
+            except (OSError, termios.error):
+                pass  # The controlling terminal may have disconnected.
+
+
+def run_child(name, expected_binding, argv):
     validate_name(name)
     profile = json.loads((ROOT / f"{name}.json").read_text())
     expected = json.loads(expected_binding)
@@ -276,6 +348,13 @@ def run(name, expected_binding, argv):
     rules = command(["sudo", "-n", "nft", "list", "table", "inet", "aimgr_claude"], capture_output=True, text=True).stdout
     if f'"aimgr-claude/{name}"' not in rules or f'redirect to :{profile["redirectPort"]}' not in rules:
         raise RuntimeError("native proxy routing is not installed")
+    require_existing_native_owners_routed(name, expected.get("nativeCommand", argv[0]))
+    # A listening SOCKS socket does not establish that the native adapter is
+    # forwarding. Prove the actual cgroup path before starting Claude.
+    command([sys.executable, str(ROOT / "linux_proxy.py"), "probe", name], timeout=8)
+    # Watch exact process lifetimes, not whether a port currently answers.
+    # A quick restart on the same port must still stop the interrupted session.
+    # Regression: native-route matrix quick-restart and detached-owner cases.
     watched = [os.pidfd_open(listener_pid(profile[key])) for key in ("socksPort", "redirectPort")]
     poll = select.poll()
     for fd in watched:

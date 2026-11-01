@@ -993,6 +993,9 @@ async function handleRedisClaudeRun(context, {
   let activeProcessControl = null;
   let managedDescriptor = null;
   try {
+    // Remember remote opt-in before any early return/profile error or credential
+    // projection; an unusable new profile must still fence the old ordinary cache.
+    // Regression: test/network/claude-optional-privacy.test.js.
     rememberClaudeProtection(homeDir, label, runtime.state.accounts?.[label]);
     assertClaudeAccountCanLaunch(runtime, label);
     guard = await acquireClaudeCredentialLeaseGuard(runtime, label, {
@@ -1044,6 +1047,9 @@ async function handleRedisClaudeRun(context, {
     // and lease acquisition. Reload under the lease before inspecting local
     // projections or choosing the authoritative bundle.
     await refreshRedisRuntimeState(runtime);
+    // Remember remote opt-in before any early return/profile error or credential
+    // projection; an unusable new profile must still fence the old ordinary cache.
+    // Regression: test/network/claude-optional-privacy.test.js.
     rememberClaudeProtection(homeDir, label, runtime.state.accounts?.[label]);
     assertClaudeAccountCanLaunch(runtime, label);
     const egressProfile = resolveNativeAccountProfile({ homeDir, state: runtime.state, label });
@@ -1308,6 +1314,12 @@ export async function handleClaude(context) {
     const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl, provider: ANTHROPIC_PROVIDER });
     let guard, assignmentLock;
     try {
+      // R4/R6: these guards cover distinct races. The local exclusive lock
+      // excludes cached launches; the Redis credential lease excludes online
+      // writers/sessions; the native stopped check catches surviving background
+      // work. Re-read under the lease, then invalidate before CAS. Even failed
+      // CAS leaves a tombstone so an old ordinary cache cannot bypass protection.
+      // Regressions: test/cli/redis-projection-command.test.js (setter races).
       assignmentLock = await acquireClaudeAssignmentLock(homeDir, label, { exclusive: true });
       guard = await acquireClaudeCredentialLeaseGuard(runtime, label);
       await refreshRedisRuntimeState(runtime);

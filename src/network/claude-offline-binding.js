@@ -28,16 +28,18 @@ export function invalidateClaudeOfflineBinding(homeDir, label) {
   writeClaudeOfflineBinding(homeDir, label, { required: true, invalidated: true });
 }
 
-// Linux flock is already an installer prerequisite. Shared locks preserve
+// Native file locks preserve
 // simultaneous cached sessions; reassignment takes an exclusive, nonwaiting
 // lock before examining the cgroup/cache. Closing stdin releases the lock,
 // including when the owning AIM process exits unexpectedly.
 export async function acquireClaudeAssignmentLock(homeDir, label, { exclusive = false } = {}) {
   const file = bindingPath(homeDir, label);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const child = spawn("flock", [exclusive ? "--exclusive" : "--shared", "--nonblock", `${file}.lock`,
-    process.execPath, "-e", 'process.stdout.write("locked\\n"); process.stdin.resume();'],
-  { stdio: ["pipe", "pipe", "pipe"] });
+  const child = process.platform === "darwin"
+    ? spawn("/usr/bin/python3", ["-I", "-c", 'import fcntl,sys; f=open(sys.argv[1],"a"); fcntl.flock(f,(fcntl.LOCK_EX if sys.argv[2]=="exclusive" else fcntl.LOCK_SH)|fcntl.LOCK_NB); print("locked",flush=True); sys.stdin.buffer.read()', `${file}.lock`, exclusive ? "exclusive" : "shared"], { stdio: ["pipe", "pipe", "pipe"] })
+    : spawn("flock", [exclusive ? "--exclusive" : "--shared", "--nonblock", `${file}.lock`,
+      process.execPath, "-e", 'process.stdout.write("locked\\n"); process.stdin.resume();'],
+    { stdio: ["pipe", "pipe", "pipe"] });
   const controller = new AbortController();
   const lost = new Error(`Claude ${label}: local assignment lock is unavailable; stop affected work before changing its proxy.`);
   const exited = new Promise(resolve => child.once("close", resolve));

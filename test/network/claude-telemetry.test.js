@@ -16,7 +16,10 @@ import { listen, startSocks } from "./socks-fixture.js";
 test("native telemetry positive control and opt-out preserve functional requests", {
   skip: process.env.AIMGR_TEST_TELEMETRY !== "1", timeout: 120000,
 }, async (t) => {
-  assert.equal(process.platform, "linux");
+  assert.ok(["linux", "darwin"].includes(process.platform));
+  const mac = process.platform === "darwin";
+  if (mac) assert.equal(os.homedir(), "/Users/ec2-user", "Mac runtime testing is rental-only");
+  const addresses = mac ? ["127.0.0.2", "127.0.0.3", "198.18.0.11", "198.18.0.12"] : ["198.18.0.11", "198.18.0.12"];
   const exec = promisify(execFile);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aimgr-telemetry-"));
   const helper = fileURLToPath(new URL("../../native/claude/linux_proxy.py", import.meta.url));
@@ -27,17 +30,20 @@ test("native telemetry positive control and opt-out preserve functional requests
   const receipts = [];
   let mode = "positive";
   let socks;
+  let secondSocks;
   let tlsOrigin;
   let origin;
   t.after(async () => {
-    await exec("sudo", ["systemctl", "stop", "aimgr-claude-proxy-telemetry_mock.service"]).catch(() => {});
+    if (mac) for (const name of ["mac_a", "mac_b"]) await exec("sudo", ["launchctl", "bootout", `system/com.aimgr.claude-proxy.${name}`]).catch(() => {});
+    else await exec("sudo", ["systemctl", "stop", "aimgr-claude-proxy-telemetry_mock.service"]).catch(() => {});
     if (socks) await socks.stop();
+    if (secondSocks) await secondSocks.stop();
     for (const server of [origin, tlsOrigin].filter(Boolean)) {
       server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     }
     // Remove only this fixture's lines; preserve concurrent host edits.
-    await exec("sudo", ["sed", "-i", `/${marker}/d`, "/etc/hosts"]);
-    for (const address of ["198.18.0.11", "198.18.0.12"]) await exec("sudo", ["ip", "address", "del", `${address}/32`, "dev", "lo"]).catch(() => {});
+    await exec("sudo", ["/usr/bin/python3", "-c", "import pathlib,sys; p=pathlib.Path('/etc/hosts');p.write_text(''.join(line for line in p.read_text().splitlines(keepends=True) if sys.argv[1] not in line))", marker]);
+    for (const address of addresses) await exec("sudo", mac ? ["ifconfig", "lo0", "-alias", address] : ["ip", "address", "del", `${address}/32`, "dev", "lo"]).catch(() => {});
     await fs.rm(root, { recursive: true, force: true });
   });
   await exec("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-keyout", keyPath,
@@ -72,23 +78,27 @@ test("native telemetry positive control and opt-out preserve functional requests
   const tlsPort = await listen(tlsOrigin);
   origin = http.createServer((req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ ip: req.socket.remoteAddress })); });
   const originPort = await listen(origin, "0.0.0.0");
-  socks = await startSocks({ sourceAddress: "127.0.0.2", destinations: { "198.18.0.11": tlsPort, "198.18.0.12": originPort } });
-  for (const address of ["198.18.0.11", "198.18.0.12"]) await exec("sudo", ["ip", "address", "add", `${address}/32`, "dev", "lo"]);
+  for (const address of addresses) await exec("sudo", mac ? ["ifconfig", "lo0", "alias", address, "up"] : ["ip", "address", "add", `${address}/32`, "dev", "lo"]);
+  const destinations = { "198.18.0.11": tlsPort, "198.18.0.12": originPort };
+  socks = await startSocks({ sourceAddress: "127.0.0.2", destinations });
+  if (mac) secondSocks = await startSocks({ sourceAddress: "127.0.0.3", destinations });
   const hostsPatch = path.join(root, "hosts-patch");
   await fs.writeFile(hostsPatch, `198.18.0.11 ${hosts.join(" ")} ${marker}\n`);
   await exec("sudo", ["sh", "-c", 'cat "$1" >> /etc/hosts', "sh", hostsPatch]);
   const manifest = path.join(root, "manifest.json");
-  await fs.writeFile(manifest, JSON.stringify({ user: process.env.USER, profiles: {
+  const profiles = mac ? Object.fromEntries([["mac_a", socks, "127.0.0.2", 84], ["mac_b", secondSocks, "127.0.0.3", 85]].map(([name, proxy, exit, index]) => [name,
+    { socksPort: proxy.port, expectedExits: [exit], exitCheckUrl: `http://198.18.0.12:${originPort}/exit`, gid: 64000 + index, interface: `utun${index}`, subnetIndex: index }])) : {
     telemetry_mock: { socksPort: socks.port, redirectPort: 15087, expectedExits: ["127.0.0.2"], exitCheckUrl: `http://198.18.0.12:${originPort}/exit` },
-  } }));
-  await exec("sudo", ["bash", fileURLToPath(new URL("../../scripts/install-claude-proxy-linux.sh", import.meta.url)), manifest]);
+  };
+  await fs.writeFile(manifest, JSON.stringify({ user: process.env.USER, profiles }));
+  await exec("sudo", ["bash", fileURLToPath(new URL(`../../scripts/install-claude-proxy-${mac ? "macos" : "linux"}.sh`, import.meta.url)), manifest]);
   for (mode of ["positive", "opt-out"]) {
     const home = path.join(root, mode);
     await fs.mkdir(home);
     const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
       ANTHROPIC_API_KEY: "sk-ant-api03-synthetic-telemetry-fixture", NODE_EXTRA_CA_CERTS: certPath, API_TIMEOUT_MS: "5000" };
     for (const key of ["DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DO_NOT_TRACK", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]) delete env[key];
-    const result = await exec("python3", [helper, "run", "telemetry_mock", JSON.stringify({ socksHost: "127.0.0.1", socksPort: socks.port, expectedExits: ["127.0.0.2"] }), "--", process.env.AIMGR_TEST_CLAUDE_BIN,
+    const result = await exec(mac ? "/opt/aimgr-claude-proxy/darwin_launch" : "/usr/bin/python3", [...(mac ? ["mac_a"] : [helper, "run", "telemetry_mock"]), JSON.stringify({ socksHost: "127.0.0.1", socksPort: socks.port, expectedExits: ["127.0.0.2"] }), "--", process.env.AIMGR_TEST_CLAUDE_BIN,
       "-p", "Reply with the synthetic marker.", "--model", "claude-sonnet-4-6", "--dangerously-skip-permissions", "--output-format", "json"],
     { env: mode === "positive" ? env : nativeProxyEnvironment(env), cwd: home, timeout: 45000, maxBuffer: 128 * 1024 });
     assert.match(result.stdout, /TELEMETRY_MOCK_DONE/);

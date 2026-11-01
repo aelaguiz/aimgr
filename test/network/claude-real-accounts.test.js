@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, execFile } from "node:child_process";
@@ -10,16 +11,32 @@ import { loadRedisRuntime, closeRedisRuntime } from "../../src/coordination/runt
 import { publishCredential } from "../../src/coordination/redis-store.js";
 import { readAimgrConfig } from "../../src/config/aimgr-config.js";
 import { setTimeout as delay } from "node:timers/promises";
+import { assertLocalClaudeProfileStopped } from "../../src/network/claude-native-route.js";
 
 function assertTestEnvironment() {
-  assert.equal(process.platform, "linux");
-  assert.equal(os.hostname(), "aimgr-privacy-dev");
-  assert.equal(os.homedir(), "/home/aimdev");
+  if (process.platform === "darwin") {
+    assert.equal(os.homedir(), "/Users/ec2-user");
+    const marker = "/etc/aimgr-macos-test-rental.json";
+    const stat = fsSync.statSync(marker);
+    assert.equal(stat.uid, 0);
+    assert.equal(stat.mode & 0o022, 0);
+    const rental = JSON.parse(fsSync.readFileSync(marker));
+    assert.equal(rental.purpose, "aimgr-macos-testing");
+    assert.equal(rental.provider, "aws-ec2");
+    assert.equal(rental.hostname, os.hostname());
+  } else {
+    assert.equal(process.platform, "linux");
+    assert.equal(os.hostname(), "aimgr-privacy-dev");
+    assert.equal(os.homedir(), "/home/aimdev");
+  }
   const { config } = readAimgrConfig({ homeDir: os.homedir() });
   const redis = new URL(config.redis.url);
   assert.equal(redis.hostname, "127.0.0.1");
   assert.equal(config.redis.keyPrefix, "aimgr-privacy-dev:");
 }
+
+const verification = path.join(os.homedir(), "verification");
+const nativeEnv = () => ({ ...process.env, PATH: `${os.homedir()}/.local/bin:${process.env.PATH}` });
 
 test("real protected account fails clearly before startup when its VM tunnel is down", {
   skip: process.env.AIMGR_TEST_REAL_PROXY_STARTUP !== "1", timeout: 90000,
@@ -27,8 +44,10 @@ test("real protected account fails clearly before startup when its VM tunnel is 
   assertTestEnvironment();
   const exec = promisify(execFile);
   const cli = fileURLToPath(new URL("../../bin/aimgr.js", import.meta.url));
+  const mac = process.platform === "darwin";
   const events = "/sys/fs/cgroup/aimgr-claude/proxy5/cgroup.events";
-  assert.match(await fs.readFile(events, "utf8"), /populated 0/);
+  const assertStopped = () => mac ? assertLocalClaudeProfileStopped("proxy5") : fs.readFile(events, "utf8").then(value => assert.match(value, /populated 0/));
+  await assertStopped();
   const runtime = await loadRedisRuntime({ homeDir: os.homedir(), provider: "anthropic" });
   assert.deepEqual(runtime.snapshot.credentials.map(record => record.label).sort(), ["proxy5", "proxy6"]);
   assert.equal(runtime.snapshot.credentials.find(record => record.label === "proxy5").policy.egress.profileRef, "proxy5");
@@ -39,7 +58,10 @@ test("real protected account fails clearly before startup when its VM tunnel is 
   };
   const originalPid = await listener();
   assert.match(originalPid, /^\d+$/);
-  const argv = (await fs.readFile(`/proc/${originalPid}/cmdline`, "utf8")).split("\0").filter(Boolean);
+  const argv = mac
+    ? JSON.parse(await fs.readFile(path.join(verification, "proxy-ssh/tunnel-command-proxy5.private.json"), "utf8"))
+    : (await fs.readFile(`/proc/${originalPid}/cmdline`, "utf8")).split("\0").filter(Boolean);
+  if (mac) assert.equal((await exec("/bin/ps", ["-ww", "-p", originalPid, "-o", "command="])).stdout.trim(), argv.join(" "));
   assert.equal(path.basename(argv[0]), "ssh");
   const { config } = readAimgrConfig({ homeDir: os.homedir() });
   const assigned = config.claudeProxyProfiles.proxy5;
@@ -55,15 +77,15 @@ test("real protected account fails clearly before startup when its VM tunnel is 
     let failure;
     try {
       await exec(process.execPath, [cli, "claude", "run", "proxy5", "--", "-p", "Synthetic startup test; this prompt must not be submitted."], {
-        cwd: "/home/aimdev/verification", env: { ...process.env, PATH: `/home/aimdev/.local/bin:${process.env.PATH}` }, timeout: 20000,
+        cwd: verification, env: nativeEnv(), timeout: 20000,
       });
     } catch (error) { failure = error; }
     assert.equal(failure?.code, 1);
     assert.match(failure.stderr, /aim: Claude proxy5: assigned proxy is unavailable/);
     assert.match(failure.stderr, /Repair the proxy\/tunnel.*retry or resume.*\(proxy5\)/);
-    assert.match(await fs.readFile(events, "utf8"), /populated 0/);
+    await assertStopped();
     receipt = { checkedAt: new Date().toISOString(), label: "proxy5", proxy: "proxy5", exitCode: failure.code,
-      error: failure.stderr.trim(), durationMs: Date.now() - startedAt, nativeCgroupEmpty: true, localChromeTunnelChanged: false };
+      error: failure.stderr.trim(), durationMs: Date.now() - startedAt, nativeOwnersAbsent: true, platform: process.platform, localChromeTunnelChanged: false };
   } finally {
     // Restore precisely the VM's original SSH invocation. No account switching
     // or session replay: only a later explicit command can use this route.
@@ -73,9 +95,27 @@ test("real protected account fails clearly before startup when its VM tunnel is 
       for (let n = 0; n < 100 && !await listener(); n++) await delay(100);
     }
     assert.match(await listener(), /^\d+$/);
-    await exec("sudo", ["systemctl", "restart", "aimgr-claude-proxy-proxy5.service"]);
+    if (mac) {
+      const owners = JSON.parse(await fs.readFile("/opt/aimgr-claude-proxy/proxy5-state/ready.json", "utf8")).owners;
+      for (let n = 0; n < 200; n++) {
+        const live = JSON.parse((await exec("/usr/bin/python3", ["-I", "-c",
+          "import sys,json;sys.path.insert(0,'/opt/aimgr-claude-proxy');import darwin_proxy as p;print(json.dumps(p.processes()))"])).stdout);
+        const state = (await exec("sudo", ["launchctl", "print", "system/com.aimgr.claude-proxy.proxy5"])).stdout;
+        if (!/^\s*pid = /m.test(state) && !owners.some(owner => owner.role !== "tunnel" && live[owner.pid]?.started === owner.started)) break;
+        if (n === 199) assert.fail("old native Mac service owners have not exited");
+        await delay(50);
+      }
+      await exec("sudo", ["launchctl", "kickstart", "system/com.aimgr.claude-proxy.proxy5"]);
+      for (let n = 0; n < 200; n++) {
+        const flags = await fs.readdir("/opt/aimgr-claude-proxy/proxy5-state");
+        if (!flags.includes("failed") && !flags.includes("starting")) break;
+        if (n === 199) assert.fail("explicit native Mac repair failed");
+        await delay(50);
+      }
+      await exec("sudo", ["/usr/bin/python3", "-I", "/opt/aimgr-claude-proxy/darwin_proxy.py", "verify", "proxy5"]);
+    } else await exec("sudo", ["systemctl", "restart", "aimgr-claude-proxy-proxy5.service"]);
   }
-  await fs.writeFile("/home/aimdev/verification/optional-real-startup.json", JSON.stringify(receipt, null, 2) + "\n");
+  await fs.writeFile(path.join(verification, "optional-real-startup.json"), JSON.stringify(receipt, null, 2) + "\n");
   console.log(JSON.stringify({ realProxyStartup: receipt }));
 });
 
@@ -86,7 +126,7 @@ test("real native Claude keeps A1/A2/B concurrent through their assigned exits",
   skip: process.env.AIMGR_TEST_REAL_ACCOUNTS !== "1", timeout: 240000,
 }, async () => {
   assertTestEnvironment();
-  const root = await fs.mkdtemp("/home/aimdev/verification/real-native-");
+  const root = await fs.mkdtemp(path.join(verification, "real-native-"));
   const cli = fileURLToPath(new URL("../../bin/aimgr.js", import.meta.url));
   const receipts = [];
   const run = async (label, name, extra = []) => {
@@ -102,7 +142,7 @@ test("real native Claude keeps A1/A2/B concurrent through their assigned exits",
     const startedAt = Date.now();
     const child = spawn(process.execPath, [cli, "claude", "run", label, "--", "-p", prompt,
       "--model", "claude-sonnet-4-6", "--output-format", "json", "--dangerously-skip-permissions", "--max-turns", "5", ...extra],
-    { cwd, env: { ...process.env, PATH: `/home/aimdev/.local/bin:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+    { cwd, env: nativeEnv(), stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout.on("data", chunk => { stdout += chunk; });
     child.stderr.on("data", chunk => { stderr += chunk; });
@@ -144,7 +184,7 @@ test("real native refresh preserves the assignment and fresh usage works", {
   const runtime = await loadRedisRuntime({ homeDir: os.homedir(), provider: "anthropic" });
   const exec = promisify(execFile);
   const cli = fileURLToPath(new URL("../../bin/aimgr.js", import.meta.url));
-  const directory = await fs.mkdtemp("/home/aimdev/verification/real-refresh-");
+  const directory = await fs.mkdtemp(path.join(verification, "real-refresh-"));
   try {
     assert.deepEqual(runtime.snapshot.credentials.map(record => record.label).sort(), ["proxy5", "proxy6"]);
     const before = runtime.snapshot.credentials.find(record => record.label === "proxy5");
@@ -158,12 +198,12 @@ test("real native refresh preserves the assignment and fresh usage works", {
     // Existing preflight reconciliation correctly prefers a newer managed
     // file. Make the same synthetic expiry hint due there, without changing
     // the real tokens, so this exercises exchange rather than reconciliation.
-    const nativePath = "/home/aimdev/.aimgr/claude-homes/proxy5/.claude/.credentials.json";
+    const nativePath = path.join(os.homedir(), ".aimgr/claude-homes/proxy5/.claude/.credentials.json");
     const native = JSON.parse(await fs.readFile(nativePath, "utf8"));
     assert.equal(native.claudeAiOauth.accessToken, due.credential.nativeClaudeBundle.claudeAiOauth.accessToken);
     native.claudeAiOauth.expiresAt = due.credential.nativeClaudeBundle.claudeAiOauth.expiresAt;
     await fs.writeFile(nativePath, JSON.stringify(native) + "\n", { mode: 0o600 });
-    const env = { ...process.env, PATH: `/home/aimdev/.local/bin:${process.env.PATH}` };
+    const env = nativeEnv();
     const maintained = await exec(process.execPath, [cli, "auth", "maintain"], { env, timeout: 60000, maxBuffer: 256 * 1024 });
     await fs.writeFile(path.join(directory, "maintenance.private.log"), maintained.stdout + maintained.stderr, { mode: 0o600 });
     // The normal one-shot Redis connection closes while native maintenance

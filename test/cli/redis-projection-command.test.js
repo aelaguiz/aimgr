@@ -69,7 +69,7 @@ async function proxyAssignmentFixture(t) {
   };
   return {
     home, client, store,
-    set: overrides => runCli(["claude", "proxy", "set", "claude", "b"], { ...deps, ...overrides }),
+    set: overrides => runCli(["claude", "proxy", "set", "claude", "b"], { ...deps, assertLocalClaudeProfileStoppedImpl: async () => {}, ...overrides }),
     run: runClaudeCliImpl => runCli(["claude", "run", "claude"], { ...deps, runClaudeCliImpl }),
     offline: () => runCli(["claude", "run", "claude"], { ...deps,
       connectRedisStoreImpl: async () => { throw new Error("Redis unavailable"); },
@@ -86,7 +86,7 @@ test("proxy reassignment refuses surviving local children and invalidates its ol
   fs.mkdirSync(path.join(root, "a"), { recursive: true });
   const events = path.join(root, "a", "cgroup.events");
   fs.writeFileSync(events, "populated 1\nfrozen 0\n");
-  const assertLocalClaudeProfileStoppedImpl = profileRef => assertLocalClaudeProfileStopped(profileRef, { cgroupRoot: root });
+  const assertLocalClaudeProfileStoppedImpl = profileRef => assertLocalClaudeProfileStopped(profileRef, { cgroupRoot: root, platform: "linux" });
   await assert.rejects(lane.set({ assertLocalClaudeProfileStoppedImpl }), /still has local native work/);
   assert.equal((await readSnapshot(lane.store)).credentials[0].policy.egress.profileRef, "a");
   assert.equal(readClaudeOfflineBinding(lane.home, "claude").egress.profileRef, "a");
@@ -97,6 +97,17 @@ test("proxy reassignment refuses surviving local children and invalidates its ol
   // An unrelated account can save a stale aggregate state without reviving A.
   writeLocalState({ homeDir: lane.home, localState: { targets: { claudeCli: { egressByLabel: { claude: { egress: { profileRef: "a" } } } } } } });
   await assert.rejects(lane.offline(), /proxy|binding|cache/i);
+});
+
+test("Darwin proxy reassignment refuses missing installed metadata before changing policy or cache", async t => {
+  const lane = await proxyAssignmentFixture(t);
+  await lane.run(() => ({ status: 0, signal: null }));
+  const before = await readSnapshot(lane.store);
+  const cached = readClaudeOfflineBinding(lane.home, "claude");
+  await assert.rejects(lane.set({ assertLocalClaudeProfileStoppedImpl: () => assertLocalClaudeProfileStopped("missing-reassignment-fixture", { platform: "darwin" }) }), /cannot verify stopped native work.*metadata.*Repair/);
+  assert.deepEqual((await readSnapshot(lane.store)).credentials, before.credentials);
+  assert.deepEqual(readClaudeOfflineBinding(lane.home, "claude"), cached);
+  await assertLocalClaudeProfileStopped(undefined, { platform: "darwin" });
 });
 
 test("proxy setter refuses an active launcher, preserves credential writes, and round-trips assignment", async t => {
@@ -159,7 +170,9 @@ test("local assignment fence permits shared cached sessions and excludes only th
 test("local assignment lock loss aborts its cached session and releases the holder", async t => {
   const lane = await proxyAssignmentFixture(t);
   const lock = await acquireClaudeAssignmentLock(lane.home, "claude");
-  const holder = Number(execFileSync("pgrep", ["-P", String(process.pid), "-x", "flock"], { encoding: "utf8" }).trim());
+  const holder = Number(execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" }).split("\n")
+    .map(line => line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)).find(parts => parts && Number(parts[2]) === process.pid
+      && parts[3].includes(path.join(lane.home, ".aimgr/claude-egress/claude.json.lock")))?.[1]);
   assert.ok(Number.isSafeInteger(holder) && holder > 1);
   const aborted = new Promise(resolve => lock.signal.addEventListener("abort", resolve, { once: true }));
   process.kill(holder, "SIGTERM");

@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { ClaudeRouteError } from "./claude-egress-policy.js";
 import { checkClaudeRouteExit } from "./claude-transport.js";
 import { readAimgrConfig } from "../config/aimgr-config.js";
@@ -7,6 +9,7 @@ import { resolveOptionalClaudeEgressProfile } from "./claude-egress-policy.js";
 import { rememberClaudeProtection } from "./claude-offline-binding.js";
 
 const helper = fileURLToPath(new URL("../../native/claude/linux_proxy.py", import.meta.url));
+const exec = promisify(execFile);
 
 export function resolveNativeAccountProfile({ homeDir, state, label }) {
   const account = state?.accounts?.[label];
@@ -16,9 +19,16 @@ export function resolveNativeAccountProfile({ homeDir, state, label }) {
     profiles: readAimgrConfig({ homeDir }).config.claudeProxyProfiles });
 }
 
-export async function assertLocalClaudeProfileStopped(profileRef, { cgroupRoot = "/sys/fs/cgroup/aimgr-claude" } = {}) {
+export async function assertLocalClaudeProfileStopped(profileRef, { cgroupRoot = "/sys/fs/cgroup/aimgr-claude", platform = process.platform } = {}) {
   if (!profileRef) return;
   if (!/^[a-z0-9][a-z0-9_-]*$/.test(profileRef)) throw new Error("Invalid native Claude profile.");
+  if (platform === "darwin") {
+    try { await fs.access(`/opt/aimgr-claude-proxy/${profileRef}.json`); }
+    catch (cause) { throw new Error(`Claude proxy ${profileRef}: cannot verify stopped native work because installed metadata is unavailable. Repair the installation before changing its assignment.`, { cause }); }
+    try { await exec("/usr/bin/python3", ["-I", "/opt/aimgr-claude-proxy/darwin_proxy.py", "check-stopped", profileRef]); }
+    catch (error) { throw new Error(error.stderr?.trim() || `Claude proxy ${profileRef}: cannot verify stopped native work.`, { cause: error }); }
+    return;
+  }
   let events;
   try { events = await fs.readFile(`${cgroupRoot}/${profileRef}/cgroup.events`, "utf8"); }
   catch (error) { if (error.code === "ENOENT") return; throw error; }
@@ -27,9 +37,15 @@ export async function assertLocalClaudeProfileStopped(profileRef, { cgroupRoot =
   }
 }
 
-export async function prepareClaudeNativeRoute({ profile, command, args, signal, deadlineMs, platform = process.platform }) {
+// R3/R5/R6: this JS preflight proves the assigned SOCKS route, not the native
+// enforcement boundary. The helper repeats the binding check under its lock
+// and probes the actual cgroup or PF/GID/TUN path before executing any child.
+// nativeCommand must name Claude itself even when command is its Node supervisor:
+// otherwise an existing unwrapped --bg daemon could receive the new work.
+// Regressions: claude-native-route.test.js and claude-native-background.test.js.
+export async function prepareClaudeNativeRoute({ profile, command, args, nativeCommand = command, signal, deadlineMs, platform = process.platform }) {
   if (!profile) throw new ClaudeRouteError("missing_proxy_assignment");
-  if (platform !== "linux") throw new ClaudeRouteError("native_proxy_platform_unverified", profile);
+  if (!["linux", "darwin"].includes(platform)) throw new ClaudeRouteError("native_proxy_platform_unverified", profile);
   let installed;
   try { installed = JSON.parse(await fs.readFile(`/opt/aimgr-claude-proxy/${profile.profileRef}.json`, "utf8")); }
   catch (cause) { throw new ClaudeRouteError("native_proxy_unavailable", { ...profile, cause }); }
@@ -39,10 +55,18 @@ export async function prepareClaudeNativeRoute({ profile, command, args, signal,
   }
   const timeoutMs = Number.isFinite(deadlineMs) ? Math.max(1, Math.min(8000, deadlineMs - Date.now())) : 8000;
   await checkClaudeRouteExit(profile, { timeoutMs, signal });
-  const binding = JSON.stringify({ label: profile.label, socksHost: profile.socksHost, socksPort: profile.socksPort, expectedExits: profile.expectedExits });
+  const binding = JSON.stringify({ label: profile.label, socksHost: profile.socksHost, socksPort: profile.socksPort, expectedExits: profile.expectedExits, nativeCommand });
+  if (platform === "darwin") return { command: "/opt/aimgr-claude-proxy/darwin_launch", args: [profile.profileRef, binding, "--", command, ...args] };
   return { command: "/usr/bin/python3", args: [helper, "run", profile.profileRef, binding, "--", command, ...args] };
 }
 
+// R0/R7: apply only after explicit protection is resolved, never in common
+// launch preparation. Clearing conflicting proxy variables is not enforcement;
+// the native boundary owns routing. Keep all other environment, including user
+// OpenTelemetry integrations, intact. These two flags opt out of Anthropic's
+// optional analytics/error reports, not ordinary task context.
+// Regressions: claude-optional-privacy.test.js, claude-telemetry.test.js and
+// inspect-native-error-optout.mjs (all under test/network).
 export function nativeProxyEnvironment(env) {
   const next = { ...env };
   for (const key of Object.keys(next)) {
