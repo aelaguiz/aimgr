@@ -1,0 +1,7 @@
+{
+  "artifactSet": "c04048c95eb289cbdda8f79a35d055ca036e9fd17251c16ca48c21942b0ca1c7",
+  "finalSourceSha256": "da7e579906c5cb95c08c0b71b2d5598b7e18cd10932c5df168d4d797459bdaa4",
+  "launcherSha256": "298aaf15606e68b7d1f32927a25a57ae0085c7f2143e28492008f8503c4b12cd",
+  "finalSourceReproducesTestedLauncher": true,
+  "differenceSinceOriginalBuild": "comments only"
+}

@@ -1,0 +1,107 @@
+{
+  "installer": {
+    "platform": "Darwin",
+    "passed": [
+      "staging does not activate",
+      "explicit activation and idempotence",
+      "old immutable artifacts retained",
+      "nonexecutable fixed helper",
+      "changed approved bytes",
+      "unapproved extra resource",
+      "test authorization cannot activate for normal use",
+      "review without human approval",
+      "existing bundle denies ordinary-user access: approval.json",
+      "existing bundle denies ordinary-user access: 7a209a95e51f22dcd049d44b396574e44268d24108551a39d9ad0247fc03d1d9",
+      "existing Mac read-denying ACL",
+      "new staged bundle readable with restrictive administrator umask",
+      "new destination under unreadable artifacts parent",
+      "existing Mac execution-denying ACL",
+      "Mac activation preserves held account session lock",
+      "stopped account transitions after lock release",
+      "Mac activation preserves custom-home native owner",
+      "post-publication durability failure reports changed selector",
+      "post-publication cleanup failure reports changed selector"
+    ],
+    "realVendorExecuted": false,
+    "realRuntimeChanged": false,
+    "syntheticInstallerContracts": true
+  },
+  "nativeValidator": {
+    "platform": "darwin",
+    "artifactSet": "8b96ed47d1c11f3188306bd65d9ef63fa5a7e183d425ca15392c4a366c1449e6",
+    "validated": true,
+    "settingsDigest": "44812c60344dbf5ab483b83a1798d0cd56bd5f309a1c77c73d49ae5395990333",
+    "scope": "Actual JS/native validator integration only",
+    "fixture": "/opt/aimgr-state-audit/claude-implementation/candidate-js-validator-FzGfbE"
+  },
+  "managedPolicy": {
+    "platform": "Darwin",
+    "scope": "Native managed-policy admission/validation only; no account or full launcher acceptance",
+    "cases": [
+      {
+        "case": "absent",
+        "expectedAccepted": true,
+        "platform": "darwin",
+        "artifactSet": "8b96ed47d1c11f3188306bd65d9ef63fa5a7e183d425ca15392c4a366c1449e6",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-z5yxqg",
+        "accepted": true,
+        "sourceCount": 0,
+        "passed": true
+      },
+      {
+        "case": "safe",
+        "expectedAccepted": true,
+        "platform": "darwin",
+        "artifactSet": "8b96ed47d1c11f3188306bd65d9ef63fa5a7e183d425ca15392c4a366c1449e6",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-x4L4FY",
+        "accepted": true,
+        "sourceCount": 1,
+        "passed": true
+      },
+      {
+        "case": "agent-view-disabled",
+        "expectedAccepted": true,
+        "platform": "darwin",
+        "artifactSet": "8b96ed47d1c11f3188306bd65d9ef63fa5a7e183d425ca15392c4a366c1449e6",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-aQQD5D",
+        "accepted": true,
+        "sourceCount": 1,
+        "passed": true
+      },
+      {
+        "case": "agent-view-enabled",
+        "expectedAccepted": false,
+        "platform": "darwin",
+        "artifactSet": "8b96ed47d1c11f3188306bd65d9ef63fa5a7e183d425ca15392c4a366c1449e6",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-QabBwt",
+        "accepted": false,
+        "refusedAt": "source-admission",
+        "diagnostic": "Claude was not started: machine-managed Claude settings are unreadable, mutable, dynamic, or conflict with this account's privacy controls.",
+        "passed": true
+      },
+      {
+        "case": "agent-view-env-enabled",
+        "expectedAccepted": false,
+        "platform": "darwin",
+        "artifactSet": "8b96ed47d1c11f3188306bd65d9ef63fa5a7e183d425ca15392c4a366c1449e6",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-w6eFAu",
+        "accepted": false,
+        "refusedAt": "source-admission",
+        "diagnostic": "Claude was not started: machine-managed Claude settings are unreadable, mutable, dynamic, or conflict with this account's privacy controls.",
+        "passed": true
+      },
+      {
+        "case": "agent-view-env-case-enabled",
+        "expectedAccepted": false,
+        "platform": "darwin",
+        "artifactSet": "8b96ed47d1c11f3188306bd65d9ef63fa5a7e183d425ca15392c4a366c1449e6",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-c3X1o8",
+        "accepted": false,
+        "refusedAt": "source-admission",
+        "diagnostic": "Claude was not started: machine-managed Claude settings are unreadable, mutable, dynamic, or conflict with this account's privacy controls.",
+        "passed": true
+      }
+    ],
+    "passed": true
+  }
+}

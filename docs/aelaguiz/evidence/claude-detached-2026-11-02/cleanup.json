@@ -1,0 +1,28 @@
+{
+  "startedAt": "2026-11-02T17:20:07.605779+00:00",
+  "personalProcessesSignaled": false,
+  "personalLauncherChanged": false,
+  "retainedBundlesVerified": true,
+  "macFinalNativeInventory": {
+    "complete": true,
+    "unreadableOwners": 0,
+    "processes": []
+  },
+  "macTestAuthorityRevoked": true,
+  "linuxFinalNativeInventory": {
+    "complete": true,
+    "unreadableOwners": 0,
+    "processes": []
+  },
+  "linuxTestAuthorityRevoked": true,
+  "rentedMacTerminationRequested": "shutting-down",
+  "sshReverseTunnelClosed": true,
+  "syntheticRedisStopped": true,
+  "taskSshKeyAndSocketRemoved": true,
+  "temporaryGcpRulesRemoved": true,
+  "persistentTestVmAndBundlesRetained": true,
+  "hostReleaseSchedule": {
+    "state": "ENABLED",
+    "expression": "rate(15 minutes)"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "privateDurableStorage": "GCP persistent test disk and owner-only local bundle archive",
+  "bundles": [
+    {
+      "artifactSet": "8b96ed47d1c11f3188306bd65d9ef63fa5a7e183d425ca15392c4a366c1449e6",
+      "archiveSha256": "54ef3e119010bc8047795579718f1a1f8fe3c2449bbeb5c18f02995313c5cd67",
+      "fileCount": 4,
+      "freshRetrievalVerified": true,
+      "normalUseApproved": false
+    },
+    {
+      "artifactSet": "c04048c95eb289cbdda8f79a35d055ca036e9fd17251c16ca48c21942b0ca1c7",
+      "archiveSha256": "443a2d320b65dbff2c7ca23ffa7418c0a57e6b6badfc2d6f055f4868bd5bbe07",
+      "fileCount": 4,
+      "freshRetrievalVerified": true,
+      "normalUseApproved": false
+    }
+  ]
+}

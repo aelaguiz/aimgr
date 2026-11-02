@@ -1,0 +1,14 @@
+{
+  "sourceCommit": "1e43725db6e4a6117a3df95c599eb7dc77bef243",
+  "filesCompared": 297,
+  "scope": [
+    "src",
+    "bin",
+    "native",
+    "scripts",
+    "test/network"
+  ],
+  "linuxMatches": true,
+  "macMatches": true,
+  "manifestSha256": "f8b907914ed71bcb0acbb5bdaa0c45c4c200e07e971cafb4c57c9908cc6d63ba"
+}
