@@ -1,0 +1,109 @@
+{
+  "installer": {
+    "platform": "Linux",
+    "passed": [
+      "staging does not activate",
+      "explicit activation and idempotence",
+      "old immutable artifacts retained",
+      "nonexecutable fixed helper",
+      "changed approved bytes",
+      "unapproved extra resource",
+      "test authorization cannot activate for normal use",
+      "review without human approval",
+      "existing bundle denies ordinary-user access: approval.json",
+      "existing bundle denies ordinary-user access: 75e2a3aa3a01c215097126d94067c21f838fbb369e5e27aa6bc41b56906c5512",
+      "new staged bundle readable with restrictive administrator umask",
+      "new destination under unreadable artifacts parent",
+      "active account shared lock prevents Linux transition",
+      "stopped account transitions after lock release",
+      "custom-home native owner prevents Linux transition",
+      "global complain mode cannot replace selector",
+      "unsafe fixed parser cannot replace selector",
+      "mutable policy lock cannot replace selector",
+      "policy reclamation refusal cannot replace selector",
+      "post-publication durability failure reports changed selector",
+      "post-publication cleanup failure reports changed selector"
+    ],
+    "realVendorExecuted": false,
+    "realRuntimeChanged": false,
+    "syntheticInstallerContracts": true
+  },
+  "nativeValidator": {
+    "platform": "linux",
+    "artifactSet": "67430530332b2a0ec10b106ca00bd767a1ed54de5331ba6b766720448d576038",
+    "validated": true,
+    "settingsDigest": "44812c60344dbf5ab483b83a1798d0cd56bd5f309a1c77c73d49ae5395990333",
+    "scope": "Actual JS/native validator integration only",
+    "fixture": "/opt/aimgr-state-audit/claude-implementation/candidate-js-validator-oMcggg"
+  },
+  "managedPolicy": {
+    "platform": "Linux",
+    "scope": "Native managed-policy admission/validation only; no account or full launcher acceptance",
+    "cases": [
+      {
+        "case": "absent",
+        "expectedAccepted": true,
+        "platform": "linux",
+        "artifactSet": "67430530332b2a0ec10b106ca00bd767a1ed54de5331ba6b766720448d576038",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-VMIHqo",
+        "accepted": true,
+        "sourceCount": 0,
+        "passed": true
+      },
+      {
+        "case": "safe",
+        "expectedAccepted": true,
+        "platform": "linux",
+        "artifactSet": "67430530332b2a0ec10b106ca00bd767a1ed54de5331ba6b766720448d576038",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-JRbmM7",
+        "accepted": true,
+        "sourceCount": 1,
+        "passed": true
+      },
+      {
+        "case": "agent-view-disabled",
+        "expectedAccepted": true,
+        "platform": "linux",
+        "artifactSet": "67430530332b2a0ec10b106ca00bd767a1ed54de5331ba6b766720448d576038",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-ziGX6N",
+        "accepted": true,
+        "sourceCount": 1,
+        "passed": true
+      },
+      {
+        "case": "agent-view-enabled",
+        "expectedAccepted": false,
+        "platform": "linux",
+        "artifactSet": "67430530332b2a0ec10b106ca00bd767a1ed54de5331ba6b766720448d576038",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-JYzQsr",
+        "accepted": false,
+        "refusedAt": "source-admission",
+        "diagnostic": "Claude was not started: machine-managed Claude settings are unreadable, mutable, dynamic, or conflict with this account's privacy controls.",
+        "passed": true
+      },
+      {
+        "case": "agent-view-env-enabled",
+        "expectedAccepted": false,
+        "platform": "linux",
+        "artifactSet": "67430530332b2a0ec10b106ca00bd767a1ed54de5331ba6b766720448d576038",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-lJjqDQ",
+        "accepted": false,
+        "refusedAt": "source-admission",
+        "diagnostic": "Claude was not started: machine-managed Claude settings are unreadable, mutable, dynamic, or conflict with this account's privacy controls.",
+        "passed": true
+      },
+      {
+        "case": "agent-view-env-case-enabled",
+        "expectedAccepted": false,
+        "platform": "linux",
+        "artifactSet": "67430530332b2a0ec10b106ca00bd767a1ed54de5331ba6b766720448d576038",
+        "fixture": "/opt/aimgr-state-audit/claude-implementation/managed-native-check-UTE7EO",
+        "accepted": false,
+        "refusedAt": "source-admission",
+        "diagnostic": "Claude was not started: machine-managed Claude settings are unreadable, mutable, dynamic, or conflict with this account's privacy controls.",
+        "passed": true
+      }
+    ],
+    "passed": true
+  }
+}

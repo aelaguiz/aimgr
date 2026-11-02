@@ -7,7 +7,12 @@ known guarantees. They do not enumerate everything a new vendor release can do.
 Select or extend them from the behavior you need to explain; an unfamiliar path
 may need a different experiment. The canonical implementation plan owns
 T01–T24's exact setups and expected results; its section 11 identifies prior
-receipts. Read it alongside the source.
+receipts. Read it alongside the source. The later
+`docs/aelaguiz/CLAUDE_DETACHED_SESSION_REMOVAL_PLAN_2026-11-02.md` replaces native
+detached-job preservation with prevention. Retain an enabled baseline for owner
+reuse, then prove new launches cannot create/join it while ordinary background
+Bash, async subagents and schedules still work. Do not run the old detached-job
+fixture as a required success case against the disabled candidate.
 
 ## Establish access and prepare a new release
 
@@ -124,7 +129,9 @@ intact when runtime activation fails; inspect its companion shortcut effects.
 
 Prepare exact dependencies in a fixed AIM release, never via a shared
 `node_modules` symlink. The file-only runtime installer stages by default;
-`--activate` needs the accepted stopped-owner transition. No-argument wrapper
+`--activate` on Mac publishes the next selection while old sessions/bundles
+remain. Linux reclamation and per-account identity/proxy migration still need
+their stopped-owner transitions. No-argument wrapper
 installation omits runtime validation and is not a missing-bundle repair.
 The test OS release is informational, not an admission requirement. Exercise
 ordinary and protected preparation with matching, different and absent recorded

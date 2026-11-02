@@ -51,6 +51,8 @@ p.add_argument("--node", type=Path)
 p.add_argument("--privacy-mode", choices=["ordinary", "protected"], default="protected")
 p.add_argument("--poll-settings", action="store_true", help="Diagnostic fixture only: use the unchanged client's polling file watcher")
 p.add_argument("--rc-policy-only", action="store_true", help="Eligible unwrapped RC comparison with only disableRemoteControl added")
+p.add_argument("--disable-agent-view", action="store_true", help="Research the narrow native daemon switch, retaining ordinary background tools")
+p.add_argument("--background-review", action="store_true", help="Run the isolated daemon lifetime/reuse/disable experiment")
 a = p.parse_args()
 base = Path("/opt/aimgr-state-audit")
 root = a.root.resolve()
@@ -159,6 +161,8 @@ class Mock(http.server.BaseHTTPRequestHandler):
         if route == "/exit" or self.headers.get("Host", "").split(":")[0] == "api.ipify.org":
             if route == "/exit" and "controls" in (active or ""):
                 until = time.time() + 5
+                if (home / "hold-route-probe").exists():
+                    (home / "route-probe-held").write_text("held")
                 while (home / "hold-route-probe").exists() and time.time() < until:
                     time.sleep(.05)
             self.reply({"ip": self.client_address[0]})
@@ -298,6 +302,11 @@ class Mock(http.server.BaseHTTPRequestHandler):
                 if "CONCURRENT_ROUTINE_CANARY." in messages:
                     content = {"type": "text", "text": "AIM-JOB: done"} if any(block.get("id") == "overlap_routine" for block in blocks) else {
                         "type": "tool_use", "id": "overlap_routine", "name": "Bash", "input": {"command": "printf overlap-routine-ok > overlap-routine-proof.txt", "description": "Verify scheduled work alongside live sessions"}}
+            if "detached-terminal" in active and "DETACHED_LIVE_CHECK" in json.dumps(body.get("messages", [])):
+                blocks = [b for m in body.get("messages", []) if isinstance(m.get("content"), list) for b in m["content"]]
+                if not any(b.get("id") == "detached_live" for b in blocks):
+                    content = {"type": "tool_use", "id": "detached_live", "name": "Bash", "input": {
+                        "command": "printf 'DETACHED_LIVE_SETTING_%s' \"$AIM_DETACHED_LIVE_SETTING\"", "description": "Verify unrelated live settings still apply"}}
             if "controls" in active:
                 messages = json.dumps(body.get("messages", []))
                 blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
@@ -351,8 +360,18 @@ class Mock(http.server.BaseHTTPRequestHandler):
                 if not ran:
                     args = {"skill": "privacy-proof"} if skill else {"description": "Synthetic child task", "prompt": "Run the synthetic Bash task. NATIVE_CHILD_TASK.", "subagent_type": "general-purpose"} if agent else ({"text": "MCP_TOOL_RESULT_CANARY"} if mcp_tool else {"query": "+stdio echo", "max_results": 5}) if mcp else {"command": "printf subagent-ok > child-proof.txt" if child else "printf native-tool-ok > tool-proof.txt", "description": "Write synthetic proof"}
                     content = {"type": "tool_use", "id": "tool_fixture_" + str(len(requests)), "name": name, "input": args}
-                elif "schedules" in active:
+                elif "schedules" in active or "ROUTINE_SUCCESS_CANARY" in messages:
                     content = {"type": "text", "text": "NATIVE_MOCK_DONE\nAIM-JOB: done"}
+                if "NATIVE_BACKGROUND_BASH" in messages and not ran:
+                    content = {"type": "tool_use", "id": "background_bash", "name": "Bash", "input": {
+                        "command": "sleep 1; printf background-ok > background-tool-proof.txt",
+                        "description": "Verify ordinary background shell tools", "run_in_background": True}}
+                overlap = re.search(r"NATIVE_OVERLAP_([ab])", messages)
+                if overlap and not ran:
+                    own = overlap.group(1); other = "b" if own == "a" else "a"
+                    content = {"type": "tool_use", "id": "overlap_" + own, "name": "Bash", "input": {
+                        "command": "touch overlap-" + own + "-ready; for i in $(seq 1 100); do if test -f overlap-" + other + "-ready; then printf overlap-ok > overlap-" + own + "-done; exit 0; fi; sleep .1; done; exit 1",
+                        "description": "Verify concurrent ordinary sessions reach their tools"}}
                 if "NATIVE_SCHEDULE_REQUEST" in "\n".join(user_text):
                     calls = [block for block in blocks if block.get("type") == "tool_use"]
                     name, args = None, None
@@ -512,8 +531,16 @@ def interactive(arguments, home, env):
     def enqueue(value):
         nonlocal typing, next_key, submit_at
         typing = bytearray(value.encode()); next_key = time.monotonic(); submit_at = None
-    deadline = time.monotonic() + (90 if "dynamic-directory" in active or "headers-reload" in active else 45)
+    deadline = time.monotonic() + (90 if "detached-terminal" in active or "dynamic-directory" in active or "headers-reload" in active else 45)
     code = "timeout"
+    opened_at = time.monotonic()
+    inventory_at = 0
+    if "detached-terminal" in active:
+        inventory_script = Path(__file__).resolve().parent.parent / "native/claude/runtime_inventory.py"
+        before_inventory = json.loads(subprocess.check_output(["/usr/bin/python3", "-I", str(inventory_script)], text=True))
+        before_pids = {r["pid"] for r in before_inventory["processes"]}
+        counts["processInventoryComplete"] = before_inventory["complete"]
+        counts["newDetachedOwners"] = []
     remote_connected_at = None
     rc_debug_offset = (home / "project/debug.private.txt").stat().st_size if (home / "project/debug.private.txt").exists() else 0
     try:
@@ -537,7 +564,46 @@ def interactive(arguments, home, env):
                             counts["deviceAttributeResponses"] += 1
             if model_at is None and any(r["case"] == active and "/messages" in r["path"] for r in requests[request_start:]):
                 model_at = time.monotonic()
-            if "-rc-" in active:
+            if "detached-terminal" in active:
+                if time.monotonic() - inventory_at > 1:
+                    observed = json.loads(subprocess.check_output(["/usr/bin/python3", "-I", str(inventory_script)], text=True))
+                    counts["processInventoryComplete"] &= observed["complete"]
+                    counts["newDetachedOwners"] = sorted(set(counts["newDetachedOwners"]) | {r["pid"] for r in observed["processes"] if r["pid"] not in before_pids and r.get("role", "").startswith("detached-")})
+                    inventory_at = time.monotonic()
+                if typing and time.monotonic() >= next_key:
+                    os.write(descriptor, bytes([typing.pop(0)])); next_key = time.monotonic() + .03
+                    if not typing: submit_at = time.monotonic() + 1
+                if submit_at is not None and time.monotonic() >= submit_at:
+                    os.write(descriptor, b"\r"); submit_at = None; dynamic_at = time.monotonic()
+                debug_file = home / "project/debug.private.txt"
+                debug = debug_file.read_text(errors="replace") if debug_file.exists() else ""
+                if dynamic_phase == "initial" and time.monotonic() - opened_at > 8:
+                    enqueue("Reply SYNTHETIC_OK. DETACHED_FOREGROUND_CHECK.")
+                    dynamic_phase = "first"
+                elif dynamic_phase == "first" and model_at is not None and time.monotonic() - model_at > 8:
+                    debug_offset = len(debug)
+                    with (Path(env["CLAUDE_CONFIG_DIR"]) / "settings.json").open("r+") as stream:
+                        stream.seek(0); json.dump({"skipDangerousModePermissionPrompt": True, "disableAgentView": False, "env": {
+                            "CLAUDE_CODE_DISABLE_AGENT_VIEW": "0", "AIM_DETACHED_LIVE_SETTING": "after"}}, stream)
+                        stream.truncate(); stream.flush(); os.fsync(stream.fileno())
+                    dynamic_phase = "changed"
+                elif dynamic_phase == "changed":
+                    counts["settingsChangeObserved"] = "Detected change to" in debug[debug_offset:]
+                    counts["appStateChangeObserved"] = "updating app state" in debug[debug_offset:]
+                    if counts["settingsChangeObserved"] and counts["appStateChangeObserved"]:
+                        enqueue("Check the live setting. DETACHED_LIVE_CHECK.")
+                        dynamic_phase = "second"
+                elif dynamic_phase == "second":
+                    models = [r for r in requests[request_start:] if r["case"] == active and "/messages" in r["path"]]
+                    if "DETACHED_LIVE_SETTING_after" in json.dumps([r["body"].get("messages") for r in models]):
+                        counts["unrelatedLiveSettingApplied"] = True
+                        enqueue("/background"); dynamic_phase = "background"
+                elif dynamic_phase == "background" and not typing and submit_at is None:
+                    plain = re.sub(rb'\s+', b'', re.sub(rb'\x1b\[[0-9;?]*[A-Za-z]', b'', bytes(output)))
+                    counts["backgroundCommandRefused"] = b"Unknowncommand:/background" in plain or b"Unknowncommand:background" in plain or b"disableAgentView" in plain or b"backgroundsessionsaredisabled" in plain.lower()
+                    if counts["backgroundCommandRefused"]:
+                        enqueue("/exit"); exit_sent = True; dynamic_phase = "exit"
+            elif "-rc-" in active:
                 # These are locally terminated synthetic RC sessions. Reach
                 # native registration/transport once, then stop that owner;
                 # never provide a remote instruction or forward provider data.
@@ -664,6 +730,9 @@ cases = [
     ("protected-pro-refresh-upgrade-disabled", "pro", True, "sign_in"),
     ("protected-pro-workflows-disabled", "pro", True, "sign_in"),
     ("ordinary-pro-workflows-disabled", "pro", False, "sign_in"),
+    ("ordinary-pro-detached-disabled", "pro", False, "sign_in"),
+    ("ordinary-pro-detached-terminal-disabled", "pro", False, "sign_in"),
+    ("protected-pro-detached-terminal-disabled", "pro", True, "sign_in"),
     ("pro-errors-on", "pro", False, "sign_in"),
     ("pro-errors-off", "pro", False, "sign_in"),
     ("protected-pro-errors-disabled", "pro", True, "sign_in"),
@@ -717,6 +786,10 @@ try:
                  "theme": "dark", "numStartups": 10,
                  "projects": {str(home / "project"): {"hasTrustDialogAccepted": True,
                                                        "hasCompletedProjectOnboarding": True}}}
+        if "detached-terminal" in name:
+            state["defaultToAgentsView"] = True
+            (config / "settings.json").write_text(json.dumps({"skipDangerousModePermissionPrompt": True, "disableAgentView": False,
+                "env": {"CLAUDE_CODE_DISABLE_AGENT_VIEW": "0", "AIM_DETACHED_LIVE_SETTING": "before"}}))
         if "-rc-" in name:
             state["remoteDialogSeen"] = True
         env = {"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
@@ -727,6 +800,8 @@ try:
                "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1",
                "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "ALL_PROXY": proxy,
                "NODE_EXTRA_CA_CERTS": str(root / "ca.pem")}
+        if a.disable_agent_view:
+            env["CLAUDE_CODE_DISABLE_AGENT_VIEW"] = "1"
         if a.routed_aim and "workflows" not in name:
             env["NODE_EXTRA_CA_CERTS"] = str(home / "project/fixture-ca.pem")
         if opt_out:
@@ -821,6 +896,10 @@ print(json.dumps(result))
             arguments += ["--debug-file", str(home / "project/debug.private.txt")]
         if "terminal" in name or "dynamic-directory" in name or "headers-reload" in name or "-rc-" in name or "errors" in name:
             arguments.remove("-p")
+        if "detached-terminal" in name:
+            # No initial prompt: exercise persisted default-view startup itself.
+            arguments.remove("Reply SYNTHETIC_OK.")
+            arguments += ["--dangerously-skip-permissions"]
         if name == "pro-rc-standalone":
             arguments = [str(a.claude), "remote-control"]
         elif name == "pro-rc-flag":
@@ -856,9 +935,11 @@ print(json.dumps(result))
         if a.integrated_aim:
             if not a.node or not plan or a.approved_mac_launcher or (a.privacy_mode == "protected" and not a.routed_aim):
                 raise SystemExit("Integrated stored OAuth requires Node and actual protected route when applicable")
-            driver = base / "claude-implementation/repo/scripts/privacy-integrated-launch-check.mjs"
+            driver = Path(__file__).resolve().with_name("privacy-integrated-launch-check.mjs")
             invocation = {"mode": a.privacy_mode, "command": str(a.claude), "userHomeDir": str(home),
                 "homeDir": str(config.parent), "configDir": str(config), "cwd": str(home / "project"), "args": arguments[1:]}
+            if "detached" in name and "terminal" not in name:
+                invocation.update(check="detached", captureFile=str(root / "requests.private.jsonl"))
             if "workflows" in name:
                 invocation["check"] = "workflows"
                 invocation["captureFile"] = str(root / "requests.private.jsonl")
@@ -870,12 +951,15 @@ print(json.dumps(result))
                 invocation.update(check="controls", captureFile=str(root / "requests.private.jsonl"))
             if "concurrency" in name:
                 invocation.update(check="concurrency", captureFile=str(root / "requests.private.jsonl"), profiles=route_profiles, background="background" in name, continuity="continuity" in name, failureLifecycle="lifetimes" in name, savedJobs="savedjobs" in name, workflowOverlap="overlap" in name)
-            if "dynamic-directory" in name or "headers-reload" in name or "-rc-" in name or "errors" in name:
+            if "terminal" in name or "dynamic-directory" in name or "headers-reload" in name or "-rc-" in name or "errors" in name:
                 invocation["check"] = "interactive"
             if "http-mcp" in name:
                 invocation["check"] = "http-mcp"
                 invocation["captureFile"] = str(root / "requests.private.jsonl")
             if route_profile: invocation["egressProfile"] = route_profile
+            if a.background_review:
+                driver = Path(__file__).resolve().with_name("privacy-claude-background-review.mjs")
+                invocation["captureFile"] = str(root / "requests.private.jsonl")
             arguments = [str(a.node), str(driver), json.dumps(invocation)]
         if a.sandbox_profile:
             if platform.system() != "Darwin" or a.sandbox_profile.resolve().parent != root.parent:
@@ -899,7 +983,7 @@ print(json.dumps(result))
                                      pass_fds=(environment_transfer.fileno(),) if environment_transfer else ())
             if environment_transfer: environment_transfer.close()
             try:
-                out, err = child.communicate(timeout=240 if "schedules" in name or "concurrency" in name else 180 if "workflows" in name or "http-mcp" in name or "compatibility" in name or "controls" in name else 45)
+                out, err = child.communicate(timeout=240 if "schedules" in name or "concurrency" in name else 180 if "detached" in name or "workflows" in name or "http-mcp" in name or "compatibility" in name or "controls" in name else 45)
                 code = child.returncode
             except subprocess.TimeoutExpired:
                 observed = subprocess.run(["/bin/ps", "-axo", "pid=,ppid=,uid=,gid=,stat=,command="], capture_output=True, text=True)
@@ -961,6 +1045,8 @@ print(json.dumps(result))
                         "terminalCanaryInOtherRequests": any(TERMINAL_CANARY in captured_text(r) for r in captures if "/event_logging/" not in r["path"] and "/messages" not in r["path"]),
                         "terminalCanaryInLocalDebug": (home / "debug.private.txt").exists() and TERMINAL_CANARY in (home / "debug.private.txt").read_text(),
                         **({"workflows": json.loads((home / "workflows.json").read_text())} if (home / "workflows.json").exists() else {}),
+                        **({"detached": json.loads((home / "detached.json").read_text())} if (home / "detached.json").exists() else {}),
+                        **({"backgroundReview": json.loads((home / "background-review.json").read_text())} if (home / "background-review.json").exists() else {}),
                         **({"compatibility": json.loads((home / "compatibility.json").read_text())} if (home / "compatibility.json").exists() else {}),
                         **({"controls": json.loads((home / "controls.json").read_text())} if (home / "controls.json").exists() else {}),
                         **({"concurrency": json.loads((home / "concurrency.json").read_text())} if (home / "concurrency.json").exists() else {}),
@@ -973,6 +1059,7 @@ finally:
     server.shutdown()
     server.server_close()
 report = {"integratedAim": a.integrated_aim, "mode": a.privacy_mode, "actualNativeRoute": a.routed_aim, "platform": platform.system(), "artifactSha256": digest, "results": results,
+          "disableAgentView": a.disable_agent_view, "backgroundReview": a.background_review,
           "settingsWatcherPollingDiagnostic": a.poll_settings,
           "remoteControlPolicyOnlyComparison": a.rc_policy_only,
           "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",

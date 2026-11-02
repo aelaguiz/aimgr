@@ -1,0 +1,73 @@
+{
+  "integratedAim": true,
+  "mode": "ordinary",
+  "actualNativeRoute": false,
+  "platform": "Linux",
+  "artifactSha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "results": [
+    {
+      "case": "ordinary-pro-workflows-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/event_logging/v2/batch",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 23,
+      "modelSources": [
+        "127.0.0.1"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": true,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 20,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "workflows": {
+        "bash": true,
+        "hooks": true,
+        "instructions": true,
+        "externalInstructionImport": true,
+        "historyResumeFork": true,
+        "stdioMcp": true,
+        "personalSkill": true,
+        "subagent": true,
+        "backgroundRetained": {
+          "ordinaryBackgroundBash": true,
+          "nativeSubagentStartedInBackground": true,
+          "concurrentSameAccountTools": true,
+          "aimScheduledOccurrenceAndNativeTool": true,
+          "routineSubstitutions": [
+            "Redis wire",
+            "Herdr UI",
+            "scheduled clock",
+            "print mode"
+          ],
+          "osCalendarRetested": false
+        }
+      },
+      "connectAuthorities": [
+        "api.anthropic.com:443"
+      ]
+    }
+  ],
+  "disableAgentView": true,
+  "backgroundReview": false,
+  "settingsWatcherPollingDiagnostic": false,
+  "remoteControlPolicyOnlyComparison": false,
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance"
+}

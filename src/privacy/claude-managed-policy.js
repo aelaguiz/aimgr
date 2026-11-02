@@ -59,6 +59,7 @@ function assertStaticPayloads(source, platform, protectedAccount, candidates) {
 
 function assertControls(settings, protectedAccount, providerEnvironment = {}) {
   if (settings.disableRemoteControl !== undefined && settings.disableRemoteControl !== true) fail();
+  if (settings.disableAgentView !== undefined && settings.disableAgentView !== true) fail();
   // Even a matching org pin makes individual Pro/Max remote-policy eligible.
   // A later static replacement cannot undo eligibility memoized during init.
   if (settings.forceLoginOrgUUID !== undefined || nonempty(settings.apiKeyHelper)

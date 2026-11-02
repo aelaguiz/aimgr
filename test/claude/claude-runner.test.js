@@ -664,3 +664,26 @@ test("lease cancellation during privacy preparation refuses before any superviso
     }, spawnImpl() { spawned = true; throw new Error("unexpected spawn"); } }), error => error === reason);
   assert.equal(spawned, false);
 });
+
+
+test("original detached intent refuses before interactive hook-prefix augmentation", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const prepared = preparedLaunch(home, { userHooksPath: path.join(home, "hooks.json") });
+  for (const args of [["daemon", "run"], ["attach", "synthetic-name"], ["logs"], ["--bg", "task"], ["-cn", "--bg"]]) {
+    await assert.rejects(realRunClaudeCli({ cwd: home, preparedLaunch: prepared, args,
+      prepareClaudeNativeInvocationImpl: () => assert.fail("native preparation must not start") }),
+    /daemon commands|detached Claude sessions/);
+    await assert.rejects(realRunClaudeCliNoninteractive({ cwd: home, args,
+      verifyInstalledClaudeExecutableImpl: () => assert.fail("artifact preparation must not start") }),
+    /daemon commands|detached Claude sessions/);
+  }
+  for (const args of [["-p", "attach"], ["-p", "daemon"], ["--name", "attach", "-p", "task"]]) {
+    await assert.rejects(realRunClaudeCli({ cwd: home, preparedLaunch: prepared, args,
+      prepareClaudeNativeInvocationImpl: input => {
+        assert.deepEqual(input.args.slice(0, 2), ["--settings", prepared.userHooksPath]);
+        assert.deepEqual(input.args.slice(2), args);
+        throw new Error("literal reached native preparation");
+      } }), /literal reached native preparation/);
+  }
+});

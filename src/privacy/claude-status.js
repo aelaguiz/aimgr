@@ -82,6 +82,7 @@ export function formatClaudePrivacyStatus(status) {
   }
   if (status.account) lines.push(`Account ${status.account.label}: ${status.account.mode} (${status.account.source}).`);
   lines.push(`Running Claude processes: ${status.running.processes.length}${status.running.complete ? "" : " (inventory incomplete)"}.`);
-  for (const row of status.running.processes) lines.push(`  PID ${row.pid}: ${row.artifactSet ?? "outside the approved runtime"}`);
+  const roles = { "detached-supervisor": "detached-session daemon", "detached-worker": "detached-session worker", session: "session", unknown: "role unknown" };
+  for (const row of status.running.processes) lines.push(`  PID ${row.pid}: ${roles[row.role] ?? roles.unknown}; ${row.artifactSet ?? "outside the approved runtime"}`);
   return lines.join("\n") + "\n";
 }

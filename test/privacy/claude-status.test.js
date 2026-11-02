@@ -140,3 +140,50 @@ test("unreadable legacy version images make the process inventory incomplete", (
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { complete: false, unreadableOwners: 1, processes: [] });
 });
+
+
+test("public detached refusal precedes Redis and provider work", t => {
+  const f = fixture(t);
+  for (const args of [["--bg", "task"], ["daemon", "run"], ["agents"], ["attach", "synthetic"], ["-cn", "--bg"], ["mcp", "add", "--bg"]]) {
+    const result = spawnSync(process.execPath, [new URL("../../bin/aimgr.js", import.meta.url).pathname,
+      "claude", "run", "synthetic", "--", ...args], { encoding: "utf8", timeout: 10000,
+      env: { HOME: f.home, PATH: f.home + path.delimiter + "/usr/bin:/bin", AIMGR_HOME: f.home,
+        REDIS_URL: "rediss://127.0.0.1:1", AIMGR_REDIS_URL: "rediss://127.0.0.1:1" } });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /Claude was not started:.*(detached Claude sessions|daemon commands)/);
+    assert.doesNotMatch(result.stderr, /Redis|ECONNREFUSED|credential/i);
+    assert.equal(fs.existsSync(path.join(f.home, "VENDOR_EXECUTED")), false);
+  }
+});
+
+test("role display is conservative and never prints unknown role input", t => {
+  const f = fixture(t), status = inspectClaudePrivacyStatus({ ...f.options, inventory: () => ({ complete: true,
+    processes: ["detached-supervisor", "detached-worker", "session", "unknown", "PRIVATE_ARG"].map((role, i) => ({ pid: 200 + i, role, artifactSet: null })) }) });
+  const display = formatClaudePrivacyStatus(status);
+  assert.match(display, /PID 200: detached-session daemon/);
+  assert.match(display, /PID 201: detached-session worker/);
+  assert.match(display, /PID 202: session/);
+  assert.match(display, /PID 204: role unknown/);
+  assert.doesNotMatch(display, /PRIVATE_ARG/);
+});
+
+test("kernel argv role parser keeps values and environment out of role classification", () => {
+  const helper = new URL("../../native/claude/runtime_inventory.py", import.meta.url).pathname;
+  const code = String.raw`import importlib.util,struct,sys
+s=importlib.util.spec_from_file_location('inventory',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+for argv,role in [(['claude','daemon','run'],'detached-supervisor'), (['claude','--dangerously-skip-permissions','daemon','run'],'detached-supervisor'), (['claude','--bg-pty-host','private'],'detached-worker'), (['claude','-p','daemon','run'],'session'), (['claude','--name','--bg-spare'],'session'), (['claude','daemon'],'unknown'), (['claude','daemon','--origin','transient'],'unknown'), (['claude','--daemon-new-role'],'unknown'), ([], 'unknown')]:
+ assert m.process_role(argv)==role
+blob=struct.pack('i',3)+b'/private/claude\0\0claude\0-p\0private prompt\0PRIVATE_ENV=secret\0'
+assert m.mac_argv(blob)==['claude','-p','private prompt']
+try: m.mac_argv(struct.pack('i',8)+blob[4:])
+except ValueError: pass
+else: raise AssertionError('truncated argc accepted')
+`;
+  const result = spawnSync("/usr/bin/python3", ["-I", "-c", code, helper], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("Mac activation and Linux reclamation contract", () => {
+  const result = spawnSync("/usr/bin/python3", ["-I", new URL("./claude-runtime-activation.py", import.meta.url).pathname], { encoding: "utf8", timeout: 15000 });
+  assert.equal(result.status, 0, result.stderr);
+});

@@ -164,7 +164,13 @@ static void subtree(FILE *out,const char *file,const char *rights) {
     char *text=NULL; size_t length=0; FILE *buffer=open_memstream(&text,&length);
     if (!buffer) fail("policy allocation");
     literal(buffer,pattern); fclose(buffer);
-    text[length-1]=0; fprintf(out,"%s**\" %s,\n",text,rights); free(text);
+    /* Kernel directory opens use a trailing slash. The bare root rule above
+     * matches a file; the recursive wildcard alone may omit the directory.
+     * Include that exact directory so shared skills can be enumerated without
+     * granting any parent or sibling. Apply the same spelling to update denies.
+     * Regression: privacy-linux-directory-check.py uses actual kernel opens;
+     * libapparmor's query interface alone reported a misleading allow here. */
+    text[length-1]=0; fprintf(out,"%s{,**}\" %s,\n",text,rights); free(text);
 }
 static void ancestors(FILE *out,const char *file,const char *rights,const char *qualifier) {
     char copy[PATH_MAX]; snprintf(copy,sizeof(copy),"%s",file);
@@ -441,6 +447,12 @@ int main(int argc,char **argv) {
     unset_environment("LD_PRELOAD");unset_environment("LD_AUDIT");
     set_environment("CLAUDE_CONFIG_DIR",config,1);set_environment("CLAUDE_SECURESTORAGE_CONFIG_DIR",config,1);
     set_environment("DISABLE_AUTOUPDATER","1",1);set_environment("DISABLE_UPDATES","1",1);set_environment("DISABLE_GROWTHBOOK","1",1);
+    /* Detached supervisors can own later requests using their earlier image and
+     * settings. Supply the narrow early default before vendor startup. Shared
+     * argument admission and the settings snapshot keep supported AIM paths
+     * disabled; this env pin alone does not override hostile disk settings. Ordinary background
+     * Bash/subagents stay available; never use DISABLE_BACKGROUND_TASKS here. */
+    set_environment("CLAUDE_CODE_DISABLE_AGENT_VIEW","1",1);
     if (protected) { set_environment("DISABLE_TELEMETRY","1",1);set_environment("DISABLE_ERROR_REPORTING","1",1); }
     set_environment("AIMGR_CLAUDE_LINUX_POLICY",profile,1);
     close_handles();argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");

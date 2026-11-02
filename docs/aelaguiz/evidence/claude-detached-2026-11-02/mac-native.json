@@ -1,0 +1,960 @@
+{
+  "detached-ordinary-v1": {
+    "integratedAim": true,
+    "mode": "ordinary",
+    "actualNativeRoute": false,
+    "platform": "Darwin",
+    "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "results": [
+      {
+        "case": "ordinary-pro-stale-cached-policy-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/event_logging/v2/batch",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 1,
+        "modelSources": [
+          "127.0.0.1"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "profile",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": true,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 2,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "connectAuthorities": [
+          "api.anthropic.com:443"
+        ]
+      },
+      {
+        "case": "ordinary-pro-workflows-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/event_logging/v2/batch",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 23,
+        "modelSources": [
+          "127.0.0.1"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": true,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 20,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "workflows": {
+          "bash": true,
+          "hooks": true,
+          "instructions": true,
+          "externalInstructionImport": true,
+          "historyResumeFork": true,
+          "stdioMcp": true,
+          "personalSkill": true,
+          "subagent": true,
+          "backgroundRetained": {
+            "ordinaryBackgroundBash": true,
+            "nativeSubagentStartedInBackground": true,
+            "concurrentSameAccountTools": true,
+            "aimScheduledOccurrenceAndNativeTool": true,
+            "routineSubstitutions": [
+              "Redis wire",
+              "Herdr UI",
+              "scheduled clock",
+              "print mode"
+            ],
+            "osCalendarRetested": false
+          }
+        },
+        "connectAuthorities": [
+          "api.anthropic.com:443"
+        ]
+      },
+      {
+        "case": "ordinary-pro-update-boundary-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/event_logging/v2/batch",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 2,
+        "modelSources": [
+          "127.0.0.1"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": true,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 2,
+        "ordinaryUpdateBoundary": {
+          "checks": [
+            {
+              "name": "updater-write",
+              "passed": true
+            },
+            {
+              "name": "direct",
+              "exit": 126,
+              "passed": true
+            },
+            {
+              "name": "interpreter",
+              "exit": 2,
+              "passed": true
+            },
+            {
+              "name": "ordinary-project-script",
+              "exit": 0,
+              "passed": true
+            },
+            {
+              "name": "native-c-build-and-run",
+              "passed": true
+            }
+          ],
+          "passed": true
+        },
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "connectAuthorities": [
+          "api.anthropic.com:443"
+        ]
+      }
+    ],
+    "disableAgentView": false,
+    "backgroundReview": false,
+    "settingsWatcherPollingDiagnostic": false,
+    "remoteControlPolicyOnlyComparison": false,
+    "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+    "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance"
+  },
+  "detached-protected-v1": {
+    "integratedAim": true,
+    "mode": "protected",
+    "actualNativeRoute": true,
+    "platform": "Darwin",
+    "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "results": [
+      {
+        "case": "protected-pro-workflows-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/exit",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 23,
+        "modelSources": [
+          "127.0.0.1",
+          "127.0.0.2"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": true,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "workflows": {
+          "bash": true,
+          "hooks": true,
+          "instructions": true,
+          "externalInstructionImport": true,
+          "historyResumeFork": true,
+          "stdioMcp": true,
+          "personalSkill": true,
+          "subagent": true,
+          "backgroundRetained": {
+            "ordinaryBackgroundBash": true,
+            "nativeSubagentStartedInBackground": true,
+            "concurrentSameAccountTools": true,
+            "aimScheduledOccurrenceAndNativeTool": true,
+            "routineSubstitutions": [
+              "Redis wire",
+              "Herdr UI",
+              "scheduled clock",
+              "print mode"
+            ],
+            "osCalendarRetested": false
+          }
+        },
+        "connectAuthorities": [
+          "api.anthropic.com:443"
+        ]
+      },
+      {
+        "case": "protected-pro-schedules-disabled",
+        "exit": 1,
+        "syntheticModelCompleted": false,
+        "requestPaths": [],
+        "modelRequests": 0,
+        "modelSources": [],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": false,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "connectAuthorities": []
+      },
+      {
+        "case": "protected-pro-schedules-refusals-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/",
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/oauth/organizations/org_boss/referral/eligibility",
+          "/api/oauth/profile",
+          "/api/oauth/usage",
+          "/exit",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 8,
+        "modelSources": [
+          "127.0.0.2"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": false,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "schedules": {
+          "passed": true,
+          "realRedis": true,
+          "refusals": [
+            {
+              "kind": "proxy-down",
+              "fireKey": "native--2026-10-31T07-00+0000",
+              "outcome": "failed_before_prompt",
+              "diagnostic": "Claude a exited with status 125 while using proxy impl_mock. Check the job log; if the proxy/tunnel is unavailable, repair it, then explicitly retry or resume.",
+              "duplicateOutcome": "duplicate",
+              "modelRequests": 0,
+              "nextOccurrenceCompleted": true,
+              "nextFireKey": "native--2026-10-31T07-01+0000"
+            },
+            {
+              "kind": "unknown-build",
+              "fireKey": "native--2026-10-31T07-02+0000",
+              "outcome": "failed_before_prompt",
+              "diagnostic": "Claude was not started: the selected Claude executable differs from the approved build; review that update before running it. Run AIM's privacy status to inspect the selected and approved builds. Selected Claude: version unknown without executing it. Approved Claude for this launch: 2.1.316 (offsite-test).",
+              "duplicateOutcome": "duplicate",
+              "modelRequests": 0,
+              "nextOccurrenceCompleted": true,
+              "nextFireKey": "native--2026-10-31T07-03+0000"
+            },
+            {
+              "kind": "missing-policy",
+              "fireKey": "native--2026-10-31T07-04+0000",
+              "outcome": "failed_before_prompt",
+              "diagnostic": "Claude was not started: the installed files do not match the complete approved inventory. Run AIM's privacy status to inspect the selected and approved builds. Selected Claude: version unknown without executing it. Approved Claude for this launch: 2.1.316 (offsite-test).",
+              "duplicateOutcome": "duplicate",
+              "modelRequests": 0,
+              "nextOccurrenceCompleted": true,
+              "nextFireKey": "native--2026-10-31T07-05+0000"
+            },
+            {
+              "kind": "auth-refreshing",
+              "fireKey": "native--2026-10-31T07-06+0000",
+              "outcome": "failed_before_prompt",
+              "diagnostic": "No unlocked Claude account with usage left is available, and no idle AIM session could be stopped to free one.",
+              "duplicateOutcome": "duplicate",
+              "modelRequests": 0,
+              "nextOccurrenceCompleted": true,
+              "nextFireKey": "native--2026-10-31T07-07+0000"
+            }
+          ],
+          "leaseReleased": true,
+          "noReplay": true
+        },
+        "connectAuthorities": []
+      },
+      {
+        "case": "protected-pro-compatibility-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/exit",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 9,
+        "modelSources": [
+          "127.0.0.2"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": false,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "compatibility": {
+          "passed": true,
+          "development": {
+            "cwd": true,
+            "relativeSettings": true,
+            "processInventory": true,
+            "explicitPrivilegedTool": true,
+            "worktreeGit": true,
+            "nativeBuild": true,
+            "shellCwd": true,
+            "atomicWrite": true
+          },
+          "relativeSourcePreserved": true,
+          "nativeInstructionDifferential": {
+            "accepted": 6,
+            "rejected": 6
+          },
+          "linkedWorktreeSkill": true,
+          "packageSkill": true,
+          "packageMcp": true,
+          "explicitPrivilegedMcp": true
+        },
+        "connectAuthorities": []
+      },
+      {
+        "case": "protected-pro-concurrency-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/",
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000004/referral/eligibility",
+          "/api/oauth/profile",
+          "/exit",
+          "/mcp-registry/v0/servers",
+          "/nested-http-a",
+          "/nested-http-b",
+          "/v1/messages"
+        ],
+        "modelRequests": 18,
+        "modelSources": [
+          "127.0.0.2",
+          "127.0.0.3"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": false,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "concurrency": {
+          "realRedis": true,
+          "fullPublicCli": true,
+          "checks": {
+            "overlappingA1A2B": true,
+            "nestedNativeAndHttp": true,
+            "sharedLeaseAndIndependentSibling": true,
+            "stableSameAccountDistinctOtherAccount": true,
+            "restartPreservesAccountIdentity": true,
+            "assignedRoutesAndCredentials": true,
+            "lastOwnerReleasesRealRedisLease": true,
+            "hostIdentifiersAbsent": true,
+            "midToolAdapterFailureClosed": true,
+            "startDownRefusesBeforeModel": true,
+            "healthySiblingSurvivesOutage": true,
+            "noReplayAfterRepair": true,
+            "explicitFreshLaunchAfterRepair": true
+          },
+          "sessions": [
+            {
+              "role": "a2",
+              "label": "a",
+              "startedAt": 1793635992303,
+              "finishedAt": 1793636000753,
+              "sessionId": "e584e840-20c4-4f22-ba2c-43b74b597e94"
+            },
+            {
+              "role": "a1",
+              "label": "a",
+              "startedAt": 1793635992297,
+              "finishedAt": 1793636000994,
+              "sessionId": "def6df88-d507-4f38-91bd-a89db6053a29"
+            },
+            {
+              "role": "b1",
+              "label": "b",
+              "startedAt": 1793635992305,
+              "finishedAt": 1793636001187,
+              "sessionId": "9dec4507-924e-4546-a133-d373b6bfb071"
+            },
+            {
+              "role": "restart-a",
+              "label": "a",
+              "startedAt": 1793636001215,
+              "finishedAt": 1793636003940,
+              "sessionId": "7d27949d-d781-4410-bb76-bcea3d7e1c27"
+            },
+            {
+              "role": "outage-b1",
+              "label": "b",
+              "startedAt": 1793636003963,
+              "finishedAt": 1793636011479,
+              "sessionId": "25579c46-b719-49d2-8916-d379f2429867"
+            },
+            {
+              "role": "repaired-a",
+              "label": "a",
+              "startedAt": 1793636011479,
+              "finishedAt": 1793636014182,
+              "sessionId": "747617bf-eb4a-4903-b54c-449fd14383cf"
+            }
+          ],
+          "outage": {
+            "stopMs": 215,
+            "affectedExits": [
+              125,
+              125
+            ],
+            "startupExit": 125
+          },
+          "passed": true
+        },
+        "connectAuthorities": []
+      },
+      {
+        "case": "protected-pro-controls-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/exit",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 3,
+        "modelSources": [
+          "127.0.0.2"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": false,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "controls": {
+          "passed": true,
+          "directVendorPid": true,
+          "pauseStopsVendorRequests": true,
+          "resumeCompletesTurn": true,
+          "forcedKillStopsVendor": true,
+          "terminalRestoredWhileAimAlive": true,
+          "preflightCancellationStartsNoVendor": true
+        },
+        "connectAuthorities": []
+      },
+      {
+        "case": "protected-pro-http-mcp-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/exit",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 8,
+        "modelSources": [
+          "127.0.0.2"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": false,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "httpMcp": {
+          "initialOAuthCodePkceAndCallback": true,
+          "nativeInitialCredentialPersistence": true,
+          "oauthRefresh": true,
+          "separateClientSecret": true,
+          "persistedRotatedToken": true,
+          "httpTool": true,
+          "resourceListAndRead": true,
+          "noBrowserOrRegistration": true,
+          "calls": [
+            "server/discover",
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "tools/call",
+            "server/discover",
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "resources/read"
+          ]
+        },
+        "connectAuthorities": []
+      }
+    ],
+    "disableAgentView": false,
+    "backgroundReview": false,
+    "settingsWatcherPollingDiagnostic": false,
+    "remoteControlPolicyOnlyComparison": false,
+    "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+    "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance"
+  },
+  "detached-live-ordinary-v1": {
+    "integratedAim": true,
+    "mode": "ordinary",
+    "actualNativeRoute": false,
+    "platform": "Darwin",
+    "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "results": [
+      {
+        "case": "ordinary-pro-detached-terminal-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/artifacts/mcp",
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/event_logging/v2/batch",
+          "/api/frame/contract/latest",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/claude-code-releases/plugins/claude-plugins-official/%7B%22features%22:%20%7B%7D,%20%22data%22:%20[],%20%22models%22:%20[]%7D.zip",
+          "/claude-code-releases/plugins/claude-plugins-official/latest",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 4,
+        "modelSources": [
+          "127.0.0.1"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": true,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 3,
+        "xtversionResponses": 1,
+        "deviceAttributeResponses": 2,
+        "processInventoryComplete": true,
+        "newDetachedOwners": [],
+        "settingsChangeObserved": true,
+        "appStateChangeObserved": true,
+        "unrelatedLiveSettingApplied": true,
+        "backgroundCommandRefused": true,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": true,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "connectAuthorities": [
+          "api.anthropic.com:443",
+          "downloads.claude.ai:443",
+          "github.com:443",
+          "raw.githubusercontent.com:443"
+        ]
+      }
+    ],
+    "disableAgentView": false,
+    "backgroundReview": false,
+    "settingsWatcherPollingDiagnostic": false,
+    "remoteControlPolicyOnlyComparison": false,
+    "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+    "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance"
+  },
+  "detached-schedules-v3": {
+    "integratedAim": true,
+    "mode": "protected",
+    "actualNativeRoute": true,
+    "platform": "Darwin",
+    "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "results": [
+      {
+        "case": "protected-pro-detached-terminal-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/artifacts/mcp",
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/frame/contract/latest",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/exit",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 6,
+        "modelSources": [
+          "127.0.0.2"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": false,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "xtversionResponses": 1,
+        "deviceAttributeResponses": 2,
+        "processInventoryComplete": true,
+        "newDetachedOwners": [],
+        "settingsChangeObserved": true,
+        "appStateChangeObserved": true,
+        "unrelatedLiveSettingApplied": true,
+        "backgroundCommandRefused": true,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "connectAuthorities": []
+      },
+      {
+        "case": "protected-pro-schedules-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/",
+          "/api/artifacts/mcp",
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/frame/contract/latest",
+          "/api/oauth/organizations/org_boss/referral/eligibility",
+          "/api/oauth/profile",
+          "/api/oauth/usage",
+          "/exit",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 14,
+        "modelSources": [
+          "127.0.0.2"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": false,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "schedules": {
+          "calendar": {
+            "scheduler": "launchd system",
+            "expectedStart": "2026-11-02T16:30:00.000Z",
+            "actualStart": "2026-11-02T16:30:01.087Z",
+            "parentPid": 1,
+            "timezone": "America/Los_Angeles",
+            "fireKey": "test-privacy-7182--2026-11-02T08-30-0800",
+            "outcome": "completed",
+            "selectedAccount": "a",
+            "unattended": true,
+            "nativeToolCompleted": true,
+            "realRedis": true,
+            "duplicateOutcome": "duplicate",
+            "leaseReleased": true,
+            "substituted": [
+              "Herdr UI",
+              "print mode instead of interactive follow-up",
+              "headless system launchd with ordinary UserName; GUI activation not exercised"
+            ]
+          },
+          "interactive": {
+            "initialTurnCompleted": true,
+            "followupCompleted": true,
+            "nativeExit": 0,
+            "terminalRestored": true,
+            "terminalCheckedBeforeAimExit": true,
+            "sessionId": "2e84f8e6-49b1-442f-a1be-6318fbd0856c",
+            "personJoinedAt": "2026-11-02T16:30:12.557Z",
+            "outcome": "completed",
+            "resizeRequested": true,
+            "inSessionScheduledWakeupCompleted": true
+          }
+        },
+        "connectAuthorities": []
+      }
+    ],
+    "disableAgentView": false,
+    "backgroundReview": false,
+    "settingsWatcherPollingDiagnostic": false,
+    "remoteControlPolicyOnlyComparison": false,
+    "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+    "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance"
+  },
+  "detached-owner-v8": {
+    "integratedAim": true,
+    "mode": "ordinary",
+    "actualNativeRoute": false,
+    "platform": "Darwin",
+    "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "results": [
+      {
+        "case": "ordinary-pro-detached-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/artifacts/mcp",
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/event_logging/v2/batch",
+          "/api/frame/contract/latest",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/claude-code-releases/plugins/claude-plugins-official/%7B%22features%22:%20%7B%7D,%20%22data%22:%20[],%20%22models%22:%20[]%7D.zip",
+          "/claude-code-releases/plugins/claude-plugins-official/latest",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 10,
+        "modelSources": [
+          "127.0.0.1"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": true,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 13,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "detached": {
+          "observations": [
+            {
+              "name": "enabled-baseline-uses-existing-old-path-supervisor",
+              "passed": true,
+              "sameReviewedVendorBytes": true,
+              "daemonSurvivedDispatcher": true,
+              "secondDispatcherUsedCandidateVendorPath": true,
+              "workersUseBaselineExecutable": true,
+              "workersAreDaemonChildren": true,
+              "workerCount": 3
+            },
+            {
+              "name": "aim-refuses-detached-and-management-intent-without-model-request",
+              "passed": true
+            },
+            {
+              "name": "literal-daemon-prompt-remains-a-normal-session",
+              "passed": true
+            },
+            {
+              "name": "targeted-disposable-supervisor-shutdown",
+              "passed": true
+            },
+            {
+              "name": "aim-prevents-fresh-supervisor-after-enabled-control",
+              "passed": true,
+              "freshAccountAndTempNamespace": true,
+              "enabledControlCreatedSupervisor": true,
+              "controlStoppedBeforeNegative": true,
+              "candidateImageAlsoInspected": true,
+              "interactiveAndNoninteractive": true,
+              "conflictingUserEnvironment": true
+            }
+          ]
+        },
+        "connectAuthorities": [
+          "api.anthropic.com:443",
+          "downloads.claude.ai:443",
+          "github.com:443",
+          "raw.githubusercontent.com:443"
+        ]
+      }
+    ],
+    "disableAgentView": false,
+    "backgroundReview": false,
+    "settingsWatcherPollingDiagnostic": false,
+    "remoteControlPolicyOnlyComparison": false,
+    "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+    "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance"
+  },
+  "detached-controls-v2": {
+    "integratedAim": true,
+    "mode": "protected",
+    "actualNativeRoute": true,
+    "platform": "Darwin",
+    "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "results": [
+      {
+        "case": "protected-pro-controls-disabled",
+        "exit": 0,
+        "syntheticModelCompleted": true,
+        "requestPaths": [
+          "/api/claude_cli/bootstrap",
+          "/api/claude_code_grove",
+          "/api/claude_code_penguin_mode",
+          "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+          "/api/oauth/profile",
+          "/exit",
+          "/mcp-registry/v0/servers",
+          "/v1/messages"
+        ],
+        "modelRequests": 3,
+        "modelSources": [
+          "127.0.0.2"
+        ],
+        "managedSettingsFetches": 0,
+        "refreshRequests": 0,
+        "refreshedCredentialStored": false,
+        "storedSubscriptionType": "pro",
+        "storedSubscriptionTypeSource": "sign_in",
+        "storedSubscriptionFresh": false,
+        "exactKernelInModel": false,
+        "hostnameInRequests": false,
+        "eventLoggingRequests": 0,
+        "terminalCanaryInModel": false,
+        "terminalCanaryInEvents": false,
+        "terminalCanaryInOtherRequests": false,
+        "terminalCanaryInLocalDebug": false,
+        "controls": {
+          "passed": true,
+          "vendorWithinSupervisedTree": true,
+          "pauseStopsVendorRequests": true,
+          "resumeCompletesTurn": true,
+          "forcedKillStopsVendor": true,
+          "terminalRestoredWhileAimAlive": true,
+          "preflightCancellationStartsNoVendor": true
+        },
+        "connectAuthorities": []
+      }
+    ],
+    "disableAgentView": false,
+    "backgroundReview": false,
+    "settingsWatcherPollingDiagnostic": false,
+    "remoteControlPolicyOnlyComparison": false,
+    "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+    "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance"
+  }
+}

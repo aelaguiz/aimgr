@@ -1,0 +1,34 @@
+{
+  "sourceCommit": "1e43725",
+  "fullSuite": {
+    "host": "designated Linux VM",
+    "total": 812,
+    "passedInitially": 775,
+    "failedInitially": 26,
+    "skipped": 11,
+    "failureCause": "incomplete test checkout: README omitted, repository root group-writable",
+    "correctedAffectedFiles": {
+      "passed": 98,
+      "failed": 0
+    },
+    "initialFailuresResolved": true
+  },
+  "finalChangedRunnerSettingsHandoff": {
+    "passed": 49,
+    "failed": 0
+  },
+  "finalStatusAndActivationContracts": {
+    "passed": 13,
+    "failed": 0
+  },
+  "linuxKernelDirectoryRegression": {
+    "grantedDirectory": true,
+    "grantedFile": true,
+    "siblingDirectoryDenied": true,
+    "parentDirectoryDenied": true,
+    "updateDirectoryDenied": true,
+    "updateFileDenied": true,
+    "passed": true
+  },
+  "screenshots": "https://share.fun.country/20261102-ai-manager-claude-detached-session-checks-63658cbba206/index.html"
+}

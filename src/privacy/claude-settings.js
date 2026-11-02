@@ -67,6 +67,50 @@ const AGENTS_BOOLEAN = new Set(`-h --help --strict-mcp-config --restricted --dan
 --allow-dangerously-skip-permissions --json --all`.split(/\s+/));
 const optionLike = text => text.length > 1 && text.startsWith("-");
 const spanKey = span => `${span.index}:${span.offset ?? "value"}:${span.valueIndex ?? ""}`;
+const DETACHED_VERBS = new Set(["attach", "logs", "stop", "kill", "respawn", "rm"]);
+const DETACHED_PREFIX_BLOCKERS = new Set(["-p", "--print", "--bg", "--background", "--routine", "-h", "--help", "-v", "-V", "--version"]);
+const DETACHED_PREFIX_EXEC_FLAGS = new Set(["--exec", "-m", "--handle-uri"]);
+
+// Reviewed 2.1.316 i9e/fYe: eager readers skip raw value slots without
+// expanding short clusters. Share this grammar between the eager settings,
+// background-flag and detached-verb readers.
+function eagerValueEnd(args, index) {
+  const token = args[index];
+  if (OPTIONAL_VALUE_FLAGS.has(token)) {
+    return index + 1 < args.length && !optionLike(args[index + 1]) ? index + 1 : index;
+  }
+  if (!REQUIRED_VALUE_FLAGS.has(token) && token !== "--settings") return index;
+  let end = index + 1;
+  if (VARIADIC_FLAGS.has(token)) while (end + 1 < args.length && !optionLike(args[end + 1])) end += 1;
+  return end;
+}
+
+// Native backgroundSessionVerbIndex dispatches these verbs before Commander.
+// At argv[0] it accepts names and even missing arguments. Behind root options
+// it requires an eight-hex job ID (or respawn --all) and a supported prefix.
+// Inspect ORIGINAL argv: prepending AIM's --settings can turn a name-based
+// command into a model prompt instead. Do not add these words to COMMANDS.
+function eagerDetachedVerb(args) {
+  let operand = -1;
+  for (let index = 0; index < args.length; index = eagerValueEnd(args, index) + 1) {
+    if (args[index] === "--") { operand = index + 1 < args.length ? index + 1 : -1; break; }
+    if (!optionLike(args[index])) { operand = index; break; }
+  }
+  if (operand < 0 || !DETACHED_VERBS.has(args[operand])) return null;
+  if (operand === 0) return args[operand];
+  if (args[operand - 1] === "--") return null;
+  if (!/^[a-f0-9]{8}$/.test(args[operand + 1] ?? "")
+    && !(args[operand] === "respawn" && args[operand + 1] === "--all")) return null;
+  for (let index = 0; index < operand; index = eagerValueEnd(args, index) + 1) {
+    const token = args[index];
+    if (DETACHED_PREFIX_BLOCKERS.has(token) || token.startsWith("--routine=") || /^-[A-Za-z]{2,}$/.test(token)) return null;
+    if (BOOLEAN_FLAGS.has(token)) continue;
+    const equals = token.indexOf("="), flag = equals < 0 ? token : token.slice(0, equals);
+    if (!(OPTIONAL_VALUE_FLAGS.has(flag)
+      || ((REQUIRED_VALUE_FLAGS.has(flag) || flag === "--settings") && !DETACHED_PREFIX_EXEC_FLAGS.has(flag)))) return null;
+  }
+  return args[operand];
+}
 
 /** The reviewed build has TWO parsers. BS/fYe loads settings from raw argv
  * before Commander expands short clusters or dispatches a subcommand. Treat
@@ -77,12 +121,18 @@ const spanKey = span => `${span.index}:${span.offset ?? "value"}:${span.valueInd
 export function inspectClaudeArguments(args) {
   if (!Array.isArray(args) || args.some(arg => typeof arg !== "string")) fail("the native arguments are invalid");
   const eager = [];
-  let eagerPrint = false, eagerUri = false, eagerManagedSettings = false, eagerRestricted = false;
+  let eagerPrint = false, eagerUri = false, eagerManagedSettings = false, eagerRestricted = false, eagerBackground = false;
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (token === "--") break;
     eagerPrint ||= token === "-p" || token === "--print";
     eagerRestricted ||= token === "--restricted";
+    // 2.1.316 hasBackgroundFlag/nDt runs before Commander and before the flag
+    // settings snapshot is loaded. Short clusters are opaque in that reader:
+    // -cn --bg can mean background dispatch there even though Commander treats
+    // --bg as the -n value. This early path must be refused at AIM admission;
+    // the native startup env pin alone can be overwritten by user settings.
+    eagerBackground ||= token === "--bg" || token === "--background";
     eagerUri ||= token.startsWith("cc://") || token.startsWith("cc+unix://");
     eagerManagedSettings ||= token === "--managed-settings" || token.startsWith("--managed-settings=");
     if (token === "--settings" && index + 1 < args.length) {
@@ -90,10 +140,7 @@ export function inspectClaudeArguments(args) {
     } else if (token.startsWith("--settings=")) {
       eager.push({ index, offset: "--settings=".length, value: token.slice("--settings=".length) });
     }
-    if (REQUIRED_VALUE_FLAGS.has(token) || token === "--settings") {
-      index += 1;
-      if (VARIADIC_FLAGS.has(token)) while (index + 1 < args.length && !optionLike(args[index + 1])) index += 1;
-    } else if (OPTIONAL_VALUE_FLAGS.has(token) && index + 1 < args.length && !optionLike(args[index + 1])) index += 1;
+    index = eagerValueEnd(args, index);
   }
   const options = [], settings = [], optionValues = {};
   let selectedCommand = null, commandAfterDelimiter = false;
@@ -173,7 +220,8 @@ export function inspectClaudeArguments(args) {
     fail("the arguments give --settings conflicting native meanings; use unambiguous full options");
   }
   return { settings, selectedSettings: eager.at(-1)?.value, options, optionValues, selectedCommand,
-    commandAfterDelimiter, eagerPrint, eagerUri, eagerManagedSettings, eagerRestricted };
+    commandAfterDelimiter, eagerPrint, eagerUri, eagerManagedSettings, eagerRestricted, eagerBackground,
+    eagerDetachedVerb: eagerDetachedVerb(args) };
 }
 
 /** Refuse native relay bootstraps which bypass the ordinary root parser.
@@ -184,6 +232,18 @@ export function inspectClaudeArguments(args) {
  */
 export function assertClaudeLocalInvocation(args) {
   const parsed = inspectClaudeArguments(args);
+  // Native daemon dispatch runs BEFORE the ordinary settings/print parser and
+  // skips only these permission flags (2.1.316 dbi). Prefixing --settings can
+  // turn `daemon run` into the model prompt "daemon". Refuse management locally
+  // instead of trying to run an uncontained vendor fast path. Literal -p text
+  // and option values remain ordinary task data; never search argv by keyword.
+  const bootstrap = args.findIndex(arg => !["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"].includes(arg));
+  if (args[bootstrap] === "daemon") {
+    fail("Claude daemon commands are disabled in AI Manager; use aim claude privacy status to inspect existing processes");
+  }
+  if (parsed.eagerBackground || parsed.eagerDetachedVerb !== null || parsed.selectedCommand === "agents" || parsed.options.some(flag => ["--bg", "--background", "--agents-view-if-allowed"].includes(flag))) {
+    fail("detached Claude sessions are disabled in AI Manager; start a normal session (background shell commands, local subagents and AIM routines remain available)");
+  }
   // The excluded self-hosted runner uploads local diagnostics independently of
   // analytics opt-out. Refuse its bootstrap explicitly; prefixing settings must
   // not silently reinterpret it as an ordinary prompt. Likewise an additional
@@ -208,9 +268,15 @@ export function claudeCriticalSettings({ protectedAccount } = {}) {
   if (typeof protectedAccount !== "boolean") fail("the account privacy mode is unknown");
   return {
     disableRemoteControl: true,
+    // Shared detached supervisors own subsequent requests and can keep an old
+    // executable/settings snapshot after the launching client exits. Disable
+    // only that optional system. The broader BACKGROUND_TASKS switch would
+    // break ordinary Bash/subagents and is deliberately not used.
+    disableAgentView: true,
     env: {
       DISABLE_AUTOUPDATER: "1",
       DISABLE_UPDATES: "1",
+      CLAUDE_CODE_DISABLE_AGENT_VIEW: "1",
       // T08: telemetry opt-out normally disables GrowthBook, but an explicit
       // disk-cache opt-in can revive a cached policy flag. Both native builds
       // then treat stale profile-derived Pro credentials as policy-eligible.
@@ -343,6 +409,7 @@ export function composeClaudePrivacySettings({
     // refuses instead of silently changing the caller's requested behavior.
     ...(hasRequiredHooks ? { disableAllHooks: false } : {}),
     disableRemoteControl: critical.disableRemoteControl,
+    disableAgentView: critical.disableAgentView,
     // An empty higher-priority string disables a lower live API key helper.
     // Merely deleting a flag field would expose the lower helper again.
     ...(Object.keys(providerEnvironment).length ? { apiKeyHelper: "" } : {}),

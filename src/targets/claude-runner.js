@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { admitClaudeArtifact } from "../privacy/claude-artifacts.js";
 import { prepareClaudeNativeInvocation } from "../privacy/claude-native-invocation.js";
+import { assertClaudeLocalInvocation } from "../privacy/claude-settings.js";
 import { cleanClaudeRootEnvironment } from "../privacy/claude-provider-admission.js";
 import {
   CLAUDE_PROCESS_CONTROL_ACK_TYPE,
@@ -700,6 +701,7 @@ export async function runClaudeCliNoninteractive({
     throw new Error("Claude noninteractive launch requires string arguments and bounded process limits.");
   }
 
+  assertClaudeLocalInvocation(args);
   const prepared = await prepareContainedClaudeCliLaunch({
     command,
     userHomeDir,
@@ -852,6 +854,11 @@ export async function runClaudeCli({
   prepareClaudeCliLaunchImpl = prepareClaudeCliLaunch,
   spawnImpl = spawn,
 } = {}) {
+  // Inspect the original task before user-hooks settings are prepended. Native
+  // eager daemon/job verbs depend on argv position; admission after that
+  // augmentation can turn a management request into an ordinary model prompt.
+  // Final composed admission remains necessary for the augmented invocation.
+  assertClaudeLocalInvocation(args);
   const resolvedCwd = normalizedAbsolute(cwd);
   if (!resolvedCwd) {
     throw new Error("Claude launch requires an absolute working directory.");

@@ -15,7 +15,10 @@ assert.ok(input.userHomeDir.startsWith("/opt/aimgr-state-audit/claude-implementa
 assert.ok(["ordinary", "protected"].includes(input.mode));
 assert.equal(Boolean(input.egressProfile), input.mode === "protected");
 try {
-  if (input.check === "controls") {
+  if (input.check === "detached") {
+    const { verifyDetached } = await import("./privacy-claude-detached-check.mjs");
+    await verifyDetached(input); console.log("SYNTHETIC_OK");
+  } else if (input.check === "controls") {
     const { verifyControls } = await import("./privacy-integrated-control-check.mjs");
     await verifyControls(input); console.log("SYNTHETIC_OK");
   } else if (input.check === "compatibility") {
@@ -75,6 +78,9 @@ try {
           "--model", "sonnet", "--max-turns", "4", "--debug-file", path.join(cwd, "workflow-debug.private.txt"), ...args],
         env: process.env, timeoutMs: 45000, maxOutputBytes: 1024 * 1024,
         spawnImpl(command, argv, options) {
+          // Synthetic-only diagnostics make a failed native admission
+          // inspectable without adding sensitive production logging.
+          fs.appendFileSync(path.join(launch.userHomeDir, 'workflow-launches.private.jsonl'), JSON.stringify({ command, argv }) + '\n');
           const child = spawn(command, argv, options);
           child.stdout.on("data", chunk => { stdout += chunk; });
           child.stderr.on("data", chunk => { stderr += chunk; }); return child;
@@ -109,8 +115,35 @@ for await(const line of readline.createInterface({input:process.stdin})) {
     const agent = await turn("Delegate the synthetic child task. NATIVE_SUBAGENT_PARENT.");
     assert.equal(agent.subagent_stats.spawned, 1);
     assert.equal(fs.readFileSync(path.join(cwd, "child-proof.txt"), "utf8"), "subagent-ok");
+    let backgroundRetained;
+    { // Current production policy disables agent view without an outer test override.
+      assert.ok(agent.subagent_stats.started_in_background > 0);
+      await turn("Run the ordinary background shell tool. NATIVE_BACKGROUND_BASH.");
+      assert.equal(fs.readFileSync(path.join(cwd, "background-tool-proof.txt"), "utf8"), "background-ok");
+      await Promise.all([turn("Run the paired tool. NATIVE_OVERLAP_a."), turn("Run the paired tool. NATIVE_OVERLAP_b.")]);
+      for (const role of ["a", "b"]) assert.equal(fs.readFileSync(path.join(cwd, `overlap-${role}-done`), "utf8"), "overlap-ok");
+      const { createNativeRoutineFixture } = await import("../test/network/native-routine-fixture.js");
+      const routineRoot = path.join(launch.userHomeDir, "background-retained-routine");
+      fs.mkdirSync(routineRoot);
+      const routine = await createNativeRoutineFixture({ root: routineRoot, claudeBin: launch.command,
+        defaultServices: { caFile: process.env.NODE_EXTRA_CA_CERTS } });
+      let receipt;
+      try {
+        const occurrence = await routine.start(0, "Run the synthetic Bash task. ROUTINE_SUCCESS_CANARY.");
+        receipt = await occurrence.finished;
+        assert.equal(receipt.outcome, "completed");
+        assert.equal(receipt.needsAttention, false);
+        assert.equal(await routine.lease(), null);
+        assert.equal(fs.readFileSync(path.join(routine.cwd, "tool-proof.txt"), "utf8"), "native-tool-ok");
+      } finally { await routine.close(); }
+      backgroundRetained = { ordinaryBackgroundBash: true, nativeSubagentStartedInBackground: agent.subagent_stats.started_in_background > 0,
+        concurrentSameAccountTools: true, aimScheduledOccurrenceAndNativeTool: true,
+        routineSubstitutions: ["Redis wire", "Herdr UI", "scheduled clock", "print mode"],
+        osCalendarRetested: false };
+    }
     fs.writeFileSync(path.join(launch.userHomeDir, "workflows.json"), JSON.stringify({ bash: true, hooks: true,
-      instructions: true, externalInstructionImport: true, historyResumeFork: true, stdioMcp: true, personalSkill: true, subagent: true }));
+      instructions: true, externalInstructionImport: true, historyResumeFork: true, stdioMcp: true, personalSkill: true, subagent: true,
+      ...(backgroundRetained ? { backgroundRetained } : {}) }));
     console.log("SYNTHETIC_OK");
   } else {
   const result = await runClaudeCliNoninteractive({ ...input, env: process.env, timeoutMs: 45000,

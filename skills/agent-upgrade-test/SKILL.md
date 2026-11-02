@@ -51,6 +51,15 @@ inherit access or survive it. A privacy boundary exists only if it covers the
 actual route the information takes. Changing a filename, an encoding or the
 process that transmits it does not change the consequence for Amir.
 
+A newly checked client can hand work to an older process that actually sends
+requests. Follow that owner through startup, reuse, detach and upgrade: whose
+executable, settings, account and route does it use, and how long do they survive?
+A background shell build is intentional tool work; a supervisor accepting future
+conversations after the checked client exits is a different lifetime boundary.
+Today's daemon flag is evidence of one implementation, not a complete list of
+future ways to cross it. Test an enabled old-owner control before concluding a
+new launch cannot reuse it, without weakening the production entry for tests.
+
 Let unfamiliar behavior change the investigation. Static differences suggest
 places to look; runtime observations can contradict the apparent source path.
 A new helper, unexplained state or request field deserves a causal explanation,
@@ -104,6 +113,8 @@ Read these paths **in that checkout**:
   matrix T01–T24 in section 6, offsite operation and upgrade playbook in 7–9.
 - `docs/aelaguiz/AGENT_UPGRADE_TEST_SKILL_PLAN_2026-11-02.md`, section 2:
   audited accepted decisions. Later explicit user decisions take precedence.
+- `docs/aelaguiz/CLAUDE_DETACHED_SESSION_REMOVAL_PLAN_2026-11-02.md`: the later
+  approved detached-session scope and retained-background test contract.
 - `README.md`, “Installing a reviewed Claude runtime”: exact bundle retention,
   fixed-release installation and the earlier missing-bundle failure.
 
@@ -141,10 +152,14 @@ version, host/hardware IDs, terminal versions and shared device IDs are not.
 
 Keep skills, MCP and its auth/packages, concurrent same/different-account sessions,
 native development, basic terminal, live admitted-path edits, history/resume/fork,
-trusted nested AIM dispatch, background/saved jobs, maintenance and schedules.
+trusted nested AIM dispatch, ordinary background Bash/local subagents, maintenance
+and schedules.
 Optional personal hooks/plugins, terminal extras, voice/realtime and GUI extras
 need not be preserved; infrastructure used by required skills/MCP and AIM routine
-hooks does. The Codex daemon concern is not a ban on Claude background work.
+hooks does. Claude's optional detached-conversation/agent-view system is now
+excluded by explicit user decision. Keep its narrow startup/settings suppression;
+this is not a ban on ordinary background tasks. `/fork` may use an asynchronous
+local subagent; CLI history fork and `general-purpose` must remain.
 
 Already accepted: individual Pro/Max only; telemetry/remote-flag feature losses;
 custom provider-header edits in a new session; a new protected session for folders
