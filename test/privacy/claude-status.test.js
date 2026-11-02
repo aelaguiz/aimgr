@@ -24,10 +24,24 @@ function fixture(t) {
 test("status hashes selected bytes and reports admitted/running identity without executing the vendor", t => {
   const f = fixture(t), status = inspectClaudePrivacyStatus(f.options);
   assert.equal(status.selected.sha256, crypto.createHash("sha256").update(fs.readFileSync(f.command)).digest("hex"));
-  assert.equal(status.approved.protectedOsCompatible, true); assert.equal(status.running.processes[0].pid, 123);
+  assert.equal(status.approved.testedKernelRelease, os.release()); assert.equal(status.running.processes[0].pid, 123);
   assert.equal(fs.existsSync(path.join(f.home, "VENDOR_EXECUTED")), false);
   assert.match(formatClaudePrivacyStatus(status), /Claude synthetic: approved for normal-use/);
   assert.doesNotMatch(JSON.stringify(status), new RegExp(f.home));
+});
+
+test("a different or absent tested OS release is informational and does not refuse approval", t => {
+  const f = fixture(t);
+  for (const testedKernelRelease of ["different-from-" + os.release(), undefined]) {
+    fs.writeFileSync(f.artifact.policy, JSON.stringify({ testedKernelRelease }));
+    const status = inspectClaudePrivacyStatus(f.options);
+    assert.equal(status.refusal, null);
+    assert.equal(status.approved.testedKernelRelease, testedKernelRelease ?? null);
+    assert.equal(Object.hasOwn(status.approved, "protectedOsCompatible"), false);
+    assert.match(formatClaudePrivacyStatus(status), /informational; OS versions are not gated/);
+    assert.doesNotMatch(formatClaudePrivacyStatus(status), /not verified for this OS|incompatible/);
+  }
+  assert.equal(fs.existsSync(path.join(f.home, "VENDOR_EXECUTED")), false);
 });
 
 test("status reports admission refusal and incomplete inventory without printing malformed pins or policy details", t => {

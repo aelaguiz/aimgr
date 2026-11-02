@@ -47,7 +47,11 @@ export async function prepareClaudeNativeInvocation({
     const policy = JSON.parse(fs.readFileSync(artifact.policy, "utf8"));
     if (policy.schema !== 1 || policy.platform !== process.platform || policy.arch !== process.arch
       || policy.version !== artifact.version || !/^[a-f0-9]{12}$/.test(policy.vendorCommit ?? "")) fail("the approved native validation identity is missing");
-    if (protectedAccount && policy.testedKernelRelease !== os.release()) fail("this OS build has no verified Claude privacy policy");
+    // Lock the reviewed Claude/helper/policy bytes, not the user's OS release.
+    // testedKernelRelease records the test environment only: requiring equality
+    // would force unrelated OS upgrades across machines with active work. The
+    // fixed native entry must still apply its policy successfully before Claude
+    // executes; an actual enforcement failure has no unsandboxed fallback.
     const configDir = fs.realpathSync(preparedLaunch.configDir);
     const appState = readClaudeActiveAppState({ configDir }).state;
     let identity;

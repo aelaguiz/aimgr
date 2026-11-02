@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -51,7 +50,8 @@ export function inspectClaudePrivacyStatus({ command, homeDir, label, pinnedArti
       vendorSha256: artifact.vendorSha256, platform: artifact.platform, arch: artifact.arch,
       privacyAbi: artifact.privacyAbi, approvalKind: artifact.approvalKind,
       policySha256: crypto.createHash("sha256").update(fs.readFileSync(artifact.policy)).digest("hex"),
-      protectedOsCompatible: policy.testedKernelRelease === os.release() };
+      // Test provenance is informational, never an OS-version admission gate.
+      testedKernelRelease: policy.testedKernelRelease ?? null };
     if (!result.selected.available) throw new Error("Claude was not started: no readable Claude executable is selected on PATH.");
     admit({ selectedCommand: command, pinnedArtifactSet, runtimeRoot });
   } catch (error) { result.refusal = { code: "AIMGR_CLAUDE_BUILD_NOT_APPROVED",
@@ -78,7 +78,7 @@ export function formatClaudePrivacyStatus(status) {
   if (status.pinnedArtifactSet) lines.push(`Inherited artifact set: ${status.pinnedArtifactSet}`);
   if (status.approved) {
     lines.push(`Approved executable: Claude ${status.approved.version}, SHA-256 ${status.approved.vendorSha256}.`);
-    lines.push(`Protected OS policy: ${status.approved.protectedOsCompatible ? "matches this OS" : "not verified for this OS"}.`);
+    lines.push(`OS release recorded during testing: ${status.approved.testedKernelRelease ?? "not recorded"} (informational; OS versions are not gated).`);
   }
   if (status.account) lines.push(`Account ${status.account.label}: ${status.account.mode} (${status.account.source}).`);
   lines.push(`Running Claude processes: ${status.running.processes.length}${status.running.complete ? "" : " (inventory incomplete)"}.`);

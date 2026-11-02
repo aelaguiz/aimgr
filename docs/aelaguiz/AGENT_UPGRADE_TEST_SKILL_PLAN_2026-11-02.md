@@ -48,6 +48,7 @@ section 1. Earlier experimental gaps are historical, not new requirements.
 | Malicious tools, deliberate credential theft and privileged tampering | No hostile-tool sandbox, credential broker or replacement credential store | Claude's automatic collection and ordinary routing failures remain covered |
 | Normal prompts, source, directories, Git, memory, history and intentionally requested tool output | No redaction, project copies or content-correlation prevention | Unrelated automatic device/file collection is not task context |
 | Original local Chrome, cookies and existing fingerprint; no extra hostile-browser hardening | No VM sign-in browser, profile copy, spoofing, Chrome firewall or adversarial extension project | Browser home-IP exposure is expressly rejected, including first navigation and tunnel loss |
+| OS releases may differ across machines and change independently of Claude | No exact OS-version gate, OS allowlist or synchronized-update requirement; tested OS is informational | Exact Claude/helper/policy hashes, platform/architecture and successful native enforcement still required; automatic exact-OS disclosure remains protected |
 | Broad OS family and CPU architecture | `MacOS`, `darwin`, `arm64` are acceptable | Exact OS version, hostname, hardware UUID/serial, terminal version and cross-account installation IDs are protected |
 | Telemetry opt-out losses; remote feature flags disabled for all Claude accounts | Experimental-feature losses caused by those switches need no new permission | Required skills/MCP, concurrency and schedules must still work; ordinary Claude telemetry is not globally opted out by the separate Codex decision |
 | Individual Pro/Max only | Team/Enterprise functionality is not required | Actual credential eligibility must be established; unknown eligibility refuses |
@@ -239,8 +240,19 @@ test VM and local machine. The original test-only archive remains separate from
 the normal-use manifest recording the user's specific installation request for
 those same bytes. A fixed AIM release with its own locked dependencies is prepared.
 The [recovery record](evidence/agent-upgrade-test-2026-11-02/runtime-recovery.json)
-states installation progress. Activation still requires the accepted stopped-owner
-transition; protected use also requires policy evidence matching the target
-kernel. The recovered protected policy does not match this local target.
+states installation progress at the time of staging. Activation still requires
+the accepted stopped-owner transition. The user corrected the exact OS-release
+gate on 2026-11-02: the requested lock is on Claude and reviewed runtime artifacts,
+not macOS or Linux updates. That gate and its misleading compatibility status
+are removed; the recovered bundle's recorded test OS remains historical evidence.
+An actual failure to apply native protection still refuses execution.
 The previously authorized launcher remains selected and existing sessions remain
 untouched. Skill/PR readiness is not a claim that local activation is finished.
+
+The [OS-release correction](evidence/agent-upgrade-test-2026-11-02/os-release-correction.json)
+passed 17 focused synthetic tests on each of the local Mac and GCP Linux VM,
+with the existing administrator-only admission group skipped in both nonroot
+runs. A fresh cold reviewer found no material issues and confirmed actual native
+enforcement still precedes vendor execution. The updated installed skill matches
+the corrected source; historical package and staging receipts retain their
+original observations. No vendor/helper/policy bytes or live launchers changed.

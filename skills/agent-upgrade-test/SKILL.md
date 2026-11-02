@@ -115,8 +115,12 @@ Read selected/approved/running identities with `aim claude privacy status --json
 or the new checkout's `node /absolute/path/bin/aimgr.js claude privacy status --json`
 if the installed launcher predates that command. Neither executes Claude. Inspect
 the candidate's official provenance, bytes, version, package/helper inventory,
-policy and OS compatibility. Never execute an unapproved candidate for `--version`.
-An installation filename is a hint, not a verified version or approval.
+policy and native enforcement. The lock protects against unreviewed Claude code;
+it must not force disruptive OS upgrades or synchronized OS versions across
+Amir's machines. Record the test OS as evidence, without an exact-release gate.
+A different OS release alone is not a launch failure; inability to apply the
+sandbox still is. Never execute an unapproved candidate for `--version`. An
+installation filename is a hint, not a verified version or approval.
 
 Keep current approved sessions and the selector intact while testing. Record
 the exact candidate and source hashes, test authorization, platform/OS and test

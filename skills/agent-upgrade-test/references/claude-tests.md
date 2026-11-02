@@ -126,6 +126,9 @@ Prepare exact dependencies in a fixed AIM release, never via a shared
 `node_modules` symlink. The file-only runtime installer stages by default;
 `--activate` needs the accepted stopped-owner transition. No-argument wrapper
 installation omits runtime validation and is not a missing-bundle repair.
-Check target OS compatibility explicitly; broad-platform acceptance does not
-approve a policy for an untested kernel. Keep the prior working launcher until
-the replacement's prerequisites and relevant smoke checks are satisfied.
+The test OS release is informational, not an admission requirement. Exercise
+ordinary and protected preparation with matching, different and absent recorded
+OS releases, while preserving build admission and refusal on actual native
+validation failure. Do not infer from this that exact-OS telemetry is accepted.
+Keep the prior working launcher until the replacement's prerequisites and
+relevant smoke checks are satisfied.

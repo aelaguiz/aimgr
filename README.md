@@ -235,8 +235,11 @@ working release until the replacement passes its installation checks.
 A Claude version, a passing test report and an installable runtime bundle are
 three different things. The bundle contains the exact tested Claude executable,
 launcher, credential adapter/other helpers, policy and complete manifest. Its
-approval covers their hashes, platform and applicable OS policy—not just the
-Claude version string. Before terminating a test VM, retain that complete bundle
+approval covers their hashes, platform and policy, not just the Claude version
+string. The version lock applies to Claude and its reviewed runtime artifacts;
+it does not lock macOS or Linux releases or require machines to run the same OS
+version. The recorded test OS is evidence provenance, not a launch requirement.
+An actual failure to apply the sandbox still stops the launch. Before terminating a test VM, retain that complete bundle
 in durable restricted storage, record its digest and source revision, then
 retrieve it into a fresh directory and verify every file against the manifest.
 Retaining source code and test logs alone is insufficient. Do not call a bundle
@@ -259,8 +262,6 @@ Use this order for a runtime change:
    release, not through another checkout's `node_modules` symlink). Run the
    file-only installer to stage the approved bundle. Staging needs administrator
    access but does not activate the bundle or stop running sessions.
-   Check the target kernel against the protected policy before planning activation;
-   a bundle tested on another kernel does not establish protected-mode compatibility.
    Coordinate administrator authentication with the user. A system dialog may
    identify only `osascript`, which is ambiguous with several agents working;
    label the prompt as AI Manager and say whether it stages files or activates
@@ -303,9 +304,11 @@ distinguishes available files from an active installation. Local copies are unde
 `~/.local/share/aimgr/runtime-bundles/`; the original test-only archive is retained
 separately from the normal-use manifest recording the user's installation request.
 The bundle has been staged into the administrator-owned runtime and its complete
-inventory verified. The stopped-owner transition and target-kernel verification
-for protected use remain unfinished. The temporary launcher remains selected;
-staging the bundle has not silently activated the new sandbox.
+inventory verified. The stopped-owner transition remains unfinished. The temporary
+launcher remains selected; staging the bundle has not silently activated the new
+sandbox. The exact OS-release gate was an unintended expansion of the Claude
+version lock and was removed after the user corrected it on 2026-11-02. The
+bundle's recorded test OS stays unchanged as historical evidence.
 
 `aim codex use` rotates away from the current Codex account on every successful
 call. It prefers labels that have not been selected recently, then uses the

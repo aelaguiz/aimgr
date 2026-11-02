@@ -54,6 +54,34 @@ test("native preparation admits, validates exact composed bytes, then transfers 
   assert.equal(fs.existsSync(prepared.retainedPaths.scratch), false);
 });
 
+test("ordinary and protected launches do not require the recorded test OS release", async t => {
+  const f = fixture(t), policy = JSON.parse(fs.readFileSync(f.artifact.policy));
+  for (const protectedAccount of [false, true]) {
+    for (const testedKernelRelease of [os.release(), "different-from-" + os.release(), undefined]) {
+      fs.writeFileSync(f.artifact.policy, JSON.stringify({ ...policy, testedKernelRelease }));
+      const prepared = await prepareClaudeNativeInvocation({ ...f.options, protectedAccount });
+      try {
+        assert.equal(prepared.command, f.artifact.launcher);
+        assert.equal(prepared.args[1], protectedAccount ? "protected" : "ordinary");
+        assert.equal(prepared.vendorCommand, f.artifact.command);
+      } finally { prepared.disposeBeforeStart(); }
+    }
+  }
+  assert.deepEqual(f.counters(), { admitted: 6, validated: 6 });
+});
+
+test("different test OS does not bypass build admission or native validation failure", async t => {
+  const f = fixture(t), policy = JSON.parse(fs.readFileSync(f.artifact.policy));
+  fs.writeFileSync(f.artifact.policy, JSON.stringify({ ...policy, testedKernelRelease: "different-from-" + os.release() }));
+  const unapproved = Object.assign(new Error("unapproved synthetic Claude build"), { code: "AIMGR_CLAUDE_BUILD_NOT_APPROVED" });
+  await assert.rejects(prepareClaudeNativeInvocation({ ...f.options, admitArtifact() { throw unapproved; } }),
+    { code: "AIMGR_CLAUDE_BUILD_NOT_APPROVED" });
+  assert.deepEqual(f.counters(), { admitted: 0, validated: 0 });
+  await assert.rejects(prepareClaudeNativeInvocation({ ...f.options, validateSnapshot: async () => { throw new Error("native policy application failed"); } }),
+    { code: "AIMGR_CLAUDE_PRIVACY_SETTINGS" });
+  assert.ok(!fs.readdirSync(f.options.preparedLaunch.configDir).some(name => name.startsWith(".aim-private-runtime-")));
+});
+
 test("started owners retain their settings and scratch for delayed native children", async t => {
   const f = fixture(t), prepared = await prepareClaudeNativeInvocation(f.options);
   prepared.markStarted(); prepared.closeEnvironment(); prepared.disposeBeforeStart();
