@@ -1,0 +1,50 @@
+✔ artifact inventory hashes are stable across key order and include role/mode/size (4.422252ms)
+✔ inventory rejects traversal, ambiguous paths, invalid digests and empty sets (3.621346ms)
+▶ administrator-owned artifact admission contracts on the offsite host
+  ✔ fixed platform helper cannot be approved with a nonexecutable or wrong-role inventory (228.657781ms)
+  ✔ returns one immutable command, matching helper and policy without execution (166.509427ms)
+  ✔ explicit selection must contain approved bytes, including through a normal symlink (728.414475ms)
+  ✔ refusal compares selected and approved versions without trusting an installation filename (241.284025ms)
+  ✔ nested pin keeps a still-approved package through activation and rechecks revocation and explicit selection (966.294432ms)
+  ✔ unknown active digest (93.764025ms)
+  ✔ corrupt approval (97.882554ms)
+  ✔ missing approval (91.361768ms)
+  ✔ extra unapproved resource (107.882427ms)
+  ✔ changed binary same display version (109.024501ms)
+  ✔ changed helper (98.580261ms)
+  ✔ missing helper (88.359592ms)
+  ✔ changed policy (95.620802ms)
+  ✔ non-executable binary (118.983242ms)
+  ✔ root-only executable binary (106.637769ms)
+  ✔ setuid runtime (123.198242ms)
+  ✔ setgid launcher (91.304089ms)
+  ✔ setuid extra helper (102.838996ms)
+  ✔ wrong launcher privilege (85.982873ms)
+  ✔ writable approval (80.148192ms)
+  ✔ writable parent (80.687465ms)
+  ✔ runtime-owned ancestor (80.372199ms)
+  ✔ runtime-owned binary (82.187341ms)
+  ✔ hardlinked runtime (86.458788ms)
+  ✔ symlinked binary (80.105974ms)
+  ✔ symlinked selector (81.511817ms)
+  ✔ symlinked parent (83.890093ms)
+  ✔ different platform (86.492475ms)
+  ✔ different architecture (86.433525ms)
+  ✔ different privacy ABI (83.638301ms)
+  ✔ missing human approval (88.144443ms)
+  ✔ offsite approval is not normal-use approval (86.730025ms)
+  ✔ review alone is not approval (81.831683ms)
+  ✔ absent review evidence (72.882817ms)
+  ✔ invalid approval date (79.518012ms)
+  ✔ unapproved entrypoint (106.285806ms)
+  ✔ safe errors do not echo malformed approval content (3.003938ms)
+  ✔ offsite authorization binds the exact candidate to this enrolled host for a bounded time (1323.40931ms)
+✔ administrator-owned artifact admission contracts on the offsite host (6558.870968ms)
+ℹ tests 41
+ℹ suites 0
+ℹ pass 41
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6775.55976

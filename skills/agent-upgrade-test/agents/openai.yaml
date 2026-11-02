@@ -1,0 +1,6 @@
+interface:
+  display_name: "Test Claude Upgrade"
+  short_description: "Review a Claude upgrade's privacy and retained workflows"
+  default_prompt: "Use $agent-upgrade-test to investigate the requested Claude version's privacy and workflow behavior, including risks our existing tests may have missed."
+policy:
+  allow_implicit_invocation: false

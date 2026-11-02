@@ -18,6 +18,24 @@ The Redis cutover is intentionally breaking and non-reverse-compatible. Runtime 
 Before installing or updating the Claude launcher, follow
 [Installing a reviewed Claude runtime](#installing-a-reviewed-claude-runtime-without-interrupting-coding).
 
+For a new Claude release, invoke **`$agent-upgrade-test`**: “Sandbox-test Claude
+version X before we approve it.” The [skill](skills/agent-upgrade-test/SKILL.md)
+teaches the agent to investigate how information reaches Anthropic, pursue
+unexpected behavior and distinguish new exposure from accepted risks. Existing
+offsite tests preserve known privacy and workflow guarantees; they do not limit
+the investigation. The skill retains the complete tested bundle and obtains a
+cold code review of both the implementation and the explanation of its protection.
+It currently supports Claude only; testing and review do not grant normal-use
+approval. Its [plan and accepted-risk audit](docs/aelaguiz/AGENT_UPGRADE_TEST_SKILL_PLAN_2026-11-02.md)
+record the scope and validation.
+
+Install the `skills/agent-upgrade-test` directory into the established local skill
+store (`~/.agents/skills/agent-upgrade-test`) and expose it to the desired runtime's
+skill directory. Keep `skill-authoring` (including its shared orchestration policy)
+and `model-routing` installed alongside the existing skill collection. The package
+locates a separate aimgr checkout and does not depend on its own installed path
+being inside this repository. It does not install or launch Claude.
+
 Configure each machine to point at the same Redis primary and key prefix:
 
 Remote clients use the Tailscale hostname:
@@ -241,6 +259,8 @@ Use this order for a runtime change:
    release, not through another checkout's `node_modules` symlink). Run the
    file-only installer to stage the approved bundle. Staging needs administrator
    access but does not activate the bundle or stop running sessions.
+   Check the target kernel against the protected policy before planning activation;
+   a bundle tested on another kernel does not establish protected-mode compatibility.
 4. Arrange the accepted transition for affected sessions and schedules. Inventory
    them first; never kill unrelated sessions to satisfy the installer. The
    current activation command requires stopped Claude owners. Activate the
@@ -271,6 +291,16 @@ The temporary local release is
 installation receipt records the recovery decision. Previous wrappers are saved
 in `~/.local/share/aimgr/launcher-backup-before-temporary-restore`. Do not switch
 back to the development checkout as an installation shortcut.
+
+The exact original Mac artifact set was subsequently recovered byte for byte
+and freshly retrieved/verified into restricted storage on both the test VM and
+the local machine. The [recovery record](docs/aelaguiz/evidence/agent-upgrade-test-2026-11-02/runtime-recovery.json)
+distinguishes available files from an active installation. Local copies are under
+`~/.local/share/aimgr/runtime-bundles/`; the original test-only archive is retained
+separately from the normal-use manifest recording the user's installation request.
+Administrator installation, the stopped-owner transition and target-kernel
+verification for protected use remain unfinished. The temporary launcher remains
+selected; recovering the bundle has not silently activated the new sandbox.
 
 `aim codex use` rotates away from the current Codex account on every successful
 call. It prefers labels that have not been selected recently, then uses the

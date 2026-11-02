@@ -1,0 +1,237 @@
+--- a/scripts/privacy-linux-candidate-install.py
++++ b/scripts/privacy-linux-candidate-install.py
+@@ -15,18 +15,19 @@
+ import sys
+ candidate_source = sys.argv[1] if len(sys.argv) == 2 else ''
+ assert len(candidate_source) == 64 and all(c in '0123456789abcdef' for c in candidate_source)
++assert candidate_source == '3333333333333333333333333333333333333333333333333333333333333333', 'Wrong synthetic preparation source identity'
+ base = Path('/opt/aimgr-state-audit')
+ work = base / 'claude-implementation'
+ assert platform.system() == 'Linux' and os.getuid() == 0 and (base / 'OFFSITE_AUDIT_HOST').is_file()
+ source = work / 'repo/native/claude/approved_launch_linux.c'
+ vendor = base / 'bin/claude'
+-assert hashlib.sha256(vendor.read_bytes()).hexdigest() == 'fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824'
++assert hashlib.sha256(vendor.read_bytes()).hexdigest() == '1111111111111111111111111111111111111111111111111111111111111111'
+ staging = work / 'linux-candidate-staging'
+ staging.mkdir(mode=0o755)
+ subprocess.run(['/usr/bin/gcc', '-O2', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(staging / 'launcher')], check=True)
+ subprocess.run(['/usr/bin/gcc', '-O2', '-Wall', '-Wextra', '-Werror', str(work / 'repo/native/claude/validate_settings_linux.c'), '-o', str(staging / 'validate-settings')], check=True)
+-policy = {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '2.1.316',
+-          'testedKernelRelease': os.uname().release, 'vendorCommit': 'cd7ceb459c68', 'sourceSha256': hashlib.sha256(source.read_bytes()).hexdigest(),
++policy = {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '2.1.999',
++          'testedKernelRelease': os.uname().release, 'vendorCommit': '123456abcdef', 'sourceSha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+           'scope': 'offsite native entry decision only; no normal-use approval'}
+ (staging / 'policy.json').write_text(json.dumps(policy, sort_keys=True) + '\n')
+ files = {}
+@@ -35,10 +36,10 @@
+                    'executable': name != 'policy.json', 'role': role}
+ inventory = [[name, files[name]['sha256'], files[name]['size'], files[name]['executable'], files[name]['role']] for name in sorted(files)]
+ artifact = hashlib.sha256(json.dumps(inventory, separators=(',', ':')).encode()).hexdigest()
+-manifest = {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '2.1.316', 'privacyAbi': 'claude-privacy-v1',
++manifest = {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '2.1.999', 'privacyAbi': 'claude-privacy-v1',
+             'candidateSourceSha256': candidate_source, 'entrypoint': 'claude', 'launcher': 'launcher', 'policy': 'policy.json', 'files': files,
+             'approval': {'kind': 'offsite-test', 'normalUseApproved': False,
+-                         'reference': 'User-authorized implementation testing on designated GCP VM only'}}
++                         'reference': 'SYNTHETIC preparation only; no execution authority'}}
+ root = Path('/opt/aimgr-claude-runtime/artifacts') / artifact
+ root.mkdir(parents=True, mode=0o755)
+ for name, file in [('claude', vendor), ('launcher', staging / 'launcher'), ('validate-settings', staging / 'validate-settings'), ('policy.json', staging / 'policy.json')]:
+--- a/scripts/privacy-macos-candidate-install.py
++++ b/scripts/privacy-macos-candidate-install.py
+@@ -10,16 +10,17 @@
+ import sys
+ candidate_source = sys.argv[1] if len(sys.argv) == 2 else ''
+ assert len(candidate_source) == 64 and all(c in '0123456789abcdef' for c in candidate_source)
++assert candidate_source == '3333333333333333333333333333333333333333333333333333333333333333', 'Wrong synthetic preparation source identity'
+ base=Path('/opt/aimgr-state-audit');work=base/'claude-implementation'
+ assert platform.system()=='Darwin' and os.getuid()!=0 and (base/'OFFSITE_AUDIT_HOST').is_file()
+ source=work/'repo/native/claude/approved_launch_macos.c';vendor=base/'bin/claude'
+-expected='64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f'
++expected='2222222222222222222222222222222222222222222222222222222222222222'
+ assert hashlib.sha256(vendor.read_bytes()).hexdigest()==expected
+ staging=work/'mac-candidate-staging';staging.mkdir(mode=0o700)
+ subprocess.run(['/usr/bin/clang','-O2','-Wall','-Wextra','-Werror',str(source),'-o',str(staging/'launcher')],check=True)
+ subprocess.run(['/usr/bin/codesign','--force','--sign','-','--options','runtime',str(staging/'launcher')],check=True,capture_output=True)
+ subprocess.run(['/usr/bin/clang','-std=c11','-O2','-Wall','-Wextra','-Werror',str(work/'repo/native/claude/security_shim.c'),'-o',str(staging/'security')],check=True)
+-policy={'schema':1,'platform':'darwin','arch':'arm64','testedKernelRelease':os.uname().release,'vendorCommit':'cd7ceb459c68','version':'2.1.316',
++policy={'schema':1,'platform':'darwin','arch':'arm64','testedKernelRelease':os.uname().release,'vendorCommit':'123456abcdef','version':'2.1.999',
+         'scope':'offsite candidate tests only; no normal-use approval','sourceSha256':hashlib.sha256(source.read_bytes()).hexdigest()}
+ (staging/'policy.json').write_text(json.dumps(policy,sort_keys=True)+'\n')
+ files={}
+@@ -27,9 +28,9 @@
+  files[name]={'sha256':hashlib.sha256(file.read_bytes()).hexdigest(),'size':file.stat().st_size,'executable':name!='policy.json','role':role}
+ inventory=[[name,files[name]['sha256'],files[name]['size'],files[name]['executable'],files[name]['role']] for name in sorted(files)]
+ artifact=hashlib.sha256(json.dumps(inventory,separators=(',',':')).encode()).hexdigest()
+-manifest={'schema':1,'platform':'darwin','arch':'arm64','version':'2.1.316','privacyAbi':'claude-privacy-v1',
++manifest={'schema':1,'platform':'darwin','arch':'arm64','version':'2.1.999','privacyAbi':'claude-privacy-v1',
+  'candidateSourceSha256':candidate_source,'entrypoint':'claude','launcher':'launcher','policy':'policy.json','securityAdapter':'security','files':files,
+- 'approval':{'kind':'offsite-test','reference':'User-authorized implementation testing on designated rented Mac only; exact vendor digest in plan',
++ 'approval':{'kind':'offsite-test','reference':'SYNTHETIC preparation only; no execution authority',
+              'normalUseApproved':False}}
+ (staging/'approval.json').write_text(json.dumps(manifest,indent=2)+'\n')
+ root=Path('/opt/aimgr-claude-runtime/artifacts')/artifact
+--- a/scripts/privacy-claude-default-services-probe.py
++++ b/scripts/privacy-claude-default-services-probe.py
+@@ -36,8 +36,8 @@
+
+
+ EXPECTED = {
+-    "Linux": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+-    "Darwin": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
++    "Linux": "1111111111111111111111111111111111111111111111111111111111111111",
++    "Darwin": "2222222222222222222222222222222222222222222222222222222222222222",
+ }
+ p = argparse.ArgumentParser()
+ p.add_argument("--root", type=Path, required=True)
+--- a/scripts/privacy-claude-policy-probe.py
++++ b/scripts/privacy-claude-policy-probe.py
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env python3
+ """Exercise scoped Claude settings before choosing a production launcher policy.
+
+-Only the two already identified official 2.1.316 artifacts are admitted. The
++Only the two synthetic preparation identities below are accepted here. The
+ Linux caller must supply a loopback-only network namespace; the rented Mac must
+ have its independent cloud egress denial installed. All homes, credentials,
+ requests and tool results are synthetic. A settings refusal is not a full
+@@ -24,8 +24,8 @@
+ import tempfile
+
+ EXPECTED = {
+-    "Linux": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+-    "Darwin": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
++    "Linux": "1111111111111111111111111111111111111111111111111111111111111111",
++    "Darwin": "2222222222222222222222222222222222222222222222222222222222222222",
+ }
+ p = argparse.ArgumentParser()
+ p.add_argument("--root", type=Path, required=True)
+--- a/scripts/privacy-candidate-validator-check.mjs
++++ b/scripts/privacy-candidate-validator-check.mjs
+@@ -16,7 +16,7 @@
+ assert.ok(["linux", "darwin"].includes(platform));
+ const candidate = JSON.parse(fs.readFileSync(path.join(work, `${platform === "darwin" ? "mac" : "linux"}-candidate-staging/installed.json`), "utf8"));
+ const vendor = path.join(candidate.root, "claude"), launcher = path.join(candidate.root, "launcher");
+-const expectedHash = platform === "darwin" ? "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f" : "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824";
++const expectedHash = platform === "darwin" ? "2222222222222222222222222222222222222222222222222222222222222222" : "1111111111111111111111111111111111111111111111111111111111111111";
+ const digest = crypto.createHash("sha256");
+ for await (const chunk of fs.createReadStream(vendor)) digest.update(chunk);
+ assert.equal(digest.digest("hex"), expectedHash);
+@@ -25,7 +25,7 @@
+ const snapshot = stageClaudeSettingsSnapshot(composed);
+ try {
+   const result = await validateClaudeSettingsSnapshot({ snapshot,
+-    expected: { version: "2.1.316", commit: "cd7ceb459c68", platform, arch: process.arch, entrypoint: vendor },
++    expected: { version: "2.1.999", commit: "123456abcdef", platform, arch: process.arch, entrypoint: vendor },
+     nativeLauncher: launcher, scratchParent: root });
+   const report = { platform, artifactSet: candidate.artifactSet, ...result, scope: "Actual JS/native validator integration only" };
+   fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
+--- a/scripts/privacy-claude-settings-validation-probe.py
++++ b/scripts/privacy-claude-settings-validation-probe.py
+@@ -26,8 +26,8 @@
+ a = p.parse_args()
+ base = Path("/opt/aimgr-state-audit")
+ root = a.root.resolve()
+-expected = {"Linux": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+-            "Darwin": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f"}
++expected = {"Linux": "1111111111111111111111111111111111111111111111111111111111111111",
++            "Darwin": "2222222222222222222222222222222222222222222222222222222222222222"}
+ if (not (base / "OFFSITE_AUDIT_HOST").is_file() or root.parent != base / "claude-implementation"
+         or root.exists() or os.geteuid() == 0):
+     raise SystemExit("Fresh unprivileged offsite fixture required")
+--- a/scripts/privacy-header-settings-check.mjs
++++ b/scripts/privacy-header-settings-check.mjs
+@@ -36,7 +36,7 @@
+   let failure, accepted;
+   try {
+     accepted = await nativeClaudeHeaderSourceAccepted(settings, {
+-      expected: { version: "2.1.316", commit: "cd7ceb459c68", platform: process.platform,
++      expected: { version: "2.1.999", commit: "123456abcdef", platform: process.platform,
+         arch: process.arch, entrypoint: path.join(candidate.root, "claude") },
+       nativeLauncher: path.join(candidate.root, "launcher"), scratchParent: root,
+       spawnImpl(command, args, options) {
+--- a/scripts/privacy-managed-validator-check.mjs
++++ b/scripts/privacy-managed-validator-check.mjs
+@@ -35,7 +35,7 @@
+ const report = { platform: process.platform, artifactSet: candidate.artifactSet, fixture: root };
+ try {
+   const managedPolicy = inspectClaudeManagedPolicy({ protectedAccount: true });
+-  const inputs = { snapshot, expected: { version: "2.1.316", commit: "cd7ceb459c68", platform: process.platform,
++  const inputs = { snapshot, expected: { version: "2.1.999", commit: "123456abcdef", platform: process.platform,
+     arch: process.arch, entrypoint: path.join(candidate.root, "claude") }, nativeLauncher: path.join(candidate.root, "launcher"), scratchParent: root,
+     spawnImpl(command, args, options) {
+       const child = spawn(command, args, options);
+--- a/scripts/privacy-claude-validator-results.mjs
++++ b/scripts/privacy-claude-validator-results.mjs
+@@ -12,7 +12,7 @@
+   throw new Error("An unprivileged offsite fixture is required");
+ }
+ const { assertClaudeSettingsDoctorResult } = await import(pathToFileURL(path.join(base, "claude-settings-validator.js")));
+-const expected = { version: "2.1.316", commit: "cd7ceb459c68", platform: process.platform,
++const expected = { version: "2.1.999", commit: "123456abcdef", platform: process.platform,
+   arch: process.arch, entrypoint: "/opt/aimgr-state-audit/bin/claude" };
+ const results = fs.readdirSync(root).filter(name => name.startsWith("doctor-before-")).sort().map(name => {
+   const result = JSON.parse(fs.readFileSync(path.join(root, name, "result.private.json"), "utf8"));
+--- a/scripts/privacy-macos-candidate-probe.py
++++ b/scripts/privacy-macos-candidate-probe.py
+@@ -20,7 +20,7 @@
+ installed = json.loads((work / 'mac-candidate-staging/installed.json').read_text())
+ package = Path(installed['root'])
+ launcher, vendor = package / 'launcher', package / 'claude'
+-assert hashlib.sha256(vendor.read_bytes()).hexdigest() == '64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f'
++assert hashlib.sha256(vendor.read_bytes()).hexdigest() == '2222222222222222222222222222222222222222222222222222222222222222'
+ root = work / 'mac-candidate-boundary-v1'
+ root.mkdir(mode=0o700)
+ config, scratch = root / 'config', root / 'scratch'
+--- a/scripts/privacy-macos-reentry-probe.py
++++ b/scripts/privacy-macos-reentry-probe.py
+@@ -12,7 +12,7 @@
+ if platform.system()!='Darwin' or os.getuid()==0 or not (base/'OFFSITE_AUDIT_HOST').is_file():
+  raise SystemExit('Unprivileged rented Mac required')
+ root=work/'reentry-native-decision';root.mkdir(mode=0o700)
+-vendor=base/'bin/claude'; expected='64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f'
++vendor=base/'bin/claude'; expected='2222222222222222222222222222222222222222222222222222222222222222'
+ assert hashlib.sha256(vendor.read_bytes()).hexdigest()==expected
+ src=work/'repo/scripts/privacy-macos-reentry-probe.c';helper=work/'reentry-native';control=root/'unhardened-entry'
+ for out in [control,root/'hardened-entry']:
+--- a/scripts/privacy-macos-nested-probe.py
++++ b/scripts/privacy-macos-nested-probe.py
+@@ -27,7 +27,7 @@
+     raise SystemExit("Invalid fixture name")
+ if platform.system() != "Darwin" or os.getuid() == 0 or not (base / "OFFSITE_AUDIT_HOST").is_file():
+     raise SystemExit("Unprivileged rented-Mac fixture only")
+-if hashlib.sha256(vendor.read_bytes()).hexdigest() != "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f":
++if hashlib.sha256(vendor.read_bytes()).hexdigest() != "2222222222222222222222222222222222222222222222222222222222222222":
+     raise SystemExit("Unapproved research artifact")
+ if (work / ("nested-a-" + a.run_name)).exists():
+     raise SystemExit("Refusing reused fixture")
+--- a/test/privacy/claude-retained-workflows.mjs
++++ b/test/privacy/claude-retained-workflows.mjs
+@@ -22,8 +22,8 @@
+ assert.equal(fs.existsSync(root), false);
+ if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
+ const vendor = `${base}/bin/claude`;
+-const expected = { linux: "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+-  darwin: "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f" };
++const expected = { linux: "1111111111111111111111111111111111111111111111111111111111111111",
++  darwin: "2222222222222222222222222222222222222222222222222222222222222222" };
+ const hash = crypto.createHash("sha256");
+ for await (const block of fs.createReadStream(vendor)) hash.update(block);
+ assert.equal(hash.digest("hex"), expected[process.platform]);
+--- a/test/privacy/claude-settings-native-handoff.mjs
++++ b/test/privacy/claude-settings-native-handoff.mjs
+@@ -18,12 +18,12 @@
+ assert.equal(fs.existsSync(root), false);
+ if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
+ const vendor = `${base}/bin/claude`;
+-const approved = { linux: "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+-  darwin: "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f" };
++const approved = { linux: "1111111111111111111111111111111111111111111111111111111111111111",
++  darwin: "2222222222222222222222222222222222222222222222222222222222222222" };
+ const digest = crypto.createHash("sha256");
+ for await (const block of fs.createReadStream(vendor)) digest.update(block);
+ assert.equal(digest.digest("hex"), approved[process.platform]);
+-const expected = { version: "2.1.316", commit: "cd7ceb459c68", platform: process.platform,
++const expected = { version: "2.1.999", commit: "123456abcdef", platform: process.platform,
+   arch: process.arch, entrypoint: vendor };
+ process.umask(0o077); fs.mkdirSync(root, { mode: 0o700 });
+ const conflictsOnly = process.argv[4] === "conflicts";

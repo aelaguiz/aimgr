@@ -1,0 +1,30 @@
+{
+  "reviewer": "upgrade_skill_behavior_test",
+  "model": "gpt-6.1-sol",
+  "effort": "high",
+  "context": "new clean native child; outside-repository installation copy",
+  "candidate": "hypothetical 2.1.999; not executed or approved",
+  "result": "usable workflow with concrete fixture preparation and refusal conditions",
+  "inspected": [
+    "full entry and reference",
+    "canonical T01-T24 and accepted decisions",
+    "actual installer/probe/validator pins",
+    "host-bound expiring test authorization",
+    "integrated dispatch and evidence paths",
+    "README and installed orchestration dependencies"
+  ],
+  "caseResults": {
+    "broadPlatformAndProjectPath": "accepted; no redaction",
+    "opaqueHostnameDependentField": "T06 open; investigate transformed identity",
+    "absentMacEvidence": "not-run; no Mac completion",
+    "deletedBundleWithLogs": "not installable; recover exact bytes or verify changed rebuild",
+    "ineligibleRemoteControlBaseline": "T09 open; establish eligible positive control",
+    "newMcpSerialization": "required-workflow regression",
+    "intervalReplacingCalendar": "calendar remains open",
+    "actualHumanPuzzle": "stop all work; report trigger and wait"
+  },
+  "fixedDuringValidation": "Shared policy resolved through installed skill-authoring, not assumed beside a separately copied package.",
+  "discoveryLimitation": "Initial read included body; separate metadata-only review supplies clean discovery evidence.",
+  "existingFixtureObservation": "Real-account test challenge regex also matches bare CAPTCHA library names; such a match is not by itself proof of an actual challenge. No real tests were run in this dry-run.",
+  "execution": "read-only; no vendor, account, browser, cloud or test execution"
+}

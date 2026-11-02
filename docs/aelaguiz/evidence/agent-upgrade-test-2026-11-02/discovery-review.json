@@ -1,0 +1,38 @@
+{
+  "reviewer": "upgrade_skill_discovery_test",
+  "model": "gpt-6.1-sol",
+  "effort": "high",
+  "context": "new clean native child; metadata only",
+  "read": [
+    "agent-upgrade-test frontmatter",
+    "aimgr frontmatter",
+    "agent-upgrade-test agents/openai.yaml"
+  ],
+  "cases": [
+    {
+      "ask": "Explicit Claude upgrade testing",
+      "result": "invoke agent-upgrade-test"
+    },
+    {
+      "ask": "Natural-language request for upgrade testing with MCP",
+      "result": "invoke agent-upgrade-test"
+    },
+    {
+      "ask": "Start normal Claude session",
+      "result": "invoke aimgr"
+    },
+    {
+      "ask": "Reinstall missing already-approved bundle",
+      "result": "neither; maintainer installation repair"
+    },
+    {
+      "ask": "Explicit Codex upgrade testing",
+      "result": "unsupported; no Codex workflow claimed"
+    },
+    {
+      "ask": "Explain unapproved version error",
+      "result": "neither; diagnosis only"
+    }
+  ],
+  "filesChanged": false
+}

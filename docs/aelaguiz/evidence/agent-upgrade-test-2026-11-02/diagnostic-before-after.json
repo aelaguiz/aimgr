@@ -1,0 +1,10 @@
+{
+  "scenario": "Selected Claude 2.1.316 bytes; missing approved runtime; admission function invoked without vendor execution",
+  "beforeRevision": "6b0a58c",
+  "after": "ca7f013",
+  "output": {
+    "before": "Claude was not started: the approved runtime or its records could not be read safely. Run AIM's privacy status to inspect the selected and approved builds.",
+    "after": "Claude was not started: no approved runtime bundle is installed on this machine. Run AIM's privacy status to inspect the selected and approved builds.\nSelected Claude: 2.1.316 (installation filename; not executed).\nApproved Claude for this launch: none; runtime bundle missing.\nInstall the reviewed runtime bundle before switching AIM to this release. Updating Claude alone will not fix this."
+  },
+  "realVendorExecuted": false
+}

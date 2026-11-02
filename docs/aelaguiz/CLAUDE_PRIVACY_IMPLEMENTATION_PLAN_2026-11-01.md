@@ -237,6 +237,12 @@ Implementation completion means all required target rows have passing implementa
 
 ## 9. Upgrade playbook
 
+The explicitly invoked [agent-upgrade-test skill](../../skills/agent-upgrade-test/SKILL.md)
+implements this playbook for Claude. Its [plan and accepted-risk audit](AGENT_UPGRADE_TEST_SKILL_PLAN_2026-11-02.md)
+carry the user's settled exclusions into future reviews. The README's
+[installation sequence](../../README.md#installing-a-reviewed-claude-runtime-without-interrupting-coding)
+adds complete bundle retention and fresh retrieval before test-host cleanup.
+
 When told that Claude upgraded, first inspect package files and the local approval/active/running records without running the new vendor binary. Keep existing approved sessions on their immutable artifact. Record official provenance, candidate hashes, helper/package changes and current native OS/policy compatibility.
 
 Review changes in identifier storage, device/terminal APIs, optional collection, functional requests, auth/refresh, settings precedence, remote control, helper/lifecycle/update behavior and required skills/MCP. Use release information and shipped package inspection; do not claim a source audit of unavailable code. Stage the candidate without normal-use activation.
