@@ -1,0 +1,26 @@
+[
+  {
+    "name": "codex-linux",
+    "version": "0.163.0-alpha.5-linux-x64",
+    "sha256": "1f389f19de064430a227a50af2bfa627699be4c600f1a37c114039fdd027b75b",
+    "registryIntegrityVerified": true
+  },
+  {
+    "name": "codex-mac",
+    "version": "0.163.0-alpha.5-darwin-arm64",
+    "sha256": "956f2edd38050f8fa55fac9ecfc570dc37c85d48019800dacee4cfcf9c70e9d1",
+    "registryIntegrityVerified": true
+  },
+  {
+    "name": "claude-mac",
+    "version": "2.1.316",
+    "sha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "registryIntegrityVerified": true
+  },
+  {
+    "name": "claude-linux",
+    "version": "2.1.316",
+    "sha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+    "registryIntegrityVerified": "previous test installation"
+  }
+]

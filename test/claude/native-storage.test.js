@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import lockfile from "proper-lockfile";
 import {
   CLAUDE_MANAGED_FILE_STORAGE_MODE,
   buildClaudeNativeStorageDescriptor,
   buildManagedClaudeNativeStorageDescriptor,
+  ensureSafeManagedClaudeStorage,
   readManagedClaudeNativeBundleFromFiles,
   readClaudeNativeBundleFromStorage,
   readClaudeNativeKeychainOauth,
@@ -18,6 +20,7 @@ import {
   validateAnthropicNativeBundleForLabel,
 } from "../../src/credentials/claude-native.js";
 import {
+  applyClaudeCliFromState,
   projectClaudeNativeBundleToManagedConfig,
   writeClaudeNativeProjectionPair,
 } from "../../src/targets/claude-cli.js";
@@ -121,6 +124,39 @@ test("complete Keychain reader uses exact secret-free argv and wipes raw buffers
   assert.doesNotMatch(JSON.stringify(result), /UNKNOWN_SECRET|WRAPPER_SECRET|STDERR_SECRET/);
   assert.ok(stdoutBuffer.every((byte) => byte === 0));
   assert.ok(stderrBuffer.every((byte) => byte === 0));
+});
+
+test("Keychain projection preserves native OAuth client and refresh expiry metadata", async () => {
+  for (const metadata of [{}, { clientId: "synthetic-native-client", refreshTokenExpiresAt: NOW_MS + 86400000 },
+    { clientId: null, refreshTokenExpiresAt: null }]) {
+    const result = await readClaudeNativeKeychainOauth({ service: "Claude Code-credentials-synthetic", account: "test-user",
+      execFileImpl: (_file, _args, _options, callback) => callback(null,
+        Buffer.from(JSON.stringify({ claudeAiOauth: { ...oauth(), ...metadata } })), Buffer.alloc(0)),
+    });
+    assert.equal(result.ok, true);
+    for (const key of ["clientId", "refreshTokenExpiresAt"]) {
+      assert.equal(Object.hasOwn(result.oauth, key), Object.hasOwn(metadata, key));
+      assert.deepEqual(result.oauth[key], metadata[key]);
+    }
+  }
+});
+
+test("Keychain projection preserves subscription verification provenance without inventing freshness", async () => {
+  for (const provenance of [{}, { subscriptionTypeSource: "sign_in" },
+    { subscriptionTypeSource: "profile", subscriptionTypeVerifiedAt: NOW_MS },
+    { subscriptionTypeSource: "profile", subscriptionTypeVerifiedAt: null },
+    { subscriptionTypeSource: "profile", subscriptionTypeVerifiedAt: "malformed" }]) {
+    const result = await readClaudeNativeKeychainOauth({
+      service: "Claude Code-credentials-synthetic", account: "test-user",
+      execFileImpl: (_file, _args, _options, callback) => callback(null,
+        Buffer.from(JSON.stringify({ claudeAiOauth: { ...oauth(), ...provenance } })), Buffer.alloc(0)),
+    });
+    assert.equal(result.ok, true);
+    for (const key of ["subscriptionTypeSource", "subscriptionTypeVerifiedAt"]) {
+      assert.equal(Object.hasOwn(result.oauth, key), Object.hasOwn(provenance, key));
+      assert.deepEqual(result.oauth[key], provenance[key]);
+    }
+  }
 });
 
 test("Keychain writer sends the complete bundle only through stdin and wipes it", () => {
@@ -336,7 +372,7 @@ test("strict replacement planning rejects stale, ambiguous, and different identi
   );
 });
 
-test("two-file projection restores app state when the credential write fails", () => {
+test("two-file projection restores app state when the credential write fails", async () => {
   const home = mkTempHome();
   writeClaudeNativeBundle(home, {
     accessToken: "OLD_ACCESS",
@@ -350,7 +386,7 @@ test("two-file projection restores app state when the credential write fails", (
   const credentialsBefore = fs.readFileSync(credentialsPath, "utf8");
   const appStateBefore = fs.readFileSync(appStatePath, "utf8");
 
-  assert.throws(
+  await assert.rejects(
     () => writeClaudeNativeProjectionPair({
       homeDir: home,
       credential: credential(),
@@ -384,6 +420,170 @@ test("managed projection writes and verifies only the selected private files", a
   assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, REFRESH);
   assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, ".claude.json"), "utf8")).oauthAccount.emailAddress, "alpha@example.com");
   assert.doesNotMatch(JSON.stringify(result), /ACCESS_SECRET|REFRESH_SECRET/);
+});
+
+test("legacy-only native state preserves newer local OAuth during reconciliation and reprojection", async t => {
+  const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const configDir = path.join(home, ".aimgr/claude-homes/alpha/.claude");
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const newer = credential({ access: "NEWER_NATIVE_ACCESS", refresh: "NEWER_NATIVE_REFRESH",
+    expiresAtMs: NOW_MS + 7_200_000 });
+  writeJson(path.join(configDir, ".config.json"), { oauthAccount: newer.nativeClaudeBundle.oauthAccount,
+    projects: { retained: true } });
+  writeJson(path.join(configDir, ".credentials.json"), { claudeAiOauth: newer.nativeClaudeBundle.claudeAiOauth,
+    mcpOAuth: { retained: true } });
+  const descriptor = buildManagedClaudeNativeStorageDescriptor({ configDir, defaultConfigDir: path.join(home, ".claude"),
+    expectedEmail: "alpha@example.com", managedRootDir: path.join(home, ".aimgr") });
+  const read = readManagedClaudeNativeBundleFromFiles({ descriptor });
+  assert.equal(read.ok, true); assert.deepEqual(read.nativeClaudeBundle, newer.nativeClaudeBundle);
+  const result = await projectClaudeNativeBundleToManagedConfig({ descriptor, credential: credential(),
+    nowMs: NOW_MS, preserveNewerLocal: true });
+  assert.equal(result.action, "kept_local");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, ".credentials.json"))).claudeAiOauth.refreshToken,
+    "NEWER_NATIVE_REFRESH");
+  assert.equal(fs.existsSync(path.join(configDir, ".claude.json")), false);
+  // A stale canonical owner cannot redirect file/keychain identity selection.
+  writeJson(path.join(configDir, ".claude.json"), { oauthAccount: account({ emailAddress: "wrong@example.com" }) });
+  assert.equal(readManagedClaudeNativeBundleFromFiles({ descriptor }).ok, true);
+});
+
+test("projection preserves ambiguous and incomplete same-account token lineages", async t => {
+  for (const incomplete of [false, true]) {
+    const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const configDir = path.join(home, ".aimgr/claude-homes/alpha/.claude");
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    const current = credential({ access: "NATIVE_ACCESS", refresh: "NATIVE_REFRESH" }).nativeClaudeBundle;
+    if (incomplete) delete current.claudeAiOauth.rateLimitTier;
+    writeJson(path.join(configDir, ".claude.json"), { oauthAccount: current.oauthAccount });
+    writeJson(path.join(configDir, ".credentials.json"), { claudeAiOauth: current.claudeAiOauth });
+    const descriptor = buildManagedClaudeNativeStorageDescriptor({ configDir, defaultConfigDir: path.join(home, ".claude"),
+      expectedEmail: "alpha@example.com", managedRootDir: path.join(home, ".aimgr") });
+    const before = fs.readFileSync(path.join(configDir, ".credentials.json"), "utf8");
+    await assert.rejects(projectClaudeNativeBundleToManagedConfig({ descriptor, credential: credential(),
+      nowMs: NOW_MS, preserveNewerLocal: true }), /preserve.*repair/);
+    assert.equal(fs.readFileSync(path.join(configDir, ".credentials.json"), "utf8"), before);
+  }
+});
+
+test("ordinary projection retains corrupt-cache repair only for the exact empty-token tombstone", async t => {
+  const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const configDir = path.join(home, ".aimgr/claude-homes/alpha/.claude");
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(configDir, ".claude.json"), "{malformed", { mode: 0o600 });
+  writeJson(path.join(configDir, ".credentials.json"), { claudeAiOauth: { ...oauth(), accessToken: "", refreshToken: "" },
+    mcpOAuth: { retained: true } });
+  const descriptor = buildManagedClaudeNativeStorageDescriptor({ configDir, defaultConfigDir: path.join(home, ".claude"),
+    expectedEmail: "alpha@example.com", managedRootDir: path.join(home, ".aimgr") });
+  const result = await projectClaudeNativeBundleToManagedConfig({ descriptor, credential: credential(),
+    nowMs: NOW_MS, preserveNewerLocal: true });
+  assert.equal(result.action, "projected");
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(configDir, ".credentials.json"))).mcpOAuth, { retained: true });
+});
+
+test("projection waits for native MCP/OAuth writes and rechecks freshness under their existing lock", async t => {
+  const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const configDir = path.join(home, ".aimgr/claude-homes/alpha/.claude");
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeJson(path.join(configDir, ".claude.json"), { oauthAccount: account() });
+  writeJson(path.join(configDir, ".credentials.json"), { claudeAiOauth: oauth() });
+  const descriptor = buildManagedClaudeNativeStorageDescriptor({ configDir, defaultConfigDir: path.join(home, ".claude"),
+    expectedEmail: "alpha@example.com", managedRootDir: path.join(home, ".aimgr") });
+  const release = await lockfile.lock(path.join(configDir, ".storage-write"), { realpath: false, stale: 15_000 });
+  let completed = false;
+  const projecting = projectClaudeNativeBundleToManagedConfig({ descriptor, credential: credential(),
+    nowMs: NOW_MS, preserveNewerLocal: true }).finally(() => { completed = true; });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(completed, false);
+  const native = { claudeAiOauth: oauth({ accessToken: "CONCURRENT_ACCESS", refreshToken: "CONCURRENT_REFRESH",
+    expiresAt: NOW_MS + 7_200_000 }), mcpOAuth: { concurrent: { accessToken: "CONCURRENT_MCP" } } };
+  writeJson(path.join(configDir, ".credentials.json"), native);
+  await release();
+  assert.equal((await projecting).action, "kept_local");
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(configDir, ".credentials.json"))), native);
+});
+
+test("projection waits for native app-state edits and holds both locks through rollback", async t => {
+  const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  writeClaudeNativeBundle(home, { oauthAccount: account(), appState: { theme: "old" } });
+  const configDir = path.join(home, ".claude"), statePath = path.join(home, ".claude.json");
+  const release = await lockfile.lock(statePath, { lockfilePath: statePath + ".lock" });
+  let completed = false;
+  const projecting = writeClaudeNativeProjectionPair({ homeDir: home, credential: credential(),
+    verifyImpl() {
+      for (const file of [statePath, path.join(configDir, ".storage-write")]) {
+        assert.throws(() => lockfile.lockSync(file, { realpath: false, retries: 0 }), { code: "ELOCKED" });
+      }
+      throw new Error("synthetic readback interruption");
+    } }).finally(() => { completed = true; });
+  // Install the rejection observer before allowing the synthetic write error.
+  const rejected = assert.rejects(projecting, /synthetic readback interruption/);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(completed, false);
+  const current = JSON.parse(fs.readFileSync(statePath)); current.theme = "concurrent-native-theme";
+  writeJson(statePath, current);
+  await release(); await rejected;
+  assert.deepEqual(JSON.parse(fs.readFileSync(statePath)), current);
+  for (const file of [statePath, path.join(configDir, ".storage-write")]) {
+    const unlock = await lockfile.lock(file, { realpath: false, retries: 0 }); await unlock();
+  }
+});
+
+test("native credential reprojection preserves MCP auth and rejects unclassified secrets before writes", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  writeClaudeNativeBundle(home, { oauthAccount: account(), appState: { theme: "dark" } });
+  const authFile = path.join(home, ".claude/.credentials.json"), appFile = path.join(home, ".claude.json");
+  const current = JSON.parse(fs.readFileSync(authFile, "utf8"));
+  const nativeSecrets = { mcpOAuth: { required: { accessToken: "private-mcp-token" } },
+    mcpOAuthClientConfig: { required: { clientId: "required-client" } },
+    pluginSecrets: { requiredSkillPackage: { credential: "private-package-token" } } };
+  fs.writeFileSync(authFile, JSON.stringify({ ...current, ...nativeSecrets }), { mode: 0o600 });
+  await writeClaudeNativeProjectionPair({ homeDir: home, credential: credential() });
+  const projected = JSON.parse(fs.readFileSync(authFile, "utf8"));
+  assert.equal(projected.claudeAiOauth.accessToken, ACCESS);
+  for (const [key, value] of Object.entries(nativeSecrets)) assert.deepEqual(projected[key], value);
+  assert.equal(JSON.parse(fs.readFileSync(appFile)).theme, "dark");
+  fs.writeFileSync(authFile, JSON.stringify({ ...projected, unknownPrivateStore: "must-preserve-for-review" }));
+  const before = [fs.readFileSync(authFile, "utf8"), fs.readFileSync(appFile, "utf8")];
+  await assert.rejects(() => writeClaudeNativeProjectionPair({ homeDir: home, credential: credential({ access: "different" }) }),
+    error => error.code === "AIMGR_CLAUDE_PRIVATE_IDENTITY" && !error.message.includes("must-preserve-for-review"));
+  assert.deepEqual([fs.readFileSync(authFile, "utf8"), fs.readFileSync(appFile, "utf8")], before);
+});
+
+test("native projection drops prior-account provider secrets while retaining independent MCP auth", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  writeClaudeNativeBundle(home, { oauthAccount: { ...account(), accountUuid: "different-account" } });
+  const file = path.join(home, ".claude/.credentials.json");
+  const current = JSON.parse(fs.readFileSync(file));
+  fs.writeFileSync(file, JSON.stringify({ ...current, trustedDeviceToken: "other-device-token",
+    coworkRemoteDevice: { "different-account": { key: "private-key" } }, mcpOAuth: { retained: true } }));
+  await writeClaudeNativeProjectionPair({ homeDir: home, credential: credential() });
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)), {
+    claudeAiOauth: credential().nativeClaudeBundle.claudeAiOauth, mcpOAuth: { retained: true },
+  });
+});
+
+test("ordinary legacy projection follows native ownership and restores all sources on failure", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  writeClaudeNativeBundle(home, { oauthAccount: account() });
+  const directory = path.join(home, ".claude"), legacy = path.join(directory, ".config.json");
+  const authFile = path.join(directory, ".credentials.json"), canonical = path.join(home, ".claude.json");
+  writeJson(legacy, { oauthAccount: { ...account(), accountUuid: "native-old-owner" }, theme: "native-theme" });
+  writeJson(authFile, { ...JSON.parse(fs.readFileSync(authFile)), trustedDeviceToken: "old-owner-device", mcpOAuth: { retained: true } });
+  const files = [legacy, authFile, canonical], before = files.map(file => fs.readFileSync(file, "utf8"));
+  await assert.rejects(() => writeClaudeNativeProjectionPair({ homeDir: home, credential: credential(),
+    writeJsonFileIfChangedImpl(file, value, options) {
+      if (file === authFile) throw new Error("synthetic auth write failure");
+      return writeJsonFileIfChanged(file, value, options);
+    } }), /synthetic auth write failure/);
+  assert.deepEqual(files.map(file => fs.readFileSync(file, "utf8")), before);
+  await writeClaudeNativeProjectionPair({ homeDir: home, credential: credential() });
+  assert.equal(JSON.parse(fs.readFileSync(legacy)).theme, "native-theme");
+  assert.deepEqual(JSON.parse(fs.readFileSync(legacy)), JSON.parse(fs.readFileSync(canonical)));
+  assert.equal(JSON.parse(fs.readFileSync(authFile)).trustedDeviceToken, undefined);
+  assert.deepEqual(JSON.parse(fs.readFileSync(authFile)).mcpOAuth, { retained: true });
 });
 
 test("managed projection accepts an expired access token when a complete refresh lineage exists", async () => {
@@ -434,6 +634,23 @@ test("managed projection repairs unchanged credential files to private modes", a
   assert.equal(fs.statSync(credentialsPath).mode & 0o777, 0o600);
   assert.equal(fs.statSync(appStatePath).mode & 0o777, 0o600);
   assert.equal(fs.statSync(configDir).mode & 0o777, 0o700);
+});
+
+test("nested storage accepts pinned private ancestors but still refuses an unrepaired public directory", t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const descriptor = buildManagedClaudeNativeStorageDescriptor({
+    configDir: path.join(home, ".aimgr", "claude-homes", "alpha", ".claude"),
+    defaultConfigDir: path.join(home, ".claude"), expectedEmail: "alpha@example.com",
+    managedRootDir: path.join(home, ".aimgr"),
+  });
+  ensureSafeManagedClaudeStorage({ descriptor });
+  const io = new Proxy(fs, { get(target, key) {
+    return key === "chmodSync" ? () => { throw Object.assign(new Error("pinned ancestor"), { code: "EACCES" }); } : target[key];
+  } });
+  assert.doesNotThrow(() => ensureSafeManagedClaudeStorage({ descriptor, fsImpl: io }));
+  fs.chmodSync(descriptor.managedRootDir, 0o755);
+  assert.throws(() => ensureSafeManagedClaudeStorage({ descriptor, fsImpl: io }), { code: "EACCES" });
 });
 
 test("managed projection rejects a symlinked AIM-owned directory before any file write", async () => {
@@ -612,4 +829,44 @@ test("post-run sync captures a newer same-identity file rotation", async () => {
   assert.equal(Object.isFrozen(result.candidateCredential.nativeClaudeBundle), true);
   assert.equal(Object.isFrozen(result.candidateCredential.nativeClaudeBundle.claudeAiOauth), true);
   assert.deepEqual(state.credentials, credentialsBefore);
+});
+
+
+test("legacy selection preserves a refresh completed during its native lock wait", async t => {
+  const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const now = Date.now(), current = credential({ expiresAtMs: now + 3_600_000 });
+  writeClaudeNativeBundle(home, { oauthAccount: account(), expiresAtMs: now + 3_600_000 });
+  const configDir = path.join(home, ".claude"), file = path.join(configDir, ".credentials.json");
+  // Native selects legacy state even if canonical state claims another owner.
+  writeJson(path.join(configDir, ".config.json"), { oauthAccount: account(), theme: "retained" });
+  writeJson(path.join(home, ".claude.json"), { oauthAccount: { ...account(), accountUuid: "stale-owner" } });
+  const state = { accounts: { alpha: { provider: "anthropic", pool: { enabled: true } } },
+    credentials: { anthropic: { alpha: current } } };
+  const release = await lockfile.lock(path.join(configDir, ".storage-write"), { realpath: false });
+  let completed = false;
+  const pending = applyClaudeCliFromState({ label: "alpha", homeDir: home }, state)
+    .finally(() => { completed = true; });
+  await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(completed, false);
+  const fresh = credential({ access: "CONCURRENT_ACCESS", refresh: "CONCURRENT_REFRESH", expiresAtMs: now + 7_200_000 });
+  writeJson(file, { claudeAiOauth: fresh.nativeClaudeBundle.claudeAiOauth, mcpOAuth: { retained: true } });
+  await release(); await pending;
+  assert.equal(JSON.parse(fs.readFileSync(file)).claudeAiOauth.refreshToken, "CONCURRENT_REFRESH");
+  assert.equal(state.credentials.anthropic.alpha.nativeClaudeBundle.claudeAiOauth.refreshToken, "CONCURRENT_REFRESH");
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)).mcpOAuth, { retained: true });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, ".claude.json"))).theme, "retained");
+});
+
+test("legacy selection refuses ambiguous or incomplete current lineage without writes", async t => {
+  for (const incomplete of [false, true]) {
+    const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const expiresAtMs = Date.now() + 3_600_000;
+    writeClaudeNativeBundle(home, { oauthAccount: account(), accessToken: "LOCAL_ACCESS", refreshToken: "LOCAL_REFRESH", expiresAtMs });
+    const file = path.join(home, ".claude/.credentials.json");
+    if (incomplete) { const auth = JSON.parse(fs.readFileSync(file)); delete auth.claudeAiOauth.rateLimitTier; writeJson(file, auth); }
+    const before = fs.readFileSync(file, "utf8");
+    const state = { accounts: { alpha: { provider: "anthropic", pool: { enabled: true } } },
+      credentials: { anthropic: { alpha: credential({ expiresAtMs }) } } };
+    await assert.rejects(applyClaudeCliFromState({ label: "alpha", homeDir: home }, state), /preserve.*repair/);
+    assert.equal(fs.readFileSync(file, "utf8"), before);
+  }
 });

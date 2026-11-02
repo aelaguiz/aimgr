@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "reviewedAt": "2026-11-02T05:01:08.249603+00:00",
+  "reviewer": "Independent cold implementation reviewer (claude_plan_cold_review_new)",
+  "verdict": "PASS: no remaining blocker against T01\u2013T24 and no vetoed functionality removal; ready for the requested PR.",
+  "requirements": "../../CLAUDE_PRIVACY_IMPLEMENTATION_PLAN_2026-11-01.md",
+  "productionFilesChecked": 46,
+  "sourceManifest": "final-source-manifest.json",
+  "requiredCasesOpen": [],
+  "preserved": [
+    "native development and live project edits",
+    "model, effort, permission controls and basic terminal operation",
+    "personal, project and package instructions/skills",
+    "required stdio/HTTP MCP, OAuth and resources",
+    "same-account and different-account simultaneous sessions",
+    "nested same/cross-account dispatch",
+    "history, resume, fork and shared memory",
+    "subagents and AIM-owned hooks",
+    "calendar and in-session scheduling",
+    "background owners and saved-job reattachment",
+    "ordinary accounts without proxy/CDP prerequisites"
+  ],
+  "acceptedTradeoffsConfirmed": [
+    "new session for folders outside initial access grants",
+    "custom HTTP header edits apply in a new session",
+    "broad OS family and CPU architecture accepted",
+    "individual Pro/Max account scope",
+    "Remote Control and remote feature flags disabled for all AIM Claude sessions",
+    "telemetry opt-out losses accepted"
+  ],
+  "noHiddenRemoval": [
+    "no session cap",
+    "no blanket background ban",
+    "no browser replacement",
+    "no DLP machinery",
+    "no required-feature cut"
+  ],
+  "evidenceReviewed": [
+    "linux-real-accounts-final.json",
+    "mac-real-accounts-final.json",
+    "linux-dns-boundary-v61.json",
+    "final-checks.json",
+    "claude-metadata-inventory.json",
+    "final-source-manifest.json",
+    "all requirement rows in plan section11 and linked synthetic receipts"
+  ],
+  "scope": "Implementation and evidence approval for PR; explicit human approval of exact runtime artifacts for normal use remains separate.",
+  "normalUseApproved": false
+}

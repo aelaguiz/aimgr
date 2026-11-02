@@ -1,0 +1,75 @@
+{
+  "platform": "Darwin",
+  "results": [
+    {
+      "case": "doctor-before-valid",
+      "exit": -6,
+      "durationMs": 11,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-invalid",
+      "exit": -6,
+      "durationMs": 8,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-env-coercion",
+      "exit": -6,
+      "durationMs": 8,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-unknown",
+      "exit": -6,
+      "durationMs": 8,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-hook",
+      "exit": -6,
+      "durationMs": 8,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-helper",
+      "exit": -6,
+      "durationMs": 8,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-permissions-invalid",
+      "exit": -6,
+      "durationMs": 8,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": false
+    }
+  ]
+}

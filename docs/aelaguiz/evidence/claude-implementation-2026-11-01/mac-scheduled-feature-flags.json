@@ -1,0 +1,24 @@
+{
+  "comparisons": [
+    {
+      "platform": "darwin",
+      "commonFeatureFlagsDisabled": false,
+      "initialTurnCompleted": true,
+      "followupCompleted": true,
+      "inSessionScheduledWakeupCompleted": true,
+      "terminalRestored": true,
+      "passed": true,
+      "meaning": "Actual AIM interactive routine and native timer; not OS calendar firing or final combined privacy policy"
+    },
+    {
+      "platform": "darwin",
+      "commonFeatureFlagsDisabled": true,
+      "initialTurnCompleted": true,
+      "followupCompleted": true,
+      "inSessionScheduledWakeupCompleted": true,
+      "terminalRestored": true,
+      "passed": true,
+      "meaning": "Actual AIM interactive routine and native timer; not OS calendar firing or final combined privacy policy"
+    }
+  ]
+}

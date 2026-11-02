@@ -1,0 +1,37 @@
+{
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-refresh-upgrade-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/mcp-registry/v0/servers",
+        "/v1/mcp_servers",
+        "/v1/messages",
+        "/v1/oauth/token"
+      ],
+      "modelRequests": 1,
+      "managedSettingsFetches": 0,
+      "refreshRequests": 1,
+      "refreshedCredentialStored": true,
+      "storedSubscriptionType": "max",
+      "storedSubscriptionTypeSource": "profile",
+      "storedSubscriptionFresh": true,
+      "exactKernelInModel": false,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "connectAuthorities": [
+        "api.anthropic.com:443",
+        "platform.claude.com:443"
+      ]
+    }
+  ],
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance"
+}

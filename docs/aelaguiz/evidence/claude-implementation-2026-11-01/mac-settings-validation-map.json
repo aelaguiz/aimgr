@@ -1,0 +1,23 @@
+{
+  "platform": "Darwin",
+  "results": [
+    {
+      "case": "doctor-before-valid",
+      "exit": -6,
+      "durationMs": 11,
+      "configuredCodeRan": false,
+      "completeDoctorReport": false,
+      "policyReceipt": false,
+      "invalidSettings": false
+    },
+    {
+      "case": "doctor-before-invalid",
+      "exit": -6,
+      "durationMs": 8,
+      "configuredCodeRan": false,
+      "completeDoctorReport": false,
+      "policyReceipt": false,
+      "invalidSettings": false
+    }
+  ]
+}

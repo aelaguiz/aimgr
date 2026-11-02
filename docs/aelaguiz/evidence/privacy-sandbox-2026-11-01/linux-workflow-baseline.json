@@ -1,0 +1,70 @@
+{
+  "platform": "Linux-7.0.0-1014-gcp-x86_64-with-glibc2.39",
+  "allPassed": true,
+  "checks": [
+    {
+      "provider": "codex",
+      "check": "one successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "native tool result returned and project/Git/PTY/build worked",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "one successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "native tool result returned and project/Git/PTY/build worked",
+      "passed": true
+    }
+  ],
+  "results": [
+    {
+      "case": "codex-fresh-a",
+      "exitCode": 0,
+      "modelRequestCount": 3,
+      "workflow": {
+        "edit": true,
+        "git": true,
+        "pty": true,
+        "nativeBuild": true,
+        "privateReadDenied": false
+      },
+      "toolOutputReturned": true,
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "claude-fresh-a",
+      "exitCode": 0,
+      "modelRequestCount": 2,
+      "workflow": {
+        "edit": true,
+        "git": true,
+        "pty": true,
+        "nativeBuild": true,
+        "privateReadDenied": false
+      },
+      "toolOutputReturned": true,
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    }
+  ]
+}

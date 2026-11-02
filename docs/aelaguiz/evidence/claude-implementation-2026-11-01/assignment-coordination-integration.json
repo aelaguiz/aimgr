@@ -1,0 +1,39 @@
+{
+  "component": "Claude local assignment coordination integration",
+  "date": "2026-11-01",
+  "platforms": [
+    "Linux GCP test VM",
+    "rented macOS EC2 test host"
+  ],
+  "suitesPerPlatform": {
+    "assignmentRunnerMaintenance": {
+      "passed": 33,
+      "failed": 0
+    },
+    "focusedAssignmentCommands": {
+      "passed": 6,
+      "failed": 0
+    }
+  },
+  "vendorExecution": false,
+  "coldReview": {
+    "reviewer": "claude_migration_cold_review",
+    "verdict": "No remaining confirmed blocker in assignment-lock integration after in-place legacy-mode repair",
+    "additionalExperiment": "Real Node supervisor with stubborn synthetic vendor/descendant: timeout TERM then KILL; vendor has no lock FD; SH retained until caller release"
+  },
+  "sourceSha256": {
+    "src/network/claude-offline-binding.js": "876466adc170b2c009906265f6fa0a2a96a15c1d64f32b495506dbdb47b73b35",
+    "src/cli/commands/claude.js": "61f4aaac732cfe4c14f7c3fb1cc629f866055f0100b322abec28cd3a7cc9904e",
+    "src/credentials/claude-maintenance.js": "dab997a3c351a36cfbfb7f83c38e51672451ef93cb3eaad7bfe62c5a369ef8c6",
+    "src/targets/claude-preflight.js": "17ac6b44388e5632ed05f958b0bd7647c4cd097d30dcf106c95fefd214ae45ad",
+    "src/targets/claude-runner.js": "3b58a83b1b009e5402d4a41c47a2c3d2cde278d1453cae974847bde2bc34d5c3",
+    "src/targets/claude-supervisor.js": "b4856266650f09ba63479853f58fde53e12e9ec35b0f449d4c37eea2dac72f10",
+    "test/network/claude-assignment-lock.test.js": "e148ec053e1af00d75844f078dc38ac7bb3d0334cee79439e382e2a7103a2884",
+    "test/claude/claude-runner.test.js": "8a62554525f36d3c693315127e21d7f66e34eff107fade068a1bc28ffa0f3838",
+    "test/cli/auth-maintain-command.test.js": "a09e0360d90bdb3265a58d3d383154508109fb9a225b5a384c2657a7004a8c72",
+    "test/cli/redis-projection-command.test.js": "fa878b6ffed931b35eaa4f6379346a6abc9ac8dbc9493d1e13e2ef5d8700c400"
+  },
+  "limits": [
+    "Does not certify identity migration, detached native-owner admission, native file/device policy, final version boundary or full retained workflows."
+  ]
+}

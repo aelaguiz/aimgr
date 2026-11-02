@@ -1,0 +1,385 @@
+{
+  "baseline": {
+    "load": {
+      "exit": 0,
+      "error": ""
+    },
+    "attributes": {
+      "exit": 0,
+      "error": "",
+      "values": {
+        "foundationHostnameIsLocalhost": false,
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "26.7.0",
+        "foundationVersionStringReadable": 1,
+        "gethostname": {
+          "errno": 0,
+          "nonempty": 1,
+          "success": 1
+        },
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hostUuidMatchesPlatformUuid": 1,
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 0,
+          "readable": 1
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 1,
+        "IOPlatformSerialNumberDirectReadable": 1,
+        "IOPlatformUUIDBulkReadable": 1,
+        "IOPlatformUUIDDirectReadable": 1,
+        "kern.hostname": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osproductversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osrelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.version": {
+          "errno": 0,
+          "readable": 1
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "systemVersionPlistReadable": 1,
+        "uname": {
+          "hostnameReadable": 1,
+          "machineReadable": 1,
+          "releaseReadable": 1,
+          "success": 1
+        },
+        "sameAsBaselineFoundationHostnameDigest": true,
+        "sameAsBaselineHostUuidDigest": true
+      }
+    }
+  },
+  "files": {
+    "load": {
+      "exit": 0,
+      "error": ""
+    },
+    "attributes": {
+      "exit": 0,
+      "error": "",
+      "values": {
+        "foundationHostnameIsLocalhost": false,
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "26.7.0",
+        "foundationVersionStringReadable": 1,
+        "gethostname": {
+          "errno": 0,
+          "nonempty": 1,
+          "success": 1
+        },
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hostUuidMatchesPlatformUuid": 1,
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 0,
+          "readable": 1
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 1,
+        "IOPlatformSerialNumberDirectReadable": 1,
+        "IOPlatformUUIDBulkReadable": 1,
+        "IOPlatformUUIDDirectReadable": 1,
+        "kern.hostname": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osproductversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osrelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.version": {
+          "errno": 0,
+          "readable": 1
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "systemVersionPlistReadable": 1,
+        "uname": {
+          "hostnameReadable": 1,
+          "machineReadable": 1,
+          "releaseReadable": 1,
+          "success": 1
+        },
+        "sameAsBaselineFoundationHostnameDigest": true,
+        "sameAsBaselineHostUuidDigest": true
+      }
+    }
+  },
+  "combined": {
+    "load": {
+      "exit": 0,
+      "error": ""
+    },
+    "attributes": {
+      "exit": 0,
+      "error": "",
+      "values": {
+        "foundationHostnameIsLocalhost": false,
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "-1.0.0",
+        "foundationVersionStringReadable": 1,
+        "gethostname": {
+          "errno": 1,
+          "nonempty": 0,
+          "success": 0
+        },
+        "gethostuuid": {
+          "errno": 1,
+          "readable": 0
+        },
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 1,
+          "readable": 0
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 0,
+        "IOPlatformSerialNumberDirectReadable": 0,
+        "IOPlatformUUIDBulkReadable": 0,
+        "IOPlatformUUIDDirectReadable": 0,
+        "kern.hostname": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osproductversion": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osrelease": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osversion": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.version": {
+          "errno": 1,
+          "readable": 0
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 1,
+          "readable": 0
+        },
+        "systemVersionPlistReadable": 0,
+        "uname": {
+          "hostnameReadable": 0,
+          "machineReadable": 1,
+          "releaseReadable": 0,
+          "success": 0
+        },
+        "sameAsBaselineFoundationHostnameDigest": true
+      }
+    }
+  },
+  "kernel-version-only": {
+    "load": {
+      "exit": 0,
+      "error": ""
+    },
+    "attributes": {
+      "exit": 0,
+      "error": "",
+      "values": {
+        "foundationHostnameIsLocalhost": false,
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "26.7.0",
+        "foundationVersionStringReadable": 1,
+        "gethostname": {
+          "errno": 0,
+          "nonempty": 1,
+          "success": 1
+        },
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hostUuidMatchesPlatformUuid": 1,
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 0,
+          "readable": 1
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 1,
+        "IOPlatformSerialNumberDirectReadable": 1,
+        "IOPlatformUUIDBulkReadable": 1,
+        "IOPlatformUUIDDirectReadable": 1,
+        "kern.hostname": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osproductversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osrelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.version": {
+          "errno": 0,
+          "readable": 1
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 0,
+        "numericSysctlRelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "systemVersionPlistReadable": 1,
+        "uname": {
+          "hostnameReadable": 1,
+          "machineReadable": 1,
+          "releaseReadable": 1,
+          "success": 1
+        },
+        "sameAsBaselineFoundationHostnameDigest": true,
+        "sameAsBaselineHostUuidDigest": true
+      }
+    }
+  },
+  "hardware-info-only": {
+    "load": {
+      "exit": -9,
+      "error": ""
+    },
+    "attributes": {
+      "exit": -9,
+      "error": ""
+    }
+  },
+  "memory-sysctl-only": {
+    "load": {
+      "exit": 0,
+      "error": ""
+    },
+    "attributes": {
+      "exit": 0,
+      "error": "",
+      "values": {
+        "foundationHostnameIsLocalhost": false,
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "26.7.0",
+        "foundationVersionStringReadable": 1,
+        "gethostname": {
+          "errno": 0,
+          "nonempty": 1,
+          "success": 1
+        },
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hostUuidMatchesPlatformUuid": 1,
+        "hw.memsize": {
+          "errno": 1,
+          "readable": 0
+        },
+        "hw.model": {
+          "errno": 0,
+          "readable": 1
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 1,
+        "IOPlatformSerialNumberDirectReadable": 1,
+        "IOPlatformUUIDBulkReadable": 1,
+        "IOPlatformUUIDDirectReadable": 1,
+        "kern.hostname": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osproductversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osrelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.version": {
+          "errno": 0,
+          "readable": 1
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "systemVersionPlistReadable": 1,
+        "uname": {
+          "hostnameReadable": 1,
+          "machineReadable": 1,
+          "releaseReadable": 1,
+          "success": 1
+        },
+        "sameAsBaselineFoundationHostnameDigest": true,
+        "sameAsBaselineHostUuidDigest": true
+      }
+    }
+  }
+}

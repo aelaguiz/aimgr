@@ -1,0 +1,49 @@
+{
+  "results": [
+    {
+      "case": "canonical",
+      "initializeSucceeded": true,
+      "configReadSucceeded": true,
+      "paths": {
+        "model_instructions_file": "/opt/aimgr-state-audit/linux-config-layout/original/instructions.md",
+        "sqlite_home": "/opt/aimgr-state-audit/linux-config-layout/original/config home",
+        "log_dir": "/opt/aimgr-state-audit/linux-config-layout/original/config home"
+      },
+      "shellSnapshot": true
+    },
+    {
+      "case": "sibling",
+      "initializeSucceeded": true,
+      "configReadSucceeded": true,
+      "paths": {
+        "model_instructions_file": "/opt/aimgr-state-audit/linux-config-layout/original/instructions.md",
+        "sqlite_home": "/opt/aimgr-state-audit/linux-config-layout/original/account-a",
+        "log_dir": "/opt/aimgr-state-audit/linux-config-layout/original/account-a"
+      },
+      "shellSnapshot": true,
+      "writer": {
+        "exitCode": 0,
+        "symlinkPreserved": true,
+        "canonicalInodeReplaced": true,
+        "canonicalChanged": true
+      },
+      "runningOwnerSawEdit": true
+    },
+    {
+      "case": "deep",
+      "initializeSucceeded": true,
+      "configReadSucceeded": false,
+      "paths": {
+        "model_instructions_file": null,
+        "sqlite_home": null,
+        "log_dir": null
+      },
+      "shellSnapshot": null,
+      "configReadError": {
+        "code": -32603,
+        "message": "failed to resolve feature override precedence: failed to read model instructions file /opt/aimgr-state-audit/linux-config-layout/accounts/account-b/instructions.md: No such file or directory (os error 2)"
+      }
+    }
+  ],
+  "meaning": "Native config path resolution and symlink writer observations, not a compatible migration design."
+}

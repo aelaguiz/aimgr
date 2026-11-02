@@ -1,0 +1,18 @@
+{
+  "baseline": {
+    "exit": 0,
+    "values": {
+      "symlinkReadAllowed": true,
+      "inheritedFdReadAllowed": true
+    },
+    "error": ""
+  },
+  "combined": {
+    "exit": 0,
+    "values": {
+      "symlinkReadAllowed": false,
+      "inheritedFdReadAllowed": true
+    },
+    "error": "python3: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\npython3: error: unable to read SDK settings for '/'\npython3: warning: unable to determine the version of the host OS\npython3: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\n"
+  }
+}

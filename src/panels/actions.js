@@ -65,7 +65,7 @@ export async function runLabelPanelAction({
     || action === "use_native_claude_label"
   ) {
     if (action === "use_native_claude_label") {
-      const activated = activateClaudeLabelSelectionImpl({ state, homeDir, label: normalizedLabel });
+      const activated = await activateClaudeLabelSelectionImpl({ state, homeDir, label: normalizedLabel });
       await persistState();
       writeImpl(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n\n`);
       return { done: false };

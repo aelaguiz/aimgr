@@ -1,0 +1,17 @@
+# Reproducing the native Mac mechanism experiments
+
+These are bounded research command bodies, not deployable sandbox policies. Run only on a disposable rented Mac with the independent outbound deny boundary already verified. Use synthetic state, fake API keys and loopback model servers. No browser or real account is required. The guards require `/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST`; creating that marker on a personal Mac does not authorize testing there.
+
+Use the exact official versions and checksums in `../mac-manifest.json`. Place the binaries in `/opt/aimgr-state-audit/bin`, stage `scripts/privacy-state-audit.py` as `audit.py`, `scripts/privacy-macos-doctor-audit.py` as `doctor.py`, and `scripts/privacy-macos-attributes.m` under its original name. The original fixture installed remote-control denial in the disposable system's Codex requirements and Claude managed settings. Preserve that setup and the external network denial.
+
+1. Run `scripts/privacy-macos-sandbox-feasibility.py --root /opt/aimgr-state-audit/mac-sandbox-verified`. It prepares the base profiles and matched model/doctor cases. The current script includes the corrected traversal paths and Claude temp-directory setting; earlier failed-policy artifacts are historical evidence, not expected passes.
+2. Run `mac-native-candidate.py` for the baseline, file boundary, combined metadata boundary and actual native tool comparison.
+3. Run `mac-syscall-audit.py` for matched libc/direct UUID syscalls and positive policy-load controls.
+4. Run `mac-final-api-check.py` for corrected native attribute measurement and split Mach/memory filters. Then `mac-mach-candidate.py` preserves the combined Mach-filter experiment, and `mac-hostname-check.py` tests two possible hostname paths separately.
+5. Run `mac-subject-policy.py` for the executable-specific metadata comparison. Run `mac-final-observations.py` for matched link/inherited-descriptor behavior and request-field checks.
+
+Experiments that create fixtures refuse to reuse their fixture roots. The final observation script deliberately reads the preceding fixtures and writes its matched follow-up results there. Keep the parent observer outside the tested policy, and record failures rather than silently rerunning the work unrestricted. The model harness bounds child process groups and uses synthetic server-issued tool calls, not just direct helper probes. Its success assertions require actual native tool-result envelopes, native build/Git/PTY results and edits observed by the parent.
+
+These follow-up bodies have added offsite guards and publication hygiene; they are not byte-for-byte copies of every historical failed fixture. `mac-final-api-check.py` supersedes earlier attribute results: `uname` may partially fill fields on failure, and Foundation hostname equality must be compared against a private positive baseline. A nonempty string is not proof of a retained real hostname.
+
+Raw `*.private.*` captures and the native probe's `privateHostUuidDigest` / `privateFoundationHostnameDigest` remain on the test VM. Strip both fields before publishing any JSON; publish only baseline equality. Also redact the rental's generated xcrun-cache path. The official account identifiers in model fixtures are synthetic; their equality hashes establish disk/request relationships, not production identity migration. The tests do not certify interactive terminal behavior, actual subscription accounts, keychain migration, native shared-daemon reuse, schedules, updates or the complete workflow.

@@ -1,0 +1,107 @@
+{
+  "platform": "Darwin",
+  "scope": "Native managed-policy admission/validation only; no account or full launcher acceptance",
+  "cases": [
+    {
+      "case": "safe-invalid-malformed",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "static-invalid-malformed",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "safe-invalid-remote",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "static-invalid-remote",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "safe-invalid-env",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": false
+    },
+    {
+      "case": "static-invalid-env",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": false
+    },
+    {
+      "case": "user-plist",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "device-plist",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "empty-user-plist",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "safe-user-plist",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "large-raw-plist",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    }
+  ],
+  "passed": false,
+  "interpretation": "Original expected-rejection for env objects was wrong: native coerces env values to strings. Raw failed assertions retained; this is not accepted as safe composed launch settings."
+}

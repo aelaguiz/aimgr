@@ -1,0 +1,23 @@
+#include <tunables/global>
+# This is a narrow OFFSITE DECISION FIXTURE, not an installed production policy.
+# Tools leave the vendor-only file rules but keep the version-directory rules.
+# Use enforce mode. The test VM's default_allow implementation accepted this
+# syntax but ignored the denies; actual downloaded-code markers caught it.
+profile aim-claude-decision-tools flags=(attach_disconnected) {
+  allow all,
+  /** ix,
+  deny /**/claude/{versions,staging}/** rmx,
+  deny /**/node_modules/@anthropic-ai/claude-code/** rmx,
+  change_profile -> aim-claude-decision,
+}
+profile aim-claude-decision flags=(attach_disconnected) {
+  #include <abstractions/base>
+  network,
+  capability,
+  /** rwmlk,
+  deny /opt/aimgr-state-audit/claude-implementation/hidden-canary r,
+  deny /**/claude/{versions,staging}/** rmx,
+  deny /**/node_modules/@anthropic-ai/claude-code/** rmx,
+  /opt/aimgr-state-audit/bin/claude ix,
+  /{usr/,}bin/** px -> aim-claude-decision-tools,
+}

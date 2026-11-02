@@ -1,0 +1,29 @@
+{
+  "platform": "Linux",
+  "sourceArchiveSha256": "cb34f1f2d7f7c51fa39e16e67a29c2b53095f998fd6d94f50854bdd2381bccef",
+  "passedCount": 20,
+  "cases": [
+    "staging preserves selector",
+    "explicit activation and idempotence",
+    "immutable old artifacts retained",
+    "nonexecutable helper refused",
+    "changed bytes refused",
+    "extra file refused",
+    "test-only authorization refused",
+    "missing human approval refused",
+    "unreadable existing approval refused",
+    "unreadable existing artifact directory refused",
+    "restrictive umask supported",
+    "unreadable destination parent refused",
+    "active account SH lock refuses transition",
+    "stopped account transition succeeds",
+    "custom-home owner refuses transition",
+    "complain-mode AppArmor refused",
+    "mutable parser refused",
+    "mutable policy lock refused",
+    "post-publication fsync reports activation",
+    "post-publication cleanup reports activation"
+  ],
+  "realVendorExecuted": false,
+  "realRuntimeChanged": false
+}

@@ -1,0 +1,56 @@
+{
+  "integratedAim": false,
+  "mode": "protected",
+  "actualNativeRoute": false,
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-headers-reload-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 3,
+      "modelSources": [
+        "127.0.0.1"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": true,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "headerReload": {
+        "initialValues": [
+          "initial",
+          "initial",
+          "initial"
+        ],
+        "competingAuthSent": false,
+        "unrelatedSettingReloaded": false
+      },
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "connectAuthorities": [
+        "api.anthropic.com:443"
+      ]
+    }
+  ],
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchiveSha256": "381785421d60f3147b7a4b22abe550809c42134792f369db68b5f104b3b2330f",
+  "acceptanceLimit": "Print mode did not reload unrelated settings in vanilla or protected runs. Does not establish interactive reload protection."
+}

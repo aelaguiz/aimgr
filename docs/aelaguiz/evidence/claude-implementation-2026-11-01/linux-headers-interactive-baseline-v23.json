@@ -1,0 +1,71 @@
+{
+  "integratedAim": false,
+  "mode": "protected",
+  "actualNativeRoute": false,
+  "platform": "Linux",
+  "artifactSha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "results": [
+    {
+      "case": "protected-pro-headers-reload-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/artifacts/mcp",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/frame/contract/latest",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/claude-code-releases/plugins/claude-plugins-official/%7B%22features%22:%20%7B%7D,%20%22data%22:%20[],%20%22models%22:%20[]%7D.zip",
+        "/claude-code-releases/plugins/claude-plugins-official/latest",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 7,
+      "modelSources": [
+        "127.0.0.1"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": true,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "headerReload": {
+        "initialValues": [
+          "initial",
+          "initial",
+          "initial",
+          "initial",
+          "changed",
+          "changed",
+          "changed"
+        ],
+        "competingAuthSent": true,
+        "unrelatedSettingReloaded": true
+      },
+      "xtversionResponses": 1,
+      "deviceAttributeResponses": 2,
+      "settingsChangeObserved": true,
+      "appStateChangeObserved": true,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "connectAuthorities": [
+        "api.anthropic.com:443",
+        "downloads.claude.ai:443",
+        "github.com:443",
+        "raw.githubusercontent.com:443"
+      ]
+    }
+  ],
+  "settingsWatcherPollingDiagnostic": false,
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchiveSha256": "423733afcad335b3d472359bd77e01988e0dffb46896eca56252fdac69e0c3cb"
+}

@@ -1,0 +1,475 @@
+{
+  "baseline": {
+    "load": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "python": {
+      "exit": 0,
+      "stdout": "OK\n",
+      "stderr": ""
+    },
+    "git": {
+      "exit": 0,
+      "stdout": "git version 2.54.0 (Apple Git-157)\n",
+      "stderr": ""
+    },
+    "swVers": {
+      "exit": 0,
+      "stdout": "26.7\n",
+      "stderr": ""
+    },
+    "attributes": {
+      "exit": 0,
+      "values": {
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "26.7.0",
+        "foundationVersionStringReadable": 1,
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hostUuidMatchesPlatformUuid": 1,
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 0,
+          "readable": 1
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 1,
+        "IOPlatformSerialNumberDirectReadable": 1,
+        "IOPlatformUUIDBulkReadable": 1,
+        "IOPlatformUUIDDirectReadable": 1,
+        "kern.hostname": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osproductversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osrelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.version": {
+          "errno": 0,
+          "readable": 1
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "systemVersionPlistReadable": 1,
+        "uname": {
+          "hostnameReadable": 1,
+          "machineReadable": 1,
+          "releaseReadable": 1,
+          "success": 1
+        },
+        "sameHostUuidAsBaseline": true
+      }
+    },
+    "workflow": {
+      "harnessExit": 0,
+      "summary": {
+        "platform": "macOS-26.7-arm64-arm-64bit",
+        "allPassed": true,
+        "checks": [
+          {
+            "provider": "codex",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          }
+        ],
+        "results": [
+          {
+            "case": "codex-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 3,
+            "userAgents": [
+              "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+            ],
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": false
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          },
+          {
+            "case": "claude-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 2,
+            "userAgents": [
+              "claude-cli/2.1.316 (external, sdk-cli)"
+            ],
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": false
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          }
+        ]
+      }
+    }
+  },
+  "files": {
+    "load": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "python": {
+      "exit": 0,
+      "stdout": "OK\n",
+      "stderr": "python3: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\npython3: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\n"
+    },
+    "git": {
+      "exit": 0,
+      "stdout": "git version 2.54.0 (Apple Git-157)\n",
+      "stderr": "git: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\ngit: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\n"
+    },
+    "swVers": {
+      "exit": 0,
+      "stdout": "26.7\n",
+      "stderr": ""
+    },
+    "attributes": {
+      "exit": 0,
+      "values": {
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "26.7.0",
+        "foundationVersionStringReadable": 1,
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hostUuidMatchesPlatformUuid": 1,
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 0,
+          "readable": 1
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 1,
+        "IOPlatformSerialNumberDirectReadable": 1,
+        "IOPlatformUUIDBulkReadable": 1,
+        "IOPlatformUUIDDirectReadable": 1,
+        "kern.hostname": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osproductversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osrelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.version": {
+          "errno": 0,
+          "readable": 1
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "systemVersionPlistReadable": 1,
+        "uname": {
+          "hostnameReadable": 1,
+          "machineReadable": 1,
+          "releaseReadable": 1,
+          "success": 1
+        },
+        "sameHostUuidAsBaseline": true
+      }
+    },
+    "workflow": {
+      "harnessExit": 0,
+      "summary": {
+        "platform": "macOS-26.7-arm64-arm-64bit",
+        "allPassed": true,
+        "checks": [
+          {
+            "provider": "codex",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          }
+        ],
+        "results": [
+          {
+            "case": "codex-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 3,
+            "userAgents": [
+              "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+            ],
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": true
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          },
+          {
+            "case": "claude-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 2,
+            "userAgents": [
+              "claude-cli/2.1.316 (external, sdk-cli)"
+            ],
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": true
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          }
+        ]
+      }
+    }
+  },
+  "combined": {
+    "load": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "python": {
+      "exit": 0,
+      "stdout": "OK\n",
+      "stderr": "python3: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\npython3: error: unable to read SDK settings for '/'\npython3: warning: unable to determine the version of the host OS\npython3: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\n"
+    },
+    "git": {
+      "exit": 0,
+      "stdout": "git version 2.54.0 (Apple Git-157)\n",
+      "stderr": "git: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\ngit: error: unable to read SDK settings for '/'\ngit: warning: unable to determine the version of the host OS\ngit: error: couldn't create cache file '<rental-xcrun-cache>' (errno=Operation not permitted)\n"
+    },
+    "swVers": {
+      "exit": 71,
+      "stdout": "",
+      "stderr": "sandbox-exec: execvp() of '/usr/bin/sw_vers' failed: Operation not permitted\n"
+    },
+    "attributes": {
+      "exit": 0,
+      "values": {
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "-1.0.0",
+        "foundationVersionStringReadable": 1,
+        "gethostuuid": {
+          "errno": 1,
+          "readable": 0
+        },
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 1,
+          "readable": 0
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 0,
+        "IOPlatformSerialNumberDirectReadable": 0,
+        "IOPlatformUUIDBulkReadable": 0,
+        "IOPlatformUUIDDirectReadable": 0,
+        "kern.hostname": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osproductversion": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osrelease": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osversion": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.version": {
+          "errno": 1,
+          "readable": 0
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 1,
+          "readable": 0
+        },
+        "systemVersionPlistReadable": 0,
+        "uname": {
+          "hostnameReadable": 0,
+          "machineReadable": 0,
+          "releaseReadable": 0,
+          "success": 0
+        },
+        "sameHostUuidAsBaseline": false
+      }
+    },
+    "workflow": {
+      "harnessExit": 0,
+      "summary": {
+        "platform": "macOS-26.7-arm64-arm-64bit",
+        "allPassed": true,
+        "checks": [
+          {
+            "provider": "codex",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          }
+        ],
+        "results": [
+          {
+            "case": "codex-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 3,
+            "userAgents": [
+              "codex_exec/0.163.0-alpha.5 (Mac OS Unknown; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+            ],
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": true
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          },
+          {
+            "case": "claude-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 2,
+            "userAgents": [
+              "claude-cli/2.1.316 (external, sdk-cli)"
+            ],
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": true
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          }
+        ]
+      }
+    }
+  }
+}

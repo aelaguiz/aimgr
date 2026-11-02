@@ -1,0 +1,72 @@
+{
+  "kind": "synthetic standalone compatibility; not production privacy acceptance",
+  "platform": "Darwin",
+  "codexSha256": "956f2edd38050f8fa55fac9ecfc570dc37c85d48019800dacee4cfcf9c70e9d1",
+  "codeModeHostSha256": "506223f47bf53603026ff6c15f887196a5daabccde036e555cdae4875e4871b0",
+  "results": [
+    {
+      "case": "DAEMON_CONTROL",
+      "mode": "standalone-tui",
+      "exitCode": -15,
+      "elapsedSeconds": 0.28,
+      "projectEditObserved": false,
+      "finalMessageReceived": false,
+      "forcedTermination": false,
+      "model": {},
+      "toolWorkflowPassed": true,
+      "officialClientReachedNativeSocket": true
+    },
+    {
+      "case": "NO_DAEMON",
+      "mode": "standalone-tui",
+      "exitCode": 0,
+      "elapsedSeconds": 1.52,
+      "projectEditObserved": true,
+      "finalMessageReceived": true,
+      "forcedTermination": false,
+      "model": {
+        "count": 4,
+        "calls": [
+          "functions/exec",
+          "functions/exec",
+          "functions/exec"
+        ],
+        "toolNames": [
+          "functions/exec",
+          "functions/wait",
+          "functions/request_user_input",
+          "functions/request_user_input_async",
+          "clock/sleep",
+          "collaboration/followup_task",
+          "collaboration/interrupt_agent",
+          "collaboration/list_agents",
+          "collaboration/send_message",
+          "collaboration/spawn_agent",
+          "collaboration/wait_agent"
+        ],
+        "skillSeen": true,
+        "stdioReturned": true,
+        "httpReturned": true,
+        "shellReturned": true,
+        "firstRequestSkillLoaded": true,
+        "priorSeedResponsePresent": false,
+        "subagentReturned": false,
+        "finished": true
+      },
+      "toolWorkflowPassed": true
+    }
+  ],
+  "harnessSha256": "612e20aa789ba5d35a49eb045646bd7a4511c5b2811ec7991e44bd5a54f304b5",
+  "databasePreparedByFiniteNativeProcess": false,
+  "separateHomesShareDatabase": false,
+  "httpMcpRequiresSyntheticBearerToken": false,
+  "sandboxProfileSha256": null,
+  "concurrentBarrierPassed": null,
+  "separateHomesHaveDifferentInstallationIds": null,
+  "daemonDirectoryAbsentOnly": true,
+  "staleDaemonSocketConnections": 0,
+  "observedProcessesStillAliveBeforeCleanup": 0,
+  "noRealAccounts": true,
+  "outboundBoundary": "external rental deny policy",
+  "rawSummarySha256": "ad3886d31b4a61e9dfc2d19c650ec9b4b0bd2df5a06989d0697b68d7f0fe142f"
+}

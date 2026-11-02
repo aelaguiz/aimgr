@@ -11,6 +11,7 @@ import {
   importCredentialsSnapshot,
   publishCredential,
   readSnapshot,
+  REDIS_CONNECTION_POLICY_LEASED,
 } from "../../src/coordination/redis-store.js";
 import {
   resolveAimgrClaudeLabelHomeDir,
@@ -173,7 +174,11 @@ test("auth maintain refreshes only due records serially and marks missing refres
     {
       env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
       nowImpl: () => NOW_MS,
-      connectRedisStoreImpl: runtime.connectRedisStoreImpl,
+      connectRedisStoreImpl: options => {
+        assert.equal(options.connectionPolicy, REDIS_CONNECTION_POLICY_LEASED,
+          "native maintenance must retain Redis through admission, refresh and publication");
+        return runtime.connectRedisStoreImpl(options);
+      },
       resolveExecutableOnPathImpl: buildTestClaudeResolver(),
       runClaudeCliNoninteractiveImpl: ({ configDir, args, env, timeoutMs }) => {
         providerOrder.push("anthropic:claude-due");

@@ -1,0 +1,142 @@
+{
+  "kind": "synthetic standalone compatibility; not production privacy acceptance",
+  "platform": "Linux",
+  "codexSha256": "1f389f19de064430a227a50af2bfa627699be4c600f1a37c114039fdd027b75b",
+  "codeModeHostSha256": "d01f7a656bd2a54b26fd99131f252c7371e2e890f3713c5dd977676b54bfb3bf",
+  "results": [
+    {
+      "case": "A1",
+      "mode": "standalone-tui",
+      "exitCode": 0,
+      "elapsedSeconds": 5.99,
+      "projectEditObserved": true,
+      "finalMessageReceived": true,
+      "forcedTermination": false,
+      "model": {
+        "count": 4,
+        "calls": [
+          "functions/exec",
+          "functions/exec",
+          "functions/exec"
+        ],
+        "toolNames": [
+          "functions/exec",
+          "functions/wait",
+          "functions/request_user_input",
+          "functions/request_user_input_async",
+          "clock/sleep",
+          "collaboration/followup_task",
+          "collaboration/interrupt_agent",
+          "collaboration/list_agents",
+          "collaboration/send_message",
+          "collaboration/spawn_agent",
+          "collaboration/wait_agent"
+        ],
+        "skillSeen": true,
+        "stdioReturned": true,
+        "httpReturned": true,
+        "shellReturned": true,
+        "firstRequestSkillLoaded": true,
+        "priorSeedResponsePresent": false,
+        "subagentReturned": false,
+        "finished": true
+      },
+      "toolWorkflowPassed": true,
+      "unicodePasteReachedModel": true,
+      "resizeSubmitted": true
+    },
+    {
+      "case": "A2",
+      "mode": "standalone-tui",
+      "exitCode": 0,
+      "elapsedSeconds": 5.81,
+      "projectEditObserved": true,
+      "finalMessageReceived": true,
+      "forcedTermination": false,
+      "model": {
+        "count": 4,
+        "calls": [
+          "functions/exec",
+          "functions/exec",
+          "functions/exec"
+        ],
+        "toolNames": [
+          "functions/exec",
+          "functions/wait",
+          "functions/request_user_input",
+          "functions/request_user_input_async",
+          "clock/sleep",
+          "collaboration/followup_task",
+          "collaboration/interrupt_agent",
+          "collaboration/list_agents",
+          "collaboration/send_message",
+          "collaboration/spawn_agent",
+          "collaboration/wait_agent"
+        ],
+        "skillSeen": true,
+        "stdioReturned": true,
+        "httpReturned": true,
+        "shellReturned": true,
+        "firstRequestSkillLoaded": true,
+        "priorSeedResponsePresent": false,
+        "subagentReturned": false,
+        "finished": true
+      },
+      "toolWorkflowPassed": true,
+      "unicodePasteReachedModel": true,
+      "resizeSubmitted": true
+    },
+    {
+      "case": "B1",
+      "mode": "standalone-tui",
+      "exitCode": 0,
+      "elapsedSeconds": 6.2,
+      "projectEditObserved": true,
+      "finalMessageReceived": true,
+      "forcedTermination": false,
+      "model": {
+        "count": 4,
+        "calls": [
+          "functions/exec",
+          "functions/exec",
+          "functions/exec"
+        ],
+        "toolNames": [
+          "functions/exec",
+          "functions/wait",
+          "functions/request_user_input",
+          "functions/request_user_input_async",
+          "clock/sleep",
+          "collaboration/followup_task",
+          "collaboration/interrupt_agent",
+          "collaboration/list_agents",
+          "collaboration/send_message",
+          "collaboration/spawn_agent",
+          "collaboration/wait_agent"
+        ],
+        "skillSeen": true,
+        "stdioReturned": true,
+        "httpReturned": true,
+        "shellReturned": true,
+        "firstRequestSkillLoaded": true,
+        "priorSeedResponsePresent": false,
+        "subagentReturned": false,
+        "finished": true
+      },
+      "toolWorkflowPassed": true,
+      "unicodePasteReachedModel": true,
+      "resizeSubmitted": true
+    }
+  ],
+  "databasePreparedByFiniteNativeProcess": true,
+  "httpMcpRequiresSyntheticBearerToken": true,
+  "sandboxProfileSha256": null,
+  "concurrentBarrierPassed": true,
+  "separateHomesHaveDifferentInstallationIds": true,
+  "daemonDirectoryAbsentOnly": true,
+  "staleDaemonSocketConnections": 0,
+  "observedProcessesStillAliveBeforeCleanup": 0,
+  "noRealAccounts": true,
+  "outboundBoundary": "loopback namespace",
+  "rawSummarySha256": "aeea2003581ccc7c406b2d4ae541230689166d0d28fabf89c2a7663e5d38331e"
+}

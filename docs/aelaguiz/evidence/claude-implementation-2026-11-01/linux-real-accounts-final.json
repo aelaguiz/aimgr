@@ -1,0 +1,125 @@
+{
+  "platform": "linux",
+  "humanChallenge": false,
+  "modelCheckedAt": "2026-11-02T04:47:08.775Z",
+  "sessions": [
+    {
+      "label": "proxy6",
+      "name": "b1",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "durationMs": 38810
+    },
+    {
+      "label": "proxy5",
+      "name": "a2",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "durationMs": 42530
+    },
+    {
+      "label": "proxy5",
+      "name": "a1",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "durationMs": 44291
+    },
+    {
+      "label": "proxy5",
+      "name": "resume-a1",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "previousMarkerRecalled": true,
+      "durationMs": 23195,
+      "sameSession": true
+    },
+    {
+      "label": "proxy6",
+      "name": "resume-b1",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "previousMarkerRecalled": true,
+      "durationMs": 20886,
+      "sameSession": true
+    }
+  ],
+  "threeDistinctSessions": true,
+  "allThreeLifetimesOverlap": true,
+  "startupDown": {
+    "checkedAt": "2026-11-02T04:40:20.395Z",
+    "label": "proxy5",
+    "proxy": "proxy5",
+    "exitCode": 1,
+    "error": "aim: Claude proxy5: assigned proxy is unavailable. Claude cannot start or continue. Repair the proxy/tunnel, then explicitly retry or resume (proxy5).",
+    "durationMs": 7785,
+    "nativeOwnersAbsent": true,
+    "platform": "linux",
+    "localChromeTunnelChanged": false
+  },
+  "refresh": {
+    "checkedAt": "2026-11-02T04:52:54.491Z",
+    "label": "proxy5",
+    "accessTokenChanged": true,
+    "refreshTokenChanged": true,
+    "expiryRenewed": true,
+    "assignmentPreserved": true,
+    "identityPreserved": true,
+    "versionBefore": 25,
+    "versionAfter": 27
+  },
+  "liveUsage": true,
+  "routine": {
+    "passed": true,
+    "platform": "linux",
+    "checkedAt": "2026-11-02T04:58:18.655Z",
+    "actualOsCalendar": true,
+    "publicRoutineCli": true,
+    "exactGeneratedWorkerCommand": true,
+    "realSacrificialAccount": "proxy6",
+    "syntheticToolCompleted": true,
+    "assignedExit": true,
+    "promptAdmitted": true,
+    "jobDone": true,
+    "terminalRemainedAvailable": true,
+    "duplicateSuppressed": true,
+    "normalExit": true,
+    "leaseReleased": true,
+    "humanChallenge": false
+  },
+  "runtimeArtifactSha256": "4ee0d0923848444dc73897d026ad110ff2bac5a9842129230ccf4c9257a26d9b",
+  "sourceArchives": [
+    {
+      "version": "v61",
+      "sha256": "6ec5f436e509f921e859b63ec23995267300e79867f34b09f578df9e62cd9bc2"
+    },
+    {
+      "version": "v63",
+      "sha256": "c1a5e90d44bc3fa056a4183d87b0af2f6ef7028c64c1ee241f7c1a181ec91fd8"
+    },
+    {
+      "version": "v64",
+      "sha256": "72f5d00ed304c12d35b83aa2728568282b772f03ef1bf1f80f83c289ec3de7de"
+    }
+  ],
+  "scope": "Only proxy5/proxy6 on the designated offsite host through their assigned routes; no browser sign-in or personal project. IDs, tokens, exits and raw logs excluded.",
+  "fixtureNotes": [
+    "The first real request failed on the canonical system resolver file. v61 uses the rebuilt fixed native runtime and passes all five model/tool turns.",
+    "The first maintenance run refreshed native tokens but lost its idle one-shot Redis connection before publication. v63 uses the existing leased connection policy; the failed run is retained privately and summarized in the plan.",
+    "The first calendar UI stand-in was killed with its completed systemd service before vendor startup. v64 opens the exact generated worker in an external UI stand-in, matching the separate Herdr process; the actual calendar/public CLI/native PTY turn passes."
+  ]
+}

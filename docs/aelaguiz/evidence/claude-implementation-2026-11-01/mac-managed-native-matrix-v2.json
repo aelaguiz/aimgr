@@ -1,0 +1,124 @@
+{
+  "platform": "Darwin",
+  "scope": "Native managed-policy admission/validation only; no account or full launcher acceptance",
+  "cases": [
+    {
+      "case": "absent",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 0,
+      "passed": true
+    },
+    {
+      "case": "safe",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "native-env-coercion",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "static-only",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "safe-invalid-flag",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "static-invalid-flag",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "invalid-model",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "invalid-off-platform-static",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "org-pin-before-static",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "source-admission",
+      "passed": true
+    },
+    {
+      "case": "literal-token-false",
+      "expectedAccepted": false,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": false,
+      "refusedAt": "source-admission",
+      "passed": true
+    },
+    {
+      "case": "static-over-invalid-unrelated-base",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "ignored-dot-and-directory",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "immutable-leaf-symlink",
+      "expectedAccepted": true,
+      "platform": "darwin",
+      "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    }
+  ],
+  "passed": true
+}

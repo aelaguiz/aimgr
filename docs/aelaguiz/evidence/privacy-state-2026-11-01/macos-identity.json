@@ -1,0 +1,178 @@
+{
+  "platform": "macOS-15.8-arm64-arm-64bit",
+  "allPassed": true,
+  "checks": [
+    {
+      "provider": "codex",
+      "check": "five successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "restart and copied home retain ID",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "fresh app homes have distinct IDs",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "five successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "restart and copied home retain ID",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "fresh app homes have distinct IDs",
+      "passed": true
+    }
+  ],
+  "results": [
+    {
+      "case": "codex-fresh-a",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "e165ec89dabcb7cd"
+      ],
+      "diskIdentifierHash": "e165ec89dabcb7cd",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Mac OS 15.8.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-repeat-a",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "e165ec89dabcb7cd"
+      ],
+      "diskIdentifierHash": "e165ec89dabcb7cd",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Mac OS 15.8.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-fresh-b",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "aaeeb78f2c9b57f8"
+      ],
+      "diskIdentifierHash": "aaeeb78f2c9b57f8",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Mac OS 15.8.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-cloned-a",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "e165ec89dabcb7cd"
+      ],
+      "diskIdentifierHash": "e165ec89dabcb7cd",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Mac OS 15.8.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-separate-os-home",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "79e9ded70f228b32"
+      ],
+      "diskIdentifierHash": "79e9ded70f228b32",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Mac OS 15.8.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "claude-fresh-a",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "13efa557eb732f5f"
+      ],
+      "diskIdentifierHash": "13efa557eb732f5f",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-repeat-a",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "13efa557eb732f5f"
+      ],
+      "diskIdentifierHash": "13efa557eb732f5f",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-fresh-b",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "e9f0b0ec2bc1d9eb"
+      ],
+      "diskIdentifierHash": "e9f0b0ec2bc1d9eb",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-cloned-a",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "13efa557eb732f5f"
+      ],
+      "diskIdentifierHash": "13efa557eb732f5f",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-separate-os-home",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "9dccbfb6fb3df999"
+      ],
+      "diskIdentifierHash": "9dccbfb6fb3df999",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    }
+  ]
+}

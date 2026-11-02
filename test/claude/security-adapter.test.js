@@ -63,6 +63,8 @@ test("security adapter intercepts only exact Claude credential-service argv", ()
     { operation: "find-generic-password", service: "Claude Code-credentials-ae077abc", status: 44 },
     { operation: "add-generic-password", service: "Claude Code-ae077abc", status: 1 },
     { operation: "delete-generic-password", service: "Claude Code", status: 44 },
+    { operation: "find-generic-password", service: "Claude Code-device-keys", status: 44 },
+    { operation: "add-generic-password", service: "Claude Code-device-keys", status: 1 },
   ];
 
   for (const { operation, service, status } of cases) {
@@ -109,6 +111,12 @@ test("security adapter intercepts exact Claude stdin scripts and replays unrelat
   assert.equal(intercepted.status, 1);
   assert.equal(fs.existsSync(delegate.argsPath), false);
   assert.equal(fs.existsSync(delegate.stdinPath), false);
+  const deviceRead = spawnSync(adapterPath, ["-i"], {
+    input: 'find-generic-password -a "synthetic" -s "Claude Code-device-keys" -w\n',
+    env: delegateEnv({ ...delegate, exit: 23 }), timeout: 2000,
+  });
+  assert.equal(deviceRead.status, 44);
+  assert.equal(fs.existsSync(delegate.argsPath), false);
 
   const unrelatedScript = Buffer.from(
     'find-generic-password -s "Unrelated Synthetic Service" -w\nopaque-line: $*[]{}\n',

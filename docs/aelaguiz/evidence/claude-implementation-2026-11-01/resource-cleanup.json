@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "checkedAt": "2026-11-02T05:05:56.456903+00:00",
+  "rentedMac": {
+    "credentialHomesRemoved": true,
+    "proxyDaemonsUnloaded": true,
+    "instanceState": "shutting-down",
+    "encryptedVolumeDeleteOnTermination": true,
+    "sshKeyPairDeleted": true,
+    "hostRelease": {
+      "state": "scheduled after AWS minimum allocation",
+      "enabled": true,
+      "resourceMatched": true,
+      "firstEligibleAttemptUtc": "2026-11-02T11:50:49Z",
+      "boundedUntilUtc": "2026-11-02T19:48:49Z"
+    }
+  },
+  "gcp": {
+    "temporaryMacSshFirewallDeleted": true,
+    "rentalSshKeysDeleted": true,
+    "taskReverseSshMasterClosed": true,
+    "syntheticRedisStopped": true,
+    "offsiteArtifactTestAuthorizationRevoked": true,
+    "standingTestVmAndOriginalAccountRoutesPreserved": true
+  },
+  "privateEvidence": {
+    "location": "designated offsite Linux VM; restricted task verification directory",
+    "archiveBytes": 21434116,
+    "files": 3101,
+    "sha256": "a7cb2813796046164c774bfd18545684379664895b7193f3f1c8c41b986a61f9",
+    "mode": "0600"
+  },
+  "publicArtifactAudit": {
+    "stagedFilesBeforeThisReceipt": 383,
+    "realTokenOrPrivateKeyFindings": 0,
+    "privateCloudIdentifierFindings": 0,
+    "productionSourceHashesMatchReviewedManifest": true
+  },
+  "physicalMacVendorExecution": false
+}

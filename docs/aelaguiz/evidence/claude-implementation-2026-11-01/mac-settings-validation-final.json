@@ -1,0 +1,68 @@
+{
+  "platform": "Darwin",
+  "results": [
+    {
+      "case": "doctor-before-valid",
+      "exit": 0,
+      "durationMs": 148,
+      "configuredCodeRan": false,
+      "completeDoctorReport": true,
+      "policyReceipt": true,
+      "invalidSettings": false
+    },
+    {
+      "case": "doctor-before-invalid",
+      "exit": 0,
+      "durationMs": 125,
+      "configuredCodeRan": false,
+      "completeDoctorReport": true,
+      "policyReceipt": false,
+      "invalidSettings": true
+    },
+    {
+      "case": "doctor-before-env-coercion",
+      "exit": 0,
+      "durationMs": 125,
+      "configuredCodeRan": false,
+      "completeDoctorReport": true,
+      "policyReceipt": true,
+      "invalidSettings": false
+    },
+    {
+      "case": "doctor-before-unknown",
+      "exit": 0,
+      "durationMs": 124,
+      "configuredCodeRan": false,
+      "completeDoctorReport": true,
+      "policyReceipt": true,
+      "invalidSettings": false
+    },
+    {
+      "case": "doctor-before-hook",
+      "exit": 0,
+      "durationMs": 126,
+      "configuredCodeRan": false,
+      "completeDoctorReport": true,
+      "policyReceipt": true,
+      "invalidSettings": false
+    },
+    {
+      "case": "doctor-before-helper",
+      "exit": 0,
+      "durationMs": 124,
+      "configuredCodeRan": false,
+      "completeDoctorReport": true,
+      "policyReceipt": true,
+      "invalidSettings": false
+    },
+    {
+      "case": "doctor-before-permissions-invalid",
+      "exit": 0,
+      "durationMs": 134,
+      "configuredCodeRan": false,
+      "completeDoctorReport": true,
+      "policyReceipt": false,
+      "invalidSettings": true
+    }
+  ]
+}

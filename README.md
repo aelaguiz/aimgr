@@ -168,8 +168,11 @@ on the replacement account before launch. `--account` and `--switch-account` als
 the picker. For scripts, use `aim claude list --json` and an explicit selector.
 
 Claude proxy protection is optional and configured per account. Accounts without
-an assignment keep the existing launch, login, maintenance and usage behavior;
-they do not need the privacy helpers or a proxy. For an enrolled account, native
+an assignment do not need proxy infrastructure, Chrome/CDP bindings or route
+helpers. All AIM-managed Claude executions require an explicitly approved exact
+Claude runtime; `aim claude privacy status [account] [--json]` inspects the selected
+build, approval and local process inventory without running Claude or contacting
+a provider. For an enrolled account, native
 Claude and AIM requests use its assigned route, and login uses its existing
 account-specific Chrome/CDP instance. A failed tunnel or proxy stops affected
 work with a repair/retry message. Repair does not automatically resume a session
@@ -182,6 +185,22 @@ enrolling a stopped account with `aim claude proxy set <label> <profileRef>`.
 After enrollment, use the normal commands and schedules without a daily proxy
 flag. The plan also records the telemetry opt-outs, acceptance tests and verified
 platform limits.
+
+The [Claude privacy implementation plan](docs/aelaguiz/CLAUDE_PRIVACY_IMPLEMENTATION_PLAN_2026-11-01.md)
+adds private installation IDs and scoped vendor file/device access for protected
+accounts. It preserves native tools, skills, MCP, concurrent sessions, history and
+scheduled/background work. Every AIM Claude session disables Remote Control and
+remote feature flags, prevents unapproved updates, and fixes custom HTTP headers
+at startup. Header edits take effect in a new session. Protected sessions also
+require a new session for folders outside their initial project/`--add-dir` grants.
+Ordinary accounts retain their normal filesystem access and telemetry environment.
+
+Once an exact runtime bundle has been reviewed and explicitly approved, install
+it during the planned stopped-session transition with
+`scripts/install-local-bin.sh --claude-runtime-bundle /absolute/path/to/approved-bundle`.
+The installer validates the approved manifest and immutable package before
+activating it. It does not approve arbitrary downloaded versions. The plan's
+upgrade playbook defines review, testing and rollback for later Claude updates.
 
 `aim codex use` rotates away from the current Codex account on every successful
 call. It prefers labels that have not been selected recently, then uses the

@@ -1,4 +1,5 @@
 import { rememberClaudeProtection, writeClaudeOfflineBinding } from "../network/claude-offline-binding.js";
+import { acquireClaudeStateGuard } from "../privacy/claude-state-migration.js";
 import { ClaudeRouteError } from "../network/claude-egress-policy.js";
 import { resolveNativeAccountProfile } from "../network/claude-native-route.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
@@ -13,7 +14,7 @@ import {
 import { buildLocalBrowserBinding } from "../coordination/browser-policy.js";
 import { publishCredential } from "../coordination/redis-store.js";
 import { getAnthropicCredentialView } from "./anthropic.js";
-import { hasCompleteClaudeNativeBundle } from "./claude-bundle.js";
+import { getClaudeNativeBundle, hasCompleteClaudeNativeBundle } from "./claude-bundle.js";
 import { syncLiveClaudeRotationBackToLabelFromStorage } from "./claude-native.js";
 import {
   resolveAimgrClaudeLabelHomeDir,
@@ -363,6 +364,7 @@ export async function maintainRedisClaudeCredential(context, {
   let shadowedAccount = null;
   let accountOverlayActive = false;
   let localBrowserBinding = null;
+  let assignmentLock = null;
 
   try {
     try {
@@ -461,6 +463,16 @@ export async function maintainRedisClaudeCredential(context, {
           nowMs,
           resolveCommandImpl: context.resolveExecutableOnPathImpl,
           assertLeaseOwned: () => assertLeaseOwned(lease),
+          beforeLocalState: async () => {
+            assignmentLock = await acquireClaudeStateGuard({ homeDir, label: normalizedLabel, configDir,
+              command: context.resolveExecutableOnPathImpl?.("claude"), readBinding: async () => {
+                await assertLeaseOwned(lease);
+                const credential = requireCredential(runtime, normalizedLabel);
+                const profile = resolveNativeAccountProfile({ homeDir, state: runtime.state, label: normalizedLabel });
+                return { protected: Boolean(profile), accountUuid: getClaudeNativeBundle(credential)?.oauthAccount?.accountUuid,
+                  profileRef: profile?.profileRef, credential, expectedEmail: requireExpectedEmail(record, normalizedLabel) };
+              } });
+          },
           stopBeforeReconciliation: () => {
             if (force) return false;
             const current = currentRedisClaudeRecord(runtime, normalizedLabel);
@@ -508,7 +520,9 @@ export async function maintainRedisClaudeCredential(context, {
         let launchError = null;
         try {
           launchResult = await runNoninteractiveImpl({
+            assignmentLock,
             egressProfile,
+            expectedIdentity: getClaudeNativeBundle(credential)?.oauthAccount,
             command,
             userHomeDir: homeDir,
             homeDir: claudeHome,
@@ -664,6 +678,8 @@ export async function maintainRedisClaudeCredential(context, {
       });
     }
   } finally {
+    try { await assignmentLock?.release(); }
+    catch { result = maintenanceResult("retryable", "local_state_conflict"); }
     if (lease) {
       const released = await lease.release().catch(() => false);
       if (released !== true) result = maintenanceResult("retryable", "lease_release_failed");

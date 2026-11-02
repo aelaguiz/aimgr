@@ -1,0 +1,109 @@
+{
+  "integratedAim": true,
+  "mode": "protected",
+  "actualNativeRoute": true,
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-concurrency-disabled",
+      "exit": 1,
+      "syntheticModelCompleted": false,
+      "requestPaths": [
+        "/",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000004/referral/eligibility",
+        "/api/oauth/profile",
+        "/exit",
+        "/mcp-registry/v0/servers",
+        "/nested-http-a",
+        "/nested-http-b",
+        "/v1/messages"
+      ],
+      "modelRequests": 15,
+      "modelSources": [
+        "127.0.0.2",
+        "127.0.0.3"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": false,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "concurrency": {
+        "realRedis": true,
+        "fullPublicCli": true,
+        "checks": {
+          "overlappingA1A2B": true,
+          "nestedNativeAndHttp": true,
+          "sharedLeaseAndIndependentSibling": true,
+          "stableSameAccountDistinctOtherAccount": true,
+          "restartPreservesAccountIdentity": true,
+          "assignedRoutesAndCredentials": true,
+          "lastOwnerReleasesRealRedisLease": true,
+          "hostIdentifiersAbsent": true
+        },
+        "sessions": [
+          {
+            "role": "a2",
+            "label": "a",
+            "startedAt": 1793590465913,
+            "finishedAt": 1793590484024,
+            "sessionId": "4f2d5395-5044-45b7-916f-bc595b5e846e"
+          },
+          {
+            "role": "a1",
+            "label": "a",
+            "startedAt": 1793590465908,
+            "finishedAt": 1793590484184,
+            "sessionId": "ea27bdb6-8b53-43e2-b412-844d3aef8eea"
+          },
+          {
+            "role": "b1",
+            "label": "b",
+            "startedAt": 1793590465915,
+            "finishedAt": 1793590484485,
+            "sessionId": "7b9a5001-d58d-47b1-8d79-8b26509add1f"
+          },
+          {
+            "role": "restart-a",
+            "label": "a",
+            "startedAt": 1793590484515,
+            "finishedAt": 1793590487278,
+            "sessionId": "085c871b-4eec-47db-a591-d61aa77a9615"
+          }
+        ]
+      },
+      "connectAuthorities": []
+    }
+  ],
+  "settingsWatcherPollingDiagnostic": false,
+  "remoteControlPolicyOnlyComparison": false,
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchives": [
+    {
+      "version": "v36",
+      "sha256": "f9d1b5a92922e6588a4666bf08be74527f4234738dcc483aa82c40ff3c072611",
+      "kind": "full"
+    },
+    {
+      "version": "v37",
+      "sha256": "1e83d1cea7b5e8b0e07c2e080028114c789becd141d7b421f091d5543c2ac3ac",
+      "kind": "delta"
+    }
+  ],
+  "sourceBaseRevision": "354be9e",
+  "runtimeArtifactSha256": "c79359be4aaaac74f4359facf0223fb0e83143b52266950ece765a4851889fdc"
+}

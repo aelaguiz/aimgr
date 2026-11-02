@@ -1,0 +1,68 @@
+{
+  "integratedAim": false,
+  "mode": "protected",
+  "actualNativeRoute": false,
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-headers-reload-disabled",
+      "exit": "timeout",
+      "syntheticModelCompleted": false,
+      "requestPaths": [
+        "/api/artifacts/mcp",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/frame/contract/latest",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/claude-code-releases/plugins/claude-plugins-official/%7B%22features%22:%20%7B%7D,%20%22data%22:%20[],%20%22models%22:%20[]%7D.zip",
+        "/claude-code-releases/plugins/claude-plugins-official/latest",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 4,
+      "modelSources": [
+        "127.0.0.1"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": true,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "headerReload": {
+        "initialValues": [
+          "initial",
+          "initial",
+          "initial",
+          "initial"
+        ],
+        "competingAuthSent": false,
+        "unrelatedSettingReloaded": false
+      },
+      "xtversionResponses": 1,
+      "deviceAttributeResponses": 2,
+      "settingsChangeObserved": false,
+      "appStateChangeObserved": false,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "connectAuthorities": [
+        "api.anthropic.com:443",
+        "downloads.claude.ai:443",
+        "github.com:443",
+        "raw.githubusercontent.com:443"
+      ]
+    }
+  ],
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchiveSha256": "a78a8b22f7375d42fc9e533f9b49f5df09cd96ad5353f1cc666835c34632b643",
+  "acceptanceLimit": "Baseline native own-write suppression caught the external edit within its 5-second startup window; no reload acceptance claimed."
+}

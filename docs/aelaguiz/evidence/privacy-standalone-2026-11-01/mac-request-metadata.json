@@ -1,0 +1,132 @@
+{
+  "scope": "selected fields in mock model protocol, not all possible exfiltration",
+  "hostVersions": {
+    "-productVersion": "26.7",
+    "-buildVersion": "25G229",
+    "kernelRelease": "25.6.0"
+  },
+  "fixtures": [
+    {
+      "fixture": "mac-base",
+      "capturedModelRequests": 66,
+      "userAgents": [
+        "codex-tui/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) xterm-256color (codex-tui; 0.163.0-alpha.5)",
+        "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) xterm-256color (codex_exec; 0.163.0-alpha.5)"
+      ],
+      "actualHostNamePresent": false,
+      "actualVersionPresent": {
+        "-productVersion": true,
+        "-buildVersion": false,
+        "kernelRelease": false
+      },
+      "terminalCanaryPresent": false,
+      "rawCaptureSha256": "6b11751e72bb2c1ec12c01858673a0392dda33f849294131c8b683a5a4453cb2"
+    },
+    {
+      "fixture": "mac-term",
+      "capturedModelRequests": 21,
+      "userAgents": [
+        "codex-tui/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) xterm-256color (codex-tui; 0.163.0-alpha.5)"
+      ],
+      "actualHostNamePresent": false,
+      "actualVersionPresent": {
+        "-productVersion": true,
+        "-buildVersion": false,
+        "kernelRelease": false
+      },
+      "terminalCanaryPresent": false,
+      "rawCaptureSha256": "0a697d6adc4a9751fb03cae3721d1ea3e4d9470a3054320c7b1266fc4a12cfc1"
+    },
+    {
+      "fixture": "mac-daemon",
+      "capturedModelRequests": 7,
+      "userAgents": [
+        "codex-tui/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) xterm-256color (codex-tui; 0.163.0-alpha.5)"
+      ],
+      "actualHostNamePresent": false,
+      "actualVersionPresent": {
+        "-productVersion": true,
+        "-buildVersion": false,
+        "kernelRelease": false
+      },
+      "terminalCanaryPresent": false,
+      "rawCaptureSha256": "5063d86c4251a196dc7017d049e58783f40aa0b3cf5bfe9a6192232dc514d194"
+    },
+    {
+      "fixture": "mac-required",
+      "capturedModelRequests": 0,
+      "userAgents": [],
+      "actualHostNamePresent": false,
+      "actualVersionPresent": {
+        "-productVersion": false,
+        "-buildVersion": false,
+        "kernelRelease": false
+      },
+      "terminalCanaryPresent": false,
+      "rawCaptureSha256": "3dff54b4820abb5feba6744126e975e8b85b82194935d4a14c91e7d708760d9c"
+    },
+    {
+      "fixture": "mac-policy",
+      "capturedModelRequests": 66,
+      "userAgents": [
+        "codex-tui/0.163.0-alpha.5 (Mac OS Unknown; arm64) xterm-256color (codex-tui; 0.163.0-alpha.5)",
+        "codex_exec/0.163.0-alpha.5 (Mac OS Unknown; arm64) xterm-256color (codex_exec; 0.163.0-alpha.5)"
+      ],
+      "actualHostNamePresent": false,
+      "actualVersionPresent": {
+        "-productVersion": false,
+        "-buildVersion": false,
+        "kernelRelease": false
+      },
+      "terminalCanaryPresent": false,
+      "rawCaptureSha256": "9bacce07fc84232d98d29f800c42456fd31bde28a5509018c18be9df67cedcba"
+    },
+    {
+      "fixture": "mac-policy-term",
+      "capturedModelRequests": 21,
+      "userAgents": [
+        "codex-tui/0.163.0-alpha.5 (Mac OS Unknown; arm64) xterm-256color (codex-tui; 0.163.0-alpha.5)"
+      ],
+      "actualHostNamePresent": false,
+      "actualVersionPresent": {
+        "-productVersion": false,
+        "-buildVersion": false,
+        "kernelRelease": false
+      },
+      "terminalCanaryPresent": false,
+      "rawCaptureSha256": "7127756ac423e7eba7ecf7b9dd1e9dabd11de05ef1e72e950cb2748219704693"
+    },
+    {
+      "fixture": "mac-interval",
+      "capturedModelRequests": 6,
+      "userAgents": [
+        "codex-tui/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) xterm-256color (codex-tui; 0.163.0-alpha.5)",
+        "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) xterm-256color (codex_exec; 0.163.0-alpha.5)"
+      ],
+      "actualHostNamePresent": false,
+      "actualVersionPresent": {
+        "-productVersion": true,
+        "-buildVersion": false,
+        "kernelRelease": false
+      },
+      "terminalCanaryPresent": false,
+      "rawCaptureSha256": "84aecfc628fd238aacbc162622212b0cc3d5a24d0d45ab381bed066a68971f5a"
+    },
+    {
+      "fixture": "mac-policy-interval",
+      "capturedModelRequests": 6,
+      "userAgents": [
+        "codex-tui/0.163.0-alpha.5 (Mac OS Unknown; arm64) xterm-256color (codex-tui; 0.163.0-alpha.5)",
+        "codex_exec/0.163.0-alpha.5 (Mac OS Unknown; arm64) xterm-256color (codex_exec; 0.163.0-alpha.5)"
+      ],
+      "actualHostNamePresent": false,
+      "actualVersionPresent": {
+        "-productVersion": false,
+        "-buildVersion": false,
+        "kernelRelease": false
+      },
+      "terminalCanaryPresent": false,
+      "rawCaptureSha256": "1352ed3bb576e9d31172aa55c18d64f78e75109b890069a10154b2c851ccbd9f"
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "baseline": {
+    "codex": {
+      "requests": 3,
+      "macVersionPresent": true,
+      "kernelVersionPresent": false,
+      "terminalVersionPresent": true,
+      "hardwareUuidPresent": false
+    },
+    "claude": {
+      "requests": 2,
+      "macVersionPresent": false,
+      "kernelVersionPresent": true,
+      "terminalVersionPresent": false,
+      "hardwareUuidPresent": false
+    },
+    "environmentFragments": [
+      "OS Version: Darwin 25.6.0\\n - Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory,",
+      "OS Version: Darwin 25.6.0\\n - Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory,"
+    ]
+  },
+  "files": {
+    "codex": {
+      "requests": 3,
+      "macVersionPresent": true,
+      "kernelVersionPresent": false,
+      "terminalVersionPresent": true,
+      "hardwareUuidPresent": false
+    },
+    "claude": {
+      "requests": 2,
+      "macVersionPresent": false,
+      "kernelVersionPresent": true,
+      "terminalVersionPresent": false,
+      "hardwareUuidPresent": false
+    },
+    "environmentFragments": [
+      "OS Version: Darwin 25.6.0\\n - Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory,",
+      "OS Version: Darwin 25.6.0\\n - Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory,"
+    ]
+  },
+  "combined": {
+    "codex": {
+      "requests": 3,
+      "macVersionPresent": false,
+      "kernelVersionPresent": false,
+      "terminalVersionPresent": true,
+      "hardwareUuidPresent": false
+    },
+    "claude": {
+      "requests": 2,
+      "macVersionPresent": false,
+      "kernelVersionPresent": false,
+      "terminalVersionPresent": false,
+      "hardwareUuidPresent": false
+    },
+    "environmentFragments": [
+      "OS Version: Darwin unknown\\n - Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory",
+      "OS Version: Darwin unknown\\n - Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory"
+    ]
+  },
+  "hostInfoDenyOfficialVersion": {
+    "codex": {
+      "exit": -9,
+      "stdout": "",
+      "stderr": ""
+    },
+    "claude": {
+      "exit": -9,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
+  "kernelVersionTested": "25.6.0"
+}

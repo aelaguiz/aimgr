@@ -1,0 +1,136 @@
+{
+  "scope": "Actual native immutable()/chain() API only; no Claude execution; no installed ACL changes",
+  "artifactSet": "b1c8b9fad92b40840bb5abbcc2f1d7e23f61fe92edabe2c52793f12cec307350",
+  "sourceSha256": "9ce924552c0f6d23d96da5044939ce65d60ba67e56e552e272d44ecb7f796764",
+  "launcherSha256": "db4cc27255dd9df39519e3886194c929c4be9aff3f1cd7a8ed4da97e1427cc49",
+  "uid": 501,
+  "startedAt": "2026-11-02T00:17:09.340839+00:00",
+  "fixture": "/opt/aimgr-state-audit/native-acl-contract-338cc148a81a4bfda95ffb5185694b3a",
+  "checks": [
+    {
+      "case": "absent ACL file accepted",
+      "api": "file",
+      "expectedExit": 0,
+      "actualExit": 0,
+      "stderr": "",
+      "passed": true
+    },
+    {
+      "case": "absent ACL complete chain accepted",
+      "api": "chain",
+      "expectedExit": 0,
+      "actualExit": 0,
+      "stderr": "",
+      "passed": true
+    },
+    {
+      "case": "read-only file ACL accepted",
+      "api": "file",
+      "expectedExit": 0,
+      "actualExit": 0,
+      "stderr": "",
+      "passed": true
+    },
+    {
+      "case": "read-only directory ACL accepted",
+      "api": "directory",
+      "expectedExit": 0,
+      "actualExit": 0,
+      "stderr": "",
+      "passed": true
+    },
+    {
+      "case": "read-only ACL complete chain accepted",
+      "api": "chain",
+      "expectedExit": 0,
+      "actualExit": 0,
+      "stderr": "",
+      "passed": true
+    },
+    {
+      "case": "append grant refused",
+      "api": "file",
+      "expectedExit": 125,
+      "actualExit": 125,
+      "stderr": "Claude was not started: native privacy admission failed (artifact ACL permits mutation). Repair the approved runtime before retrying.",
+      "passed": true
+    },
+    {
+      "case": "writesecurity grant refused",
+      "api": "file",
+      "expectedExit": 125,
+      "actualExit": 125,
+      "stderr": "Claude was not started: native privacy admission failed (artifact ACL permits mutation). Repair the approved runtime before retrying.",
+      "passed": true
+    },
+    {
+      "case": "denied readsecurity refused",
+      "api": "file",
+      "expectedExit": 125,
+      "actualExit": 125,
+      "stderr": "Claude was not started: native privacy admission failed (artifact ACL unreadable). Repair the approved runtime before retrying.",
+      "passed": true
+    },
+    {
+      "case": "denied readsecurity plus append refused",
+      "api": "file",
+      "expectedExit": 125,
+      "actualExit": 125,
+      "stderr": "Claude was not started: native privacy admission failed (artifact ACL unreadable). Repair the approved runtime before retrying.",
+      "passed": true
+    },
+    {
+      "case": "safe leaf remains independently acceptable",
+      "api": "file",
+      "expectedExit": 0,
+      "actualExit": 0,
+      "stderr": "",
+      "passed": true
+    },
+    {
+      "case": "directory replacement grant refused",
+      "api": "directory",
+      "expectedExit": 125,
+      "actualExit": 125,
+      "stderr": "Claude was not started: native privacy admission failed (artifact ACL permits mutation). Repair the approved runtime before retrying.",
+      "passed": true
+    },
+    {
+      "case": "unsafe ancestor refused by complete chain",
+      "api": "chain",
+      "expectedExit": 125,
+      "actualExit": 125,
+      "stderr": "Claude was not started: native privacy admission failed (artifact ACL permits mutation). Repair the approved runtime before retrying.",
+      "passed": true
+    }
+  ],
+  "positiveControls": {
+    "append really changes content despite mode0644": {
+      "succeeded": true,
+      "value": true
+    },
+    "append works while readsecurity is denied": {
+      "succeeded": true,
+      "value": true
+    },
+    "writesecurity really grants content mutation": {
+      "succeeded": true,
+      "value": true
+    },
+    "add_file plus delete_child really replaces root-owned leaf": {
+      "succeeded": true,
+      "value": true
+    },
+    "plain positive rejects mutation": {
+      "succeeded": true,
+      "value": true
+    },
+    "read-only ACL positive rejects mutation": {
+      "succeeded": true,
+      "value": true
+    }
+  },
+  "passed": true,
+  "finishedAt": "2026-11-02T00:17:09.562115+00:00",
+  "fixtureRemoved": true
+}

@@ -1,0 +1,78 @@
+{
+  "integratedAim": true,
+  "mode": "protected",
+  "actualNativeRoute": true,
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-concurrency-disabled",
+      "exit": 1,
+      "syntheticModelCompleted": false,
+      "requestPaths": [
+        "/",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000004/referral/eligibility",
+        "/api/oauth/profile",
+        "/exit",
+        "/mcp-registry/v0/servers",
+        "/nested-http-a",
+        "/v1/messages"
+      ],
+      "modelRequests": 6,
+      "modelSources": [
+        "127.0.0.2",
+        "127.0.0.3"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": false,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "concurrency": {
+        "realRedis": true,
+        "fullPublicCli": true,
+        "checks": {
+          "overlappingA1A2B": true
+        },
+        "sessions": []
+      },
+      "connectAuthorities": []
+    }
+  ],
+  "settingsWatcherPollingDiagnostic": false,
+  "remoteControlPolicyOnlyComparison": false,
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchives": [
+    {
+      "version": "v32",
+      "sha256": "fe2468c24cf8a53fe439db5e27e9ac26db7dbfb6530f78a89d4296f474a754ae",
+      "kind": "full"
+    },
+    {
+      "version": "v33",
+      "sha256": "828d12472176a3d1333aedb8bfa166a1176ca7f5fe499e83c54915ad78b476aa",
+      "kind": "delta"
+    },
+    {
+      "version": "v34",
+      "sha256": "016e77d31c64a414a81ec831c88ea4ffe8e78bac15ea2e351eec9f90c3ccc2b9",
+      "kind": "delta"
+    }
+  ],
+  "sourceBaseRevision": "354be9e",
+  "runtimeArtifactSha256": "52170f292d4d5f36a95b1eb10790a060ad4ddb0e8ca590033877714f874abd95",
+  "fixtureInstrumentation": "Temporary traceback.print_exc in root-installed route helper; no policy relaxation; removed after diagnosis"
+}

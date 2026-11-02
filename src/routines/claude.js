@@ -114,8 +114,10 @@ export function prepareInteractiveClaudeRoutine({ launch, routine, sessionId, ev
   const overlay = launch.preparedLaunch.userHooksPath ? readOptionalObject(launch.preparedLaunch.userHooksPath) : {};
   const command = [process.execPath, HOOK_PATH, eventsPath, sessionId].map(shellQuote).join(" ");
   const hooks = { ...overlay.hooks };
+  const requiredHooks = {};
   for (const event of ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure"]) {
-    hooks[event] = [...(hooks[event] ?? []), { hooks: [{ type: "command", command, timeout: 5 }] }];
+    requiredHooks[event] = [{ hooks: [{ type: "command", command, timeout: 5 }] }];
+    hooks[event] = [...(hooks[event] ?? []), ...requiredHooks[event]];
   }
   const settingsPath = eventsPath.replace(/\.jsonl$/, ".settings.json");
   writeJsonFileIfChanged(settingsPath, {
@@ -126,6 +128,7 @@ export function prepareInteractiveClaudeRoutine({ launch, routine, sessionId, ev
   return {
     ...launch,
     preparedLaunch: { ...launch.preparedLaunch, userHooksPath: settingsPath },
+    requiredHooks,
     args: [...claudeRoutineArgs(routine), "--session-id", sessionId],
   };
 }

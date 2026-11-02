@@ -7,13 +7,23 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   buildManagedClaudeStatusLine,
-  prepareClaudeCliLaunch,
+  prepareClaudeCliLaunch as realPrepareClaudeCliLaunch,
   resolveInstalledClaudeSecurityAdapter,
-  runClaudeCli,
-  runClaudeCliNoninteractive,
+  runClaudeCli as realRunClaudeCli,
+  runClaudeCliNoninteractive as realRunClaudeCliNoninteractive,
   verifyInstalledClaudeExecutable,
 } from "../../src/targets/claude-runner.js";
 import { mkTempHome, writeJson } from "../helpers/files.js";
+import { acquireClaudeAssignmentLock } from "../../src/network/claude-offline-binding.js";
+
+import { verifySyntheticExecutable, prepareSyntheticNativeInvocation, spawnSyntheticSupervisor, resolveSyntheticSecurityAdapter } from "../helpers/claude-native-invocation.js";
+const prepareClaudeCliLaunch = options => realPrepareClaudeCliLaunch({ verifyInstalledClaudeExecutableImpl: verifySyntheticExecutable,
+  resolveInstalledClaudeSecurityAdapterImpl: resolveSyntheticSecurityAdapter, ...options });
+const runClaudeCli = options => realRunClaudeCli({ prepareClaudeCliLaunchImpl: prepareClaudeCliLaunch,
+  prepareClaudeNativeInvocationImpl: prepareSyntheticNativeInvocation, spawnImpl: spawnSyntheticSupervisor, ...options });
+const runClaudeCliNoninteractive = options => realRunClaudeCliNoninteractive({ verifyInstalledClaudeExecutableImpl: verifySyntheticExecutable,
+  resolveInstalledClaudeSecurityAdapterImpl: resolveSyntheticSecurityAdapter,
+  prepareClaudeNativeInvocationImpl: prepareSyntheticNativeInvocation, spawnImpl: spawnSyntheticSupervisor, ...options });
 
 const RUNNER_SOURCE_PATH = fileURLToPath(new URL(
   "../../src/targets/claude-runner.js",
@@ -120,43 +130,50 @@ test("protected exit 125 retains job diagnostics without changing other process 
   }
 });
 
-test("executable preflight resolves the exact PATH selection once and requires only file plus X_OK", async () => {
-  const selected = "/synthetic/bin/claude";
-  const resolved = "/synthetic/share/claude/current";
-  const calls = [];
-  const result = await verifyInstalledClaudeExecutable({
-    command: selected,
-    fsImpl: {
-      realpathSync(filePath) {
-        calls.push(["realpath", filePath]);
-        return resolved;
-      },
-      statSync(filePath) {
-        calls.push(["stat", filePath]);
-        return { isFile: () => true };
-      },
-      accessSync(filePath, mode) {
-        calls.push(["access", filePath, mode]);
-      },
+test("Mac privacy routing keeps the fixed exec chain below the IPC supervisor", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  installSyntheticAdapter(home);
+  const prepared = preparedLaunch(home);
+  const launcher = `/opt/aimgr-claude-runtime/artifacts/${"a".repeat(64)}/launcher`;
+  const vendor = launcher.replace(/launcher$/, "claude");
+  let routeCalled = false;
+  await runClaudeCliNoninteractive({ ...prepared, cwd: home, platform: "darwin",
+    egressProfile: { label: "protected", profileRef: "office" },
+    prepareClaudeNativeInvocationImpl: async options => ({ ...await prepareSyntheticNativeInvocation(options),
+      command: launcher, vendorCommand: vendor, args: ["v1", "protected", "fixture"] }),
+    prepareClaudeNativeRouteImpl: async options => {
+      routeCalled = true;
+      assert.equal(options.command, launcher);
+      assert.equal(options.nativeCommand, vendor);
+      assert.equal(options.approvedPrivacyEntry, true);
+      return { command: launcher, args: ["route-v1", "office", "binding", "--", ...options.args] };
+    },
+    spawnImpl(command, args, options) {
+      assert.equal(routeCalled, true);
+      assert.equal(command, process.execPath);
+      assert.deepEqual(args.slice(1), ["--privacy-entry-v1", launcher, "route-v1", "office", "binding", "--", "v1", "protected", "fixture"]);
+      assert.equal(options.stdio[3], "ipc");
+      assert.equal(fs.fstatSync(options.stdio[5]).nlink, 0);
+      return { status: 0, signal: null };
     },
   });
-  assert.equal(result, resolved);
-  assert.deepEqual(calls, [
-    ["realpath", selected],
-    ["stat", resolved],
-    ["access", resolved, fs.constants.X_OK],
-  ]);
 });
 
-test("installed adapter resolution uses one stable installer-owned executable", () => {
+test("executable preflight refuses an unapproved executable without running it", async () => {
+  await assert.rejects(verifyInstalledClaudeExecutable({ command: process.execPath }), { code: "AIMGR_CLAUDE_BUILD_NOT_APPROVED" });
+});
+
+test("adapter resolution uses the admitted executable's exact sibling and never a legacy fallback", () => {
   const home = mkTempHome();
   const expected = installSyntheticAdapter(home);
-  assert.deepEqual(resolveInstalledClaudeSecurityAdapter({ userHomeDir: home }), expected);
+  const command = path.join(expected.adapterDir, "claude");
+  assert.deepEqual(resolveInstalledClaudeSecurityAdapter({ command }), expected);
 
   fs.unlinkSync(expected.shimPath);
   assert.throws(
-    () => resolveInstalledClaudeSecurityAdapter({ userHomeDir: home }),
-    /run the local installer/,
+    () => resolveInstalledClaudeSecurityAdapter({ command }),
+    /approved runtime bundle/,
   );
 });
 
@@ -306,30 +323,22 @@ test("the usage tap saves readings privately and still renders the user's status
   assert.deepEqual(fs.readdirSync(configDir), [".aimgr-session-usage.json"]);
 });
 
-test("one optional customization failure warns and leaves the other categories usable", async () => {
-  const home = mkTempHome();
-  const { homeDir, configDir } = launchPaths(home);
-  const claudeDir = path.join(home, ".claude");
-  fs.mkdirSync(path.join(claudeDir, "skills"), { recursive: true });
-  fs.mkdirSync(path.join(configDir, "skills"), { recursive: true });
-  writeJson(path.join(claudeDir, "settings.json"), {
-    hooks: { Stop: [{ hooks: [{ type: "command", command: "/usr/bin/true" }] }] },
-  });
-  writeJson(path.join(home, ".claude.json"), {
-    mcpServers: { synthetic: { command: "/usr/bin/true" } },
-  });
-  const warnings = [];
-  const prepared = await prepareClaudeCliLaunch({
-    command: process.execPath,
-    userHomeDir: home,
-    homeDir,
-    configDir,
-    platform: "linux",
-    warn: (message) => warnings.push(message),
-  });
-  assert.deepEqual(warnings, ["Managed Claude skipped optional personal skills."]);
-  assert.ok(prepared.userHooksPath);
-  assert.ok(prepared.userMcpConfigPath);
+test("required skills, MCP and package preparation refuse instead of silently reducing a session", async t => {
+  for (const category of ["skills", "mcp", "packages"]) {
+    const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const { homeDir, configDir } = launchPaths(home);
+    const claudeDir = path.join(home, ".claude");
+    fs.mkdirSync(path.join(claudeDir, "skills"), { recursive: true });
+    if (category === "skills") fs.mkdirSync(path.join(configDir, "skills"), { recursive: true });
+    writeJson(path.join(claudeDir, "settings.json"), category === "packages"
+      ? { enabledPlugins: { "missing@synthetic": true } } : {});
+    writeJson(path.join(home, ".claude.json"), { mcpServers: category === "mcp" ? [] : { synthetic: { command: "/usr/bin/true" } } });
+    const warnings = [];
+    await assert.rejects(prepareClaudeCliLaunch({ command: process.execPath,
+      userHomeDir: home, homeDir, configDir, platform: "linux", warn: message => warnings.push(message),
+    }), category === "skills" ? /conflicting managed Claude skills/ : category === "mcp" ? /MCP servers are malformed/ : /plugin/);
+    assert.equal(warnings.some(message => /optional personal skills|optional user MCP|optional user plugins/.test(message)), false);
+  }
 });
 
 test("login staging does not traverse or materialize optional customizations", async () => {
@@ -383,6 +392,9 @@ test("interactive runner preserves cwd, stdio, PATH, and developer env while cle
       ANTHROPIC_BASE_URL: "clear",
       CLAUDE_CODE_OAUTH_TOKEN: "clear",
       CLAUDE_CODE_USE_BEDROCK: "clear",
+      CLAUDE_CODE_ORGANIZATION_UUID: "other-org",
+      CLAUDE_CODE_ACCOUNT_UUID: "other-account",
+      CLAUDE_CODE_USER_EMAIL: "other@example.invalid",
       ANTHROPIC_CUSTOM_HEADERS: "preserve",
       CODEX_HOME: "/developer/codex",
       DEBUG: "developer-debug",
@@ -399,7 +411,7 @@ test("interactive runner preserves cwd, stdio, PATH, and developer env while cle
   assert.deepEqual(result, { status: 7, signal: null });
   assert.equal(calls[0].file, process.execPath);
   assert.match(calls[0].args[0], /claude-supervisor\.js$/);
-  assert.deepEqual(calls[0].args.slice(1), [
+  assert.deepEqual(calls[0].args.slice(2), [
     process.execPath,
     "--settings",
     prepared.userHooksPath,
@@ -409,7 +421,9 @@ test("interactive runner preserves cwd, stdio, PATH, and developer env while cle
     prepared.userPluginDirs[0],
     "--synthetic",
   ]);
-  assert.deepEqual(calls[0].options.stdio, ["inherit", "inherit", "inherit", "ipc"]);
+  assert.equal(calls[0].args[1], "--privacy-entry-v1");
+  assert.deepEqual(calls[0].options.stdio.slice(0, 5), ["inherit", "inherit", "inherit", "ipc", "ignore"]);
+  assert.equal(typeof calls[0].options.stdio[5], "number");
   assert.equal(calls[0].options.cwd, projectDir);
   assert.equal(calls[0].options.env.HOME, home);
   assert.equal(calls[0].options.env.CLAUDE_CONFIG_DIR, prepared.configDir);
@@ -421,6 +435,9 @@ test("interactive runner preserves cwd, stdio, PATH, and developer env while cle
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_ORGANIZATION_UUID",
+    "CLAUDE_CODE_ACCOUNT_UUID",
+    "CLAUDE_CODE_USER_EMAIL",
   ]) assert.equal(calls[0].options.env[key], undefined, key);
   for (const key of [
     "ANTHROPIC_CUSTOM_HEADERS",
@@ -439,7 +456,7 @@ test("interactive runner preserves cwd, stdio, PATH, and developer env while cle
   }[key], key);
 });
 
-test("direct noninteractive runner uses contained roots and adapter without customization or IPC", async () => {
+test("noninteractive runner uses the admitted supervisor handoff without optional customization", async () => {
   const home = mkTempHome();
   const projectDir = path.join(home, "project");
   const { homeDir, configDir } = launchPaths(home);
@@ -470,9 +487,9 @@ test("direct noninteractive runner uses contained roots and adapter without cust
   assert.deepEqual(result, { status: 0, signal: null, timedOut: false });
   assert.deepEqual(calls, [{
     file: fs.realpathSync(process.execPath),
-    args: ["--version"],
+    args: [SUPERVISOR_SOURCE_PATH, "--privacy-entry-v1", fs.realpathSync(process.execPath), "--version"],
     options: {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe", "ipc", "ignore", calls[0].options.stdio[5]],
       env: {
         PATH: `${adapter.adapterDir}:/developer/bin:/usr/bin:/bin`,
         ANTHROPIC_CUSTOM_HEADERS: "preserve",
@@ -517,6 +534,23 @@ test("direct noninteractive runner reports its bounded timeout without inventing
     }),
     /bounded process limits/,
   );
+});
+
+test("coordinated maintenance uses the real supervisor and keeps its lock out of vendor descriptors", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const paths = launchPaths(home);
+  const lock = await acquireClaudeAssignmentLock(home, "alpha");
+  const identity = fs.fstatSync(lock.fd);
+  try {
+    const result = await runClaudeCliNoninteractive({ command: process.execPath, userHomeDir: home,
+      ...paths, cwd: home, env: { PATH: "/usr/bin:/bin" }, assignmentLock: lock, platform: "linux",
+      args: ["-e", `const fs=require('fs'); for(let fd=3;fd<64;fd++) { try {
+        const s=fs.fstatSync(fd); if(s.dev===${identity.dev} && s.ino===${identity.ino}) process.exit(99);
+      } catch {} } process.exit(13);`] });
+    assert.deepEqual(result, { status: 13, signal: null, timedOut: false });
+    lock.assertOwned();
+  } finally { await lock.release(); }
 });
 
 test("pause-resume IPC is present without build qualification policy", () => {
@@ -613,4 +647,20 @@ test("noninteractive timeout kills the detached Claude process group including a
   }
   assert.equal(alive(pids.parent), false);
   assert.equal(alive(pids.child), false);
+});
+
+
+test("a missing selected executable cannot silently choose the active approved build", async () => {
+  await assert.rejects(verifyInstalledClaudeExecutable({}), /absolute PATH-selected/);
+});
+
+test("lease cancellation during privacy preparation refuses before any supervisor starts", async t => {
+  const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const prepared = preparedLaunch(home), controller = new AbortController();
+  const reason = new Error("synthetic lease lost"); let spawned = false;
+  await assert.rejects(runClaudeCli({ ...prepared, preparedLaunch: prepared, cwd: home,
+    signal: controller.signal, prepareClaudeNativeInvocationImpl: async options => {
+      const native = await prepareSyntheticNativeInvocation(options); controller.abort(reason); return native;
+    }, spawnImpl() { spawned = true; throw new Error("unexpected spawn"); } }), error => error === reason);
+  assert.equal(spawned, false);
 });

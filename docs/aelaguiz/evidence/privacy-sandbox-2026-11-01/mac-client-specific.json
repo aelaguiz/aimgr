@@ -1,0 +1,97 @@
+{
+  "load": {
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "python": {
+    "exit": 0,
+    "stdout": "26.7\n\n",
+    "stderr": ""
+  },
+  "codexVersion": {
+    "exit": 0,
+    "stdout": "codex-cli 0.163.0-alpha.5\n",
+    "stderr": "WARNING: proceeding, even though we could not create PATH aliases: CODEX_HOME points to \"/opt/aimgr-state-audit/mac-subject-policy/codex-version\", but that path does not exist\n"
+  },
+  "claudeVersion": {
+    "exit": 0,
+    "stdout": "2.1.316 (Claude Code)\n",
+    "stderr": ""
+  },
+  "workflow": {
+    "harnessExit": 0,
+    "summary": {
+      "platform": "macOS-26.7-arm64-arm-64bit",
+      "allPassed": true,
+      "checks": [
+        {
+          "provider": "codex",
+          "check": "one successful model exchanges",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "native tool result returned and project/Git/PTY/build worked",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "one successful model exchanges",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "native tool result returned and project/Git/PTY/build worked",
+          "passed": true
+        }
+      ],
+      "results": [
+        {
+          "case": "codex-fresh-a",
+          "exitCode": 0,
+          "requestCount": 3,
+          "modelRequestCount": 3,
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS Unknown; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ],
+          "workflow": {
+            "edit": true,
+            "git": true,
+            "pty": true,
+            "nativeBuild": true
+          },
+          "toolOutputReturned": true,
+          "sharedEditObserved": true
+        },
+        {
+          "case": "claude-fresh-a",
+          "exitCode": 0,
+          "requestCount": 2,
+          "modelRequestCount": 2,
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ],
+          "workflow": {
+            "edit": true,
+            "git": true,
+            "pty": true,
+            "nativeBuild": true
+          },
+          "toolOutputReturned": true,
+          "sharedEditObserved": true
+        }
+      ]
+    }
+  }
+}

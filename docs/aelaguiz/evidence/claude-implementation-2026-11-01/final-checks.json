@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "hostRole": "designated offsite Linux VM",
+  "sourceArchiveVersion": "v63",
+  "sourceArchiveSha256": "c1a5e90d44bc3fa056a4183d87b0af2f6ef7028c64c1ee241f7c1a181ec91fd8",
+  "commands": [
+    "npm run lint",
+    "npm test -- --test-concurrency=2"
+  ],
+  "lintExit": 0,
+  "testExit": 0,
+  "tests": 800,
+  "passed": 789,
+  "failed": 0,
+  "skipped": 11,
+  "skipMeaning": "Explicitly enabled native/real-account suites are verified separately on their offsite hosts, not counted as passes in this default suite.",
+  "logs": {
+    "claude-final-lint-v63.private.log": {
+      "sha256": "288129b0a980d55ef7c3b31805e629a7e8c03e3539d10d46022a5e219d5a1407",
+      "summary": []
+    },
+    "claude-final-tests-v63.private.tap": {
+      "sha256": "f7c9b90f297c894084b35e2a789f7376d2672fea988aa2eb8bd4544254ee4e9f",
+      "summary": [
+        "\u2139 tests 800",
+        "\u2139 suites 0",
+        "\u2139 pass 789",
+        "\u2139 fail 0",
+        "\u2139 cancelled 0",
+        "\u2139 skipped 11",
+        "\u2139 todo 0",
+        "\u2139 duration_ms 79964.531466"
+      ]
+    },
+    "claude-final-regressions.private.tap": {
+      "sha256": "5f29904b38b534909c685eb5beaa8afdb10461f201e1511fc957ab8fdddddd8c",
+      "summary": [
+        "\u2139 tests 25",
+        "\u2139 suites 0",
+        "\u2139 pass 25",
+        "\u2139 fail 0",
+        "\u2139 cancelled 0",
+        "\u2139 skipped 0",
+        "\u2139 todo 0",
+        "\u2139 duration_ms 3854.857866"
+      ]
+    }
+  },
+  "priorFailures": [
+    {
+      "phase": "first lint",
+      "reason": "Stale AppleDouble sidecars from initial source transfer were treated as JavaScript. Removed only files with AppleDouble magic; future archives exclude them."
+    },
+    {
+      "phase": "first complete suite",
+      "tests": 800,
+      "passed": 785,
+      "failed": 4,
+      "skipped": 11,
+      "reasons": [
+        "Ordinary offline readBinding omitted expectedEmail required by the shared storage guard: production fix and existing regression now pass.",
+        "Shared-memory fixture lacked the new synthetic admission dependency: fixture corrected.",
+        "Two README contract tests had no README in the offsite source archive: transfer corrected."
+      ]
+    }
+  ]
+}

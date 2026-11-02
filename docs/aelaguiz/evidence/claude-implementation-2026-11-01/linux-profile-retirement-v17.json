@@ -1,0 +1,15 @@
+{
+  "platform": "Linux",
+  "count": 5,
+  "vendorExecuted": false,
+  "sourceArchiveSha256": "53e82a7df1115a346a1386017c493b9bd07a06b39b843a51f44c0a1c2353a9b1",
+  "passed": [
+    "tool-only survivor retains vendor and tool profiles",
+    "exited leader with live worker retains both profiles",
+    "unknown live task label retains both profiles",
+    "stopped pair reclaimed under policy lock; unrelated and other-user policies retained",
+    "empty repeated reclamation is harmless"
+  ],
+  "evidenceOrigin": "Recorded from completed offsite command output; no rerun",
+  "coldComponentReview": "No remaining blocker; operator-paused transition required; no session cap or background restriction"
+}

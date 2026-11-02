@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -34,6 +35,7 @@ export async function superviseClaudeProcess({
   command,
   args = [],
   env = process.env,
+  environmentFd = null,
   parentProcess = process,
   spawnImpl = spawn,
   childKillGraceMs = DEFAULT_CHILD_KILL_GRACE_MS,
@@ -50,6 +52,12 @@ export async function superviseClaudeProcess({
 
   const resolvedCommand = path.resolve(rawCommand);
   const resolvedArgs = Array.isArray(args) ? args : [];
+  if (environmentFd !== null) {
+    if (!Number.isInteger(environmentFd) || environmentFd < 3) throw new Error("Claude supervisor requires a private environment transfer.");
+    const stat = fs.fstatSync(environmentFd);
+    if (!stat.isFile() || stat.uid !== process.getuid() || stat.nlink !== 0 || (stat.mode & 0o077)
+      || stat.size < 1 || stat.size > 16 * 1024 * 1024) throw new Error("Claude supervisor requires a private environment transfer.");
+  }
   const boundedKillGraceMs = Math.min(
     5_000,
     Math.max(0, Number.isFinite(childKillGraceMs) ? childKillGraceMs : DEFAULT_CHILD_KILL_GRACE_MS),
@@ -138,17 +146,27 @@ export async function superviseClaudeProcess({
   if (parentProcess.connected !== true) {
     requestedSignal = "SIGTERM";
     removeParentListeners();
+    if (environmentFd !== null) fs.closeSync(environmentFd);
     return normalizedResult(null, null, requestedSignal);
   }
 
   try {
     child = spawnImpl(resolvedCommand, resolvedArgs, {
-      stdio: "inherit",
-      env,
+      // 'inherit' is exactly fd0..2. Never forward AIM's coordination fd4 or
+      // its IPC descriptor to the vendor: the supervisor retains the lock
+      // until Claude exits, including when AIM loses its own FD on a crash.
+      // Only the fixed native privacy entry receives one additional handle,
+      // mapped to fd3. It restores this environment AFTER policy installation
+      // and closes every non-stdio handle before vendor exec. The supervisor's
+      // own IPC/assignment descriptors still never reach vendor code.
+      stdio: environmentFd === null ? "inherit" : ["inherit", "inherit", "inherit", environmentFd],
+      env: environmentFd === null ? env : { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C.UTF-8", NODE_V8_COVERAGE: undefined },
     });
   } catch (error) {
     removeParentListeners();
     throw error;
+  } finally {
+    if (environmentFd !== null) fs.closeSync(environmentFd);
   }
   if (child?.error) {
     removeParentListeners();
@@ -189,14 +207,51 @@ export async function superviseClaudeProcess({
 }
 
 async function main() {
-  const [command, ...args] = process.argv.slice(2);
+  const inputs = process.argv.slice(2);
+  const privacyEntry = inputs[0] === "--privacy-entry-v1";
+  if (privacyEntry) inputs.shift();
+  const [command, ...args] = inputs;
+  const routedMac = privacyEntry && process.platform === "darwin" && args[0] === "route-v1"
+    && /^[a-z0-9][a-z0-9_-]{0,127}$/.test(args[1] ?? "");
+  let terminal;
   let result;
   try {
-    result = await superviseClaudeProcess({ command, args });
+    if (privacyEntry && !/^\/opt\/aimgr-claude-runtime\/artifacts\/[a-f0-9]{64}\/launcher$/.test(command ?? "")) {
+      throw new Error("Claude supervisor requires the admitted native entry.");
+    }
+    if (routedMac && process.stdin.isTTY) {
+      // The Mac route now execs all the way into Claude to preserve pause and
+      // forced-kill semantics. Save terminal state in this surviving owner,
+      // before any native child can enter raw mode. A fixed Python termios
+      // call also lets restore skip a background job without SIGTTOU.
+      terminal = execFileSync("/usr/bin/python3", ["-I", "-c",
+        "import json,termios;print(json.dumps(termios.tcgetattr(0),default=lambda b:list(b)))"],
+      { stdio: [0, "pipe", "ignore"], timeout: 2000, maxBuffer: 8192, encoding: "utf8" }).trim();
+    }
+    result = await superviseClaudeProcess({ command, args, environmentFd: privacyEntry ? 5 : null });
+    if (routedMac && (result.status !== 0 || result.signal)
+      && fs.existsSync(`/opt/aimgr-claude-proxy/${args[1]}-state/failed`)) {
+      // The guardian kills all routed native owners after marking failure.
+      // Retain the old visible failure/receipt semantics even though the
+      // supervisor now observes the vendor's signal directly.
+      process.stderr.write(`Claude proxy ${args[1]} failed; affected work was stopped. Repair the proxy/tunnel, then explicitly retry or resume.\n`);
+      result = { status: 125, signal: null };
+    }
   } catch {
     process.exitCode = 1;
     if (process.connected) process.disconnect();
     return;
+  } finally {
+    if (terminal) {
+      try {
+        execFileSync("/usr/bin/python3", ["-I", "-c",
+          "import json,os,sys,termios;a=json.loads(sys.argv[1]);a[6]=[bytes(v) if isinstance(v,list) else v for v in a[6]];termios.tcsetattr(0,termios.TCSANOW,a) if os.tcgetpgrp(0)==os.getpgrp() else None", terminal],
+        { stdio: [0, "ignore", "ignore"], timeout: 2000 });
+      } catch {
+        // A disconnected controlling terminal cannot be restored. Do not
+        // replace the native result or wait on a background process group.
+      }
+    }
   }
 
   if (process.connected) process.disconnect();

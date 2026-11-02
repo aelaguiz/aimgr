@@ -1,0 +1,204 @@
+{
+  "privateFileHidden": true,
+  "symlinkEscapeDenied": true,
+  "childPrivateReadDenied": true,
+  "ambientSecretAbsent": true,
+  "hostHomeAbsent": true,
+  "hostSysfsAbsent": true,
+  "hostSocketsAbsent": true,
+  "machineIdIsFixture": true,
+  "hostnameIsFixture": true,
+  "kernelRelease": "7.0.0-1014-gcp",
+  "procPids": [
+    "1",
+    "2"
+  ],
+  "gitWorks": true,
+  "ptyWorks": true,
+  "externalNetworkDenied": true,
+  "cpuInfoStillVisible": true,
+  "memInfoStillVisible": true,
+  "unprivilegedPayload": true,
+  "sameUserUnsandboxedCanaryReadable": true,
+  "workspaceEditVisibleOutside": true,
+  "sameKernelAsHost": true,
+  "bubblewrapVersion": "bubblewrap 0.9.0",
+  "runtime": {
+    "platform": "Linux-7.0.0-1014-gcp-x86_64-with-glibc2.39",
+    "python": "3.12.3"
+  },
+  "individualFileMountAtomicReplace": {
+    "succeeded": false,
+    "errno": 16,
+    "error": "Device or resource busy"
+  },
+  "modelHarnessExitCode": 0,
+  "modelSummaryPresent": true,
+  "modelCases": [
+    {
+      "case": "claude-cloned-a",
+      "exitCode": 0,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "9d03f020450f520e"
+      ],
+      "diskIdentifierHash": "9d03f020450f520e",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-fresh-a",
+      "exitCode": 0,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "9d03f020450f520e"
+      ],
+      "diskIdentifierHash": "9d03f020450f520e",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-fresh-b",
+      "exitCode": 0,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "54f54d7a606a0595"
+      ],
+      "diskIdentifierHash": "54f54d7a606a0595",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-repeat-a",
+      "exitCode": 0,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "9d03f020450f520e"
+      ],
+      "diskIdentifierHash": "9d03f020450f520e",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-separate-os-home",
+      "exitCode": 0,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "3e5bfd4fa20ae39a"
+      ],
+      "diskIdentifierHash": "3e5bfd4fa20ae39a",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "codex-cloned-a",
+      "exitCode": 0,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "bc98fdd5ebaaeb9c"
+      ],
+      "diskIdentifierHash": "bc98fdd5ebaaeb9c",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-fresh-a",
+      "exitCode": 0,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "bc98fdd5ebaaeb9c"
+      ],
+      "diskIdentifierHash": "bc98fdd5ebaaeb9c",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-fresh-b",
+      "exitCode": 0,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "dc2c74459a4361e1"
+      ],
+      "diskIdentifierHash": "dc2c74459a4361e1",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-repeat-a",
+      "exitCode": 0,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "bc98fdd5ebaaeb9c"
+      ],
+      "diskIdentifierHash": "bc98fdd5ebaaeb9c",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-separate-os-home",
+      "exitCode": 0,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "590743df22cfa3da"
+      ],
+      "diskIdentifierHash": "590743df22cfa3da",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    }
+  ],
+  "boundedChecksPassed": true,
+  "allTenModelCasesPassed": true,
+  "modelIdentityChecks": [
+    {
+      "provider": "codex",
+      "check": "five successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "restart and copied home retain ID",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "fresh app homes have distinct IDs",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "five successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "restart and copied home retain ID",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "fresh app homes have distinct IDs",
+      "passed": true
+    }
+  ],
+  "modelIdentityAssertionsPassed": true
+}

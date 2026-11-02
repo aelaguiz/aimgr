@@ -1,0 +1,61 @@
+{
+  "integratedAim": false,
+  "mode": "protected",
+  "actualNativeRoute": false,
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-dynamic-directory-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/artifacts/mcp",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/frame/contract/latest",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/claude-code-releases/plugins/claude-plugins-official/%7B%22features%22:%20%7B%7D,%20%22data%22:%20[],%20%22models%22:%20[]%7D.zip",
+        "/claude-code-releases/plugins/claude-plugins-official/latest",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 6,
+      "modelSources": [
+        "127.0.0.1"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": true,
+      "hostnameInRequests": false,
+      "dynamicDirectory": {
+        "nativeReadSucceeded": true,
+        "newInstructionLoaded": false,
+        "readAttempted": true
+      },
+      "eventLoggingRequests": 0,
+      "xtversionResponses": 1,
+      "deviceAttributeResponses": 2,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "connectAuthorities": [
+        "api.anthropic.com:443",
+        "downloads.claude.ai:443",
+        "github.com:443",
+        "raw.githubusercontent.com:443"
+      ]
+    }
+  ],
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchiveSha256": "e6d85e78cf497e93ab273ab68d4a88add1503d533b75ba6109d1c6a44637ad4a",
+  "nativeArtifactSet": null
+}

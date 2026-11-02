@@ -1,0 +1,79 @@
+{
+  "platform": "linux",
+  "passed": false,
+  "results": [
+    {
+      "name": "valid",
+      "accepted": false,
+      "expectedAccepted": true,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    },
+    {
+      "name": "invalid-model",
+      "accepted": false,
+      "expectedAccepted": false,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    },
+    {
+      "name": "env-coercion",
+      "accepted": false,
+      "expectedAccepted": true,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    },
+    {
+      "name": "unknown",
+      "accepted": false,
+      "expectedAccepted": true,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    },
+    {
+      "name": "hook",
+      "accepted": false,
+      "expectedAccepted": true,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    },
+    {
+      "name": "helper",
+      "accepted": false,
+      "expectedAccepted": true,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    },
+    {
+      "name": "invalid-permissions",
+      "accepted": false,
+      "expectedAccepted": false,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    },
+    {
+      "name": "large-input",
+      "accepted": false,
+      "expectedAccepted": true,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    }
+  ],
+  "meaning": "Actual composed-settings staging and isolated native validation; not full session admission"
+}

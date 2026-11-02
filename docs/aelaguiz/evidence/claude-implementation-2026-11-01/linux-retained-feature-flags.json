@@ -1,0 +1,60 @@
+{
+  "comparisons": [
+    {
+      "platform": "linux",
+      "commonFeatureFlagsDisabled": false,
+      "tools": [
+        "Agent",
+        "Bash",
+        "DeferredToolPlaceholder",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "Write",
+        "mcp__stdio__echo"
+      ],
+      "bash": true,
+      "hooks": true,
+      "instructions": true,
+      "historyResumeFork": true,
+      "stdioMcp": true,
+      "subagent": true,
+      "personalSkill": true,
+      "passed": true,
+      "meaning": "Actual native retained-feature comparison; not the final combined privacy policy"
+    },
+    {
+      "platform": "linux",
+      "commonFeatureFlagsDisabled": true,
+      "tools": [
+        "Agent",
+        "Bash",
+        "DeferredToolPlaceholder",
+        "Edit",
+        "ListAgents",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "Write",
+        "mcp__stdio__echo"
+      ],
+      "bash": true,
+      "hooks": true,
+      "instructions": true,
+      "historyResumeFork": true,
+      "stdioMcp": true,
+      "subagent": true,
+      "personalSkill": true,
+      "passed": true,
+      "meaning": "Actual native retained-feature comparison; not the final combined privacy policy"
+    }
+  ]
+}

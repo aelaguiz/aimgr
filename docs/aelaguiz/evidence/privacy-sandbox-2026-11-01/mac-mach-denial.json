@@ -1,0 +1,30 @@
+{
+  "host-info": {
+    "load": {
+      "exit": -9,
+      "error": ""
+    },
+    "attributes": {
+      "exit": -9,
+      "error": ""
+    },
+    "python": {
+      "exit": -9,
+      "error": ""
+    }
+  },
+  "no-inference": {
+    "load": {
+      "exit": -9,
+      "error": ""
+    },
+    "attributes": {
+      "exit": -9,
+      "error": ""
+    },
+    "python": {
+      "exit": -9,
+      "error": ""
+    }
+  }
+}
