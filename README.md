@@ -262,6 +262,14 @@ Use this order for a runtime change:
    release, not through another checkout's `node_modules` symlink). Run the
    file-only installer to stage the approved bundle. Staging needs administrator
    access but does not activate the bundle or stop running sessions.
+   Before activation, a single directly invoked release process may select the
+   staged, normal-use-approved bundle with `AIMGR_CLAUDE_ARTIFACT_SET=<digest>`.
+   Put that bundle's directory first on this process's `PATH` so executable
+   selection agrees with the pin. An absent default selector is allowed only
+   with an explicit pin; all approval, ownership and integrity checks still run.
+   This does not create a default selector or change the installed launcher.
+   Use an account authorized for the test and preserve its routing requirements;
+   proxy5/proxy6 are never authorized for a direct home-IP test.
    Coordinate administrator authentication with the user. A system dialog may
    identify only `osascript`, which is ambiguous with several agents working;
    label the prompt as AI Manager and say whether it stages files or activates

@@ -266,14 +266,24 @@ export function admitClaudeArtifact({
       fail("the native platform or artifact root is unsupported");
     }
     directoryChain(runtimeRoot, fsImpl);
-    const selector = readRecord(path.join(runtimeRoot, "active.json"), fsImpl);
-    if (selector.schema !== 1 || typeof selector.artifactSet !== "string" || !HASH.test(selector.artifactSet)) fail("the active build selector is invalid");
     // A trusted nested launch defaults to its parent's still-approved set.
     // macOS's fixed no-sandbox entry names that immutable launcher; silently
     // switching it to a newly activated set would break nested execution.
     // The pin only chooses a record: every normal approval/ABI/integrity check
     // below still runs, including explicit PATH selection. It is not authority.
     if (pinnedArtifactSet !== undefined && (typeof pinnedArtifactSet !== "string" || !HASH.test(pinnedArtifactSet))) fail("the inherited approved build selection is invalid");
+    const selectorFile = path.join(runtimeRoot, "active.json");
+    let selector;
+    try { selector = readRecord(selectorFile, fsImpl); }
+    catch (error) {
+      // A one-process smoke test can name an already approved, staged build
+      // before the stopped-session transition publishes a machine default.
+      // Only absence is allowed: a corrupt, unsafe or unreadable selector still
+      // refuses. The explicit pin never supplies approval or skips the complete
+      // artifact checks below, and no selector is created as a side effect.
+      if (pinnedArtifactSet === undefined || error?.code !== "ENOENT" || error?.path !== selectorFile) throw error;
+    }
+    if (selector !== undefined && (selector.schema !== 1 || typeof selector.artifactSet !== "string" || !HASH.test(selector.artifactSet))) fail("the active build selector is invalid");
     const artifactSet = pinnedArtifactSet ?? selector.artifactSet;
     const root = path.join(runtimeRoot, "artifacts", artifactSet);
     directoryChain(root, fsImpl);

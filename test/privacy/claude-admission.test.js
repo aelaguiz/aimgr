@@ -191,6 +191,57 @@ test("administrator-owned artifact admission contracts on the offsite host", { s
     fs.unlinkSync(old.approval);
     assert.equal(runtimeAdmission(old.root, undefined, old.artifactSet).status, 77, "revoked approval cannot be borrowed from the new active set");
   });
+  await t.test("explicit approved staged build can run before activation without changing the default", () => {
+    const f = fixture("staged-before-activation");
+    const selector = path.join(f.root, "active.json"), command = path.join(f.bundle, "claude");
+    fs.unlinkSync(selector);
+    assert.equal(runtimeAdmission(f.root).status, 77, "ordinary unpinned launch still needs activation");
+    const staged = runtimeAdmission(f.root, command, f.artifactSet);
+    assert.equal(staged.status, 0, staged.stderr || staged.stdout);
+    assert.equal(JSON.parse(staged.stdout).artifactSet, f.artifactSet);
+    assert.equal(fs.existsSync(selector), false, "explicit selection must not activate a default");
+    for (const pin of ["", "unknown", "f".repeat(64), [f.artifactSet]]) {
+      assert.equal(runtimeAdmission(f.root, undefined, pin).status, 77);
+    }
+    const other = path.join(f.root, "other-command");
+    fs.writeFileSync(other, "#!/bin/sh\necho MUST-NOT-EXECUTE\n", { mode: 0o755 });
+    assert.equal(runtimeAdmission(f.root, other, f.artifactSet).status, 77);
+    for (const manifest of [
+      { ...f.manifest, arch: "other" },
+      { ...f.manifest, approval: {} },
+      { ...f.manifest, candidateSourceSha256: "b".repeat(64), approval: { kind: "offsite-test", normalUseApproved: false, reference: "synthetic" } },
+    ]) {
+      fs.writeFileSync(f.approval, JSON.stringify(manifest));
+      assert.equal(runtimeAdmission(f.root, command, f.artifactSet).status, 77);
+    }
+    fs.writeFileSync(f.approval, JSON.stringify(f.manifest));
+    fs.writeFileSync(selector, JSON.stringify({ schema: 1, artifactSet: f.artifactSet }), { mode: 0o666 });
+    fs.chmodSync(selector, 0o666);
+    assert.equal(runtimeAdmission(f.root, command, f.artifactSet).status, 77, "a present unsafe selector cannot be ignored");
+    fs.unlinkSync(selector);
+    fs.writeFileSync(selector, "PRIVATE_INVALID_JSON");
+    assert.equal(runtimeAdmission(f.root, command, f.artifactSet).status, 77);
+    fs.unlinkSync(selector);
+    fs.symlinkSync(path.join(f.root, "absent-target"), selector);
+    assert.equal(runtimeAdmission(f.root, command, f.artifactSet).status, 77, "dangling symlinks are not an absent selector");
+    fs.unlinkSync(selector);
+    fs.appendFileSync(path.join(f.bundle, "helpers/worker"), "changed");
+    assert.equal(runtimeAdmission(f.root, command, f.artifactSet).status, 77, "staging does not waive helper integrity");
+    assert.equal(fs.existsSync(selector), false);
+  });
+  await t.test("staged selection still refuses revoked approval, tampering and unsafe ancestry", () => {
+    for (const [name, mutate] of [
+      ["revoked", f => fs.unlinkSync(f.approval)],
+      ["vendor", f => fs.appendFileSync(path.join(f.bundle, "claude"), "changed")],
+      ["policy", f => fs.writeFileSync(path.join(f.bundle, "policy.json"), "[]\n")],
+      ["ancestor", f => fs.chmodSync(path.join(f.root, "artifacts"), 0o777)],
+    ]) {
+      const f = fixture("staged-negative-" + name);
+      fs.unlinkSync(path.join(f.root, "active.json"));
+      mutate(f);
+      assert.equal(runtimeAdmission(f.root, undefined, f.artifactSet).status, 77, name);
+    }
+  });
   for (const [name, mutate] of [
     ["unknown active digest", f => fs.writeFileSync(path.join(f.root, "active.json"), JSON.stringify({ schema: 1, artifactSet: "f".repeat(64) }))],
     ["corrupt approval", f => fs.writeFileSync(f.approval, "broken PRIVATE-CONTENT")],

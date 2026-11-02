@@ -1,0 +1,43 @@
+{
+  "recordedAt": "2026-11-02T14:16:53.237447+00:00",
+  "baseRevision": "dc6132de826a509e6e9078bb969be7afa2b88ad7",
+  "artifactSet": "9bc287ee11a9576ccf080f2988ecef24961a792c645dd53040568e3132fdf9b4",
+  "claudeVersion": "2.1.316",
+  "localMac": {
+    "realInstalledArtifactAdmission": "passed as ordinary runtime user",
+    "publicPrivacyStatus": "passed: activeArtifactSet null, explicit pin matches normal-use approved bundle, no refusal",
+    "actualNativeSettingsValidator": "passed; actual reviewed Claude executed with no credentials and native network denial",
+    "ordinaryInvocationPrepared": true,
+    "realProviderConversation": "pending explicit authorization to use an ordinary account; proxy5/proxy6 cannot be used from home IP"
+  },
+  "tests": {
+    "localFocused": {
+      "passed": 17,
+      "failed": 0,
+      "skipped": 1,
+      "skipReason": "administrator-only offsite admission group"
+    },
+    "linuxNativeAdmission": {
+      "passed": 43,
+      "failed": 0,
+      "skipped": 0,
+      "raw": "staged-admission-linux.tap"
+    }
+  },
+  "coldReview": {
+    "agent": "/root/staged_claude_smoke_review",
+    "model": "gpt-6.1-sol",
+    "effort": "xhigh",
+    "verdict": "No material findings in implemented diff",
+    "scope": "Selection with an absent default only when explicitly pinned; all present-selector and artifact checks preserved; actual final regression cases inspected."
+  },
+  "activation": {
+    "defaultSelectorPublished": false,
+    "liveLauncherChanged": false,
+    "runningSessionsStopped": false
+  },
+  "sourcesSha256": {
+    "src/privacy/claude-artifacts.js": "6b5efcc66ae41c311bb68f7eeeb75399ed1a0d17711923e4dc503ad68a218412",
+    "test/privacy/claude-admission.test.js": "9625209937f9b4cd9a5332f055115858b5ae98cff53758049f3f29882034a6bb"
+  }
+}
