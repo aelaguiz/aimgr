@@ -8,7 +8,12 @@
     "publicPrivacyStatus": "passed: activeArtifactSet null, explicit pin matches normal-use approved bundle, no refusal",
     "actualNativeSettingsValidator": "passed; actual reviewed Claude executed with no credentials and native network denial",
     "ordinaryInvocationPrepared": true,
-    "realProviderConversation": "pending explicit authorization to use an ordinary account; proxy5/proxy6 cannot be used from home IP"
+    "realProviderConversation": "passed via directly invoked fixed-release public aim claude run command, process-local approved artifact pin, ordinary account, no proxy environment",
+    "fileRead": "passed: actual Read tool returned expected synthetic marker",
+    "bashWrite": "passed: actual Bash tool wrote expected file contents",
+    "resume": "passed: same session ID and prior response markers retained",
+    "skill": "passed: actual Skill tool and marker from the local skill",
+    "mcp": "passed: actual local MCP echo invocation independently logged by the server"
   },
   "tests": {
     "localFocused": {
@@ -39,5 +44,45 @@
   "sourcesSha256": {
     "src/privacy/claude-artifacts.js": "6b5efcc66ae41c311bb68f7eeeb75399ed1a0d17711923e4dc503ad68a218412",
     "test/privacy/claude-admission.test.js": "9625209937f9b4cd9a5332f055115858b5ae98cff53758049f3f29882034a6bb"
-  }
+  },
+  "completedAt": "2026-11-02T14:22:21.858308+00:00",
+  "testedAimRevision": "9a9cb7df11bc805be721907a50c4d4635abc097c",
+  "accountAuthorization": "User explicitly authorized using an existing ordinary account for this local non-proxy test; proxy5/proxy6 were excluded.",
+  "initialConversation": {
+    "exitCode": 0,
+    "seconds": 9.0,
+    "humanChallenge": false,
+    "timedOut": false,
+    "bashOutput": "LOCAL_NONPROXY_BASH_OK",
+    "activeSelectorExists": false
+  },
+  "resumeSkillMcp": {
+    "exitCode": 0,
+    "seconds": 9.6,
+    "humanChallenge": false,
+    "timedOut": false,
+    "sameSession": true,
+    "historyPreserved": true,
+    "skillMarkerReturned": true,
+    "actualMcpCall": true,
+    "providerSuccess": true,
+    "activeSelectorExists": false
+  },
+  "cleanup": {
+    "actualToolNames": [
+      "Read",
+      "Bash",
+      "Read",
+      "Bash",
+      "Skill",
+      "ToolSearch",
+      "mcp__local_smoke__echo"
+    ],
+    "savedSessionTranscriptVerified": true,
+    "testProcessGroupsExited": true,
+    "testMcpServerExited": true,
+    "liveLauncherUnchanged": true,
+    "globalRuntimeActivated": false
+  },
+  "limits": "Focused local ordinary-account smoke, including real provider requests. Existing offsite full-suite evidence remains separate; this does not claim a fresh full platform or protected-account acceptance run."
 }
