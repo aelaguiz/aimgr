@@ -1,0 +1,11 @@
+{
+  "recoveryInstance": "terminated",
+  "temporarySecurityGroupKeyPairAndTerminationSchedule": "removed",
+  "temporaryGcpSshEgressRuleAndKey": "removed",
+  "exactBundleRetainedAndFreshlyVerified": "local and GCP",
+  "dedicatedHostState": "pending",
+  "dedicatedHostRelease": "existing bounded release schedule retained until paid minimum completes",
+  "releaseScheduleState": "ENABLED",
+  "releaseScheduleStart": "2026-11-02T12:26:46-06:00",
+  "releaseScheduleEnd": "2026-11-02T20:24:46-06:00"
+}

@@ -93,6 +93,9 @@ Verify its identity and revision before reading or changing it. The skill may
 be installed outside the repo. Do not search the whole home/workspace or assume
 the live launcher should follow your development branch. Preserve unrelated
 edits; use an isolated checkout for candidate fixture/code changes.
+If that checkout predates the sources below, use its Git worktree/branch metadata
+to locate the reviewed checkout that contains them. Keep that source identity
+explicit; do not update a live launcher's checkout merely to load this skill.
 
 Read these paths **in that checkout**:
 

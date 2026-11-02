@@ -261,6 +261,10 @@ Use this order for a runtime change:
    access but does not activate the bundle or stop running sessions.
    Check the target kernel against the protected policy before planning activation;
    a bundle tested on another kernel does not establish protected-mode compatibility.
+   Coordinate administrator authentication with the user. A system dialog may
+   identify only `osascript`, which is ambiguous with several agents working;
+   label the prompt as AI Manager and say whether it stages files or activates
+   them. A canceled dialog is not permission to reopen it unexpectedly.
 4. Arrange the accepted transition for affected sessions and schedules. Inventory
    them first; never kill unrelated sessions to satisfy the installer. The
    current activation command requires stopped Claude owners. Activate the
@@ -298,9 +302,10 @@ the local machine. The [recovery record](docs/aelaguiz/evidence/agent-upgrade-te
 distinguishes available files from an active installation. Local copies are under
 `~/.local/share/aimgr/runtime-bundles/`; the original test-only archive is retained
 separately from the normal-use manifest recording the user's installation request.
-Administrator installation, the stopped-owner transition and target-kernel
-verification for protected use remain unfinished. The temporary launcher remains
-selected; recovering the bundle has not silently activated the new sandbox.
+The bundle has been staged into the administrator-owned runtime and its complete
+inventory verified. The stopped-owner transition and target-kernel verification
+for protected use remain unfinished. The temporary launcher remains selected;
+staging the bundle has not silently activated the new sandbox.
 
 `aim codex use` rotates away from the current Codex account on every successful
 call. It prefers labels that have not been selected recently, then uses the
