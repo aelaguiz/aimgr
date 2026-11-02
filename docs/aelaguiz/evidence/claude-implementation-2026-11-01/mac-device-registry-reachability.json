@@ -1,0 +1,50 @@
+{
+  "platform": "darwin",
+  "vendorVersion": "2.1.316",
+  "vendorSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "reviewer": "cold_implementation_review",
+  "method": "Read-only bounded embedded-source review; no vendor execution",
+  "conditions": {
+    "DISABLE_GROWTHBOOK": "1",
+    "disableRemoteControl": true,
+    "accounts": "individual Pro/Max"
+  },
+  "finding": "No reachable automatic global device-registry key lookup in reviewed workflows; not unconditional OS keychain denial",
+  "entrypoints": {
+    "deviceBinding": {
+      "offset": 276064305,
+      "gate": "tengu_violin_wood=false"
+    },
+    "attachBinding": {
+      "offset": 281159000,
+      "gate": "wood or maple; both false"
+    },
+    "cloudToolRegistration": {
+      "offset": 290178991,
+      "gate": "wood served authoritatively off"
+    },
+    "cloudSettingsSigner": {
+      "offset": 276170390,
+      "gate": "wood and strad; both false"
+    },
+    "cloudSessionSigners": {
+      "offsets": [
+        281205496,
+        290299028,
+        290306351,
+        290314202
+      ],
+      "gate": "successful gated binding, or wood/maple"
+    },
+    "peerSessionSigner": {
+      "offset": 278218500,
+      "gate": "requires !uns(); disabled wood/maple makes uns() true"
+    }
+  },
+  "disabledFeatureResolution": {
+    "offset": 254775271,
+    "description": "Returns supplied false default with source disabled before persisted cache; exact production environment/config override methods are compiled no-ops",
+    "overrideOffset": 254765236
+  },
+  "compatibilityDecision": "Retain mutable PATH and ordinary tool keychain access. No broader securityd/exec denial or PATH freeze added."
+}

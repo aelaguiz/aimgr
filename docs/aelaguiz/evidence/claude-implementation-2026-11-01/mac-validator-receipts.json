@@ -1,0 +1,55 @@
+{
+  "platform": "darwin",
+  "passed": true,
+  "results": [
+    {
+      "case": "doctor-before-env-coercion",
+      "accepted": true,
+      "expectedAccepted": true,
+      "configuredCodeRan": false,
+      "stderrEmpty": true
+    },
+    {
+      "case": "doctor-before-helper",
+      "accepted": true,
+      "expectedAccepted": true,
+      "configuredCodeRan": false,
+      "stderrEmpty": true
+    },
+    {
+      "case": "doctor-before-hook",
+      "accepted": true,
+      "expectedAccepted": true,
+      "configuredCodeRan": false,
+      "stderrEmpty": true
+    },
+    {
+      "case": "doctor-before-invalid",
+      "accepted": false,
+      "expectedAccepted": false,
+      "configuredCodeRan": false,
+      "stderrEmpty": true
+    },
+    {
+      "case": "doctor-before-permissions-invalid",
+      "accepted": false,
+      "expectedAccepted": false,
+      "configuredCodeRan": false,
+      "stderrEmpty": true
+    },
+    {
+      "case": "doctor-before-unknown",
+      "accepted": true,
+      "expectedAccepted": true,
+      "configuredCodeRan": false,
+      "stderrEmpty": true
+    },
+    {
+      "case": "doctor-before-valid",
+      "accepted": true,
+      "expectedAccepted": true,
+      "configuredCodeRan": false,
+      "stderrEmpty": true
+    }
+  ]
+}

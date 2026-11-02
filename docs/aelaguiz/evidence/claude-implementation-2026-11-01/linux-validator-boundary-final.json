@@ -1,0 +1,39 @@
+{
+  "platform": "Linux",
+  "comparisons": {
+    "baseline": {
+      "privateRead": true,
+      "privateWrite": true,
+      "symlinkRead": true,
+      "allowedReadWrite": true,
+      "inputRead": true,
+      "inputWrite": true,
+      "inputReplace": true,
+      "inputRename": true,
+      "inputUnlink": true,
+      "networkSocket": true,
+      "shellExec": true,
+      "loaderShellExec": true,
+      "inheritedDescriptor": true,
+      "inheritedSecret": true
+    },
+    "restricted": {
+      "privateRead": false,
+      "privateWrite": false,
+      "symlinkRead": false,
+      "allowedReadWrite": true,
+      "inputRead": true,
+      "inputWrite": false,
+      "inputReplace": false,
+      "inputRename": false,
+      "inputUnlink": false,
+      "networkSocket": false,
+      "shellExec": false,
+      "loaderShellExec": true,
+      "inheritedDescriptor": false,
+      "inheritedSecret": false
+    }
+  },
+  "passed": true,
+  "meaning": "File/input/network boundary, not arbitrary code-execution denial; no proxy setup or namespace privileges used"
+}

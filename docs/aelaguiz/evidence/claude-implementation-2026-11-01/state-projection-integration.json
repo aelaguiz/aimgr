@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "scope": "Synthetic state/credential/command integration; no vendor requests or production state",
+  "platforms": {
+    "linux": {
+      "integrationV3": {
+        "passed": 126,
+        "failed": 0
+      },
+      "finalNativeStorageV4": {
+        "passed": 27,
+        "failed": 0
+      },
+      "artifactAdmissionV4": {
+        "passed": 34,
+        "failed": 0
+      }
+    },
+    "darwin": {
+      "integrationV3": {
+        "passed": 126,
+        "failed": 0
+      },
+      "finalNativeStorageV4": {
+        "passed": 27,
+        "failed": 0
+      },
+      "artifactAdmissionV4": {
+        "passed": 40,
+        "failed": 0
+      }
+    }
+  },
+  "archives": {
+    "aimgr-state-integration-v3.tgz": "a77a13775254984d42f650784b7f9e6c50c1c3da73dfd76a198dafa1c4b20380",
+    "aimgr-state-integration-v4.tgz": "a55eba78754f48f1a5abc07ac056db8ac140281e673005316694965ccad90088"
+  },
+  "finalSourceSha256": {
+    "src/privacy/claude-state-migration.js": "16663cc706de4b4ffef6a6cf9bc1ecb82873116da011874b3e73fbacbfd745f3",
+    "src/privacy/claude-state-source.js": "76e329988cf83fac10dccc7668f0f59449271aaf00f5cb8f179b6503c9d1eef7",
+    "src/privacy/claude-identity.js": "001dd9053da11b3b362353eb826d9e2ee8823db40ef4d9c2d9616321afa8230c",
+    "src/privacy/claude-credential-projection.js": "10dd3b5a3e5cbc7c812c869d08e6f9f633967a27cc91096814ab67a6daa2adbc",
+    "src/credentials/claude-native-state-lock.js": "14e4106fb9b9ae4aa746b0b96789dd946860ed8b0d5f664d248a20a407f2c422",
+    "src/credentials/claude-native-storage.js": "88d716240a8c1867eb65f61c80a5b81436cf3574b3efd4b172de80f36155a8d2",
+    "src/targets/claude-cli.js": "4d605bf994028a5e89f9123180d631e44bb0c4559884b809793a32f88e6bd1a3",
+    "src/cli/commands/claude.js": "1d47d23833508d2bf77d17a94c431a2c9f05922fdfe12920efea4716da45ba6c",
+    "src/credentials/claude-maintenance.js": "ee27834e74b0817f2cb9e81975e3eb3030a0ebb8968f0e7b186d1540dad3c94a",
+    "test/claude/native-storage.test.js": "91cf599cd5b2315d19777f04d957a15ca818c7c297fd1d7b4c411d4b91c98ac0"
+  },
+  "componentReview": "Independent read-only reviewer found no remaining blocker in native-state locks, projection and legacy activation; 19 distinct focused review tests passed. Not full implementation approval.",
+  "earlierFailures": [
+    "V1 expected projection before static preflight; fixed static preparation ordering.",
+    "V1 old protected-corrupt-state test expected blind replacement; now asserts fail-closed preservation, then verified empty-token repair.",
+    "Linux unrelated harness fixture parent was group-writable; corrected isolated test fixture ownership/mode to trusted ancestors."
+  ],
+  "open": [
+    "Final native file/device/exec integration",
+    "Actual native private identity request lifecycle",
+    "Full retained workflow, calendar schedules and real sacrificial-account acceptance",
+    "Full cold implementation review"
+  ]
+}

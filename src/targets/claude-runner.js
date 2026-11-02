@@ -4,6 +4,9 @@ import { ClaudeRouteError } from "../network/claude-egress-policy.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { admitClaudeArtifact } from "../privacy/claude-artifacts.js";
+import { prepareClaudeNativeInvocation } from "../privacy/claude-native-invocation.js";
+import { cleanClaudeRootEnvironment } from "../privacy/claude-provider-admission.js";
 import {
   CLAUDE_PROCESS_CONTROL_ACK_TYPE,
   CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
@@ -19,29 +22,24 @@ const SUPERVISOR_PATH = fileURLToPath(new URL("./claude-supervisor.js", import.m
 const STATUSLINE_TAP_PATH = fileURLToPath(new URL("./claude-statusline-tap.sh", import.meta.url));
 const USER_HOOKS_OVERLAY_FILE = ".aimgr-user-hooks.json";
 const USER_MCP_OVERLAY_FILE = ".aimgr-user-mcp.json";
-const SECURITY_ADAPTER_RELATIVE_PATH = path.join(
-  ".aimgr",
-  "runtime",
-  "claude-file-store",
-  "security",
-);
 
-// These values can select credentials or a provider backend instead of the
-// projected Claude account. Every other developer/operator variable survives.
-const COMPETING_CLAUDE_ENV_KEYS = Object.freeze([
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
-  "CLAUDE_CODE_HOST_CREDS_FILE",
-  "CLAUDE_CODE_OAUTH_CLIENT_ID",
-  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_FOUNDRY",
-  "CLAUDE_CODE_USE_VERTEX",
-]);
+async function prepareSupervisedNativeInvocation({ native, egressProfile, platform = process.platform,
+  signal, deadlineMs, prepareRoute }) {
+  if (egressProfile && platform === "darwin") {
+    // Seatbelt blocks setuid helpers in nested tools. Only the hardened native
+    // launcher can leave that inherited policy, run fixed route admission, and
+    // enter the selected account policy. Its exec chain preserves the child
+    // PID controlled by our supervisor, including pause and forced shutdown.
+    const routed = await prepareRoute({ profile: egressProfile, command: native.command, args: native.args,
+      nativeCommand: native.vendorCommand, approvedPrivacyEntry: true, platform, signal, deadlineMs });
+    return { command: process.execPath, args: [SUPERVISOR_PATH, "--privacy-entry-v1", routed.command, ...routed.args] };
+  }
+  const args = [SUPERVISOR_PATH, "--privacy-entry-v1", native.command, ...native.args];
+  return egressProfile
+    ? prepareRoute({ profile: egressProfile, command: process.execPath, args,
+      nativeCommand: native.vendorCommand, platform, signal, deadlineMs })
+    : { command: process.execPath, args };
+}
 
 const SAFE_MARKER_NAME = /^\.[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const FORBIDDEN_MARKER_NAME = /(?:^\.claude\.json$|account|auth|cache|credential|history|log|oauth|project|session|token|trust)/i;
@@ -131,39 +129,25 @@ function syncPrivateJsonOverlay(filePath, payload, {
   return filePath;
 }
 
-export async function verifyInstalledClaudeExecutable({
-  command,
-  fsImpl = fs,
-} = {}) {
-  const selectedCommand = normalizedAbsolute(command);
-  if (!selectedCommand) {
-    throw new Error("Managed Claude requires the absolute PATH-selected executable.");
-  }
-
-  let resolvedCommand;
-  let stat;
-  try {
-    resolvedCommand = fsImpl.realpathSync(selectedCommand);
-    stat = fsImpl.statSync(resolvedCommand);
-    fsImpl.accessSync(resolvedCommand, fs.constants.X_OK);
-  } catch {
-    throw new Error("The PATH-selected Claude executable is unavailable or not executable.");
-  }
-  if (!stat.isFile()) {
-    throw new Error("The PATH-selected Claude executable is not a file.");
-  }
-  return resolvedCommand;
+export async function verifyInstalledClaudeExecutable({ command, fsImpl = fs } = {}) {
+  if (!normalizedAbsolute(command)) throw new Error("Managed Claude requires the absolute PATH-selected executable.");
+  // Never execute --version to discover a candidate. Admission reads immutable
+  // administrator records and bytes before credentials enter native state.
+  return admitClaudeArtifact({ selectedCommand: command,
+    pinnedArtifactSet: process.env.AIMGR_CLAUDE_ARTIFACT_SET, fsImpl }).command;
 }
 
 export function resolveInstalledClaudeSecurityAdapter({
-  userHomeDir,
+  command,
   fsImpl = fs,
 } = {}) {
-  const resolvedHome = normalizedAbsolute(userHomeDir);
-  if (!resolvedHome) {
-    throw new Error("Managed Claude security adapter lookup requires an absolute user home.");
+  if (!normalizedAbsolute(command)) {
+    throw new Error("Managed Claude security adapter lookup requires the admitted executable.");
   }
-  const installedPath = path.join(resolvedHome, SECURITY_ADAPTER_RELATIVE_PATH);
+  // Called only AFTER complete artifact admission. Darwin manifests require
+  // this exact sibling and hash it with the vendor; never fall back to an old
+  // home-directory adapter that lacks the current device-key restrictions.
+  const installedPath = path.join(path.dirname(command), "security");
   let shimPath;
   let stat;
   try {
@@ -171,7 +155,7 @@ export function resolveInstalledClaudeSecurityAdapter({
     stat = fsImpl.statSync(shimPath);
     fsImpl.accessSync(shimPath, fs.constants.X_OK);
   } catch {
-    throw new Error("Managed Claude requires the installed security adapter; run the local installer.");
+    throw new Error("Managed Claude requires the credential adapter in its approved runtime bundle.");
   }
   if (!stat.isFile() || path.basename(shimPath) !== "security") {
     throw new Error("Managed Claude found an invalid installed security adapter.");
@@ -488,7 +472,7 @@ async function prepareContainedClaudeCliLaunch({
   ensureDirectory(resolvedConfigDir, { fsImpl });
 
   const adapter = platform === "darwin"
-    ? resolveInstalledClaudeSecurityAdapterImpl({ userHomeDir: resolvedUserHome, fsImpl })
+    ? resolveInstalledClaudeSecurityAdapterImpl({ command: resolvedCommand, userHomeDir: resolvedUserHome, fsImpl })
     : {};
   return Object.freeze({
     command: resolvedCommand,
@@ -532,11 +516,14 @@ export async function prepareClaudeCliLaunch({
   let userHooksPath = null;
   let userMcpConfigPath = null;
   if (!loginStaging) {
-    optionalCustomization("personal skills", () => ensureManagedClaudePersonalSkillsLink({
+    // T14/T22: skills and MCP are required workflows. A failed projection
+    // must stop before vendor execution, rather than silently starting a
+    // reduced session. Optional hooks/status presentation may still warn.
+    ensureManagedClaudePersonalSkillsLink({
       userHomeDir: resolvedUserHome,
       configDir: resolvedConfigDir,
       fsImpl,
-    }), null, warn);
+    });
     userHooksPath = optionalCustomization("user hooks and status line", () => (
       syncManagedClaudeUserSettings({
         userHomeDir: resolvedUserHome,
@@ -544,16 +531,14 @@ export async function prepareClaudeCliLaunch({
         fsImpl,
       })
     ), null, warn);
-    userMcpConfigPath = optionalCustomization("user MCP servers", () => (
-      syncManagedClaudeUserMcp({
-        userHomeDir: resolvedUserHome,
-        configDir: resolvedConfigDir,
-        fsImpl,
-      })
-    ), null, warn);
-    userPlugins = optionalCustomization("user plugins", () => (
-      resolveEnabledClaudeUserPlugins({ userHomeDir: resolvedUserHome, fsImpl })
-    ), [], warn);
+    userMcpConfigPath = syncManagedClaudeUserMcp({
+      userHomeDir: resolvedUserHome,
+      configDir: resolvedConfigDir,
+      fsImpl,
+    });
+    // Enabled packages can supply required skills/MCP. An unreadable package
+    // inventory is not evidence that every package is an optional integration.
+    userPlugins = resolveEnabledClaudeUserPlugins({ userHomeDir: resolvedUserHome, fsImpl });
     optionalCustomization("config-root markers", () => syncManagedClaudeConfigMarkers({
       userHomeDir: resolvedUserHome,
       configDir: resolvedConfigDir,
@@ -575,8 +560,10 @@ export async function prepareClaudeCliLaunch({
 }
 
 export function buildContainedLaunchEnvironment({ preparedLaunch, env }) {
-  const launchEnv = { ...(env ?? {}) };
-  for (const key of COMPETING_CLAUDE_ENV_KEYS) delete launchEnv[key];
+  // This is a new AIM root even for trusted A-to-B dispatch. Native self-
+  // spawned agents/background children inherit their own admitted handoffs
+  // directly and must not pass through this root credential cleanup.
+  const launchEnv = cleanClaudeRootEnvironment(env ?? {});
   launchEnv.HOME = preparedLaunch.userHomeDir;
   launchEnv.CLAUDE_CONFIG_DIR = preparedLaunch.configDir;
   launchEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR = preparedLaunch.configDir;
@@ -687,7 +674,11 @@ export async function runClaudeCliNoninteractive({
   spawnImpl = spawn,
   killProcessGroupImpl = process.kill,
   egressProfile,
+  assignmentLock = null,
   prepareClaudeNativeRouteImpl = prepareClaudeNativeRoute,
+  prepareClaudeNativeInvocationImpl = prepareClaudeNativeInvocation,
+  expectedIdentity,
+  requiredHooks = {},
 } = {}) {
   const resolvedCwd = normalizedAbsolute(cwd);
   if (!resolvedCwd) {
@@ -726,23 +717,33 @@ export async function runClaudeCliNoninteractive({
   const effectiveTimeoutMs = Math.max(1, Math.min(timeoutMs, remaining));
   // Maintenance and other noninteractive work share the same admission as
   // interactive Claude. Never spawn first and validate afterward. Ordinary
-  // accounts retain their existing environment and have no helper dependency.
+  // accounts retain their existing environment and need no proxy helper; the
+  // approved entry and isolated settings validator are common to all accounts.
   // Regressions: test/network/claude-optional-privacy.test.js and native fixtures.
   const operationDeadline = Date.now() + effectiveTimeoutMs;
   const detached = platform !== "win32";
-  const invocation = egressProfile
-    ? await prepareClaudeNativeRouteImpl({ profile: egressProfile, command: prepared.command, args, platform, signal, deadlineMs: operationDeadline })
-    : { command: prepared.command, args };
-  if (signal?.aborted || Date.now() >= operationDeadline) return Object.freeze({ status: null, signal: null, timedOut: true });
-  const child = spawnClaude(invocation, {
-    stdio: ["ignore", "pipe", "pipe"],
-    env: egressProfile
-      ? nativeProxyEnvironment(buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }))
-      : buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
-    cwd: resolvedCwd,
-    detached,
-    shell: false,
-  }, spawnImpl, egressProfile);
+  const containedEnv = buildContainedLaunchEnvironment({ preparedLaunch: prepared, env });
+  const native = await prepareClaudeNativeInvocationImpl({ preparedLaunch: prepared, args,
+    env: egressProfile ? nativeProxyEnvironment(containedEnv) : containedEnv, cwd: resolvedCwd,
+    protectedAccount: Boolean(egressProfile), expectedIdentity, requiredHooks, stdoutIsTTY: false });
+  let child;
+  try {
+    const invocation = await prepareSupervisedNativeInvocation({ native, egressProfile, platform, signal,
+      deadlineMs: operationDeadline, prepareRoute: prepareClaudeNativeRouteImpl });
+    if (signal?.aborted || Date.now() >= operationDeadline) {
+      native.disposeBeforeStart(); return Object.freeze({ status: null, signal: null, timedOut: true });
+    }
+    assignmentLock?.assertOwned();
+    child = spawnClaude(invocation, {
+      // fd3 is IPC, fd4 is trusted account coordination, fd5 is the private
+      // environment. The supervisor maps only fd5 to the native entry's fd3.
+      // Neither coordination nor the environment handle reaches vendor code.
+      stdio: ["ignore", "pipe", "pipe", "ipc", assignmentLock?.fd ?? "ignore", native.environmentFd],
+      env: native.environment, cwd: resolvedCwd, detached, shell: false,
+    }, spawnImpl, egressProfile);
+    native.markStarted();
+  } catch (error) { native.disposeBeforeStart(); throw error; }
+  finally { native.closeEnvironment(); }
   if (Number.isInteger(child?.status) || typeof child?.signal === "string") {
     const childSignal = typeof child.signal === "string" ? child.signal : null;
     return Object.freeze({
@@ -842,8 +843,12 @@ export async function runClaudeCli({
   signal = null,
   registerProcessControl = null,
   preparedLaunch = null,
+  assignmentLock = null,
   egressProfile,
   prepareClaudeNativeRouteImpl = prepareClaudeNativeRoute,
+  prepareClaudeNativeInvocationImpl = prepareClaudeNativeInvocation,
+  expectedIdentity,
+  requiredHooks = {},
   prepareClaudeCliLaunchImpl = prepareClaudeCliLaunch,
   spawnImpl = spawn,
 } = {}) {
@@ -872,22 +877,31 @@ export async function runClaudeCli({
     throw new Error("Claude launch requires a completed managed preflight.");
   }
 
-  // Route the supervisor and inherited children before Claude can execute.
+  // Establish the selected route before Claude can execute.
   // Still identify the real Claude binary to the existing-background-owner guard;
   // checking Node alone misses a native daemon that predates enrollment.
   // Preserve IPC/TTY descriptors: routing must not remove pause/resume or tools.
   // Regressions: claude-native-background.test.js and native-pty-fixture.js.
-  const supervisorArgs = buildSupervisorArgs(prepared, args);
-  const invocation = egressProfile
-    ? await prepareClaudeNativeRouteImpl({ profile: egressProfile, command: process.execPath, args: supervisorArgs, nativeCommand: prepared.command, signal })
-    : { command: process.execPath, args: supervisorArgs };
-  const child = spawnClaude(invocation, {
-    stdio: ["inherit", "inherit", "inherit", "ipc"],
-    env: egressProfile
-      ? nativeProxyEnvironment(buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }))
-      : buildContainedLaunchEnvironment({ preparedLaunch: prepared, env }),
-    cwd: resolvedCwd,
-  }, spawnImpl, egressProfile);
+  const containedEnv = buildContainedLaunchEnvironment({ preparedLaunch: prepared, env });
+  const native = await prepareClaudeNativeInvocationImpl({ preparedLaunch: prepared, args: buildClaudeArgs(prepared, args),
+    env: egressProfile ? nativeProxyEnvironment(containedEnv) : containedEnv, cwd: resolvedCwd,
+    protectedAccount: Boolean(egressProfile), expectedIdentity, requiredHooks });
+  let child;
+  try {
+    const invocation = await prepareSupervisedNativeInvocation({ native, egressProfile, signal,
+      prepareRoute: prepareClaudeNativeRouteImpl });
+    // Redis lease cancellation is independent of the local assignment guard.
+    // Doctor/route setup may have yielded after cancellation; never start a
+    // vendor just to terminate it immediately afterward.
+    if (signal?.aborted) throw signal.reason ?? new Error("Claude launch was cancelled before start.");
+    assignmentLock?.assertOwned();
+    child = spawnClaude(invocation, {
+      stdio: ["inherit", "inherit", "inherit", "ipc", assignmentLock?.fd ?? "ignore", native.environmentFd],
+      env: native.environment, cwd: resolvedCwd, shell: false,
+    }, spawnImpl, egressProfile);
+    native.markStarted();
+  } catch (error) { native.disposeBeforeStart(); throw error; }
+  finally { native.closeEnvironment(); }
   if (Number.isInteger(child?.status) || typeof child?.signal === "string") {
     const childSignal = typeof child?.signal === "string" ? child.signal : null;
     return {

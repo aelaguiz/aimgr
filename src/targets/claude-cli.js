@@ -1,5 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { planClaudeCredentialProjection } from "../privacy/claude-credential-projection.js";
+import { readClaudeActiveAppState } from "../privacy/claude-state-source.js";
+import { withClaudeNativeStateLocks } from "../credentials/claude-native-state-lock.js";
 import { getAnthropicCredential } from "../browser/seed.js";
 import { ANTHROPIC_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
@@ -8,10 +11,10 @@ import {
   assertAnthropicCredentialShape,
   buildAnthropicTokenLineageFingerprint,
 } from "../credentials/anthropic.js";
-import { cloneJsonObject, getClaudeNativeBundle, hasCompleteClaudeNativeBundle, normalizeNonEmptyStringArray, readClaudeAppStateFile, readClaudeNativeBundle } from "../credentials/claude-bundle.js";
+import { buildClaudeNativeBundle, cloneJsonObject, deriveAnthropicCredentialFromClaudeBundle, getClaudeNativeBundle, hasCompleteClaudeNativeBundle, normalizeNonEmptyStringArray, readClaudeAppStateFile, readClaudeNativeBundle } from "../credentials/claude-bundle.js";
 import {
   planClaudeNativeBundleReplacement,
-  syncLiveClaudeRotationBackToLabel,
+  syncClaudeNativeBundleBackToLabel,
 } from "../credentials/claude-native.js";
 import {
   CLAUDE_MANAGED_FILE_STORAGE_MODE,
@@ -141,7 +144,14 @@ function restoreProjectionSnapshot(snapshot, {
   writeTextFileIfChangedImpl(snapshot.filePath, snapshot.text, { mode: snapshot.mode || 0o600 });
 }
 
-export function writeClaudeNativeProjectionPair({
+export async function writeClaudeNativeProjectionPair(options = {}) {
+  const configDir = options.claudeDir ?? resolveManagedClaudeDir({ homeDir: options.homeDir });
+  const appStatePath = resolveClaudeAppStatePath({ homeDir: options.homeDir });
+  return withClaudeNativeStateLocks({ configDir, appStatePath, fsImpl: options.fsImpl ?? fs },
+    () => writeClaudeNativeProjectionPairLocked(options));
+}
+
+function writeClaudeNativeProjectionPairLocked({
   homeDir,
   claudeDir = resolveManagedClaudeDir({ homeDir }),
   credential,
@@ -154,12 +164,40 @@ export function writeClaudeNativeProjectionPair({
   const appStatePath = resolveClaudeAppStatePath({ homeDir });
   const credentialsSnapshot = snapshotProjectionFile(credentialsPath, { fsImpl });
   const appStateSnapshot = snapshotProjectionFile(appStatePath, { fsImpl });
-  const currentAppState = readClaudeAppStateFile({ homeDir });
-  const authPayload = buildClaudeAuthDotJson({ credential });
-  const appStatePayload = buildClaudeAppStatePayload({ current: currentAppState, credential });
+  const activeState = readClaudeActiveAppState({ configDir: claudeDir, canonicalFile: appStatePath,
+    fsImpl, allowMalformed: true });
+  const legacySnapshot = activeState.legacy ? snapshotProjectionFile(activeState.file, { fsImpl }) : null;
+  const projectedOauth = buildClaudeAuthDotJson({ credential }).claudeAiOauth;
+  let currentCredentials = {};
+  try {
+    if (credentialsSnapshot.exists) currentCredentials = JSON.parse(credentialsSnapshot.text);
+  } catch {
+    throw new Error("Claude credential projection refused unreadable native secrets; preserve the file for repair.");
+  }
+  if (activeState.malformed && currentCredentials?.claudeAiOauth?.accessToken === ""
+    && currentCredentials?.claudeAiOauth?.refreshToken === "") {
+    // Preserve the existing ordinary-account repair of a corrupt disposable
+    // cache with native's exact empty-token tombstone. It carries no lineage
+    // to attribute. Other provider secrets still require a verified owner;
+    // MCP/package secrets retain their independent ownership. Protected entry
+    // points perform strict stopped-owner identity admission before reaching
+    // this projection, so corruption there never discards unknown task state.
+    currentCredentials = { ...currentCredentials };
+    delete currentCredentials.claudeAiOauth;
+  }
+  // T04/T14: the native document also holds required MCP/package secrets.
+  // Replacing it with the portable OAuth bundle loses those workflows at each
+  // refresh/reprojection. Classify before either write; the portable verified
+  // OAuth remains authoritative, while independent native secrets stay local.
+  const authPayload = planClaudeCredentialProjection({ current: currentCredentials,
+    currentAccountUuid: activeState.state.oauthAccount?.accountUuid ?? null,
+    targetAccountUuid: getClaudeNativeBundle(credential)?.oauthAccount?.accountUuid,
+    projectedOauth });
+  const appStatePayload = buildClaudeAppStatePayload({ current: { ok: activeState.exists, json: activeState.state }, credential });
   const rollback = () => {
     restoreProjectionSnapshot(credentialsSnapshot, { fsImpl, writeTextFileIfChangedImpl });
     restoreProjectionSnapshot(appStateSnapshot, { fsImpl, writeTextFileIfChangedImpl });
+    if (legacySnapshot) restoreProjectionSnapshot(legacySnapshot, { fsImpl, writeTextFileIfChangedImpl });
   };
 
   let appStateWrite = { wrote: false, path: appStatePath };
@@ -168,6 +206,11 @@ export function writeClaudeNativeProjectionPair({
     // Identity is preflighted before either write. If the second atomic rename
     // fails, restore the first file before surfacing the failure.
     appStateWrite = writeJsonFileIfChangedImpl(appStatePath, appStatePayload, { mode: 0o600 });
+    // Ordinary accounts keep their existing legacy selector. Publish the same
+    // verified identity there too, preserving the actual native-active task
+    // state. Protected identity migration retires this selector separately,
+    // under stopped-owner EX coordination with a durable journal.
+    if (legacySnapshot) writeJsonFileIfChangedImpl(activeState.file, appStatePayload, { mode: 0o600 });
     credentialsWrite = writeJsonFileIfChangedImpl(credentialsPath, authPayload, { mode: 0o600 });
     const verification = typeof verifyImpl === "function" ? verifyImpl() : null;
     return {
@@ -176,7 +219,6 @@ export function writeClaudeNativeProjectionPair({
       credentialsWrite,
       appStateWrite,
       verification,
-      rollback,
     };
   } catch (error) {
     try {
@@ -188,7 +230,16 @@ export function writeClaudeNativeProjectionPair({
   }
 }
 
-export async function projectClaudeNativeBundleToManagedConfig({
+export async function projectClaudeNativeBundleToManagedConfig(options = {}) {
+  // Freshness is checked AFTER taking the same locks native refresh/MCP writes
+  // use. Checking first would allow an older Redis token to win the wait.
+  ensureSafeManagedClaudeStorage({ descriptor: options.descriptor, fsImpl: options.fsImpl ?? fs });
+  return withClaudeNativeStateLocks({ configDir: options.descriptor.configDir,
+    appStatePath: options.descriptor.appStatePath, fsImpl: options.fsImpl ?? fs },
+  () => projectClaudeNativeBundleToManagedConfigLocked(options));
+}
+
+function projectClaudeNativeBundleToManagedConfigLocked({
   descriptor,
   credential,
   nowMs = Date.now(),
@@ -237,10 +288,27 @@ export async function projectClaudeNativeBundleToManagedConfig({
           wrote: { credentials: false, appState: false },
         };
       }
+      if (localPlan.ok !== true && localPlan.reason !== "identity_conflict") {
+        throw new Error(`Managed Claude projection blocked: ${localPlan.reason}; preserve native credentials for repair.`);
+      }
+    } else {
+      const active = readClaudeActiveAppState({ configDir: descriptor.configDir,
+        canonicalFile: descriptor.appStatePath, fsImpl, allowMalformed: true });
+      const snapshot = snapshotProjectionFile(descriptor.credentialsPath, { fsImpl });
+      let current;
+      try { current = snapshot.exists ? JSON.parse(snapshot.text) : {}; }
+      catch { throw new Error("Managed Claude projection refused unreadable native secrets; preserve them for repair."); }
+      const owner = active.state.oauthAccount?.accountUuid;
+      const target = getClaudeNativeBundle(credential)?.oauthAccount?.accountUuid;
+      if ((!owner || owner === target)
+        && [current?.claudeAiOauth?.accessToken, current?.claudeAiOauth?.refreshToken]
+          .some(value => typeof value === "string" && value.length > 0)) {
+        throw new Error("Managed Claude projection refused an incomplete native token lineage; preserve it for repair.");
+      }
     }
   }
 
-  const projection = writeClaudeNativeProjectionPair({
+  const projection = writeClaudeNativeProjectionPairLocked({
     homeDir: descriptor.configDir,
     claudeDir: descriptor.configDir,
     credential,
@@ -291,7 +359,17 @@ export function writeClaudeAppStateOauthAccount({ homeDir, credential }) {
   return writeJsonFileIfChanged(resolveClaudeAppStatePath({ homeDir }), next, { mode: 0o600 });
 }
 
-export function applyClaudeCliFromState({ label, homeDir }, state) {
+export async function applyClaudeCliFromState({ label, homeDir }, state) {
+  // Legacy local selection can wait behind native refresh just like managed
+  // projection. Reconcile and choose its credential only after that writer
+  // finishes; taking locks solely around the later write would restore an
+  // already-spent refresh token selected before the wait.
+  return withClaudeNativeStateLocks({ configDir: resolveManagedClaudeDir({ homeDir }),
+    appStatePath: resolveClaudeAppStatePath({ homeDir }) },
+  () => applyClaudeCliFromStateLocked({ label, homeDir }, state));
+}
+
+function applyClaudeCliFromStateLocked({ label, homeDir }, state) {
   ensureStateShape(state);
   if (getAnthropicPoolLabels(state).length === 0) {
     throw new Error(
@@ -310,17 +388,45 @@ export function applyClaudeCliFromState({ label, homeDir }, state) {
     throw new Error(`Refusing to activate non-Claude label=${normalizedLabel} provider=${provider || "unknown"}.`);
   }
 
-  const preSwitchSync = syncLiveClaudeRotationBackToLabel({ state, homeDir });
-
+  const claudeDir = resolveManagedClaudeDir({ homeDir });
+  const active = readClaudeActiveAppState({ configDir: claudeDir,
+    canonicalFile: resolveClaudeAppStatePath({ homeDir }), allowMalformed: true });
+  const auth = snapshotProjectionFile(resolveClaudeAuthFilePath(claudeDir));
+  let native;
+  try { native = auth.exists ? JSON.parse(auth.text) : {}; }
+  catch { throw new Error("Claude selection refused unreadable native credentials; preserve them for repair."); }
+  const liveBundle = buildClaudeNativeBundle({ claudeAiOauth: native.claudeAiOauth,
+    oauthAccount: active.state.oauthAccount });
+  const preSwitchSync = syncClaudeNativeBundleBackToLabel({ state, nativeClaudeBundle: liveBundle,
+    source: "file", credentialsPath: auth.filePath });
+  let selected = getAnthropicCredential(state, normalizedLabel);
+  const targetId = getClaudeNativeBundle(selected)?.oauthAccount?.accountUuid;
+  const owner = active.state.oauthAccount?.accountUuid;
+  if (!owner || owner === targetId) {
+    if (hasCompleteClaudeNativeBundle(liveBundle)) {
+      const replacement = planClaudeNativeBundleReplacement({ currentBundle: liveBundle,
+        candidateBundle: selected, allowExpiredCandidate: true });
+      if (replacement.action === "noop" || replacement.reason === "stale_candidate") {
+        selected = deriveAnthropicCredentialFromClaudeBundle({ existingCredential: selected,
+          nativeClaudeBundle: liveBundle });
+      } else if (replacement.ok !== true) {
+        throw new Error(`Claude selection refused ${replacement.reason}; preserve native credentials for repair.`);
+      }
+    } else if ([native?.claudeAiOauth?.accessToken, native?.claudeAiOauth?.refreshToken]
+      .some(value => typeof value === "string" && value.length > 0)) {
+      throw new Error("Claude selection refused an incomplete native token lineage; preserve it for repair.");
+    }
+  }
+  // Reconciliation is a pure planner. Consume its result after successful
+  // publication below; merely calling it does not preserve a rotated token.
   const credential = assertAnthropicCredentialShape({
     label: normalizedLabel,
-    credential: getAnthropicCredential(state, normalizedLabel),
+    credential: selected,
     requireFresh: true,
     requireClaudeNativeBundle: true,
   });
 
-  const claudeDir = resolveManagedClaudeDir({ homeDir });
-  const projection = writeClaudeNativeProjectionPair({
+  const projection = writeClaudeNativeProjectionPairLocked({
     homeDir,
     claudeDir,
     credential,
@@ -351,6 +457,10 @@ export function applyClaudeCliFromState({ label, homeDir }, state) {
     throw new Error(`Claude readback mismatch after apply: expected label=${normalizedLabel}, got ${inferredLabel}.`);
   }
 
+  if (preSwitchSync.status === "candidate") {
+    state.credentials[ANTHROPIC_PROVIDER][preSwitchSync.label] = structuredClone(preSwitchSync.candidateCredential);
+  }
+  state.credentials[ANTHROPIC_PROVIDER][normalizedLabel] = structuredClone(credential);
   const target = getClaudeTargetState(state);
   delete target.claudeDir;
   delete target.authPath;
@@ -454,7 +564,7 @@ export async function activateClaudePoolSelection({
     throw new Error("Failed to select a next-best Claude pool label.");
   }
 
-  const activated = applyClaudeCliFromState({
+  const activated = await applyClaudeCliFromState({
     label: selection.label,
     homeDir,
   }, state);
@@ -514,7 +624,7 @@ export function classifyClaudeActivationError(err) {
   return "activation_failed";
 }
 
-export function activateClaudeLabelSelection({ state, homeDir, env = {}, label }) {
+export async function activateClaudeLabelSelection({ state, homeDir, env = {}, label }) {
   ensureStateShape(state);
   const normalizedLabel = normalizeLabel(label);
   const observedAt = new Date().toISOString();
@@ -522,7 +632,7 @@ export function activateClaudeLabelSelection({ state, homeDir, env = {}, label }
   const currentTarget = readClaudeCliTargetStatus({ state, homeDir, env });
 
   try {
-    const activated = applyClaudeCliFromState({
+    const activated = await applyClaudeCliFromState({
       label: normalizedLabel,
       homeDir,
     }, state);

@@ -1,0 +1,5 @@
+{
+  "exit": 0,
+  "passed": true,
+  "correction": "The original FD256 fixture exceeded the soft limit 256 before attempting closure. FD200 exists before lowering the hard limit to 64."
+}

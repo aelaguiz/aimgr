@@ -1,0 +1,10 @@
+{
+  "exit": 0,
+  "profiles": [
+    "aim-claude-transition-vendor (enforce)",
+    "aim-claude-transition-tools (enforce)",
+    "aim-claude-transition-vendor (enforce)"
+  ],
+  "stderr": "",
+  "passed": true
+}

@@ -1,0 +1,118 @@
+{
+  "platform": "Darwin",
+  "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+  "parent": {
+    "case": "privacy-overlay",
+    "exit": 0,
+    "toolFailureObserved": false,
+    "policyRefusal": false,
+    "syntheticModelFailureObserved": false,
+    "modelRequests": 3,
+    "toolEnvironment": {
+      "DISABLE_TELEMETRY": "1",
+      "DISABLE_ERROR_REPORTING": "1",
+      "DISABLE_UPDATES": "1",
+      "REQUIRED_TOOL_CANARY": "preserve-me",
+      "PROJECT_LIVE_CANARY": null,
+      "toolUnameMatchesHost": true,
+      "toolUid": 501,
+      "intentionalToolRead": true,
+      "toolNoNewPrivs": null,
+      "nativeToolCheck": {
+        "validation": {
+          "platform": "darwin",
+          "artifactSet": "2f2fa9ae5233c16637ebe71e5b93c710b225b434cff3e9c87d5d50cef7ad808b",
+          "accepted": true,
+          "sourceCount": 0
+        },
+        "nested": [
+          {
+            "case": "privacy-overlay",
+            "exit": 0,
+            "toolFailureObserved": false,
+            "policyRefusal": false,
+            "syntheticModelFailureObserved": false,
+            "modelRequests": 3,
+            "toolEnvironment": {
+              "DISABLE_TELEMETRY": "1",
+              "DISABLE_ERROR_REPORTING": "1",
+              "DISABLE_UPDATES": "1",
+              "REQUIRED_TOOL_CANARY": "preserve-me",
+              "PROJECT_LIVE_CANARY": null,
+              "toolUnameMatchesHost": true,
+              "toolUid": 501,
+              "intentionalToolRead": true,
+              "toolNoNewPrivs": null
+            },
+            "automaticHeaders": {
+              "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+              "X-Stainless-Arch": "arm64",
+              "X-Stainless-OS": "MacOS",
+              "X-Stainless-Runtime": "node",
+              "X-Stainless-Runtime-Version": "v26.12.1"
+            },
+            "automaticEnvironmentLines": [
+              "- OS Version: Darwin unknown",
+              "- Platform: darwin",
+              "- Shell: bash"
+            ],
+            "nativeReadAttempted": true,
+            "nativeReadReturnedCanary": false,
+            "nativeReadError": true
+          },
+          {
+            "case": "privacy-overlay",
+            "exit": 0,
+            "toolFailureObserved": false,
+            "policyRefusal": false,
+            "syntheticModelFailureObserved": false,
+            "modelRequests": 3,
+            "toolEnvironment": {
+              "DISABLE_TELEMETRY": "1",
+              "DISABLE_ERROR_REPORTING": "1",
+              "DISABLE_UPDATES": "1",
+              "REQUIRED_TOOL_CANARY": "preserve-me",
+              "PROJECT_LIVE_CANARY": null,
+              "toolUnameMatchesHost": true,
+              "toolUid": 501,
+              "intentionalToolRead": true,
+              "toolNoNewPrivs": null
+            },
+            "automaticHeaders": {
+              "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+              "X-Stainless-Arch": "arm64",
+              "X-Stainless-OS": "MacOS",
+              "X-Stainless-Runtime": "node",
+              "X-Stainless-Runtime-Version": "v26.12.1"
+            },
+            "automaticEnvironmentLines": [
+              "- OS Version: Darwin unknown",
+              "- Platform: darwin",
+              "- Shell: bash"
+            ],
+            "nativeReadAttempted": true,
+            "nativeReadReturnedCanary": true,
+            "nativeReadError": false
+          }
+        ]
+      }
+    },
+    "automaticHeaders": {
+      "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+      "X-Stainless-Arch": "arm64",
+      "X-Stainless-OS": "MacOS",
+      "X-Stainless-Runtime": "node",
+      "X-Stainless-Runtime-Version": "v26.12.1"
+    },
+    "automaticEnvironmentLines": [
+      "- OS Version: Darwin unknown",
+      "- Platform: darwin",
+      "- Shell: bash"
+    ],
+    "nativeReadAttempted": true,
+    "nativeReadReturnedCanary": false,
+    "nativeReadError": true
+  },
+  "scope": "Native entry plus nested native validation/account file grants; full AIM route/scheduler integration remains separate",
+  "passed": true
+}

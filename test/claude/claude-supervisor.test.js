@@ -38,6 +38,38 @@ class FakeChildProcess extends EventEmitter {
   }
 }
 
+test("native privacy entry receives only one private environment handle and clean bootstrap env", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aim-supervisor-transfer-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const makeTransfer = () => {
+    const file = path.join(root, "environment");
+    const fd = fs.openSync(file, "wx+", 0o600); fs.unlinkSync(file);
+    fs.writeFileSync(fd, "REQUIRED_MCP_TOKEN=synthetic-secret\0");
+    return fd;
+  };
+  const fd = makeTransfer(), child = new FakeChildProcess();
+  const result = superviseClaudeProcess({ command: process.execPath, environmentFd: fd,
+    env: { DYLD_INSERT_LIBRARIES: "unrelated-library", REQUIRED_MCP_TOKEN: "synthetic-secret" },
+    parentProcess: new FakeParentProcess(),
+    spawnImpl(command, args, options) {
+      assert.deepEqual(options.stdio, ["inherit", "inherit", "inherit", fd]);
+      assert.equal(options.env.REQUIRED_MCP_TOKEN, undefined);
+      assert.equal(options.env.DYLD_INSERT_LIBRARIES, undefined);
+      assert.equal(fs.fstatSync(fd).nlink, 0);
+      return child;
+    } });
+  assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
+  child.emit("close", 0, null); assert.deepEqual(await result, { status: 0, signal: null });
+  for (const connected of [true, false]) {
+    const failedFd = makeTransfer();
+    const pending = superviseClaudeProcess({ command: process.execPath, environmentFd: failedFd,
+      parentProcess: new FakeParentProcess({ connected }), spawnImpl() { throw new Error("synthetic startup failure"); } });
+    if (connected) await assert.rejects(pending, /synthetic startup failure/);
+    else assert.equal((await pending).signal, "SIGTERM");
+    assert.throws(() => fs.fstatSync(failedFd), { code: "EBADF" });
+  }
+});
+
 test("Claude supervisor spawns the exact executable and propagates a normal nonzero exit", async () => {
   const parentProcess = new FakeParentProcess();
   const child = new FakeChildProcess();

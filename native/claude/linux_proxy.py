@@ -263,7 +263,7 @@ def listener_pid(port):
     return int(pids.pop())
 
 
-def require_existing_native_owners_routed(name, executable):
+def require_existing_native_owners_routed(name, executable, *, require_stopped=False):
     """A new dispatcher must not reuse an unprotected, pre-enrollment daemon.
 
     Inspect the actual pinned executable and inherited account directory rather
@@ -313,6 +313,11 @@ def require_existing_native_owners_routed(name, executable):
                     break
             if not same_account:
                 continue
+            # T04: identity migration cannot run beside even correctly routed
+            # owners. Reuse this inventory, but make zero owners a distinct
+            # condition; "all routed" is sufficient only for ordinary launch.
+            if require_stopped:
+                raise RuntimeError("this account still has native Claude work; stop its sessions and background owners before identity migration")
             if expected not in (process / "cgroup").read_text().splitlines():
                 raise RuntimeError("this account still has native Claude work outside its assigned proxy; "
                                    "stop its existing sessions and background daemon before retrying")

@@ -1,0 +1,24 @@
+{
+  "date": "2026-11-01T18:48:10.267861+00:00",
+  "platform": "macOS-26.7-arm64-arm-64bit",
+  "macOS": "26.7",
+  "kernel": "25.6.0",
+  "architecture": "arm64",
+  "binaries": {
+    "codex": {
+      "sha256": "956f2edd38050f8fa55fac9ecfc570dc37c85d48019800dacee4cfcf9c70e9d1",
+      "version": "0.163.0-alpha.5"
+    },
+    "claude": {
+      "sha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+      "version": "2.1.316"
+    }
+  },
+  "syntheticOnly": true,
+  "originalBrowsersUsed": false,
+  "personalMacUsed": false,
+  "scope": "Native mechanism feasibility; not full account/daemon/scheduler/workflow acceptance.",
+  "providerWebEgressDenied": true,
+  "codexInspectedSourceCommit": "54201ea65a3501d09a87c776376a0c16aa39db70",
+  "sourceScope": "Pinned source inspection is distinct from the tested release binary; source-only terminal/daemon findings are not runtime acceptance."
+}

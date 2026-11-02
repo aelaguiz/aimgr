@@ -1,0 +1,50 @@
+{
+  "platform": "Linux",
+  "artifactSha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "meaning": "Scoped settings observations, not complete telemetry or relay lifecycle acceptance",
+  "results": [
+    {
+      "case": "remote-private-managed",
+      "exit": 1,
+      "policyRefusal": false,
+      "modelRequests": 0,
+      "toolEnvironment": null
+    },
+    {
+      "case": "private-managed-conflicting-overlay",
+      "exit": 0,
+      "policyRefusal": false,
+      "modelRequests": 2,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "",
+        "DISABLE_ERROR_REPORTING": "",
+        "DISABLE_UPDATES": "",
+        "REQUIRED_TOOL_CANARY": "preserve-me"
+      }
+    },
+    {
+      "case": "privacy-overlay-live-edit",
+      "exit": 0,
+      "policyRefusal": false,
+      "modelRequests": 3,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "live-edit-preserved"
+      }
+    },
+    {
+      "case": "private-managed-live-edit",
+      "exit": 0,
+      "policyRefusal": false,
+      "modelRequests": 3,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "",
+        "DISABLE_ERROR_REPORTING": "",
+        "DISABLE_UPDATES": "",
+        "REQUIRED_TOOL_CANARY": "live-edit-preserved"
+      }
+    }
+  ]
+}

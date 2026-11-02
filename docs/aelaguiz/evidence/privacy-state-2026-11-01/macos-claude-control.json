@@ -1,0 +1,16 @@
+{
+  "allPassed": false,
+  "results": [
+    {
+      "case": "standalone",
+      "exitCode": 1,
+      "output": "Error: Remote Control is disabled by your organization's policy (managed setting `disableRemoteControl`).\n",
+      "passed": true
+    },
+    {
+      "case": "flag",
+      "passed": false,
+      "error": "timed out; no policy proof"
+    }
+  ]
+}

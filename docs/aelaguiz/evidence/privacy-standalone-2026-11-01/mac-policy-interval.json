@@ -1,0 +1,74 @@
+{
+  "kind": "synthetic standalone compatibility; not production privacy acceptance",
+  "platform": "Darwin",
+  "codexSha256": "956f2edd38050f8fa55fac9ecfc570dc37c85d48019800dacee4cfcf9c70e9d1",
+  "codeModeHostSha256": "506223f47bf53603026ff6c15f887196a5daabccde036e555cdae4875e4871b0",
+  "results": [
+    {
+      "case": "SCHEDULE",
+      "mode": "OS scheduler + real AIM native-turn adapter",
+      "error": null,
+      "model": {
+        "count": 4,
+        "calls": [
+          "functions/exec",
+          "functions/exec",
+          "functions/exec"
+        ],
+        "toolNames": [
+          "functions/exec",
+          "functions/wait",
+          "functions/request_user_input",
+          "functions/request_user_input_async",
+          "clock/sleep",
+          "collaboration/followup_task",
+          "collaboration/interrupt_agent",
+          "collaboration/list_agents",
+          "collaboration/send_message",
+          "collaboration/spawn_agent",
+          "collaboration/wait_agent"
+        ],
+        "skillSeen": true,
+        "stdioReturned": true,
+        "httpReturned": true,
+        "shellReturned": true,
+        "firstRequestSkillLoaded": true,
+        "priorSeedResponsePresent": false,
+        "subagentReturned": false,
+        "finished": true
+      },
+      "toolWorkflowPassed": true
+    },
+    {
+      "case": "HANDOFF",
+      "mode": "standalone-tui",
+      "exitCode": 0,
+      "elapsedSeconds": 1.02,
+      "projectEditObserved": false,
+      "finalMessageReceived": true,
+      "forcedTermination": false,
+      "model": {},
+      "toolWorkflowPassed": true,
+      "noPromptReplayed": true
+    }
+  ],
+  "harnessSha256": "612e20aa789ba5d35a49eb045646bd7a4511c5b2811ec7991e44bd5a54f304b5",
+  "databasePreparedByFiniteNativeProcess": true,
+  "separateHomesShareDatabase": false,
+  "httpMcpRequiresSyntheticBearerToken": true,
+  "sandboxProfileSha256": "c43c4897bbbdb1a07dbd19a26b83c93ab4f48ba427b807dbd832eed6dbba13ff",
+  "concurrentBarrierPassed": null,
+  "separateHomesHaveDifferentInstallationIds": true,
+  "daemonDirectoryAbsentOnly": true,
+  "staleDaemonSocketConnections": 0,
+  "observedProcessesStillAliveBeforeCleanup": 3,
+  "noRealAccounts": true,
+  "outboundBoundary": "external rental deny policy",
+  "rawSummarySha256": "f3c7a88bb0c161f5917a011aa7e5c53a228e86cff5fa3c0fa9f2aeef35f988d2",
+  "scheduler": {
+    "scheduler": "launchd interval timer",
+    "nativeAdapterAndHandoffPassed": true,
+    "jobExitCode": 0,
+    "restrictedJobAndHandoff": true
+  }
+}

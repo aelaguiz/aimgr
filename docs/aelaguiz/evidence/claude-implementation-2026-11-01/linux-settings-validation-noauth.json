@@ -1,0 +1,75 @@
+{
+  "platform": "Linux",
+  "results": [
+    {
+      "case": "doctor-before-valid",
+      "exit": 0,
+      "durationMs": 618,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": true,
+      "completeDiagnostics": true,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-invalid",
+      "exit": 0,
+      "durationMs": 541,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": true,
+      "policyReceipt": false,
+      "completeDiagnostics": true,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-env-coercion",
+      "exit": 0,
+      "durationMs": 595,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": true,
+      "completeDiagnostics": true,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-unknown",
+      "exit": 0,
+      "durationMs": 520,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": true,
+      "completeDiagnostics": true,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-hook",
+      "exit": 0,
+      "durationMs": 519,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": true,
+      "completeDiagnostics": true,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-helper",
+      "exit": 0,
+      "durationMs": 547,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": false,
+      "policyReceipt": true,
+      "completeDiagnostics": true,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-permissions-invalid",
+      "exit": 0,
+      "durationMs": 539,
+      "configuredCodeRan": false,
+      "reportedInvalidSettings": true,
+      "policyReceipt": false,
+      "completeDiagnostics": true,
+      "unknownOption": false
+    }
+  ]
+}

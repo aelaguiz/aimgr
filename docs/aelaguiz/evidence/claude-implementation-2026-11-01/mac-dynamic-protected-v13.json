@@ -1,0 +1,56 @@
+{
+  "integratedAim": true,
+  "mode": "protected",
+  "actualNativeRoute": true,
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-dynamic-directory-disabled",
+      "exit": "timeout",
+      "syntheticModelCompleted": false,
+      "requestPaths": [
+        "/api/artifacts/mcp",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/frame/contract/latest",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/exit",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 3,
+      "modelSources": [
+        "127.0.0.2"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": false,
+      "hostnameInRequests": false,
+      "dynamicDirectory": {
+        "nativeReadSucceeded": false,
+        "newInstructionLoaded": false,
+        "readAttempted": false
+      },
+      "eventLoggingRequests": 0,
+      "xtversionResponses": 1,
+      "deviceAttributeResponses": 2,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "connectAuthorities": []
+    }
+  ],
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchiveSha256": "e6d85e78cf497e93ab273ab68d4a88add1503d533b75ba6109d1c6a44637ad4a",
+  "nativeArtifactSet": "52170f292d4d5f36a95b1eb10790a060ad4ddb0e8ca590033877714f874abd95",
+  "interpretation": "Native /add-dir rejected the local directory as a network path under OS file denial. Driver awaited a confirmation that never appeared, then timed out; no Read attempted. Not a privacy or retained-workflow pass."
+}

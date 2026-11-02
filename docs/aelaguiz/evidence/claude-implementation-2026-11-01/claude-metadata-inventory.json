@@ -1,0 +1,579 @@
+{
+  "schema": 1,
+  "version": "2.1.316",
+  "artifactSha256": {
+    "linux-x64": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+    "darwin-arm64": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f"
+  },
+  "sourceOffsetMeaning": "module offsets from beginning of exact native artifact; shipped code inspected read-only",
+  "inventoryComplete": true,
+  "rows": [
+    {
+      "id": "installation-user-id",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "path": "CLAUDE_CONFIG_DIR/.claude.json or native-active .config.json",
+        "field": "userID"
+      },
+      "owner": "account installation",
+      "role": "main vendor; automatic model metadata",
+      "destination": {
+        "kind": "provider request",
+        "field": "metadata.user_id JSON device_id"
+      },
+      "control": "classified stable private identity; migration journal and native-active legacy selector handling",
+      "status": "Integrated private IDs remain stable within each account across concurrency, restart, login/relogin and history continuation; cloned personal IDs are replaced before provider requests.",
+      "evidence": [
+        "../privacy-state-2026-11-01/linux-identity.json",
+        "../privacy-state-2026-11-01/macos-identity.json",
+        "../../../../src/privacy/claude-identity.js",
+        "linux-concurrency-v39.json",
+        "mac-concurrency-v42.json",
+        "linux-continuity-v54.json",
+        "mac-continuity-v54.json"
+      ],
+      "source": [],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "other-installation-state",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "path": "native-active app state",
+        "fields": [
+          "machineID",
+          "summonSidKey",
+          "remoteControlMachineId"
+        ]
+      },
+      "owner": "account installation",
+      "role": "vendor functional/remote state",
+      "destination": {
+        "kind": "field-specific inventory",
+        "known": "not observed raw in selected model captures; remote lifecycle remains separate"
+      },
+      "control": "classify and retain private stable values; never copy personal or other-account values",
+      "status": "Exact-build formats classified and migrated without deleting task state; per-account app state survives native login/relogin and wrong-account rejection. Remote device callers are separately gated.",
+      "evidence": [
+        "../../../../src/privacy/claude-identity.js",
+        "state-projection-integration.json",
+        "linux-continuity-v54.json",
+        "mac-continuity-v54.json",
+        "mac-device-registry-reachability.json"
+      ],
+      "source": [],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "legacy-and-backups",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "paths": [
+          "CLAUDE_CONFIG_DIR/.config.json",
+          "CLAUDE_CONFIG_DIR/backups/.claude.json.backup.<timestamp>",
+          "CLAUDE_CONFIG_DIR/.claude.json.backup.<timestamp>",
+          "CLAUDE_CONFIG_DIR/.claude.json.backup"
+        ]
+      },
+      "owner": "account state and historical identity",
+      "role": "native config selection and manual recovery",
+      "destination": {
+        "kind": "local state",
+        "known": "nonempty .config.json takes precedence; no automatic backup import found"
+      },
+      "control": "journal exact active state; retire legacy last; exclude pre-migration backups from generic vendor grants",
+      "status": "Legacy activation, interrupted migration and backup retention/reclamation tested; final vendor file grants exclude pre-migration backups.",
+      "source": [
+        "linux module273626237 y_"
+      ],
+      "evidence": [
+        "../../../../src/privacy/claude-state-transaction.js",
+        "state-projection-integration.json",
+        "linux-combined-policy.json",
+        "mac-file-policy.json"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "exact-os-version",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "api": [
+          "os.type",
+          "os.release"
+        ]
+      },
+      "owner": "host",
+      "role": "automatic model context and explicit user-owned OTel",
+      "destination": {
+        "kind": "provider model request",
+        "field": "system prompt OS Version"
+      },
+      "control": "vendor-specific Linux uname restriction and Mac signed-process sysctl/version restrictions",
+      "status": "Final integrated protected model, interactive, concurrent, background and error-lifecycle captures omit exact host OS version; ordinary tools retain host discovery.",
+      "source": [
+        "linux module283175860 fio/ikt/Sio/pkt",
+        "darwin module260605243 mio/Sio"
+      ],
+      "evidence": [
+        "linux-metadata.json",
+        "mac-metadata.json",
+        "mac-metadata-refresh.json",
+        "linux-compatibility-v42.json",
+        "mac-compatibility-v42.json",
+        "linux-background-v46.json",
+        "mac-background-v50.json",
+        "linux-errors-protected-v55.json",
+        "mac-errors-protected-v49.json",
+        "linux-dns-boundary-v61.json"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "broad-platform",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "api": [
+          "platform",
+          "architecture"
+        ]
+      },
+      "owner": "platform",
+      "role": "functional protocol and task context",
+      "destination": {
+        "kind": "provider request",
+        "fields": [
+          "X-Stainless-OS",
+          "X-Stainless-Arch",
+          "Platform"
+        ]
+      },
+      "control": "explicit user acceptance of OS family and CPU architecture",
+      "status": "Explicitly accepted OS family and architecture remain visible in ordinary functional requests.",
+      "evidence": [
+        "mac-metadata.json",
+        "linux-metadata.json"
+      ],
+      "source": [],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "linux-machine-id",
+      "platforms": [
+        "linux"
+      ],
+      "read": {
+        "paths": [
+          "/etc/machine-id",
+          "/proc/self/ns/pid"
+        ]
+      },
+      "owner": "host/process namespace",
+      "role": "automatic PID-domain construction and local coordination",
+      "destination": {
+        "kind": "local records",
+        "fields": [
+          "pidDomain"
+        ],
+        "known": "no provider serialization found in reviewed session/UDS/auth-lock consumers"
+      },
+      "control": "deny vendor host-ID file read; preserve supported empty-component fallback and coordination",
+      "status": "Vendor host-ID reads denied; reviewed local PID/lock fallback retains concurrent foreground/background work, nested launches and state locks. No provider serialization found in the reviewed consumers.",
+      "source": [
+        "linux module276364746 o/yR",
+        "linux modules276506871 and276419890",
+        "linux module312941813 startup"
+      ],
+      "evidence": [
+        "../privacy-state-2026-11-01/filesystem-observations.json",
+        "linux-combined-policy.json",
+        "linux-concurrency-v39.json",
+        "linux-background-v46.json",
+        "linux-lifetimes-v55.json",
+        "linux-dns-boundary-v61.json"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "hostname-locks-and-fullscreen",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "api": [
+          "os.hostname"
+        ],
+        "fields": [
+          ".oauth_refresh.lock.owner.pidSpace",
+          "fullscreenBootPending[pid].host"
+        ]
+      },
+      "owner": "host; local coordination/crash bookkeeping",
+      "role": "automatic token refresh and interactive startup",
+      "destination": {
+        "kind": "local records",
+        "known": "fullscreen event transmits strike/count/time, not hostname"
+      },
+      "control": "vendor metadata restrictions; never rotate live lock ownership records as installation IDs",
+      "status": "Final native concurrent, background, interactive and login/refresh captures omit raw hostnames; local lock bookkeeping remains functional.",
+      "source": [
+        "linux module276364746 wQ",
+        "linux module276506871 Rv",
+        "darwin module253990910 PJ",
+        "linux module292455283",
+        "darwin module270113570"
+      ],
+      "evidence": [
+        "mac-metadata-refresh.json",
+        "linux-concurrency-v39.json",
+        "mac-concurrency-v42.json",
+        "linux-continuity-v54.json",
+        "mac-continuity-v54.json"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "terminal-version",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "environment": [
+          "TERM_PROGRAM_VERSION"
+        ],
+        "terminalQueries": [
+          "XTVERSION CSI > 0 q"
+        ]
+      },
+      "owner": "local terminal",
+      "role": "automatic capability detection",
+      "destination": {
+        "kind": "local capability/debug state and optional provider event",
+        "fields": [
+          "tengu_terminal_probe.xtversion",
+          "tengu_terminal_probe.term_program_version"
+        ],
+        "known": "no functional model serialization found; event sink is telemetry-gated"
+      },
+      "control": "protected telemetry/error-reporting opt-outs; remove unnecessary inherited identifying inputs; verify interactive canary and attachment paths",
+      "status": "Ordinary positive controls send the terminal probe in analytics. Protected interactive and final error-lifecycle captures suppress provider events; explicit local debug can retain the terminal value. Basic terminal behavior remains available.",
+      "source": [
+        "linux module289631293 bb",
+        "linux module308844778 Eie/cFt",
+        "darwin module288074139"
+      ],
+      "evidence": [
+        "linux-default-services.json",
+        "mac-default-services.json",
+        "linux-terminal-final.json",
+        "mac-terminal-final.json",
+        "mac-controls-v43.json",
+        "linux-errors-protected-v55.json",
+        "mac-errors-protected-v49.json"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "hardware-otel-detector",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "command": "ioreg -rd1 -c IOPlatformExpertDevice",
+        "property": "IOPlatformUUID"
+      },
+      "owner": "host hardware",
+      "role": "bundled OpenTelemetry hostDetector",
+      "destination": {
+        "kind": "unselected bundled detector",
+        "fields": [
+          "host.name",
+          "host.arch",
+          "host.id"
+        ],
+        "known": "all hostDetector references found are definitions/re-exports; actual builder selects osDetector/envDetector"
+      },
+      "control": "hardware API/property restriction and exact-version upgrade review",
+      "status": "Exact-build source references define/re-export the host detector but do not select it. Alternative native hardware/UUID APIs have paired negative controls; explicitly requested tool discovery remains permitted.",
+      "source": [
+        "linux modules296040787/275551390/304390563",
+        "darwin modules273870783/253177254/280850857"
+      ],
+      "evidence": [
+        "../privacy-sandbox-2026-11-01/mac-api-final.json",
+        "mac-metadata.json",
+        "mac-approved-entry-descriptor-correction.json"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "builtin-plugin-environment",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "commands": [
+          "uname -s",
+          "uname -r",
+          "uname -m"
+        ],
+        "paths": [
+          "/sys/hypervisor/uuid"
+        ]
+      },
+      "owner": "host",
+      "role": "automatic built-in telemetry plugin",
+      "destination": {
+        "kind": "provider event",
+        "endpoint": "/api/event_logging/v2/batch",
+        "fields": [
+          "linuxKernel",
+          "linuxDistroVersion",
+          "architecture",
+          "deployment classification"
+        ]
+      },
+      "control": "DISABLE_TELEMETRY checked before environment-context construction",
+      "status": "Telemetry opt-out gates environment-context construction; live native analytics positive controls and final protected startup/tool-failure/idle/shutdown checks pass on both platforms.",
+      "source": [
+        "linux module312839804",
+        "darwin module290809803"
+      ],
+      "evidence": [
+        "linux-default-services.json",
+        "mac-default-services.json",
+        "linux-errors-baseline-v54.json",
+        "mac-errors-baseline-v48.json",
+        "linux-errors-protected-v55.json",
+        "mac-errors-protected-v49.json"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "remote-device-credential",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "path": "os.homedir()/.claude/.device-keys.json",
+        "legacyField": "credentials.coworkRemoteDevice[accountUuid]",
+        "macKeychainService": "Claude Code-device-keys",
+        "fields": [
+          "privateKeyPkcs8B64",
+          "rowPk"
+        ]
+      },
+      "owner": "account-bound signed-device credential in global store",
+      "role": "automatic remote-device registration and signed cloud/peer requests behind reviewed disabled gates",
+      "destination": {
+        "kind": "provider registration",
+        "fields": [
+          "display_name (hostname and platform)",
+          "platform",
+          "public_key"
+        ]
+      },
+      "control": "disableRemoteControl and DISABLE_GROWTHBOOK; deny global vendor file reads; preserve ordinary tools and unrelated MCP Keychain access",
+      "status": "Reviewed automatic binding/signing callers stop before key lookup under the pinned feature flags and Remote Control policy, including saved-enabled restart. This is source-gated suppression, not unconditional OS denial of Keychain access.",
+      "source": [
+        "linux module279926261 bsr/$sr",
+        "darwin module257267274 bsr/$sr",
+        "linux module298744040",
+        "darwin module276044095"
+      ],
+      "evidence": [
+        "mac-device-registry-reachability.json",
+        "linux-rc-protected-v28.json",
+        "mac-rc-protected-v27.json",
+        "linux-rc-policy-v33.json",
+        "mac-rc-policy-v33.json"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "chrome-native-host-name",
+      "platforms": [
+        "darwin"
+      ],
+      "read": {
+        "command": "scutil --get ComputerName"
+      },
+      "owner": "host",
+      "role": "optional Chrome native-host get_status handler",
+      "destination": {
+        "kind": "local Chrome response",
+        "field": "status_response.computer_name"
+      },
+      "control": "optional GUI integration not required; do not replace original browser/profile",
+      "status": "Optional Chrome native-host integration is outside preserved local skills/MCP workflows. Original account browser/profile is retained; no substitute browser is used.",
+      "source": [
+        "linux-containing module295032828",
+        "darwin module272770844"
+      ],
+      "evidence": [
+        "../../CLAUDE_PRIVACY_PROXY_WORKLOG_2026-10-30.md"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "error-reporter-host-version",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "field": "host_os_release"
+      },
+      "owner": "host",
+      "role": "automatic error reporter",
+      "destination": {
+        "kind": "provider-directed error report",
+        "field": "host_os_release"
+      },
+      "control": "DISABLE_ERROR_REPORTING before reporter initialization plus native metadata controls",
+      "status": "Actual native reporter uploads the synthetic internal error in baseline; opt-out removes that upload. Final protected tool-failure/idle/shutdown captures have no optional reports and preserve independent user OTel logs/metrics.",
+      "source": [
+        "linux modules282523248 Z_i and282528524 tSe/K"
+      ],
+      "evidence": [
+        "linux-default-services.json",
+        "mac-default-services.json",
+        "linux-errors-baseline-v54.json",
+        "mac-errors-baseline-v48.json",
+        "linux-errors-protected-v55.json",
+        "mac-errors-protected-v49.json"
+      ],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "unrelated-files-and-descriptors",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "paths": [
+          "personal home outside required dependencies",
+          "other account state"
+        ],
+        "handles": [
+          "inherited file and socket descriptors"
+        ],
+        "environment": [
+          "required inherited build/MCP values remain readable by the vendor; AIM provider credentials and known automatic terminal detector inputs are scoped separately"
+        ]
+      },
+      "owner": "user/other accounts",
+      "role": "potential automatic vendor access; intentional tool output distinguished",
+      "destination": {
+        "kind": "not a proven upload",
+        "known": "Canary tests establish file/descriptor denial under the scoped vendor boundary; intentionally invoked tools and accepted task context remain separate."
+      },
+      "control": "native vendor file restrictions; final inherited-handle cleanup; targeted automatic detector/provider cleanup preserving required build/MCP environment",
+      "status": "Paired direct-file/alias/descriptor negatives and final-entry controls pass. Required development, tools/MCP, nested dispatch and protected descendants remain usable. Required inherited build/MCP values are intentionally vendor-readable; no blanket secret isolation is claimed.",
+      "evidence": [
+        "linux-combined-policy.json",
+        "mac-file-policy.json",
+        "mac-nested-common-policy.json",
+        "mac-approved-entry-descriptor-correction.json",
+        "linux-compatibility-v42.json",
+        "mac-compatibility-v42.json",
+        "linux-lifetimes-v55.json",
+        "mac-lifetimes-v55.json",
+        "linux-dns-boundary-v61.json"
+      ],
+      "source": [],
+      "coverage": "Exact reviewed artifact and named workflows; each receipt retains its actual source/runtime identity. Acceptance is tracked by the plan T01\u2013T24 matrix."
+    },
+    {
+      "id": "native-background-ipc",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "paths": [
+          "/tmp/cc-daemon-UID/SHA256(path.resolve(NFC(CLAUDE_CONFIG_DIR))).digest(\"hex\").slice(0, 8)"
+        ],
+        "separateIntegration": "cc-socks independent-session messaging inbox"
+      },
+      "owner": "account config namespace",
+      "role": "native background supervisor/worker rendezvous and attach PTY; normal Agent queries execute in-process",
+      "destination": {
+        "kind": "local control sockets",
+        "known": "no global installation identifier in config-path hash; independent-session integration is outside requested workflows"
+      },
+      "control": "precreate and verify owned non-symlink 0700 parent/child; grant exact child only, never shared subtree; keep descendants in existing route and approved-image controls",
+      "status": "Native A1/A2/B background, surviving worker, failure, retained settings and saved-job stop/respawn/attach/new prompt with Unicode paste pass on both platforms.",
+      "source": [
+        "darwin module251094182 Ne at251096737 config NFC",
+        "darwin module258348364 q at258350662 SHA256 hex slice(0,8); XFe at258350735 daemon path; oEn at258352502 and idi at258353178 ownership/mode",
+        "darwin module269149554 Xo at269168418; koe(makeStream:yP) at269191621 and foreground at269195758",
+        "darwin module268886851 yP at268979813; nt.options.runQuery at269001413",
+        "darwin module280611271 fLi at280625605; aDs long-path fallback at280625743",
+        "darwin module284887735 local-session at284981570; sendToUdsSocket at284982778",
+        "darwin module280541097 CLAUDE_BG_BACKEND daemon branch at280563937"
+      ],
+      "evidence": [
+        "linux-background-v46.json",
+        "mac-background-v50.json",
+        "mac-savedjobs-v56.json",
+        "linux-savedjobs-v59.json"
+      ],
+      "coverage": "Filesystem grant scope; no claim that per-path file grants authenticate all same-UID AF_UNIX operations."
+    },
+    {
+      "id": "functional-protocol-and-task-metadata",
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "read": {
+        "fields": [
+          "account UUID and organization",
+          "client and bundled runtime version",
+          "OS family/architecture",
+          "task cwd, shell, Git context, prompts, code and requested tool output"
+        ]
+      },
+      "owner": "account, reviewed client build and task",
+      "role": "functional provider requests",
+      "destination": {
+        "kind": "provider model/auth/usage request"
+      },
+      "control": "explicitly accepted task/platform information; retain account binding and distinct private installation IDs",
+      "status": "Accepted disclosure; do not redact or reclassify as an unresolved privacy target.",
+      "source": [],
+      "evidence": [
+        "linux-metadata.json",
+        "mac-metadata.json",
+        "linux-concurrency-v39.json",
+        "mac-concurrency-v42.json"
+      ],
+      "coverage": "Accepted disclosures are not promises of anonymity or content-correlation prevention."
+    }
+  ],
+  "scope": "Automatic Anthropic collection and reviewed vendor access for official Claude Code 2.1.316 under AIM; not malicious/privileged tools, user-requested context, independent services, or optional GUI/independent-session integrations.",
+  "pendingAcceptance": [],
+  "completionMeaning": "Inventory complete for the pinned artifacts and reviewed automatic collection paths under the agreed exclusions; not a promise against arbitrary malicious/privileged tool actions or future unreviewed builds."
+}

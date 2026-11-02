@@ -1,0 +1,94 @@
+{
+  "results": [
+    {
+      "profile": "baseline",
+      "policyLoad": {
+        "exit": 0,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": ""
+      },
+      "libc": {
+        "exit": 0,
+        "validUuid": true,
+        "sameAsBaseline": true,
+        "error": ""
+      },
+      "direct": {
+        "exit": 0,
+        "validUuid": true,
+        "sameAsBaseline": true,
+        "error": ""
+      }
+    },
+    {
+      "profile": "symbol",
+      "policyLoad": {
+        "exit": 0,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": ""
+      },
+      "libc": {
+        "exit": 1,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": "",
+        "errno": "error:1"
+      },
+      "direct": {
+        "exit": 1,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": "",
+        "errno": "error:1"
+      }
+    },
+    {
+      "profile": "numeric",
+      "policyLoad": {
+        "exit": 0,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": ""
+      },
+      "libc": {
+        "exit": 1,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": "",
+        "errno": "error:1"
+      },
+      "direct": {
+        "exit": 1,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": "",
+        "errno": "error:1"
+      }
+    },
+    {
+      "profile": "no-inference",
+      "policyLoad": {
+        "exit": 0,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": ""
+      },
+      "libc": {
+        "exit": 1,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": "",
+        "errno": "error:1"
+      },
+      "direct": {
+        "exit": 1,
+        "validUuid": false,
+        "sameAsBaseline": false,
+        "error": "",
+        "errno": "error:1"
+      }
+    }
+  ]
+}

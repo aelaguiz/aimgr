@@ -1,0 +1,45 @@
+{
+  "linux": {
+    "machineIdOpened": true,
+    "rawOsMachineIdInCapturedRequests": false,
+    "rawClaudeConfigMachineIdInCapturedRequests": false,
+    "claudeConfigMachineIdEqualsOsMachineId": false,
+    "examples": [
+      "openat(AT_FDCWD</opt/aimgr-state-audit/linux-verified/project>, \"/etc/machine-id\", O_RDONLY|O_NOCTTY|O_LARGEFILE|O_CLOEXEC) = 10</etc/machine-id>"
+    ]
+  },
+  "macos": {
+    "filesystemTraceLines": 46406,
+    "doctorTraceLines": 8216,
+    "examples": [
+      "17:36:08.051891  open              F=35       (R__________X__)  /System/Library/CoreServices/SystemVersion.plist                                                                                                              0.000008   codex.7246",
+      "17:36:08.051951  open              F=35       (R__________X__)  /System/Library/CoreServices/SystemVersion.plist                                                                                                              0.000006   codex.7244",
+      "17:36:08.070678  getattrlist                            /System/Library/Keychains/SystemRootCertificates.keychain                                                                                                             0.000009   codex.7253",
+      "17:36:08.070691  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000005   codex.7253",
+      "17:36:08.072419  open              F=37       (R_____________)  /System/Library/Keychains/SystemRootCertificates.keychain                                                                                                     0.000009   codex.7253",
+      "17:36:08.076629  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000001   codex.7253",
+      "17:36:08.079643  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000001   codex.7253",
+      "17:36:08.211658  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000002   codex.7253",
+      "17:36:08.214203  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000001   codex.7253",
+      "17:36:08.216904  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000001   codex.7253",
+      "17:36:08.418552  open              F=30       (R__________X__)  /System/Library/CoreServices/SystemVersion.plist                                                                                                              0.000023   codex.7325",
+      "17:36:08.418564  open              F=31       (R__________X__)  /System/Library/CoreServices/SystemVersion.plist                                                                                                              0.000019   codex.7330",
+      "17:36:08.449319  getattrlist                            /System/Library/Keychains/SystemRootCertificates.keychain                                                                                                             0.000009   codex.7334",
+      "17:36:08.449329  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000002   codex.7334",
+      "17:36:08.450998  open              F=40       (R_____________)  /System/Library/Keychains/SystemRootCertificates.keychain                                                                                                     0.000011   codex.7334",
+      "17:36:08.455098  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000002   codex.7334",
+      "17:36:08.457951  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000001   codex.7334",
+      "17:36:08.579044  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000002   codex.7334",
+      "17:36:08.581584  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000001   codex.7334",
+      "17:36:08.584278  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000001   codex.7334",
+      "17:36:08.794660  open              F=29       (R__________X__)  /System/Library/CoreServices/SystemVersion.plist                                                                                                              0.000029   codex.7414",
+      "17:36:08.794660  open              F=30       (R__________X__)  /System/Library/CoreServices/SystemVersion.plist                                                                                                              0.000028   codex.7419",
+      "17:36:08.803082  getattrlist                            /System/Library/Keychains/SystemRootCertificates.keychain                                                                                                             0.000008   codex.7422",
+      "17:36:08.803091  getattrlist            [  2]           /System/Library/Keychains/SystemRootCertificates.keychain-db                                                                                                          0.000002   codex.7422"
+    ],
+    "desktopBootstrapReads": [
+      "17:38:19.524091  open              F=11       (R__________X__)  /opt/aimgr-state-audit/mac-doctor/os-home-a/Library/Application Support/com.openai.codex/production-appcast-bootstrap.json                                    0.000014   codex.9141",
+      "17:38:23.678443  open              F=11       (R__________X__)  /opt/aimgr-state-audit/mac-doctor/os-home-b/Library/Application Support/com.openai.codex/production-appcast-bootstrap.json                                    0.000021   codex.9190"
+    ]
+  }
+}

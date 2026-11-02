@@ -1,0 +1,64 @@
+{
+  "integratedAim": true,
+  "mode": "protected",
+  "actualNativeRoute": true,
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-controls-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/exit",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 3,
+      "modelSources": [
+        "127.0.0.2"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": false,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "controls": {
+        "passed": true,
+        "directVendorPid": true,
+        "pauseStopsVendorRequests": true,
+        "resumeCompletesTurn": true,
+        "forcedKillStopsVendor": true,
+        "terminalRestoredWhileAimAlive": true,
+        "preflightCancellationStartsNoVendor": true
+      },
+      "connectAuthorities": []
+    }
+  ],
+  "settingsWatcherPollingDiagnostic": false,
+  "remoteControlPolicyOnlyComparison": false,
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchives": [
+    {
+      "version": "v43",
+      "sha256": "3533e006cceb3ace8f28a2f79bac0462640f4ace3e4e1777995c4e2befae997d",
+      "kind": "full"
+    }
+  ],
+  "sourceBaseRevision": "354be9e",
+  "runtimeArtifactSha256": "0055c2354eeaeacbf33e9c171f0c635d530780931334c37ea9ff8963970e1ca8"
+}

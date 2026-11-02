@@ -1,0 +1,62 @@
+{
+  "kind": "synthetic standalone compatibility; not production privacy acceptance",
+  "platform": "Linux",
+  "codexSha256": "1f389f19de064430a227a50af2bfa627699be4c600f1a37c114039fdd027b75b",
+  "codeModeHostSha256": "d01f7a656bd2a54b26fd99131f252c7371e2e890f3713c5dd977676b54bfb3bf",
+  "results": [
+    {
+      "case": "SCHEDULE",
+      "mode": "OS scheduler + real AIM native-turn adapter",
+      "error": null,
+      "model": {
+        "count": 4,
+        "calls": [
+          "functions/exec",
+          "functions/exec",
+          "functions/exec"
+        ],
+        "toolNames": [
+          "functions/exec",
+          "functions/wait",
+          "functions/request_user_input",
+          "functions/request_user_input_async",
+          "clock/sleep",
+          "collaboration/followup_task",
+          "collaboration/interrupt_agent",
+          "collaboration/list_agents",
+          "collaboration/send_message",
+          "collaboration/spawn_agent",
+          "collaboration/wait_agent"
+        ],
+        "skillSeen": true,
+        "stdioReturned": true,
+        "httpReturned": true,
+        "shellReturned": true,
+        "firstRequestSkillLoaded": true,
+        "subagentReturned": false,
+        "finished": true
+      },
+      "toolWorkflowPassed": true
+    },
+    {
+      "case": "HANDOFF",
+      "mode": "standalone-tui",
+      "exitCode": 0,
+      "elapsedSeconds": 5.8,
+      "projectEditObserved": false,
+      "finalMessageReceived": true,
+      "forcedTermination": false,
+      "model": {},
+      "toolWorkflowPassed": true,
+      "noPromptReplayed": true
+    }
+  ],
+  "concurrentBarrierPassed": null,
+  "separateHomesHaveDifferentInstallationIds": null,
+  "daemonDirectoryAbsentOnly": true,
+  "staleDaemonSocketConnections": 0,
+  "observedProcessesStillAliveBeforeCleanup": 0,
+  "noRealAccounts": true,
+  "outboundBoundary": "loopback namespace",
+  "rawSummarySha256": "9172af3a2bfbcbcfee8f34c6afed184a9c65c5d907acb68eb31d22655873e54b"
+}

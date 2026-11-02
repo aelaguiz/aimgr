@@ -1,0 +1,41 @@
+{
+  "platform": "Darwin",
+  "comparisons": {
+    "baseline": {
+      "privateRead": true,
+      "symlinkRead": true,
+      "privateWrite": true,
+      "allowedReadWrite": true,
+      "inputRead": true,
+      "inputWrite": true,
+      "inputReplace": true,
+      "inputRename": true,
+      "inputUnlink": true,
+      "networkConnect": true,
+      "shellExec": true,
+      "serviceLookup": {
+        "com.apple.securityd.xpc": true,
+        "com.apple.cfprefsd.daemon": true
+      }
+    },
+    "restricted": {
+      "privateRead": false,
+      "symlinkRead": false,
+      "privateWrite": false,
+      "allowedReadWrite": true,
+      "inputRead": true,
+      "inputWrite": false,
+      "inputReplace": false,
+      "inputRename": false,
+      "inputUnlink": false,
+      "networkConnect": false,
+      "shellExec": false,
+      "serviceLookup": {
+        "com.apple.securityd.xpc": false,
+        "com.apple.cfprefsd.daemon": false
+      }
+    }
+  },
+  "passed": true,
+  "meaning": "Synthetic policy boundary controls; final launcher must also close inherited descriptors"
+}

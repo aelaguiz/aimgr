@@ -1,0 +1,178 @@
+{
+  "platform": "Linux-7.0.0-1014-gcp-x86_64-with-glibc2.39",
+  "allPassed": true,
+  "checks": [
+    {
+      "provider": "codex",
+      "check": "five successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "restart and copied home retain ID",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "fresh app homes have distinct IDs",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "five successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "restart and copied home retain ID",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "fresh app homes have distinct IDs",
+      "passed": true
+    }
+  ],
+  "results": [
+    {
+      "case": "codex-fresh-a",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "1c1571326ce382cd"
+      ],
+      "diskIdentifierHash": "1c1571326ce382cd",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-repeat-a",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "1c1571326ce382cd"
+      ],
+      "diskIdentifierHash": "1c1571326ce382cd",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-fresh-b",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "494a11cbc8ac840d"
+      ],
+      "diskIdentifierHash": "494a11cbc8ac840d",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-cloned-a",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "1c1571326ce382cd"
+      ],
+      "diskIdentifierHash": "1c1571326ce382cd",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "codex-separate-os-home",
+      "exitCode": 0,
+      "requestCount": 2,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "8669b25c239f1aed"
+      ],
+      "diskIdentifierHash": "8669b25c239f1aed",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ]
+    },
+    {
+      "case": "claude-fresh-a",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "ea6a51b65fec48c1"
+      ],
+      "diskIdentifierHash": "ea6a51b65fec48c1",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-repeat-a",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "ea6a51b65fec48c1"
+      ],
+      "diskIdentifierHash": "ea6a51b65fec48c1",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-fresh-b",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "90739512e0617a0d"
+      ],
+      "diskIdentifierHash": "90739512e0617a0d",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-cloned-a",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "ea6a51b65fec48c1"
+      ],
+      "diskIdentifierHash": "ea6a51b65fec48c1",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    },
+    {
+      "case": "claude-separate-os-home",
+      "exitCode": 0,
+      "requestCount": 1,
+      "modelRequestCount": 1,
+      "identifierHashes": [
+        "6fa86396b51ae500"
+      ],
+      "diskIdentifierHash": "6fa86396b51ae500",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ]
+    }
+  ]
+}

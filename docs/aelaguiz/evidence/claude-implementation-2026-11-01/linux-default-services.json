@@ -1,0 +1,128 @@
+{
+  "platform": "Linux",
+  "artifactSha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "results": [
+    {
+      "case": "api-key-telemetry-on",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code/organizations/metrics_enabled",
+        "/api/claude_code/policy_limits",
+        "/api/claude_code/settings",
+        "/api/claude_code_penguin_mode",
+        "/api/eval/sdk-zAZezfDKGoZuXXKe",
+        "/api/event_logging/v2/batch",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 1,
+      "managedSettingsFetches": 2,
+      "eventLoggingRequests": 2,
+      "connectAuthorities": [
+        "api.anthropic.com:443"
+      ]
+    },
+    {
+      "case": "api-key-telemetry-off",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code/policy_limits",
+        "/api/claude_code/settings",
+        "/api/claude_code_penguin_mode",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 1,
+      "managedSettingsFetches": 2,
+      "eventLoggingRequests": 0,
+      "connectAuthorities": [
+        "api.anthropic.com:443"
+      ]
+    },
+    {
+      "case": "pro-sign-in",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 1,
+      "managedSettingsFetches": 0,
+      "eventLoggingRequests": 0,
+      "connectAuthorities": [
+        "api.anthropic.com:443"
+      ]
+    },
+    {
+      "case": "max-sign-in",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 1,
+      "managedSettingsFetches": 0,
+      "eventLoggingRequests": 0,
+      "connectAuthorities": [
+        "api.anthropic.com:443"
+      ]
+    },
+    {
+      "case": "team-positive-control",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code/policy_limits",
+        "/api/claude_code/settings",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/profile",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 1,
+      "managedSettingsFetches": 2,
+      "eventLoggingRequests": 0,
+      "connectAuthorities": [
+        "api.anthropic.com:443"
+      ]
+    },
+    {
+      "case": "pro-stale-profile",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 1,
+      "managedSettingsFetches": 0,
+      "eventLoggingRequests": 0,
+      "connectAuthorities": [
+        "api.anthropic.com:443"
+      ]
+    }
+  ],
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance"
+}

@@ -3,7 +3,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { writeAimgrConfig as writeConfig } from "../../src/config/aimgr-config.js";
 import {
   connectRedisStore,
@@ -123,7 +122,7 @@ test("proxy setter refuses an active launcher, preserves credential writes, and 
   });
   try {
     await started.promise;
-    await assert.rejects(lane.set(), { code: "AIMGR_CREDENTIAL_BUSY" });
+    await assert.rejects(lane.set(), /local assignment lock is unavailable/);
     assert.equal((await readSnapshot(lane.store)).credentials[0].policy.egress.profileRef, "a");
   } finally { finish.resolve(); await running; }
   await lane.set();
@@ -167,16 +166,28 @@ test("local assignment fence permits shared cached sessions and excludes only th
   } finally { await one.release(); await two.release(); await unrelated.release(); }
 });
 
-test("local assignment lock loss aborts its cached session and releases the holder", async t => {
+test("online Claude holds the local shared lock and refuses exclusive migration before launch", async t => {
+  const lane = await proxyAssignmentFixture(t);
+  await lane.run(async ({ assignmentLock }) => {
+    assignmentLock.assertOwned();
+    await assert.rejects(acquireClaudeAssignmentLock(lane.home, "claude", { exclusive: true }), /lock is unavailable/);
+    const sibling = await acquireClaudeAssignmentLock(lane.home, "claude");
+    await sibling.release();
+    return { status: 0, signal: null };
+  });
+  const exclusive = await acquireClaudeAssignmentLock(lane.home, "claude", { exclusive: true });
+  try {
+    await assert.rejects(lane.run(() => assert.fail("exclusive migration reached launch")), /lock is unavailable/);
+  } finally { await exclusive.release(); }
+  await lane.run(() => ({ status: 0, signal: null }));
+});
+
+test("releasing the locally owned assignment descriptor invalidates its guard", async t => {
   const lane = await proxyAssignmentFixture(t);
   const lock = await acquireClaudeAssignmentLock(lane.home, "claude");
-  const holder = Number(execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" }).split("\n")
-    .map(line => line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)).find(parts => parts && Number(parts[2]) === process.pid
-      && parts[3].includes(path.join(lane.home, ".aimgr/claude-egress/claude.json.lock")))?.[1]);
-  assert.ok(Number.isSafeInteger(holder) && holder > 1);
-  const aborted = new Promise(resolve => lock.signal.addEventListener("abort", resolve, { once: true }));
-  process.kill(holder, "SIGTERM");
-  await aborted;
+  lock.assertOwned();
+  await lock.release();
+  assert.equal(lock.signal.aborted, true);
   assert.throws(lock.assertOwned, /assignment lock is unavailable/);
   await lock.release();
   const next = await acquireClaudeAssignmentLock(lane.home, "claude", { exclusive: true });
@@ -1511,7 +1522,7 @@ test("automatic Fable run skips a locked account and launches the lowest five-ho
   await lockedLease.release();
 });
 
-test("explicit Claude run replaces incomplete credentials and malformed app state from Redis", async () => {
+test("protected Claude preserves corrupt app state and repairs only a verified empty-token cache", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const nowMs = Date.now();
@@ -1556,6 +1567,15 @@ test("explicit Claude run replaces incomplete credentials and malformed app stat
   writeJson(path.join(configDir, ".credentials.json"), { claudeAiOauth: emptyOauth });
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, ".claude.json"), "{malformed\n", { mode: 0o600 });
+  await assert.rejects(runCli(["claude", "run", "pro4", "--home", home], {
+    env: { HOME: home }, nowImpl: () => nowMs,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: () => assert.fail("corrupt private identity reached native launch"),
+  }), /preserve it for repair/);
+  assert.equal(fs.readFileSync(path.join(configDir, ".claude.json"), "utf8"), "{malformed\n");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, ".credentials.json"))).claudeAiOauth.accessToken, "");
+  writeJson(path.join(configDir, ".claude.json"), { oauthAccount: credential.nativeClaudeBundle.oauthAccount });
   let launched = false;
   const out = await runCli(["claude", "run", "pro4", "--home", home], {
     env: { HOME: home },

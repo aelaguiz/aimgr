@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
 import { isObject } from "../core/normalize.js";
 import { parseTimestampLikeToMs } from "../state/demand.js";
+import { readClaudeActiveAppState, selectClaudeAppStateFile } from "../privacy/claude-state-source.js";
 import {
   buildClaudeNativeBundle,
   buildClaudeCredentialSummaryFromBundle,
@@ -100,6 +101,22 @@ function normalizeFullKeychainOauth(value) {
       refreshToken,
       expiresAt,
       subscriptionType,
+      // Privacy admission and vanilla Claude both distinguish a sign-in tier
+      // from a profile-derived tier whose verification can expire. Dropping
+      // these fields silently turns the latter into an undated legacy tier.
+      // Preserve presence and value exactly, including null/malformed values:
+      // admission must refuse uncertainty rather than laundering it here.
+      // T08 covers profile freshness and managed-policy eligibility on refresh.
+      ...(Object.hasOwn(oauth, "subscriptionTypeSource")
+        ? { subscriptionTypeSource: structuredClone(oauth.subscriptionTypeSource) } : {}),
+      ...(Object.hasOwn(oauth, "subscriptionTypeVerifiedAt")
+        ? { subscriptionTypeVerifiedAt: structuredClone(oauth.subscriptionTypeVerifiedAt) } : {}),
+      // Native refresh binds clientId and refresh-token expiry to the issued
+      // credential. A projection must not erase them or infer them from an
+      // older token. Preserve exact optional presence just like provenance.
+      ...(Object.hasOwn(oauth, "clientId") ? { clientId: structuredClone(oauth.clientId) } : {}),
+      ...(Object.hasOwn(oauth, "refreshTokenExpiresAt")
+        ? { refreshTokenExpiresAt: structuredClone(oauth.refreshTokenExpiresAt) } : {}),
       rateLimitTier,
       scopes,
     },
@@ -396,6 +413,19 @@ export function readClaudeNativeOauthAccountAtPath({
   return { ok: true, oauthAccount };
 }
 
+function readActiveClaudeNativeOauthAccount({ descriptor, fsImpl = fs }) {
+  try {
+    const active = readClaudeActiveAppState({ configDir: descriptor.configDir,
+      canonicalFile: descriptor.appStatePath, fsImpl });
+    // Keep the existing private-file, size, complete-identity and expected-
+    // email checks on the actual source chosen by native. Reading canonical
+    // state when a legacy selector wins can misattribute a refresh to another
+    // account in reconciliation, offline admission or Keychain capture.
+    return readClaudeNativeOauthAccountAtPath({ appStatePath: active.file,
+      expectedEmail: descriptor.expectedEmail, fsImpl });
+  } catch { return { ok: false, errorKind: "app_state_unavailable" }; }
+}
+
 export function buildClaudeNativeStorageDescriptor({
   configDir,
   defaultConfigDir,
@@ -534,14 +564,21 @@ export function ensureSafeManagedClaudeStorage({ descriptor, fsImpl = fs } = {})
     if (!assertOwnedDirectory(stat)) {
       throw new Error("Refusing an unsafe managed Claude directory.");
     }
-    fsImpl.chmodSync(current, 0o700);
+    // A nested AIM launch can inherit the parent's immutable settings path.
+    // Linux must pin that path's ancestors against rename; AppArmor also
+    // classifies chmod on those directories as a write. Avoid a redundant
+    // chmod only after inspecting the owned directory's actual permissions.
+    // An insecure directory still requires successful repair and verification.
+    if ((stat.mode & 0o7777) !== 0o700) fsImpl.chmodSync(current, 0o700);
     const verified = fsImpl.lstatSync(current);
     if (!assertOwnedDirectory(verified) || (verified.mode & 0o077) !== 0) {
       throw new Error("Could not secure a managed Claude directory.");
     }
   }
 
-  for (const filePath of [descriptor.credentialsPath, descriptor.appStatePath]) {
+  const active = selectClaudeAppStateFile({ configDir: descriptor.configDir,
+    canonicalFile: descriptor.appStatePath, fsImpl });
+  for (const filePath of new Set([descriptor.credentialsPath, descriptor.appStatePath, active.file])) {
     let stat;
     try {
       stat = fsImpl.lstatSync(filePath);
@@ -629,11 +666,7 @@ export async function captureClaudeNativeBundleFromKeychain({
   if (!isValidClaudeNativeStorageDescriptor(descriptor)) {
     return { ok: false, errorKind: "storage_descriptor_invalid" };
   }
-  const identity = readClaudeNativeOauthAccountAtPath({
-    appStatePath: descriptor.appStatePath,
-    expectedEmail: descriptor.expectedEmail,
-    fsImpl,
-  });
+  const identity = readActiveClaudeNativeOauthAccount({ descriptor, fsImpl });
   if (identity.ok !== true) return identity;
 
   let keychain;
@@ -678,11 +711,7 @@ export function readClaudeNativeBundleFromConfigFiles({ descriptor, fsImpl = fs 
     return { ok: false, errorKind: "storage_descriptor_invalid" };
   }
   const credentials = readOwnedPrivateJsonObject(descriptor.credentialsPath, { fsImpl });
-  const identity = readClaudeNativeOauthAccountAtPath({
-    appStatePath: descriptor.appStatePath,
-    expectedEmail: descriptor.expectedEmail,
-    fsImpl,
-  });
+  const identity = readActiveClaudeNativeOauthAccount({ descriptor, fsImpl });
   if (
     credentials.ok !== true
     || !isObject(credentials.json?.claudeAiOauth)
@@ -803,7 +832,7 @@ export async function readClaudeNativeBundleFromStorage({
       return { ok: false, errorKind: "managed_storage_unsafe" };
     }
   }
-  const file = readClaudeNativeBundleFromConfigFiles({ descriptor });
+  const file = readClaudeNativeBundleFromConfigFiles({ descriptor, fsImpl });
   let keychainOauth;
   try {
     keychainOauth = await readClaudeNativeKeychainOauthImpl({ service: descriptor.service });
@@ -812,11 +841,7 @@ export async function readClaudeNativeBundleFromStorage({
   }
   let keychain;
   if (keychainOauth?.ok === true) {
-    const identity = readClaudeNativeOauthAccountAtPath({
-      appStatePath: descriptor.appStatePath,
-      expectedEmail: descriptor.expectedEmail,
-      fsImpl,
-    });
+    const identity = readActiveClaudeNativeOauthAccount({ descriptor, fsImpl });
     if (identity.ok !== true) {
       keychain = { ok: false, errorKind: "keychain_identity_unavailable" };
     } else {

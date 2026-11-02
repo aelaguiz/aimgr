@@ -1,0 +1,33 @@
+{
+  "platform": "Linux",
+  "artifactSha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "meaning": "Scoped settings observations, not complete telemetry or relay lifecycle acceptance",
+  "results": [
+    {
+      "case": "privacy-overlay",
+      "exit": 0,
+      "policyRefusal": false,
+      "modelRequests": 2,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "preserve-me",
+        "toolUnameMatchesHost": true,
+        "toolUid": 999
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Linux",
+        "- Platform: linux",
+        "- Shell: bash"
+      ]
+    }
+  ]
+}

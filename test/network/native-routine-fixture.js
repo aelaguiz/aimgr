@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
-import { connectRedisStore, importCredentialsSnapshot, readSnapshot, publishCredential } from "../../src/coordination/redis-store.js";
+import { connectRedisStore, closeRedisStore, importCredentialsSnapshot, readSnapshot, publishCredential } from "../../src/coordination/redis-store.js";
 import { executeRoutineWorker } from "../../src/routines/run.js";
 import { runClaudeCli, runClaudeCliNoninteractive } from "../../src/targets/claude-runner.js";
 import { runCli } from "../helpers/cli-runner.js";
@@ -11,6 +12,7 @@ import { formatCliError } from "../../src/cli/error.js";
 import { prepareClaudeNativeRoute } from "../../src/network/claude-native-route.js";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 
@@ -71,40 +73,52 @@ export async function verifyStartupDenied({ root, profile, destination, phase, r
   console.log(JSON.stringify({ startupFailure: { phase, code, message: stderr.trim(), protectedChildStarted: false, protectedRequests: 0, ordinaryAccountLaunched: true } }));
 }
 
-// Only the Mac Herdr UI and Redis wire are fixtures. AIM's scheduler, account
+// Herdr UI is substituted; callers may use disposable real Redis. AIM's scheduler, account
 // selection/lease, worker, native launcher, real CLI, hooks and route all run.
 // Print mode makes this check unattended. It does not establish actual OS
 // timer firing or interactive follow-up; the plan requires separate evidence.
-export async function createNativeRoutineFixture({ root, profile, destination, claudeBin, routineId = "native", label = "a", scheduledDate = null, printMode = true }) {
+export async function createNativeRoutineFixture({ root, profile, destination, claudeBin, routineId = "native", label = "a", scheduledDate = null, printMode = true, defaultServices = null }) {
   const homeDir = path.join(root, "routine-home");
   const cwd = path.join(homeDir, "work");
   fs.mkdirSync(cwd, { recursive: true });
-  installFixtureSecurityAdapter(homeDir);
+  if (!defaultServices) installFixtureSecurityAdapter(homeDir);
   fs.mkdirSync(path.join(homeDir, ".claude"), { recursive: true });
   fs.writeFileSync(path.join(homeDir, ".claude", "settings.json"), JSON.stringify({
     skipDangerousModePermissionPrompt: true,
-    env: { ANTHROPIC_BASE_URL: destination, ANTHROPIC_API_KEY: "synthetic-routine-key" },
+    env: defaultServices ? { NODE_EXTRA_CA_CERTS: defaultServices.caFile }
+      : { ANTHROPIC_BASE_URL: destination, ANTHROPIC_API_KEY: "synthetic-routine-key" },
   }));
   fs.writeFileSync(path.join(homeDir, ".claude.json"), JSON.stringify({ projects: { [cwd]: { hasTrustDialogAccepted: true } } }));
   const promptFile = path.join(homeDir, "prompt.md");
-  const keyPrefix = "native-routine-test:";
+  const redisUrl = defaultServices?.realRedisUrl ?? null;
+  if (redisUrl) assert.equal(redisUrl, 'redis://127.0.0.1:36379');
+  const keyPrefix = redisUrl ? `native-routine-${createHash('sha256').update(root).digest('hex').slice(0, 16)}:` : "native-routine-test:";
   writeAimgrConfig({ homeDir, config: {
-    redis: { url: "redis://fake:6379", keyPrefix },
+    redis: { url: redisUrl ?? "redis://fake:6379", keyPrefix },
     ...(profile ? { claudeProxyProfiles: { [profile.profileRef]: { socksPort: profile.socksPort, expectedExits: profile.expectedExits } } } : {}),
     routines: { [routineId]: { agent: "claude", provider: "anthropic", model: "claude-sonnet-4-6", thinking: "high",
-      calendar: scheduledDate ? [{ hour: scheduledDate.getHours(), minute: scheduledDate.getMinutes() }] : [{ hour: 7, minute: 0 }, { hour: 7, minute: 1 }, { hour: 7, minute: 2 }],
+      calendar: scheduledDate ? [{ hour: scheduledDate.getHours(), minute: scheduledDate.getMinutes() }] : Array.from({length: defaultServices?.realRedisUrl ? 10 : 3}, (_,minute) => ({hour:7,minute})),
       cwd, promptFile, herdrSession: "fixture", spaceTitleFormat: "native · {scheduled_local}" } },
   } });
-  const client = new FakeRedisClient();
-  const store = await connectRedisStore({ client, keyPrefix });
+  const client = redisUrl ? null : new FakeRedisClient();
+  const connect = options => connectRedisStore({ ...options, ...(client ? { client } : { url: redisUrl }), keyPrefix });
+  const store = await connect({ connectionPolicy: 'leased' });
   const credential = buildAnthropicClaudeCredential();
-  await importCredentialsSnapshot(store, { credentials: [{ provider: "anthropic", label, credential,
+  if (defaultServices) {
+    // The outer offsite fixture owns loopback TLS at the DEFAULT service
+    // names. No backend/API-key override or production admission bypass.
+    assert.ok(fs.existsSync('/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST'));
+    credential.nativeClaudeBundle.claudeAiOauth.accessToken = 'sk-ant-oat01-synthetic-not-a-real-token';
+    credential.nativeClaudeBundle.claudeAiOauth.subscriptionTypeSource = 'sign_in';
+  }
+  if (!(await readSnapshot(store)).credentials.length) await importCredentialsSnapshot(store, { credentials: [{ provider: "anthropic", label, credential,
     identity: { accountUuid: "acct_boss", emailAddress: "boss@example.com", organizationUuid: "org_boss" },
     policy: { expect: { email: "boss@example.com" }, ...(profile ? { egress: { profileRef: profile.profileRef } } : {}), pool: { enabled: true } },
     health: { status: "ready", reason: null },
   }] }, { updatedBy: "synthetic-native-routine" });
   const receipts = [];
-  const env = { ...process.env, HOME: homeDir, HERDR_SESSION: "fixture", HERDR_WORKSPACE_ID: "w", HERDR_PANE_ID: "p" };
+  const env = { ...process.env, ...(defaultServices ? { NODE_EXTRA_CA_CERTS: defaultServices.caFile } : {}),
+    HOME: homeDir, HERDR_SESSION: "fixture", HERDR_WORKSPACE_ID: "w", HERDR_PANE_ID: "p" };
   const spawnSyncImpl = (_command, args) => {
     let result = {};
     if (args.includes("list")) result = { type: "workspace_list", workspaces: [{ workspace_id: "existing", focused: true }] };
@@ -114,7 +128,7 @@ export async function createNativeRoutineFixture({ root, profile, destination, c
       root_pane: { pane_id: "p", tab_id: "t", workspace_id: "w", cwd, focused: false } };
     return { status: 0, stdout: JSON.stringify({ result }), stderr: "" };
   };
-  const start = async (minute, prompt) => {
+  const start = async (minute, prompt, { command = claudeBin } = {}) => {
     fs.writeFileSync(promptFile, prompt + "\n");
     const deps = { env, ...(scheduledDate ? {} : { routineNow: new Date(2026, 9, 31, 7, minute, 0) }), spawnSyncImpl,
       routineWorkspaceMoveImpl: async () => ({ verified: true, position: 1 }) };
@@ -126,22 +140,25 @@ export async function createNativeRoutineFixture({ root, profile, destination, c
     const finished = executeRoutineWorker({ homeDir, cwd, env, opts: {}, nowMs: Date.now(),
       positional: ["routine", "__execute", routineId, queued.fireKey, owner.token],
       stdout: { write() {} }, stderr: { write() {} }, setExitCode: code => { exitCode = code; },
-      resolveExecutableOnPathImpl: () => claudeBin,
-      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix }),
-      fetchJsonWithTimeoutImpl: async () => ({ ok: true, json: async () => ({ five_hour: { utilization: 1, resets_at: new Date(Date.now() + 3600000).toISOString() } }) }),
+      resolveExecutableOnPathImpl: () => command,
+      connectRedisStoreImpl: options => connect(options),
+      ...(defaultServices ? {} : { fetchJsonWithTimeoutImpl: async () => ({ ok: true, json: async () => ({ five_hour: { utilization: 1, resets_at: new Date(Date.now() + 3600000).toISOString() } }) }) }),
       routineTimeouts: { pollMs: 25, initialTurnMs: 30000 },
       runClaudeCliImpl: launch => {
         // Inject the synthetic origin into the actual generated hook overlay.
         // AIM deliberately strips competing backend env variables on launch.
-        const overlayPath = launch.preparedLaunch.userHooksPath;
-        const overlay = JSON.parse(fs.readFileSync(overlayPath));
-        overlay.env = { ANTHROPIC_BASE_URL: destination, ANTHROPIC_API_KEY: "synthetic-routine-key" };
-        fs.writeFileSync(overlayPath, JSON.stringify(overlay), { mode: 0o600 });
+        if (!defaultServices) {
+          const overlayPath = launch.preparedLaunch.userHooksPath;
+          const overlay = JSON.parse(fs.readFileSync(overlayPath));
+          overlay.env = { ANTHROPIC_BASE_URL: destination, ANTHROPIC_API_KEY: "synthetic-routine-key" };
+          fs.writeFileSync(overlayPath, JSON.stringify(overlay), { mode: 0o600 });
+        }
         if (!printMode) {
           const appState = path.join(launch.configDir, ".claude.json");
           const current = JSON.parse(fs.readFileSync(appState, "utf8"));
-          fs.writeFileSync(appState, JSON.stringify({ ...current, hasCompletedOnboarding: true, primaryApiKey: "synthetic-routine-key",
-            customApiKeyResponses: { approved: ["synthetic-routine-key"], rejected: [] } }));
+          fs.writeFileSync(appState, JSON.stringify({ ...current, hasCompletedOnboarding: true,
+            ...(defaultServices ? {} : { primaryApiKey: "synthetic-routine-key",
+              customApiKeyResponses: { approved: ["synthetic-routine-key"], rejected: [] } }) }));
         }
         return runClaudeCli({ ...launch, egressProfile: profile ? { ...launch.egressProfile, exitCheckUrl: profile.exitCheckUrl } : null,
           args: printMode ? ["-p", "--output-format", "json", ...launch.args] : launch.args });
@@ -198,5 +215,9 @@ fs.writeFileSync(file,JSON.stringify(content),{mode:0o600});\n`, { mode: 0o700 }
     console.log(JSON.stringify({ unattendedMaintenance: { unavailable, activeLease, output: output.trim(), assignmentAndIdentityPreserved: true,
       nativeCommand: "synthetic refresh exchange; actual AIM maintenance and native enforcement" } }));
   };
-  return { start, receipts, cwd, homeDir, routineId, maintain };
+  return { start, receipts, cwd, homeDir, routineId, maintain,
+    close: () => closeRedisStore(store),
+    lease: () => store.client.get(`${keyPrefix}lease:credential:anthropic:${label}`),
+    holdAuthRefreshLease: () => acquireRedisCredentialLease(store, {provider:"anthropic",label,ttlMs:120000}),
+    realRedis: Boolean(redisUrl) };
 }

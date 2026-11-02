@@ -1,0 +1,25 @@
+{
+  "platform": "linux",
+  "passed": true,
+  "results": [
+    {
+      "name": "provider-env",
+      "accepted": false,
+      "expectedAccepted": false,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    },
+    {
+      "name": "config-env",
+      "accepted": true,
+      "expectedAccepted": true,
+      "sourceUnchanged": true,
+      "snapshotUnchanged": true,
+      "configuredCodeRan": false,
+      "scratchRemoved": true
+    }
+  ],
+  "meaning": "Actual composed-settings staging and isolated native validation; not full session admission"
+}

@@ -71,7 +71,10 @@ try:
             receipt = json.loads(pathlib.Path(info['receiptPath']).read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             continue
-        if phase == 'initial' and (receipt.get('initialTurn') or {}).get('status') == 'idle':
+        # The worker can publish initialTurn=idle before the Stop hook's
+        # lastTurn receipt lands. Wait for both observations rather than
+        # racing that legitimate intermediate state.
+        if phase == 'initial' and (receipt.get('initialTurn') or {}).get('status') == 'idle' and (receipt.get('lastTurn') or {}).get('endedAt'):
             first_stop = receipt['lastTurn']['endedAt']
             fcntl.ioctl(descriptor, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 120, 0, 0))
             enter(b'Continue this same scheduled conversation. NATIVE_FOLLOWUP_CANARY.')
@@ -87,7 +90,12 @@ try:
         if pathlib.Path(final_path).exists():
             final = json.loads(pathlib.Path(final_path).read_text())
             restored = termios.tcgetattr(descriptor)
-            assert restored == initial, {"initialAttributes": initial, "restoredAttributes": restored}
+            expected=list(initial);actual=list(restored)
+            # Darwin marks queued input pending when ICANON is restored; this
+            # transient state is not a terminal control and must not be flushed.
+            if sys.platform == 'darwin':
+                expected[3]&=~termios.PENDIN;actual[3]&=~termios.PENDIN
+            assert actual == expected, {"initialAttributes": initial, "restoredAttributes": restored}
             done_pid, status = os.waitpid(pid, os.WNOHANG)
             if not done_pid:
                 terminal_checked_before_aim_exit = True

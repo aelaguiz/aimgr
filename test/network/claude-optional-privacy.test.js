@@ -13,7 +13,7 @@ import { buildStableIdentityForCredential } from "../../src/coordination/login-p
 import { resolveOptionalClaudeEgressProfile } from "../../src/network/claude-egress-policy.js";
 import { prepareClaudeNativeRoute, resolveNativeAccountProfile } from "../../src/network/claude-native-route.js";
 import { invalidateClaudeOfflineBinding, readClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
-import { runClaudeCli, runClaudeCliNoninteractive } from "../../src/targets/claude-runner.js";
+import { runClaudeCli as realRunClaudeCli, runClaudeCliNoninteractive as realRunClaudeCliNoninteractive, prepareClaudeCliLaunch } from "../../src/targets/claude-runner.js";
 import { fetchClaudeUsageSnapshot, probeUsageSnapshotsByProvider } from "../../src/pool/usage.js";
 import { buildCoordinationView } from "../../src/coordination/snapshot.js";
 import { collectClaudeRedisAccountUsageStatus, selectLeastUsedUnlockedClaudeAccount } from "../../src/status/claude-redis-view.js";
@@ -22,6 +22,12 @@ import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { mkTempHome } from "../helpers/files.js";
 import { installFixtureSecurityAdapter } from "./native-routine-fixture.js";
+
+import { verifySyntheticExecutable, prepareSyntheticNativeInvocation, spawnSyntheticSupervisor, resolveSyntheticSecurityAdapter } from "../helpers/claude-native-invocation.js";
+const runClaudeCli = options => realRunClaudeCli({ prepareClaudeNativeInvocationImpl: prepareSyntheticNativeInvocation, ...options });
+const runClaudeCliNoninteractive = options => realRunClaudeCliNoninteractive({ verifyInstalledClaudeExecutableImpl: verifySyntheticExecutable,
+  resolveInstalledClaudeSecurityAdapterImpl: resolveSyntheticSecurityAdapter,
+  prepareClaudeNativeInvocationImpl: prepareSyntheticNativeInvocation, ...options });
 
 const prefix = "optional-privacy-test:";
 const forbidden = () => { throw new Error("ordinary account reached privacy machinery"); };
@@ -80,12 +86,16 @@ test("ordinary interactive and Darwin noninteractive launch preserve environment
   await assert.rejects(prepareClaudeNativeRoute({ profile: { label: "protected", profileRef: "missing-optional-test-profile" }, platform: "darwin", command: process.execPath, args: [] }), { code: "native_proxy_unavailable" });
 });
 
-test("ordinary actual CLI launch and pre-change offline cache work with no privacy files or helper", async t => {
+test("ordinary synthetic CLI launch and pre-change offline cache work without proxy configuration", async t => {
   const { home, connectRedisStoreImpl } = await fixture(t);
   const proof = path.join(home, "child.json");
   const command = path.join(home, "synthetic-claude");
   fs.writeFileSync(command, `#!${process.execPath}\nimport fs from 'node:fs';fs.writeFileSync(${JSON.stringify(proof)},JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),proxy:process.env.HTTPS_PROXY,telemetry:process.env.DISABLE_TELEMETRY}));`, { mode: 0o700 });
-  const deps = { env: { HOME: home, PATH: "/usr/bin:/bin", HTTPS_PROXY: "http://existing.example:3128" }, connectRedisStoreImpl, resolveExecutableOnPathImpl: () => command };
+  const resolveExecutableOnPathImpl = () => command;
+  resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl = options => prepareClaudeCliLaunch({ ...options,
+    verifyInstalledClaudeExecutableImpl: verifySyntheticExecutable, resolveInstalledClaudeSecurityAdapterImpl: resolveSyntheticSecurityAdapter });
+  const deps = { env: { HOME: home, PATH: "/usr/bin:/bin", HTTPS_PROXY: "http://existing.example:3128" }, connectRedisStoreImpl, resolveExecutableOnPathImpl,
+    runClaudeCliImpl: options => runClaudeCli({ ...options, spawnImpl: spawnSyntheticSupervisor }) };
   await runCli(["claude", "run", "ordinary", "--", "--model", "preserved-model"], deps);
   const first = JSON.parse(fs.readFileSync(proof));
   assert.deepEqual(first.args.slice(-2), ["--model", "preserved-model"]);
@@ -95,7 +105,7 @@ test("ordinary actual CLI launch and pre-change offline cache work with no priva
   fs.unlinkSync(proof);
   await runCli(["claude", "run", "ordinary", "--", "--resume", "saved-session"], { ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); } });
   assert.deepEqual(JSON.parse(fs.readFileSync(proof)).args.slice(-2), ["--resume", "saved-session"]);
-  assert.equal(fs.existsSync(path.join(home, ".aimgr", "claude-egress")), false, "ordinary cache needs no new lock or assignment files");
+  assert.equal(readClaudeOfflineBinding(home, "ordinary"), null, "ordinary cache acquires only local coordination, never a proxy assignment");
   invalidateClaudeOfflineBinding(home, "ordinary");
   fs.unlinkSync(proof);
   await assert.rejects(runCli(["claude", "run", "ordinary"], { ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); } }), /cached proxy assignment/);

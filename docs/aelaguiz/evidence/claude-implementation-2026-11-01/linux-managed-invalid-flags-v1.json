@@ -1,0 +1,62 @@
+{
+  "platform": "Linux",
+  "scope": "Native managed-policy admission/validation only; no account or full launcher acceptance",
+  "cases": [
+    {
+      "case": "safe-invalid-malformed",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "static-invalid-malformed",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "safe-invalid-remote",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "static-invalid-remote",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "safe-invalid-env",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": false
+    },
+    {
+      "case": "static-invalid-env",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": false
+    }
+  ],
+  "passed": false,
+  "interpretation": "Original expected-rejection for env objects was wrong: native coerces env values to strings. Raw failed assertions retained; this is not accepted as safe composed launch settings."
+}

@@ -47,8 +47,18 @@ static int exact_or_config_scoped_service(const char *service, const char *base)
 }
 
 static int claude_credential_service(const char *service) {
+    /* The reviewed remote-device registry ignores the account config root
+     * and uses this GLOBAL service. It is separate from required MCP/XAA
+     * secrets, which share the ordinary account credential document. Keep
+     * this automatic native fallback from reading a personal device key.
+     * T04/T06/T14: exact matching preserves independent third-party services.
+     * Direct system security calls remain available to legitimate tools.
+     * The reviewed automatic device-key callers are made unreachable by the
+     * common Remote Control and remote-feature-flag controls; this shim alone
+     * is not an OS-wide Keychain denial. Re-audit that reachability on upgrades. */
     return exact_or_config_scoped_service(service, "Claude Code-credentials") ||
-        exact_or_config_scoped_service(service, "Claude Code");
+        exact_or_config_scoped_service(service, "Claude Code") ||
+        equal(service, "Claude Code-device-keys");
 }
 
 static void wipe(volatile unsigned char *buffer, size_t length) {

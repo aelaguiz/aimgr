@@ -1,0 +1,68 @@
+{
+  "integratedAim": true,
+  "mode": "protected",
+  "actualNativeRoute": true,
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-concurrency-savedjobs-disabled",
+      "exit": 1,
+      "syntheticModelCompleted": false,
+      "requestPaths": [
+        "/",
+        "/api/artifacts/mcp",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/frame/contract/latest",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000004/referral/eligibility",
+        "/api/oauth/profile",
+        "/exit",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 22,
+      "modelSources": [
+        "127.0.0.2",
+        "127.0.0.3"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": false,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "concurrency": {
+        "realRedis": true,
+        "fullPublicCli": true,
+        "checks": {
+          "nativeJobListingsStayWithinAccount": true
+        },
+        "sessions": []
+      },
+      "connectAuthorities": []
+    }
+  ],
+  "settingsWatcherPollingDiagnostic": false,
+  "remoteControlPolicyOnlyComparison": false,
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchives": [
+    {
+      "version": "v54",
+      "sha256": "4972fcab9e976844e6c99c0643cee17f8746aa8dee1aaa01aaf7538330c8665e",
+      "kind": "full"
+    }
+  ],
+  "sourceBaseRevision": "354be9e",
+  "runtimeArtifactSha256": "9bc287ee11a9576ccf080f2988ecef24961a792c645dd53040568e3132fdf9b4"
+}

@@ -1,0 +1,245 @@
+TAP version 13
+# Subtest: artifact inventory hashes are stable across key order and include role/mode/size
+ok 1 - artifact inventory hashes are stable across key order and include role/mode/size
+  ---
+  duration_ms: 0.626042
+  type: 'test'
+  ...
+# Subtest: inventory rejects traversal, ambiguous paths, invalid digests and empty sets
+ok 2 - inventory rejects traversal, ambiguous paths, invalid digests and empty sets
+  ---
+  duration_ms: 0.461041
+  type: 'test'
+  ...
+# Subtest: administrator-owned artifact admission contracts on the offsite host
+    # Subtest: returns one immutable command, matching helper and policy without execution
+    ok 1 - returns one immutable command, matching helper and policy without execution
+      ---
+      duration_ms: 131.031417
+      type: 'test'
+      ...
+    # Subtest: unknown active digest
+    ok 2 - unknown active digest
+      ---
+      duration_ms: 44.279583
+      type: 'test'
+      ...
+    # Subtest: corrupt approval
+    ok 3 - corrupt approval
+      ---
+      duration_ms: 60.787541
+      type: 'test'
+      ...
+    # Subtest: missing approval
+    ok 4 - missing approval
+      ---
+      duration_ms: 58.181042
+      type: 'test'
+      ...
+    # Subtest: extra unapproved resource
+    ok 5 - extra unapproved resource
+      ---
+      duration_ms: 74.34925
+      type: 'test'
+      ...
+    # Subtest: changed binary same display version
+    ok 6 - changed binary same display version
+      ---
+      duration_ms: 75.209042
+      type: 'test'
+      ...
+    # Subtest: changed helper
+    ok 7 - changed helper
+      ---
+      duration_ms: 81.358625
+      type: 'test'
+      ...
+    # Subtest: missing helper
+    ok 8 - missing helper
+      ---
+      duration_ms: 71.197916
+      type: 'test'
+      ...
+    # Subtest: changed policy
+    ok 9 - changed policy
+      ---
+      duration_ms: 79.926542
+      type: 'test'
+      ...
+    # Subtest: non-executable binary
+    ok 10 - non-executable binary
+      ---
+      duration_ms: 74.398083
+      type: 'test'
+      ...
+    # Subtest: root-only executable binary
+    ok 11 - root-only executable binary
+      ---
+      duration_ms: 75.015292
+      type: 'test'
+      ...
+    # Subtest: setuid runtime
+    ok 12 - setuid runtime
+      ---
+      duration_ms: 73.915917
+      type: 'test'
+      ...
+    # Subtest: writable approval
+    ok 13 - writable approval
+      ---
+      duration_ms: 57.045125
+      type: 'test'
+      ...
+    # Subtest: writable parent
+    ok 14 - writable parent
+      ---
+      duration_ms: 45.082542
+      type: 'test'
+      ...
+    # Subtest: runtime-owned ancestor
+    ok 15 - runtime-owned ancestor
+      ---
+      duration_ms: 43.137291
+      type: 'test'
+      ...
+    # Subtest: runtime-owned binary
+    ok 16 - runtime-owned binary
+      ---
+      duration_ms: 62.011792
+      type: 'test'
+      ...
+    # Subtest: hardlinked runtime
+    ok 17 - hardlinked runtime
+      ---
+      duration_ms: 72.712333
+      type: 'test'
+      ...
+    # Subtest: symlinked binary
+    ok 18 - symlinked binary
+      ---
+      duration_ms: 62.275416
+      type: 'test'
+      ...
+    # Subtest: symlinked selector
+    ok 19 - symlinked selector
+      ---
+      duration_ms: 40.855125
+      type: 'test'
+      ...
+    # Subtest: symlinked parent
+    ok 20 - symlinked parent
+      ---
+      duration_ms: 43.524958
+      type: 'test'
+      ...
+    # Subtest: directory ACL permits replacement although W_OK denies it
+    ok 21 - directory ACL permits replacement although W_OK denies it
+      ---
+      duration_ms: 71.510625
+      type: 'test'
+      ...
+    # Subtest: writesecurity ACL permits granting later write access
+    ok 22 - writesecurity ACL permits granting later write access
+      ---
+      duration_ms: 102.613833
+      type: 'test'
+      ...
+    # Subtest: append-only ACL permits modifying a policy
+    ok 23 - append-only ACL permits modifying a policy
+      ---
+      duration_ms: 98.013708
+      type: 'test'
+      ...
+    # Subtest: an unreadable ACL cannot be mistaken for absent permissions
+    ok 24 - an unreadable ACL cannot be mistaken for absent permissions
+      ---
+      duration_ms: 98.501667
+      type: 'test'
+      ...
+    # Subtest: ACL can deny execution despite executable mode bits
+    ok 25 - ACL can deny execution despite executable mode bits
+      ---
+      duration_ms: 77.089042
+      type: 'test'
+      ...
+    # Subtest: read-only allow ACL and deny ACL remain admissible
+    ok 26 - read-only allow ACL and deny ACL remain admissible
+      ---
+      duration_ms: 85.382667
+      type: 'test'
+      ...
+    # Subtest: different platform
+    ok 27 - different platform
+      ---
+      duration_ms: 59.952458
+      type: 'test'
+      ...
+    # Subtest: different architecture
+    ok 28 - different architecture
+      ---
+      duration_ms: 60.21225
+      type: 'test'
+      ...
+    # Subtest: different privacy ABI
+    ok 29 - different privacy ABI
+      ---
+      duration_ms: 59.889667
+      type: 'test'
+      ...
+    # Subtest: missing human approval
+    ok 30 - missing human approval
+      ---
+      duration_ms: 60.467041
+      type: 'test'
+      ...
+    # Subtest: offsite approval is not normal-use approval
+    ok 31 - offsite approval is not normal-use approval
+      ---
+      duration_ms: 60.366458
+      type: 'test'
+      ...
+    # Subtest: review alone is not approval
+    ok 32 - review alone is not approval
+      ---
+      duration_ms: 60.83925
+      type: 'test'
+      ...
+    # Subtest: absent review evidence
+    ok 33 - absent review evidence
+      ---
+      duration_ms: 60.663042
+      type: 'test'
+      ...
+    # Subtest: invalid approval date
+    ok 34 - invalid approval date
+      ---
+      duration_ms: 60.568542
+      type: 'test'
+      ...
+    # Subtest: unapproved entrypoint
+    ok 35 - unapproved entrypoint
+      ---
+      duration_ms: 60.771375
+      type: 'test'
+      ...
+    # Subtest: safe errors do not echo malformed approval content
+    ok 36 - safe errors do not echo malformed approval content
+      ---
+      duration_ms: 30.172041
+      type: 'test'
+      ...
+    1..36
+ok 3 - administrator-owned artifact admission contracts on the offsite host
+  ---
+  duration_ms: 2463.682333
+  type: 'test'
+  ...
+1..3
+# tests 39
+# suites 0
+# pass 39
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2514.403334

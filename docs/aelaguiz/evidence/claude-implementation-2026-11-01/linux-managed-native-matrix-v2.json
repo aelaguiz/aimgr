@@ -1,0 +1,124 @@
+{
+  "platform": "Linux",
+  "scope": "Native managed-policy admission/validation only; no account or full launcher acceptance",
+  "cases": [
+    {
+      "case": "absent",
+      "expectedAccepted": true,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": true,
+      "sourceCount": 0,
+      "passed": true
+    },
+    {
+      "case": "safe",
+      "expectedAccepted": true,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "native-env-coercion",
+      "expectedAccepted": true,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "static-only",
+      "expectedAccepted": true,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "safe-invalid-flag",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "static-invalid-flag",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "invalid-model",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "invalid-off-platform-static",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "machine-policy-validation",
+      "passed": true
+    },
+    {
+      "case": "org-pin-before-static",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "source-admission",
+      "passed": true
+    },
+    {
+      "case": "literal-token-false",
+      "expectedAccepted": false,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": false,
+      "refusedAt": "source-admission",
+      "passed": true
+    },
+    {
+      "case": "static-over-invalid-unrelated-base",
+      "expectedAccepted": true,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "ignored-dot-and-directory",
+      "expectedAccepted": true,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    },
+    {
+      "case": "immutable-leaf-symlink",
+      "expectedAccepted": true,
+      "platform": "linux",
+      "artifactSet": "3a611d7c284f74e0b943a3e916c86add919d04b4e3c2f300b364f1fe857619c3",
+      "accepted": true,
+      "sourceCount": 1,
+      "passed": true
+    }
+  ],
+  "passed": true
+}

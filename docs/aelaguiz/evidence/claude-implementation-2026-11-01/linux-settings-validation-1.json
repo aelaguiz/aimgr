@@ -1,0 +1,53 @@
+{
+  "platform": "Linux",
+  "results": [
+    {
+      "case": "doctor-before-valid",
+      "exit": 0,
+      "reportedInvalidSettings": false,
+      "policyReceipt": true,
+      "completeDiagnostics": true,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-before-invalid",
+      "exit": 0,
+      "reportedInvalidSettings": true,
+      "policyReceipt": false,
+      "completeDiagnostics": true,
+      "unknownOption": false
+    },
+    {
+      "case": "doctor-after-valid",
+      "exit": 1,
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": true
+    },
+    {
+      "case": "doctor-after-invalid",
+      "exit": 1,
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": true
+    },
+    {
+      "case": "init-only-valid",
+      "exit": "timeout",
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": false
+    },
+    {
+      "case": "init-only-invalid",
+      "exit": "timeout",
+      "reportedInvalidSettings": false,
+      "policyReceipt": false,
+      "completeDiagnostics": false,
+      "unknownOption": false
+    }
+  ]
+}

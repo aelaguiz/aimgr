@@ -1,0 +1,112 @@
+{
+  "privateFileHidden": true,
+  "symlinkEscapeDenied": true,
+  "childPrivateReadDenied": true,
+  "ambientSecretAbsent": true,
+  "hostHomeAbsent": true,
+  "hostSysfsAbsent": true,
+  "hostSocketsAbsent": true,
+  "machineIdIsFixture": true,
+  "hostnameIsFixture": true,
+  "kernelRelease": "7.0.0-1014-gcp",
+  "procPids": [
+    "1",
+    "2"
+  ],
+  "gitWorks": true,
+  "ptyWorks": true,
+  "externalNetworkDenied": true,
+  "cpuInfoStillVisible": true,
+  "memInfoStillVisible": true,
+  "unprivilegedPayload": true,
+  "sameUserUnsandboxedCanaryReadable": true,
+  "workspaceEditVisibleOutside": true,
+  "sameKernelAsHost": true,
+  "bubblewrapVersion": "bubblewrap 0.9.0",
+  "runtime": {
+    "platform": "Linux-7.0.0-1014-gcp-x86_64-with-glibc2.39",
+    "python": "3.12.3"
+  },
+  "individualFileMountAtomicReplace": {
+    "succeeded": false,
+    "errno": 16,
+    "error": "Device or resource busy"
+  },
+  "modelHarnessExitCode": 1,
+  "modelSummaryPresent": true,
+  "modelIdentityChecks": [
+    {
+      "provider": "codex",
+      "check": "one successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "codex",
+      "check": "native tool result returned and project/Git/PTY/build worked",
+      "passed": false
+    },
+    {
+      "provider": "claude",
+      "check": "one successful model exchanges",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "each transmitted identifier matches its disk identifier",
+      "passed": true
+    },
+    {
+      "provider": "claude",
+      "check": "native tool result returned and project/Git/PTY/build worked",
+      "passed": false
+    }
+  ],
+  "modelIdentityAssertionsPassed": false,
+  "modelCases": [
+    {
+      "case": "claude-fresh-a",
+      "exitCode": 0,
+      "modelRequestCount": 2,
+      "identifierHashes": [
+        "8e25988052727486"
+      ],
+      "diskIdentifierHash": "8e25988052727486",
+      "userAgents": [
+        "claude-cli/2.1.316 (external, sdk-cli)"
+      ],
+      "workflow": {
+        "edit": true,
+        "git": true,
+        "pty": true,
+        "nativeBuild": false
+      },
+      "toolOutputReturned": true
+    },
+    {
+      "case": "codex-fresh-a",
+      "exitCode": 0,
+      "modelRequestCount": 3,
+      "identifierHashes": [
+        "a4d2d8143492a030"
+      ],
+      "diskIdentifierHash": "a4d2d8143492a030",
+      "userAgents": [
+        "codex_exec/0.163.0-alpha.5 (Ubuntu 24.4.0; x86_64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+      ],
+      "workflow": {
+        "edit": true,
+        "git": true,
+        "pty": true,
+        "nativeBuild": false
+      },
+      "toolOutputReturned": true
+    }
+  ],
+  "boundedChecksPassed": true,
+  "allNativeWorkflowCasesPassed": false
+}

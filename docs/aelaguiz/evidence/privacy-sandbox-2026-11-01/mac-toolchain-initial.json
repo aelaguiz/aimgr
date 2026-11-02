@@ -1,0 +1,1031 @@
+{
+  "platform": "macOS-26.7-arm64-arm-64bit",
+  "profiles": {
+    "baseline": {
+      "policyLoadExit": 0,
+      "probeExit": 0,
+      "probe": {
+        "privateFileHidden": false,
+        "symlinkEscapeDenied": false,
+        "childPrivateReadDenied": false,
+        "ptyWorks": true,
+        "gitInitWorks": true,
+        "ambientEnvironmentStillVisible": true,
+        "uname": {
+          "exitCode": 0,
+          "value": "Darwin 25.6.0"
+        },
+        "osVersion": {
+          "exitCode": 0,
+          "value": "26.7"
+        },
+        "hardwareModelReadable": true,
+        "platformUuidPropertyVisible": true,
+        "serialPropertyVisible": true
+      },
+      "nativeAttributesExit": 0,
+      "nativeAttributes": {
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "26.7.0",
+        "foundationVersionStringReadable": 1,
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 0,
+          "readable": 1
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 1,
+        "IOPlatformSerialNumberDirectReadable": 1,
+        "IOPlatformUUIDBulkReadable": 1,
+        "IOPlatformUUIDDirectReadable": 1,
+        "kern.hostname": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osproductversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osrelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.version": {
+          "errno": 0,
+          "readable": 1
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "systemVersionPlistReadable": 1,
+        "uname": {
+          "hostnameReadable": 1,
+          "machineReadable": 1,
+          "releaseReadable": 1,
+          "success": 1
+        }
+      },
+      "modelHarnessExit": 0,
+      "modelCases": [
+        {
+          "case": "claude-cloned-a",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "cfd4f9f499ae258d"
+          ],
+          "diskIdentifierHash": "cfd4f9f499ae258d",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "claude-fresh-a",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "cfd4f9f499ae258d"
+          ],
+          "diskIdentifierHash": "cfd4f9f499ae258d",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "claude-fresh-b",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "56d8c27137346438"
+          ],
+          "diskIdentifierHash": "56d8c27137346438",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "claude-repeat-a",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "cfd4f9f499ae258d"
+          ],
+          "diskIdentifierHash": "cfd4f9f499ae258d",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "claude-separate-os-home",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "6342d0c7bfe3a2fb"
+          ],
+          "diskIdentifierHash": "6342d0c7bfe3a2fb",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "codex-cloned-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "629975f0df3309ab"
+          ],
+          "diskIdentifierHash": "629975f0df3309ab",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-fresh-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "629975f0df3309ab"
+          ],
+          "diskIdentifierHash": "629975f0df3309ab",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-fresh-b",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "4b03a1f3850da6b4"
+          ],
+          "diskIdentifierHash": "4b03a1f3850da6b4",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-repeat-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "629975f0df3309ab"
+          ],
+          "diskIdentifierHash": "629975f0df3309ab",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-separate-os-home",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "a83eecdf7a3398c5"
+          ],
+          "diskIdentifierHash": "a83eecdf7a3398c5",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        }
+      ],
+      "identityChecks": [
+        {
+          "provider": "codex",
+          "check": "five successful model exchanges",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "restart and copied home retain ID",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "fresh app homes have distinct IDs",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "five successful model exchanges",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "restart and copied home retain ID",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "fresh app homes have distinct IDs",
+          "passed": true
+        }
+      ],
+      "allTenModelsPassed": true,
+      "workflow": {
+        "harnessExit": 0,
+        "allPassed": true,
+        "checks": [
+          {
+            "provider": "codex",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          }
+        ],
+        "cases": [
+          {
+            "case": "codex-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 3,
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": false
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          },
+          {
+            "case": "claude-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 2,
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": false
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          }
+        ],
+        "expectedPrivateReadBehaviorPassed": true
+      }
+    },
+    "files": {
+      "policyLoadExit": 0,
+      "probeExit": 1,
+      "probeError": "xcode-select: error: unable to read data link at '/var/select/developer_dir', expected symbolic link (Operation not permitted)\nxcode-select: error: No developer tools were found and no install could be requested (possibly because there is no active GUI session).\nIf developer tools are located at a non-default location on disk, use `sudo xcode-select --switch path/to/Xcode.app` to specify the Xcode that you wish to use for command line developer tools.\nUse `xcode-select --install` to install the standalone command line developer tools, or visit http://adc.apple.com to download Xcode or the standalone command line tools installation package.\nSee `man xcode-select` for more details.\n",
+      "nativeAttributesExit": 0,
+      "nativeAttributes": {
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "26.7.0",
+        "foundationVersionStringReadable": 1,
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 0,
+          "readable": 1
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 1,
+        "IOPlatformSerialNumberDirectReadable": 1,
+        "IOPlatformUUIDBulkReadable": 1,
+        "IOPlatformUUIDDirectReadable": 1,
+        "kern.hostname": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osproductversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osrelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.osversion": {
+          "errno": 0,
+          "readable": 1
+        },
+        "kern.version": {
+          "errno": 0,
+          "readable": 1
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 0,
+          "readable": 1
+        },
+        "systemVersionPlistReadable": 1,
+        "uname": {
+          "hostnameReadable": 1,
+          "machineReadable": 1,
+          "releaseReadable": 1,
+          "success": 1
+        }
+      },
+      "modelHarnessExit": 1,
+      "modelCases": [
+        {
+          "case": "claude-fresh-a",
+          "exitCode": 1,
+          "modelRequestCount": 0,
+          "identifierHashes": [],
+          "diskIdentifierHash": null,
+          "userAgents": []
+        },
+        {
+          "case": "codex-cloned-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "31e167f18142ca52"
+          ],
+          "diskIdentifierHash": "31e167f18142ca52",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-fresh-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "31e167f18142ca52"
+          ],
+          "diskIdentifierHash": "31e167f18142ca52",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-fresh-b",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "923c0d8bc1f7e872"
+          ],
+          "diskIdentifierHash": "923c0d8bc1f7e872",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-repeat-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "31e167f18142ca52"
+          ],
+          "diskIdentifierHash": "31e167f18142ca52",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-separate-os-home",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "bbb2812b0808d84a"
+          ],
+          "diskIdentifierHash": "bbb2812b0808d84a",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        }
+      ],
+      "identityChecks": [
+        {
+          "provider": "codex",
+          "check": "five successful model exchanges",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "restart and copied home retain ID",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "fresh app homes have distinct IDs",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "five successful model exchanges",
+          "passed": false
+        },
+        {
+          "provider": "claude",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": false
+        }
+      ],
+      "allTenModelsPassed": false
+    },
+    "attributes": {
+      "policyLoadExit": 0,
+      "probeExit": 1,
+      "probeError": "xcode-select: error: unable to read data link at '/var/select/developer_dir', expected symbolic link (Operation not permitted)\nxcode-select: error: No developer tools were found and no install could be requested (possibly because there is no active GUI session).\nIf developer tools are located at a non-default location on disk, use `sudo xcode-select --switch path/to/Xcode.app` to specify the Xcode that you wish to use for command line developer tools.\nUse `xcode-select --install` to install the standalone command line developer tools, or visit http://adc.apple.com to download Xcode or the standalone command line tools installation package.\nSee `man xcode-select` for more details.\n",
+      "nativeAttributesExit": 0,
+      "nativeAttributes": {
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "-1.0.0",
+        "foundationVersionStringReadable": 1,
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 1,
+          "readable": 0
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 0,
+        "IOPlatformSerialNumberDirectReadable": 0,
+        "IOPlatformUUIDBulkReadable": 0,
+        "IOPlatformUUIDDirectReadable": 0,
+        "kern.hostname": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osproductversion": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osrelease": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osversion": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.version": {
+          "errno": 1,
+          "readable": 0
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 1,
+          "readable": 0
+        },
+        "systemVersionPlistReadable": 0,
+        "uname": {
+          "hostnameReadable": 0,
+          "machineReadable": 0,
+          "releaseReadable": 0,
+          "success": 0
+        }
+      },
+      "modelHarnessExit": 1,
+      "modelCases": [
+        {
+          "case": "claude-fresh-a",
+          "exitCode": 1,
+          "modelRequestCount": 0,
+          "identifierHashes": [],
+          "diskIdentifierHash": null,
+          "userAgents": []
+        },
+        {
+          "case": "codex-cloned-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "fcccbd7ddc3b6725"
+          ],
+          "diskIdentifierHash": "fcccbd7ddc3b6725",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-fresh-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "fcccbd7ddc3b6725"
+          ],
+          "diskIdentifierHash": "fcccbd7ddc3b6725",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-fresh-b",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "4233dd301b14ec01"
+          ],
+          "diskIdentifierHash": "4233dd301b14ec01",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-repeat-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "fcccbd7ddc3b6725"
+          ],
+          "diskIdentifierHash": "fcccbd7ddc3b6725",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-separate-os-home",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "11ca3a563c36fcbc"
+          ],
+          "diskIdentifierHash": "11ca3a563c36fcbc",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        }
+      ],
+      "identityChecks": [
+        {
+          "provider": "codex",
+          "check": "five successful model exchanges",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "restart and copied home retain ID",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "fresh app homes have distinct IDs",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "five successful model exchanges",
+          "passed": false
+        },
+        {
+          "provider": "claude",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": false
+        }
+      ],
+      "allTenModelsPassed": false
+    },
+    "attributes-only": {
+      "policyLoadExit": 0,
+      "probeExit": 0,
+      "probe": {
+        "privateFileHidden": false,
+        "symlinkEscapeDenied": false,
+        "childPrivateReadDenied": false,
+        "ptyWorks": true,
+        "gitInitWorks": true,
+        "ambientEnvironmentStillVisible": true,
+        "uname": {
+          "exitCode": 1,
+          "value": "Darwin"
+        },
+        "osVersion": {
+          "exitCode": 0,
+          "value": "26.7"
+        },
+        "hardwareModelReadable": false,
+        "platformUuidPropertyVisible": false,
+        "serialPropertyVisible": false
+      },
+      "nativeAttributesExit": 0,
+      "nativeAttributes": {
+        "foundationHostnameReadable": 1,
+        "foundationOSVersion": "-1.0.0",
+        "foundationVersionStringReadable": 1,
+        "gethostuuid": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.memsize": {
+          "errno": 0,
+          "readable": 1
+        },
+        "hw.model": {
+          "errno": 1,
+          "readable": 0
+        },
+        "iokitBulkSuccess": 1,
+        "iokitServiceFound": 1,
+        "IOPlatformSerialNumberBulkReadable": 0,
+        "IOPlatformSerialNumberDirectReadable": 0,
+        "IOPlatformUUIDBulkReadable": 0,
+        "IOPlatformUUIDDirectReadable": 0,
+        "kern.hostname": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osproductversion": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osrelease": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.osversion": {
+          "errno": 1,
+          "readable": 0
+        },
+        "kern.version": {
+          "errno": 1,
+          "readable": 0
+        },
+        "machHardwareInfoReadable": 1,
+        "machKernelVersionReadable": 1,
+        "numericSysctlRelease": {
+          "errno": 1,
+          "readable": 0
+        },
+        "systemVersionPlistReadable": 0,
+        "uname": {
+          "hostnameReadable": 0,
+          "machineReadable": 0,
+          "releaseReadable": 0,
+          "success": 0
+        }
+      },
+      "modelHarnessExit": 0,
+      "modelCases": [
+        {
+          "case": "claude-cloned-a",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "8ee2f784ed12a579"
+          ],
+          "diskIdentifierHash": "8ee2f784ed12a579",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "claude-fresh-a",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "8ee2f784ed12a579"
+          ],
+          "diskIdentifierHash": "8ee2f784ed12a579",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "claude-fresh-b",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "2480ad63b49fb1f9"
+          ],
+          "diskIdentifierHash": "2480ad63b49fb1f9",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "claude-repeat-a",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "8ee2f784ed12a579"
+          ],
+          "diskIdentifierHash": "8ee2f784ed12a579",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "claude-separate-os-home",
+          "exitCode": 0,
+          "modelRequestCount": 1,
+          "identifierHashes": [
+            "de7637cda6005074"
+          ],
+          "diskIdentifierHash": "de7637cda6005074",
+          "userAgents": [
+            "claude-cli/2.1.316 (external, sdk-cli)"
+          ]
+        },
+        {
+          "case": "codex-cloned-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "7a0c05064b8ef786"
+          ],
+          "diskIdentifierHash": "7a0c05064b8ef786",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-fresh-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "7a0c05064b8ef786"
+          ],
+          "diskIdentifierHash": "7a0c05064b8ef786",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-fresh-b",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "73eb8180e3310091"
+          ],
+          "diskIdentifierHash": "73eb8180e3310091",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-repeat-a",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "7a0c05064b8ef786"
+          ],
+          "diskIdentifierHash": "7a0c05064b8ef786",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        },
+        {
+          "case": "codex-separate-os-home",
+          "exitCode": 0,
+          "modelRequestCount": 2,
+          "identifierHashes": [
+            "278709e8bfdcb0a3"
+          ],
+          "diskIdentifierHash": "278709e8bfdcb0a3",
+          "userAgents": [
+            "codex_exec/0.163.0-alpha.5 (Mac OS 26.7.0; arm64) PrivacyAuditTerminal/AUDIT_VERSION_123 (codex_exec; 0.163.0-alpha.5)"
+          ]
+        }
+      ],
+      "identityChecks": [
+        {
+          "provider": "codex",
+          "check": "five successful model exchanges",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "restart and copied home retain ID",
+          "passed": true
+        },
+        {
+          "provider": "codex",
+          "check": "fresh app homes have distinct IDs",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "five successful model exchanges",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "each transmitted identifier matches its disk identifier",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "restart and copied home retain ID",
+          "passed": true
+        },
+        {
+          "provider": "claude",
+          "check": "fresh app homes have distinct IDs",
+          "passed": true
+        }
+      ],
+      "allTenModelsPassed": true,
+      "workflow": {
+        "harnessExit": 0,
+        "allPassed": true,
+        "checks": [
+          {
+            "provider": "codex",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "codex",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "one successful model exchanges",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "each transmitted identifier matches its disk identifier",
+            "passed": true
+          },
+          {
+            "provider": "claude",
+            "check": "native tool result returned and project/Git/PTY/build worked",
+            "passed": true
+          }
+        ],
+        "cases": [
+          {
+            "case": "codex-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 3,
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": false
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          },
+          {
+            "case": "claude-fresh-a",
+            "exitCode": 0,
+            "modelRequestCount": 2,
+            "workflow": {
+              "edit": true,
+              "git": true,
+              "pty": true,
+              "nativeBuild": true,
+              "privateReadDenied": false
+            },
+            "toolOutputReturned": true,
+            "sharedEditObserved": true
+          }
+        ],
+        "expectedPrivateReadBehaviorPassed": true
+      }
+    }
+  },
+  "meaning": "Bounded filesystem and selected attribute tests, not full workflow certification.",
+  "attributeProbeBuildExit": 0,
+  "doctor": {
+    "baseline": {
+      "harnessExit": 0,
+      "result": {
+        "allPassed": true,
+        "results": [
+          {
+            "case": "a",
+            "doctorExit": 1,
+            "requestsCaptured": 4,
+            "appcastRequests": [
+              "https://chatgpt.com:443/backend-api/wham/app/appcast?installation_id=SYNTHETIC-DESKTOP-INSTALLATION-A&arch=arm64&app_version=1.0.0&beta=false&os-version=26.7.0&plan_type=unknown"
+            ],
+            "passed": true
+          },
+          {
+            "case": "b",
+            "doctorExit": 1,
+            "requestsCaptured": 4,
+            "appcastRequests": [
+              "https://chatgpt.com:443/backend-api/wham/app/appcast?installation_id=SYNTHETIC-DESKTOP-INSTALLATION-B&arch=arm64&app_version=1.0.0&beta=false&os-version=26.7.0&plan_type=unknown"
+            ],
+            "passed": true
+          }
+        ],
+        "meaning": "The CLI sent each synthetic HOME desktop ID despite an unchanged CODEX_HOME and telemetry opt-out; HTTP requests terminated at the loopback test server."
+      }
+    },
+    "deny-desktop-file": {
+      "harnessExit": 1,
+      "result": {
+        "allPassed": false,
+        "results": [
+          {
+            "case": "a",
+            "doctorExit": 1,
+            "requestsCaptured": 4,
+            "appcastRequests": [],
+            "passed": false
+          },
+          {
+            "case": "b",
+            "doctorExit": 1,
+            "requestsCaptured": 4,
+            "appcastRequests": [],
+            "passed": false
+          }
+        ],
+        "meaning": "The fixture did not establish transmission; inspect doctor output and trace before drawing a conclusion."
+      }
+    },
+    "denialChecks": {
+      "positiveBaseline": true,
+      "denialHarnessCompleted": true,
+      "matchedDoctorExit": true,
+      "captureStillWorking": true,
+      "noAppcastRequest": true,
+      "nativeDiagnosticJson": true,
+      "expectedDiagnosticChecksPresent": true,
+      "otherRequestsPreserved": true,
+      "fallbackCdnCaptured": true,
+      "noCanaryInAnyCapturedRequest": true
+    },
+    "boundedDenialPassed": true
+  },
+  "workspaceEditVisibleOutside": true
+}

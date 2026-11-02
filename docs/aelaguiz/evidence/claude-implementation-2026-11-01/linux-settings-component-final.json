@@ -1,0 +1,161 @@
+{
+  "platform": "Linux",
+  "artifactSha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "meaning": "Scoped settings observations, not complete telemetry or relay lifecycle acceptance",
+  "results": [
+    {
+      "case": "aim-composed-settings",
+      "exit": 0,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 3,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "component-preserved",
+        "PROJECT_LIVE_CANARY": "project-live-edit-preserved",
+        "toolUnameMatchesHost": true,
+        "toolUid": 999
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Linux 7.0.0-1014-gcp",
+        "- Platform: linux",
+        "- Shell: bash"
+      ],
+      "lifecycleEvents": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "requiredHooksConfigured": [
+        "SessionStart",
+        "Stop",
+        "StopFailure",
+        "UserPromptSubmit"
+      ]
+    },
+    {
+      "case": "aim-composed-settings-model-error",
+      "exit": 1,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": true,
+      "modelRequests": 6,
+      "toolEnvironment": null,
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Linux 7.0.0-1014-gcp",
+        "- Platform: linux",
+        "- Shell: bash"
+      ],
+      "lifecycleEvents": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "StopFailure"
+      ],
+      "requiredHooksConfigured": [
+        "SessionStart",
+        "Stop",
+        "StopFailure",
+        "UserPromptSubmit"
+      ]
+    },
+    {
+      "case": "schema-invalid-model",
+      "exit": 0,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 2,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "",
+        "DISABLE_ERROR_REPORTING": "",
+        "DISABLE_UPDATES": "",
+        "REQUIRED_TOOL_CANARY": "preserve-me",
+        "PROJECT_LIVE_CANARY": null,
+        "toolUnameMatchesHost": true,
+        "toolUid": 999
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Linux 7.0.0-1014-gcp",
+        "- Platform: linux",
+        "- Shell: bash"
+      ]
+    },
+    {
+      "case": "schema-invalid-env",
+      "exit": 0,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 2,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "",
+        "PROJECT_LIVE_CANARY": null,
+        "toolUnameMatchesHost": true,
+        "toolUid": 999
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Linux 7.0.0-1014-gcp",
+        "- Platform: linux",
+        "- Shell: bash"
+      ]
+    },
+    {
+      "case": "safe-mode-settings",
+      "exit": 0,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 2,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "preserve-me",
+        "PROJECT_LIVE_CANARY": null,
+        "toolUnameMatchesHost": true,
+        "toolUid": 999
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Linux 7.0.0-1014-gcp",
+        "- Platform: linux",
+        "- Shell: bash"
+      ]
+    }
+  ]
+}

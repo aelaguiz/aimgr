@@ -1,0 +1,16 @@
+{
+  "verifiedAt": "2026-11-01T19:00:19.628472+00:00",
+  "instanceState": "shutting-down",
+  "volumesDeleted": false,
+  "volumeDeleteOnTermination": true,
+  "forcedTerminationRequested": true,
+  "sshPrivateKeyRemoved": true,
+  "awsKeyPairRemoved": true,
+  "temporaryGcpAccessRuleRemoved": true,
+  "rawEvidenceArchivedOnTestVm": true,
+  "noRemainingAuditProcessesBeforeTermination": true,
+  "exactInstanceTerminationFailsafeEnabled": true,
+  "dedicatedHostReleaseScheduleEnabled": true,
+  "dedicatedHostReleaseStart": "2026-11-02T18:26:46.342079+00:00",
+  "dedicatedHostReleaseEnd": "2026-11-03T02:24:46.342079+00:00"
+}

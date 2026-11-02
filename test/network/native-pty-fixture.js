@@ -18,17 +18,18 @@ export async function verifyNativeTerminalCleanup(profile) {
   }
 }
 
-export async function verifyInteractiveRoutine({ root: parentRoot, profile, destination, claudeBin, failure = null }) {
+export async function verifyInteractiveRoutine({ root: parentRoot, profile, destination, claudeBin, failure = null, defaultServices = null }) {
   const root = path.join(parentRoot, `interactive-routine${failure ? "-" + failure : ""}`);
   await fs.mkdir(root);
   const info = path.join(root, "info.json"), final = path.join(root, "final.json");
   const entry = path.join(root, "interactive.mjs");
   await fs.writeFile(entry, `import fs from 'node:fs';
 import {createNativeRoutineFixture} from ${JSON.stringify(new URL("./native-routine-fixture.js", import.meta.url).href)};
-const fixture=await createNativeRoutineFixture(${JSON.stringify({ root, profile, destination, claudeBin, printMode: false })});
+const fixture=await createNativeRoutineFixture(${JSON.stringify({ root, profile, destination, claudeBin, printMode: false, defaultServices })});
 const occurrence=await fixture.start(0,'Run the synthetic Bash task. ROUTINE_SUCCESS_CANARY.');
 fs.writeFileSync(${JSON.stringify(info)},JSON.stringify({receiptPath:occurrence.queued.receiptPath,cwd:fixture.cwd,failure:${JSON.stringify(failure)},stdinTTY:Boolean(process.stdin.isTTY),stdoutTTY:Boolean(process.stdout.isTTY)}));
 const receipt=await occurrence.finished;
+await fixture.close();
 fs.writeFileSync(${JSON.stringify(final)},JSON.stringify(receipt));
 // Keep AIM alive long enough to check the launcher's cleanup independently
 // of Node's own terminal reset when the outer process exits.

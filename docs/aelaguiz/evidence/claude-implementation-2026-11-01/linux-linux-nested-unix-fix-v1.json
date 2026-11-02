@@ -1,0 +1,124 @@
+{
+  "platform": "Linux",
+  "artifactSet": "6dd464167781be4556575af1d03bdf7e4dc6673444ae22b4600990d8710ddb3e",
+  "parent": {
+    "case": "privacy-overlay",
+    "exit": 0,
+    "toolFailureObserved": false,
+    "policyRefusal": false,
+    "syntheticModelFailureObserved": false,
+    "modelRequests": 3,
+    "toolEnvironment": {
+      "DISABLE_TELEMETRY": "1",
+      "DISABLE_ERROR_REPORTING": "1",
+      "DISABLE_UPDATES": "1",
+      "REQUIRED_TOOL_CANARY": "preserve-me",
+      "PROJECT_LIVE_CANARY": null,
+      "toolUnameMatchesHost": true,
+      "toolUid": 1001,
+      "intentionalToolRead": true,
+      "toolNoNewPrivs": [
+        "NoNewPrivs:\t0"
+      ],
+      "nativeToolCheck": {
+        "validation": {
+          "platform": "linux",
+          "artifactSet": "6dd464167781be4556575af1d03bdf7e4dc6673444ae22b4600990d8710ddb3e",
+          "accepted": true,
+          "sourceCount": 0
+        },
+        "nested": [
+          {
+            "case": "privacy-overlay",
+            "exit": 0,
+            "toolFailureObserved": false,
+            "policyRefusal": false,
+            "syntheticModelFailureObserved": false,
+            "modelRequests": 3,
+            "toolEnvironment": {
+              "DISABLE_TELEMETRY": "1",
+              "DISABLE_ERROR_REPORTING": "1",
+              "DISABLE_UPDATES": "1",
+              "REQUIRED_TOOL_CANARY": "preserve-me",
+              "PROJECT_LIVE_CANARY": null,
+              "toolUnameMatchesHost": true,
+              "toolUid": 1001,
+              "intentionalToolRead": true,
+              "toolNoNewPrivs": [
+                "NoNewPrivs:\t0"
+              ]
+            },
+            "automaticHeaders": {
+              "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+              "X-Stainless-Arch": "x64",
+              "X-Stainless-OS": "Linux",
+              "X-Stainless-Runtime": "node",
+              "X-Stainless-Runtime-Version": "v26.12.1"
+            },
+            "automaticEnvironmentLines": [
+              "- OS Version: Linux",
+              "- Platform: linux",
+              "- Shell: bash"
+            ],
+            "nativeReadAttempted": true,
+            "nativeReadReturnedCanary": false,
+            "nativeReadError": true
+          },
+          {
+            "case": "privacy-overlay",
+            "exit": 0,
+            "toolFailureObserved": false,
+            "policyRefusal": false,
+            "syntheticModelFailureObserved": false,
+            "modelRequests": 3,
+            "toolEnvironment": {
+              "DISABLE_TELEMETRY": "1",
+              "DISABLE_ERROR_REPORTING": "1",
+              "DISABLE_UPDATES": "1",
+              "REQUIRED_TOOL_CANARY": "preserve-me",
+              "PROJECT_LIVE_CANARY": null,
+              "toolUnameMatchesHost": true,
+              "toolUid": 1001,
+              "intentionalToolRead": true,
+              "toolNoNewPrivs": [
+                "NoNewPrivs:\t0"
+              ]
+            },
+            "automaticHeaders": {
+              "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+              "X-Stainless-Arch": "x64",
+              "X-Stainless-OS": "Linux",
+              "X-Stainless-Runtime": "node",
+              "X-Stainless-Runtime-Version": "v26.12.1"
+            },
+            "automaticEnvironmentLines": [
+              "- OS Version: Linux",
+              "- Platform: linux",
+              "- Shell: bash"
+            ],
+            "nativeReadAttempted": true,
+            "nativeReadReturnedCanary": true,
+            "nativeReadError": false
+          }
+        ]
+      }
+    },
+    "automaticHeaders": {
+      "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+      "X-Stainless-Arch": "x64",
+      "X-Stainless-OS": "Linux",
+      "X-Stainless-Runtime": "node",
+      "X-Stainless-Runtime-Version": "v26.12.1"
+    },
+    "automaticEnvironmentLines": [
+      "- OS Version: Linux",
+      "- Platform: linux",
+      "- Shell: bash"
+    ],
+    "nativeReadAttempted": true,
+    "nativeReadReturnedCanary": false,
+    "nativeReadError": true
+  },
+  "scope": "Native entry plus nested native validation/account file grants; full AIM route/scheduler integration remains separate",
+  "passed": true
+}

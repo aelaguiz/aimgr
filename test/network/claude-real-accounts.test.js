@@ -37,11 +37,21 @@ function assertTestEnvironment() {
 
 const verification = path.join(os.homedir(), "verification");
 const nativeEnv = () => ({ ...process.env, PATH: `${os.homedir()}/.local/bin:${process.env.PATH}` });
+const challengeFile = path.join(verification, "HUMAN_VERIFICATION_CHALLENGE");
+const realChildren = new Set();
+function inspectChallenge(value) {
+  if (/hcaptcha|recaptcha|verify you are human|human verification challenge/i.test(value)) {
+    fsSync.writeFileSync(challengeFile, "Stop all provider work and discuss with user.\n", { mode: 0o600 });
+    for (const child of realChildren) child.kill("SIGTERM");
+  }
+  assert.ok(!fsSync.existsSync(challengeFile), "HUMAN_VERIFICATION_CHALLENGE: stop all provider work");
+}
 
 test("real protected account fails clearly before startup when its VM tunnel is down", {
   skip: process.env.AIMGR_TEST_REAL_PROXY_STARTUP !== "1", timeout: 90000,
 }, async () => {
   assertTestEnvironment();
+  inspectChallenge("");
   const exec = promisify(execFile);
   const cli = fileURLToPath(new URL("../../bin/aimgr.js", import.meta.url));
   const mac = process.platform === "darwin";
@@ -122,46 +132,57 @@ test("real protected account fails clearly before startup when its VM tunnel is 
 // Explicit offsite acceptance test. Never runs in the ordinary unit suite.
 // It uses only the two sacrificial accounts, already enrolled through their
 // existing local browsers. All test prompts and files are synthetic.
-test("real native Claude keeps A1/A2/B concurrent through their assigned exits", {
-  skip: process.env.AIMGR_TEST_REAL_ACCOUNTS !== "1", timeout: 240000,
+test("real native Claude keeps A1/A2/B concurrent and resumes each account through its assigned exit", {
+  skip: process.env.AIMGR_TEST_REAL_ACCOUNTS !== "1", timeout: 360000,
 }, async () => {
   assertTestEnvironment();
+  inspectChallenge("");
   const root = await fs.mkdtemp(path.join(verification, "real-native-"));
   const cli = fileURLToPath(new URL("../../bin/aimgr.js", import.meta.url));
   const receipts = [];
-  const run = async (label, name, extra = []) => {
+  const run = async (label, name, { previous = null } = {}) => {
     assert.ok(["proxy5", "proxy6"].includes(label));
-    const cwd = path.join(root, name);
-    await fs.mkdir(cwd);
+    const cwd = previous?.cwd ?? path.join(root, name);
+    if (!previous) await fs.mkdir(cwd);
     await fs.writeFile(path.join(cwd, "CLAUDE.md"), "This is a synthetic test workspace. Preserve its normal directory and tool behavior.\n");
     const { config } = readAimgrConfig({ homeDir: os.homedir() });
     const expectedExits = config.claudeProxyProfiles[label].expectedExits;
     assert.ok(Array.isArray(expectedExits) && expectedExits.length > 0);
     const marker = `NATIVE_REAL_${name.toUpperCase()}`;
-    const prompt = `Run this exact Bash command once and report its output: sleep 6; printf '${marker} '; curl -fsS 'https://api.ipify.org?format=json'. Do not do any other work.`;
+    const prompt = `${previous ? "Your final answer must contain two labeled lines: PREVIOUS MARKER (the exact marker printed by the previous turn's Bash command, recalled from this conversation), and NEW OUTPUT (the output of the command below). " : ""}Run this exact Bash command once and report its output: sleep 6; printf '${marker} '; curl -fsS 'https://api.ipify.org?format=json'. Do not do any other work.`;
     const startedAt = Date.now();
     const child = spawn(process.execPath, [cli, "claude", "run", label, "--", "-p", prompt,
-      "--model", "claude-sonnet-4-6", "--output-format", "json", "--dangerously-skip-permissions", "--max-turns", "5", ...extra],
+      "--model", "claude-sonnet-4-6", "--output-format", "json", "--dangerously-skip-permissions", "--max-turns", "5",
+      ...(previous ? ["--resume", previous.sessionId] : [])],
     { cwd, env: nativeEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    realChildren.add(child);
     let stdout = "", stderr = "";
-    child.stdout.on("data", chunk => { stdout += chunk; });
-    child.stderr.on("data", chunk => { stderr += chunk; });
+    const inspect = () => { try { inspectChallenge(stdout + stderr); } catch {} };
+    child.stdout.on("data", chunk => { stdout += chunk; inspect(); });
+    child.stderr.on("data", chunk => { stderr += chunk; inspect(); });
     const status = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => { child.kill("SIGTERM"); reject(new Error(`Native ${name} timed out`)); }, 180000);
       child.once("error", error => { clearTimeout(timer); reject(error); });
       child.once("exit", (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
     });
-    await fs.writeFile(path.join(cwd, "output.private.log"), stdout + "\n" + stderr, { mode: 0o600 });
+    realChildren.delete(child);
+    await fs.writeFile(path.join(cwd, `${name}.output.private.log`), stdout + "\n" + stderr, { mode: 0o600 });
+    inspectChallenge(stdout + stderr);
     const result = stdout.split("\n").filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } }).find(value => value?.type === "result");
-    const receipt = { label, name, startedAt, finishedAt: Date.now(), ...status,
+    const receipt = { label, name, cwd, startedAt, finishedAt: Date.now(), ...status,
       sessionId: result?.session_id, stopReason: result?.stop_reason, isError: result?.is_error,
       markerPresent: result?.result?.includes(marker) ?? false,
-      assignedExitPresent: expectedExits.some(ip => result?.result?.includes(ip)) };
+      assignedExitPresent: expectedExits.some(ip => result?.result?.includes(ip)),
+      ...(previous ? { previousMarkerRecalled: result?.result?.includes(`NATIVE_REAL_${previous.name.toUpperCase()}`) ?? false } : {}) };
     receipts.push(receipt);
     assert.equal(status.code, 0, `Native ${name} failed; inspect its private VM log`);
     assert.equal(result?.is_error, false, `Native ${name} did not complete a model turn`);
     assert.equal(receipt.markerPresent, true);
     assert.equal(receipt.assignedExitPresent, true);
+    if (previous) {
+      assert.equal(receipt.sessionId, previous.sessionId);
+      assert.equal(receipt.previousMarkerRecalled, true);
+    }
     return receipt;
   };
   try {
@@ -170,6 +191,11 @@ test("real native Claude keeps A1/A2/B concurrent through their assigned exits",
     assert.equal(failures.length, 0, failures.map(result => result.reason.message).join("; "));
     assert.equal(new Set(receipts.map(receipt => receipt.sessionId)).size, 3);
     assert.ok(Math.max(...receipts.map(receipt => receipt.startedAt)) < Math.min(...receipts.map(receipt => receipt.finishedAt)), "all three session lifetimes overlap");
+    // Continue only under the same underlying account. Recall proof excludes
+    // the old marker from the new prompt, so a fresh conversation cannot pass.
+    const [a1, , b1] = results.map(result => result.value);
+    await run("proxy5", "resume-a1", { previous: a1 });
+    await run("proxy6", "resume-b1", { previous: b1 });
   } finally {
     await fs.writeFile(path.join(root, "receipt.json"), JSON.stringify({ checkedAt: new Date().toISOString(), receipts }, null, 2) + "\n");
     console.log(JSON.stringify({ realNativeEvidence: path.join(root, "receipt.json"), receipts }));
@@ -181,6 +207,7 @@ test("real native refresh preserves the assignment and fresh usage works", {
   skip: process.env.AIMGR_TEST_REAL_ACCOUNTS !== "1", timeout: 120000,
 }, async () => {
   assertTestEnvironment();
+  inspectChallenge("");
   const runtime = await loadRedisRuntime({ homeDir: os.homedir(), provider: "anthropic" });
   const exec = promisify(execFile);
   const cli = fileURLToPath(new URL("../../bin/aimgr.js", import.meta.url));
@@ -200,12 +227,14 @@ test("real native refresh preserves the assignment and fresh usage works", {
     // the real tokens, so this exercises exchange rather than reconciliation.
     const nativePath = path.join(os.homedir(), ".aimgr/claude-homes/proxy5/.claude/.credentials.json");
     const native = JSON.parse(await fs.readFile(nativePath, "utf8"));
-    assert.equal(native.claudeAiOauth.accessToken, due.credential.nativeClaudeBundle.claudeAiOauth.accessToken);
+    assert.ok(native.claudeAiOauth.accessToken === due.credential.nativeClaudeBundle.claudeAiOauth.accessToken,
+      "Reconcile the disposable native token rotation before forcing another refresh; never print token values");
     native.claudeAiOauth.expiresAt = due.credential.nativeClaudeBundle.claudeAiOauth.expiresAt;
     await fs.writeFile(nativePath, JSON.stringify(native) + "\n", { mode: 0o600 });
     const env = nativeEnv();
     const maintained = await exec(process.execPath, [cli, "auth", "maintain"], { env, timeout: 60000, maxBuffer: 256 * 1024 });
     await fs.writeFile(path.join(directory, "maintenance.private.log"), maintained.stdout + maintained.stderr, { mode: 0o600 });
+    inspectChallenge(maintained.stdout + maintained.stderr);
     // The normal one-shot Redis connection closes while native maintenance
     // runs. Read the completed publication through a fresh one-shot view.
     const refreshed = await loadRedisRuntime({ homeDir: os.homedir(), provider: "anthropic" });

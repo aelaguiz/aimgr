@@ -1,0 +1,92 @@
+{
+  "integratedAim": true,
+  "mode": "protected",
+  "actualNativeRoute": true,
+  "platform": "Linux",
+  "artifactSha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "results": [
+    {
+      "case": "protected-pro-schedules-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/",
+        "/api/artifacts/mcp",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/frame/contract/latest",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/api/oauth/usage",
+        "/exit",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 14,
+      "modelSources": [
+        "127.0.0.2"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": false,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "schedules": {
+        "calendar": {
+          "scheduler": "systemd transient timer",
+          "expectedStart": "2026-11-02T03:55:00.000Z",
+          "actualStart": "2026-11-02T03:55:01.081Z",
+          "parentPid": 1,
+          "timezone": "UTC",
+          "fireKey": "test-privacy-334265--2026-11-02T03-55+0000",
+          "outcome": "completed",
+          "selectedAccount": "a",
+          "unattended": true,
+          "nativeToolCompleted": true,
+          "realRedis": true,
+          "duplicateOutcome": "duplicate",
+          "leaseReleased": true,
+          "substituted": [
+            "Herdr UI",
+            "print mode instead of interactive follow-up"
+          ]
+        },
+        "interactive": {
+          "initialTurnCompleted": true,
+          "followupCompleted": true,
+          "nativeExit": 0,
+          "terminalRestored": true,
+          "terminalCheckedBeforeAimExit": true,
+          "sessionId": "e98e4795-3f66-4ba7-9b6c-fcc027f976a1",
+          "personJoinedAt": "2026-11-02T03:55:24.317Z",
+          "outcome": "completed",
+          "resizeRequested": true,
+          "inSessionScheduledWakeupCompleted": true
+        }
+      },
+      "connectAuthorities": []
+    }
+  ],
+  "settingsWatcherPollingDiagnostic": false,
+  "remoteControlPolicyOnlyComparison": false,
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchives": [
+    {
+      "version": "v43",
+      "sha256": "3533e006cceb3ace8f28a2f79bac0462640f4ace3e4e1777995c4e2befae997d",
+      "kind": "full"
+    }
+  ],
+  "sourceBaseRevision": "354be9e",
+  "runtimeArtifactSha256": "1a5f7cf4367abad094026163c258e40abdba606dcd1460ae3e55198918b590f3"
+}

@@ -14,6 +14,7 @@ import {
 } from "../../src/targets/claude-shared-memory.js";
 import { runCli } from "../helpers/cli-runner.js";
 import { mkTempHome } from "../helpers/files.js";
+import { verifySyntheticExecutable } from "../helpers/claude-native-invocation.js";
 
 const PROJECT = "-Users-synthetic-workspace-app";
 const HOUR_MS = 60 * 60 * 1000;
@@ -170,6 +171,7 @@ test("a normal launch moves stragglers in and says so; login staging does not", 
     configDir: path.join(stagingHome, ".claude"),
     platform: "linux",
     warn: (message) => stagingWarnings.push(message),
+    verifyInstalledClaudeExecutableImpl: verifySyntheticExecutable,
   });
   assert.deepEqual(stagingWarnings, []);
   assert.equal(fs.existsSync(sharedMemoryDir(home)), false);
@@ -182,6 +184,7 @@ test("a normal launch moves stragglers in and says so; login staging does not", 
     configDir: path.join(labelHome, ".claude"),
     platform: "linux",
     warn: (message) => warnings.push(message),
+    verifyInstalledClaudeExecutableImpl: verifySyntheticExecutable,
   });
   assert.deepEqual(warnings, [
     "Moved 1 Claude memory saved under beta into the shared memory store.",

@@ -1,0 +1,204 @@
+{
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "meaning": "Scoped settings observations, not complete telemetry or relay lifecycle acceptance",
+  "results": [
+    {
+      "case": "privacy-overlay",
+      "exit": 0,
+      "policyRefusal": false,
+      "modelRequests": 3,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "preserve-me",
+        "toolUnameMatchesHost": true,
+        "toolUid": 501,
+        "intentionalToolRead": true,
+        "toolNoNewPrivs": null,
+        "nativeToolCheck": {
+          "platform": "Darwin",
+          "processPolicy": null,
+          "checks": [
+            {
+              "name": "home/.local/share/claude/versions/unknown:direct",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "home/.local/share/claude/versions/unknown:shell",
+              "exit": 126,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "home/.local/share/claude/versions/unknown:interpreter",
+              "exit": 2,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "home/.local/share/claude/versions/unknown:symlink",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "home/.cache/claude/staging/unknown:direct",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "home/.cache/claude/staging/unknown:shell",
+              "exit": 126,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "home/.cache/claude/staging/unknown:interpreter",
+              "exit": 2,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "home/.cache/claude/staging/unknown:symlink",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "alternative-data/claude/versions/unknown:direct",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "alternative-data/claude/versions/unknown:shell",
+              "exit": 126,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "alternative-data/claude/versions/unknown:interpreter",
+              "exit": 2,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "alternative-data/claude/versions/unknown:symlink",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "alternative-cache/claude/staging/unknown:direct",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "alternative-cache/claude/staging/unknown:shell",
+              "exit": 126,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "alternative-cache/claude/staging/unknown:interpreter",
+              "exit": 2,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "alternative-cache/claude/staging/unknown:symlink",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "npm/node_modules/@anthropic-ai/claude-code/unknown:direct",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "npm/node_modules/@anthropic-ai/claude-code/unknown:shell",
+              "exit": 126,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "npm/node_modules/@anthropic-ai/claude-code/unknown:interpreter",
+              "exit": 2,
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "npm/node_modules/@anthropic-ai/claude-code/unknown:symlink",
+              "exit": "permission-denied",
+              "markerExecuted": false,
+              "expectedDenied": true,
+              "passed": true
+            },
+            {
+              "name": "ordinary-project-script",
+              "exit": 0,
+              "markerExecuted": true,
+              "expectedDenied": false,
+              "passed": true
+            },
+            {
+              "name": "native-project-build",
+              "exit": 0,
+              "passed": true
+            },
+            {
+              "name": "native-project-run",
+              "exit": 0,
+              "markerExecuted": true,
+              "expectedDenied": false,
+              "passed": true
+            }
+          ],
+          "decisionFixturePassed": true
+        }
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Darwin unknown",
+        "- Platform: darwin",
+        "- Shell: bash"
+      ],
+      "nativeReadAttempted": true,
+      "nativeReadReturnedCanary": false,
+      "nativeReadError": true
+    }
+  ]
+}

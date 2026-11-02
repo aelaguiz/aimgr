@@ -1,0 +1,81 @@
+{
+  "integratedAim": true,
+  "mode": "protected",
+  "actualNativeRoute": true,
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "results": [
+    {
+      "case": "protected-pro-schedules-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/artifacts/mcp",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/frame/contract/latest",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/organizations/org_boss/referral/eligibility",
+        "/api/oauth/profile",
+        "/exit",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 14,
+      "modelSources": [
+        "127.0.0.2"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": false,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "schedules": {
+        "calendar": {
+          "scheduler": "launchd system",
+          "expectedStart": "2026-11-02T02:16:00.000Z",
+          "actualStart": "2026-11-02T02:16:03.505Z",
+          "parentPid": 1,
+          "timezone": "+00:00",
+          "fireKey": "test-privacy-941--2026-11-02T02-16+0000",
+          "outcome": "completed",
+          "selectedAccount": "a",
+          "unattended": true,
+          "nativeToolCompleted": true,
+          "substituted": [
+            "Herdr UI",
+            "Redis wire",
+            "print mode instead of interactive follow-up",
+            "headless system launchd with ordinary UserName; GUI activation not exercised"
+          ]
+        },
+        "interactive": {
+          "initialTurnCompleted": true,
+          "followupCompleted": true,
+          "nativeExit": 0,
+          "terminalRestored": true,
+          "terminalCheckedBeforeAimExit": true,
+          "sessionId": "b980d48f-55ea-4540-aa7a-03582fb0cb57",
+          "personJoinedAt": "2026-11-02T02:16:11.954Z",
+          "outcome": "completed",
+          "resizeRequested": true,
+          "inSessionScheduledWakeupCompleted": true
+        }
+      },
+      "connectAuthorities": []
+    }
+  ],
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchiveSha256": "fbb17cb8e225f3e95e129275c4c0d626ec56df6959b6bedf50bb833a1ea72ac3",
+  "nativeArtifactSet": "52170f292d4d5f36a95b1eb10790a060ad4ddb0e8ca590033877714f874abd95"
+}

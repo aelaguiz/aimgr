@@ -8,6 +8,7 @@ import {
   refreshRedisRuntimeState,
 } from "../../coordination/runtime.js";
 import { findCredentialRecord } from "../../coordination/snapshot.js";
+import { REDIS_CONNECTION_POLICY_LEASED } from "../../coordination/redis-store.js";
 import { isObject, normalizeLabel } from "../../core/normalize.js";
 import { parseExpiresAtToMs } from "../../core/time.js";
 import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.js";
@@ -141,7 +142,13 @@ async function handleOAuthMaintain(context) {
   if (!isRedisConfigured({ homeDir })) {
     throw new Error("`aim auth maintain` requires Redis.");
   }
-  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
+  // Native admission/refresh can outlive a one-shot connection's idle timeout.
+  // Keep the existing leased connection policy until publication/release, or
+  // successfully refreshed tokens cannot be committed and later accounts fail.
+  // This does not relax ownership: each publication still checks the live lease,
+  // and leased connections disable offline command queueing on a disconnect.
+  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl,
+    connectionPolicy: REDIS_CONNECTION_POLICY_LEASED });
   const counts = {
     refreshed: 0,
     unchanged: 0,

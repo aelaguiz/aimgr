@@ -27,6 +27,7 @@ const PUBLIC_COMMAND_STEMS = [
   "aim codex watch",
   "aim hermes watch",
   "aim claude status",
+  "aim claude privacy status",
   "aim claude usage",
   "aim claude inventory",
   "aim claude run",

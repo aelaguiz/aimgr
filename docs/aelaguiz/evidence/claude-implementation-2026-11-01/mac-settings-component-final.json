@@ -1,0 +1,161 @@
+{
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "meaning": "Scoped settings observations, not complete telemetry or relay lifecycle acceptance",
+  "results": [
+    {
+      "case": "aim-composed-settings",
+      "exit": 0,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 3,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "component-preserved",
+        "PROJECT_LIVE_CANARY": "project-live-edit-preserved",
+        "toolUnameMatchesHost": true,
+        "toolUid": 501
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Darwin 25.6.0",
+        "- Platform: darwin",
+        "- Shell: bash"
+      ],
+      "lifecycleEvents": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "requiredHooksConfigured": [
+        "SessionStart",
+        "Stop",
+        "StopFailure",
+        "UserPromptSubmit"
+      ]
+    },
+    {
+      "case": "aim-composed-settings-model-error",
+      "exit": 1,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": true,
+      "modelRequests": 6,
+      "toolEnvironment": null,
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Darwin 25.6.0",
+        "- Platform: darwin",
+        "- Shell: bash"
+      ],
+      "lifecycleEvents": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "StopFailure"
+      ],
+      "requiredHooksConfigured": [
+        "SessionStart",
+        "Stop",
+        "StopFailure",
+        "UserPromptSubmit"
+      ]
+    },
+    {
+      "case": "schema-invalid-model",
+      "exit": 0,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 2,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "",
+        "DISABLE_ERROR_REPORTING": "",
+        "DISABLE_UPDATES": "",
+        "REQUIRED_TOOL_CANARY": "preserve-me",
+        "PROJECT_LIVE_CANARY": null,
+        "toolUnameMatchesHost": true,
+        "toolUid": 501
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Darwin 25.6.0",
+        "- Platform: darwin",
+        "- Shell: bash"
+      ]
+    },
+    {
+      "case": "schema-invalid-env",
+      "exit": 0,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 2,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "",
+        "PROJECT_LIVE_CANARY": null,
+        "toolUnameMatchesHost": true,
+        "toolUid": 501
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Darwin 25.6.0",
+        "- Platform: darwin",
+        "- Shell: bash"
+      ]
+    },
+    {
+      "case": "safe-mode-settings",
+      "exit": 0,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 2,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "preserve-me",
+        "PROJECT_LIVE_CANARY": null,
+        "toolUnameMatchesHost": true,
+        "toolUid": 501
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Darwin 25.6.0",
+        "- Platform: darwin",
+        "- Shell: bash"
+      ]
+    }
+  ]
+}

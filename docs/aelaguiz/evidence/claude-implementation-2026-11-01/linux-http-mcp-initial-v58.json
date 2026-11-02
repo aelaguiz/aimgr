@@ -1,0 +1,79 @@
+{
+  "integratedAim": true,
+  "mode": "protected",
+  "actualNativeRoute": true,
+  "platform": "Linux",
+  "artifactSha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "results": [
+    {
+      "case": "protected-pro-http-mcp-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/exit",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 8,
+      "modelSources": [
+        "127.0.0.2"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": false,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 0,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "httpMcp": {
+        "initialOAuthCodePkceAndCallback": true,
+        "nativeInitialCredentialPersistence": true,
+        "oauthRefresh": true,
+        "separateClientSecret": true,
+        "persistedRotatedToken": true,
+        "httpTool": true,
+        "resourceListAndRead": true,
+        "noBrowserOrRegistration": true,
+        "calls": [
+          "server/discover",
+          "initialize",
+          "notifications/initialized",
+          "tools/list",
+          "resources/list",
+          "tools/call",
+          "server/discover",
+          "initialize",
+          "notifications/initialized",
+          "tools/list",
+          "resources/list",
+          "resources/read"
+        ]
+      },
+      "connectAuthorities": []
+    }
+  ],
+  "settingsWatcherPollingDiagnostic": false,
+  "remoteControlPolicyOnlyComparison": false,
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "sourceArchives": [
+    {
+      "version": "v58",
+      "sha256": "241de32bd360a5baaee40bf68ee0dd3b08ee992fa8b9c92fe4a5bb43453a344b",
+      "kind": "full"
+    }
+  ],
+  "sourceBaseRevision": "354be9e",
+  "runtimeArtifactSha256": "1a5f7cf4367abad094026163c258e40abdba606dcd1460ae3e55198918b590f3"
+}

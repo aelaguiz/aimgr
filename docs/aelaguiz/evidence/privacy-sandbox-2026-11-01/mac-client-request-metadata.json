@@ -1,0 +1,16 @@
+{
+  "codex": {
+    "macVersionPresent": false,
+    "kernelVersionPresent": false,
+    "terminalVersionPresent": true,
+    "macUnknownPresent": true,
+    "darwinUnknownPresent": false
+  },
+  "claude": {
+    "macVersionPresent": false,
+    "kernelVersionPresent": false,
+    "terminalVersionPresent": false,
+    "macUnknownPresent": false,
+    "darwinUnknownPresent": true
+  }
+}

@@ -1,0 +1,281 @@
+{
+  "allPassed": true,
+  "results": [
+    {
+      "attempt": "cold",
+      "method": "remoteControl/enable",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 10
+      }
+    },
+    {
+      "attempt": "cold",
+      "method": "remoteControl/disable",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 11
+      }
+    },
+    {
+      "attempt": "cold",
+      "method": "remoteControl/status/read",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 12
+      }
+    },
+    {
+      "attempt": "cold",
+      "method": "remoteControl/pairing/start",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 13
+      }
+    },
+    {
+      "attempt": "cold",
+      "method": "remoteControl/pairing/status",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 14
+      }
+    },
+    {
+      "attempt": "cold",
+      "method": "remoteControl/client/list",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 15
+      }
+    },
+    {
+      "attempt": "cold",
+      "method": "remoteControl/client/revoke",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 16
+      }
+    },
+    {
+      "attempt": "cold",
+      "method": "config/read",
+      "passed": true
+    },
+    {
+      "attempt": "cold",
+      "method": "configRequirements/read",
+      "passed": true,
+      "response": {
+        "id": 100,
+        "result": {
+          "supportsIndependentSpeedModes": true,
+          "requirements": {
+            "modelProvider": null,
+            "modelProviders": null,
+            "allowedLoginMethods": [
+              "api",
+              "chatgpt"
+            ],
+            "cliAuthCredentialsStore": null,
+            "chatgptBaseUrl": null,
+            "additionalDeveloperInstructions": null,
+            "allowedApprovalPolicies": null,
+            "allowedApprovalsReviewers": null,
+            "allowedSandboxModes": null,
+            "allowedWindowsSandboxImplementations": null,
+            "allowedPermissionProfiles": null,
+            "defaultPermissions": null,
+            "allowedWebSearchModes": null,
+            "allowManagedHooksOnly": null,
+            "allowBrowserAndComputerUse": null,
+            "allowAppshots": null,
+            "allowRemoteControl": false,
+            "computerUse": null,
+            "browserUse": null,
+            "inAppBrowser": null,
+            "featureRequirements": null,
+            "hooks": null,
+            "enforceResidency": null,
+            "network": null,
+            "application": null,
+            "autoReview": null,
+            "models": null,
+            "sqliteHome": null,
+            "logDir": null,
+            "modelCatalogJson": null,
+            "checkForUpdateOnStartup": null,
+            "allowLoginShell": null,
+            "feedback": null
+          }
+        }
+      }
+    },
+    {
+      "attempt": "restart",
+      "method": "remoteControl/enable",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 10
+      }
+    },
+    {
+      "attempt": "restart",
+      "method": "remoteControl/disable",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 11
+      }
+    },
+    {
+      "attempt": "restart",
+      "method": "remoteControl/status/read",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 12
+      }
+    },
+    {
+      "attempt": "restart",
+      "method": "remoteControl/pairing/start",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 13
+      }
+    },
+    {
+      "attempt": "restart",
+      "method": "remoteControl/pairing/status",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 14
+      }
+    },
+    {
+      "attempt": "restart",
+      "method": "remoteControl/client/list",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 15
+      }
+    },
+    {
+      "attempt": "restart",
+      "method": "remoteControl/client/revoke",
+      "passed": true,
+      "response": {
+        "error": {
+          "code": -32600,
+          "message": "remote control is disabled by managed requirements"
+        },
+        "id": 16
+      }
+    },
+    {
+      "attempt": "restart",
+      "method": "config/read",
+      "passed": true
+    },
+    {
+      "attempt": "restart",
+      "method": "configRequirements/read",
+      "passed": true,
+      "response": {
+        "id": 100,
+        "result": {
+          "supportsIndependentSpeedModes": true,
+          "requirements": {
+            "modelProvider": null,
+            "modelProviders": null,
+            "allowedLoginMethods": [
+              "api",
+              "chatgpt"
+            ],
+            "cliAuthCredentialsStore": null,
+            "chatgptBaseUrl": null,
+            "additionalDeveloperInstructions": null,
+            "allowedApprovalPolicies": null,
+            "allowedApprovalsReviewers": null,
+            "allowedSandboxModes": null,
+            "allowedWindowsSandboxImplementations": null,
+            "allowedPermissionProfiles": null,
+            "defaultPermissions": null,
+            "allowedWebSearchModes": null,
+            "allowManagedHooksOnly": null,
+            "allowBrowserAndComputerUse": null,
+            "allowAppshots": null,
+            "allowRemoteControl": false,
+            "computerUse": null,
+            "browserUse": null,
+            "inAppBrowser": null,
+            "featureRequirements": null,
+            "hooks": null,
+            "enforceResidency": null,
+            "network": null,
+            "application": null,
+            "autoReview": null,
+            "models": null,
+            "sqliteHome": null,
+            "logDir": null,
+            "modelCatalogJson": null,
+            "checkForUpdateOnStartup": null,
+            "allowLoginShell": null,
+            "feedback": null
+          }
+        }
+      }
+    }
+  ]
+}

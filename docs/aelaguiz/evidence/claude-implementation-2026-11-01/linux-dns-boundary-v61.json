@@ -1,0 +1,88 @@
+{
+  "runtimeArtifactSha256": "4ee0d0923848444dc73897d026ad110ff2bac5a9842129230ccf4c9257a26d9b",
+  "sourceArchive": "v61",
+  "cases": [
+    {
+      "case": "privacy-overlay",
+      "exit": 0,
+      "toolFailureObserved": false,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 4,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "preserve-me",
+        "PROJECT_LIVE_CANARY": null,
+        "toolUnameMatchesHost": true,
+        "toolUid": 1001,
+        "intentionalToolRead": true,
+        "toolNoNewPrivs": [
+          "NoNewPrivs:\t0"
+        ]
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Linux 7.0.0-1014-gcp",
+        "- Platform: linux",
+        "- Shell: bash"
+      ],
+      "nativeReadAttempted": true,
+      "nativeReadReturnedCanary": true,
+      "nativeReadError": false,
+      "hostIdReadAttempted": true,
+      "hostIdReturned": true,
+      "hostIdReadError": false,
+      "mode": "ordinary"
+    },
+    {
+      "case": "privacy-overlay",
+      "exit": 0,
+      "toolFailureObserved": false,
+      "policyRefusal": false,
+      "syntheticModelFailureObserved": false,
+      "modelRequests": 4,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "preserve-me",
+        "PROJECT_LIVE_CANARY": null,
+        "toolUnameMatchesHost": true,
+        "toolUid": 1001,
+        "intentionalToolRead": true,
+        "toolNoNewPrivs": [
+          "NoNewPrivs:\t0"
+        ]
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Linux",
+        "- Platform: linux",
+        "- Shell: bash"
+      ],
+      "nativeReadAttempted": true,
+      "nativeReadReturnedCanary": false,
+      "nativeReadError": true,
+      "hostIdReadAttempted": true,
+      "hostIdReturned": false,
+      "hostIdReadError": true,
+      "mode": "protected"
+    }
+  ],
+  "passed": true,
+  "sourceArchiveSha256": "6ec5f436e509f921e859b63ec23995267300e79867f34b09f578df9e62cd9bc2"
+}

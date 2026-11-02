@@ -1,0 +1,14 @@
+{
+  "kind": "baseline calendar job did not run on rental",
+  "registeredJobRuns": 0,
+  "nativeReceiptExists": false,
+  "registration": {
+    "registeredAt": "2026-11-01T20:04:11.189420",
+    "trigger": "calendar",
+    "scheduledHour": 20,
+    "scheduledMinute": 5
+  },
+  "calendarEventChannelActive": false,
+  "privacyPolicyApplied": false,
+  "rawJobStatusSha256": "cec5ac7e956d73783d2659f10f7925a57ba9a9fea22bc4e2faff3c5cc735267c"
+}

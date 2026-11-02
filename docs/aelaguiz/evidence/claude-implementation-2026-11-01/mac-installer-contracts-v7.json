@@ -1,0 +1,29 @@
+{
+  "platform": "Darwin",
+  "sourceArchiveSha256": "3178b621817c1f15760822eb2f07b357743445801ebfb88437426f146bc1303a",
+  "passedCount": 19,
+  "cases": [
+    "staging preserves selector",
+    "explicit activation and idempotence",
+    "immutable old artifacts retained",
+    "nonexecutable helper refused",
+    "changed bytes refused",
+    "extra file refused",
+    "test-only authorization refused",
+    "missing human approval refused",
+    "unreadable existing approval refused",
+    "unreadable existing artifact directory refused",
+    "read-denying ACL refused",
+    "restrictive umask supported",
+    "unreadable destination parent refused",
+    "execution-denying ACL refused",
+    "active account SH lock refuses transition",
+    "stopped account transition succeeds",
+    "custom-home owner refuses transition",
+    "post-publication fsync reports activation",
+    "post-publication cleanup reports activation"
+  ],
+  "realVendorExecuted": false,
+  "realRuntimeChanged": false,
+  "initialFixtureFailure": "Copied Apple platform sleep binary did not behave as ordinary third-party owner; replaced with tiny compiled synthetic sleeper."
+}

@@ -43,7 +43,7 @@ export async function assertLocalClaudeProfileStopped(profileRef, { cgroupRoot =
 // nativeCommand must name Claude itself even when command is its Node supervisor:
 // otherwise an existing unwrapped --bg daemon could receive the new work.
 // Regressions: claude-native-route.test.js and claude-native-background.test.js.
-export async function prepareClaudeNativeRoute({ profile, command, args, nativeCommand = command, signal, deadlineMs, platform = process.platform }) {
+export async function prepareClaudeNativeRoute({ profile, command, args, nativeCommand = command, approvedPrivacyEntry = false, signal, deadlineMs, platform = process.platform }) {
   if (!profile) throw new ClaudeRouteError("missing_proxy_assignment");
   if (!["linux", "darwin"].includes(platform)) throw new ClaudeRouteError("native_proxy_platform_unverified", profile);
   let installed;
@@ -56,7 +56,14 @@ export async function prepareClaudeNativeRoute({ profile, command, args, nativeC
   const timeoutMs = Number.isFinite(deadlineMs) ? Math.max(1, Math.min(8000, deadlineMs - Date.now())) : 8000;
   await checkClaudeRouteExit(profile, { timeoutMs, signal });
   const binding = JSON.stringify({ label: profile.label, socksHost: profile.socksHost, socksPort: profile.socksPort, expectedExits: profile.expectedExits, nativeCommand });
-  if (platform === "darwin") return { command: "/opt/aimgr-claude-proxy/darwin_launch", args: [profile.profileRef, binding, "--", command, ...args] };
+  if (platform === "darwin") {
+    if (approvedPrivacyEntry) {
+      if (!/^\/opt\/aimgr-claude-runtime\/artifacts\/[a-f0-9]{64}\/launcher$/.test(command)
+        || args[0] !== "v1" || args[1] !== "protected") throw new ClaudeRouteError("native_proxy_unavailable", profile);
+      return { command, args: ["route-v1", profile.profileRef, binding, "--", ...args] };
+    }
+    return { command: "/opt/aimgr-claude-proxy/darwin_launch", args: [profile.profileRef, binding, "--", command, ...args] };
+  }
   return { command: "/usr/bin/python3", args: [helper, "run", profile.profileRef, binding, "--", command, ...args] };
 }
 

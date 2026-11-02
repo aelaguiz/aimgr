@@ -1,0 +1,62 @@
+{
+  "platform": "Darwin",
+  "artifactSha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+  "meaning": "Scoped settings observations, not complete telemetry or relay lifecycle acceptance",
+  "results": [
+    {
+      "case": "privacy-overlay",
+      "exit": 0,
+      "policyRefusal": false,
+      "modelRequests": 2,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "preserve-me"
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Darwin 25.6.0",
+        "- Platform: darwin",
+        "- Shell: bash"
+      ]
+    },
+    {
+      "case": "remote-user-setting",
+      "exit": 1,
+      "policyRefusal": true,
+      "modelRequests": 0,
+      "toolEnvironment": null
+    },
+    {
+      "case": "privacy-overlay-live-edit",
+      "exit": 0,
+      "policyRefusal": false,
+      "modelRequests": 3,
+      "toolEnvironment": {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_UPDATES": "1",
+        "REQUIRED_TOOL_CANARY": "live-edit-preserved"
+      },
+      "automaticHeaders": {
+        "User-Agent": "claude-cli/2.1.316 (external, sdk-cli)",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1"
+      },
+      "automaticEnvironmentLines": [
+        "- OS Version: Darwin 25.6.0",
+        "- Platform: darwin",
+        "- Shell: bash"
+      ]
+    }
+  ]
+}

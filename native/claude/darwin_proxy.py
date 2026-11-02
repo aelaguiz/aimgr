@@ -48,7 +48,7 @@ def profile(name):
 def lock(file, exclusive=False, nonblocking=False):
     with file.open('r') as descriptor:
         fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | (fcntl.LOCK_NB if nonblocking else 0))
-        yield
+        yield descriptor
 
 
 def processes():
@@ -147,7 +147,7 @@ def environment(pid):
 # launcher's GID. Inspect live owners, including old binaries, aliased config
 # directories and surviving workers; a roster alone is not authoritative.
 # Regression: test/network/claude-native-background.test.js.
-def require_existing_owners_routed(config, expected, env):
+def require_existing_owners_routed(config, expected, env, *, require_stopped=False):
     config_dir = env.get('CLAUDE_CONFIG_DIR')
     if not config_dir:
         return
@@ -186,6 +186,8 @@ def require_existing_owners_routed(config, expected, env):
                 except OSError:
                     same_account = os.path.realpath(candidate) == os.path.realpath(config_dir)
                 break
+        if same_account and require_stopped:
+            raise RuntimeError('this account still has native Claude work; stop its sessions and background owners before identity migration')
         if same_account and info['gid'] != config['gid']:
             raise RuntimeError('this account still has native Claude work outside its assigned proxy; stop its existing sessions and background daemon before retrying')
 
@@ -220,7 +222,7 @@ def run(name, expected, env_fd, argv):
                 pass  # The controlling terminal may have disconnected.
 
 
-def run_child(name, expected, env_fd, argv):
+def run_child(name, expected, env_fd, argv, *, replace_with_approved=False):
     config = profile(name)
     for key in ('socksHost', 'socksPort'):
         if config[key] != expected[key]:
@@ -282,7 +284,7 @@ def run_child(name, expected, env_fd, argv):
     # Hold shared admission through the actual routed probe and identity handshake.
     # The child must enter its routing GID before stop/reconfiguration can acquire
     # the exclusive lock; otherwise a late child could escape the stop inventory.
-    with lock(ROOT / f'{name}.lock'):
+    with lock(ROOT / f'{name}.lock') as admission_lock:
         current_ready(name, allow_starting=argv == probe_args)
         require_existing_owners_routed(config, expected, env)
         # The service invokes this exact internal probe too. Avoid recursion;
@@ -297,6 +299,31 @@ def run_child(name, expected, env_fd, argv):
                 checking.wait()
                 raise RuntimeError('native routing health check timed out before launch')
         current_ready(name, allow_starting=argv == probe_args)
+        if replace_with_approved:
+            # The hardened launcher reaches this role with a minimal routing
+            # environment and a separate unopened vendor-environment FD. Keep
+            # the supervisor's child PID: a waiting Python wrapper would make
+            # SIGSTOP pause that wrapper while Claude kept sending requests.
+            # Preserve admission through identity's GID change; final policy
+            # entry closes this lock and all other non-stdio descriptors.
+            # After the bounded probe, this PID is the payload. Do not consume
+            # a TERM in a Python handler between the pending check and exec:
+            # that would start Claude after cancellation until KILL escalated.
+            active_child = None
+            for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                signal.signal(signum, signal.SIG_DFL)
+            if pending_signal:
+                raise RuntimeError('native launch was cancelled before admission')
+            os.set_inheritable(admission_lock.fileno(), True)
+            read_fd, write_fd = os.pipe()
+            os.set_inheritable(read_fd, True)
+            os.set_inheritable(write_fd, True)
+            os.set_inheritable(env_fd, True)
+            # The fixed identity helper writes its normal success handshake.
+            # This exec chain does not need a second observer: its own exit
+            # remains the supervisor's child exit. Retain the read end until
+            # final entry so the write cannot fail with SIGPIPE.
+            os.execv(IDENTITY, [IDENTITY, name, str(write_fd), str(env_fd), '--', *argv])
         child = spawn_routed(argv)
     code = child.wait()
     if (state_dir(name) / 'failed').exists():
@@ -615,8 +642,19 @@ if __name__ == '__main__':
             install()
             sys.exit(0)
         validate(name)
-        if action == 'run' and sys.argv[5] == '--':
-            with lock(ROOT / 'install.lock'):
+        if action in ('run', 'launch-approved') and sys.argv[5] == '--':
+            with lock(ROOT / 'install.lock') as install_lock:
+                if action == 'launch-approved':
+                    # This is NOT a sandbox escape entry. Only the immutable,
+                    # hardened C launcher has that exception; it supplies the
+                    # fixed final launcher and native protocol below. Calls
+                    # from ordinary sandboxed tools still inherit their policy.
+                    argv = sys.argv[6:]
+                    if (len(argv) < 11 or not re.fullmatch(r'/opt/aimgr-claude-runtime/artifacts/[a-f0-9]{64}/launcher', argv[0])
+                            or argv[1:3] != ['v1', 'protected']):
+                        raise RuntimeError('invalid approved privacy entry')
+                    os.set_inheritable(install_lock.fileno(), True)
+                    sys.exit(run_child(name, json.loads(sys.argv[3]), int(sys.argv[4]), argv, replace_with_approved=True))
                 sys.exit(run(name, json.loads(sys.argv[3]), int(sys.argv[4]), sys.argv[6:]))
         elif action == 'serve':
             serve(name)
@@ -634,7 +672,7 @@ if __name__ == '__main__':
             raise RuntimeError('invalid native proxy operation')
     except Exception as error:
         label = 'unknown'
-        if len(sys.argv) > 3 and sys.argv[1] == 'run':
+        if len(sys.argv) > 3 and sys.argv[1] in ('run', 'launch-approved'):
             try:
                 candidate = json.loads(sys.argv[3]).get('label', 'unknown')
                 if isinstance(candidate, str) and re.fullmatch(r'[a-zA-Z0-9_.@+-]+', candidate):

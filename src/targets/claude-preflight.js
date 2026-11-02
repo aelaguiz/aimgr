@@ -59,6 +59,7 @@ export async function runSharedClaudePreRunPreflight({
   resolveCommandImpl,
   assertLeaseOwned,
   stopBeforeReconciliation = null,
+  beforeLocalState = null,
 }) {
   const observedAt = new Date(nowMs).toISOString();
   if (
@@ -67,6 +68,11 @@ export async function runSharedClaudePreRunPreflight({
   ) {
     return { descriptor: null, command: null, observedAt, reconciliation: null, paused: true };
   }
+
+  // Maintenance can skip a not-due account without touching its local state.
+  // Once it will inspect/reconcile that state, acquire the same coordination
+  // used by interactive runs BEFORE reading it, not after projection.
+  if (beforeLocalState) await beforeLocalState();
 
   let descriptor;
   try {

@@ -1,0 +1,11 @@
+{
+  "kind": "initial calendar fixture did not execute; not a Codex turn failure",
+  "registeredJobRuns": 0,
+  "nativeReceiptExists": false,
+  "fixtureReadyAt": "2026-11-01T19:58:53.781168",
+  "scheduledHour": 19,
+  "scheduledMinute": 59,
+  "registrationCompletionTimeRecorded": false,
+  "retryChange": "at least 30 seconds between choosing the calendar minute and its boundary",
+  "rawJobStatusSha256": "d8473336537ef2662b2e521e04f86d1470e4165b0af1c94909724d6c2f5d7408"
+}

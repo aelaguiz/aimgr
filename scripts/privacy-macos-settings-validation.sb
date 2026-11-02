@@ -1,0 +1,40 @@
+(version 1)
+; Offsite decision fixture only. A final launcher must substitute its private
+; validation directory and admitted immutable vendor path from trusted records.
+; The doctor child gets no account credentials and cannot reach any network.
+(allow default)
+; Restrict data, network and child execution, not unrelated runtime APIs. The
+; loader also reads literal traversal roots before main; these are not subpath
+; grants and do not expose sibling homes. The paired negative probe is required.
+(deny network*)
+; Doctor probes the Keychain through the system security tool. It must be able
+; to start that tool and receive a failure, otherwise this Bun build exits with
+; no diagnostics. Deny its service access as well as the actual Keychain files;
+; file denial alone does not isolate a service performing work on its behalf.
+(deny mach-lookup)
+(deny file-read* (require-not (require-any
+                  (literal "/") (literal "/opt") (literal "/private")
+                  (literal "/var") (literal "/private/var")
+                  (literal "/Library") (literal "/Library/Developer")
+                  (literal "/opt/aimgr-state-audit")
+                  (literal "/opt/aimgr-state-audit/bin")
+                  (literal "/opt/aimgr-state-audit/claude-implementation")
+                  (subpath "/System") (subpath "/usr")
+                  (subpath "/Library/Apple")
+                  (subpath "/private/var/db/dyld")
+                  (subpath "/private/preboot/Cryptexes/OS")
+                  (literal "/dev/null")
+                  (literal "/dev/urandom")
+                  (literal "/dev/random")
+                  (literal "/opt/aimgr-state-audit/bin/claude")
+                  (literal (param "VALIDATION_CONTAINER"))
+                  (literal (param "INPUT_DIRECTORY"))
+                  (literal (param "SETTINGS_FILE"))
+                  (subpath (param "VALIDATION_ROOT")))))
+; The input is outside writable scratch. Never grant its containing directory
+; as a writable subpath: validation must not change the bytes later launched.
+(deny file-write* (require-not (require-any (literal "/dev/null")
+                   (subpath (param "VALIDATION_ROOT")))))
+(deny process-exec (require-not (require-any
+  (literal "/opt/aimgr-state-audit/bin/claude")
+  (literal "/usr/bin/security"))))

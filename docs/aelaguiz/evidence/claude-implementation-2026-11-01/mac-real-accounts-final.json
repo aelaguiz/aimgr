@@ -1,0 +1,121 @@
+{
+  "platform": "darwin",
+  "humanChallenge": false,
+  "modelCheckedAt": "2026-11-02T04:39:49.564Z",
+  "sessions": [
+    {
+      "label": "proxy5",
+      "name": "a1",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "durationMs": 14213
+    },
+    {
+      "label": "proxy5",
+      "name": "a2",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "durationMs": 14302
+    },
+    {
+      "label": "proxy6",
+      "name": "b1",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "durationMs": 16074
+    },
+    {
+      "label": "proxy5",
+      "name": "resume-a1",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "previousMarkerRecalled": true,
+      "durationMs": 13893,
+      "sameSession": true
+    },
+    {
+      "label": "proxy6",
+      "name": "resume-b1",
+      "code": 0,
+      "signal": null,
+      "isError": false,
+      "markerPresent": true,
+      "assignedExitPresent": true,
+      "previousMarkerRecalled": false,
+      "durationMs": 14904,
+      "sameSession": true,
+      "separateSameSessionRecallPassed": true
+    }
+  ],
+  "threeDistinctSessions": true,
+  "allThreeLifetimesOverlap": true,
+  "startupDown": {
+    "checkedAt": "2026-11-02T04:39:02.451Z",
+    "label": "proxy5",
+    "proxy": "proxy5",
+    "exitCode": 1,
+    "error": "aim: Claude proxy5: assigned proxy is unavailable. Claude cannot start or continue. Repair the proxy/tunnel, then explicitly retry or resume (proxy5).",
+    "durationMs": 2262,
+    "nativeOwnersAbsent": true,
+    "platform": "darwin",
+    "localChromeTunnelChanged": false
+  },
+  "refresh": {
+    "checkedAt": "2026-11-02T04:39:54.117Z",
+    "label": "proxy5",
+    "accessTokenChanged": true,
+    "refreshTokenChanged": true,
+    "expiryRenewed": true,
+    "assignmentPreserved": true,
+    "identityPreserved": true,
+    "versionBefore": 18,
+    "versionAfter": 20
+  },
+  "liveUsage": true,
+  "routine": {
+    "passed": true,
+    "platform": "darwin",
+    "checkedAt": "2026-11-02T04:49:17.070Z",
+    "actualOsCalendar": true,
+    "publicRoutineCli": true,
+    "exactGeneratedWorkerCommand": true,
+    "realSacrificialAccount": "proxy6",
+    "syntheticToolCompleted": true,
+    "assignedExit": true,
+    "promptAdmitted": true,
+    "jobDone": true,
+    "terminalRemainedAvailable": true,
+    "duplicateSuppressed": true,
+    "normalExit": true,
+    "leaseReleased": true,
+    "humanChallenge": false
+  },
+  "runtimeArtifactSha256": "9bc287ee11a9576ccf080f2988ecef24961a792c645dd53040568e3132fdf9b4",
+  "sourceArchives": [
+    {
+      "version": "v59",
+      "sha256": "d4152cb8c6f41a14c7607a0364d918d1d171b95d37eee6d64e63cfc42d307f3f"
+    },
+    {
+      "version": "v62",
+      "sha256": "431d2b2c6fb17a9ed75264ddcbf045a3ae2ccf0747eab4264d368c7af946fcc6"
+    }
+  ],
+  "scope": "Only proxy5/proxy6 on the designated offsite host through their assigned routes; no browser sign-in or personal project. IDs, tokens, exits and raw logs excluded.",
+  "fixtureNotes": [
+    "The initial resume-B reply omitted the requested old marker but retained the same session and completed the new tool turn. A separate no-tool recall prompt with no old marker returned NATIVE_REAL_B1 in that same session.",
+    "The calendar run used source v61 with the root-owned launchd fixture correction included in v62; production runtime and source were unchanged. Herdr UI is a stand-in; actual public CLI, generated worker command, native PTY, live service and OS calendar execute."
+  ]
+}

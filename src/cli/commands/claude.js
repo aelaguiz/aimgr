@@ -1,5 +1,8 @@
 import { resolveNativeAccountProfile, assertLocalClaudeProfileStopped } from "../../network/claude-native-route.js";
 import { readClaudeOfflineBinding, writeClaudeOfflineBinding, invalidateClaudeOfflineBinding, acquireClaudeAssignmentLock, rememberClaudeProtection } from "../../network/claude-offline-binding.js";
+import { acquireClaudeStateGuard } from "../../privacy/claude-state-migration.js";
+import { readClaudeActiveAppState } from "../../privacy/claude-state-source.js";
+import { inspectClaudePrivacyStatus, formatClaudePrivacyStatus } from "../../privacy/claude-status.js";
 import { readAimgrConfig } from "../../config/aimgr-config.js";
 import { normalizeEgressPolicy, resolveClaudeEgressProfile } from "../../network/claude-egress-policy.js";
 import fs from "node:fs";
@@ -52,7 +55,7 @@ import {
 import { markImportedAnthropicLabelDirtyState } from "../../state/authority-anthropic.js";
 import { loadAimgrState } from "../../state/schema.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
-import { hasCompleteClaudeNativeBundle, readClaudeAppStateFile } from "../../credentials/claude-bundle.js";
+import { getClaudeNativeBundle, hasCompleteClaudeNativeBundle, readClaudeAppStateFile } from "../../credentials/claude-bundle.js";
 import {
   activateClaudeLabelSelection,
   activateClaudePoolSelection,
@@ -832,8 +835,9 @@ async function handleRedisClaudeImportNative(context, { label, inFile }) {
 function readCleanOfflineClaudeCache({ homeDir, label }) {
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label });
   const configDir = resolveManagedClaudeDir({ homeDir: claudeHome });
-  const appState = readClaudeAppStateFile({ homeDir: configDir });
-  const expectedEmail = typeof appState?.emailAddress === "string" ? appState.emailAddress.trim().toLowerCase() : "";
+  const appState = readClaudeActiveAppState({ configDir }).state;
+  const expectedEmail = typeof appState?.oauthAccount?.emailAddress === "string"
+    ? appState.oauthAccount.emailAddress.trim().toLowerCase() : "";
   if (!expectedEmail) {
     throw new Error(`Claude label=${label} local cache has no complete native identity.`);
   }
@@ -849,13 +853,13 @@ function readCleanOfflineClaudeCache({ homeDir, label }) {
     throw new Error(`Claude label=${label} local cache is incomplete or unreadable.`);
   }
   const binding = readClaudeOfflineBinding(homeDir, label);
-  if (!binding) return { claudeHome, configDir, descriptor, egressProfile: null };
+  if (!binding) return { claudeHome, configDir, descriptor, egressProfile: null, expectedIdentity: cached.nativeClaudeBundle.oauthAccount };
   const identity = buildStableIdentityForCredential(ANTHROPIC_PROVIDER, { nativeClaudeBundle: cached.nativeClaudeBundle });
   if (!binding?.identity?.accountUuid || !identitiesAreCompatible(binding.identity, identity)) {
     throw new Error(`Claude ${label}: cached proxy assignment does not match the cached account identity.`);
   }
   const egressProfile = resolveNativeAccountProfile({ homeDir, label, state: { accounts: { [label]: { egress: binding.egress } } } });
-  return { claudeHome, configDir, descriptor, egressProfile };
+  return { claudeHome, configDir, descriptor, egressProfile, expectedIdentity: cached.nativeClaudeBundle.oauthAccount };
 }
 
 async function runClaudeFromCleanOfflineCache(context, {
@@ -872,16 +876,32 @@ async function runClaudeFromCleanOfflineCache(context, {
     runClaudeCliImpl = runClaudeCli,
     resolveExecutableOnPathImpl,
   } = context;
-  // Legacy cached launches keep their existing platform dependencies. The
-  // first opt-in is a stopped transition; protected caches use the shared lock.
-  const assignmentLock = readClaudeOfflineBinding(homeDir, label)
-    ? await acquireClaudeAssignmentLock(homeDir, label) : null;
+  // T04/T16: hold the local SH lock before reading identity or credentials.
+  // Ordinary accounts participate too: a later opt-in/rebinding must not race
+  // an already running cached session. SH/SH preserves simultaneous sessions.
+  const discoveredCommand = resolveExecutableOnPathImpl?.("claude");
+  if (!discoveredCommand || !path.isAbsolute(discoveredCommand)) {
+    throw new Error("Could not resolve the installed Claude executable for offline managed launch.");
+  }
+  const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label });
+  const configDir = resolveManagedClaudeDir({ homeDir: claudeHome });
+  const assignmentLock = await acquireClaudeStateGuard({ homeDir, label, configDir, command: discoveredCommand,
+    readBinding: async () => {
+      const binding = readClaudeOfflineBinding(homeDir, label);
+      // The shared guard validates storage for ordinary accounts too. Read
+      // their cached identity under SH so it has the expected-email contract
+      // without inventing a proxy assignment or requiring Redis to be online.
+      if (!binding) return { protected: false,
+        expectedEmail: readCleanOfflineClaudeCache({ homeDir, label }).descriptor.expectedEmail };
+      if (binding.invalidated || !binding.egress?.profileRef || !binding.identity?.accountUuid
+        || !binding.identity?.emailAddress) {
+        throw new Error(`Claude ${label}: cached proxy assignment is incomplete or invalidated.`);
+      }
+      return { protected: true, accountUuid: binding.identity.accountUuid,
+        profileRef: binding.egress.profileRef, expectedEmail: binding.identity.emailAddress };
+    } });
   try {
     const cache = readCleanOfflineClaudeCache({ homeDir, label });
-    const discoveredCommand = resolveExecutableOnPathImpl?.("claude");
-    if (!discoveredCommand || !path.isAbsolute(discoveredCommand)) {
-      throw new Error("Could not resolve the installed Claude executable for offline managed launch.");
-    }
     const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
       ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl
       : prepareClaudeCliLaunch;
@@ -912,8 +932,10 @@ async function runClaudeFromCleanOfflineCache(context, {
         `AIM coordination=offline label=${label} cache=complete\n`,
       );
       const result = await runClaudeCliImpl({
+        assignmentLock,
         signal: assignmentLock?.signal,
         egressProfile: cache.egressProfile,
+        expectedIdentity: cache.expectedIdentity,
         command: preparedLaunch.command,
         userHomeDir: homeDir,
         homeDir: cache.claudeHome,
@@ -992,6 +1014,7 @@ async function handleRedisClaudeRun(context, {
   let stagedSessionFork = null;
   let activeProcessControl = null;
   let managedDescriptor = null;
+  let assignmentLock = null;
   try {
     // Remember remote opt-in before any early return/profile error or credential
     // projection; an unusable new profile must still fence the old ordinary cache.
@@ -1055,6 +1078,25 @@ async function handleRedisClaudeRun(context, {
     const egressProfile = resolveNativeAccountProfile({ homeDir, state: runtime.state, label });
     await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before managed Claude preflight" });
     const expectedEmail = requireExpectedClaudeEmail(runtime.state, label);
+    // Reconciliation itself can publish native credentials. Acquire before it,
+    // retain through final publication, and give the trusted supervisor an FD
+    // reference so parent death cannot release coordination before vendor exit.
+    const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
+      ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl : prepareClaudeCliLaunch;
+    const discoveredCommand = resolveExecutableOnPathImpl?.("claude");
+    let preparedLaunch;
+    assignmentLock = await acquireClaudeStateGuard({ homeDir, label, configDir,
+      command: discoveredCommand,
+      beforeState: async () => {
+        preparedLaunch = await prepareLaunchImpl({ command: discoveredCommand,
+          userHomeDir: homeDir, homeDir: claudeHome, configDir });
+      }, readBinding: async () => {
+        await assertClaudeCredentialLeaseOwned({ ...guard, phase: "before private identity admission" });
+        const credential = requireRedisClaudeCredential(runtime.state, label);
+        const profile = resolveNativeAccountProfile({ homeDir, state: runtime.state, label });
+        return { protected: Boolean(profile), accountUuid: getClaudeNativeBundle(credential)?.oauthAccount?.accountUuid,
+          profileRef: profile?.profileRef, credential, expectedEmail: requireExpectedClaudeEmail(runtime.state, label) };
+      } });
     const preflight = await runSharedClaudePreRunPreflight({
       runtime,
       label,
@@ -1062,25 +1104,15 @@ async function handleRedisClaudeRun(context, {
       configDir,
       expectedEmail,
       nowMs,
-      resolveCommandImpl: resolveExecutableOnPathImpl,
+      resolveCommandImpl: () => discoveredCommand,
       lease: guard.lease,
       assertLeaseOwned: (phase) => assertClaudeCredentialLeaseOwned({ ...guard, phase }),
     });
     const {
       descriptor,
-      command: discoveredCommand,
       observedAt,
     } = preflight;
     managedDescriptor = descriptor;
-    const prepareLaunchImpl = typeof resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl === "function"
-      ? resolveExecutableOnPathImpl.prepareClaudeCliLaunchImpl
-      : prepareClaudeCliLaunch;
-    const preparedLaunch = await prepareLaunchImpl({
-      command: discoveredCommand,
-      userHomeDir: homeDir,
-      homeDir: claudeHome,
-      configDir,
-    });
 
     const target = runtime.state.targets.claudeCli;
     const resumePlan = planCrossAccountClaudeResume({
@@ -1129,7 +1161,9 @@ async function handleRedisClaudeRun(context, {
     let launchError = null;
     try {
       launched = await runClaudeCliImpl({
+        assignmentLock,
         egressProfile,
+        expectedIdentity: getClaudeNativeBundle(credential)?.oauthAccount,
         command: preparedLaunch.command,
         userHomeDir: homeDir,
         homeDir: claudeHome,
@@ -1221,6 +1255,11 @@ async function handleRedisClaudeRun(context, {
       }
     }
     try {
+      await assignmentLock?.release();
+    } catch {
+      cleanupError ??= new Error("Claude local assignment lock release failed.");
+    }
+    try {
       await closeRedisRuntime(runtime);
     } catch {
       cleanupError ??= new Error("Could not close the Redis runtime safely.");
@@ -1299,6 +1338,15 @@ export async function handleClaude(context) {
     nowMs,
   } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+  if (subcmd === "privacy") {
+    if (positional[2] !== "status" || positional.length > 4) throw new Error("Usage: aim claude privacy status [account] [--json]");
+    const label = positional[3] ? normalizeLabel(positional[3]) : undefined;
+    const status = inspectClaudePrivacyStatus({ command: context.resolveExecutableOnPathImpl?.("claude"),
+      homeDir, label, pinnedArtifactSet: env.AIMGR_CLAUDE_ARTIFACT_SET });
+    stdout.write(opts.json ? JSON.stringify(status, null, 2) + "\n" : formatClaudePrivacyStatus(status));
+    if (status.refusal) setExitCode(1);
+    return;
+  }
   if (!subcmd) {
     throw new Error(
       "Missing claude subcommand. Usage: aim claude list [count] [--json] | aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-account fable|opus|sonnet] | aim claude inventory [--json] | aim claude memory | aim claude status [account...] [--fresh] [--verbose] [--json] | aim claude run <label> [-- <claude args...>] | aim claude capture-native <label> | aim claude export-live --out <file> | aim claude import-native <label> --in <file>",
@@ -1724,7 +1772,7 @@ export async function handleClaude(context) {
   const state = loadAimgrState(statePath);
   const explicitLabel = String(positional[2] ?? "").trim() ? normalizeLabel(positional[2]) : null;
   const activated = explicitLabel
-    ? activateClaudeLabelSelection({ state, homeDir, env, label: explicitLabel })
+    ? await activateClaudeLabelSelection({ state, homeDir, env, label: explicitLabel })
     : await activateClaudePoolSelection({ state, homeDir, env, probeUsageSnapshotsByProviderImpl });
   writeJsonFileWithBackup(statePath, state);
   stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: activated.status !== "blocked", activated }), null, 2)}\n`);

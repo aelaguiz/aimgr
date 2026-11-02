@@ -1,0 +1,24 @@
+{
+  "allPassed": true,
+  "results": [
+    {
+      "case": "a",
+      "doctorExit": 1,
+      "requestsCaptured": 4,
+      "appcastRequests": [
+        "https://chatgpt.com:443/backend-api/wham/app/appcast?installation_id=SYNTHETIC-DESKTOP-INSTALLATION-A&arch=arm64&app_version=1.0.0&beta=false&os-version=15.8.0&plan_type=unknown"
+      ],
+      "passed": true
+    },
+    {
+      "case": "b",
+      "doctorExit": 1,
+      "requestsCaptured": 4,
+      "appcastRequests": [
+        "https://chatgpt.com:443/backend-api/wham/app/appcast?installation_id=SYNTHETIC-DESKTOP-INSTALLATION-B&arch=arm64&app_version=1.0.0&beta=false&os-version=15.8.0&plan_type=unknown"
+      ],
+      "passed": true
+    }
+  ],
+  "meaning": "The CLI sent each synthetic HOME desktop ID despite an unchanged CODEX_HOME and telemetry opt-out; HTTP requests terminated at the loopback test server."
+}
