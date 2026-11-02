@@ -6,7 +6,7 @@ machine sources and restores that absence in finally. No credentials/network.
 """
 import argparse, json, os, platform, plistlib, re, shutil, socket, subprocess
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('--run-name',default='managed-native-matrix-v3');p.add_argument('--case',action='append');args=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--run-name',default='managed-native-matrix-v3');p.add_argument('--case',action='append');p.add_argument('--node');args=p.parse_args()
 assert re.fullmatch('[a-z0-9-]{1,48}',args.run_name)
 base=Path('/opt/aimgr-state-audit'); work=base/'claude-implementation'
 assert os.geteuid()==0 and (base/'OFFSITE_AUDIT_HOST').is_file()
@@ -22,7 +22,7 @@ if mac:
 else:
  mounted=root/'machine'; mounted.mkdir(mode=0o755)
  subprocess.run(['mount','--bind',str(mounted),str(machine)],check=True)
-node=str(work/'node-v22.16.0-darwin-arm64/bin/node') if mac else '/usr/bin/node'
+node=args.node or (str(work/'node-v22.16.0-darwin-arm64/bin/node') if mac else '/usr/bin/node')
 command=[node,str(work/'repo/scripts/privacy-managed-validator-check.mjs'),'--machine-only']
 if mac: command=['sudo','-n','-u',user,*command]
 else: command=['runuser','-u',user,'--',*command]
@@ -31,6 +31,10 @@ other='linux' if mac else 'macos'; current='macos' if mac else 'linux'
 cases=[
  ('absent',None,True,None),
  ('safe',safe,True,None),
+ ('agent-view-disabled',{'disableAgentView':True,'env':{'CLAUDE_CODE_DISABLE_AGENT_VIEW':'1'}},True,None),
+ ('agent-view-enabled',{'disableAgentView':False},False,'source-admission'),
+ ('agent-view-env-enabled',{'env':{'CLAUDE_CODE_DISABLE_AGENT_VIEW':'0'}},False,'source-admission'),
+ ('agent-view-env-case-enabled',{'env':{'claude_code_disable_agent_view':'0'}},False,'source-admission'),
  ('native-env-coercion',{'env':{'DISABLE_GROWTHBOOK':1}},True,None),
  ('static-only',{'policyHelpers':{current:{'defaultSettings':safe}}},True,None),
  ('safe-invalid-flag',safe,False,'machine-policy-validation'),

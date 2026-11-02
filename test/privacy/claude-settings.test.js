@@ -64,7 +64,7 @@ test("ordinary account keeps its telemetry choice and needs no proxy settings", 
   assert.equal(Object.hasOwn(result.settings.env, "DISABLE_ERROR_REPORTING"), false);
   assert.equal(result.settings.env.DISABLE_GROWTHBOOK, "1");
   assert.deepEqual(claudeCriticalSettings({ protectedAccount: false }), {
-    disableRemoteControl: true, env: { DISABLE_AUTOUPDATER: "1", DISABLE_UPDATES: "1", DISABLE_GROWTHBOOK: "1" },
+    disableRemoteControl: true, disableAgentView: true, env: { DISABLE_AUTOUPDATER: "1", DISABLE_UPDATES: "1", DISABLE_GROWTHBOOK: "1", CLAUDE_CODE_DISABLE_AGENT_VIEW: "1" },
   });
 });
 
@@ -231,4 +231,70 @@ test("required lifecycle hooks cannot be silently suppressed by disableAllHooks"
     requiredHooks: { Stop: [hook] } }).settings.disableAllHooks, false);
   assert.equal(composeClaudePrivacySettings({ cwd, protectedAccount: true,
     args: ["--settings", '{"disableAllHooks":true}'] }).settings.disableAllHooks, true);
+});
+
+
+test("detached intent refuses but literal text and ordinary background work remain allowed", () => {
+  for (const args of [["daemon", "run"], ["daemon", "status", "-p"],
+    ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "daemon", "stop"],
+    ["agents"], ["--", "agents"],
+    ["--bg", "task"], ["--background"], ["--agents-view-if-allowed"],
+    ["-cn", "--bg"], ["-vn", "--background"], ["-pn", "--bg"],
+    ["--verbose", "-cn", "--bg"], ["--name", "--", "--bg"]]) {
+    assert.throws(() => assertClaudeLocalInvocation(args), /Claude was not started:.*(daemon commands|detached Claude sessions)/);
+  }
+  for (const args of [["--model", "opus", "daemon", "run"], ["--", "daemon"], ["-p", "daemon"], ["-p", "agents"], ["-p", "--", "daemon"],
+    ["--append-system-prompt", "--bg"], ["-n", "--bg"], ["--name", "--background"],
+    ["--append-system-prompt=--bg"], ["--name", "daemon"], ["--", "--bg"],
+    ["-p", "run a background shell command"], ["--resume", "thread", "--fork-session"],
+    ["-p", "task", "--agent", "general-purpose"]]) assert.doesNotThrow(() => assertClaudeLocalInvocation(args));
+});
+
+test("native detached verbs refuse before settings-prefix insertion can turn them into prompts", () => {
+  for (const verb of ["attach", "logs", "stop", "kill", "respawn", "rm"]) {
+    for (const args of [[verb], [verb, "synthetic-baseline"], [verb, "synthetic-baseline", "-p"],
+      ["--settings", "{}", verb, "1234abcd"], ["--model=opus", verb, "1234abcd"]]) {
+      assert.equal(inspectClaudeArguments(args).eagerDetachedVerb, verb, JSON.stringify(args));
+      assert.throws(() => assertClaudeLocalInvocation(args), /detached Claude sessions/, JSON.stringify(args));
+    }
+  }
+  for (const args of [["respawn", "--all"], ["--verbose", "respawn", "--all"],
+    ["--model", "opus", "attach", "1234abcd"], ["--name", "worker", "logs", "1234abcd"],
+    ["--resume", "thread", "attach", "1234abcd"], ["--resume=thread", "attach", "1234abcd"],
+    ["--name=--", "attach", "1234abcd"], ["--allowedTools=Read", "attach", "1234abcd"]]) {
+    assert.notEqual(inspectClaudeArguments(args).eagerDetachedVerb, null, JSON.stringify(args));
+    assert.throws(() => assertClaudeLocalInvocation(args), /detached Claude sessions/, JSON.stringify(args));
+  }
+});
+
+test("detached verb recognition preserves native prompt and option-value interpretations", () => {
+  for (const verb of ["attach", "logs", "stop", "kill", "respawn", "rm"]) {
+    for (const args of [["-p", verb], ["-p", verb, "1234abcd"], ["--", verb, "1234abcd"],
+      ["--name", verb], ["--append-system-prompt", verb], ["mcp", verb, "synthetic-baseline"],
+      ["--model", "opus", verb, "synthetic-baseline"], ["--model", "opus", verb],
+      ["--model", "opus", verb, "1234ABCD"], ["--model", "opus", verb, "1234abcde"]]) {
+      assert.equal(inspectClaudeArguments(args).eagerDetachedVerb, null, JSON.stringify(args));
+      assert.doesNotThrow(() => assertClaudeLocalInvocation(args), JSON.stringify(args));
+    }
+  }
+  for (const args of [["-cn", "attach", "1234abcd"], ["--name", "--", "attach", "1234abcd"],
+    ["--allowedTools", "Read", "attach", "1234abcd"], ["--exec", "command", "attach", "1234abcd"],
+    ["--help", "attach", "1234abcd"], ["-V", "attach", "1234abcd"],
+    ["--routine=example", "attach", "1234abcd"], ["--unknown", "attach", "1234abcd"],
+    ["-", "attach", "1234abcd"], ["explain", "attach", "1234abcd"]]) {
+    assert.equal(inspectClaudeArguments(args).eagerDetachedVerb, null, JSON.stringify(args));
+    assert.doesNotThrow(() => assertClaudeLocalInvocation(args), JSON.stringify(args));
+  }
+});
+
+test("ordinary and protected overlays pin only detached conversations", () => {
+  for (const protectedAccount of [false, true]) {
+    const result = composeClaudePrivacySettings({ cwd, protectedAccount, defaultFlagSettings: {
+      disableAgentView: false, env: { CLAUDE_CODE_DISABLE_AGENT_VIEW: "0", BUILD_TOKEN: "kept" },
+    } });
+    assert.equal(result.settings.disableAgentView, true);
+    assert.equal(result.settings.env.CLAUDE_CODE_DISABLE_AGENT_VIEW, "1");
+    assert.equal(result.settings.env.BUILD_TOKEN, "kept");
+    assert.equal(Object.hasOwn(result.settings.env, "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"), false);
+  }
 });

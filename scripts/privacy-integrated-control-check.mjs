@@ -1,4 +1,4 @@
-/** Exercise the actual approved Mac route, supervisor and vendor in a PTY.
+/** Exercise the actual approved route, supervisor and vendor in a PTY.
  * All credentials and requests belong to the outer offsite synthetic fixture. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { runClaudeCli } from '../src/targets/claude-runner.js';
 
 export async function verifyControls(input) {
-  assert.equal(process.platform, 'darwin');
+  assert.ok(['darwin', 'linux'].includes(process.platform));
   const home = input.userHomeDir, cwd = input.cwd;
   assert.ok(home.startsWith('/opt/aimgr-state-audit/claude-implementation/'));
   if (!input.controlPty) {
@@ -57,9 +57,19 @@ print('NATIVE_CONTROL_TOOL_OK')
     try {
       await wait(() => fs.existsSync(path.join(cwd, role + '.entered')), role + ' native tool');
       toolPid = Number(fs.readFileSync(path.join(cwd, role + '.entered')));
-      const native = processes().find(p => p.ppid === work.supervisor().pid);
-      assert.ok(native?.command.endsWith('/claude'), 'supervisor direct child must be the real vendor');
-      result.directVendorPid = true;
+      const tree = processes();
+      const descendants = new Set([work.supervisor().pid]);
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const row of tree) if (descendants.has(row.ppid) && !descendants.has(row.pid)) { descendants.add(row.pid); changed = true; }
+      }
+      const native = tree.find(row => {
+        if (!descendants.has(row.pid)) return false;
+        try { return process.platform === 'linux' ? fs.readlinkSync(`/proc/${row.pid}/exe`) === launch.command : row.command === launch.command; }
+        catch { return false; }
+      });
+      assert.ok(native, 'the supervised tree must contain the exact real vendor image');
+      result.vendorWithinSupervisedTree = true;
       if (role === 'pause') {
         assert.equal(await work.control().pause(), true);
         assert.ok(processes().find(p => p.pid === native.pid)?.state.includes('T'));
@@ -78,7 +88,7 @@ print('NATIVE_CONTROL_TOOL_OK')
         execFileSync('/usr/bin/python3', ['-I', '-c', 'import tty,termios;tty.setraw(0);a=termios.tcgetattr(0);assert not a[3] & (termios.ICANON|termios.ECHO|termios.ISIG)'], { stdio: [0, 'ignore', 'ignore'] });
         process.kill(native.pid, 'SIGKILL');
         const stopped = await work.running;
-        assert.equal(stopped.signal, 'SIGKILL');
+        assert.ok(stopped.signal === 'SIGKILL' || (process.platform === 'linux' && stopped.status === 137), 'native hard kill must propagate through the route');
         assert.ok(!processes().some(p => p.pid === native.pid));
         result.forcedKillStopsVendor = true;
         // The independent PTY parent compares every saved termios field now,
@@ -99,12 +109,12 @@ print('NATIVE_CONTROL_TOOL_OK')
   fs.writeFileSync(hold, 'hold');
   const before = models().length, work = start('cancel');
   try {
-    await wait(() => work.supervisor() && processes().some(p => p.ppid === work.supervisor().pid
-      && p.command.toLowerCase().includes('python')), 'actual route preflight');
+    await wait(() => fs.existsSync(path.join(home, 'route-probe-held')), 'actual held route preflight');
     work.abort.abort();
-    const stopped = await work.running;
-    assert.ok(stopped.status !== 0 || stopped.signal);
-    fs.unlinkSync(hold); await delay(500);
+    fs.unlinkSync(hold);
+    const stopped = await work.running.catch(error => ({ rejectedBeforeStart: error instanceof Error }));
+    assert.ok(stopped.rejectedBeforeStart || stopped.status !== 0 || stopped.signal);
+    await delay(500);
     assert.equal(models().length, before);
     result.preflightCancellationStartsNoVendor = true;
   } finally {

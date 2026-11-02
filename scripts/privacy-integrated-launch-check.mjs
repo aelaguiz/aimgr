@@ -15,7 +15,10 @@ assert.ok(input.userHomeDir.startsWith("/opt/aimgr-state-audit/claude-implementa
 assert.ok(["ordinary", "protected"].includes(input.mode));
 assert.equal(Boolean(input.egressProfile), input.mode === "protected");
 try {
-  if (input.check === "controls") {
+  if (input.check === "detached") {
+    const { verifyDetached } = await import("./privacy-claude-detached-check.mjs");
+    await verifyDetached(input); console.log("SYNTHETIC_OK");
+  } else if (input.check === "controls") {
     const { verifyControls } = await import("./privacy-integrated-control-check.mjs");
     await verifyControls(input); console.log("SYNTHETIC_OK");
   } else if (input.check === "compatibility") {
@@ -75,6 +78,9 @@ try {
           "--model", "sonnet", "--max-turns", "4", "--debug-file", path.join(cwd, "workflow-debug.private.txt"), ...args],
         env: process.env, timeoutMs: 45000, maxOutputBytes: 1024 * 1024,
         spawnImpl(command, argv, options) {
+          // Synthetic-only diagnostics make a failed native admission
+          // inspectable without adding sensitive production logging.
+          fs.appendFileSync(path.join(launch.userHomeDir, 'workflow-launches.private.jsonl'), JSON.stringify({ command, argv }) + '\n');
           const child = spawn(command, argv, options);
           child.stdout.on("data", chunk => { stdout += chunk; });
           child.stderr.on("data", chunk => { stderr += chunk; }); return child;
@@ -110,7 +116,7 @@ for await(const line of readline.createInterface({input:process.stdin})) {
     assert.equal(agent.subagent_stats.spawned, 1);
     assert.equal(fs.readFileSync(path.join(cwd, "child-proof.txt"), "utf8"), "subagent-ok");
     let backgroundRetained;
-    if (process.env.CLAUDE_CODE_DISABLE_AGENT_VIEW === "1") {
+    { // Current production policy disables agent view without an outer test override.
       assert.ok(agent.subagent_stats.started_in_background > 0);
       await turn("Run the ordinary background shell tool. NATIVE_BACKGROUND_BASH.");
       assert.equal(fs.readFileSync(path.join(cwd, "background-tool-proof.txt"), "utf8"), "background-ok");

@@ -153,7 +153,11 @@ try:
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600); os.fchown(fd, owner.pw_uid, owner.pw_gid)
     try:
         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        refuses('active account shared lock prevents transition', lambda: install(first, True), 'stop Claude sessions')
+        if platform.system() == 'Linux':
+            refuses('active account shared lock prevents Linux transition', lambda: install(first, True), 'stop Claude sessions')
+        else:
+            assert install(first, True)['activated']
+            passed.append('Mac activation preserves held account session lock')
     finally: os.close(fd)
     assert install(first, True)['activated']
     passed.append('stopped account transitions after lock release')
@@ -176,7 +180,12 @@ try:
             if json.loads(probe.stdout)['processes']: break
             time.sleep(0.02)
         else: raise AssertionError('synthetic custom-home owner did not start')
-        refuses('custom-home native owner prevents transition', lambda: install(next_bundle, True), 'owners in every home')
+        if platform.system() == 'Linux':
+            refuses('custom-home native owner prevents Linux transition', lambda: install(next_bundle, True), 'owners in every home')
+        else:
+            assert install(next_bundle, True)['activated']
+            assert child.poll() is None
+            passed.append('Mac activation preserves custom-home native owner')
     finally:
         os.killpg(child.pid, signal.SIGTERM); child.wait(timeout=5)
     if platform.system() == 'Linux':

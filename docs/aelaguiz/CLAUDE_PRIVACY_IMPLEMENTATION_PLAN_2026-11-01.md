@@ -2,6 +2,19 @@
 
 2026-11-01. **Implementation, Linux/rented-Mac acceptance tests and cold implementation review are complete.** Implement the privacy targets below while preserving native development, skills, MCP, simultaneous sessions, history and scheduled work. This is a plan for official, unmodified Claude Code through AI Manager. Codex implementation is deferred. **Cold plan review approved after revisions;** section 10 records the verdict. The required cold implementation review passed with no remaining blocker or vetoed functionality removal; section 13 records the verdict. Implementation acceptance and approval of a Claude build remain separate.
 
+
+**November 2 scope amendment:** the user subsequently authorized disabling
+Claude's optional detached-conversation/agent-view daemon. The
+[detached-session removal plan](CLAUDE_DETACHED_SESSION_REMOVAL_PLAN_2026-11-02.md)
+owns that implementation and new acceptance evidence. It supersedes references
+below to preserving native detached jobs, agent-view UI and saved-job reattach;
+those remain historical evidence, not current requirements. Ordinary background
+Bash, asynchronous local subagents, concurrency, skills/MCP, CLI history fork and
+AIM scheduling remain required. `/fork` may use the ordinary async subagent path
+and the `claude` agent subtype may disappear; `general-purpose` remains. Existing
+owners are handled only in an agreed transition. All other accepted risks and
+privacy requirements below remain in force.
+
 ## 1. The agreed target list
 
 The current-state column describes the completed implementation evidence in section 11. Accepted disclosures are exclusions, not a backlog of additional protections. Scope is the pinned vanilla build and reviewed automatic collection paths, with ordinary tool access retained as agreed.

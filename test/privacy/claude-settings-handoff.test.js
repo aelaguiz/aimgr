@@ -47,8 +47,7 @@ test("handoff keeps short clusters, child literal values and both native setting
     ["--settings", snapshot.file, "-p-settings", snapshot.file]);
   assert.deepEqual(claudeArgsWithSettingsSnapshot(["-p-settings={}"], snapshot),
     ["--settings", snapshot.file, "-p-settings=" + snapshot.file]);
-  assert.deepEqual(claudeArgsWithSettingsSnapshot(["--settings", "shadowed", "agents", "--settings={}"], snapshot),
-    ["--settings", snapshot.file, "--settings", snapshot.file, "agents", "--settings=" + snapshot.file]);
+  assert.throws(() => claudeArgsWithSettingsSnapshot(["--settings", "shadowed", "agents", "--settings={}"], snapshot), /detached Claude sessions/);
 });
 
 test("a failed private write removes its partial snapshot without touching the source", t => {

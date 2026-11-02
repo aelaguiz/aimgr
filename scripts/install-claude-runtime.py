@@ -3,7 +3,9 @@
 
 This command never downloads or executes Claude and cannot grant approval.
 The input directory contains approval.json and exactly its approved files.
-Stage by default; --activate performs the planned stopped-account transition.
+Stage by default; --activate selects the bundle for future launches.
+Mac activation preserves running sessions. Linux policy reclamation requires
+the planned stopped-account transition.
 Old bundles are retained for running/saved work. Proxy enrollment is separate.
 """
 import argparse
@@ -212,6 +214,27 @@ def stopped_accounts(user, vendor):
         for fd in guards: os.close(fd)
 
 
+def activate_installed_bundle(user, target, runtime, published):
+    """Publish only after install() has admitted the immutable destination.
+
+    Mac Seatbelt policy belongs to each process, not to active.json. Changing
+    this selector cannot replace a running image or its policy. Keep old
+    bundles and per-launch settings; nested launches retain their approved pin.
+    Account identity/proxy transitions still enforce their own stopped-owner
+    checks at launch. Do not turn this default selection into a machine-wide
+    session cap or kill user work to make an installer pass.
+
+    Linux activation also unloads old named AppArmor policies. That operation
+    really does require stopped owners/tools, so keep its existing coordination
+    through selector publication. It is not a prerequisite for Mac activation.
+    """
+    guard = stopped_accounts(user, target / 'claude') if platform.system() == 'Linux' else contextlib.nullcontext()
+    with guard:
+        if platform.system() == 'Linux':
+            reclaim_stopped_linux_profiles(user.pw_uid, runtime)
+        write_atomic(runtime / 'active.json', (json.dumps({'schema': 1, 'artifactSet': target.name}) + '\n').encode(), published)
+
+
 def install(bundle, node, user, activate=False, runtime=RUNTIME):
     require(os.geteuid() == 0, 'installation requires administrator privileges')
     require(user.pw_uid != 0, 'choose the ordinary AIM runtime user')
@@ -324,10 +347,7 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME):
         if not lock.exists() and not lock.is_symlink(): write_atomic(lock, b'')
         if platform.system() == 'Linux': linux_immutable(lock)
         if activate:
-            with stopped_accounts(user, target / 'claude'):
-                if platform.system() == 'Linux':
-                    reclaim_stopped_linux_profiles(user.pw_uid, runtime)
-                write_atomic(runtime / 'active.json', (json.dumps({'schema': 1, 'artifactSet': artifact}) + '\n').encode(), published)
+            activate_installed_bundle(user, target, runtime, published)
         return {'artifactSet': artifact, 'activated': activate, 'oldBundlesRetained': True}
     except Exception as error:
         if selector_published:

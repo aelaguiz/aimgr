@@ -147,3 +147,18 @@ test("federation halves across file, MDM and static candidates cannot select ano
     default: { env: { DISABLE_GROWTHBOOK: "1", disable_growthbook: "0" } },
   } }) }), { code: "AIMGR_CLAUDE_PRIVACY_SETTINGS" });
 });
+
+
+test("all accounts reject managed sources which reenable detached sessions", () => {
+  for (const protectedAccount of [false, true]) {
+    for (const value of [{ disableAgentView: false }, { disableAgentView: "true" },
+      { env: { CLAUDE_CODE_DISABLE_AGENT_VIEW: "0" } },
+      { env: { CLAUDE_CODE_DISABLE_AGENT_VIEW: "1", claude_code_disable_agent_view: "0" } },
+      { policyHelpers: { default: { disableAgentView: false } } }]) {
+      assert.throws(() => inspect({ "/etc/claude-code/managed-settings.json": policy(value) }, { protectedAccount }),
+        { code: "AIMGR_CLAUDE_PRIVACY_SETTINGS" });
+    }
+    assert.doesNotThrow(() => inspect({ "/etc/claude-code/managed-settings.json": policy({ disableAgentView: true,
+      env: { CLAUDE_CODE_DISABLE_AGENT_VIEW: "1" } }) }, { protectedAccount }));
+  }
+});

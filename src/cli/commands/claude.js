@@ -2,6 +2,7 @@ import { resolveNativeAccountProfile, assertLocalClaudeProfileStopped } from "..
 import { readClaudeOfflineBinding, writeClaudeOfflineBinding, invalidateClaudeOfflineBinding, acquireClaudeAssignmentLock, rememberClaudeProtection } from "../../network/claude-offline-binding.js";
 import { acquireClaudeStateGuard } from "../../privacy/claude-state-migration.js";
 import { readClaudeActiveAppState } from "../../privacy/claude-state-source.js";
+import { assertClaudeLocalInvocation } from "../../privacy/claude-settings.js";
 import { inspectClaudePrivacyStatus, formatClaudePrivacyStatus } from "../../privacy/claude-status.js";
 import { readAimgrConfig } from "../../config/aimgr-config.js";
 import { normalizeEgressPolicy, resolveClaudeEgressProfile } from "../../network/claude-egress-policy.js";
@@ -1338,6 +1339,10 @@ export async function handleClaude(context) {
     nowMs,
   } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+  // Reject unsupported native intent before account selection, Redis or any
+  // provider preflight. The shared settings handoff repeats this for internal
+  // callers; this early check makes the public failure local and intelligible.
+  if (subcmd === "run" || subcmd === "resume") assertClaudeLocalInvocation(opts.afterDoubleDash ?? []);
   if (subcmd === "privacy") {
     if (positional[2] !== "status" || positional.length > 4) throw new Error("Usage: aim claude privacy status [account] [--json]");
     const label = positional[3] ? normalizeLabel(positional[3]) : undefined;

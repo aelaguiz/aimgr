@@ -361,6 +361,12 @@ int main(int argc,char **argv) {
     set_environment("CLAUDE_CONFIG_DIR",validator?scratch:config,1);
     set_environment("CLAUDE_SECURESTORAGE_CONFIG_DIR",validator?scratch:config,1);
     set_environment("DISABLE_AUTOUPDATER","1",1); set_environment("DISABLE_UPDATES","1",1); set_environment("DISABLE_GROWTHBOOK","1",1);
+    /* Detached supervisors can own later requests using their earlier image and
+     * settings. Supply the narrow early default before vendor startup. Shared
+     * argument admission and the settings snapshot keep supported AIM paths
+     * disabled; this env pin alone does not override hostile disk settings. Ordinary background
+     * Bash/subagents stay available; never use DISABLE_BACKGROUND_TASKS here. */
+    set_environment("CLAUDE_CODE_DISABLE_AGENT_VIEW","1",1);
     if (protected || validator) { set_environment("DISABLE_TELEMETRY","1",1); set_environment("DISABLE_ERROR_REPORTING","1",1); }
     // Keep stdio; the trusted supervisor retains its IPC/assignment handles.
     close_inherited_descriptors();
