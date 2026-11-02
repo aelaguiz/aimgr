@@ -24,5 +24,8 @@
   "hostReleaseSchedule": {
     "state": "ENABLED",
     "expression": "rate(15 minutes)"
-  }
+  },
+  "taskAwsKeyPairDeleted": true,
+  "rentedMacState": "shutting-down",
+  "lastCheckedAt": "2026-11-02T17:23:51.085655+00:00"
 }

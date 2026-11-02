@@ -1,7 +1,7 @@
 ---
 title: Disable Claude detached sessions while preserving normal work
 date: 2026-11-02
-status: active
+status: complete
 fallback_policy: forbidden
 owners: [implementation agent]
 reviewers: [cold reviewer]
@@ -66,7 +66,7 @@ Rollback means restoring a compatible previously approved source/bundle delibera
 
 ## Progress and evidence
 
-Implementation and the required offsite Linux/Mac tests are complete at source `1e43725`. An independent read-only reviewer signed off with no remaining production or acceptance-test blocker. Publication and the user-authorized merge are the remaining delivery steps.
+Implementation and the required offsite Linux/Mac tests are complete at source `1e43725`. An independent read-only reviewer signed off with no remaining production or acceptance-test blocker. [PR #10](https://github.com/aelaguiz/aimgr/pull/10) is the delivery and merge record for this completed implementation.
 
 The [implementation evidence](evidence/claude-detached-2026-11-02/README.md) maps every requirement to its final passing receipt, identifies the exact vendor and artifact sets, and records substitutions and initial failures with their replacements. Both final source checkouts matched; rebuilding the final C sources reproduced the tested launchers. Complete bundles were retained and freshly retrieved with their inventories verified. They remain test-only, without personal activation.
 
