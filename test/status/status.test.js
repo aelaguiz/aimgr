@@ -96,7 +96,7 @@ test("plain status shows coordination provenance and canonical account facts", (
   assert.match(text, /\naverage .*\nNext 24h: 12% of pool weekly capacity frees up \(1 of 1 accounts reset\); 88% free now, 100% after\n\nCLAUDE:/);
   assert.match(text, /\naverage .*\nNext 24h: 0% of pool weekly capacity frees up \(0 of 1 accounts reset\); 55% free now, 55% after\n\nCODEX ACTIVE/);
   assert.match(text, /CLAUDE: 0 ready · 0 limited · 1 in use · 0 needs you · 0 unknown/);
-  assert.match(text, /pro7\s+IN USE\s+23%\s+3\.0h\s+45%\s+6\.0d\s+67%\s+6\.0d\s+--\s+--\s+2m\s+session active/);
+  assert.match(text, /pro7\s+IN USE\s+23%\s+3\.0h\s+45%\s+6\.0d\s+67%\s+6\.0d\s+--\s+--\s+2m\s+unknown\s+session active/);
   assert.doesNotMatch(text, /usage_readable|unpublished/);
   assert.match(text, /\nCODEX ACTIVE\nlabel=boss\s+wk_used=12%\s+wk_in=2\.0h\n\nCLAUDE LAST RUN\nlabel=pro7\n$/);
   assert.doesNotMatch(text, /POOL NOW|PRESSURE|PROJECTION|NEXT BEST|WARNINGS|requests=|cache_state=/);

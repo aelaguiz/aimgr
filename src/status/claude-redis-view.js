@@ -1,6 +1,6 @@
 import { CLAUDE_ROUTE_ERROR_CODES, ClaudeRouteError } from "../network/claude-egress-policy.js";
 import crypto from "node:crypto";
-import { getRedisConfig } from "../config/aimgr-config.js";
+import { getRedisConfig, readAimgrConfig } from "../config/aimgr-config.js";
 import {
   closeRedisStore,
   connectRedisStore,
@@ -20,6 +20,8 @@ import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { resolveAimgrRedisCachePath } from "../io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../pool/usage.js";
 import { readClaudeSessionUsage } from "./claude-session-usage.js";
+import { describeClaudeEgress, formatClaudeEgress, hasNoLocalClaudeRoute } from "./claude-egress.js";
+import { rememberClaudeProtection } from "../network/claude-offline-binding.js";
 import {
   averageStatusNumbers,
   formatStatusDeltaMsCell,
@@ -887,13 +889,26 @@ export async function collectClaudeRedisAccountUsageStatus({
   }
   const facts = selectFacts(authoritativeRecords, normalizedLabels, nowMs);
   const factsByLabel = new Map(facts.map((entry) => [entry.record.label, entry]));
+  const localProfiles = readAimgrConfig({ homeDir }).config.claudeProxyProfiles ?? {};
+  const routing = new Map(facts.map(({ record }) => {
+    // Retain protection even on cache-only/unsafe-cache returns below.
+    const binding = rememberClaudeProtection(homeDir, record.label, record);
+    return [record.label, describeClaudeEgress(record, localProfiles, { previouslyProtected: binding !== null })];
+  }));
   const buildResult = (options) => buildStatusResult({
     ...options,
     accounts: options.accounts.map((account) => {
       const accountFacts = factsByLabel.get(account.label);
+      const egress = routing.get(account.label);
+      // Local protection wins over every cache return, including unsafe cache
+      // files. A missing assignment is a broken privacy policy, not permission
+      // to choose another account; a missing local profile is the agreed skip.
+      if (egress.mode === "missing_assignment") account = buildStaticAccount(accountFacts, "missing_proxy_assignment");
+      else if (hasNoLocalClaudeRoute({ egress })) account = buildStaticAccount(accountFacts, "proxy_profile_unavailable");
       const locked = lockSource === "redis" ? lockedLabels.has(account.label) : null;
       return {
         ...account,
+        egress,
         credentialReady: accountFacts?.credentialReady === true,
         credentialState: accountFacts?.state ?? "unknown",
         credentialExpiresAt: accountFacts?.expiresAt ?? null,
@@ -929,6 +944,20 @@ export async function collectClaudeRedisAccountUsageStatus({
   }
 
   for (const entry of facts) {
+    if (routing.get(entry.record.label).mode === "missing_assignment") {
+      accountsByLabel.set(entry.record.label, buildStaticAccount(entry, "missing_proxy_assignment"));
+      continue;
+    }
+    // An account shared from another machine is not locally selectable until
+    // its route is configured. Do not probe credentials or trust cached usage
+    // in that case. Remember the opt-in so an old ordinary cache cannot turn
+    // this absence into permission for a direct launch.
+    // This is NOT outage recovery: a present but broken profile still produces
+    // a fatal route error, and explicit launches retain their native checks.
+    if (hasNoLocalClaudeRoute({ egress: routing.get(entry.record.label) })) {
+      accountsByLabel.set(entry.record.label, buildStaticAccount(entry, "proxy_profile_unavailable"));
+      continue;
+    }
     if (!entry.credentialReady) {
       const cachedEntry = entry.state === "credential_expired"
         ? cacheEntryForFacts(cacheEntries, entry)
@@ -1100,8 +1129,9 @@ function findOverallWeeklyWindow(usage) {
     : null;
 }
 
-function assertClaudeUsageRoutes(result) {
+export function assertClaudeUsageRoutes(result) {
   for (const account of result?.accounts ?? []) {
+    if (hasNoLocalClaudeRoute(account) && account?.errorKind === "proxy_profile_unavailable") continue;
     if (CLAUDE_ROUTE_ERROR_CODES.has(account?.errorKind)) {
       throw new ClaudeRouteError(account.errorKind, { label: account.label });
     }
@@ -1120,7 +1150,8 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset, requireIn
       // does not make a Team/Enterprise account an individual Pro/Max account.
       // Admission still checks the reconciled credential at launch; keep the
       // route-error check above this filter so outages cannot trigger failover.
-      (!requireIndividualOAuth || ["pro", "max"].includes(account?.subscriptionType))
+      !hasNoLocalClaudeRoute(account)
+      && (!requireIndividualOAuth || ["pro", "max"].includes(account?.subscriptionType))
       && account?.locked === false
       && (
         account?.authState === "usage_readable"
@@ -1312,6 +1343,7 @@ function describeClaudeOperatorState(account, nowMs) {
   const credentialState = typeof account?.credentialState === "string" ? account.credentialState : "";
   const label = typeof account?.label === "string" ? account.label : "account";
 
+  if (hasNoLocalClaudeRoute(account)) return { status: "NO ROUTE", next: "don't have a route to this account" };
   if (CLAUDE_ROUTE_ERROR_CODES.has(account?.errorKind)) return { status: "PROXY ERROR", next: "repair assigned proxy" };
   if (account?.locked === true) return { status: "IN USE", next: "session active" };
   if (
@@ -1374,7 +1406,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
-  const rows = [["account", "plan", "state", "lock", ...columns.headers, "source"]];
+  const rows = [["account", "plan", "state", "lock", ...columns.headers, "proxy", "source"]];
   for (const account of accounts) {
     rows.push([
       account.label,
@@ -1382,6 +1414,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
       account.authState,
       account.locked === null ? "unknown" : account.locked === true ? "yes" : "--",
       ...columns.values(account),
+      formatClaudeEgress(account.egress),
       account.source,
     ]);
   }
@@ -1392,6 +1425,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
       "--",
       "--",
       ...columns.averageValues(),
+      "--",
       "all",
     ]);
   }
@@ -1424,13 +1458,14 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
     operator: describeClaudeOperatorState(account, nowMs),
   }));
   const countStatus = (status) => describedAccounts.filter((entry) => entry.operator.status === status).length;
-  const rows = [["account", "status", ...columns.headers, "updated", "next"]];
+  const rows = [["account", "status", ...columns.headers, "updated", "proxy", "next"]];
   for (const { account, operator } of describedAccounts) {
     rows.push([
       account.label,
       operator.status,
       ...columns.values(account),
       formatClaudeUsageAge(account),
+      formatClaudeEgress(account.egress),
       operator.next,
     ]);
   }
@@ -1441,10 +1476,11 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
       ...columns.averageValues(),
       "--",
       "--",
+      "--",
     ]);
   }
   return `${[
-    `CLAUDE: ${countStatus("PROXY ERROR") ? `${countStatus("PROXY ERROR")} proxy errors · ` : ""}${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
+    `CLAUDE: ${countStatus("NO ROUTE") ? `${countStatus("NO ROUTE")} without a local route · ` : ""}${countStatus("PROXY ERROR") ? `${countStatus("PROXY ERROR")} proxy errors · ` : ""}${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
     ...formatStatusTable(rows),
     formatWeeklyCapacityFreeingNextDayLine(
       summarizeWeeklyCapacityFreeingNextDay(accounts.map((account) => findOverallWeeklyWindow(account.usage)), nowMs),
