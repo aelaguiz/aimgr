@@ -1,0 +1,25 @@
+{
+  "scenario": "novel-case.md; independently authored hypothetical shared TLS transport investigation",
+  "scenarioSha256": "b2f79064f8c0f0127e4ac40155ed4ca7cabfda2844fa789b7da64e06d65a6d18",
+  "skillSha256": "846e45ab65e0d65c82ecd2562fd996bca5e38c543b8a55ee5b162c718677d9d4",
+  "author": "upgrade_skill_novel_case_author",
+  "operator": "upgrade_skill_novel_case_operator",
+  "operatorContext": "New clean native Sol xhigh session; received only operator brief, skill and decision sources, no evaluation rationale or other review results",
+  "observedBehavior": [
+    "Kept cross-account transport identity unresolved rather than claiming a leak or a pass from resumed=true",
+    "Identified plain-HTTP capture blind spot, rehearsal contamination, retry-to-connection ambiguity, incomplete home reset and unmatched baseline",
+    "Traced ticket issuance, offers, acceptance and renewed-ticket lineage; recognized a rejected offer may still disclose a link",
+    "Proposed distinguishing experiments with controls and independent state variation instead of an exhaustive permutation matrix",
+    "Preserved accepted original-browser footprint, MCP/auth, A1/A2/B concurrency, native work, history and actual schedules",
+    "Kept fixes conditional on causal evidence and retained exact-artifact, offsite and human approval boundaries"
+  ],
+  "actualOperatorExcerpts": [
+    "The reported resumption does not identify whose TLS state B1 used.",
+    "The baseline comparison is confounded.",
+    "A rejected ticket can still disclose a cross-account link if the client offers it.",
+    "Vary those dimensions only where the source or observations leave a specific ownership question; a complete permutation matrix is unnecessary."
+  ],
+  "limits": "This is evidence of judgment in one unseen synthetic case, not proof of universal discovery, actual Claude leakage or approval of a release. No experiments or vendor execution occurred.",
+  "review": "Independent case author and final cold reviewer both passed this single-case judgment check; neither claims universal discovery.",
+  "laterPackagingChange": "Three lines explain locating the reviewed source through Git metadata when the working checkout predates the skill documents; investigative method unchanged."
+}

@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-02",
+  "reviewer": "upgrade_skill_plan_review",
+  "model": "gpt-6.1-sol",
+  "effort": "xhigh",
+  "context": "new clean native child; read-only",
+  "verdict": "ready to implement",
+  "resolvedFinding": "Existing fixtures pin Claude 2.1.316. Plan now specifies reviewed candidate-specific fixture changes, original baseline retention and wrong-hash/host/authorization refusal checks.",
+  "acceptedRisks": "Faithful to the exact user decisions; no remaining material omission or required workflow loss found.",
+  "scope": "Plan and relevant source/test surfaces; no implementation or recovered-bundle certification.",
+  "testsExecuted": false
+}

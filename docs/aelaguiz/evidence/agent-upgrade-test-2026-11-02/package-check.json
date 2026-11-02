@@ -1,0 +1,16 @@
+{
+  "descriptionCharacters": 472,
+  "bodyLines": 231,
+  "bodyWords": 2058,
+  "bodyTokensEstimate": 3641,
+  "tokenMethod": "UTF-8 bytes divided by four; estimate, not a tokenizer",
+  "referenceWords": 1064,
+  "explicitInvocation": true,
+  "metadataAndLinks": "passed",
+  "installation": "Shared local skill store with Codex and Claude links; installed and external-loading package bytes match",
+  "filesSha256": {
+    "SKILL.md": "e8e054af7ae5acf1cf85426fde3e713f2149e11e891248b828b2aca36afad89c",
+    "references/claude-tests.md": "d76264357a7b785bb16c3e31004ac9f16399c72244470304a4c6e7fa7666d9d1",
+    "agents/openai.yaml": "f4426edd8a4f29ef058e2d690cc8146f23f90fc50912cb0bd74a249e28db652a"
+  }
+}

@@ -1,0 +1,118 @@
+TAP version 13
+# Subtest: artifact inventory hashes are stable across key order and include role/mode/size
+ok 1 - artifact inventory hashes are stable across key order and include role/mode/size
+  ---
+  duration_ms: 3.688718
+  type: 'test'
+  ...
+# Subtest: inventory rejects traversal, ambiguous paths, invalid digests and empty sets
+ok 2 - inventory rejects traversal, ambiguous paths, invalid digests and empty sets
+  ---
+  duration_ms: 2.683795
+  type: 'test'
+  ...
+# Subtest: administrator-owned artifact admission contracts on the offsite host
+ok 3 - administrator-owned artifact admission contracts on the offsite host # SKIP
+  ---
+  duration_ms: 5.706947
+  type: 'test'
+  ...
+# Subtest: native preparation admits, validates exact composed bytes, then transfers environment privately
+ok 4 - native preparation admits, validates exact composed bytes, then transfers environment privately
+  ---
+  duration_ms: 40.784871
+  type: 'test'
+  ...
+# Subtest: ordinary and protected launches do not require the recorded test OS release
+ok 5 - ordinary and protected launches do not require the recorded test OS release
+  ---
+  duration_ms: 98.80765
+  type: 'test'
+  ...
+# Subtest: different test OS does not bypass build admission or native validation failure
+ok 6 - different test OS does not bypass build admission or native validation failure
+  ---
+  duration_ms: 12.210645
+  type: 'test'
+  ...
+# Subtest: started owners retain their settings and scratch for delayed native children
+ok 7 - started owners retain their settings and scratch for delayed native children
+  ---
+  duration_ms: 17.124434
+  type: 'test'
+  ...
+# Subtest: unknown account eligibility and wrong identity refuse before validation or private transfer
+ok 8 - unknown account eligibility and wrong identity refuse before validation or private transfer
+  ---
+  duration_ms: 5.947521
+  type: 'test'
+  ...
+# Subtest: validation failure cleans preparation state and never returns a launchable invocation
+ok 9 - validation failure cleans preparation state and never returns a launchable invocation
+  ---
+  duration_ms: 10.875098
+  type: 'test'
+  ...
+# Subtest: status hashes selected bytes and reports admitted/running identity without executing the vendor
+ok 10 - status hashes selected bytes and reports admitted/running identity without executing the vendor
+  ---
+  duration_ms: 7.145097
+  type: 'test'
+  ...
+# Subtest: a different or absent tested OS release is informational and does not refuse approval
+ok 11 - a different or absent tested OS release is informational and does not refuse approval
+  ---
+  duration_ms: 4.573652
+  type: 'test'
+  ...
+# Subtest: status reports admission refusal and incomplete inventory without printing malformed pins or policy details
+ok 12 - status reports admission refusal and incomplete inventory without printing malformed pins or policy details
+  ---
+  duration_ms: 2.554868
+  type: 'test'
+  ...
+# Subtest: unknown PATH selection still reports the valid approved build for comparison
+ok 13 - unknown PATH selection still reports the valid approved build for comparison
+  ---
+  duration_ms: 2.318659
+  type: 'test'
+  ...
+# Subtest: a missing runtime explains the installed version and installation repair without executing Claude
+ok 14 - a missing runtime explains the installed version and installation repair without executing Claude
+  ---
+  duration_ms: 5.948312
+  type: 'test'
+  ...
+# Subtest: version hints never echo arbitrary filenames or turn an installation label into approval
+ok 15 - version hints never echo arbitrary filenames or turn an installation label into approval
+  ---
+  duration_ms: 2.276082
+  type: 'test'
+  ...
+# Subtest: account status uses only the current local protection binding; absent binding stays unknown
+ok 16 - account status uses only the current local protection binding; absent binding stays unknown
+  ---
+  duration_ms: 4.522476
+  type: 'test'
+  ...
+# Subtest: public status command works without Redis or credentials and never executes an unknown PATH binary
+ok 17 - public status command works without Redis or credentials and never executes an unknown PATH binary
+  ---
+  duration_ms: 1353.140008
+  type: 'test'
+  ...
+# Subtest: unreadable legacy version images make the process inventory incomplete
+ok 18 - unreadable legacy version images make the process inventory incomplete
+  ---
+  duration_ms: 170.333063
+  type: 'test'
+  ...
+1..18
+# tests 18
+# suites 0
+# pass 17
+# fail 0
+# cancelled 0
+# skipped 1
+# todo 0
+# duration_ms 2305.53604

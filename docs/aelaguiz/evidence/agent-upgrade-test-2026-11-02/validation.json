@@ -1,0 +1,51 @@
+{
+  "localFocused": {
+    "passed": 10,
+    "failed": 0,
+    "skipped": 1,
+    "skip": "Opt-in native filesystem cases run separately offsite"
+  },
+  "linuxNativeAdmission": {
+    "passed": 41,
+    "failed": 0,
+    "skipped": 0
+  },
+  "macNativeAdmission": {
+    "passed": 47,
+    "failed": 0,
+    "skipped": 0,
+    "initialFailure": "Disposable audit ancestor was user-owned; fixed root ownership before rerun. No production source change."
+  },
+  "fullSuite": {
+    "tests": 802,
+    "initialPassed": 767,
+    "initialFailed": 24,
+    "skipped": 11,
+    "initialFailure": "Source archive extraction created group-writable parent directories, rejected by existing harness executable trust checks.",
+    "repair": "Removed group/other write bits from task checkout directories; shared dependencies untouched.",
+    "affectedFilesRerun": [
+      "test/targets/harness-auth.test.js",
+      "test/pi/prime-target.test.js",
+      "test/pi/use.test.js",
+      "test/cli/redis-projection-command.test.js"
+    ],
+    "affectedRerunPassed": 96,
+    "affectedRerunFailed": 0,
+    "remainingFailures": 0,
+    "note": "Full suite run once; every failing file passed after fixture repair. Native/real opt-in skips are not claimed as new real-account evidence."
+  },
+  "lint": "passed on GCP",
+  "realVendorExecutedDuringRecovery": false,
+  "sourceSha256": {
+    "src/privacy/claude-artifacts.js": "c980e9f0f6a3ca1bad537ddacc63188c4a1f9e86022813169d11afa87f44f0d0",
+    "src/privacy/claude-status.js": "97334936f6518d8cf6569939d976c5bea7ec6f864a4cf4a5f3602605a01dd301",
+    "test/privacy/claude-admission.test.js": "80c2f621cad0957794676dd9e1811282c4a9e42dd0250ece70d537c5c2e498f7",
+    "test/privacy/claude-status.test.js": "2b3a197a7f0a50327ec8ddb55affbef44174653bb7d301c8d5d18adbcd50b091"
+  },
+  "macInstallerContracts": {
+    "passed": 19,
+    "failed": 0,
+    "evidence": "mac-installer-contracts.json",
+    "vendorExecuted": false
+  }
+}

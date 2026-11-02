@@ -1,0 +1,21 @@
+{
+  "reviewer": "upgrade_skill_final_review",
+  "model": "gpt-6.1-sol",
+  "effort": "xhigh",
+  "context": "Independent clean native reviewer, read-only",
+  "verdict": "Ready for PR; no remaining material defect, accepted-risk expansion or required-workflow removal",
+  "reviewed": [
+    "Skill and reference versus full canonical requirements and accepted decisions",
+    "Diagnostic code and unchanged authority boundaries",
+    "Actual native evidence and source/test hashes",
+    "Full original discovery/behavior returns",
+    "Concrete 14-file synthetic fixture preparation and proxy-failure response",
+    "Independently authored novel case and full fresh-operator return",
+    "Installed package identity, README and exact-bundle recovery status"
+  ],
+  "resolvedFinding": "Initial preparation exercise lacked supplied candidate identities, a concrete diff and the proxy-down observation. Supplemental exercise closes this with explicitly synthetic preparation and refusal evidence grounded in executed native tests.",
+  "intuitionBuilding": "Causal information-flow investigation, competing explanations, instrument limits, and open evidence choice; novel TLS case demonstrated judgment without unsupported leak claims or workflow cuts.",
+  "runtimeInstallation": "Administrator staging and installed inventory verification completed after the first review. Activation remains pending the stopped-owner transition; protected use requires policy matching the target kernel. Existing launcher stays.",
+  "execution": "Reviewer made no writes and ran no tests, vendor, account/browser/cloud operations or agents.",
+  "finalDeltaReview": "Passed: reviewed-source discovery through Git metadata; successful administrator staging without activation; labeled authentication prompt; cleanup separates instance termination from later host release."
+}

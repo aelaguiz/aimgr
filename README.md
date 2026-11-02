@@ -15,6 +15,27 @@ The Redis cutover is intentionally breaking and non-reverse-compatible. Runtime 
 
 ## Setup
 
+Before installing or updating the Claude launcher, follow
+[Installing a reviewed Claude runtime](#installing-a-reviewed-claude-runtime-without-interrupting-coding).
+
+For a new Claude release, invoke **`$agent-upgrade-test`**: “Sandbox-test Claude
+version X before we approve it.” The [skill](skills/agent-upgrade-test/SKILL.md)
+teaches the agent to investigate how information reaches Anthropic, pursue
+unexpected behavior and distinguish new exposure from accepted risks. Existing
+offsite tests preserve known privacy and workflow guarantees; they do not limit
+the investigation. The skill retains the complete tested bundle and obtains a
+cold code review of both the implementation and the explanation of its protection.
+It currently supports Claude only; testing and review do not grant normal-use
+approval. Its [plan and accepted-risk audit](docs/aelaguiz/AGENT_UPGRADE_TEST_SKILL_PLAN_2026-11-02.md)
+record the scope and validation.
+
+Install the `skills/agent-upgrade-test` directory into the established local skill
+store (`~/.agents/skills/agent-upgrade-test`) and expose it to the desired runtime's
+skill directory. Keep `skill-authoring` (including its shared orchestration policy)
+and `model-routing` installed alongside the existing skill collection. The package
+locates a separate aimgr checkout and does not depend on its own installed path
+being inside this repository. It does not install or launch Claude.
+
 Configure each machine to point at the same Redis primary and key prefix:
 
 Remote clients use the Tailscale hostname:
@@ -201,6 +222,93 @@ it during the planned stopped-session transition with
 The installer validates the approved manifest and immutable package before
 activating it. It does not approve arbitrary downloaded versions. The plan's
 upgrade playbook defines review, testing and rollback for later Claude updates.
+
+
+### Installing a reviewed Claude runtime without interrupting coding
+
+The installed `aim` wrapper executes the checkout it names. If that path is a
+working checkout, `git pull`, switching branches or updating `main` changes the
+live launcher immediately. **Install the launcher from a fixed release directory
+or dedicated checkout that will not move with development.** Keep the previous
+working release until the replacement passes its installation checks.
+
+A Claude version, a passing test report and an installable runtime bundle are
+three different things. The bundle contains the exact tested Claude executable,
+launcher, credential adapter/other helpers, policy and complete manifest. Its
+approval covers their hashes, platform and policy, not just the Claude version
+string. The version lock applies to Claude and its reviewed runtime artifacts;
+it does not lock macOS or Linux releases or require machines to run the same OS
+version. The recorded test OS is evidence provenance, not a launch requirement.
+An actual failure to apply the sandbox still stops the launch. Before terminating a test VM, retain that complete bundle
+in durable restricted storage, record its digest and source revision, then
+retrieve it into a fresh directory and verify every file against the manifest.
+Retaining source code and test logs alone is insufficient. Do not call a bundle
+available until this retrieval check passes.
+
+Use this order for a runtime change:
+
+1. Inspect the selected Claude bytes, installed approval and running owners
+   with `aim claude privacy status [account] --json`, which does not execute
+   Claude. If the current release predates that command, run the new release's
+   `node /absolute/path/to/release/bin/aimgr.js claude privacy status --json`
+   directly without changing the live wrapper. Distinguish a different version from a
+   missing, invalid or incompatible runtime. Do not run an unapproved
+   `claude --version`, and do not download a new Claude merely to repair a
+   missing AIM bundle.
+2. Complete offsite verification and cold review, retain/retrieve the full
+   tested bundle, and record the user's approval of those exact artifacts for
+   normal use. Test-only authorization does not authorize a personal machine.
+3. Prepare the fixed AIM release and its exact dependencies (`npm ci` in that
+   release, not through another checkout's `node_modules` symlink). Run the
+   file-only installer to stage the approved bundle. Staging needs administrator
+   access but does not activate the bundle or stop running sessions.
+   Coordinate administrator authentication with the user. A system dialog may
+   identify only `osascript`, which is ambiguous with several agents working;
+   label the prompt as AI Manager and say whether it stages files or activates
+   them. A canceled dialog is not permission to reopen it unexpectedly.
+4. Arrange the accepted transition for affected sessions and schedules. Inventory
+   them first; never kill unrelated sessions to satisfy the installer. The
+   current activation command requires stopped Claude owners. Activate the
+   bundle with `scripts/install-local-bin.sh --claude-runtime-bundle
+   /absolute/path/to/approved-bundle` **from the fixed release**, so failed
+   activation leaves the previous wrappers intact. Do not omit the bundle
+   argument on a machine without an approved runtime: the no-argument wrapper
+   installer does not check that prerequisite.
+5. Verify installed approval, selected binary hash, ordinary/protected modes as
+   applicable and the relevant smoke checks before declaring the transition
+   complete. Keep the approved compatible rollback and preserve account state.
+   Do not resume or replay interrupted work automatically.
+
+**2026-11-02 installation incident:** updating the development checkout changed
+its live wrapper to code requiring a runtime that had not been installed. The
+selected Claude 2.1.316 matched the tested vendor bytes; it was not a version
+mismatch. The exact tested Mac bundle had not been retained before rental
+cleanup. The user explicitly authorized temporarily restoring the previous
+working launcher, preserving the earlier proxy protections while accepting that
+the new file/device sandbox and exact-build lock are not active in that temporary
+release. This is a specific recovery decision, not permission for a future agent
+to bypass admission. A rebuilt helper must be compared with the original approved
+hashes. Changed bytes require new verification; never relabel a different bundle
+as the original tested artifact.
+
+The temporary local release is
+`~/.local/share/aimgr/releases/354be9e-before-runtime-install`; its private
+installation receipt records the recovery decision. Previous wrappers are saved
+in `~/.local/share/aimgr/launcher-backup-before-temporary-restore`. Do not switch
+back to the development checkout as an installation shortcut.
+
+The exact original Mac artifact set was subsequently recovered byte for byte
+and freshly retrieved/verified into restricted storage on both the test VM and
+the local machine. The [recovery record](docs/aelaguiz/evidence/agent-upgrade-test-2026-11-02/runtime-recovery.json)
+distinguishes available files from an active installation. Local copies are under
+`~/.local/share/aimgr/runtime-bundles/`; the original test-only archive is retained
+separately from the normal-use manifest recording the user's installation request.
+The bundle has been staged into the administrator-owned runtime and its complete
+inventory verified. The stopped-owner transition remains unfinished. The temporary
+launcher remains selected; staging the bundle has not silently activated the new
+sandbox. The exact OS-release gate was an unintended expansion of the Claude
+version lock and was removed after the user corrected it on 2026-11-02. The
+bundle's recorded test OS stays unchanged as historical evidence.
 
 `aim codex use` rotates away from the current Codex account on every successful
 call. It prefers labels that have not been selected recently, then uses the

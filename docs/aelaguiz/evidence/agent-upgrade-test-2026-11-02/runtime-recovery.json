@@ -1,0 +1,36 @@
+{
+  "artifactSet": "9bc287ee11a9576ccf080f2988ecef24961a792c645dd53040568e3132fdf9b4",
+  "exactOriginalBundleRecovered": true,
+  "testOnlyArchiveRetained": true,
+  "separateNormalUseRecordPrepared": true,
+  "normalUseAuthority": "User specifically requested installation of the previously reviewed bundle; this is the identical complete artifact set, not approval of a new build.",
+  "vendorOrHelpersExecutedLocally": false,
+  "installedIntoAdministratorRuntime": true,
+  "activeLauncher": "specifically authorized prior fixed release",
+  "protectedKernelCompatibility": {
+    "tested": "25.6.0",
+    "compatible": false
+  },
+  "activationPending": [
+    "stopped-owner transition",
+    "protected use requires a policy tested for the target kernel"
+  ],
+  "fixedRelease": {
+    "revision": "ca7f013",
+    "prepared": true,
+    "dependencies": "npm ci in own release directory; no shared symlink",
+    "activated": false
+  },
+  "administratorStagingAttempt": "First authentication canceled; user explicitly requested reopening a labeled prompt, then installation succeeded. No activation requested.",
+  "installedVerification": {
+    "version": "2.1.316",
+    "artifactSet": "9bc287ee11a9576ccf080f2988ecef24961a792c645dd53040568e3132fdf9b4",
+    "approvalKind": "normal-use",
+    "installedAdministratorOwnershipAndInventoryVerified": true,
+    "installerStagingAdmissionPassed": true,
+    "activeSelectorExists": false,
+    "protectedKernelMatches": false,
+    "previousLauncherSelected": true,
+    "vendorExecuted": false
+  }
+}
