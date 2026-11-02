@@ -306,6 +306,14 @@ Use this order for a runtime change:
    complete. Keep the approved compatible rollback and preserve account state.
    Do not resume or replay interrupted work automatically.
 
+Include the user's automatic preset command (for example, `aim claude run opus`)
+in the installation smoke test. A successful explicit-account launch alone does
+not verify automatic selection. The runtime supports individual Pro/Max OAuth
+accounts; automatic sessions and scheduled jobs skip other subscription types
+before ranking usage, while those accounts remain visible in account inventory.
+The launch-time credential check still applies, and a failed assigned proxy
+still stops selection rather than choosing another route.
+
 **2026-11-02 installation incident:** updating the development checkout changed
 its live wrapper to code requiring a runtime that had not been installed. The
 selected Claude 2.1.316 matched the tested vendor bytes; it was not a version

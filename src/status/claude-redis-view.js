@@ -1108,14 +1108,20 @@ function assertClaudeUsageRoutes(result) {
   }
 }
 
-export function selectLeastUsedUnlockedClaudeAccount(result, { preset } = {}) {
+export function selectLeastUsedUnlockedClaudeAccount(result, { preset, requireIndividualOAuth = false } = {}) {
   assertClaudeUsageRoutes(result);
   if (!isClaudeModelPreset(preset)) {
     throw new Error("Claude automatic selection requires the fable, opus, or sonnet preset.");
   }
   const candidates = (Array.isArray(result?.accounts) ? result.accounts : [])
     .filter((account) => (
-      account?.locked === false
+      // Automatic sessions and scheduled jobs must choose an account the privacy
+      // runtime supports. Readable usage (or a session already on this machine)
+      // does not make a Team/Enterprise account an individual Pro/Max account.
+      // Admission still checks the reconciled credential at launch; keep the
+      // route-error check above this filter so outages cannot trigger failover.
+      (!requireIndividualOAuth || ["pro", "max"].includes(account?.subscriptionType))
+      && account?.locked === false
       && (
         account?.authState === "usage_readable"
         || (
@@ -1183,7 +1189,7 @@ export function selectClaudeAccountForSession(result, { preset } = {}) {
       // Reuse the unlocked-account eligibility rules unchanged.
       const eligible = selectLeastUsedUnlockedClaudeAccount({
         accounts: [{ ...account, locked: false }],
-      }, { preset });
+      }, { preset, requireIndividualOAuth: true });
       if (!eligible) return null;
       const weeklyUsedPercent = Number(findOverallWeeklyWindow(account?.usage)?.usedPercent);
       const knownWeekly = Number.isFinite(weeklyUsedPercent) && weeklyUsedPercent >= 0;

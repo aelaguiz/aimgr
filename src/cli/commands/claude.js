@@ -1292,7 +1292,7 @@ async function freeClaudeAccountForScheduledJob(context, { preset, jobName, stde
   });
   const eligibleLabels = new Set(usageStatus.accounts
     .filter((account) => account?.locked === true
-      && selectLeastUsedUnlockedClaudeAccount({ ...usageStatus, accounts: [{ ...account, locked: false }] }, { preset }))
+      && selectLeastUsedUnlockedClaudeAccount({ ...usageStatus, accounts: [{ ...account, locked: false }] }, { preset, requireIndividualOAuth: true }))
     .map((account) => account.label));
   const target = (context.chooseClaudeAccountToFreeImpl ?? chooseClaudeAccountToFree)(
     (context.listLocalAimClaudeSessionsImpl ?? listLocalAimClaudeSessions)({ homeDir: context.homeDir }),

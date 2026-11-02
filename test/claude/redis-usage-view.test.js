@@ -101,6 +101,7 @@ function successSnapshot(percent = 12, resetAt = NOW_MS + 60 * 60_000) {
 test("Claude automatic selection prioritizes five-hour usage for every model preset", () => {
   const account = (label, fiveHourUsedPercent, fableUsedPercent, options = {}) => ({
     label,
+    subscriptionType: "max",
     authState: options.authState ?? "usage_readable",
     credentialState: options.credentialState ?? "credential_ready",
     credentialReady: options.credentialReady !== false,
@@ -163,6 +164,7 @@ test("Claude automatic selection prioritizes five-hour usage for every model pre
 test("Claude automatic selection breaks five-hour ties by overall weekly usage, then label", () => {
   const account = (label, fiveHourUsedPercent, weeklyUsedPercent) => ({
     label,
+    subscriptionType: "max",
     authState: "usage_readable",
     locked: false,
     usage: {
@@ -197,6 +199,64 @@ test("Claude automatic selection breaks five-hour ties by overall weekly usage, 
       }, `${preset}: ${accounts.map((entry) => entry.label).join(" vs ")}`);
     }
   }
+});
+
+test("automatic sessions and scheduled jobs skip unsupported subscriptions before ranking usage", () => {
+  const account = (subscriptionType, usedPercent = 0) => ({
+    label: subscriptionType ?? "unknown-plan", subscriptionType,
+    authState: "usage_readable", credentialReady: true, locked: false,
+    usage: successSnapshot(usedPercent),
+  });
+  const unsupported = ["team", "enterprise", "free", "MAX", "", null, undefined].map(plan => account(plan));
+  for (const preset of ["opus", "sonnet", "fable"]) {
+    for (const select of [selectClaudeAccountForSession, selectLeastUsedUnlockedClaudeAccount]) {
+      assert.equal(select({ accounts: unsupported }, { preset, requireIndividualOAuth: true }), null);
+      for (const plan of ["pro", "max"]) {
+        assert.deepEqual(select({ accounts: [...unsupported, account(plan, 70)] }, { preset, requireIndividualOAuth: true }),
+          { label: plan, usedPercent: 70 }, "supported account wins even with less usage left");
+      }
+    }
+    assert.deepEqual(selectClaudeAccountForSession({ accounts: [
+      { ...account("team"), locked: true, localSessions: 3 },
+      { ...account("max", 60), locked: true, localSessions: 1 },
+    ] }, { preset }), { label: "max", usedPercent: 60 }, "existing local Team sessions do not make it eligible");
+  }
+});
+
+test("native-only eligibility keeps other harnesses unchanged and never hides proxy failures", () => {
+  const team = { label: "team", subscriptionType: "team", authState: "usage_readable",
+    locked: false, usage: successSnapshot(0) };
+  assert.deepEqual(selectLeastUsedUnlockedClaudeAccount({ accounts: [team] }, { preset: "opus" }),
+    { label: "team", usedPercent: 0 }, "other harnesses retain their existing supported accounts");
+  for (const select of [selectClaudeAccountForSession, selectLeastUsedUnlockedClaudeAccount]) {
+    assert.throws(() => select({ accounts: [
+      { ...team, errorKind: "proxy_unavailable" },
+      { ...team, label: "individual", subscriptionType: "max" },
+    ] }, { preset: "opus", requireIndividualOAuth: true }), { code: "proxy_unavailable" });
+  }
+});
+
+test("real status collection preserves Team visibility but automatic selection chooses an individual account on live and cached reads", async t => {
+  const team = buildCredential("team"); team.nativeClaudeBundle.claudeAiOauth.subscriptionType = "team";
+  const { homeDir, connectRedisStoreImpl } = await setup([
+    anthropicRecord("team", { credential: team }), anthropicRecord("individual"),
+  ]);
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  let requests = 0;
+  for (const offset of [0, 1]) {
+    const result = await collectClaudeRedisAccountUsageStatus({
+      homeDir, connectRedisStoreImpl, nowMs: NOW_MS + offset,
+      fetchClaudeUsageSnapshotImpl: async ({ record }) => {
+        requests += 1; return successSnapshot(record.label === "team" ? 0 : 70);
+      },
+    });
+    assert.equal(result.accounts.find(a => a.label === "team").subscriptionType, "team");
+    assert.equal(result.accounts.find(a => a.label === "team").authState, "usage_readable");
+    for (const select of [selectClaudeAccountForSession, selectLeastUsedUnlockedClaudeAccount]) {
+      assert.deepEqual(select(result, { preset: "opus", requireIndividualOAuth: true }), { label: "individual", usedPercent: 70 });
+    }
+  }
+  assert.equal(requests, 2, "second read uses the identity-bound cache without more provider calls");
 });
 
 test("Redis Claude inventory is provider-filtered, offline, candidate-safe, and strictly allowlisted", async () => {
@@ -1270,6 +1330,7 @@ test("Claude OAuth usage never falls back to claude.ai cookies", async (t) => {
 test("Claude session selection shares this machine's accounts by headroom per session", () => {
   const account = (label, { fiveHour, weekly, locked = false, localSessions = 0 }) => ({
     label,
+    subscriptionType: "max",
     authState: "usage_readable",
     locked,
     localSessions,
@@ -1308,6 +1369,7 @@ test("Claude session selection shares this machine's accounts by headroom per se
 test("Claude automatic selection keeps idle accounts whose expired token hides their usage, ranked after known usage", () => {
   const unknownUsage = (label, { authState = "credential_expired", locked = false } = {}) => ({
     label,
+    subscriptionType: "max",
     authState,
     credentialState: authState,
     credentialReady: false,
@@ -1316,6 +1378,7 @@ test("Claude automatic selection keeps idle accounts whose expired token hides t
   });
   const known = (label, { fiveHour, weekly, authState = "usage_readable" }) => ({
     label,
+    subscriptionType: "max",
     authState,
     credentialState: "credential_ready",
     credentialReady: true,
