@@ -112,6 +112,24 @@ def mark_failed(name):
         pass
 
 
+def publish_state(file, contents, mode):
+    # The ordinary-user guardian must own this directory to mark failure.
+    # Root must never truncate or chmod one of its replaceable pathnames:
+    # write an exclusively created inode, set permissions through that FD,
+    # then rename it over the destination without following a symlink.
+    fd, staged = tempfile.mkstemp(prefix='.publish-', dir=file.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(contents)
+            os.fchmod(stream.fileno(), mode)
+        os.replace(staged, file)
+    finally:
+        try:
+            os.unlink(staged)
+        except FileNotFoundError:
+            pass
+
+
 def listener_pid(port):
     output = command(['/usr/sbin/lsof', '-nP', '-t', f'-iTCP:{port}', '-sTCP:LISTEN'], capture_output=True, text=True).stdout
     pids = set(map(int, output.split()))
@@ -360,8 +378,12 @@ def rules(config):
     # Trusted AIM launched by a tool can explicitly select another account.
     # Its account-bound HTTP transport needs that account's loopback SOCKS.
     # Deliberate local-relay misuse by hostile tools is outside this boundary.
-    lines = [f'pass out quick inet proto tcp from any to 127.0.0.0/8 group {gid} keep state',
-              f'pass out quick inet6 proto tcp from any to ::1 group {gid} keep state',
+    # Local OAuth/MCP listeners also send SYN+ACK, not just outbound SYN. PF's
+    # default S/SA mask drops those replies when an ordinary browser initiated
+    # the connection. Permit every TCP flag only within the existing loopback
+    # exception; external connections still require the assigned TUN below.
+    lines = [f'pass out quick inet proto tcp from any to 127.0.0.0/8 group {gid} flags any keep state',
+              f'pass out quick inet6 proto tcp from any to ::1 group {gid} flags any keep state',
               f'pass out quick route-to ({tun} 198.19.{index}.2) inet proto tcp from any to any group {gid} flags S/SA keep state',
               f'pass out quick route-to ({tun} fd19:{index}::2) inet6 proto tcp from any to any group {gid} flags S/SA keep state',
               f'block drop out quick proto tcp from any to any group {gid}']
@@ -448,9 +470,8 @@ def serve(name):
         owners = [{'pid': pid, 'started': live[pid]['started'], 'role': role}
                   for role, pid in [('monitor', os.getpid()), ('adapter', adapter.pid), ('tunnel', tunnel), ('guardian', watcher)]]
         with lock(ROOT / f'{name}.lock', exclusive=True):
-            (state / 'starting').touch(mode=0o600)
-            previous.write_text(json.dumps({'owners': owners}))
-            os.chmod(previous, 0o644)
+            publish_state(state / 'starting', '', 0o600)
+            publish_state(previous, json.dumps({'owners': owners}), 0o644)
             (state / 'failed').unlink()
         # The starting marker denies ordinary admission until the complete
         # native path passes. A listening tunnel or created TUN is insufficient.
