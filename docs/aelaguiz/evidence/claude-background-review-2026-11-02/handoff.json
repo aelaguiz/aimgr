@@ -1,0 +1,155 @@
+{
+  "integratedAim": true,
+  "mode": "ordinary",
+  "actualNativeRoute": false,
+  "platform": "Linux",
+  "artifactSha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "results": [
+    {
+      "case": "ordinary-pro-workflows-disabled",
+      "exit": 0,
+      "syntheticModelCompleted": true,
+      "requestPaths": [
+        "/api/artifacts/mcp",
+        "/api/claude_cli/bootstrap",
+        "/api/claude_code_grove",
+        "/api/claude_code_penguin_mode",
+        "/api/event_logging/v2/batch",
+        "/api/frame/contract/latest",
+        "/api/oauth/organizations/00000000-0000-4000-8000-000000000002/referral/eligibility",
+        "/api/oauth/profile",
+        "/claude-code-releases/plugins/claude-plugins-official/%7B%22features%22:%20%7B%7D,%20%22data%22:%20[],%20%22models%22:%20[]%7D.zip",
+        "/claude-code-releases/plugins/claude-plugins-official/latest",
+        "/mcp-registry/v0/servers",
+        "/v1/messages"
+      ],
+      "modelRequests": 16,
+      "modelSources": [
+        "127.0.0.1"
+      ],
+      "managedSettingsFetches": 0,
+      "refreshRequests": 0,
+      "refreshedCredentialStored": false,
+      "storedSubscriptionType": "pro",
+      "storedSubscriptionTypeSource": "sign_in",
+      "storedSubscriptionFresh": false,
+      "exactKernelInModel": true,
+      "hostnameInRequests": false,
+      "eventLoggingRequests": 16,
+      "terminalCanaryInModel": false,
+      "terminalCanaryInEvents": false,
+      "terminalCanaryInOtherRequests": false,
+      "terminalCanaryInLocalDebug": false,
+      "backgroundReview": {
+        "observations": [
+          {
+            "name": "foreground-does-not-require-daemon",
+            "passed": true
+          },
+          {
+            "name": "background-outlives-dispatch",
+            "passed": true,
+            "daemonExecutable": "/opt/aimgr-state-audit/claude-implementation/bg-review-handoff-5/ordinary-pro-workflows-disabled/claude-previous-path",
+            "daemonPid": 70
+          },
+          {
+            "name": "new-admitted-dispatch-reuses-previous-executable",
+            "passed": true,
+            "sameDaemon": true,
+            "descendantProcesses": [
+              {
+                "pid": 205,
+                "executable": "/opt/aimgr-state-audit/claude-implementation/bg-review-handoff-5/ordinary-pro-workflows-disabled/claude-previous-path"
+              },
+              {
+                "pid": 214,
+                "executable": "/opt/aimgr-state-audit/claude-implementation/bg-review-handoff-5/ordinary-pro-workflows-disabled/claude-previous-path"
+              },
+              {
+                "pid": 77,
+                "executable": "/opt/aimgr-state-audit/claude-implementation/bg-review-handoff-5/ordinary-pro-workflows-disabled/claude-previous-path"
+              },
+              {
+                "pid": 79,
+                "executable": "/opt/aimgr-state-audit/claude-implementation/bg-review-handoff-5/ordinary-pro-workflows-disabled/claude-previous-path"
+              },
+              {
+                "pid": 90,
+                "executable": "/opt/aimgr-state-audit/claude-implementation/bg-review-handoff-5/ordinary-pro-workflows-disabled/claude-previous-path"
+              },
+              {
+                "pid": 95,
+                "executable": "/opt/aimgr-state-audit/claude-implementation/bg-review-handoff-5/ordinary-pro-workflows-disabled/claude-previous-path"
+              }
+            ],
+            "limitation": "The previous pathname contains the same reviewed vendor bytes, not another version."
+          },
+          {
+            "name": "disabled-bg-with-existing-daemon",
+            "status": 1,
+            "policyRefusal": true,
+            "modelRequests": 0
+          },
+          {
+            "name": "aim-daemon-argv-falls-through-to-prompt",
+            "status": 0,
+            "policyRefusal": false,
+            "modelRequests": 2,
+            "nativeDaemonCommandReached": false,
+            "promptText": "daemon"
+          },
+          {
+            "name": "disabled-agents-with-real-pty",
+            "status": 1,
+            "policyRefusal": true
+          },
+          {
+            "name": "narrow-switch-does-not-stop-existing-work",
+            "passed": true
+          },
+          {
+            "name": "narrow-switch-prevents-fresh-supervisor",
+            "passed": true,
+            "status": 0,
+            "policyRefusal": true,
+            "modelRequests": 0,
+            "nativeOwners": 0,
+            "rosterCreated": false
+          },
+          {
+            "name": "narrow-switch-retains-foreground",
+            "passed": true
+          }
+        ]
+      },
+      "connectAuthorities": [
+        "api.anthropic.com:443",
+        "downloads.claude.ai:443",
+        "github.com:443",
+        "raw.githubusercontent.com:443"
+      ]
+    }
+  ],
+  "disableAgentView": false,
+  "backgroundReview": true,
+  "settingsWatcherPollingDiagnostic": false,
+  "remoteControlPolicyOnlyComparison": false,
+  "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",
+  "meaning": "Default-host synthetic captures; no real-account eligibility or full lifecycle acceptance",
+  "evidenceProcessing": {
+    "sourceFile": "/opt/aimgr-state-audit/claude-implementation/bg-review-handoff-5/observations.json",
+    "sourceSha256": "f50903e54acb8ccbbc104d5cd493569ad29848d0d01f44c9338b7dfb203ad58b",
+    "change": "Corrected one misnamed daemon-gate observation using raw request bodies. Its old modelRequests field counted rejected-job markers rather than requests for this invocation. All other observations are unchanged."
+  },
+  "daemonArgumentAnalysis": {
+    "nativeDaemonCommandReached": false,
+    "ordinaryPromptModelRequests": 2,
+    "submittedPromptText": "daemon",
+    "explanation": "AIM prepends settings arguments; the generic launch became an ordinary prompt. The independent fresh direct native daemon check did exercise the disabling gate."
+  },
+  "backgroundRelatedAuxiliaryRequests": {
+    "quotaPrompts": 2,
+    "taskStatusSummaryPrompts": 4,
+    "attribution": "Observed in the enabled background portion; capture does not identify individual process owners."
+  }
+}

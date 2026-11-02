@@ -51,6 +51,8 @@ p.add_argument("--node", type=Path)
 p.add_argument("--privacy-mode", choices=["ordinary", "protected"], default="protected")
 p.add_argument("--poll-settings", action="store_true", help="Diagnostic fixture only: use the unchanged client's polling file watcher")
 p.add_argument("--rc-policy-only", action="store_true", help="Eligible unwrapped RC comparison with only disableRemoteControl added")
+p.add_argument("--disable-agent-view", action="store_true", help="Research the narrow native daemon switch, retaining ordinary background tools")
+p.add_argument("--background-review", action="store_true", help="Run the isolated daemon lifetime/reuse/disable experiment")
 a = p.parse_args()
 base = Path("/opt/aimgr-state-audit")
 root = a.root.resolve()
@@ -351,8 +353,18 @@ class Mock(http.server.BaseHTTPRequestHandler):
                 if not ran:
                     args = {"skill": "privacy-proof"} if skill else {"description": "Synthetic child task", "prompt": "Run the synthetic Bash task. NATIVE_CHILD_TASK.", "subagent_type": "general-purpose"} if agent else ({"text": "MCP_TOOL_RESULT_CANARY"} if mcp_tool else {"query": "+stdio echo", "max_results": 5}) if mcp else {"command": "printf subagent-ok > child-proof.txt" if child else "printf native-tool-ok > tool-proof.txt", "description": "Write synthetic proof"}
                     content = {"type": "tool_use", "id": "tool_fixture_" + str(len(requests)), "name": name, "input": args}
-                elif "schedules" in active:
+                elif "schedules" in active or "ROUTINE_SUCCESS_CANARY" in messages:
                     content = {"type": "text", "text": "NATIVE_MOCK_DONE\nAIM-JOB: done"}
+                if "NATIVE_BACKGROUND_BASH" in messages and not ran:
+                    content = {"type": "tool_use", "id": "background_bash", "name": "Bash", "input": {
+                        "command": "sleep 1; printf background-ok > background-tool-proof.txt",
+                        "description": "Verify ordinary background shell tools", "run_in_background": True}}
+                overlap = re.search(r"NATIVE_OVERLAP_([ab])", messages)
+                if overlap and not ran:
+                    own = overlap.group(1); other = "b" if own == "a" else "a"
+                    content = {"type": "tool_use", "id": "overlap_" + own, "name": "Bash", "input": {
+                        "command": "touch overlap-" + own + "-ready; for i in $(seq 1 100); do if test -f overlap-" + other + "-ready; then printf overlap-ok > overlap-" + own + "-done; exit 0; fi; sleep .1; done; exit 1",
+                        "description": "Verify concurrent ordinary sessions reach their tools"}}
                 if "NATIVE_SCHEDULE_REQUEST" in "\n".join(user_text):
                     calls = [block for block in blocks if block.get("type") == "tool_use"]
                     name, args = None, None
@@ -727,6 +739,8 @@ try:
                "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1",
                "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "ALL_PROXY": proxy,
                "NODE_EXTRA_CA_CERTS": str(root / "ca.pem")}
+        if a.disable_agent_view:
+            env["CLAUDE_CODE_DISABLE_AGENT_VIEW"] = "1"
         if a.routed_aim and "workflows" not in name:
             env["NODE_EXTRA_CA_CERTS"] = str(home / "project/fixture-ca.pem")
         if opt_out:
@@ -856,7 +870,7 @@ print(json.dumps(result))
         if a.integrated_aim:
             if not a.node or not plan or a.approved_mac_launcher or (a.privacy_mode == "protected" and not a.routed_aim):
                 raise SystemExit("Integrated stored OAuth requires Node and actual protected route when applicable")
-            driver = base / "claude-implementation/repo/scripts/privacy-integrated-launch-check.mjs"
+            driver = Path(__file__).resolve().with_name("privacy-integrated-launch-check.mjs")
             invocation = {"mode": a.privacy_mode, "command": str(a.claude), "userHomeDir": str(home),
                 "homeDir": str(config.parent), "configDir": str(config), "cwd": str(home / "project"), "args": arguments[1:]}
             if "workflows" in name:
@@ -876,6 +890,9 @@ print(json.dumps(result))
                 invocation["check"] = "http-mcp"
                 invocation["captureFile"] = str(root / "requests.private.jsonl")
             if route_profile: invocation["egressProfile"] = route_profile
+            if a.background_review:
+                driver = Path(__file__).resolve().with_name("privacy-claude-background-review.mjs")
+                invocation["captureFile"] = str(root / "requests.private.jsonl")
             arguments = [str(a.node), str(driver), json.dumps(invocation)]
         if a.sandbox_profile:
             if platform.system() != "Darwin" or a.sandbox_profile.resolve().parent != root.parent:
@@ -961,6 +978,7 @@ print(json.dumps(result))
                         "terminalCanaryInOtherRequests": any(TERMINAL_CANARY in captured_text(r) for r in captures if "/event_logging/" not in r["path"] and "/messages" not in r["path"]),
                         "terminalCanaryInLocalDebug": (home / "debug.private.txt").exists() and TERMINAL_CANARY in (home / "debug.private.txt").read_text(),
                         **({"workflows": json.loads((home / "workflows.json").read_text())} if (home / "workflows.json").exists() else {}),
+                        **({"backgroundReview": json.loads((home / "background-review.json").read_text())} if (home / "background-review.json").exists() else {}),
                         **({"compatibility": json.loads((home / "compatibility.json").read_text())} if (home / "compatibility.json").exists() else {}),
                         **({"controls": json.loads((home / "controls.json").read_text())} if (home / "controls.json").exists() else {}),
                         **({"concurrency": json.loads((home / "concurrency.json").read_text())} if (home / "concurrency.json").exists() else {}),
@@ -973,6 +991,7 @@ finally:
     server.shutdown()
     server.server_close()
 report = {"integratedAim": a.integrated_aim, "mode": a.privacy_mode, "actualNativeRoute": a.routed_aim, "platform": platform.system(), "artifactSha256": digest, "results": results,
+          "disableAgentView": a.disable_agent_view, "backgroundReview": a.background_review,
           "settingsWatcherPollingDiagnostic": a.poll_settings,
           "remoteControlPolicyOnlyComparison": a.rc_policy_only,
           "captureAnalysis": "Decoded additional_metadata and process base64 JSON in native event envelopes",

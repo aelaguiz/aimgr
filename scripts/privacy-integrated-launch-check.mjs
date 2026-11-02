@@ -109,8 +109,35 @@ for await(const line of readline.createInterface({input:process.stdin})) {
     const agent = await turn("Delegate the synthetic child task. NATIVE_SUBAGENT_PARENT.");
     assert.equal(agent.subagent_stats.spawned, 1);
     assert.equal(fs.readFileSync(path.join(cwd, "child-proof.txt"), "utf8"), "subagent-ok");
+    let backgroundRetained;
+    if (process.env.CLAUDE_CODE_DISABLE_AGENT_VIEW === "1") {
+      assert.ok(agent.subagent_stats.started_in_background > 0);
+      await turn("Run the ordinary background shell tool. NATIVE_BACKGROUND_BASH.");
+      assert.equal(fs.readFileSync(path.join(cwd, "background-tool-proof.txt"), "utf8"), "background-ok");
+      await Promise.all([turn("Run the paired tool. NATIVE_OVERLAP_a."), turn("Run the paired tool. NATIVE_OVERLAP_b.")]);
+      for (const role of ["a", "b"]) assert.equal(fs.readFileSync(path.join(cwd, `overlap-${role}-done`), "utf8"), "overlap-ok");
+      const { createNativeRoutineFixture } = await import("../test/network/native-routine-fixture.js");
+      const routineRoot = path.join(launch.userHomeDir, "background-retained-routine");
+      fs.mkdirSync(routineRoot);
+      const routine = await createNativeRoutineFixture({ root: routineRoot, claudeBin: launch.command,
+        defaultServices: { caFile: process.env.NODE_EXTRA_CA_CERTS } });
+      let receipt;
+      try {
+        const occurrence = await routine.start(0, "Run the synthetic Bash task. ROUTINE_SUCCESS_CANARY.");
+        receipt = await occurrence.finished;
+        assert.equal(receipt.outcome, "completed");
+        assert.equal(receipt.needsAttention, false);
+        assert.equal(await routine.lease(), null);
+        assert.equal(fs.readFileSync(path.join(routine.cwd, "tool-proof.txt"), "utf8"), "native-tool-ok");
+      } finally { await routine.close(); }
+      backgroundRetained = { ordinaryBackgroundBash: true, nativeSubagentStartedInBackground: agent.subagent_stats.started_in_background > 0,
+        concurrentSameAccountTools: true, aimScheduledOccurrenceAndNativeTool: true,
+        routineSubstitutions: ["Redis wire", "Herdr UI", "scheduled clock", "print mode"],
+        osCalendarRetested: false };
+    }
     fs.writeFileSync(path.join(launch.userHomeDir, "workflows.json"), JSON.stringify({ bash: true, hooks: true,
-      instructions: true, externalInstructionImport: true, historyResumeFork: true, stdioMcp: true, personalSkill: true, subagent: true }));
+      instructions: true, externalInstructionImport: true, historyResumeFork: true, stdioMcp: true, personalSkill: true, subagent: true,
+      ...(backgroundRetained ? { backgroundRetained } : {}) }));
     console.log("SYNTHETIC_OK");
   } else {
   const result = await runClaudeCliNoninteractive({ ...input, env: process.env, timeoutMs: 45000,

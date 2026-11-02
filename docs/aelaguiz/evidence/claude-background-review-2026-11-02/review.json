@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-02",
+  "sourceBaseCommit": "532ad6a3f00b48a18fc5d76465ef07bbe1ea473b",
+  "scope": "Analysis and offsite synthetic experiments; no production policy or installation change",
+  "localReadOnlyInventory": {
+    "managedAccountDirectories": 44,
+    "directoriesWithSavedJobs": 14,
+    "savedJobRecords": 18,
+    "jobDateRange": [
+      "2026-08-02",
+      "2026-10-29"
+    ],
+    "kernelConfirmedLiveSupervisors": 2,
+    "readableManagedAppStateFiles": 42,
+    "defaultToAgentsViewTrue": 0,
+    "standardUserServicePlistPresent": false,
+    "standardSystemServicePlistPresent": false,
+    "defaultHomeRosterPresent": false,
+    "initiatorAttribution": "unknown",
+    "processesStopped": 0
+  },
+  "staticFindings": [
+    {
+      "finding": "Supervisor creates later workers from its own executable",
+      "source": "Mac extracted chunk-267241066.js doSpawn; chunk-258612058.js current-binary helper",
+      "consequence": "Dispatcher admission alone does not admit actual worker image or inherited policy"
+    },
+    {
+      "finding": "Agent-view gate covers supported UI, background dispatch and service entry",
+      "source": "Mac chunks-250888390,260290474,267353362,267968913",
+      "limits": "Hidden helpers trust normal parents; malicious direct invocation is accepted risk"
+    },
+    {
+      "finding": "Ordinary Agent runs through local task registry",
+      "source": "Mac chunks-267958864,269149554",
+      "tradeoff": "Built-in subtype claude disappears; general-purpose remains"
+    },
+    {
+      "finding": "Native settings persistence refuses flagSettings and policySettings writes",
+      "source": "Mac chunk-252444203.js Ha at local offset113000; chunk-265940852.js snapshot read/pin",
+      "consequence": "No automatic settings mutation demonstrated; do not add hostile-tool defenses"
+    },
+    {
+      "finding": "Transient daemon grace is 5 seconds after work or 50 seconds before work, conditional on zero leases/handles",
+      "source": "Mac chunks-267353362,267159708",
+      "limits": "Foreground/service origins skip idle exit; this is not worker lifetime"
+    },
+    {
+      "finding": "AIM-prefixed daemon command misses native first-argument dispatch",
+      "source": "Mac chunk-250879608.js dbi at local offset2055; src/privacy/claude-settings-handoff.js",
+      "dynamicEvidence": "handoff.json daemonArgumentAnalysis"
+    }
+  ],
+  "coldReview": {
+    "reviewer": "independent mac_activation_cold_review agent",
+    "finding": "Recommendation supported; no new automatic same-approved-build leak or blanket stop-all requirement",
+    "requestedCorrections": [
+      "Distinguish same reviewed bytes at another pathname from an older version",
+      "Separate AIM daemon-argument prompt fallthrough from actual native gate",
+      "Explain direct native management versus gated detached-job commands",
+      "Avoid unused and unproven workflow claims",
+      "Keep existing-owner shutdown at agreed transition"
+    ],
+    "disposition": "Final document and sanitized receipts rechecked; all requested corrections incorporated; no unresolved findings within review scope."
+  },
+  "experimentLimits": [
+    "Linux actual-native behavior only; separate static inspection of approved Mac build",
+    "Ordinary-mode synthetic account, not protected-route recertification",
+    "No actual new/older vendor version executed",
+    "No real-account eligibility claim",
+    "AIM routine used fake Redis wire, Herdr UI and scheduled clock; no new OS-calendar proof",
+    "Research harness final diagnostic labeling and pipe-drain/assertion improvements reviewed without rerunning completed native work"
+  ],
+  "cleanup": {
+    "offsiteAuthorizationRevoked": true,
+    "remainingSyntheticClaudeProcesses": 0,
+    "duplicateResearchBinariesRemoved": 4
+  }
+}
