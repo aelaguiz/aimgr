@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { admitClaudeArtifact, CLAUDE_RUNTIME_ROOT, inspectClaudeAdministratorPath } from "./claude-artifacts.js";
+import { admitClaudeArtifact, CLAUDE_RUNTIME_ROOT, inspectClaudeAdministratorPath, claudeInstalledVersionHint } from "./claude-artifacts.js";
 import { readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
 
 function inspectSelection(command) {
@@ -18,7 +18,7 @@ function inspectSelection(command) {
     const hash = crypto.createHash("sha256"), buffer = Buffer.alloc(1024 * 1024);
     let count;
     while ((count = fs.readSync(fd, buffer, 0, buffer.length, null))) hash.update(buffer.subarray(0, count));
-    return { available: true, sha256: hash.digest("hex") };
+    return { available: true, versionHint: claudeInstalledVersionHint(command), sha256: hash.digest("hex") };
   } catch { return { available: false }; }
   finally { if (fd !== undefined) fs.closeSync(fd); }
 }
@@ -70,6 +70,9 @@ export function inspectClaudePrivacyStatus({ command, homeDir, label, pinnedArti
 
 export function formatClaudePrivacyStatus(status) {
   const lines = [status.refusal ? status.refusal.message : `Claude ${status.approved.version}: approved for ${status.approved.approvalKind}.`,
+    `Selected Claude version: ${status.approved && status.selected.sha256 === status.approved.vendorSha256
+      ? `${status.approved.version} (matches approved bytes)`
+      : status.selected.versionHint ? `${status.selected.versionHint} (installation filename; not verified)` : "unknown without executing it"}.`,
     `Selected executable: ${status.selected.sha256 ?? "unavailable"}`,
     `Active artifact set: ${status.activeArtifactSet ?? "unavailable"}`];
   if (status.pinnedArtifactSet) lines.push(`Inherited artifact set: ${status.pinnedArtifactSet}`);

@@ -18,6 +18,16 @@ export class ClaudeAdmissionError extends Error {
   }
 }
 
+/** A diagnostic hint only. Reading an installation filename must never grant
+ * approval, and --version would execute the very build admission may reject. */
+export function claudeInstalledVersionHint(command, fsImpl = fs) {
+  try {
+    if (!path.isAbsolute(command ?? "")) return null;
+    const name = path.basename(fsImpl.realpathSync(command));
+    return /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(name) ? name : null;
+  } catch { return null; }
+}
+
 const fail = (reason) => { throw new ClaudeAdmissionError(reason); };
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const text = (value) => typeof value === "string" && value.trim().length > 0;
@@ -250,6 +260,7 @@ export function admitClaudeArtifact({
   arch = process.arch,
   fsImpl = fs,
 } = {}) {
+  let approvedBuild = null;
   try {
     if (!["linux", "darwin"].includes(platform) || !path.isAbsolute(runtimeRoot)) {
       fail("the native platform or artifact root is unsupported");
@@ -282,6 +293,10 @@ export function admitClaudeArtifact({
       if (!HASH.test(manifest.candidateSourceSha256 ?? "")) fail("the offsite candidate source is unidentified");
       authorizeOffsiteTest({ runtimeRoot, artifactSet, platform, arch, fsImpl });
     } else fail("the selected build lacks explicit normal-use approval");
+    // Display only an administrator-owned, compatible, authorized record.
+    // This is explanatory context: all inventory/hash checks below still run.
+    approvedBuild = { version: /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(manifest.version)
+      ? manifest.version : "version label unavailable", kind: approval.kind };
     if (claudeArtifactSetDigest(manifest.files) !== artifactSet) {
       fail("the approved artifact inventory does not match the selected build");
     }
@@ -373,9 +388,18 @@ export function admitClaudeArtifact({
       approvalKind: approval.kind,
     });
   } catch (error) {
-    if (error instanceof ClaudeAdmissionError) throw error;
     // File paths, parse contents and file-descriptor errors can contain private
     // context. Status gets one actionable refusal, never raw state or secrets.
-    throw new ClaudeAdmissionError("the approved runtime or its records could not be read safely");
+    const missing = error?.code === "ENOENT" && error?.path === runtimeRoot;
+    const refusal = error instanceof ClaudeAdmissionError ? error : new ClaudeAdmissionError(missing
+      ? "no approved runtime bundle is installed on this machine"
+      : "the approved runtime or its records could not be read safely");
+    const hint = claudeInstalledVersionHint(selectedCommand, fsImpl);
+    if (selectedCommand !== undefined) refusal.message += `\nSelected Claude: ${hint
+      ? `${hint} (installation filename; not executed)` : "version unknown without executing it"}.`;
+    refusal.message += `\nApproved Claude for this launch: ${approvedBuild
+      ? `${approvedBuild.version} (${approvedBuild.kind})` : missing ? "none; runtime bundle missing" : "approval unavailable or invalid"}.`;
+    if (missing) refusal.message += "\nInstall the reviewed runtime bundle before switching AIM to this release. Updating Claude alone will not fix this.";
+    throw refusal;
   }
 }

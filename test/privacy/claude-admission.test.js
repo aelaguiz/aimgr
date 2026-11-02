@@ -153,6 +153,24 @@ test("administrator-owned artifact admission contracts on the offsite host", { s
     fs.unlinkSync(selected);
     assert.equal(runtimeAdmission(f.root, alias).status, 77);
   });
+  await t.test("refusal compares selected and approved versions without trusting an installation filename", () => {
+    const f = fixture("version-diagnostics");
+    f.manifest.version = "2.1.316";
+    fs.writeFileSync(f.approval, JSON.stringify(f.manifest));
+    const selected = path.join(f.root, "2.1.999");
+    fs.writeFileSync(selected, "#!/bin/sh\nprintf 'MUST-NOT-EXECUTE'\n# unknown bytes\n", { mode: 0o755 });
+    const result = runtimeAdmission(f.root, selected);
+    assert.equal(result.status, 77);
+    const message = JSON.parse(result.stdout).message;
+    assert.match(message, /Selected Claude: 2\.1\.999 \(installation filename; not executed\)/);
+    assert.match(message, /Approved Claude for this launch: 2\.1\.316 \(normal-use\)/);
+    assert.doesNotMatch(message, /MUST-NOT-EXECUTE/);
+    fs.writeFileSync(f.approval, "PRIVATE-CONTENT");
+    const broken = runtimeAdmission(f.root, selected);
+    assert.equal(broken.status, 77);
+    assert.match(JSON.parse(broken.stdout).message, /approval unavailable or invalid/);
+    assert.doesNotMatch(broken.stdout, /2\.1\.316|PRIVATE-CONTENT/);
+  });
   await t.test("nested pin keeps a still-approved package through activation and rechecks revocation and explicit selection", () => {
     const old = fixture("pinned-old"), next = fixture("pinned-next", "# synthetic newer package\n");
     fs.cpSync(next.bundle, path.join(old.root, "artifacts", next.artifactSet), { recursive: true });

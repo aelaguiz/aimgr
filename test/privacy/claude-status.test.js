@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { inspectClaudePrivacyStatus, formatClaudePrivacyStatus } from "../../src/privacy/claude-status.js";
-import { ClaudeAdmissionError } from "../../src/privacy/claude-artifacts.js";
+import { admitClaudeArtifact, ClaudeAdmissionError, claudeInstalledVersionHint } from "../../src/privacy/claude-artifacts.js";
 import { writeClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
 
 function fixture(t) {
@@ -53,6 +53,40 @@ test("unknown PATH selection still reports the valid approved build for comparis
   assert.equal(status.approved.version, "synthetic"); assert.equal(status.approved.vendorSha256, f.artifact.vendorSha256);
   assert.match(status.refusal.message, /differs from the approved build/);
   assert.match(formatClaudePrivacyStatus(status), new RegExp("Approved executable: Claude synthetic, SHA-256 " + f.artifact.vendorSha256));
+  assert.equal(fs.existsSync(path.join(f.home, "VENDOR_EXECUTED")), false);
+});
+
+test("a missing runtime explains the installed version and installation repair without executing Claude", t => {
+  const f = fixture(t), versioned = path.join(f.home, "2.1.999");
+  fs.renameSync(f.command, versioned);
+  fs.symlinkSync(versioned, f.command);
+  const runtimeRoot = path.join(f.home, "missing-runtime");
+  assert.throws(() => admitClaudeArtifact({ selectedCommand: f.command, runtimeRoot }), error => {
+    assert.equal(error.code, "AIMGR_CLAUDE_BUILD_NOT_APPROVED");
+    assert.match(error.message, /no approved runtime bundle is installed/);
+    assert.match(error.message, /Selected Claude: 2\.1\.999 \(installation filename; not executed\)/);
+    assert.match(error.message, /Approved Claude for this launch: none; runtime bundle missing/);
+    assert.match(error.message, /Updating Claude alone will not fix this/);
+    assert.equal(error.message.includes(f.home), false);
+    return true;
+  });
+  const status = inspectClaudePrivacyStatus({ ...f.options, admit: () => {
+    throw new ClaudeAdmissionError("no approved runtime bundle is installed on this machine");
+  } });
+  assert.equal(status.selected.versionHint, "2.1.999");
+  assert.match(formatClaudePrivacyStatus(status), /Selected Claude version: 2\.1\.999 \(installation filename; not verified\)/);
+  assert.equal(fs.existsSync(path.join(f.home, "VENDOR_EXECUTED")), false);
+});
+
+test("version hints never echo arbitrary filenames or turn an installation label into approval", t => {
+  const f = fixture(t);
+  assert.equal(claudeInstalledVersionHint(f.command), null);
+  const privateName = path.join(f.home, "2.1.999\nPRIVATE_FILENAME_SECRET");
+  fs.renameSync(f.command, privateName); fs.symlinkSync(privateName, f.command);
+  assert.equal(claudeInstalledVersionHint(f.command), null);
+  assert.equal(claudeInstalledVersionHint("relative/2.1.999"), null);
+  const status = inspectClaudePrivacyStatus(f.options);
+  assert.doesNotMatch(JSON.stringify(status), /PRIVATE_FILENAME_SECRET/);
   assert.equal(fs.existsSync(path.join(f.home, "VENDOR_EXECUTED")), false);
 });
 
