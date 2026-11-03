@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
@@ -166,6 +167,48 @@ test("late scheduled fire writes a missed receipt without selecting an account o
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
 });
 
+test("concurrent routine retries recover a pre-reboot lock and launch only once", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home);
+  const lockPath = path.join(home, ".aimgr", "routine-locks", "demo");
+  const beforeBoot = new Date(Date.now() - (os.uptime() + 60) * 1_000);
+  fs.utimesSync(lockPath, beforeBoot, beforeBoot);
+  const calls = [];
+  const deps = {
+    env: { HOME: home },
+    routineAimCommand: ["fake-aim"],
+    spawnSyncImpl: fakeParentSpawn(calls, home),
+    routineWorkspaceMoveImpl: fakeWorkspaceMove,
+  };
+  const argv = ["routine", "run", "demo", "--manual", "--json", "--home", home];
+  const results = await Promise.all([runCli(argv, deps), runCli(argv, deps)]);
+  assert.deepEqual(results.map((value) => JSON.parse(value).outcome).sort(), ["overlap", "queued"]);
+  assert.equal(calls.filter((call) => call.args.includes("create")).length, 1);
+  const interrupted = JSON.parse(fs.readFileSync(receipt.receiptPath, "utf8"));
+  assert.equal(interrupted.outcome, "interrupted");
+  assert.equal(interrupted.needsAttention, true);
+  assert.equal(interrupted.herdr.workspaceId, receipt.herdr.workspaceId);
+  assert.equal(fs.existsSync(lockPath), true);
+});
+
+
+test("a truncated pre-reboot owner record does not keep a routine locked", async () => {
+  const home = mkTempHome();
+  await prepareQueuedWorker(home);
+  const lockPath = path.join(home, ".aimgr", "routine-locks", "demo");
+  fs.writeFileSync(path.join(lockPath, "owner.json"), '{"token":');
+  const beforeBoot = new Date(Date.now() - (os.uptime() + 60) * 1_000);
+  fs.utimesSync(lockPath, beforeBoot, beforeBoot);
+  const result = JSON.parse(await runCli([
+    "routine", "run", "demo", "--manual", "--json", "--home", home,
+  ], {
+    env: { HOME: home },
+    routineAimCommand: ["fake-aim"],
+    spawnSyncImpl: fakeParentSpawn([], home),
+    routineWorkspaceMoveImpl: fakeWorkspaceMove,
+  }));
+  assert.equal(result.outcome, "queued");
+});
 
 test("duplicate scheduled launch for the same local slot creates no second Space", async () => {
   const home = mkTempHome();
@@ -441,9 +484,13 @@ function latestUserText(sessionPath) {
   return users.at(-1)?.message?.content?.[0]?.text ?? null;
 }
 
-test("worker admits one prompt into an exact inherited-TTY Prime TUI and releases occurrence ownership while it stays live", async () => {
+test("worker recovers a pre-reboot bootstrap lock, admits one prompt, and releases occurrence ownership while its TUI stays live", async () => {
   const home = mkTempHome();
   const { receipt } = await prepareQueuedWorker(home);
+  const bootstrapPath = path.join(home, ".aimgr", "routine-bootstrap.lock");
+  fs.mkdirSync(bootstrapPath);
+  const beforeBoot = new Date(Date.now() - (os.uptime() + 60) * 1_000);
+  fs.utimesSync(bootstrapPath, beforeBoot, beforeBoot);
   const runtime = makeInteractiveRuntime({ home, cwd: receipt.configured.cwd });
   const context = workerContext(home, receipt, runtime);
   let workerSettled = false;

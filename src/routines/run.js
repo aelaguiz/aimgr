@@ -25,6 +25,7 @@ import { findRolloutPathById } from "../targets/codex-rollout.js";
 import { isPrimeKeyBackedProvider } from "../core/constants.js";
 import { readRoutineDefinition } from "./config.js";
 import { deriveRoutineOccurrence } from "./schedule.js";
+import { recoverRoutineLockAfterRestart } from "./locks.js";
 import { codexRoutineArgs, startCodexRoutineTurn } from "./codex.js";
 import {
   formatClaudeRoutineParkNotice,
@@ -455,6 +456,7 @@ function openCodexRolloutTail(codexHome, threadId) {
 }
 
 async function acquireBootstrapLock(lockPath, lockfileImpl = lockfile) {
+  await recoverRoutineLockAfterRestart(lockPath);
   let compromised = null;
   const lockTarget = path.join(path.dirname(lockPath), "routine-bootstrap");
   let release;
@@ -497,7 +499,7 @@ function releaseOwnership(lockPath, token) {
     if (owner.token !== token) return;
     fs.rmSync(lockPath, { recursive: true, force: true });
   } catch {
-    // A crashed or externally changed owner is intentionally left for manual cleanup.
+    // Do not release another occurrence's ownership.
   }
 }
 
@@ -576,6 +578,7 @@ export async function launchRoutineOccurrence(context) {
 
   const token = randomUUID();
   const lockPath = lockPathFor({ homeDir: context.homeDir, routineId });
+  await recoverRoutineLockAfterRestart(lockPath);
   try {
     fs.mkdirSync(lockPath, { mode: 0o700 });
     writeJsonFileIfChanged(path.join(lockPath, "owner.json"), {

@@ -19,6 +19,28 @@ through the November 3 morning recovery; the original requirements come from
 October 31–November 2. This is an analysis of observed disruptions, not a count
 of every error string or an estimate of total time lost.
 
+### Later finding: the staging routine stayed locked after the reboot
+
+The November 3, 6 a.m. staging job left Practice vs AI in maintenance when the
+Mac crashed. Its poker engine finished starting remotely, but AIM refused a
+replacement run because the local overlap directory still existed. The owner
+record was created at 6:00:18 a.m.; this boot began at 6:17:39 a.m. No process
+from that boot could still own it.
+
+This was an older AIM recovery bug, introduced with routine overlap protection
+on August 15 in `62f1b560`, rather than part of the recent Claude privacy work.
+It had the same practical failure: a guard treated abandoned bookkeeping as
+live work and prevented recovery. The shared startup lock also had no restart
+recovery path.
+
+AIM now recovers both types of lock when they predate the current boot, retains
+the interrupted occurrence's session IDs, and still prevents two current runs
+from starting together. The staging lock was recovered and the saved 0%
+maintenance rollout restored after the exact live backend/engine check and
+authenticated origin health passed. The interrupted build itself is not
+claimed complete: the engine updated, while the backend remained on its prior
+compatible commit. [Staging occurrence and recovery evidence](/Users/aelaguiz/.local/share/aimgr/local-verification/20261103-routine-recovery)
+
 ## What Amir actually asked for
 
 The original conversation explicitly limited this work:

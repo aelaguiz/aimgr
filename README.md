@@ -574,6 +574,9 @@ the completed task's result and records that the follow-up UI needs attention.
 All three agents share duplicate prevention, per-job overlap protection, and the
 ten-minute admission window after a scheduled time. `--manual` creates a unique
 occurrence but still respects overlap protection. Scheduling uses macOS launchd.
+After a machine restart, the next launch recovers routine and bootstrap locks
+left by the previous boot. Interrupted occurrences retain their receipts and
+session IDs; a lock created during the current boot still prevents overlap.
 Codex's event protocol follows the [official non-interactive mode documentation](https://learn.chatgpt.com/docs/non-interactive-mode).
 
 
