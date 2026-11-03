@@ -447,10 +447,15 @@ async function handleRedisCodexResumeFresh(context) {
     }
     stdout.write(`[aim] analytics ${analytics.changed ? "disabled in the yolo profile" : "already disabled"}\n`);
   }
+  // An AIM invocation started from another Codex inherits that thread's ID.
+  // This is a new thread on a rotated account; do not carry the old identity
+  // into Codex or into Herdr's session-start hook.
+  const freshLaunchEnv = { ...(env ?? {}), CODEX_HOME: codexHome };
+  delete freshLaunchEnv.CODEX_THREAD_ID;
   const launched = await runCodexInteractiveImpl({
     homeDir,
     cwd: process.cwd(),
-    env: { ...(env ?? {}), CODEX_HOME: codexHome },
+    env: freshLaunchEnv,
     args,
   });
   if (archiveSource) {

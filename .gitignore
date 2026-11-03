@@ -8,6 +8,7 @@ yarn-error.log*
 .antigravitycli/
 .firecrawl/
 .tmp/
+.local/
 
 # Private local evidence; this repository is public.
 secrets/

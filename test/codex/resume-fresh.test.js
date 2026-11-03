@@ -206,7 +206,7 @@ test("resume-fresh rotates, copies the thread into a new id, scrubs it, and resu
   const out = await runCli(["codex", "resume-fresh", SOURCE_THREAD, "--home", home], {
     connectRedisStoreImpl,
     probeUsageSnapshotsByProviderImpl,
-    env: {},
+    env: { CODEX_THREAD_ID: SOURCE_THREAD, HERDR_PANE_ID: "w1:p1" },
     stdout: { isTTY: true },
     spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
     runCodexInteractiveImpl: async (request) => {
@@ -222,6 +222,8 @@ test("resume-fresh rotates, copies the thread into a new id, scrubs it, and resu
   assert.equal(copiedLines[0].payload.session_id, newId);
   assert.notEqual(newId, SOURCE_THREAD);
   assert.deepEqual(launched.args, ["-p", "yolo", "resume", newId]);
+  assert.equal(launched.env.CODEX_THREAD_ID, undefined);
+  assert.equal(launched.env.HERDR_PANE_ID, "w1:p1");
   assert.equal(copiedLines[0].payload.forked_from_id, undefined);
   assert.equal(copiedLines[0].payload.history_base, undefined);
   assert.equal(fs.readFileSync(copies[0], "utf8").includes(SOURCE_THREAD), false);

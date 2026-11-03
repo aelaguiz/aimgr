@@ -1460,7 +1460,7 @@ export async function handleClaude(context) {
       ...(picked ? { account: picked.account } : {}),
     });
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+      throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     const requestedSwitchPreset = opts.claudeResumeSwitchAccountPreset;
     const requestedAccountLabel = opts.claudeResumeAccountLabel
@@ -1570,7 +1570,7 @@ export async function handleClaude(context) {
       );
     }
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error(`\`aim claude run\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+      throw new Error(`\`aim claude run\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     if (opts.claudeAutoSelect === true) {
       const selected = await selectAutomaticClaudeAccount(context, {
@@ -1592,7 +1592,7 @@ export async function handleClaude(context) {
   }
   if (subcmd === "status" || subcmd === "usage") {
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error(`\`aim claude ${subcmd}\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+      throw new Error(`\`aim claude ${subcmd}\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     const selectedLabels = positional.slice(2);
     const result = await collectClaudeRedisAccountUsageStatus({
@@ -1632,7 +1632,7 @@ export async function handleClaude(context) {
       throw new Error("`aim claude inventory` is always offline and does not accept --fresh.");
     }
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error(`\`aim claude inventory\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+      throw new Error(`\`aim claude inventory\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     const result = await collectClaudeRedisAccountInventory({
       homeDir,
