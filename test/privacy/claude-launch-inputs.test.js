@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { readClaudeLaunchState, stageClaudeLaunchEnvironment, buildClaudePrivacyEnvironment,
   resolveClaudeTaskReadRoots, resolveClaudeConfiguredInputs, prepareClaudeDaemonDirectory,
   resolveClaudeUpdateRoots } from "../../src/privacy/claude-launch-inputs.js";
@@ -33,6 +34,46 @@ test("updater protection follows empty, absent and relative XDG locations withou
   assert.equal(covered(empty, path.join(cwd, "node_modules/mcp-server/index.js")), false);
   const relative = resolveClaudeUpdateRoots({ ...input, env: { XDG_DATA_HOME: "data" } });
   assert.ok(relative.includes(path.join(cwd, "data/claude/versions")));
+});
+
+test("nested launch resolves updater denies while the parent sandbox still blocks their reads and writes", {
+  skip: process.platform !== "darwin",
+}, t => {
+  const root = fixture(t), home = path.join(root, "home"), cwd = path.join(root, "project");
+  fs.mkdirSync(home); fs.mkdirSync(cwd);
+  const input = { userHomeDir: home, cwd, env: {}, vendorCommand: "/approved/claude" };
+  const roots = resolveClaudeUpdateRoots(input);
+  for (const directory of roots.slice(0, 3)) fs.mkdirSync(directory, { recursive: true });
+  const policy = `(version 1)(allow default)(deny network*)${roots.slice(0, 3)
+    .map(directory => `(deny file-read* file-write* process-exec file-map-executable (subpath ${JSON.stringify(directory)}))`).join("")}`;
+  const moduleUrl = new URL("../../src/privacy/claude-launch-inputs.js", import.meta.url).href;
+  const script = `import fs from "node:fs";
+    import { resolveClaudeUpdateRoots } from ${JSON.stringify(moduleUrl)};
+    const roots = resolveClaudeUpdateRoots(${JSON.stringify(input)});
+    const denied = roots.slice(0, 3).map(directory => {
+      const results = [];
+      for (const operation of [() => fs.statSync(directory), () => fs.writeFileSync(directory + "/probe", "no")]) {
+        try { operation(); results.push("allowed"); } catch (error) { results.push(error.code); }
+      }
+      return results;
+    });
+    console.log(JSON.stringify({ roots, denied }));`;
+  const result = spawnSync("/usr/bin/sandbox-exec", ["-p", policy, process.execPath, "--input-type=module", "-e", script],
+    { cwd, encoding: "utf8", timeout: 10_000 });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  const actual = JSON.parse(result.stdout);
+  assert.deepEqual(actual.roots, roots);
+  assert.deepEqual(actual.denied, Array.from({ length: 3 }, () => ["EPERM", "EPERM"]));
+});
+
+test("update roots follow existing aliases and still refuse dangling links", t => {
+  const root = fixture(t), home = path.join(root, "home"), target = path.join(root, "updates");
+  fs.mkdirSync(path.join(home, ".cache/claude"), { recursive: true }); fs.mkdirSync(target);
+  const link = path.join(home, ".cache/claude/staging"); fs.symlinkSync(target, link);
+  const input = { userHomeDir: home, cwd: root, env: {}, vendorCommand: "/approved/claude" };
+  assert.ok(resolveClaudeUpdateRoots(input).includes(target));
+  fs.rmdirSync(target);
+  assert.throws(() => resolveClaudeUpdateRoots(input), /dangling link/);
 });
 
 test("native daemon directories are stable per config and never share the writable parent", t => {

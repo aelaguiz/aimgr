@@ -263,16 +263,21 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
 /** Resolve a not-yet-created native update location without creating it. The
  * final entry independently requires a canonical existing ancestor. Existing
  * symlinks are followed now; dangling links and unknown inspection failures
- * refuse, rather than treating an alternate executable root as absent.
+ * refuse. A nested AIM inherits updater denies, so permission-denied suffixes
+ * are carried from the nearest readable canonical ancestor to the immutable
+ * native entry. That entry rechecks them after leaving the parent's sandbox;
+ * inaccessible or noncanonical paths still refuse before Claude executes.
  */
 function futurePath(file) {
   let current = path.resolve(file); const missing = [];
   for (;;) {
     try { fs.lstatSync(current); return path.join(fs.realpathSync(current), ...missing.reverse()); }
     catch (error) {
-      if (error.code !== "ENOENT") fail("a native update location could not be resolved");
-      try { if (fs.lstatSync(current).isSymbolicLink()) fail("a native update location is a dangling link"); }
-      catch (entryError) { if (entryError.code !== "ENOENT") throw entryError; }
+      if (!["ENOENT", "EACCES", "EPERM"].includes(error.code)) fail("a native update location could not be resolved");
+      if (error.code === "ENOENT") {
+        try { if (fs.lstatSync(current).isSymbolicLink()) fail("a native update location is a dangling link"); }
+        catch (entryError) { if (entryError.code !== "ENOENT") throw entryError; }
+      }
       if (path.dirname(current) === current) fail("a native update location has no existing ancestor");
       missing.push(path.basename(current)); current = path.dirname(current);
     }
