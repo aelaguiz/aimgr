@@ -190,8 +190,12 @@ assigned route; new launches wait for verification. An unexpected exit address
 or a lost tunnel/adapter still stops affected work. The Mac proxy service
 restarts automatically after failure, with a ten-second launchd throttle, and
 verifies the same assigned exit before admitting work again. Recovery does not
-automatically resume a session or replay a failed scheduled job; later independent scheduled occurrences retain
-the normal scheduling rules. Same-account sessions remain concurrent.
+automatically resume a session or replay a failed scheduled job; later independent
+scheduled occurrences retain the normal scheduling rules. Same-account sessions
+remain concurrent.
+Reinstalling the macOS proxy helper with the same assignments reloads its monitor
+code in place: active sessions, SSH tunnels and network adapters keep running.
+Changing proxy assignments still requires the affected work to stop.
 
 `aim status` and `aim claude status` show each Claude account's assigned proxy
 (`none` for ordinary accounts) and its current native service health: `running`,

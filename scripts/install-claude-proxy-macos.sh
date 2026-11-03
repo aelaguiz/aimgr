@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# One-time native setup; existing Chrome and SSH tunnel owners stay in place.
+# Native setup and updates; existing Chrome and SSH tunnel owners stay in place.
 # Protected accounts only; ordinary installations never require this helper.
-# The Python installer owns the stopped transition and leaves failed activation
-# closed. launchd retries a failed service on the same assigned route; it never
-# restarts an interrupted agent session or selects a different proxy.
+# Same-assignment updates reload running monitors without draining sessions.
+# Fresh installation leaves failed activation closed. launchd retries a failed
+# service on the same assigned route; it never restarts an interrupted agent
+# session or selects a different proxy.
 # Regression: test/network/claude-native-macos.test.js (installation failures).
 set -euo pipefail
 if [[ $EUID -ne 0 || $(uname -s) != Darwin || $# -ne 1 ]]; then

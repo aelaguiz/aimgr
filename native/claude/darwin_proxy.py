@@ -3,6 +3,7 @@
 import ctypes
 import fcntl
 import grp
+import hashlib
 import http.client
 import json
 import os
@@ -12,7 +13,6 @@ import plistlib
 import re
 import select
 import signal
-import shutil
 import subprocess
 import sys
 import time
@@ -24,6 +24,7 @@ from contextlib import contextmanager
 ROOT = pathlib.Path('/opt/aimgr-claude-proxy')
 IDENTITY = str(ROOT / 'darwin_identity')
 LIBC = ctypes.CDLL(None, use_errno=True)
+SOURCE_REVISION = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
 
 
 class TransientProxyError(RuntimeError):
@@ -230,10 +231,10 @@ def current_ready(name, allow_starting=False):
     return ready
 
 
-def run(name, expected, env_fd, argv):
+def run(name, expected, env_fd, argv, *, install_lock=None):
     terminal = termios.tcgetattr(0) if os.isatty(0) else None
     try:
-        return run_child(name, expected, env_fd, argv)
+        return run_child(name, expected, env_fd, argv, install_lock=install_lock)
     finally:
         if terminal is not None:
             try:
@@ -244,7 +245,7 @@ def run(name, expected, env_fd, argv):
                 pass  # The controlling terminal may have disconnected.
 
 
-def run_child(name, expected, env_fd, argv, *, replace_with_approved=False):
+def run_child(name, expected, env_fd, argv, *, replace_with_approved=False, install_lock=None):
     config = profile(name)
     for key in ('socksHost', 'socksPort'):
         if config[key] != expected[key]:
@@ -347,6 +348,9 @@ def run_child(name, expected, env_fd, argv, *, replace_with_approved=False):
             # final entry so the write cannot fail with SIGPIPE.
             os.execv(IDENTITY, [IDENTITY, name, str(write_fd), str(env_fd), '--', *argv])
         child = spawn_routed(argv)
+    if install_lock is not None:
+        # The installer coordinates admission, not the lifetime of the session.
+        install_lock.close()
     code = child.wait()
     if (state_dir(name) / 'failed').exists():
         raise RuntimeError('tunnel or native proxy failed; affected work was stopped')
@@ -496,65 +500,88 @@ def serve(name):
     config = profile(name)
     state = state_dir(name)
     previous = state / 'ready.json'
-    # An old guardian may still be stopping the old GID's processes. Drain it
-    # before reuse, or it could kill newly admitted work after service recovery.
-    if previous.exists():
-        old = json.loads(previous.read_text())
-        live = processes()
-        if any(live.get(owner['pid'], {}).get('started') == owner['started'] for owner in old['owners'] if owner.get('role') == 'guardian'):
+    adapter = watcher = None
+    reload_requested = False
+    def reload_code(_signum, _frame):
+        nonlocal reload_requested
+        reload_requested = True
+    def stopping(_signum, _frame):
+        raise RuntimeError('native proxy was stopped')
+    # exec preserves the monitor PID, its children, and the guardian's kqueue.
+    # Adopt only this exact monitor lifetime, never another service's owners.
+    old = json.loads(previous.read_text()) if previous.exists() else {'owners': []}
+    live = processes()
+    continuing = any(owner['role'] == 'monitor' and owner['pid'] == os.getpid()
+                     and live.get(owner['pid'], {}).get('started') == owner['started'] for owner in old['owners'])
+    if continuing:
+        current_ready(name, allow_starting=True)
+        owners = {owner['role']: owner['pid'] for owner in old['owners']}
+        adapter, watcher, tunnel = owners['adapter'], owners['guardian'], owners['tunnel']
+        # ready.json is user-writable. Only retained children can be adopted
+        # and later stopped by this root monitor, never arbitrary recorded PIDs.
+        if adapter == watcher or any(os.waitpid(pid, os.WNOHANG)[0] for pid in (adapter, watcher)):
+            raise RuntimeError('native proxy children did not survive the reload')
+    else:
+        if any(live.get(owner['pid'], {}).get('started') == owner['started'] for owner in old['owners'] if owner['role'] == 'guardian'):
             raise RuntimeError('the previous proxy guardian is still stopping work; waiting for it to exit')
-    require_stopped(name)
-    mark_failed(name)
-    adapter = None
-    watcher = None
+        require_stopped(name)
+        mark_failed(name)
     try:
-        tunnel = listener_pid(config['socksPort'])
-        if config['interface'] in command(['/sbin/ifconfig', '-l'], capture_output=True, text=True).stdout.split():
-            raise RuntimeError('the configured native interface already exists; repair its owner before retrying')
-        adapter = subprocess.Popen(['/usr/local/bin/sing-box', 'run', '-c', str(ROOT / f'{name}-sing-box.json')])
-        for _ in range(80):
-            if adapter.poll() is not None:
-                raise RuntimeError('native adapter exited during startup')
-            if subprocess.run(['/sbin/ifconfig', config['interface']], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-                break
-            time.sleep(.1)
-        else:
-            raise RuntimeError('native adapter did not create its interface')
-        configure_firewall(name, config)
-        read_fd, write_fd = os.pipe()
-        watcher = os.fork()
-        if watcher == 0:
-            os.close(read_fd)
+        if not continuing:
+            tunnel = listener_pid(config['socksPort'])
+            if config['interface'] in command(['/sbin/ifconfig', '-l'], capture_output=True, text=True).stdout.split():
+                raise RuntimeError('the configured native interface already exists; repair its owner before retrying')
+            adapter = os.posix_spawn('/usr/local/bin/sing-box',
+                                     ['/usr/local/bin/sing-box', 'run', '-c', str(ROOT / f'{name}-sing-box.json')], os.environ)
+            for _ in range(80):
+                if os.waitpid(adapter, os.WNOHANG)[0]:
+                    adapter = None
+                    raise RuntimeError('native adapter exited during startup')
+                if subprocess.run(['/sbin/ifconfig', config['interface']], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                    break
+                time.sleep(.1)
+            else:
+                raise RuntimeError('native adapter did not create its interface')
+            configure_firewall(name, config)
+            read_fd, write_fd = os.pipe()
+            watcher = os.fork()
+            if watcher == 0:
+                os.close(read_fd)
+                try:
+                    guardian(name, os.getppid(), adapter, tunnel, write_fd)
+                    os._exit(0)
+                except Exception:
+                    os._exit(125)
+            os.close(write_fd)
             try:
-                guardian(name, os.getppid(), adapter.pid, tunnel, write_fd)
-                os._exit(0)
-            except Exception:
-                os._exit(125)
-        os.close(write_fd)
-        try:
-            if not select.select([read_fd], [], [], 8)[0] or os.read(read_fd, 1) != b'1':
-                raise RuntimeError('native guardian did not become ready')
-        finally:
-            os.close(read_fd)
-        live = processes()
-        owners = [{'pid': pid, 'started': live[pid]['started'], 'role': role}
-                  for role, pid in [('monitor', os.getpid()), ('adapter', adapter.pid), ('tunnel', tunnel), ('guardian', watcher)]]
-        with lock(ROOT / f'{name}.lock', exclusive=True):
-            publish_state(state / 'starting', '', 0o600)
-            publish_state(previous, json.dumps({'owners': owners}), 0o644)
-            (state / 'failed').unlink()
-        # The starting marker denies ordinary admission until the complete
-        # native path passes. A listening tunnel or created TUN is insufficient.
-        def stopping(_signum, _frame):
-            raise RuntimeError('native proxy was stopped')
+                if not select.select([read_fd], [], [], 8)[0] or os.read(read_fd, 1) != b'1':
+                    raise RuntimeError('native guardian did not become ready')
+            finally:
+                os.close(read_fd)
         signal.signal(signal.SIGTERM, stopping)
         signal.signal(signal.SIGINT, stopping)
+        signal.signal(signal.SIGHUP, reload_code)
+        live = processes()
+        owners = [{'pid': pid, 'started': live[pid]['started'], 'role': role}
+                  for role, pid in [('monitor', os.getpid()), ('adapter', adapter), ('tunnel', tunnel), ('guardian', watcher)]]
+        with lock(ROOT / f'{name}.lock', exclusive=True):
+            publish_state(state / 'starting', '', 0o600)
+            publish_state(previous, json.dumps({'owners': owners, 'hotReload': True, 'revision': SOURCE_REVISION}), 0o644)
+            (state / 'failed').unlink(missing_ok=True)
         check_native_path_with_retry(name, config)
         (state / 'starting').unlink(missing_ok=True)
         next_check = time.monotonic() + 5
         while True:
-            if adapter.poll() is not None or os.waitpid(watcher, os.WNOHANG)[0]:
-                raise RuntimeError('native adapter or guardian exited')
+            if reload_requested:
+                # Reload only between completed checks, with no admission lock
+                # or health-check child left behind. Network sockets stay open.
+                os.execv('/usr/bin/python3', ['/usr/bin/python3', '-I', str(ROOT / 'darwin_proxy.py'), 'serve', name])
+            if os.waitpid(adapter, os.WNOHANG)[0]:
+                adapter = None
+                raise RuntimeError('native adapter exited')
+            if os.waitpid(watcher, os.WNOHANG)[0]:
+                watcher = None
+                raise RuntimeError('native guardian exited')
             if time.monotonic() >= next_check:
                 if members(config):
                     check_native_path_with_retry(name, config)
@@ -563,17 +590,63 @@ def serve(name):
     finally:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
         try:
             stop(name)
         finally:
-            if adapter and adapter.poll() is None:
-                adapter.kill()
-                adapter.wait()
+            if adapter:
+                try:
+                    os.kill(adapter, signal.SIGKILL)
+                    os.waitpid(adapter, 0)
+                except (ProcessLookupError, ChildProcessError):
+                    pass
             if watcher:
                 try:
                     os.waitpid(watcher, 0)
                 except ChildProcessError:
                     pass
+
+
+def install_runtime(source, build):
+    for name in ('darwin_proxy.py', 'darwin_launch', 'darwin_identity'):
+        original = (source if name.endswith('.py') else build) / name
+        fd, staged = tempfile.mkstemp(prefix='.install-', dir=ROOT)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(original.read_bytes())
+                os.fchown(stream.fileno(), 0, 0)
+                os.fchmod(stream.fileno(), 0o4755 if name == 'darwin_identity' else 0o755)
+            os.replace(staged, ROOT / name)
+        finally:
+            pathlib.Path(staged).unlink(missing_ok=True)
+
+
+def reload_services(profiles, ready):
+    for name in profiles:
+        if name in ready:
+            monitor = next(owner for owner in ready[name]['owners'] if owner['role'] == 'monitor')
+            if processes().get(monitor['pid'], {}).get('started') != monitor['started']:
+                raise RuntimeError(f'native proxy {name} changed during installation; retry the update')
+            command(['/bin/launchctl', 'kill', 'SIGHUP', f'system/com.aimgr.claude-proxy.{name}'])
+        else:
+            # A stopped profile can recover alongside an active profile; no
+            # need to drain the healthy one's sessions to bring it back.
+            service = f'system/com.aimgr.claude-proxy.{name}'
+            if subprocess.run(['/bin/launchctl', 'print', service], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                command(['/bin/launchctl', 'kickstart', service])
+            else:
+                command(['/bin/launchctl', 'bootstrap', 'system', f'/Library/LaunchDaemons/com.aimgr.claude-proxy.{name}.plist'])
+    deadline = time.monotonic() + 90
+    for name in profiles:
+        while True:
+            try:
+                if current_ready(name).get('revision') == SOURCE_REVISION:
+                    break
+            except (RuntimeError, FileNotFoundError):
+                pass
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f'native proxy {name} has not completed its update; existing sessions were left running')
+            time.sleep(.1)
 
 
 def install():
@@ -594,8 +667,6 @@ def install():
         old = json.loads(previous.read_text()) if previous.exists() else {'user': user.pw_name, 'profiles': {}}
         if old['user'] != user.pw_name:
             raise RuntimeError('installed profiles belong to another user')
-        for name in old['profiles']:
-            require_stopped(name)
         profiles = {**old['profiles'], **manifest['profiles']}
         gids, ports, interfaces, subnets = set(), set(), set(), set()
         for index, (name, value) in enumerate(profiles.items()):
@@ -622,8 +693,23 @@ def install():
             if not value.get('expectedExits'):
                 raise RuntimeError('approved exit addresses are required')
             gids.add(value['gid']); ports.add(value['socksPort']); interfaces.add(value['interface']); subnets.add(value['subnetIndex'])
-        if any(info['gid'] in gids for info in processes().values()):
-            raise RuntimeError('a routing group is already used by a live process')
+        reload_ready = {}
+        same_assignments = profiles == old['profiles']
+        if same_assignments:
+            for name in profiles:
+                try:
+                    ready = current_ready(name, allow_starting=True)
+                    if ready.get('hotReload'):
+                        reload_ready[name] = ready
+                except (RuntimeError, FileNotFoundError):
+                    pass
+                if name not in reload_ready:
+                    require_stopped(name)
+        else:
+            for name in old['profiles']:
+                require_stopped(name)
+            if any(info['gid'] in gids for info in processes().values()):
+                raise RuntimeError('a routing group is already used by a live process')
         main_rules = command(['/sbin/pfctl', '-sr'], capture_output=True, text=True).stdout
         if 'anchor "com.apple/*"' not in main_rules:
             raise RuntimeError('the existing PF rules lack the standard com.apple/* anchor; preserve existing firewall rules and add that anchor before installation')
@@ -631,6 +717,10 @@ def install():
         with tempfile.TemporaryDirectory(prefix='aimgr-mac-build-') as build:
             for binary in ('darwin_launch', 'darwin_identity'):
                 command(['/usr/bin/clang', '-O2', '-Wall', '-Wextra', '-Werror', str(source / f'{binary}.c'), '-o', str(pathlib.Path(build) / binary)])
+            if reload_ready:
+                install_runtime(source, pathlib.Path(build))
+                reload_services(profiles, reload_ready)
+                return
             for name in old['profiles']:
                 subprocess.run(['/bin/launchctl', 'bootout', f'system/com.aimgr.claude-proxy.{name}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for name in old['profiles']:
@@ -647,13 +737,7 @@ def install():
                         time.sleep(.05)
                     else:
                         raise RuntimeError('previous native service has not finished stopping')
-            shutil.copyfile(source / 'darwin_proxy.py', ROOT / 'darwin_proxy.py')
-            os.chmod(ROOT / 'darwin_proxy.py', 0o755)
-            for binary in ('darwin_launch', 'darwin_identity'):
-                destination = ROOT / binary
-                shutil.copyfile(pathlib.Path(build) / binary, destination)
-                os.chown(destination, 0, 0)
-                os.chmod(destination, 0o4755 if binary == 'darwin_identity' else 0o755)
+            install_runtime(source, pathlib.Path(build))
         manifest = {'user': user.pw_name, 'profiles': profiles}
         previous.write_text(json.dumps(manifest))
         os.chmod(previous, 0o644)
@@ -747,7 +831,7 @@ if __name__ == '__main__':
                         raise RuntimeError('invalid approved privacy entry')
                     os.set_inheritable(install_lock.fileno(), True)
                     sys.exit(run_child(name, json.loads(sys.argv[3]), int(sys.argv[4]), argv, replace_with_approved=True))
-                sys.exit(run(name, json.loads(sys.argv[3]), int(sys.argv[4]), sys.argv[6:]))
+                sys.exit(run(name, json.loads(sys.argv[3]), int(sys.argv[4]), sys.argv[6:], install_lock=install_lock))
         elif action == 'serve':
             serve(name)
         elif action == 'probe':
