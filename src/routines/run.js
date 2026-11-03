@@ -389,14 +389,18 @@ function closeRoutineSpace({ routine, receiptPath, receipt, context }) {
     }
     receipt = record({ status: "requested", requestedAt: new Date().toISOString() });
     // Herdr hangs up everything in a Space it closes, including this close
-    // command, so its exit status proves nothing. Look for the Space instead.
+    // command, so a hangup is the proof it closed (seen on Herdr 0.9.0). With
+    // no hangup, the Space is closed only if Herdr can no longer find it.
     const close = herdrSpawnSync("herdr", ["--session", session, "workspace", "close", workspaceId], {
       ...options, encoding: "utf8",
     });
-    const after = herdrSpawnSync("herdr", ["--session", session, "workspace", "get", workspaceId], {
-      ...options, encoding: "utf8",
-    });
-    if (/"workspace_not_found"/.test(`${after?.stdout ?? ""}${after?.stderr ?? ""}`)) {
+    const gone = () => {
+      const after = herdrSpawnSync("herdr", ["--session", session, "workspace", "get", workspaceId], {
+        ...options, encoding: "utf8",
+      });
+      return after?.signal === "SIGHUP" || /"workspace_not_found"/.test(`${after?.stdout ?? ""}${after?.stderr ?? ""}`);
+    };
+    if (close?.signal === "SIGHUP" || gone()) {
       return record({ status: "closed", closedAt: new Date().toISOString() });
     }
     const detail = String(close?.error?.message ?? (close?.stderr || close?.stdout || "")).trim()

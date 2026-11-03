@@ -364,8 +364,9 @@ async function prepareQueuedWorker(home, definition = routineDefinition(home)) {
 }
 
 // Herdr as the worker sees it from inside its own Space. Never the real one.
-// Like Herdr 0.9.0, closing the Space hangs up the close command running in it.
-function fakeWorkerHerdr(receipt, space = {}, { closeError = null } = {}) {
+// Like Herdr 0.9.0, closing the Space hangs up the close command running in it
+// (`hangup: false` models a close that returns normally).
+function fakeWorkerHerdr(receipt, space = {}, { closeError = null, hangup = true } = {}) {
   const calls = [];
   let closed = false;
   const impl = (command, args) => {
@@ -383,7 +384,7 @@ function fakeWorkerHerdr(receipt, space = {}, { closeError = null } = {}) {
     if (args.includes("close")) {
       if (closeError) return { status: 1, stdout: "", stderr: closeError };
       closed = true;
-      return { status: null, signal: "SIGHUP", stdout: "", stderr: "" };
+      return hangup ? { status: null, signal: "SIGHUP", stdout: "", stderr: "" } : { status: 0, stdout: "{}" };
     }
     throw new Error(`unexpected herdr call: ${args.join(" ")}`);
   };
@@ -1218,6 +1219,23 @@ for (const [name, space, reason] of [
     assert.equal(result.herdr.close.reason, reason);
   });
 }
+
+test("a Space close that returns normally is confirmed by Herdr no longer finding the Space", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home);
+  const context = claudeWorkerContext(home, receipt, runtime);
+  context.herdr = fakeWorkerHerdr(receipt, {}, { hangup: false });
+  context.routineHerdrSpawnSyncImpl = context.herdr.impl;
+  context.routineTimeouts["claudePark.done"] = 30;
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.active, "Claude UI did not start");
+  runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256 });
+  runtime.emit("Stop", { jobStatus: { state: "done", detail: null }, backgroundTasks: 0, sessionCrons: 0 });
+  const result = await worker;
+  assert.equal(result.herdr.close.status, "closed");
+  assert.equal(context.herdr.calls.filter((args) => args.includes("get")).length, 2);
+});
 
 test("a failed Space close is recorded and leaves the finished job's result alone", async () => {
   const home = mkTempHome();
