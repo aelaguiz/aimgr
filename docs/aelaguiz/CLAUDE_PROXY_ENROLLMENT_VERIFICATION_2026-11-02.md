@@ -2,9 +2,9 @@
 
 ## Current outcome
 
-The two requested individual Max accounts have completed managed sign-in and
-real Claude acceptance tests in a separate staging namespace. Neither account
-is published in the shared pool yet. The original local Chrome instances,
+The two requested individual Max accounts are now in the shared pool with
+proxy-only assignments. Both passed staged acceptance, production Opus/tool/MCP
+launches and actual production calendar jobs. The original local Chrome instances,
 profiles and proxy assignments were retained. No human-verification challenge
 occurred. Private account bindings and receipts are in the local enrollment
 plan; they are intentionally absent from this tracked report.
@@ -37,8 +37,8 @@ Claude remains the official, unmodified **2.1.316** binary, SHA-256
 `64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f`.
 The tested replacement Mac helper/policy bundle is
 `3b93114dd0f34733e1e2a07841f5bd3e7bfbe36afee7ef5ca99df003e23a876c`.
-It is test-authorized only. Normal-use installation is pending the exact-bundle
-approval required by the existing [upgrade plan](AGENT_UPGRADE_TEST_SKILL_PLAN_2026-11-02.md).
+The user authorized installing this reviewed repair, and its normal-use bundle
+is installed. Original test-only evidence remains retained separately.
 The test Mac ran arm64 macOS 26.7; this is evidence, not an OS-version gate.
 
 ## Acceptance evidence
@@ -62,12 +62,12 @@ The test Mac ran arm64 macOS 26.7; this is evidence, not an OS-version gate.
 | Linux regression | 838 tests: initial 799 pass, 27 fail, 12 skip. Missing README and group-writable archive extraction caused 26 failures; one new fixture assumed `/bin/sh` was canonical. Corrected the test copy and canonical fixture, then all 105 tests in the six affected files passed. Native opt-in skips are not claimed as execution |
 | Fleet route/status | Four existing consumers received the narrow backport; all 48 focused checks passed on each, and installed status JSON succeeded |
 
-Real-account tests used the existing approved bundle except for the pending
-final local Homebrew-MCP check. New-helper tests used only synthetic credentials
-on the rented Mac behind independent outbound denial. They do not replace the
-final real-account check after approved installation.
+Initial real-account tests used the previous approved bundle. The replacement
+helper passed the original Homebrew command on both real accounts in staging
+and again in production. Rented-Mac collection tests used only synthetic
+credentials behind independent outbound denial.
 
-## Remaining completion steps
+## Installed result and independent review
 
 Cold review completed against `d20c990` and `e952611`: no remaining code finding
 or functionality cut. The reviewer independently checked native MCP/private-file
@@ -75,23 +75,39 @@ results, local workflow receipts, regression logs and all four retained bundle
 payloads. The complete bundle was retrieved and verified against its manifest;
 archive SHA-256 is
 `ae2d9abe66d9bec450758f3dc37997d04e331576fa5f0e2c56c8ce17504ba0e8`.
-The fixed release has its own installed dependencies. The failed rental instance
-is terminated; the tested Mac has accepted termination and is still shutting
-down in AWS. The temporary GCP SSH rule is removed, and automatic termination
-and host-release schedules remain enabled for the rental minimum.
 
-1. Obtain normal-use authorization for the named replacement bundle. Install
-   from the fixed `d20c990` release, leaving existing sessions and older immutable
-   artifacts intact. Verify Homebrew-path MCP on both staged accounts.
-2. Preserve each account's private installation identity and native state,
-   create proxy-bound production policies first, and publish credentials only
-   through the leased native import path. No ordinary-mode publication interval.
-3. Verify production explicit/automatic selection, calendar execution and fleet
-   “no route” status; remove only owned test jobs.
+The user subsequently explicitly instructed completion of the repair. The
+normal-use manifest records that instruction, the reviewed revision and evidence.
+Fixed release `d20c990-claude-proxy-mcp`, with its own dependencies, is now the
+local default. The new immutable helper was staged and activated without
+signalling existing sessions or removing older bundles.
 
-Promotion preflight confirms both production records are absent; separate native
-imports, proxy-only policy inputs and per-account identifier digests are prepared
-under credential/assignment ownership. It performed zero production writes.
+Both account homes were copied separately under assignment/credential ownership.
+Their private installation identifiers and sidecars matched before and after
+production launches. Proxy-only policies were published before credentials;
+credentials used the leased native import path. No ordinary credential interval,
+account reauthentication or identity rotation was introduced.
+
+Both production Opus launches passed Read, Bash, Skill and the unchanged
+Homebrew MCP command. Both actual production calendar jobs completed once and
+the owned jobs were unloaded. Ordinary non-proxy and automatic pool launches
+also completed. The production selector confirms both new accounts are eligible
+for Opus. All four other fleet machines show both as `no_route`, ineligible, with
+“don't have a route to this account.” The M5's `aim status` shows each assigned
+proxy and `READY` / `use now`.
+
+During completion, the user reported new launches failing. The local executable
+link had moved to unapproved 2.1.317 at 19:48 Chicago time on November2, after
+these 2.1.316 tests. Restoring the hash-verified 2.1.316 link cleared admission,
+and real ordinary/protected launches passed. The link evidence establishes
+what changed, not which process changed it. Existing sessions were preserved.
+The user separately requested testing and adopting the latest release; that is
+follow-up upgrade work and does not relabel 2.1.316 evidence as 2.1.317 approval.
+
+Staging is inactive, with private audit receipts retained. Rental termination was
+requested after complete artifact retrieval, the temporary GCP SSH rule removed,
+and dedicated host-release schedules retained. Later upgrade work may reuse an
+available test host under its own instance/cleanup receipt.
 
 No workflow removal was introduced: skills, MCP, same/different-account
 concurrency, resume, scheduled work and ordinary accounts remain requirements.
