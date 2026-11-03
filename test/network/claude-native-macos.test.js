@@ -287,20 +287,14 @@ test("rented Mac native routes preserve concurrent callers and close on adapter/
   const failedStartup = routines ? await verifyScheduledStartupFailure({ root, profile, profileB: nestedProfile, destination,
     ordinaryDestination, claudeBin: process.env.AIMGR_TEST_CLAUDE_BIN, modelRequests }) : null;
   const repair = async () => {
-    const owners = JSON.parse(await fs.readFile("/opt/aimgr-claude-proxy/mac_a-state/ready.json", "utf8")).owners;
-    for (let n = 0; n < 200; n++) {
-      const live = JSON.parse((await exec("/usr/bin/python3", ["-I", "-c", "import sys,json; sys.path.insert(0,'/opt/aimgr-claude-proxy'); import darwin_proxy as p; print(json.dumps(p.processes()))"])).stdout);
-      if (!owners.some(owner => owner.role !== "tunnel" && live[owner.pid]?.started === owner.started)) break;
-      if (n === 199) assert.fail("old profile owners did not finish stopping");
-      await delay(50);
-    }
-    await exec("sudo", ["launchctl", "kickstart", "system/com.aimgr.claude-proxy.mac_a"]);
-    for (let n = 0; n < 200; n++) {
+    // launchd restores the same assigned service after a fatal failure. It
+    // must not require the operator to kick it each time an SSH tunnel drops.
+    for (let n = 0; n < 400; n++) {
       const flags = await fs.readdir("/opt/aimgr-claude-proxy/mac_a-state");
       if (!flags.includes("failed") && !flags.includes("starting")) return;
       await delay(50);
     }
-    assert.fail("explicit profile repair did not become ready");
+    assert.fail("automatic profile recovery did not become ready");
   };
   await repair();
   if (routines) await routines.maintain();

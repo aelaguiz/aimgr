@@ -26,6 +26,10 @@ IDENTITY = str(ROOT / 'darwin_identity')
 LIBC = ctypes.CDLL(None, use_errno=True)
 
 
+class TransientProxyError(RuntimeError):
+    """The assigned route is temporarily unreachable, not a different exit."""
+
+
 def command(args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
 
@@ -436,15 +440,56 @@ def check_native_path(name, config):
     # until this child exits so it cannot enter the GID after stop's scan.
     with lock(ROOT / f'{name}.lock'):
         current_ready(name, allow_starting=True)
-        result = command(['/usr/bin/curl', '--disable', '--proxy', '', '--noproxy', '*',
-                          '--proto', '=http,https', '--max-time', '6', '--max-filesize', '1024',
-                          '--silent', '--show-error', '--fail', '--write-out', '\n%{http_code}', '--', url],
-                         env={'PATH': '/usr/bin:/bin'}, preexec_fn=routed_identity,
-                         timeout=8, capture_output=True, text=True)
+        try:
+            result = command(['/usr/bin/curl', '--disable', '--proxy', '', '--noproxy', '*',
+                              '--proto', '=http,https', '--max-time', '6', '--max-filesize', '1024',
+                              '--silent', '--show-error', '--fail', '--write-out', '\n%{http_code}', '--', url],
+                             env={'PATH': '/usr/bin:/bin'}, preexec_fn=routed_identity,
+                             timeout=8, capture_output=True, text=True)
+        except subprocess.TimeoutExpired as error:
+            raise TransientProxyError('native route check timed out') from error
+        except subprocess.CalledProcessError as error:
+            if error.returncode in (5, 6, 7, 18, 22, 28, 35, 52, 55, 56):
+                raise TransientProxyError(f'native route check could not connect (curl {error.returncode})') from error
+            raise
         body, separator, status = result.stdout.rpartition('\n')
         if (not separator or status != '200' or len(body) > 1024
                 or json.loads(body).get('ip') not in config['expectedExits']):
             raise RuntimeError('native route exit mismatch')
+
+
+def check_native_path_with_retry(name, config):
+    deadline = None
+    while True:
+        try:
+            check_native_path(name, config)
+            if deadline is not None:
+                (state_dir(name) / 'starting').unlink(missing_ok=True)
+                print(f'Claude proxy {name}: connection recovered; existing sessions preserved.', flush=True)
+            return
+        except TransientProxyError:
+            now = time.monotonic()
+            if deadline is None:
+                deadline = now + 60
+                # Existing sessions keep their fixed PF/GID route. Close new
+                # admission while connectivity recovers; never change exits.
+                publish_state(state_dir(name) / 'starting', '', 0o600)
+                print(f'Claude proxy {name}: connection interrupted; retrying for up to 60 seconds.', flush=True)
+            if now >= deadline:
+                raise RuntimeError('native route remained unavailable for 60 seconds')
+            time.sleep(min(2, deadline - now))
+
+
+def configure_firewall(name, config):
+    # launchd starts profiles together after a reboot. Concurrent PF updates
+    # can fail with DIOCADDRULE: Resource busy even for different anchors.
+    pf_lock = ROOT / 'pf.lock'
+    pf_lock.touch(mode=0o600, exist_ok=True)
+    with lock(pf_lock, exclusive=True):
+        command(['/sbin/pfctl', '-a', f'com.apple/aimgr-claude_{name}', '-f', '-'], input=rules(config), text=True)
+        status = command(['/sbin/pfctl', '-s', 'info'], capture_output=True, text=True).stdout
+        if 'Status: Enabled' not in status:
+            command(['/sbin/pfctl', '-E'], stdout=subprocess.DEVNULL)
 
 
 def serve(name):
@@ -452,12 +497,12 @@ def serve(name):
     state = state_dir(name)
     previous = state / 'ready.json'
     # An old guardian may still be stopping the old GID's processes. Drain it
-    # before reuse, or it could kill newly admitted work after explicit repair.
+    # before reuse, or it could kill newly admitted work after service recovery.
     if previous.exists():
         old = json.loads(previous.read_text())
         live = processes()
         if any(live.get(owner['pid'], {}).get('started') == owner['started'] for owner in old['owners'] if owner.get('role') == 'guardian'):
-            raise RuntimeError('the previous proxy guardian is still stopping work; retry explicit repair after it exits')
+            raise RuntimeError('the previous proxy guardian is still stopping work; waiting for it to exit')
     require_stopped(name)
     mark_failed(name)
     adapter = None
@@ -475,10 +520,7 @@ def serve(name):
             time.sleep(.1)
         else:
             raise RuntimeError('native adapter did not create its interface')
-        command(['/sbin/pfctl', '-a', f'com.apple/aimgr-claude_{name}', '-f', '-'], input=rules(config), text=True)
-        status = command(['/sbin/pfctl', '-s', 'info'], capture_output=True, text=True).stdout
-        if 'Status: Enabled' not in status:
-            command(['/sbin/pfctl', '-E'], stdout=subprocess.DEVNULL)
+        configure_firewall(name, config)
         read_fd, write_fd = os.pipe()
         watcher = os.fork()
         if watcher == 0:
@@ -503,19 +545,19 @@ def serve(name):
             (state / 'failed').unlink()
         # The starting marker denies ordinary admission until the complete
         # native path passes. A listening tunnel or created TUN is insufficient.
-        check_native_path(name, config)
-        (state / 'starting').unlink()
-        next_check = time.monotonic() + 5
         def stopping(_signum, _frame):
             raise RuntimeError('native proxy was stopped')
         signal.signal(signal.SIGTERM, stopping)
         signal.signal(signal.SIGINT, stopping)
+        check_native_path_with_retry(name, config)
+        (state / 'starting').unlink(missing_ok=True)
+        next_check = time.monotonic() + 5
         while True:
             if adapter.poll() is not None or os.waitpid(watcher, os.WNOHANG)[0]:
                 raise RuntimeError('native adapter or guardian exited')
             if time.monotonic() >= next_check:
                 if members(config):
-                    check_native_path(name, config)
+                    check_native_path_with_retry(name, config)
                 next_check = time.monotonic() + 5
             time.sleep(.2)
     finally:
@@ -640,7 +682,8 @@ def install():
             log.touch(mode=0o600)
             os.chmod(log, 0o600)
             plist = {'Label': label, 'ProgramArguments': ['/usr/bin/python3', '-I', str(ROOT / 'darwin_proxy.py'), 'serve', name],
-                     'RunAtLoad': True, 'KeepAlive': False, 'Umask': 0o077, 'StandardOutPath': str(log), 'StandardErrorPath': str(log)}
+                     'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 10,
+                     'Umask': 0o077, 'StandardOutPath': str(log), 'StandardErrorPath': str(log)}
             destination = pathlib.Path(f'/Library/LaunchDaemons/{label}.plist')
             destination.write_bytes(plistlib.dumps(plist))
             os.chmod(destination, 0o644)

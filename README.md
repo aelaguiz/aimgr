@@ -184,9 +184,13 @@ Claude runtime; `aim claude privacy status [account] [--json]` inspects the sele
 build, approval and local process inventory without running Claude or contacting
 a provider. For an enrolled account, native
 Claude and AIM requests use its assigned route, and login uses its existing
-account-specific Chrome/CDP instance. A failed tunnel or proxy stops affected
-work with a repair/retry message. Repair does not automatically resume a session
-or replay a failed scheduled job; later independent scheduled occurrences retain
+account-specific Chrome/CDP instance. On macOS, a transient connectivity check
+failure gets up to 60 seconds to recover while existing sessions keep their
+assigned route; new launches wait for verification. An unexpected exit address
+or a lost tunnel/adapter still stops affected work. The Mac proxy service
+restarts automatically after failure, with a ten-second launchd throttle, and
+verifies the same assigned exit before admitting work again. Recovery does not
+automatically resume a session or replay a failed scheduled job; later independent scheduled occurrences retain
 the normal scheduling rules. Same-account sessions remain concurrent.
 
 `aim status` and `aim claude status` show each Claude account's assigned proxy
