@@ -34,17 +34,12 @@ function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }
     ...(averageAccountRow ? [averageAccountRow] : []),
   ];
   lines.push(...formatStatusTable(accountRows));
-  // Blocked accounts have no usable credential or are out of the pool, so
-  // their resets give the pool nothing.
-  const poolAccounts = accounts.filter((account) => account?.operator?.status !== "blocked");
-  const blocked = accounts.length - poolAccounts.length;
   const weeklyIndex = codex ? 0 : 1;
   lines.push(formatWeeklyCapacityFreeingNextDayLine(
     summarizeWeeklyCapacityFreeingNextDay(
-      poolAccounts.map((account) => (account?.usage?.ok === true ? account.usage.windows?.[weeklyIndex] ?? null : null)),
+      accounts.map((account) => (account?.usage?.ok === true ? account.usage.windows?.[weeklyIndex] ?? null : null)),
       now,
     ),
-    { excluded: blocked > 0 ? `${blocked} blocked not in pool` : "" },
   ));
 }
 
@@ -56,8 +51,9 @@ export function renderStatusText(view, {
   const lines = [];
   const now = Number.isFinite(Number(view?.nowMs)) ? Number(view.nowMs) : Date.now();
   const accounts = Array.isArray(view?.accounts) ? view.accounts : [];
-  const codexAccounts = accounts.filter((account) => account?.provider === OPENAI_CODEX_PROVIDER);
-  const claudeAccounts = accounts.filter((account) => account?.provider === ANTHROPIC_PROVIDER);
+  const visibleAccounts = accounts.filter((account) => account?.operator?.status !== "blocked");
+  const codexAccounts = visibleAccounts.filter((account) => account?.provider === OPENAI_CODEX_PROVIDER);
+  const claudeAccounts = visibleAccounts.filter((account) => account?.provider === ANTHROPIC_PROVIDER);
 
   const redisStatus = typeof view?.redis?.status === "string" ? view.redis.status : "unknown";
   const cacheAgeMs = Number(view?.redis?.cacheAgeMs);
@@ -71,8 +67,14 @@ export function renderStatusText(view, {
     pushStatusAccountTable(lines, { heading: "CODEX ACCOUNTS", accounts: codexAccounts, now, codex: true });
     lines.push("");
     if (claudeUsageStatus) {
+      const blockedClaudeLabels = new Set(accounts
+        .filter((account) => account?.provider === ANTHROPIC_PROVIDER && account?.operator?.status === "blocked")
+        .map((account) => account.label));
       lines.push(
-        ...renderClaudeRedisAccountUsageStatus(claudeUsageStatus).trimEnd().split("\n"),
+        ...renderClaudeRedisAccountUsageStatus({
+          ...claudeUsageStatus,
+          accounts: claudeUsageStatus.accounts?.filter((account) => !blockedClaudeLabels.has(account.label)),
+        }).trimEnd().split("\n"),
       );
     } else {
       pushStatusAccountTable(lines, { heading: "CLAUDE ACCOUNTS", accounts: claudeAccounts, now });

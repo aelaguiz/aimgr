@@ -149,7 +149,7 @@ test("capacity freeing in the next 24h counts only pool accounts whose weekly li
   const text = renderStatusText(view, { claudeUsageStatus });
 
   // Codex: (100 + 50) of 3 pool accounts' weeks = 50%; 70% used now = 30% free.
-  assert.match(text, /\nNext 24h: 50% of pool weekly capacity frees up \(2 of 3 accounts reset, 1 blocked not in pool\); 30% free now, 80% after\n/);
+  assert.match(text, /\nNext 24h: 50% of pool weekly capacity frees up \(2 of 3 accounts reset\); 30% free now, 80% after\n/);
   // Claude: the 5h window is ignored; 100 of 2 measured weeks = 50%.
   assert.match(text, /\nNext 24h: 50% of pool weekly capacity frees up \(1 of 2 accounts reset, 1 without a reading not counted\); 30% free now, 80% after\n/);
 });
