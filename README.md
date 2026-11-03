@@ -260,6 +260,8 @@ separate explicit transition; installing this change does not perform it.
 
 ### Installing a reviewed Claude runtime without interrupting coding
 
+The [Claude 2.1.317 verification record](docs/aelaguiz/CLAUDE_2_1_317_UPGRADE_VERIFICATION_2026-11-03.md) records the tested bundles, final source, cold review, installation and retained evidence for the latest completed upgrade.
+
 The installed `aim` wrapper executes the checkout it names. If that path is a
 working checkout, `git pull`, switching branches or updating `main` changes the
 live launcher immediately. **Install the launcher from a fixed release directory
