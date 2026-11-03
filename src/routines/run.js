@@ -21,6 +21,7 @@ import {
 } from "../targets/prime-sessions.js";
 import { preparePrimeInvocation, resolvePrimeLauncher } from "../targets/prime-launcher.js";
 import { resolveCodexCommand } from "../targets/codex-runner.js";
+import { findRolloutPathById } from "../targets/codex-rollout.js";
 import { isPrimeKeyBackedProvider } from "../core/constants.js";
 import { readRoutineDefinition } from "./config.js";
 import { deriveRoutineOccurrence } from "./schedule.js";
@@ -361,6 +362,97 @@ const CLAUDE_PARK_AFTER_MS = Object.freeze({
 });
 const LIFECYCLE_POLL_MS = 250;
 const HERDR_API_TIMEOUT_MS = 3_000;
+const CODEX_STOP_GRACE_MS = 5_000;
+
+// A job that finished with nobody in its Space closes that Space; finished
+// Spaces were piling up in Herdr (Amir, 2026-11-03). The worker runs inside the
+// Space, so Herdr may end this process when the close lands: every receipt
+// write that matters happens first, and a receipt left at "requested" means the
+// close took this process with it. A Space someone renamed, split or gave
+// another tab is theirs now and stays.
+function closeRoutineSpace({ routine, receiptPath, receipt, context }) {
+  const herdrSpawnSync = context.routineHerdrSpawnSyncImpl ?? spawnSync;
+  const options = { cwd: routine.cwd, env: context.env, timeout: HERDR_API_TIMEOUT_MS };
+  const { session, workspaceId, title } = receipt.herdr;
+  const record = (close) => writeReceipt(receiptPath, {
+    ...receipt,
+    herdr: { ...receipt.herdr, close: { ...receipt.herdr.close, ...close } },
+  });
+  try {
+    const space = runJsonSync("herdr", ["--session", session, "workspace", "get", workspaceId], options, herdrSpawnSync)
+      ?.result?.workspace;
+    if (space?.workspace_id !== workspaceId || space?.label !== title) {
+      return record({ status: "kept", reason: "renamed or replaced", at: new Date().toISOString() });
+    }
+    if (space.tab_count !== 1 || space.pane_count !== 1) {
+      return record({ status: "kept", reason: "has another tab or pane", at: new Date().toISOString() });
+    }
+    receipt = record({ status: "requested", requestedAt: new Date().toISOString() });
+    // Herdr hangs up everything in a Space it closes, including this close
+    // command, so a hangup is the proof it closed (seen on Herdr 0.9.0). With
+    // no hangup, the Space is closed only if Herdr can no longer find it.
+    const close = herdrSpawnSync("herdr", ["--session", session, "workspace", "close", workspaceId], {
+      ...options, encoding: "utf8",
+    });
+    const gone = () => {
+      const after = herdrSpawnSync("herdr", ["--session", session, "workspace", "get", workspaceId], {
+        ...options, encoding: "utf8",
+      });
+      return after?.signal === "SIGHUP" || /"workspace_not_found"/.test(`${after?.stdout ?? ""}${after?.stderr ?? ""}`);
+    };
+    if (close?.signal === "SIGHUP" || gone()) {
+      return record({ status: "closed", closedAt: new Date().toISOString() });
+    }
+    const detail = String(close?.error?.message ?? (close?.stderr || close?.stdout || "")).trim()
+      || `close ended with ${close?.signal ?? `exit ${close?.status}`}`;
+    return record({ status: "failed", error: safeError(detail), at: new Date().toISOString() });
+  } catch (error) {
+    return record({ status: "failed", error: safeError(error), at: new Date().toISOString() });
+  }
+}
+
+// A finished Codex job stays open for a reply as long as a finished Claude job
+// does. A new turn in its thread means someone is using it, and AIM leaves it
+// alone from then on.
+async function watchCodexFollowUp({ context, tui, readNewRolloutEvents }) {
+  if (!readNewRolloutEvents) return { outcome: "unwatched" };
+  const graceMs = privateTimeout(context, "codexFollowUpMs", CLAUDE_PARK_AFTER_MS.done);
+  const pollMs = privateTimeout(context, "pollMs", LIFECYCLE_POLL_MS);
+  const deadline = Date.now() + graceMs;
+  while (tui.isRunning()) {
+    let events;
+    try {
+      events = readNewRolloutEvents();
+    } catch (error) {
+      return { outcome: "unwatched", error: safeError(error) };
+    }
+    if (events.some((event) => event.type === "event_msg" && event.payload?.type === "task_started")) {
+      return { outcome: "joined", at: new Date().toISOString() };
+    }
+    if (Date.now() >= deadline) {
+      tui.terminate();
+      const stopped = await Promise.race([
+        tui.exit.then(() => true),
+        lifecycleSleep(context, privateTimeout(context, "codexStopGraceMs", CODEX_STOP_GRACE_MS)).then(() => false),
+      ]);
+      if (!stopped) tui.terminate("SIGKILL");
+      return { outcome: "stopped", at: new Date().toISOString() };
+    }
+    await Promise.race([tui.exit, lifecycleSleep(context, pollMs)]);
+  }
+  return { outcome: "exited" };
+}
+
+function openCodexRolloutTail(codexHome, threadId) {
+  try {
+    const rollout = findRolloutPathById({ codexHome, threadId });
+    return rollout?.path && !rollout.archived
+      ? createClaudeRoutineEventReader(rollout.path, { fromEnd: true })
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 async function acquireBootstrapLock(lockPath, lockfileImpl = lockfile) {
   let compromised = null;
@@ -763,8 +855,8 @@ function startInteractiveAgent(command, args, { cwd, env, spawnImpl = spawn } = 
     child,
     exit,
     isRunning: () => running,
-    terminate() {
-      if (running) child.kill?.("SIGTERM");
+    terminate(signal = "SIGTERM") {
+      if (running) child.kill?.(signal);
     },
   };
 }
@@ -919,6 +1011,7 @@ export async function executeRoutineWorker(context) {
       const sessionId = randomUUID();
       const eventsPath = receiptPath.replace(/\.json$/, ".claude.jsonl");
       const runSession = context.routineClaudeSessionImpl ?? runClaudeRoutineSession;
+      let closeSpace = false;
       await runSession(context, { cwd: routine.cwd, jobName: receipt.routineId, async runSession(launch) {
         const interactiveLaunch = prepareInteractiveClaudeRoutine({ launch, routine, sessionId, eventsPath });
         bootstrapLease.assertHealthy();
@@ -1071,8 +1164,11 @@ export async function executeRoutineWorker(context) {
           }));
         }
         if (needsAttention) context.setExitCode(1);
+        closeSpace = parked?.reason === "done" && !personJoined && !needsAttention;
         return { status: needsAttention ? 1 : 0, signal: null };
       } });
+      // Only after the account is handed back and the receipt is final.
+      if (closeSpace) receipt = closeRoutineSpace({ routine, receiptPath, receipt, context });
       return receipt;
     }
     const account = selectAccount(routine, context);
@@ -1147,6 +1243,8 @@ export async function executeRoutineWorker(context) {
         interactiveTui: { status: "starting", startedAt: new Date().toISOString(), sessionId: result.sessionId },
       });
       releaseRoutineOwnership();
+      // Read the thread from its current end, so only turns after the job count.
+      const readNewRolloutEvents = openCodexRolloutTail(account.codexHome, result.sessionId);
       // Resume by exact ID with no prompt, so opening the TUI never executes
       // the scheduled task a second time. Keep it as a child of the pane shell.
       tui = startInteractiveAgent(command, [...commonArgs, "resume", result.sessionId], {
@@ -1156,19 +1254,26 @@ export async function executeRoutineWorker(context) {
         ...receipt,
         interactiveTui: { ...receipt.interactiveTui, status: "live" },
       });
+      const followUp = await watchCodexFollowUp({ context, tui, readNewRolloutEvents });
+      if (followUp.outcome === "joined") {
+        receipt = writeReceipt(receiptPath, { ...receipt, personJoinedAt: followUp.at });
+      }
       const tuiExit = await tui.exit;
+      const stoppedByAim = followUp.outcome === "stopped";
       receipt = writeReceipt(receiptPath, {
         ...receipt,
         interactiveTui: {
           ...receipt.interactiveTui, status: "exited", exitedAt: new Date().toISOString(),
-          exitCode: tuiExit.code, exitSignal: tuiExit.signal,
+          exitCode: tuiExit.code, exitSignal: tuiExit.signal, followUp: followUp.outcome,
+          ...(stoppedByAim ? { stoppedBy: "aim", stoppedAt: followUp.at } : {}),
           ...(tuiExit.error ? { error: safeError(tuiExit.error) } : {}),
         },
       });
-      if (tuiExit.code !== 0) {
+      if (tuiExit.code !== 0 && !stoppedByAim) {
         receipt = writeReceipt(receiptPath, { ...receipt, needsAttention: true, error: "Codex task completed, but interactive resume failed." });
         context.setExitCode(1);
       }
+      if (stoppedByAim) receipt = closeRoutineSpace({ routine, receiptPath, receipt, context });
       return receipt;
     }
 

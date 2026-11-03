@@ -363,9 +363,40 @@ async function prepareQueuedWorker(home, definition = routineDefinition(home)) {
   return { routine, receipt: output };
 }
 
+// Herdr as the worker sees it from inside its own Space. Never the real one.
+// Like Herdr 0.9.0, closing the Space hangs up the close command running in it
+// (`hangup: false` models a close that returns normally).
+function fakeWorkerHerdr(receipt, space = {}, { closeError = null, hangup = true } = {}) {
+  const calls = [];
+  let closed = false;
+  const impl = (command, args) => {
+    assert.equal(command, "herdr");
+    calls.push(args);
+    if (args.includes("get")) {
+      if (closed) {
+        const id = receipt.herdr.workspaceId;
+        return { status: 1, stdout: JSON.stringify({ error: { code: "workspace_not_found", message: `workspace ${id} not found` } }) };
+      }
+      return { status: 0, stdout: JSON.stringify({ result: { type: "workspace_info", workspace: {
+        workspace_id: receipt.herdr.workspaceId, label: receipt.herdr.title, tab_count: 1, pane_count: 1, ...space,
+      } } }) };
+    }
+    if (args.includes("close")) {
+      if (closeError) return { status: 1, stdout: "", stderr: closeError };
+      closed = true;
+      return hangup ? { status: null, signal: "SIGHUP", stdout: "", stderr: "" } : { status: 0, stdout: "{}" };
+    }
+    throw new Error(`unexpected herdr call: ${args.join(" ")}`);
+  };
+  return { calls, impl, closes: () => calls.filter((args) => args.includes("close")) };
+}
+
 function workerContext(home, receipt, runtime) {
   let exitCode = 0;
+  const herdr = fakeWorkerHerdr(receipt);
   return {
+    herdr,
+    routineHerdrSpawnSyncImpl: herdr.impl,
     positional: ["routine", "__execute", "demo", receipt.fireKey, JSON.parse(
       fs.readFileSync(path.join(home, ".aimgr", "routine-locks", "demo", "owner.json"), "utf8"),
     ).token],
@@ -668,10 +699,14 @@ function makeCodexRuntime(home, options = {}) {
   let submitted = "";
   let tui;
   const kills = [];
-  return {
+  const rolloutPath = path.join(home, ".aimgr", "codex-cli", "sessions", "2026", "08", "15",
+    `rollout-2026-08-15T12-34-00-${sessionId}.jsonl`);
+  const runtime = {
     sessionId, calls, kills,
     get submitted() { return submitted; },
+    get rolloutPath() { return rolloutPath; },
     closeTui(code = 0) { tui.emit("close", code, null); },
+    appendRollout(entry) { fs.appendFileSync(rolloutPath, `${JSON.stringify(entry)}\n`); },
     spawnSyncImpl(command, args) {
       assert.equal(command, "fake-aim");
       assert.deepEqual(args, ["codex", "use", "--home", home]);
@@ -689,8 +724,19 @@ function makeCodexRuntime(home, options = {}) {
         assert.equal(args.at(-1), sessionId);
         assert.equal(args.includes("--last"), false);
         tui = child;
+        child.kill = (signal) => {
+          kills.push(signal);
+          if (!options.ignoreTuiTerm || signal === "SIGKILL") setImmediate(() => child.emit("close", null, signal));
+        };
+        // Codex writes its settings on resume; that is not a person replying.
+        if (options.rollout) runtime.appendRollout({ type: "event_msg", payload: { type: "thread_settings_applied" } });
         if (options.resumeError) setImmediate(() => child.emit("error", new Error("resume unavailable")));
         return child;
+      }
+      if (options.rollout) {
+        fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+        fs.writeFileSync(rolloutPath, `${JSON.stringify({ type: "session_meta", payload: { id: sessionId } })}\n`
+          + `${JSON.stringify({ type: "event_msg", payload: { type: "task_started" } })}\n`);
       }
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
@@ -715,6 +761,7 @@ function makeCodexRuntime(home, options = {}) {
       return child;
     },
   };
+  return runtime;
 }
 
 test("Codex routine executes the prompt once, saves events, and resumes that session while releasing overlap protection", async () => {
@@ -749,6 +796,58 @@ test("Codex routine executes the prompt once, saves events, and resumes that ses
   const result = await worker;
   assert.equal(result.interactiveTui.status, "exited");
   assert.equal(context.getExitCode(), 0);
+  // Without its thread file AIM cannot tell whether someone replied, so it keeps the Space.
+  assert.equal(result.interactiveTui.followUp, "unwatched");
+  assert.deepEqual(context.herdr.calls, []);
+});
+
+test("finished Codex job nobody replied to is stopped after the grace period and its Space closed", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  const runtime = makeCodexRuntime(home, { rollout: true });
+  const context = workerContext(home, receipt, runtime);
+  context.routineTimeouts.codexFollowUpMs = 30;
+  const result = await executeRoutineWorker(context);
+  assert.equal(result.outcome, "completed");
+  assert.equal(result.needsAttention, false);
+  assert.equal(result.exitCode, 0);
+  assert.equal(context.getExitCode(), 0);
+  assert.equal(result.interactiveTui.followUp, "stopped");
+  assert.equal(result.interactiveTui.stoppedBy, "aim");
+  assert.deepEqual(runtime.kills, ["SIGTERM"]);
+  assert.deepEqual(context.herdr.closes(), [["--session", "growth", "workspace", "close", "w-test"]]);
+  assert.equal(result.herdr.close.status, "closed");
+  assert.equal(readReceipt(receipt).herdr.close.status, "closed");
+});
+
+test("Codex TUI that ignores the stop is killed before its Space is closed", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  const runtime = makeCodexRuntime(home, { rollout: true, ignoreTuiTerm: true });
+  const context = workerContext(home, receipt, runtime);
+  Object.assign(context.routineTimeouts, { codexFollowUpMs: 30, codexStopGraceMs: 5 });
+  const result = await executeRoutineWorker(context);
+  assert.deepEqual(runtime.kills, ["SIGTERM", "SIGKILL"]);
+  assert.equal(result.herdr.close.status, "closed");
+});
+
+test("finished Codex job someone replied to keeps its Space and Codex", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  const runtime = makeCodexRuntime(home, { rollout: true });
+  const context = workerContext(home, receipt, runtime);
+  context.routineTimeouts.codexFollowUpMs = 200;
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.calls.length === 2, "Codex TUI did not open");
+  runtime.appendRollout({ type: "event_msg", payload: { type: "task_started", turn_attribution: { turn_trigger: "user" } } });
+  await waitUntil(() => readReceipt(receipt).personJoinedAt, "reply not noticed");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.deepEqual(runtime.kills, []);
+  runtime.closeTui();
+  const result = await worker;
+  assert.equal(result.interactiveTui.followUp, "joined");
+  assert.equal(result.interactiveTui.stoppedBy, undefined);
+  assert.deepEqual(context.herdr.calls, []);
 });
 
 test("DeepSeek Codex routine uses the API profile without selecting a ChatGPT account", async () => {
@@ -1073,13 +1172,13 @@ async function startParkableClaude(home, parkTimeouts) {
   const worker = executeRoutineWorker(context);
   await waitUntil(() => runtime.active, "Claude UI did not start");
   runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256, promptSource: "user" });
-  return { receipt, runtime, worker, printed: () => printed };
+  return { receipt, runtime, context, worker, printed: () => printed };
 }
 
 const readReceipt = (receipt) => JSON.parse(fs.readFileSync(receipt.receiptPath));
 
 test("Claude job that reports done is stopped after the grace period and its account released", async () => {
-  const { receipt, runtime, worker, printed } = await startParkableClaude(mkTempHome(), { done: 30 });
+  const { receipt, runtime, context, worker, printed } = await startParkableClaude(mkTempHome(), { done: 30 });
   runtime.emit("Stop", { jobStatus: { state: "done", detail: null }, backgroundTasks: 0, sessionCrons: 0 });
   const result = await worker;
   assert.equal(result.outcome, "completed");
@@ -1092,6 +1191,70 @@ test("Claude job that reports done is stopped after the grace period and its acc
   assert.equal(runtime.leaseHeld, false);
   assert.match(printed(), new RegExp(`demo finished\\. Claude was stopped and account fable-a was released`));
   assert.match(printed(), new RegExp(`aim claude resume ${runtime.sessionId}`));
+  assert.deepEqual(context.herdr.closes(), [["--session", "growth", "workspace", "close", "w-test"]]);
+  assert.equal(result.herdr.close.status, "closed");
+});
+
+for (const [name, space, reason] of [
+  ["split into two panes", { pane_count: 2 }, "has another tab or pane"],
+  ["added a tab to", { tab_count: 2 }, "has another tab or pane"],
+  ["renamed", { label: "keep this one" }, "renamed or replaced"],
+]) {
+  test(`finished Claude job keeps a Space someone ${name}`, async () => {
+    const home = mkTempHome();
+    const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+    const runtime = makeClaudeRuntime(home);
+    const context = claudeWorkerContext(home, receipt, runtime);
+    context.herdr = fakeWorkerHerdr(receipt, space);
+    context.routineHerdrSpawnSyncImpl = context.herdr.impl;
+    context.routineTimeouts["claudePark.done"] = 30;
+    const worker = executeRoutineWorker(context);
+    await waitUntil(() => runtime.active, "Claude UI did not start");
+    runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256 });
+    runtime.emit("Stop", { jobStatus: { state: "done", detail: null }, backgroundTasks: 0, sessionCrons: 0 });
+    const result = await worker;
+    assert.equal(result.parked.reason, "done");
+    assert.deepEqual(context.herdr.closes(), []);
+    assert.equal(result.herdr.close.status, "kept");
+    assert.equal(result.herdr.close.reason, reason);
+  });
+}
+
+test("a Space close that returns normally is confirmed by Herdr no longer finding the Space", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home);
+  const context = claudeWorkerContext(home, receipt, runtime);
+  context.herdr = fakeWorkerHerdr(receipt, {}, { hangup: false });
+  context.routineHerdrSpawnSyncImpl = context.herdr.impl;
+  context.routineTimeouts["claudePark.done"] = 30;
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.active, "Claude UI did not start");
+  runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256 });
+  runtime.emit("Stop", { jobStatus: { state: "done", detail: null }, backgroundTasks: 0, sessionCrons: 0 });
+  const result = await worker;
+  assert.equal(result.herdr.close.status, "closed");
+  assert.equal(context.herdr.calls.filter((args) => args.includes("get")).length, 2);
+});
+
+test("a failed Space close is recorded and leaves the finished job's result alone", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
+  const runtime = makeClaudeRuntime(home);
+  const context = claudeWorkerContext(home, receipt, runtime);
+  context.herdr = fakeWorkerHerdr(receipt, {}, { closeError: "permission denied" });
+  context.routineHerdrSpawnSyncImpl = context.herdr.impl;
+  context.routineTimeouts["claudePark.done"] = 30;
+  const worker = executeRoutineWorker(context);
+  await waitUntil(() => runtime.active, "Claude UI did not start");
+  runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256 });
+  runtime.emit("Stop", { jobStatus: { state: "done", detail: null }, backgroundTasks: 0, sessionCrons: 0 });
+  const result = await worker;
+  assert.equal(result.outcome, "completed");
+  assert.equal(result.needsAttention, false);
+  assert.equal(result.herdr.close.status, "failed");
+  assert.match(result.herdr.close.error, /permission denied/);
+  assert.ok(result.herdr.close.requestedAt);
 });
 
 test("Claude job waiting on its background agents is not stopped at the done grace period", async () => {
@@ -1108,7 +1271,7 @@ test("Claude job waiting on its background agents is not stopped at the done gra
 });
 
 test("Claude job that needs input is held for a reply, then stopped with the question on screen", async () => {
-  const { receipt, runtime, worker, printed } = await startParkableClaude(mkTempHome(), { "needs-input": 30 });
+  const { receipt, runtime, context, worker, printed } = await startParkableClaude(mkTempHome(), { "needs-input": 30 });
   runtime.emit("Stop", { jobStatus: { state: "needs-input", detail: "Post drafts 1 and 2?" }, backgroundTasks: 0, sessionCrons: 0 });
   await waitUntil(() => readReceipt(receipt).outcome === "needs_input", "needs-input not recorded");
   const result = await worker;
@@ -1117,6 +1280,7 @@ test("Claude job that needs input is held for a reply, then stopped with the que
   assert.equal(result.parked.reason, "needs-input");
   assert.match(printed(), /demo needs your reply/);
   assert.match(printed(), /Post drafts 1 and 2\?/);
+  assert.deepEqual(context.herdr.calls, []);
 });
 
 test("Claude failure after the first turn replaces the completed outcome and stops the session", async () => {
@@ -1134,17 +1298,18 @@ test("Claude failure after the first turn replaces the completed outcome and sto
 });
 
 test("Claude job that goes quiet without a status line is stopped and flagged", async () => {
-  const { runtime, worker } = await startParkableClaude(mkTempHome(), { quiet: 30 });
+  const { runtime, context, worker } = await startParkableClaude(mkTempHome(), { quiet: 30 });
   runtime.emit("Stop", { jobStatus: null, backgroundTasks: 0, sessionCrons: 0 });
   const result = await worker;
   assert.equal(result.parked.reason, "quiet");
   assert.equal(result.outcome, "needs_attention");
   assert.match(result.error, /without an AIM-JOB status line/);
   assert.equal(runtime.leaseHeld, false);
+  assert.deepEqual(context.herdr.calls, []);
 });
 
 test("Claude session a person typed into uses the idle limit, not the done grace period", async () => {
-  const { receipt, runtime, worker } = await startParkableClaude(mkTempHome(), { done: 5, idle: 300 });
+  const { receipt, runtime, context, worker } = await startParkableClaude(mkTempHome(), { done: 5, idle: 300 });
   runtime.emit("Stop", { jobStatus: null, backgroundTasks: 0, sessionCrons: 0 });
   await waitUntil(() => readReceipt(receipt).outcome === "completed", "first turn end not recorded");
   runtime.emit("UserPromptSubmit", { promptSha256: "typed", promptSource: "user" });
@@ -1155,6 +1320,7 @@ test("Claude session a person typed into uses the idle limit, not the done grace
   const result = await worker;
   assert.equal(result.parked.reason, "done");
   assert.equal(result.outcome, "completed");
+  assert.deepEqual(context.herdr.calls, []);
 });
 
 test("Claude launch errors are recorded without attempting another launch", async () => {
