@@ -197,8 +197,16 @@ failure; telemetry opt-out says nothing by itself about functional requests.
 A timeout,
 skipped native test or broken positive control is not a pass.
 
-After synthetic gates pass, use **only proxy5 and proxy6** and their assigned
-routes for real model/tool overlap, refresh/usage, history and calendar execution.
+Privacy investigation must not make Amir's normal identity part of the unknown
+behavior being investigated. Keep candidate execution and collection experiments
+inside the established sacrificial-account/proxy setup; using a normal account
+on a VM already associated with test accounts can link them through host or
+persisted state even when the immediate request seems harmless. This is different
+from routine verification of an already reviewed setup under existing permissions.
+
+For this offsite upgrade investigation, use **only proxy5 and proxy6** through
+their assigned proxies after synthetic gates pass. Ordinary-mode experiments use
+synthetic credentials and local mock services under independent outbound denial.
 Any necessary real browser sign-in uses the **original local account Chrome/CDP
 and tunnel**, preserving cookies/profile/host. Never create a rental browser or
 copy the profile. Stop **all work immediately** on an actual human-verification
