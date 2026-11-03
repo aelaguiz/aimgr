@@ -33,7 +33,7 @@ export async function prepareClaudeNativeInvocation({
   validateHeaderSource = nativeClaudeHeaderSourceAccepted,
   prepareDaemonDirectory = prepareClaudeDaemonDirectory,
 } = {}) {
-  let scratch, snapshot, environmentFd, retention, started = false;
+  let scratch, snapshot, environmentFd, retention, started = false, executableAliases = [];
   try {
     if (!preparedLaunch || !path.isAbsolute(cwd ?? "") || typeof protectedAccount !== "boolean"
       || (readRoots !== undefined && !Array.isArray(readRoots)) || (updateRoots !== undefined && !Array.isArray(updateRoots))
@@ -81,7 +81,8 @@ export async function prepareClaudeNativeInvocation({
     const managedPolicy = inspectManagedPolicy({ protectedAccount, providerEnvironment, cwd, userHomeDir: preparedLaunch.userHomeDir });
     if (readRoots === undefined) {
       const task = resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDir: preparedLaunch.userHomeDir,
-        composition, env, discoverReadRoots: protectedAccount });
+        composition, env, appState, discoverReadRoots: protectedAccount });
+      executableAliases = task.executableAliases ?? [];
       task.taskFiles.push(...(managedPolicy.tlsReadPaths ?? []));
       if (protectedAccount) {
         const sharedMemoryDirectory = path.join(preparedLaunch.userHomeDir, ".claude/projects");
@@ -105,6 +106,17 @@ export async function prepareClaudeNativeInvocation({
     environmentFd = stageClaudeLaunchEnvironment(environment, scratch);
     const daemonRoots = protectedAccount ? [prepareDaemonDirectory({ configDir, env: environment })] : [];
     const combinedReads = [...new Set([...readRoots, ...daemonRoots, ...(artifact.readPaths ?? []), ...managedPolicy.resolvedReadPaths])];
+    if (protectedAccount && process.platform === "darwin") {
+      // Only the new immutable helper understands executable-alias entries.
+      // Old approved bundles retain their original native MCP behavior; an
+      // incomplete optional-server inventory must not refuse unrelated work.
+      // Never replace the user's configured command or bypass build admission.
+      const nativeRoots = [configDir, scratch, "/System", "/usr", "/bin", "/sbin", "/dev",
+        "/Library/Apple", "/Library/Developer", "/private/etc", "/private/var/db/dyld", "/private/preboot/Cryptexes/OS"];
+      const covered = file => [...combinedReads, ...nativeRoots].some(root => file === root || file.startsWith(root + path.sep));
+      const needed = executableAliases.filter(file => !covered(file));
+      if (policy.mcpExecutableAliases === true) combinedReads.push(...new Set(needed));
+    }
     if (combinedReads.length > 256) fail("the task and machine read roots exceed native policy capacity");
     snapshot.assertUnchanged();
     retention = retainClaudeLaunchFiles({ configDir, settings: snapshot.file, scratch });

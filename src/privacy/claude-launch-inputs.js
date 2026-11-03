@@ -4,6 +4,7 @@ import path from "node:path";
 import { ClaudePrivacySettingsError, claudeCriticalSettings, inspectClaudeArguments } from "./claude-settings.js";
 import { resolveClaudeInstructionReads } from "./claude-instruction-inputs.js";
 import { resolveClaudeTlsReadPaths } from "./claude-tls-inputs.js";
+import { resolveClaudeMcpExecutableReads, claudeMcpEnvironmentVariants } from "./claude-mcp-inputs.js";
 
 const fail = reason => { throw new ClaudePrivacySettingsError(reason); };
 const inside = (file, root) => file === root || file.startsWith(root + path.sep);
@@ -300,7 +301,7 @@ export function resolveClaudeUpdateRoots({ userHomeDir, env, cwd, vendorCommand 
  * These are explicit task inputs, not automatic whole-home visibility.
  */
 export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDir, composition,
-  env = {}, discoverReadRoots = true }) {
+  env = {}, appState = {}, discoverReadRoots = true }) {
   const parsed = inspectClaudeArguments(args), values = parsed.optionValues;
   const taskCwd = path.resolve(cwd, values["--cwd"]?.at(-1) ?? ".");
   const expand = (value, origin = taskCwd) => value.startsWith("~/")
@@ -357,11 +358,17 @@ export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDi
     }
   }
   if (!discoverReadRoots) return { cwd: taskCwd, additionalDirectories: [], userPluginDirs: [], taskFiles: [] };
+  const executableAliases = [];
+  taskFiles.push(...resolveClaudeMcpExecutableReads({ cwd: taskCwd, aliases: executableAliases,
+    projectConfigRoot: projectRoot ? expand(projectRoot) : undefined, appState,
+    cliConfigs: values["--mcp-config"] ?? [], strict: parsed.options.includes("--strict-mcp-config"),
+    environments: claudeMcpEnvironmentVariants({ env, appState, configDir, cwd: taskCwd,
+      projectConfigRoot: projectRoot ? expand(projectRoot) : undefined, userHomeDir, enabled, composition }) }));
   // Native TLS reads these explicit files itself, including during refresh.
   // Grant the selected files, never their home/credential-directory parents.
   // Lower settings may reload during a session: retain their initially known
   // paths as well as inherited/flag paths. Replacement at those paths works.
   taskFiles.push(...resolveClaudeTlsReadPaths({ environments: [env, ...settings.map(source => source.env ?? {})], cwd: taskCwd, userHomeDir }));
-  return { cwd: taskCwd, additionalDirectories, userPluginDirs, taskFiles,
+  return { cwd: taskCwd, additionalDirectories, userPluginDirs, taskFiles, executableAliases: [...new Set(executableAliases)],
     ...(projectRoot ? { projectConfigRoot: expand(projectRoot) } : {}) };
 }

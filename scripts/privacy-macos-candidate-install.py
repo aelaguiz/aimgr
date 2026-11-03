@@ -19,7 +19,7 @@ staging=work/'mac-candidate-staging';staging.mkdir(mode=0o700)
 subprocess.run(['/usr/bin/clang','-O2','-Wall','-Wextra','-Werror',str(source),'-o',str(staging/'launcher')],check=True)
 subprocess.run(['/usr/bin/codesign','--force','--sign','-','--options','runtime',str(staging/'launcher')],check=True,capture_output=True)
 subprocess.run(['/usr/bin/clang','-std=c11','-O2','-Wall','-Wextra','-Werror',str(work/'repo/native/claude/security_shim.c'),'-o',str(staging/'security')],check=True)
-policy={'schema':1,'platform':'darwin','arch':'arm64','testedKernelRelease':os.uname().release,'vendorCommit':'cd7ceb459c68','version':'2.1.316',
+policy={'schema':1,'platform':'darwin','arch':'arm64','testedKernelRelease':os.uname().release,'vendorCommit':'cd7ceb459c68','version':'2.1.316','mcpExecutableAliases':True,
         'scope':'offsite candidate tests only; no normal-use approval','sourceSha256':hashlib.sha256(source.read_bytes()).hexdigest()}
 (staging/'policy.json').write_text(json.dumps(policy,sort_keys=True)+'\n')
 files={}

@@ -264,6 +264,18 @@ class Mock(http.server.BaseHTTPRequestHandler):
                 if not any(block.get("id") == "expected_error_tool" for block in blocks):
                     content = {"type": "tool_use", "id": "expected_error_tool", "name": "Bash", "input": {
                         "command": "printf SYNTHETIC_EXPECTED_TOOL_FAILURE >&2; exit 7", "description": "Exercise an expected synthetic tool failure"}}
+            if "mcp-alias" in active:
+                messages = json.dumps(body.get("messages", []))
+                blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
+                calls = [block.get("name") for block in blocks if block.get("type") == "tool_use"]
+                if "MCP_ALIAS_PRIVATE_READ" in messages:
+                    if "Read" not in calls:
+                        content = {"type": "tool_use", "id": "mcp_alias_private_read", "name": "Read", "input": {"file_path": str(home / "private-mcp-bin/unrelated-private-file")}}
+                else:
+                    wanted = next((tool["name"] for tool in body.get("tools", []) if "alias" in tool["name"] and tool["name"].endswith("echo")), None)
+                    tool = wanted or "ToolSearch"
+                    if tool not in calls:
+                        content = {"type": "tool_use", "id": "mcp_alias_" + str(len(requests)), "name": tool, "input": {} if wanted else {"query": "+alias echo", "max_results": 3}}
             if "compatibility" in active:
                 messages = json.dumps(body.get("messages", []))
                 blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
@@ -747,6 +759,7 @@ cases = [
     ("pro-rc-toggle", "pro", True, "sign_in"),
     ("pro-rc-saved", "pro", True, "sign_in"),
     ("protected-pro-compatibility-disabled", "pro", True, "sign_in"),
+    ("protected-pro-mcp-alias-disabled", "pro", True, "sign_in"),
     ("protected-pro-concurrency-disabled", "pro", True, "sign_in"),
     ("protected-pro-concurrency-background-disabled", "pro", True, "sign_in"),
     ("protected-pro-concurrency-continuity-disabled", "pro", True, "sign_in"),
@@ -767,6 +780,8 @@ try:
     for name, plan, opt_out, origin in cases:
         if a.case and name not in a.case:
             continue
+        if "mcp-alias" in name and platform.system() != "Darwin":
+            continue  # This regression exercises macOS executable lookup.
         active, active_plan = name, plan
         if "upgrade" in name:
             active_plan = "max"
@@ -945,6 +960,8 @@ print(json.dumps(result))
                 invocation["captureFile"] = str(root / "requests.private.jsonl")
             if "schedules" in name:
                 invocation.update(check="schedule-refusals" if "refusals" in name else "schedules", captureFile=str(root / "requests.private.jsonl"))
+            if "mcp-alias" in name:
+                invocation.update(check="mcp-alias", captureFile=str(root / "requests.private.jsonl"))
             if "compatibility" in name:
                 invocation.update(check="compatibility", captureFile=str(root / "requests.private.jsonl"))
             if "controls" in name:
@@ -983,7 +1000,7 @@ print(json.dumps(result))
                                      pass_fds=(environment_transfer.fileno(),) if environment_transfer else ())
             if environment_transfer: environment_transfer.close()
             try:
-                out, err = child.communicate(timeout=240 if "schedules" in name or "concurrency" in name else 180 if "detached" in name or "workflows" in name or "http-mcp" in name or "compatibility" in name or "controls" in name else 45)
+                out, err = child.communicate(timeout=240 if "schedules" in name or "concurrency" in name else 180 if "detached" in name or "workflows" in name or "http-mcp" in name or "mcp-alias" in name or "compatibility" in name or "controls" in name else 45)
                 code = child.returncode
             except subprocess.TimeoutExpired:
                 observed = subprocess.run(["/bin/ps", "-axo", "pid=,ppid=,uid=,gid=,stat=,command="], capture_output=True, text=True)
@@ -1048,6 +1065,7 @@ print(json.dumps(result))
                         **({"detached": json.loads((home / "detached.json").read_text())} if (home / "detached.json").exists() else {}),
                         **({"backgroundReview": json.loads((home / "background-review.json").read_text())} if (home / "background-review.json").exists() else {}),
                         **({"compatibility": json.loads((home / "compatibility.json").read_text())} if (home / "compatibility.json").exists() else {}),
+                        **({"mcpAlias": json.loads((home / "mcp-alias.json").read_text())} if (home / "mcp-alias.json").exists() else {}),
                         **({"controls": json.loads((home / "controls.json").read_text())} if (home / "controls.json").exists() else {}),
                         **({"concurrency": json.loads((home / "concurrency.json").read_text())} if (home / "concurrency.json").exists() else {}),
                         **({"schedules": json.loads((home / "schedules.json").read_text())} if (home / "schedules.json").exists() else {}),
