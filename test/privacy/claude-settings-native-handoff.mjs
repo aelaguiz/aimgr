@@ -18,12 +18,12 @@ assert.equal(path.dirname(root), `${base}/claude-implementation`);
 assert.equal(fs.existsSync(root), false);
 if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
 const vendor = `${base}/bin/claude`;
-const approved = { linux: "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
-  darwin: "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f" };
+const approved = { linux: "eb224419e344575faa4a1f39b290b649425a10cd5ee2ef1d003480cd9ae57eb0",
+  darwin: "09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9" };
 const digest = crypto.createHash("sha256");
 for await (const block of fs.createReadStream(vendor)) digest.update(block);
 assert.equal(digest.digest("hex"), approved[process.platform]);
-const expected = { version: "2.1.316", commit: "cd7ceb459c68", platform: process.platform,
+const expected = { version: "2.1.317", commit: "3d3e7cb16b55", platform: process.platform,
   arch: process.arch, entrypoint: vendor };
 process.umask(0o077); fs.mkdirSync(root, { mode: 0o700 });
 const conflictsOnly = process.argv[4] === "conflicts";

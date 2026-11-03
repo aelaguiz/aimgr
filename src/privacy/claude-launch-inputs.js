@@ -279,15 +279,20 @@ function futurePath(file) {
   }
 }
 
-/** Exact standalone 2.1.316 automatic updater/housekeeping/fallback roots.
- * Fixed immutable process.execPath self-spawns itself. It cannot dispatch npm
- * updater code in the retained session path; explicit install/update commands
- * are refused separately. Never deny all node_modules or package-manager bins:
+/** Standalone 2.1.317 mutable installer roots from the inherited environment.
+ * Settings can change XDG values later, so this list is not the whole version
+ * boundary. Pinned update/agent-view controls prevent automatic installation
+ * and detached fallback; retained self-spawns use immutable process.execPath.
+ * That fixed native path cannot dispatch npm updater code. Explicit install
+ * commands are refused separately. Never deny all node_modules/package bins:
  * MCP packages and independent build tooling must remain available (T03/T14).
  */
 export function resolveClaudeUpdateRoots({ userHomeDir, env, cwd, vendorCommand }) {
   const home = fs.realpathSync(userHomeDir);
-  const base = (key, fallback) => path.resolve(cwd, env[key] || path.join(home, fallback));
+  // Match the vendor's nullish fallback. An inherited empty XDG value means
+  // a cwd-relative path; treating it as absent would protect HOME while the
+  // updater could reach a different directory (T03). Tools keep those values.
+  const base = (key, fallback) => path.resolve(cwd, env[key] ?? path.join(home, fallback));
   const files = [path.join(base("XDG_DATA_HOME", ".local/share"), "claude/versions"),
     path.join(base("XDG_CACHE_HOME", ".cache"), "claude/staging"),
     path.join(base("XDG_STATE_HOME", ".local/state"), "claude/locks"),

@@ -16,7 +16,7 @@ const platform = process.platform;
 assert.ok(["linux", "darwin"].includes(platform));
 const candidate = JSON.parse(fs.readFileSync(path.join(work, `${platform === "darwin" ? "mac" : "linux"}-candidate-staging/installed.json`), "utf8"));
 const vendor = path.join(candidate.root, "claude"), launcher = path.join(candidate.root, "launcher");
-const expectedHash = platform === "darwin" ? "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f" : "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824";
+const expectedHash = platform === "darwin" ? "09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9" : "eb224419e344575faa4a1f39b290b649425a10cd5ee2ef1d003480cd9ae57eb0";
 const digest = crypto.createHash("sha256");
 for await (const chunk of fs.createReadStream(vendor)) digest.update(chunk);
 assert.equal(digest.digest("hex"), expectedHash);
@@ -25,7 +25,7 @@ const composed = composeClaudePrivacySettings({ cwd: root, protectedAccount: tru
 const snapshot = stageClaudeSettingsSnapshot(composed);
 try {
   const result = await validateClaudeSettingsSnapshot({ snapshot,
-    expected: { version: "2.1.316", commit: "cd7ceb459c68", platform, arch: process.arch, entrypoint: vendor },
+    expected: { version: "2.1.317", commit: "3d3e7cb16b55", platform, arch: process.arch, entrypoint: vendor },
     nativeLauncher: launcher, scratchParent: root });
   const report = { platform, artifactSet: candidate.artifactSet, ...result, scope: "Actual JS/native validator integration only" };
   fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise scoped Claude settings before choosing a production launcher policy.
 
-Only the two already identified official 2.1.316 artifacts are admitted. The
+Only the two already identified official 2.1.317 artifacts are admitted. The
 Linux caller must supply a loopback-only network namespace; the rented Mac must
 have its independent cloud egress denial installed. All homes, credentials,
 requests and tool results are synthetic. A settings refusal is not a full
@@ -24,8 +24,8 @@ import threading
 import tempfile
 
 EXPECTED = {
-    "Linux": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
-    "Darwin": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "Linux": "eb224419e344575faa4a1f39b290b649425a10cd5ee2ef1d003480cd9ae57eb0",
+    "Darwin": "09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9",
 }
 p = argparse.ArgumentParser()
 p.add_argument("--root", type=Path, required=True)

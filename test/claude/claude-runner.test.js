@@ -654,6 +654,74 @@ test("a missing selected executable cannot silently choose the active approved b
   await assert.rejects(verifyInstalledClaudeExecutable({}), /absolute PATH-selected/);
 });
 
+test("a standalone noninteractive caller waits for descendant cleanup after its direct child closes", t => {
+  if (process.platform === "win32") return;
+  const home = mkTempHome();
+  const { homeDir, configDir } = launchPaths(home);
+  installSyntheticAdapter(home);
+  const tree = path.join(home, "term-exiting-tree.mjs");
+  const pidsFile = path.join(home, "pids.json");
+  const signalsFile = path.join(home, "signals.jsonl");
+  fs.writeFileSync(tree, `
+    import fs from 'node:fs';
+    import { spawn } from 'node:child_process';
+    if (process.argv[2] === 'descendant') {
+      process.on('SIGTERM', () => {});
+      console.log('ready');
+      setInterval(() => {}, 1000);
+    } else {
+      const child = spawn(process.execPath, [${JSON.stringify(tree)}, 'descendant'], {stdio:['ignore','pipe','ignore']});
+      child.stdout.once('data', () => {
+        fs.writeFileSync(${JSON.stringify(pidsFile)}, JSON.stringify({parent:process.pid, child:child.pid}));
+        child.stdout.destroy();
+      });
+      process.on('SIGTERM', () => process.exit(0));
+      setInterval(() => {}, 1000);
+    }
+  `);
+  t.after(() => {
+    // On the before-fix run the standalone caller can exit before its KILL.
+    // Reap only the process group created by this fixture, then remove its data.
+    if (fs.existsSync(pidsFile)) {
+      const { parent } = JSON.parse(fs.readFileSync(pidsFile));
+      try { process.kill(-parent, "SIGKILL"); } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+  const runner = new URL("../../src/targets/claude-runner.js", import.meta.url).href;
+  const helpers = new URL("../helpers/claude-native-invocation.js", import.meta.url).href;
+  const program = `
+    import fs from 'node:fs';
+    import { spawn } from 'node:child_process';
+    import { runClaudeCliNoninteractive } from ${JSON.stringify(runner)};
+    import { verifySyntheticExecutable, resolveSyntheticSecurityAdapter, prepareSyntheticNativeInvocation } from ${JSON.stringify(helpers)};
+    const result = await runClaudeCliNoninteractive({
+      command:process.execPath, userHomeDir:${JSON.stringify(home)}, homeDir:${JSON.stringify(homeDir)},
+      configDir:${JSON.stringify(configDir)}, cwd:${JSON.stringify(home)}, timeoutMs:2000, terminationGraceMs:150,
+      verifyInstalledClaudeExecutableImpl:verifySyntheticExecutable,
+      resolveInstalledClaudeSecurityAdapterImpl:resolveSyntheticSecurityAdapter,
+      prepareClaudeNativeInvocationImpl:prepareSyntheticNativeInvocation,
+      spawnImpl(_command,_args,options) { return spawn(process.execPath,[${JSON.stringify(tree)}],options); },
+      killProcessGroupImpl(pid,signal) {
+        fs.appendFileSync(${JSON.stringify(signalsFile)}, JSON.stringify({pid,signal})+'\\n');
+        return process.kill(pid,signal);
+      }
+    });
+    console.log(JSON.stringify(result));
+  `;
+  // A separate Node program is essential: the test runner's own referenced
+  // handles otherwise hide premature exit with an unresolved top-level await.
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", program],
+    { encoding: "utf8", timeout: 15000, maxBuffer: 64 * 1024 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).timedOut, true);
+  const signals = fs.readFileSync(signalsFile, "utf8").trim().split("\n").map(JSON.parse);
+  const { parent } = JSON.parse(fs.readFileSync(pidsFile));
+  assert.deepEqual(signals, [{ pid: -parent, signal: "SIGTERM" }, { pid: -parent, signal: "SIGKILL" }]);
+});
+
 test("lease cancellation during privacy preparation refuses before any supervisor starts", async t => {
   const home = mkTempHome(); t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const prepared = preparedLaunch(home), controller = new AbortController();

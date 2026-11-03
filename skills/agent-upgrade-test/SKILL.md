@@ -204,8 +204,11 @@ on a VM already associated with test accounts can link them through host or
 persisted state even when the immediate request seems harmless. This is different
 from routine verification of an already reviewed setup under existing permissions.
 
-For this offsite upgrade investigation, use **only proxy5 and proxy6** through
-their assigned proxies after synthetic gates pass. Ordinary-mode experiments use
+For real-service upgrade tests, use the established sacrificial proxy accounts
+through their assigned routes after synthetic gates pass. Proxy6 or another
+existing proxied account is authorized; proxy5 has been retired. Keep real-account
+coverage explicit when an account is unavailable; do not silently count a mock
+as a real service test. Ordinary-mode experiments use
 synthetic credentials and local mock services under independent outbound denial.
 Any necessary real browser sign-in uses the **original local account Chrome/CDP
 and tunnel**, preserving cookies/profile/host. Never create a rental browser or

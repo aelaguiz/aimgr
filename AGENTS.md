@@ -12,8 +12,9 @@ can link identities even if the immediate request looks harmless. Routine checks
 of an already reviewed setup can use existing account permissions. Judge the
 exposure being investigated, not whether the task is called a test.
 
-Claude upgrade/privacy investigations use proxy5 and proxy6 through their assigned
-routes. Their real sign-in stays in the original local Chrome/CDP profiles.
+Use the established proxied test accounts and their assigned routes for these
+investigations. Amir has authorized proxy6 or other existing proxied accounts;
+proxy5 is retired. Real sign-in stays in the original local Chrome/CDP profiles.
 
 ## Prime Agent daemon, sessions, and Herdr restores
 

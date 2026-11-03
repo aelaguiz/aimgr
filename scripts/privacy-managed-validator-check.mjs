@@ -35,7 +35,7 @@ let phase = "source-admission";
 const report = { platform: process.platform, artifactSet: candidate.artifactSet, fixture: root };
 try {
   const managedPolicy = inspectClaudeManagedPolicy({ protectedAccount: true });
-  const inputs = { snapshot, expected: { version: "2.1.316", commit: "cd7ceb459c68", platform: process.platform,
+  const inputs = { snapshot, expected: { version: "2.1.317", commit: "3d3e7cb16b55", platform: process.platform,
     arch: process.arch, entrypoint: path.join(candidate.root, "claude") }, nativeLauncher: path.join(candidate.root, "launcher"), scratchParent: root,
     spawnImpl(command, args, options) {
       const child = spawn(command, args, options);

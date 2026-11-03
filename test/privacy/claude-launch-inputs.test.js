@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { readClaudeLaunchState, stageClaudeLaunchEnvironment, buildClaudePrivacyEnvironment,
-  resolveClaudeTaskReadRoots, resolveClaudeConfiguredInputs, prepareClaudeDaemonDirectory } from "../../src/privacy/claude-launch-inputs.js";
+  resolveClaudeTaskReadRoots, resolveClaudeConfiguredInputs, prepareClaudeDaemonDirectory,
+  resolveClaudeUpdateRoots } from "../../src/privacy/claude-launch-inputs.js";
 
 const covered = (roots, file) => roots.some(root => file === root || file.startsWith(root + path.sep));
 
@@ -13,6 +14,26 @@ function fixture(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
+
+test("updater protection follows empty, absent and relative XDG locations without hiding project tools", t => {
+  const root = fixture(t), home = path.join(root, "home"), cwd = path.join(root, "project");
+  fs.mkdirSync(home); fs.mkdirSync(cwd);
+  const input = { userHomeDir: home, cwd, vendorCommand: "/approved/claude" };
+  const defaults = resolveClaudeUpdateRoots({ ...input, env: {} });
+  assert.ok(defaults.includes(path.join(home, ".local/share/claude/versions")));
+  assert.ok(defaults.includes(path.join(home, ".cache/claude/staging")));
+  assert.ok(defaults.includes(path.join(home, ".local/state/claude/locks")));
+  const empty = resolveClaudeUpdateRoots({ ...input,
+    env: { XDG_DATA_HOME: "", XDG_CACHE_HOME: "", XDG_STATE_HOME: "" } });
+  for (const kind of ["versions", "staging", "locks"]) {
+    assert.ok(empty.includes(path.join(cwd, "claude", kind)));
+  }
+  assert.equal(empty.length, 4); // Three vendor roots and its home launcher.
+  assert.equal(covered(empty, path.join(cwd, "ordinary-build")), false);
+  assert.equal(covered(empty, path.join(cwd, "node_modules/mcp-server/index.js")), false);
+  const relative = resolveClaudeUpdateRoots({ ...input, env: { XDG_DATA_HOME: "data" } });
+  assert.ok(relative.includes(path.join(cwd, "data/claude/versions")));
+});
 
 test("native daemon directories are stable per config and never share the writable parent", t => {
   const root = fixture(t), inputs = { env: {}, temporaryBase: root };

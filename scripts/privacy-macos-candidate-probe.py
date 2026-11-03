@@ -20,7 +20,7 @@ assert platform.system() == 'Darwin' and os.getuid() != 0 and (base / 'OFFSITE_A
 installed = json.loads((work / 'mac-candidate-staging/installed.json').read_text())
 package = Path(installed['root'])
 launcher, vendor = package / 'launcher', package / 'claude'
-assert hashlib.sha256(vendor.read_bytes()).hexdigest() == '64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f'
+assert hashlib.sha256(vendor.read_bytes()).hexdigest() == '09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9'
 root = work / 'mac-candidate-boundary-v1'
 root.mkdir(mode=0o700)
 config, scratch = root / 'config', root / 'scratch'

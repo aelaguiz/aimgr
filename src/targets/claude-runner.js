@@ -793,7 +793,11 @@ export async function runClaudeCliNoninteractive({
           else finish(resolve, closeResult);
         }
       }, terminationGraceMs);
-      forcedKillTimer.unref?.();
+      // The direct child can close its final referenced handles during TERM
+      // grace while descendants still survive. This timer then owns both the
+      // remaining group cleanup and promise resolution below. Keep it referenced:
+      // unref lets a standalone maintenance/scheduled caller exit before KILL
+      // (Node reports an unsettled top-level await), abandoning that cleanup.
     };
     const onAbort = () => terminate();
     const onOverflow = () => {
