@@ -90,6 +90,8 @@ function savedSettingsReferences(configDir) {
 /** Caller has already verified no live native owners, including background
  * descendants, while holding EX. Compare recorded inode identities before
  * deleting; preserve substituted files rather than deleting user data.
+ * Device numbers can change after reboot. An identity mismatch preserves the
+ * whole launch and its receipt; optional cleanup must not block a new session.
  * A crash after any deletion is retryable because absent owned paths are done.
  */
 export function retireClaudeLaunchFiles({ configDir, guard }) {
@@ -98,7 +100,7 @@ export function retireClaudeLaunchFiles({ configDir, guard }) {
   const directory = directoryFor(configDir); privateDirectory(directory);
   const references = savedSettingsReferences(configDir);
   if (references === null) return;
-  for (const name of fs.readdirSync(directory)) {
+  launches: for (const name of fs.readdirSync(directory)) {
     if (!receiptName.test(name)) continue;
     const file = path.join(directory, name); identity(file);
     if (fs.statSync(file).size > 16384) fail();
@@ -111,14 +113,20 @@ export function retireClaudeLaunchFiles({ configDir, guard }) {
     let canonicalSettings;
     try { canonicalSettings = fs.realpathSync(value.settings.path); } catch { /* Prior interrupted deletion is handled below. */ }
     if (references.has(value.settings.path) || references.has(canonicalSettings)) continue;
+    const owned = [];
     for (const [key, isDirectory] of [["settings", false], ["scratch", true]]) {
       guard.assertOwned(); const entry = value[key];
       if (!Number.isSafeInteger(entry.dev) || !Number.isSafeInteger(entry.ino)) fail();
       let actual;
       try { actual = identity(entry.path, isDirectory); }
       catch (error) { if (error.code === "ENOENT") continue; throw error; }
-      if (actual.dev !== entry.dev || actual.ino !== entry.ino) fail();
-      if (isDirectory) fs.rmSync(entry.path, { recursive: true });
+      if (actual.dev !== entry.dev || actual.ino !== entry.ino) continue launches;
+      owned.push({ path: entry.path, isDirectory });
+    }
+    // Verify both paths before deleting either half of the launch.
+    for (const entry of owned) {
+      guard.assertOwned();
+      if (entry.isDirectory) fs.rmSync(entry.path, { recursive: true });
       else fs.unlinkSync(entry.path);
     }
     fs.unlinkSync(file);

@@ -197,3 +197,29 @@ test("a second launch joins while optional stopped cleanup briefly owns EX", asy
   t.after(() => Promise.all(guards.map(g => g.release())));
   assert.ok(guards.every(g => !g.exclusive)); assert.equal(fs.existsSync(settings), false);
 });
+
+for (const protectedAccount of [false, true]) {
+  test(`launch and resume admission survive pre-reboot launch records (protected=${protectedAccount})`, async t => {
+    const f = await fixture(t); await migrateClaudePrivateState(f); await f.guard.release();
+    const settings = path.join(f.userHomeDir, ".aim-claude-settings-00000000-0000-4000-8000-000000000001.json");
+    write(settings, { keep: true });
+    const scratch = fs.mkdtempSync(path.join(f.configDir, ".aim-private-runtime-"));
+    retainClaudeLaunchFiles({ configDir: f.configDir, settings, scratch });
+    const directory = path.join(path.dirname(f.configDir), ".privacy-launches");
+    const receipt = path.join(directory, fs.readdirSync(directory)[0]);
+    const recorded = read(receipt);
+    recorded.settings.dev += 1; recorded.scratch.dev += 1; write(receipt, recorded);
+    const checksBefore = f.checks();
+
+    const guard = await acquireClaudeStateGuard({ homeDir: f.userHomeDir, label: "a", configDir: f.configDir,
+      command: f.command, assertStopped: f.assertStopped,
+      readBinding: async () => ({ protected: protectedAccount, accountUuid: A,
+        expectedEmail: "synthetic@example.invalid", credential: f.credential }) });
+    t.after(() => guard.release());
+
+    assert.equal(guard.exclusive, false); guard.assertOwned();
+    assert.equal(f.checks(), checksBefore + 1, "cleanup still requires stopped-owner proof");
+    assert.deepEqual(read(settings), { keep: true }); assert.ok(fs.existsSync(scratch));
+    assert.deepEqual(read(receipt), recorded);
+  });
+}
