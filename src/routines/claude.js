@@ -139,9 +139,16 @@ export function readClaudeRoutineEvents(eventsPath) {
   return createClaudeRoutineEventReader(eventsPath)();
 }
 
-export function createClaudeRoutineEventReader(eventsPath) {
+// Also tails a Codex rollout from its current end (`fromEnd`), so only records
+// written after the reader opens are returned.
+export function createClaudeRoutineEventReader(eventsPath, { fromEnd = false } = {}) {
   let offset = 0;
   let identity = null;
+  if (fromEnd) {
+    const stat = fs.statSync(eventsPath);
+    offset = stat.size;
+    identity = `${stat.dev}:${stat.ino}`;
+  }
   return () => {
     const stat = fs.statSync(eventsPath);
     const currentIdentity = `${stat.dev}:${stat.ino}`;
