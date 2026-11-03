@@ -1,7 +1,7 @@
 import { isObject } from "../core/normalize.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { renderClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
-import { formatClaudeEgress, hasNoLocalClaudeRoute } from "./claude-egress.js";
+import { formatClaudeEgress, formatClaudeProxyHealth, hasNoLocalClaudeRoute } from "./claude-egress.js";
 import { buildStatusAccountFlags, buildStatusAverageAccountTableRow, formatInteractiveLoginSummary, formatStatusAccountExpiryCell, formatStatusAccountResetCell, formatStatusAccountResetCreditsCell, formatStatusAccountUsedCell, formatStatusTable, formatWeeklyCapacityFreeingNextDayLine, renderCurrentCodexUsageText, summarizeWeeklyCapacityFreeingNextDay } from "./table.js";
 
 function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }) {
@@ -27,6 +27,7 @@ function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }
       account.usage?.source || "unavailable",
       [buildStatusAccountFlags(account),
         ...(account.provider === ANTHROPIC_PROVIDER ? [`proxy=${formatClaudeEgress(account.egress)}`] : []),
+        ...(account.egress?.mode === "proxy" ? [`proxy_health=${formatClaudeProxyHealth(account.egress)}`] : []),
         ...(hasNoLocalClaudeRoute(account) ? ["don't have a route to this account"] : []),
       ].filter(Boolean).join(" "),
     ]),

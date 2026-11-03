@@ -18,7 +18,8 @@ import { loadLocalState } from "../state/local-state.js";
 import { readClaudeCliTargetStatus } from "../targets/claude-status.js";
 import { readCodexCliTargetStatus } from "../targets/codex-cli.js";
 import { collectClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
-import { describeClaudeEgress, projectClaudeEgress, hasNoLocalClaudeRoute } from "./claude-egress.js";
+import { describeClaudeEgress, projectClaudeEgress, claudeProxyHealthProblem, hasNoLocalClaudeRoute } from "./claude-egress.js";
+import { readClaudeProxyHealth } from "./claude-proxy-health.js";
 import { readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
 import { CLAUDE_ROUTE_ERROR_CODES } from "../network/claude-egress-policy.js";
 import {
@@ -294,6 +295,7 @@ function buildCodexAccounts({ snapshot, usageByLabel, lockedLabels, lockSource, 
 
 function buildClaudeAccounts(claudeStatus) {
   return (claudeStatus?.accounts ?? []).map((account) => {
+    const proxyProblem = claudeProxyHealthProblem(account);
     const launchable = !CLAUDE_ROUTE_ERROR_CODES.has(account.errorKind)
       && (account.credentialReady === true || account.credentialState === "credential_expired");
     return {
@@ -301,8 +303,8 @@ function buildClaudeAccounts(claudeStatus) {
       provider: ANTHROPIC_PROVIDER,
       egress: projectClaudeEgress(account.egress),
       operator: {
-        status: hasNoLocalClaudeRoute(account) ? "no_route" : launchable ? "ready" : account.credentialState === "reauth_required" ? "reauth" : "blocked",
-        eligible: !hasNoLocalClaudeRoute(account) && launchable && account.locked === false,
+        status: hasNoLocalClaudeRoute(account) ? "no_route" : proxyProblem ? proxyProblem.status.toLowerCase().replaceAll(" ", "_") : launchable ? "ready" : account.credentialState === "reauth_required" ? "reauth" : "blocked",
+        eligible: !hasNoLocalClaudeRoute(account) && !proxyProblem && launchable && account.locked === false,
       },
       credentials: {
         status: account.credentialState ?? "unknown",
@@ -350,6 +352,7 @@ export async function buildRedisStatusView({
   nowMs = Date.now(),
   connectRedisStoreImpl = connectRedisStore,
   readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
+  readClaudeProxyHealthImpl = readClaudeProxyHealth,
 } = {}) {
   const configRead = readAimgrConfig({ homeDir });
   const redisConfig = configRead.config.redis;
@@ -384,6 +387,7 @@ export async function buildRedisStatusView({
         nowMs,
         fetchJsonWithTimeoutImpl,
         readHeldRedisCredentialLeaseLabelsImpl,
+        readClaudeProxyHealthImpl,
       });
     } catch {
       claudeUsageStatus = {
@@ -490,7 +494,16 @@ export async function buildRedisStatusView({
       }
       account.egress = describeClaudeEgress({ egress: account.egress }, configRead.config.claudeProxyProfiles ?? {});
       if (hasNoLocalClaudeRoute(account)) account.operator = { status: "no_route", eligible: false };
-      else if (account.operator.status === "no_route") account.operator = { status: "unknown", eligible: false };
+      else if (account.operator.status === "no_route" || account.operator.status.startsWith("proxy_")) account.operator = { status: "unknown", eligible: false };
+    }
+    const proxyHealth = await readClaudeProxyHealthImpl(cached.accounts
+      .filter(account => account.egress?.mode === "proxy" && account.egress.localStatus === "configured")
+      .map(account => account.egress.profileRef));
+    for (const account of cached.accounts) {
+      if (account.egress?.mode !== "proxy" || account.egress.localStatus !== "configured") continue;
+      account.egress.health = proxyHealth[account.egress.profileRef] ?? "unknown";
+      const problem = claudeProxyHealthProblem(account);
+      if (problem) account.operator = { status: problem.status.toLowerCase().replaceAll(" ", "_"), eligible: false };
     }
 
     const observedAtMs = Number(cached.nowMs);

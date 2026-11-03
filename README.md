@@ -189,8 +189,15 @@ work with a repair/retry message. Repair does not automatically resume a session
 or replay a failed scheduled job; later independent scheduled occurrences retain
 the normal scheduling rules. Same-account sessions remain concurrent.
 
-`aim status` shows each Claude account's assigned proxy (`none` for ordinary
-accounts). When that profile is not configured on this machine, it shows
+`aim status` and `aim claude status` show each Claude account's assigned proxy
+(`none` for ordinary accounts) and its current native service health: `running`,
+`stopped`, `starting`, `not installed`, or `unknown`. A stopped service displays
+`PROXY DOWN` and `restart assigned proxy` instead of `READY / use now`. The JSON
+field is `egress.health`; local health is checked again even when usage or Redis
+data comes from cache. This reads the Mac service's failure markers and recorded
+process lifetimes, or Linux systemd service state. It does not restart services
+or send extra network probes; native launch still verifies the assigned exit.
+When that profile is not configured on this machine, it shows
 `NO ROUTE` and `don't have a route to this account`. Automatic selection,
 including scheduled jobs, skips that account without probing its credentials.
 Installing its local profile makes it available to the picker. A configured

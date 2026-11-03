@@ -534,7 +534,7 @@ test("Claude human status renders the four launch states with frozen precedence"
   });
 
   assert.match(rendered, /^CLAUDE: 2 ready · 0 limited · 1 in use · 1 needs you · 1 unknown/m);
-  assert.match(rendered, /ready\s+READY.*2m\s+unknown\s+use now/);
+  assert.match(rendered, /ready\s+READY.*2m\s+unknown\s+--\s+use now/);
   assert.match(rendered, /active\s+IN USE.*session active/);
   assert.match(rendered, /fixing\s+READY.*use now/);
   assert.match(rendered, /needs\s+NEEDS YOU.*aim login needs/);
@@ -1455,7 +1455,7 @@ test("idle accounts keep last-known usage for days and read LIMITED until the fu
   assert.equal(limited.accounts[0].ageMs, 2 * DAY_MS);
   const limitedText = renderClaudeRedisAccountUsageStatus(limited);
   assert.match(limitedText, /^CLAUDE: 0 ready · 1 limited · 0 in use · 0 needs you · 0 unknown$/m);
-  assert.match(limitedText, /idle\s+LIMITED\s+0%\s+--\s+100%\s+24\.0h\s.*2\.0d\s+none\s+free in 24\.0h/);
+  assert.match(limitedText, /idle\s+LIMITED\s+0%\s+--\s+100%\s+24\.0h\s.*2\.0d\s+none\s+--\s+free in 24\.0h/);
   assert.equal(selectLeastUsedUnlockedClaudeAccount(limited, { preset: "opus" }), null);
 
   // After the weekly reset the account is free again.
@@ -1591,7 +1591,7 @@ test("accounts without a local route remain visible, are not probed or selected,
   assert.equal(remote.errorKind, "proxy_profile_unavailable");
   assert.deepEqual(calls, ["ordinary"]);
   assert.ok(readClaudeOfflineBinding(deps.homeDir, "remote"));
-  assert.match(renderClaudeRedisAccountUsageStatus(absent), /remote\s+NO ROUTE.*office\s+don't have a route to this account/);
+  assert.match(renderClaudeRedisAccountUsageStatus(absent), /remote\s+NO ROUTE.*office\s+no route\s+don't have a route to this account/);
   for (const select of [selectLeastUsedUnlockedClaudeAccount, selectClaudeAccountForSession]) {
     assert.equal(select(absent, { preset: "opus" }).label, "ordinary");
     assert.equal(select({ accounts: [remote] }, { preset: "opus" }), null);
@@ -1627,12 +1627,13 @@ test("a configured proxy failure remains fatal and never selects an ordinary rep
     claudeProxyProfiles: { office: { socksPort: 1081, expectedExits: ["127.0.0.2"] } },
   } });
   const result = await collectClaudeRedisAccountUsageStatus({ ...deps, nowMs: NOW_MS,
+    readClaudeProxyHealthImpl: async () => ({ office: "running" }),
     fetchClaudeUsageSnapshotImpl: async ({ record }) => {
       if (record.label === "protected") throw new ClaudeRouteError("proxy_unavailable", { label: record.label, profileRef: "office" });
       return successSnapshot();
     },
   });
-  assert.match(renderClaudeRedisAccountUsageStatus(result), /protected\s+PROXY ERROR.*office\s+repair assigned proxy/);
+  assert.match(renderClaudeRedisAccountUsageStatus(result), /protected\s+PROXY ERROR.*office\s+running\s+repair assigned proxy/);
   for (const select of [selectLeastUsedUnlockedClaudeAccount, selectClaudeAccountForSession]) {
     assert.throws(() => select(result, { preset: "opus" }), { code: "proxy_unavailable" });
   }

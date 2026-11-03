@@ -231,8 +231,10 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
 
   let directProbeCalls = 0;
   let claudeRequests = 0;
+  let proxyHealth = "running";
   const deps = {
     homeDir: home,
+    readClaudeProxyHealthImpl: async () => ({ test: proxyHealth }),
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-claude-test" }),
     probeUsageSnapshotsByProviderImpl: async (state) => {
       directProbeCalls += 1;
@@ -263,18 +265,33 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   assert.equal(first.claudeUsageStatus.accounts[0].label, "claude");
   assert.equal(first.claudeUsageStatus.accounts[0].locked, true);
   assert.equal(first.claudeUsageStatus.accounts[0].usage.ok, true);
-  assert.deepEqual(first.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured" });
-  assert.deepEqual(first.claudeUsageStatus.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured" });
+  assert.deepEqual(first.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured", health: "running" });
+  assert.deepEqual(first.claudeUsageStatus.accounts[0].egress, first.view.accounts[0].egress);
   const text = renderStatusText(first.view, { claudeUsageStatus: first.claudeUsageStatus });
-  assert.match(text, /updated\s+proxy\s+next/);
-  assert.match(text, /claude\s+IN USE.*\s+test\s+session active/);
+  assert.match(text, /updated\s+proxy\s+health\s+next/);
+  assert.match(text, /claude\s+IN USE.*\s+test\s+running\s+session active/);
   assert.equal(second.view.accounts[0].usage.ok, true);
   assert.equal(second.claudeUsageStatus.accounts[0].source, "cache");
-  assert.deepEqual(second.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured" });
+  assert.deepEqual(second.view.accounts[0].egress, first.view.accounts[0].egress);
+  // A fresh usage cache cannot hide a service that has stopped since that read.
+  proxyHealth = "stopped";
+  const stopped = await buildRedisStatusView({ ...deps, nowMs: nowMs + 61_000 });
+  assert.equal(stopped.claudeUsageStatus.accounts[0].source, "cache");
+  assert.equal(stopped.view.accounts[0].egress.health, "stopped");
+  assert.deepEqual(stopped.view.accounts[0].operator, { status: "proxy_down", eligible: false });
+  assert.match(renderStatusText(stopped.view, { claudeUsageStatus: stopped.claudeUsageStatus }), /claude\s+PROXY DOWN.*test\s+stopped\s+restart assigned proxy/);
+  assert.match(renderStatusText(stopped.view), /claude\s+proxy_down.*proxy_health=stopped/);
   const offline = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_000,
     connectRedisStoreImpl: async () => { throw new Error("offline"); } });
-  assert.deepEqual(offline.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured" });
+  assert.deepEqual(offline.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured", health: "stopped" });
+  assert.deepEqual(offline.view.accounts[0].operator, { status: "proxy_down", eligible: false });
   assert.match(renderStatusText(offline.view), /proxy=test/);
+  // Local recovery is visible even without Redis, but does not claim fresh account readiness.
+  proxyHealth = "running";
+  const recovered = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_000,
+    connectRedisStoreImpl: async () => { throw new Error("offline"); } });
+  assert.equal(recovered.view.accounts[0].egress.health, "running");
+  assert.deepEqual(recovered.view.accounts[0].operator, { status: "unknown", eligible: false });
   writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-claude-test" } } });
   const absentOffline = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_001,
     connectRedisStoreImpl: async () => { throw new Error("offline"); } });

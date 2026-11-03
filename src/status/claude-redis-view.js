@@ -20,7 +20,8 @@ import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { resolveAimgrRedisCachePath } from "../io/paths.js";
 import { fetchClaudeUsageSnapshot } from "../pool/usage.js";
 import { readClaudeSessionUsage } from "./claude-session-usage.js";
-import { describeClaudeEgress, formatClaudeEgress, hasNoLocalClaudeRoute } from "./claude-egress.js";
+import { describeClaudeEgress, formatClaudeEgress, formatClaudeProxyHealth, claudeProxyHealthProblem, hasNoLocalClaudeRoute } from "./claude-egress.js";
+import { readClaudeProxyHealth } from "./claude-proxy-health.js";
 import { rememberClaudeProtection } from "../network/claude-offline-binding.js";
 import {
   averageStatusNumbers,
@@ -856,6 +857,7 @@ export async function collectClaudeRedisAccountUsageStatus({
   acquireRedisCacheLockImpl = acquireRedisCacheLock,
   writeCachedProviderUsageImpl = writeCachedProviderUsage,
   readClaudeSessionUsageImpl = readClaudeSessionUsage,
+  readClaudeProxyHealthImpl = readClaudeProxyHealth,
 } = {}) {
   const normalizedLabels = normalizeSelectedLabels(selectedLabels);
   let authoritativeRecords;
@@ -895,6 +897,11 @@ export async function collectClaudeRedisAccountUsageStatus({
     const binding = rememberClaudeProtection(homeDir, record.label, record);
     return [record.label, describeClaudeEgress(record, localProfiles, { previouslyProtected: binding !== null })];
   }));
+  const proxyHealth = await readClaudeProxyHealthImpl([...routing.values()]
+    .filter(egress => egress.mode === "proxy" && egress.localStatus === "configured").map(egress => egress.profileRef));
+  for (const egress of routing.values()) {
+    if (egress.mode === "proxy" && egress.localStatus === "configured") egress.health = proxyHealth[egress.profileRef] ?? "unknown";
+  }
   const buildResult = (options) => buildStatusResult({
     ...options,
     accounts: options.accounts.map((account) => {
@@ -1344,6 +1351,8 @@ function describeClaudeOperatorState(account, nowMs) {
   const label = typeof account?.label === "string" ? account.label : "account";
 
   if (hasNoLocalClaudeRoute(account)) return { status: "NO ROUTE", next: "don't have a route to this account" };
+  const proxyProblem = claudeProxyHealthProblem(account);
+  if (proxyProblem) return proxyProblem;
   if (CLAUDE_ROUTE_ERROR_CODES.has(account?.errorKind)) return { status: "PROXY ERROR", next: "repair assigned proxy" };
   if (account?.locked === true) return { status: "IN USE", next: "session active" };
   if (
@@ -1406,7 +1415,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
-  const rows = [["account", "plan", "state", "lock", ...columns.headers, "proxy", "source"]];
+  const rows = [["account", "plan", "state", "lock", ...columns.headers, "proxy", "health", "source"]];
   for (const account of accounts) {
     rows.push([
       account.label,
@@ -1415,6 +1424,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
       account.locked === null ? "unknown" : account.locked === true ? "yes" : "--",
       ...columns.values(account),
       formatClaudeEgress(account.egress),
+      formatClaudeProxyHealth(account.egress),
       account.source,
     ]);
   }
@@ -1425,6 +1435,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
       "--",
       "--",
       ...columns.averageValues(),
+      "--",
       "--",
       "all",
     ]);
@@ -1458,7 +1469,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
     operator: describeClaudeOperatorState(account, nowMs),
   }));
   const countStatus = (status) => describedAccounts.filter((entry) => entry.operator.status === status).length;
-  const rows = [["account", "status", ...columns.headers, "updated", "proxy", "next"]];
+  const rows = [["account", "status", ...columns.headers, "updated", "proxy", "health", "next"]];
   for (const { account, operator } of describedAccounts) {
     rows.push([
       account.label,
@@ -1466,6 +1477,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
       ...columns.values(account),
       formatClaudeUsageAge(account),
       formatClaudeEgress(account.egress),
+      formatClaudeProxyHealth(account.egress),
       operator.next,
     ]);
   }
@@ -1477,10 +1489,11 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
       "--",
       "--",
       "--",
+      "--",
     ]);
   }
   return `${[
-    `CLAUDE: ${countStatus("NO ROUTE") ? `${countStatus("NO ROUTE")} without a local route · ` : ""}${countStatus("PROXY ERROR") ? `${countStatus("PROXY ERROR")} proxy errors · ` : ""}${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
+    `CLAUDE: ${countStatus("NO ROUTE") ? `${countStatus("NO ROUTE")} without a local route · ` : ""}${["PROXY DOWN", "PROXY STARTING", "PROXY UNKNOWN", "PROXY ERROR"].filter(status => countStatus(status)).map(status => `${countStatus(status)} ${status.toLowerCase()} · `).join("")}${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
     ...formatStatusTable(rows),
     formatWeeklyCapacityFreeingNextDayLine(
       summarizeWeeklyCapacityFreeingNextDay(accounts.map((account) => findOverallWeeklyWindow(account.usage)), nowMs),
