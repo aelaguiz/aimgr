@@ -3,14 +3,14 @@
  * T02/T03/T08/T11: compile and hardened-runtime sign THIS helper during the
  * approved installation. No DYLD/library-validation exception is permitted.
  * Seatbelt's no-sandbox transition occurs before main; ordinary code clearing
- * DYLD_* inside main would already be too late. The only reentry exception is
- * this immutable image. It accepts data paths and fixed modes, never SBPL or a
- * replacement executable, and applies the new policy before any payload runs.
+ * DYLD_* inside main would already be too late. This immutable entry accepts
+ * data paths and fixed modes, never SBPL or a replacement executable, and
+ * applies the new policy before any payload runs.
  *
  * The trusted AIM caller first validates the complete artifact manifest,
  * provider/admin settings and exact snapshot. This helper independently keeps
  * its own package immutable, fixes the vendor target relative to itself, adds
- * mandatory common restrictions, restores the private environment transfer
+ * vendor restrictions, restores the private environment transfer
  * only after policy entry, closes inherited descriptors, then execs that image.
  * No request, callback, interpreter or vendor probe runs before policy entry.
  */
@@ -315,22 +315,16 @@ int main(int argc,char **argv) {
         if (managed_validator) fputs("(literal \"/usr/bin/plutil\")",out);
         fputs(")))",out);
     } else {
-        fputs("(allow process-exec ",out); rule(out,"literal",self); fputs(" (with no-sandbox))",out);
-        // Seatbelt also prevents Apple's setuid ps from starting, even with
-        // allow-default. The reviewed vendor uses it for zombie/process-tree
-        // and daemon-owner checks. This fixed system utility cannot execute a
-        // caller-selected payload; preserve those lifecycle operations.
-        fputs("(allow process-exec (literal \"/bin/ps\") (with no-sandbox))",out);
-        // Explicit privileged tool commands retain their normal host authority
-        // under the user's accepted privileged-tampering scope. No automatic
-        // sudo execution exists in the reviewed vendor. Include explicit MCP
-        // server commands: those are spawned directly by the vendor too.
-        // Never give shells, interpreters or generic route helpers an escape.
-        // Ordinary unprivileged tools keep all common restrictions.
-        fputs("(allow process-exec (literal \"/usr/bin/sudo\") (with no-sandbox))",out);
-        // Every descendant, including ordinary tools, keeps these exact
-        // snapshot and updater restrictions. Tool-specific file/metadata
-        // exemptions below must never exempt vendor update code.
+        // Privacy controls apply to Claude's automatic collection, not the
+        // user's tools. Drop this Seatbelt policy when executing an ordinary
+        // program: inheritance broke Chrome's own sandbox and made shells/MCP
+        // servers unable to use normal host paths.
+        // Direct vendor self-spawns retain the policy; nested AIM enters its
+        // own launcher and applies the selected account's policy afresh.
+        // Deliberate tool bypass/tampering is outside the agreed threat model.
+        fputs("(allow process-exec (require-not ",out); rule(out,"literal",vendor);
+        fputs(") (with no-sandbox))",out);
+        // These pins govern the vendor only. Ordinary tools keep host access.
         fputs("(deny file-write* ",out); rule(out,"literal",settings); fputs(")",out);
         // T08: denying only the leaf permits moving its parent and writing the
         // same inode through the new path, and loses the replayed --settings
@@ -340,7 +334,7 @@ int main(int argc,char **argv) {
         // Do not make absent machine policy look unreadable: that can make
         // the native client eligible for remote organization policy. The AIM
         // caller admits these exact sources and their replacement permissions.
-        // Descendants may inspect them, but cannot introduce a later override.
+        // Claude may inspect them, but cannot introduce a later override.
         fputs("(deny file-write* ",out); rule(out,"subpath",managed);
         rule(out,"literal",system_preferences); rule(out,"literal",user_preferences); fputs(")",out);
         for (int i=0;i<updatecount;i++) {
@@ -352,7 +346,7 @@ int main(int argc,char **argv) {
             // An operation-specific metadata allowance overrides the generic
             // file-read* denial without permitting file contents or directory
             // enumeration. Keep this INSIDE the vendor filter. Normal tool
-            // authority and common updater/settings restrictions are unchanged.
+            // authority is restored by the exec transition above.
             for (int i=0;i<readcount;i++) if (executable_aliases[i]) {
                 fputs("(allow file-read-metadata ",out);
                 rule(out,"literal",executable_aliases[i]); ancestors(out,executable_aliases[i]); fputs(")",out);

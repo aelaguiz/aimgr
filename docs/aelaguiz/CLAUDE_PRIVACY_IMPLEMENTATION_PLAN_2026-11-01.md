@@ -1,5 +1,13 @@
 # Claude privacy implementation and test plan
 
+**November 3 workflow correction:** the macOS implementation incorrectly made
+ordinary tools inherit Claude's settings/updater sandbox. This exceeded the
+accepted tool-risk scope and broke Chrome startup. Ordinary executable children
+now leave that sandbox; direct vendor self-spawns retain it. Assigned proxy
+routing remains independent. The [scope review and verification](CLAUDE_TOOL_RESTRICTIONS_ROLLBACK_2026-11-03.md)
+supersede the historical claims below that tool-level snapshot/updater denials
+were necessary or that GUI exclusions permitted breaking ordinary app startup.
+
 2026-11-01. **Implementation, Linux/rented-Mac acceptance tests and cold implementation review are complete.** Implement the privacy targets below while preserving native development, skills, MCP, simultaneous sessions, history and scheduled work. This is a plan for official, unmodified Claude Code through AI Manager. Codex implementation is deferred. **Cold plan review approved after revisions;** section 10 records the verdict. The required cold implementation review passed with no remaining blocker or vetoed functionality removal; section 13 records the verdict. Implementation acceptance and approval of a Claude build remain separate.
 
 

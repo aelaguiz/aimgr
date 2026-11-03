@@ -213,6 +213,10 @@ session disables detached conversations/agent view, Remote Control and remote fe
 at startup. Header edits take effect in a new session. Protected sessions also
 require a new session for folders outside their initial project/`--add-dir` grants.
 Ordinary accounts retain their normal filesystem access and telemetry environment.
+On macOS, Claude's privacy sandbox ends when it executes an ordinary tool.
+Shells, Chrome, MCP servers and their children retain normal host access;
+direct Claude self-spawns retain Claude's restrictions. Assigned proxy routing
+is independent of this sandbox and remains enforced.
 
 Once an exact runtime bundle has been reviewed and explicitly approved, install
 it with
