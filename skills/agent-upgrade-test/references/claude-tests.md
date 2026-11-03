@@ -65,7 +65,7 @@ Do not infer authorization from a marker or passing installer alone.
 | T10–T13 routes, failures and original browser | `test/network/claude-native-route.test.js`; `claude-native-macos.test.js`; `claude-native-background.test.js`; `claude-chrome.test.js`; integrated concurrency/launch fixtures; original worklog's browser evidence and current binding checks |
 | T14–T17 skills, MCP, native work, concurrency and continuity | `scripts/privacy-integrated-mcp-check.mjs`; `privacy-integrated-compatibility-check.mjs`; `privacy-integrated-concurrency-check.mjs`; `privacy-integrated-overlap-check.mjs`; `privacy-integrated-continuity-check.mjs`; `privacy-integrated-control-check.mjs`; native reentry probes |
 | T18–T20 schedules, refusal and process lifetime | `scripts/privacy-integrated-control-check.mjs`; `privacy-integrated-schedule-refusals.mjs`; overlap/concurrency fixtures; native background tests; routine lifecycle and saved-job tests in `test/routines/` |
-| T21 real service compatibility | `test/network/claude-real-accounts.test.js`; `scripts/privacy-real-routine-check.mjs`; only assigned proxy5/proxy6 routes after synthetic checks |
+| T21 real service compatibility | `test/network/claude-real-accounts.test.js`; `scripts/privacy-real-routine-check.mjs`; only authorized existing proxy-account routes after synthetic checks |
 | T22–T24 exclusions, transition, comments and review | Full workflow comparison, installer/state/assignment tests, README installation sequence and cold code/evidence review |
 
 Enumerate the actual fixture options and subcases in the run record. This table

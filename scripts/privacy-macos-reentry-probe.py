@@ -12,7 +12,7 @@ base=Path('/opt/aimgr-state-audit'); work=base/'claude-implementation'
 if platform.system()!='Darwin' or os.getuid()==0 or not (base/'OFFSITE_AUDIT_HOST').is_file():
  raise SystemExit('Unprivileged rented Mac required')
 root=work/'reentry-native-decision';root.mkdir(mode=0o700)
-vendor=base/'bin/claude'; expected='64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f'
+vendor=base/'bin/claude'; expected='09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9'
 assert hashlib.sha256(vendor.read_bytes()).hexdigest()==expected
 src=work/'repo/scripts/privacy-macos-reentry-probe.c';helper=work/'reentry-native';control=root/'unhardened-entry'
 for out in [control,root/'hardened-entry']:

@@ -12,7 +12,7 @@ if (process.getuid() === 0 || path.dirname(root) !== base
   throw new Error("An unprivileged offsite fixture is required");
 }
 const { assertClaudeSettingsDoctorResult } = await import(pathToFileURL(path.join(base, "claude-settings-validator.js")));
-const expected = { version: "2.1.316", commit: "cd7ceb459c68", platform: process.platform,
+const expected = { version: "2.1.317", commit: "3d3e7cb16b55", platform: process.platform,
   arch: process.arch, entrypoint: "/opt/aimgr-state-audit/bin/claude" };
 const results = fs.readdirSync(root).filter(name => name.startsWith("doctor-before-")).sort().map(name => {
   const result = JSON.parse(fs.readFileSync(path.join(root, name, "result.private.json"), "utf8"));

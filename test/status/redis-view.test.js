@@ -15,6 +15,9 @@ import {
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
+import { renderStatusText } from "../../src/status/render.js";
+import { invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
+import { writeCachedRedisStatusView } from "../../src/status/redis-cache.js";
 
 test("Codex cache projects the legacy 168h window as Week", () => {
   const view = buildRedisDiagnosticCacheView({
@@ -260,10 +263,73 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   assert.equal(first.claudeUsageStatus.accounts[0].label, "claude");
   assert.equal(first.claudeUsageStatus.accounts[0].locked, true);
   assert.equal(first.claudeUsageStatus.accounts[0].usage.ok, true);
+  assert.deepEqual(first.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured" });
+  assert.deepEqual(first.claudeUsageStatus.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured" });
+  const text = renderStatusText(first.view, { claudeUsageStatus: first.claudeUsageStatus });
+  assert.match(text, /updated\s+proxy\s+next/);
+  assert.match(text, /claude\s+IN USE.*\s+test\s+session active/);
   assert.equal(second.view.accounts[0].usage.ok, true);
   assert.equal(second.claudeUsageStatus.accounts[0].source, "cache");
+  assert.deepEqual(second.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured" });
+  const offline = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_000,
+    connectRedisStoreImpl: async () => { throw new Error("offline"); } });
+  assert.deepEqual(offline.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured" });
+  assert.match(renderStatusText(offline.view), /proxy=test/);
+  writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-claude-test" } } });
+  const absentOffline = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_001,
+    connectRedisStoreImpl: async () => { throw new Error("offline"); } });
+  assert.equal(absentOffline.view.accounts[0].egress.localStatus, "not_configured");
+  assert.deepEqual(absentOffline.view.accounts[0].operator, { status: "no_route", eligible: false });
+  assert.match(renderStatusText(absentOffline.view), /don't have a route to this account/);
+
+  // Persist a NO ROUTE view, then install the profile while Redis is offline.
+  await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_002 });
+  writeAimgrConfig({ homeDir: home, config: {
+    redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-claude-test" },
+    claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } },
+  } });
+  const installedOffline = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_003,
+    connectRedisStoreImpl: async () => { throw new Error("offline"); } });
+  assert.equal(installedOffline.view.accounts[0].egress.localStatus, "configured");
+  assert.deepEqual(installedOffline.view.accounts[0].operator, { status: "unknown", eligible: false });
   assert.equal(directProbeCalls, 0);
   assert.equal(claudeRequests, 1);
+});
+
+test("offline status does not call an account ordinary when a local protection binding exists", async () => {
+  const homeDir = mkTempHome();
+  writeAimgrConfig({ homeDir, config: { redis: { url: "redis://fake:6379", keyPrefix: "test" } } });
+  invalidateClaudeOfflineBinding(homeDir, "protected");
+  for (const egress of [undefined, { mode: "direct" }]) {
+    writeCachedRedisStatusView({ homeDir, view: buildRedisDiagnosticCacheView({
+      nowMs: Date.now(), accounts: [{ label: "protected", provider: ANTHROPIC_PROVIDER,
+        egress, operator: { status: "ready", eligible: true } }],
+    }) });
+    const result = await buildRedisStatusView({ homeDir,
+      connectRedisStoreImpl: async () => { throw new Error("offline"); } });
+    assert.deepEqual(result.view.accounts[0].egress, { mode: "missing_assignment" });
+    assert.deepEqual(result.view.accounts[0].operator, { status: "blocked", eligible: false });
+    assert.doesNotMatch(renderStatusText(result.view), /proxy=none|proxy=unknown/);
+  }
+});
+
+test("diagnostic status never invents direct routing from an old cache or exposes proxy configuration", () => {
+  const view = buildRedisDiagnosticCacheView({ accounts: [
+    { label: "old", provider: ANTHROPIC_PROVIDER },
+    { label: "ordinary", provider: ANTHROPIC_PROVIDER, egress: { mode: "direct" } },
+    { label: "proxied", provider: ANTHROPIC_PROVIDER,
+      egress: { mode: "proxy", profileRef: "office", socksHost: "PRIVATE_IP", chrome: { userDataDir: "PRIVATE_PATH" }, token: "SECRET" } },
+    { label: "invalid", provider: ANTHROPIC_PROVIDER, egress: { mode: "proxy", profileRef: "https://SECRET@example.test" } },
+  ] });
+  assert.deepEqual(view.accounts.map(account => account.egress), [
+    { mode: "unknown" }, { mode: "direct" }, { mode: "proxy", profileRef: "office" }, { mode: "invalid" },
+  ]);
+  const text = renderStatusText(view);
+  assert.match(text, /old.*proxy=unknown/);
+  assert.match(text, /ordinary.*proxy=none/);
+  assert.match(text, /proxied.*proxy=office/);
+  assert.match(text, /invalid.*proxy=invalid/);
+  assert.doesNotMatch(JSON.stringify(view) + text, /PRIVATE_|SECRET/);
 });
 
 test("unconfigured status returns local active facts without reading legacy credentials", async () => {

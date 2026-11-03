@@ -16,6 +16,7 @@ import { fetchJsonWithTimeout } from "../../src/io/fetch.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { collectClaudeRedisAccountUsageStatus, selectClaudeAccountForSession } from "../../src/status/claude-redis-view.js";
 import { buildStableIdentityForCredential } from "../../src/coordination/login-publish.js";
+import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 
 test("usage and automatic selection distinguish hung SOCKS from a healthy route with a stalled origin", async t => {
   const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "aimgr-usage-deadline-"));
@@ -41,6 +42,10 @@ test("usage and automatic selection distinguish hung SOCKS from a healthy route 
     policy: { egress: { profileRef: "a" }, expect: { email: credential.nativeClaudeBundle.oauthAccount.emailAddress } },
     version: 1 });
   let socksPort = healthy.port;
+  const configure = () => writeAimgrConfig({ homeDir, config: {
+    claudeProxyProfiles: { a: { socksPort, expectedExits: ["127.0.0.2"] } },
+  } });
+  configure();
   const fetchUsage = args => fetchClaudeUsageSnapshot({ ...args, homeDir, timeoutMs: 500,
     profiles: { a: { socksPort, expectedExits: ["127.0.0.2"] } },
     createClaudeAccountTransportImpl: params => createClaudeAccountTransport({ ...params,
@@ -56,6 +61,7 @@ test("usage and automatic selection distinguish hung SOCKS from a healthy route 
   assert.equal(ordinary.accounts[0].errorKind, "timeout");
   assert.doesNotThrow(() => selectClaudeAccountForSession(ordinary, { preset: "sonnet" }));
   socksPort = hungPort;
+  configure();
   await assert.rejects(fetchUsage({ record }), { code: "proxy_unavailable" });
   // A new cache avoids the normal provider backoff from the ordinary timeout.
   const failed = await collectClaudeRedisAccountUsageStatus({ homeDir, records: [record], fresh: true,

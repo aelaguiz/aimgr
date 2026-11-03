@@ -2,6 +2,20 @@
 
 `aim` coordinates AI account credentials (Redis on the Mac Studio) and launches Prime Agent, Claude, Codex and Grok sessions. `README.md` covers the credential side.
 
+## Privacy investigations and test identities
+
+An experiment about what Claude or Codex might disclose must not expose Amir's
+normal identity to Anthropic or OpenAI in the process. Keep uncertain data flows
+inside the established sacrificial-account/proxy setup, including the accounts
+already associated with an offsite test VM; introducing a normal account there
+can link identities even if the immediate request looks harmless. Routine checks
+of an already reviewed setup can use existing account permissions. Judge the
+exposure being investigated, not whether the task is called a test.
+
+Use the established proxied test accounts and their assigned routes for these
+investigations. Amir has authorized proxy6 or other existing proxied accounts;
+proxy5 is retired. Real sign-in stays in the original local Chrome/CDP profiles.
+
 ## Prime Agent daemon, sessions, and Herdr restores
 
 Read these before touching the Prime daemon, its locks, or any Herdr pane that hosts a Prime session:

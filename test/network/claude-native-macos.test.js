@@ -151,6 +151,21 @@ test("rented Mac native routes preserve concurrent callers and close on adapter/
     const invocation = await prepareClaudeNativeRoute({ profile: { ...routes.a, profileRef: "mac_a", label: "a" }, command: "/usr/bin/curl", args: ["--noproxy", "*", "-fsS", "--max-time", "5", url] });
     assert.equal(JSON.parse((await exec(invocation.command, invocation.args)).stdout).ip, expected);
   }
+  // OAuth callbacks reverse the direction of the earlier loopback test:
+  // ordinary browser -> protected listener. Its SYN+ACK must be permitted.
+  for (const address of ["127.0.0.1", "::1"]) {
+    const code = `const http=require('node:http');const s=http.createServer((q,r)=>{r.end('callback-ok');s.close()});s.listen(0,${JSON.stringify(address)},()=>console.log(s.address().port));setTimeout(()=>process.exit(2),8000).unref();`;
+    const invocation = await prepareClaudeNativeRoute({ profile: { ...routes.a, profileRef: "mac_a", label: "a" },
+      command: process.execPath, args: ["-e", code] });
+    const child = spawn(invocation.command, invocation.args, { stdio: ["ignore", "pipe", "pipe"] });
+    children.push(child);
+    const exited = once(child, "exit");
+    const callbackPort = Number((await once(child.stdout, "data"))[0].toString().trim());
+    assert.ok(Number.isInteger(callbackPort) && callbackPort > 0);
+    const callback = await fetch(`http://${address.includes(":") ? `[${address}]` : address}:${callbackPort}/callback`, { signal: AbortSignal.timeout(4000) });
+    assert.equal(await callback.text(), "callback-ok");
+    assert.equal((await exited)[0], 0);
+  }
   console.log(JSON.stringify({ nativeNetwork: { ipv6AssignedRoute: true, hostnameAndLoopbackPreserved: true, defaultRouteAndResolversUnchanged: true } }));
   const started = [];
   const launch = async (name, id) => {

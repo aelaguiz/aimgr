@@ -20,13 +20,13 @@ work = base / 'claude-implementation'
 assert platform.system() == 'Linux' and os.getuid() == 0 and (base / 'OFFSITE_AUDIT_HOST').is_file()
 source = work / 'repo/native/claude/approved_launch_linux.c'
 vendor = base / 'bin/claude'
-assert hashlib.sha256(vendor.read_bytes()).hexdigest() == 'fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824'
+assert hashlib.sha256(vendor.read_bytes()).hexdigest() == 'eb224419e344575faa4a1f39b290b649425a10cd5ee2ef1d003480cd9ae57eb0'
 staging = work / 'linux-candidate-staging'
 staging.mkdir(mode=0o755)
 subprocess.run(['/usr/bin/gcc', '-O2', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(staging / 'launcher')], check=True)
 subprocess.run(['/usr/bin/gcc', '-O2', '-Wall', '-Wextra', '-Werror', str(work / 'repo/native/claude/validate_settings_linux.c'), '-o', str(staging / 'validate-settings')], check=True)
-policy = {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '2.1.316',
-          'testedKernelRelease': os.uname().release, 'vendorCommit': 'cd7ceb459c68', 'sourceSha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+policy = {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '2.1.317',
+          'testedKernelRelease': os.uname().release, 'vendorCommit': '3d3e7cb16b55', 'sourceSha256': hashlib.sha256(source.read_bytes()).hexdigest(),
           'scope': 'offsite native entry decision only; no normal-use approval'}
 (staging / 'policy.json').write_text(json.dumps(policy, sort_keys=True) + '\n')
 files = {}
@@ -35,7 +35,7 @@ for name, file, role in [('claude', vendor, 'vendor'), ('launcher', staging / 'l
                    'executable': name != 'policy.json', 'role': role}
 inventory = [[name, files[name]['sha256'], files[name]['size'], files[name]['executable'], files[name]['role']] for name in sorted(files)]
 artifact = hashlib.sha256(json.dumps(inventory, separators=(',', ':')).encode()).hexdigest()
-manifest = {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '2.1.316', 'privacyAbi': 'claude-privacy-v1',
+manifest = {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '2.1.317', 'privacyAbi': 'claude-privacy-v1',
             'candidateSourceSha256': candidate_source, 'entrypoint': 'claude', 'launcher': 'launcher', 'policy': 'policy.json', 'files': files,
             'approval': {'kind': 'offsite-test', 'normalUseApproved': False,
                          'reference': 'User-authorized implementation testing on designated GCP VM only'}}

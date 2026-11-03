@@ -108,3 +108,28 @@ test("validation failure cleans preparation state and never returns a launchable
   assert.ok(!fs.readdirSync(f.options.preparedLaunch.configDir).some(name => name.startsWith(".aim-private-runtime-")));
   assert.deepEqual(fs.readdirSync(path.join(f.root, `claude-${process.getuid()}`)), []);
 });
+
+test("Mac MCP aliases require the admitted helper capability and never broaden ordinary launches", {
+  skip: process.platform !== "darwin",
+}, async t => {
+  const f = fixture(t), external = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aim-external-mcp-")));
+  t.after(() => fs.rmSync(external, { recursive: true, force: true }));
+  const executable = path.join(external, "binary"), alias = path.join(external, "alias");
+  fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 }); fs.symlinkSync(executable, alias);
+  const options = { ...f.options, readRoots: undefined,
+    preparedLaunch: { ...f.options.preparedLaunch, userHomeDir: f.root },
+    args: [...f.options.args, "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: { local: { command: alias } } })] };
+  const policy = JSON.parse(fs.readFileSync(f.artifact.policy));
+  for (const capability of [false, true]) {
+    fs.writeFileSync(f.artifact.policy, JSON.stringify({ ...policy, mcpExecutableAliases: capability }));
+    for (const protectedAccount of [false, true]) {
+      const prepared = await prepareClaudeNativeInvocation({ ...options, protectedAccount });
+      try {
+        const roots = prepared.args.slice(7, 7 + Number(prepared.args[6]));
+        assert.equal(roots.includes(alias), protectedAccount && capability);
+        assert.equal(roots.includes(executable), protectedAccount);
+        assert.ok(!roots.includes(external), "never grant the external bin directory");
+      } finally { prepared.disposeBeforeStart(); }
+    }
+  }
+});

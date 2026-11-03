@@ -240,7 +240,8 @@ int main(int argc,char **argv) {
     if (update_index>=argc) fail("read roots");
     int updatecount=number(argv[update_index],MAX_ROOTS), separator=update_index+1+updatecount;
     if (separator>=argc || strcmp(argv[separator],"--")) fail("update roots");
-    const char **readroots=(const char **)(argv+8), **updateroots=(const char **)(argv+update_index+1);
+    const char **requested_reads=(const char **)(argv+8), **updateroots=(const char **)(argv+update_index+1);
+    const char *readroots[MAX_ROOTS], *executable_aliases[MAX_ROOTS]={0};
     struct passwd *user=getpwuid(getuid()); if (!user || !user->pw_dir) fail("caller home");
     char home[PATH_MAX]; if (!realpath(user->pw_dir,home)) fail("caller home");
     const char *managed="/Library/Application Support/ClaudeCode";
@@ -250,13 +251,40 @@ int main(int argc,char **argv) {
         "/Library/Managed Preferences/%s/com.anthropic.claudecode.plist",user->pw_name)>=(int)sizeof(user_preferences)) fail("managed preference path");
     if (inside(home,config) || inside(home,scratch)) fail("overbroad private root");
     for (int i=0;i<readcount;i++) {
+        const char *requested=requested_reads[i]; char resolved[PATH_MAX];
+        if (!requested || requested[0]!='/' || strlen(requested)>=PATH_MAX || !realpath(requested,resolved)) fail("read root path");
+        readroots[i]=strdup(resolved); if (!readroots[i]) fail("read root allocation");
         canonical(readroots[i]);
+        if (strcmp(requested,resolved)) {
+            // MCP posix_spawn inspects symlink spellings before the canonical
+            // command. A data-read grant to Homebrew's whole bin directory
+            // would expose unrelated files and still need not admit the link.
+            // Accept only an executable FILE alias, never a directory alias.
+            // Each intermediate full command spelling has the same target;
+            // only metadata for that spelling/traversal is admitted below.
+            struct stat command;
+            if (!protected || stat(resolved,&command) || !S_ISREG(command.st_mode) || access(resolved,X_OK)) fail("read alias is not an executable file");
+            for (const unsigned char *p=(const unsigned char *)requested;*p;p++) if (*p<32 || *p==127) fail("invalid executable alias");
+            const char *part=requested+1;
+            while (*part) {
+                const char *end=strchr(part,'/'); size_t n=end?(size_t)(end-part):strlen(part);
+                if (!n || (n==1 && part[0]=='.') || (n==2 && part[0]=='.' && part[1]=='.')) fail("non-normalized executable alias");
+                if (!end) break;
+                part=end+1; if (!*part) fail("non-normalized executable alias");
+            }
+            executable_aliases[i]=requested;
+        }
         if (!strcmp(readroots[i],"/") || inside(home,readroots[i])
             || (inside(config,readroots[i]) && strcmp(config,readroots[i]))) fail("overbroad read root");
     }
     for (int i=0;i<updatecount;i++) {
         canonical_future(updateroots[i]);
         if (!strcmp(updateroots[i],"/") || inside(vendor,updateroots[i]) || inside(self,updateroots[i])) fail("invalid update root");
+        // A literal metadata allow can outrank the generic updater denial.
+        // Never introduce that exception for a command stored in, or pointing
+        // into, an update root. Leave native's existing refusal intact.
+        for (int j=0;j<readcount;j++) if (executable_aliases[j]
+            && (inside(executable_aliases[j],updateroots[i]) || inside(readroots[j],updateroots[i]))) executable_aliases[j]=NULL;
     }
     if (validator && (inside(vendor,scratch) || inside(settings,scratch))) fail("validator input overlap");
     char *policy=NULL; size_t length=0; FILE *out=open_memstream(&policy,&length);
@@ -321,6 +349,14 @@ int main(int argc,char **argv) {
         }
         if (protected) {
             fputs("(with-filter ",out); rule(out,"process-path",vendor); fputs("\n",out);
+            // An operation-specific metadata allowance overrides the generic
+            // file-read* denial without permitting file contents or directory
+            // enumeration. Keep this INSIDE the vendor filter. Normal tool
+            // authority and common updater/settings restrictions are unchanged.
+            for (int i=0;i<readcount;i++) if (executable_aliases[i]) {
+                fputs("(allow file-read-metadata ",out);
+                rule(out,"literal",executable_aliases[i]); ancestors(out,executable_aliases[i]); fputs(")",out);
+            }
             fputs("(deny file-read* file-write* (require-not (require-any ",out);
             rule(out,"literal",vendor); rule(out,"literal",settings); rule(out,"subpath",config); rule(out,"subpath",scratch);
             rule(out,"subpath",config_lock);

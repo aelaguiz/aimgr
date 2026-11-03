@@ -112,6 +112,24 @@ def mark_failed(name):
         pass
 
 
+def publish_state(file, contents, mode):
+    # The ordinary-user guardian must own this directory to mark failure.
+    # Root must never truncate or chmod one of its replaceable pathnames:
+    # write an exclusively created inode, set permissions through that FD,
+    # then rename it over the destination without following a symlink.
+    fd, staged = tempfile.mkstemp(prefix='.publish-', dir=file.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(contents)
+            os.fchmod(stream.fileno(), mode)
+        os.replace(staged, file)
+    finally:
+        try:
+            os.unlink(staged)
+        except FileNotFoundError:
+            pass
+
+
 def listener_pid(port):
     output = command(['/usr/sbin/lsof', '-nP', '-t', f'-iTCP:{port}', '-sTCP:LISTEN'], capture_output=True, text=True).stdout
     pids = set(map(int, output.split()))
@@ -360,8 +378,12 @@ def rules(config):
     # Trusted AIM launched by a tool can explicitly select another account.
     # Its account-bound HTTP transport needs that account's loopback SOCKS.
     # Deliberate local-relay misuse by hostile tools is outside this boundary.
-    lines = [f'pass out quick inet proto tcp from any to 127.0.0.0/8 group {gid} keep state',
-              f'pass out quick inet6 proto tcp from any to ::1 group {gid} keep state',
+    # Local OAuth/MCP listeners also send SYN+ACK, not just outbound SYN. PF's
+    # default S/SA mask drops those replies when an ordinary browser initiated
+    # the connection. Permit every TCP flag only within the existing loopback
+    # exception; external connections still require the assigned TUN below.
+    lines = [f'pass out quick inet proto tcp from any to 127.0.0.0/8 group {gid} flags any keep state',
+              f'pass out quick inet6 proto tcp from any to ::1 group {gid} flags any keep state',
               f'pass out quick route-to ({tun} 198.19.{index}.2) inet proto tcp from any to any group {gid} flags S/SA keep state',
               f'pass out quick route-to ({tun} fd19:{index}::2) inet6 proto tcp from any to any group {gid} flags S/SA keep state',
               f'block drop out quick proto tcp from any to any group {gid}']
@@ -384,17 +406,45 @@ def probe(name):
         connection.close()
 
 
-# Running probe() as root would test the host's ordinary route. Enter through
-# the same UID/GID helper as Claude so this proves PF -> TUN -> assigned SOCKS.
+# Running a check as root would test the host's ordinary route. Drop the
+# fixed curl child to Claude's UID/routing GID BEFORE exec/network activity.
+# Actual caller admission still exercises darwin_identity, its ownership and
+# binding checks, and the Python probe in run_child.
+#
+# Do not reintroduce two fresh Python interpreters on every health tick:
+# macOS startup/imports alone exceeded eight seconds on the developer laptop,
+# killing healthy sessions before any network I/O. Nor may a fork-only child
+# call Python's resolver: macOS does not support getaddrinfo before exec.
+# A single native curl exec keeps the same hard eight-second outer deadline.
 def check_native_path(name, config):
-    user = pwd.getpwuid(config['uid'])
-    binding = {key: config[key] for key in ('socksHost', 'socksPort', 'expectedExits')}
-    def ordinary_user():
-        os.initgroups(user.pw_name, user.pw_gid)
-        os.setgid(user.pw_gid)
-        os.setuid(user.pw_uid)
-    command([str(ROOT / 'darwin_launch'), name, json.dumps(binding), '--', '/usr/bin/python3', '-I', str(ROOT / 'darwin_proxy.py'), 'probe', name],
-            preexec_fn=ordinary_user, timeout=8)
+    if os.geteuid() != 0 or config['uid'] <= 0 or config['gid'] <= 0:
+        raise RuntimeError('native route monitor requires a non-root routing identity')
+    url = config.get('exitCheckUrl', 'https://api.ipify.org?format=json')
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ('https', 'http') or not parsed.hostname or parsed.username:
+        raise RuntimeError('invalid exit check URL')
+    def routed_identity():
+        # Only credential syscalls run between fork and exec. This fixed
+        # health check needs no supplementary file access or user settings.
+        os.setgroups([])
+        os.setgid(config['gid'])
+        os.setuid(config['uid'])
+        if (os.getuid() != config['uid'] or os.geteuid() != config['uid']
+                or os.getgid() != config['gid'] or os.getegid() != config['gid']):
+            os._exit(125)
+    # Stop marks failure before waiting for admission. Hold the shared lock
+    # until this child exits so it cannot enter the GID after stop's scan.
+    with lock(ROOT / f'{name}.lock'):
+        current_ready(name, allow_starting=True)
+        result = command(['/usr/bin/curl', '--disable', '--proxy', '', '--noproxy', '*',
+                          '--proto', '=http,https', '--max-time', '6', '--max-filesize', '1024',
+                          '--silent', '--show-error', '--fail', '--write-out', '\n%{http_code}', '--', url],
+                         env={'PATH': '/usr/bin:/bin'}, preexec_fn=routed_identity,
+                         timeout=8, capture_output=True, text=True)
+        body, separator, status = result.stdout.rpartition('\n')
+        if (not separator or status != '200' or len(body) > 1024
+                or json.loads(body).get('ip') not in config['expectedExits']):
+            raise RuntimeError('native route exit mismatch')
 
 
 def serve(name):
@@ -448,9 +498,8 @@ def serve(name):
         owners = [{'pid': pid, 'started': live[pid]['started'], 'role': role}
                   for role, pid in [('monitor', os.getpid()), ('adapter', adapter.pid), ('tunnel', tunnel), ('guardian', watcher)]]
         with lock(ROOT / f'{name}.lock', exclusive=True):
-            (state / 'starting').touch(mode=0o600)
-            previous.write_text(json.dumps({'owners': owners}))
-            os.chmod(previous, 0o644)
+            publish_state(state / 'starting', '', 0o600)
+            publish_state(previous, json.dumps({'owners': owners}), 0o644)
             (state / 'failed').unlink()
         # The starting marker denies ordinary admission until the complete
         # native path passes. A listening tunnel or created TUN is insufficient.

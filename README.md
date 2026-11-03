@@ -200,6 +200,15 @@ work with a repair/retry message. Repair does not automatically resume a session
 or replay a failed scheduled job; later independent scheduled occurrences retain
 the normal scheduling rules. Same-account sessions remain concurrent.
 
+`aim status` shows each Claude account's assigned proxy (`none` for ordinary
+accounts). When that profile is not configured on this machine, it shows
+`NO ROUTE` and `don't have a route to this account`. Automatic selection,
+including scheduled jobs, skips that account without probing its credentials.
+Installing its local profile makes it available to the picker. A configured
+route that fails still stops the launch with a clear proxy error; an explicit
+account launch also requires its assigned route. Cached usage cannot override
+these checks, and Redis-down status rechecks the current local configuration.
+
 Follow the [Claude privacy setup and transition plan](docs/aelaguiz/CLAUDE_PRIVACY_PROXY_WORKLOG_2026-10-30.md#8-implementation-order-and-scheduled-transition)
 to install the Linux or macOS helper and configure the local profile before
 enrolling a stopped account with `aim claude proxy set <label> <profileRef>`.
@@ -250,6 +259,8 @@ fast path as a shortcut around AIM admission. Existing session cleanup is a
 separate explicit transition; installing this change does not perform it.
 
 ### Installing a reviewed Claude runtime without interrupting coding
+
+The [Claude 2.1.317 verification record](docs/aelaguiz/CLAUDE_2_1_317_UPGRADE_VERIFICATION_2026-11-03.md) records the tested bundles, final source, cold review, installation and retained evidence for the latest completed upgrade.
 
 The installed `aim` wrapper executes the checkout it names. If that path is a
 working checkout, `git pull`, switching branches or updating `main` changes the

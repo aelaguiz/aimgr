@@ -1,4 +1,6 @@
 import { ClaudeRouteError } from "../../src/network/claude-egress-policy.js";
+import { readClaudeOfflineBinding, invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
+import { resolveNativeAccountProfile } from "../../src/network/claude-native-route.js";
 import { getAnthropicCredentialView } from "../../src/credentials/anthropic.js";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -412,7 +414,7 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   assert.equal(first.accounts[1].locked, true);
   assert.deepEqual(first.missingAccounts, ["candidate"]);
   assert.deepEqual(Object.keys(first.accounts[1]).sort(), [
-    "ageMs", "authState", "credentialExpiresAt", "credentialReady", "credentialState", "errorKind", "label",
+    "ageMs", "authState", "credentialExpiresAt", "credentialReady", "credentialState", "egress", "errorKind", "label",
     "lastAttemptAtMs", "lock", "locked", "rateLimitTier", "source", "stale", "subscriptionType",
     "usage", "usageObservedAtMs",
   ]);
@@ -532,7 +534,7 @@ test("Claude human status renders the four launch states with frozen precedence"
   });
 
   assert.match(rendered, /^CLAUDE: 2 ready · 0 limited · 1 in use · 1 needs you · 1 unknown/m);
-  assert.match(rendered, /ready\s+READY.*2m\s+use now/);
+  assert.match(rendered, /ready\s+READY.*2m\s+unknown\s+use now/);
   assert.match(rendered, /active\s+IN USE.*session active/);
   assert.match(rendered, /fixing\s+READY.*use now/);
   assert.match(rendered, /needs\s+NEEDS YOU.*aim login needs/);
@@ -1453,7 +1455,7 @@ test("idle accounts keep last-known usage for days and read LIMITED until the fu
   assert.equal(limited.accounts[0].ageMs, 2 * DAY_MS);
   const limitedText = renderClaudeRedisAccountUsageStatus(limited);
   assert.match(limitedText, /^CLAUDE: 0 ready · 1 limited · 0 in use · 0 needs you · 0 unknown$/m);
-  assert.match(limitedText, /idle\s+LIMITED\s+0%\s+--\s+100%\s+24\.0h\s.*2\.0d\s+free in 24\.0h/);
+  assert.match(limitedText, /idle\s+LIMITED\s+0%\s+--\s+100%\s+24\.0h\s.*2\.0d\s+none\s+free in 24\.0h/);
   assert.equal(selectLeastUsedUnlockedClaudeAccount(limited, { preset: "opus" }), null);
 
   // After the weekly reset the account is free again.
@@ -1571,5 +1573,91 @@ test("cached route failures remain visible and cannot select another account", a
     assert.match(renderClaudeRedisAccountUsageStatus(result), /PROXY ERROR/);
     a.locked = true;
     assert.match(renderClaudeRedisAccountUsageStatus(result), /PROXY ERROR/);
+  }
+});
+
+test("accounts without a local route remain visible, are not probed or selected, and reject explicit launch", async () => {
+  const proxied = anthropicRecord("remote");
+  proxied.policy.egress = { profileRef: "office" };
+  const deps = await setup([proxied, anthropicRecord("ordinary")]);
+  const calls = [];
+  const collect = extra => collectClaudeRedisAccountUsageStatus({
+    ...deps, nowMs: NOW_MS, ...extra,
+    fetchClaudeUsageSnapshotImpl: async ({ record }) => { calls.push(record.label); return successSnapshot(record.label === "remote" ? 0 : 50); },
+  });
+  const absent = await collect();
+  const remote = absent.accounts.find(account => account.label === "remote");
+  assert.deepEqual(remote.egress, { mode: "proxy", profileRef: "office", localStatus: "not_configured" });
+  assert.equal(remote.errorKind, "proxy_profile_unavailable");
+  assert.deepEqual(calls, ["ordinary"]);
+  assert.ok(readClaudeOfflineBinding(deps.homeDir, "remote"));
+  assert.match(renderClaudeRedisAccountUsageStatus(absent), /remote\s+NO ROUTE.*office\s+don't have a route to this account/);
+  for (const select of [selectLeastUsedUnlockedClaudeAccount, selectClaudeAccountForSession]) {
+    assert.equal(select(absent, { preset: "opus" }).label, "ordinary");
+    assert.equal(select({ accounts: [remote] }, { preset: "opus" }), null);
+    assert.equal(select({ accounts: [{ ...remote, locked: true, localSessions: 2 }] }, { preset: "opus" }), null);
+  }
+  assert.throws(() => resolveNativeAccountProfile({ homeDir: deps.homeDir,
+    label: "remote", state: { accounts: { remote: proxied } } }), { code: "proxy_profile_unavailable" });
+
+  // Installing the route makes this account eligible on the next status read.
+  writeAimgrConfig({ homeDir: deps.homeDir, config: {
+    redis: { url: "redis://fake:6379", keyPrefix: KEY_PREFIX },
+    claudeProxyProfiles: { office: { socksPort: 1081, expectedExits: ["127.0.0.2"] } },
+  } });
+  const available = await collect();
+  assert.equal(available.accounts.find(account => account.label === "remote").egress.localStatus, "configured");
+  assert.equal(selectClaudeAccountForSession(available, { preset: "opus" }).label, "remote");
+  assert.deepEqual(calls, ["ordinary", "remote"]);
+
+  // Removing the local config cannot reuse that fresh, lower-usage cache to
+  // select or probe the account. Explicit admission remains fail closed.
+  writeAimgrConfig({ homeDir: deps.homeDir, config: { redis: { url: "redis://fake:6379", keyPrefix: KEY_PREFIX } } });
+  const removed = await collect({ nowMs: NOW_MS + 1_000 });
+  assert.equal(selectClaudeAccountForSession(removed, { preset: "opus" }).label, "ordinary");
+  assert.deepEqual(calls, ["ordinary", "remote"]);
+});
+
+test("a configured proxy failure remains fatal and never selects an ordinary replacement", async () => {
+  const proxied = anthropicRecord("protected");
+  proxied.policy.egress = { profileRef: "office" };
+  const deps = await setup([proxied, anthropicRecord("ordinary")]);
+  writeAimgrConfig({ homeDir: deps.homeDir, config: {
+    redis: { url: "redis://fake:6379", keyPrefix: KEY_PREFIX },
+    claudeProxyProfiles: { office: { socksPort: 1081, expectedExits: ["127.0.0.2"] } },
+  } });
+  const result = await collectClaudeRedisAccountUsageStatus({ ...deps, nowMs: NOW_MS,
+    fetchClaudeUsageSnapshotImpl: async ({ record }) => {
+      if (record.label === "protected") throw new ClaudeRouteError("proxy_unavailable", { label: record.label, profileRef: "office" });
+      return successSnapshot();
+    },
+  });
+  assert.match(renderClaudeRedisAccountUsageStatus(result), /protected\s+PROXY ERROR.*office\s+repair assigned proxy/);
+  for (const select of [selectLeastUsedUnlockedClaudeAccount, selectClaudeAccountForSession]) {
+    assert.throws(() => select(result, { preset: "opus" }), { code: "proxy_unavailable" });
+  }
+});
+
+test("remembered protection blocks missing assignment even with healthy or unsafe usage cache", async () => {
+  const deps = await setup([anthropicRecord("protected"), anthropicRecord("ordinary")]);
+  let calls = 0;
+  const collect = () => collectClaudeRedisAccountUsageStatus({ ...deps, nowMs: NOW_MS,
+    fetchClaudeUsageSnapshotImpl: async () => { calls += 1; return successSnapshot(); },
+  });
+  await collect();
+  assert.equal(calls, 2);
+  invalidateClaudeOfflineBinding(deps.homeDir, "protected");
+  for (const unsafe of [false, true]) {
+    if (unsafe) fs.chmodSync(resolveAimgrRedisCachePath({ homeDir: deps.homeDir }), 0o644);
+    const result = await collect();
+    const account = result.accounts.find(account => account.label === "protected");
+    assert.deepEqual(account.egress, { mode: "missing_assignment" });
+    assert.equal(account.errorKind, "missing_proxy_assignment");
+    assert.equal(account.usage.ok, false);
+    assert.equal(calls, 2);
+    assert.match(renderClaudeRedisAccountUsageStatus(result), /protected\s+PROXY ERROR/);
+    for (const select of [selectLeastUsedUnlockedClaudeAccount, selectClaudeAccountForSession]) {
+      assert.throws(() => select(result, { preset: "opus" }), { code: "missing_proxy_assignment" });
+    }
   }
 });

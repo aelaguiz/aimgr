@@ -21,6 +21,9 @@ try {
   } else if (input.check === "controls") {
     const { verifyControls } = await import("./privacy-integrated-control-check.mjs");
     await verifyControls(input); console.log("SYNTHETIC_OK");
+  } else if (input.check === "mcp-alias") {
+    const { verifyMcpAliases } = await import("./privacy-integrated-mcp-alias-check.mjs");
+    await verifyMcpAliases(input); console.log("SYNTHETIC_OK");
   } else if (input.check === "compatibility") {
     const { verifyCompatibility } = await import("./privacy-integrated-compatibility-check.mjs");
     await verifyCompatibility(input); console.log("SYNTHETIC_OK");

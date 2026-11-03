@@ -13,13 +13,13 @@ assert len(candidate_source) == 64 and all(c in '0123456789abcdef' for c in cand
 base=Path('/opt/aimgr-state-audit');work=base/'claude-implementation'
 assert platform.system()=='Darwin' and os.getuid()!=0 and (base/'OFFSITE_AUDIT_HOST').is_file()
 source=work/'repo/native/claude/approved_launch_macos.c';vendor=base/'bin/claude'
-expected='64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f'
+expected='09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9'
 assert hashlib.sha256(vendor.read_bytes()).hexdigest()==expected
 staging=work/'mac-candidate-staging';staging.mkdir(mode=0o700)
 subprocess.run(['/usr/bin/clang','-O2','-Wall','-Wextra','-Werror',str(source),'-o',str(staging/'launcher')],check=True)
 subprocess.run(['/usr/bin/codesign','--force','--sign','-','--options','runtime',str(staging/'launcher')],check=True,capture_output=True)
 subprocess.run(['/usr/bin/clang','-std=c11','-O2','-Wall','-Wextra','-Werror',str(work/'repo/native/claude/security_shim.c'),'-o',str(staging/'security')],check=True)
-policy={'schema':1,'platform':'darwin','arch':'arm64','testedKernelRelease':os.uname().release,'vendorCommit':'cd7ceb459c68','version':'2.1.316',
+policy={'schema':1,'platform':'darwin','arch':'arm64','testedKernelRelease':os.uname().release,'vendorCommit':'3d3e7cb16b55','version':'2.1.317','mcpExecutableAliases':True,
         'scope':'offsite candidate tests only; no normal-use approval','sourceSha256':hashlib.sha256(source.read_bytes()).hexdigest()}
 (staging/'policy.json').write_text(json.dumps(policy,sort_keys=True)+'\n')
 files={}
@@ -27,7 +27,7 @@ for name,file,role in [('claude',vendor,'vendor'),('launcher',staging/'launcher'
  files[name]={'sha256':hashlib.sha256(file.read_bytes()).hexdigest(),'size':file.stat().st_size,'executable':name!='policy.json','role':role}
 inventory=[[name,files[name]['sha256'],files[name]['size'],files[name]['executable'],files[name]['role']] for name in sorted(files)]
 artifact=hashlib.sha256(json.dumps(inventory,separators=(',',':')).encode()).hexdigest()
-manifest={'schema':1,'platform':'darwin','arch':'arm64','version':'2.1.316','privacyAbi':'claude-privacy-v1',
+manifest={'schema':1,'platform':'darwin','arch':'arm64','version':'2.1.317','privacyAbi':'claude-privacy-v1',
  'candidateSourceSha256':candidate_source,'entrypoint':'claude','launcher':'launcher','policy':'policy.json','securityAdapter':'security','files':files,
  'approval':{'kind':'offsite-test','reference':'User-authorized implementation testing on designated rented Mac only; exact vendor digest in plan',
              'normalUseApproved':False}}

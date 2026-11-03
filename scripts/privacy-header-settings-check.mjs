@@ -36,7 +36,7 @@ for (const [name, settings, expected] of cases) {
   let failure, accepted;
   try {
     accepted = await nativeClaudeHeaderSourceAccepted(settings, {
-      expected: { version: "2.1.316", commit: "cd7ceb459c68", platform: process.platform,
+      expected: { version: "2.1.317", commit: "3d3e7cb16b55", platform: process.platform,
         arch: process.arch, entrypoint: path.join(candidate.root, "claude") },
       nativeLauncher: path.join(candidate.root, "launcher"), scratchParent: root,
       spawnImpl(command, args, options) {

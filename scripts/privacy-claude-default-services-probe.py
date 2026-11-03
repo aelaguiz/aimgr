@@ -36,8 +36,8 @@ from urllib.parse import urlsplit
 
 
 EXPECTED = {
-    "Linux": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
-    "Darwin": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "Linux": "eb224419e344575faa4a1f39b290b649425a10cd5ee2ef1d003480cd9ae57eb0",
+    "Darwin": "09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9",
 }
 p = argparse.ArgumentParser()
 p.add_argument("--root", type=Path, required=True)
@@ -264,6 +264,18 @@ class Mock(http.server.BaseHTTPRequestHandler):
                 if not any(block.get("id") == "expected_error_tool" for block in blocks):
                     content = {"type": "tool_use", "id": "expected_error_tool", "name": "Bash", "input": {
                         "command": "printf SYNTHETIC_EXPECTED_TOOL_FAILURE >&2; exit 7", "description": "Exercise an expected synthetic tool failure"}}
+            if "mcp-alias" in active:
+                messages = json.dumps(body.get("messages", []))
+                blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
+                calls = [block.get("name") for block in blocks if block.get("type") == "tool_use"]
+                if "MCP_ALIAS_PRIVATE_READ" in messages:
+                    if "Read" not in calls:
+                        content = {"type": "tool_use", "id": "mcp_alias_private_read", "name": "Read", "input": {"file_path": str(home / "private-mcp-bin/unrelated-private-file")}}
+                else:
+                    wanted = next((tool["name"] for tool in body.get("tools", []) if "alias" in tool["name"] and tool["name"].endswith("echo")), None)
+                    tool = wanted or "ToolSearch"
+                    if tool not in calls:
+                        content = {"type": "tool_use", "id": "mcp_alias_" + str(len(requests)), "name": tool, "input": {} if wanted else {"query": "+alias echo", "max_results": 3}}
             if "compatibility" in active:
                 messages = json.dumps(body.get("messages", []))
                 blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
@@ -330,7 +342,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
                         "command": "printf 'HEADER_FIRST_SETTING_%s' \"$AIM_HEADER_LIVE_PROBE\"", "description": "Read initial fixture setting"}}
                 elif "NATIVE_SECOND_HEADER_TURN" in json.dumps(body.get("messages", [])) and "header_live_env_probe" not in identifiers:
                     content = {"type": "tool_use", "id": "header_live_env_probe", "name": "Bash", "input": {
-                        "command": "printf 'HEADER_LIVE_SETTING_%s' \"$AIM_HEADER_LIVE_PROBE\"", "description": "Read unrelated live fixture setting"}}
+                        "command": "printf 'HEADER_LIVE_SETTING_%s CRITICAL_LIVE_SETTINGS_%s_%s_%s_%s_%s' \"$AIM_HEADER_LIVE_PROBE\" \"$DISABLE_UPDATES\" \"$DISABLE_AUTOUPDATER\" \"$DISABLE_TELEMETRY\" \"$DISABLE_ERROR_REPORTING\" \"$DISABLE_GROWTHBOOK\"", "description": "Verify live edits preserve the pinned privacy controls"}}
             if ("dynamic-directory" in active or "startup-directory" in active) and "NATIVE_ADDED_DIRECTORY" in json.dumps(body.get("messages", [])):
                 blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
                 if not any(block.get("type") == "tool_use" and block.get("name") == "Read" for block in blocks):
@@ -550,6 +562,11 @@ def interactive(arguments, home, env):
                     chunk = os.read(descriptor, 65536)
                     if chunk:
                         output.extend(chunk)
+                        # Retain synthetic terminal evidence while the child is
+                        # alive. A stuck kernel exit must not discard the only
+                        # evidence of the prompt or startup failure it reached.
+                        with (home / "terminal-capture.private.txt").open("ab") as capture:
+                            capture.write(chunk)
                 except OSError as error:
                     if error.errno != errno.EIO:
                         raise
@@ -653,7 +670,12 @@ def interactive(arguments, home, env):
                         debug = home / "project/debug.private.txt"
                         debug_offset = debug.stat().st_size if debug.exists() else 0
                         changed = {"env": {"ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer SYNTHETIC_HEADER_OVERRIDE\nX-Aim-Initial: changed",
-                                           "AIM_HEADER_LIVE_PROBE": "after"}}
+                                           "AIM_HEADER_LIVE_PROBE": "after", "DISABLE_UPDATES": "",
+                                           "DISABLE_AUTOUPDATER": "false", "DISABLE_TELEMETRY": "0",
+                                           "DISABLE_ERROR_REPORTING": "", "DISABLE_GROWTHBOOK": "false"}}
+                        # A real unrelated-setting change proves the watcher
+                        # applied this edit. Startup-only checks cannot prove
+                        # that the critical values survive a later reload.
                         # Edit externally after idle, preserving the inode.
                         # Native watcher initialization is asynchronous: an
                         # immediate first-turn Bash edit can precede readiness.
@@ -704,13 +726,26 @@ def interactive(arguments, home, env):
                 finished = True
                 break
     finally:
+        # Release the fixture's PTY before waiting for a killed child. Keep the
+        # reap bounded too: an exiting Darwin task can remain in the kernel
+        # after SIGKILL. That is a failed experiment, never a passing cleanup or
+        # a reason to leave the entire acceptance run blocked in waitpid.
+        os.close(descriptor)
         if not finished:
             try:
                 os.killpg(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            os.waitpid(pid, 0)
-        os.close(descriptor)
+            reap_deadline = time.monotonic() + 5
+            while True:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    break
+                if time.monotonic() >= reap_deadline:
+                    (home / "terminal-cleanup-failed.json").write_text(json.dumps({
+                        "pid": pid, "passed": False, "reason": "child did not exit after SIGKILL"}))
+                    raise RuntimeError("Synthetic terminal child did not exit; inspect retained offsite evidence")
+                time.sleep(.05)
     return output.decode(errors="replace"), "", code, counts
 
 
@@ -747,6 +782,7 @@ cases = [
     ("pro-rc-toggle", "pro", True, "sign_in"),
     ("pro-rc-saved", "pro", True, "sign_in"),
     ("protected-pro-compatibility-disabled", "pro", True, "sign_in"),
+    ("protected-pro-mcp-alias-disabled", "pro", True, "sign_in"),
     ("protected-pro-concurrency-disabled", "pro", True, "sign_in"),
     ("protected-pro-concurrency-background-disabled", "pro", True, "sign_in"),
     ("protected-pro-concurrency-continuity-disabled", "pro", True, "sign_in"),
@@ -755,6 +791,8 @@ cases = [
     ("protected-pro-concurrency-overlap-disabled", "pro", True, "sign_in"),
     ("protected-pro-controls-disabled", "pro", True, "sign_in"),
     ("ordinary-pro-update-boundary-disabled", "pro", False, "sign_in"),
+    ("ordinary-pro-update-boundary-empty-xdg-disabled", "pro", False, "sign_in"),
+    ("protected-pro-update-boundary-empty-xdg-disabled", "pro", True, "sign_in"),
     ("protected-pro-http-mcp-disabled", "pro", True, "sign_in"),
     ("ordinary-pro-terminal-disabled", "pro", False, "sign_in"),
     ("protected-pro-terminal-disabled", "pro", True, "sign_in"),
@@ -767,6 +805,8 @@ try:
     for name, plan, opt_out, origin in cases:
         if a.case and name not in a.case:
             continue
+        if "mcp-alias" in name and platform.system() != "Darwin":
+            continue  # This regression exercises macOS executable lookup.
         active, active_plan = name, plan
         if "upgrade" in name:
             active_plan = "max"
@@ -853,25 +893,39 @@ try:
             (config / "settings.json").write_text(json.dumps({"env": {
                 "ANTHROPIC_CUSTOM_HEADERS": "X-Aim-Initial: initial", "AIM_HEADER_LIVE_PROBE": "before"}}))
         if "update-boundary" in name:
-            updater = home / "xdg-actual/claude/versions/unknown"
-            updater.mkdir(parents=True)
-            (home / "xdg-alias").symlink_to(home / "xdg-actual", target_is_directory=True)
-            env["XDG_DATA_HOME"] = str(home / "xdg-alias")
+            if "empty-xdg" in name:
+                # The shipped client uses nullish defaults: an empty XDG
+                # value selects a cwd-relative root, not the HOME default.
+                # Exercise the real AIM resolver and native policy together.
+                for key in ["XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]:
+                    env[key] = ""
+                updaters = [home / "project/claude" / kind / "unknown"
+                            for kind in ["versions", "staging", "locks"]]
+            else:
+                updaters = [home / "xdg-actual/claude/versions/unknown"]
+                (home / "xdg-alias").symlink_to(home / "xdg-actual", target_is_directory=True)
+                env["XDG_DATA_HOME"] = str(home / "xdg-alias")
             marker = home / "project/unapproved-executed"
-            (updater / "claude").write_text("#!/bin/sh\n: > " + shlex.quote(str(marker)) + "\n")
-            (updater / "claude").chmod(0o700)
-            (updater / "unknown.py").write_text("from pathlib import Path\nPath(" + repr(str(marker)) + ").touch()\n")
+            for updater in updaters:
+                updater.mkdir(parents=True)
+                (updater / "claude").write_text("#!/bin/sh\n: > " + shlex.quote(str(marker)) + "\n")
+                (updater / "claude").chmod(0o700)
+                (updater / "unknown.py").write_text("from pathlib import Path\nPath(" + repr(str(marker)) + ").touch()\n")
+                (updater / "alias").symlink_to(updater / "claude")
             check = '''import json,subprocess
 from pathlib import Path
-updater=Path(UPDATER);marker=Path(MARKER);checks=[]
-try:
- (updater/'replacement').write_text('must refuse')
- checks.append({'name':'updater-write','passed':False})
-except PermissionError:checks.append({'name':'updater-write','passed':True})
-for name,argv in [('direct',[str(updater/'claude')]),('interpreter',['/usr/bin/python3',str(updater/'unknown.py')])]:
- try: code=subprocess.run(argv,capture_output=True,timeout=15).returncode
- except PermissionError:code=126
- checks.append({'name':name,'exit':code,'passed':code!=0 and not marker.exists()})
+marker=Path(MARKER);checks=[]
+for directory in UPDATERS:
+ updater=Path(directory);kind=updater.parent.name
+ try:
+  (updater/'replacement').write_text('must refuse')
+  checks.append({'name':kind+':updater-write','passed':False})
+ except PermissionError:checks.append({'name':kind+':updater-write','passed':True})
+ for name,argv in [('direct',[str(updater/'claude')]),('shell',['/bin/sh',str(updater/'claude')]),('interpreter',['/usr/bin/python3',str(updater/'unknown.py')]),('symlink',[str(updater/'alias')])]:
+  try: code=subprocess.run(argv,capture_output=True,timeout=15).returncode
+  except PermissionError:code=126
+  checks.append({'name':kind+':'+name,'exit':code,'passed':code!=0 and not marker.exists()})
+  if marker.exists():marker.unlink()
 project=marker.parent;proof=project/'project-script-proof';script=project/'ordinary.sh'
 script.write_text('#!/bin/sh\\nprintf ordinary-ok > '+str(proof)+'\\n');script.chmod(0o700)
 code=subprocess.run([str(script)],capture_output=True,timeout=15).returncode
@@ -883,7 +937,7 @@ checks.append({'name':'native-c-build-and-run','passed':built.returncode==0 and 
 result={'checks':checks,'passed':all(c['passed'] for c in checks)}
 (project/'update-observations.json').write_text(json.dumps(result))
 print(json.dumps(result))
-'''.replace("UPDATER", repr(str(updater))).replace("MARKER", repr(str(marker)))
+'''.replace("UPDATERS", repr([str(updater) for updater in updaters])).replace("MARKER", repr(str(marker)))
             (home / "project/update-check.py").write_text(check)
         if "-rc-" in name:
             (config / "settings.json").write_text(json.dumps({"remoteControlAtStartup": name.endswith("saved")}))
@@ -945,6 +999,8 @@ print(json.dumps(result))
                 invocation["captureFile"] = str(root / "requests.private.jsonl")
             if "schedules" in name:
                 invocation.update(check="schedule-refusals" if "refusals" in name else "schedules", captureFile=str(root / "requests.private.jsonl"))
+            if "mcp-alias" in name:
+                invocation.update(check="mcp-alias", captureFile=str(root / "requests.private.jsonl"))
             if "compatibility" in name:
                 invocation.update(check="compatibility", captureFile=str(root / "requests.private.jsonl"))
             if "controls" in name:
@@ -983,7 +1039,7 @@ print(json.dumps(result))
                                      pass_fds=(environment_transfer.fileno(),) if environment_transfer else ())
             if environment_transfer: environment_transfer.close()
             try:
-                out, err = child.communicate(timeout=240 if "schedules" in name or "concurrency" in name else 180 if "detached" in name or "workflows" in name or "http-mcp" in name or "compatibility" in name or "controls" in name else 45)
+                out, err = child.communicate(timeout=240 if "schedules" in name or "concurrency" in name else 180 if "detached" in name or "workflows" in name or "http-mcp" in name or "mcp-alias" in name or "compatibility" in name or "controls" in name else 45)
                 code = child.returncode
             except subprocess.TimeoutExpired:
                 observed = subprocess.run(["/bin/ps", "-axo", "pid=,ppid=,uid=,gid=,stat=,command="], capture_output=True, text=True)
@@ -1038,6 +1094,7 @@ print(json.dumps(result))
                             "initialValues": [next((value for key, value in r["headers"].items() if key.lower() == "x-aim-initial"), None) for r in captures if "/messages" in r["path"]],
                             "competingAuthSent": any(any(key.lower() == "authorization" and "SYNTHETIC_HEADER_OVERRIDE" in value for key, value in r["headers"].items()) for r in captures),
                             "unrelatedSettingReloaded": any("HEADER_LIVE_SETTING_after" in json.dumps(r["body"]) for r in captures if "/messages" in r["path"]),
+                            "criticalSettingsStayedPinned": any("CRITICAL_LIVE_SETTINGS_1_1_1_1_1" in json.dumps(r["body"]) for r in captures if "/messages" in r["path"]),
                         }} if "headers-reload" in name else {}),
                         **terminal,
                         "terminalCanaryInModel": any(TERMINAL_CANARY in captured_text(r) for r in captures if "/messages" in r["path"]),
@@ -1048,6 +1105,7 @@ print(json.dumps(result))
                         **({"detached": json.loads((home / "detached.json").read_text())} if (home / "detached.json").exists() else {}),
                         **({"backgroundReview": json.loads((home / "background-review.json").read_text())} if (home / "background-review.json").exists() else {}),
                         **({"compatibility": json.loads((home / "compatibility.json").read_text())} if (home / "compatibility.json").exists() else {}),
+                        **({"mcpAlias": json.loads((home / "mcp-alias.json").read_text())} if (home / "mcp-alias.json").exists() else {}),
                         **({"controls": json.loads((home / "controls.json").read_text())} if (home / "controls.json").exists() else {}),
                         **({"concurrency": json.loads((home / "concurrency.json").read_text())} if (home / "concurrency.json").exists() else {}),
                         **({"schedules": json.loads((home / "schedules.json").read_text())} if (home / "schedules.json").exists() else {}),

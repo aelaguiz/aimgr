@@ -87,13 +87,13 @@ function safeGitText(file) {
 // repository for a linked worktree, followed by ownership/home checks. Git env
 // overrides and `git rev-parse` are not this client's selector. Failed linked
 // worktree checks fall back to its own root, not to a different ancestor.
-export function claudeLocalSettingsRoot(cwd, home) {
+export function claudeNativeProjectRoot(cwd) {
   let root;
   for (let current = cwd; ; current = path.dirname(current)) {
     if (gitMarker(path.join(current, ".git"))) { root = current; break; }
     if (path.dirname(current) === current) break;
   }
-  if (!root) return cwd;
+  if (!root) return undefined;
   const dotgit = path.join(root, ".git");
   try {
     const raw = fs.readFileSync(dotgit, "utf8").trim();
@@ -109,7 +109,13 @@ export function claudeLocalSettingsRoot(cwd, home) {
       }
     }
   } catch { /* Native uses the original worktree root on any invalid link. */ }
-  root = fs.realpathSync(root).normalize("NFC");
+  return root;
+}
+
+export function claudeLocalSettingsRoot(cwd, home) {
+  const project = claudeNativeProjectRoot(cwd);
+  if (!project) return cwd;
+  const root = fs.realpathSync(project).normalize("NFC");
   if (root === cwd) return root;
   if (root === fs.realpathSync(home).normalize("NFC")) return cwd;
   try {

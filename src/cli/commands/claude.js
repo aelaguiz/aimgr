@@ -88,6 +88,7 @@ import {
   stageManagedClaudeSessionFork,
 } from "../../targets/claude-sessions.js";
 import {
+  assertClaudeUsageRoutes,
   collectClaudeRedisAccountInventory,
   collectClaudeRedisAccountUsageStatus,
   renderClaudeRedisAccountInventory,
@@ -496,6 +497,9 @@ async function selectAutomaticClaudeAccount(context, {
     fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl,
   });
+  // Check before preference/exclusion filtering: a failed configured route
+  // cannot disappear from the live-only resume candidates and cause fallback.
+  assertClaudeUsageRoutes(usageStatus);
   const localSessions = readMachineClaudeSessionCounts({ homeDir });
   return selectClaudeAccountForSession({
     ...usageStatus,
@@ -1290,6 +1294,9 @@ async function freeClaudeAccountForScheduledJob(context, { preset, jobName, stde
     fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl: context.connectRedisStoreImpl,
   });
+  // A route may fail since the first selection. Fail before choosing or
+  // stopping an unrelated idle session to make room for scheduled work.
+  assertClaudeUsageRoutes(usageStatus);
   const eligibleLabels = new Set(usageStatus.accounts
     .filter((account) => account?.locked === true
       && selectLeastUsedUnlockedClaudeAccount({ ...usageStatus, accounts: [{ ...account, locked: false }] }, { preset, requireIndividualOAuth: true }))

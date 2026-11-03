@@ -179,8 +179,11 @@ console.log('CONCURRENT_TOOL_OK_'+role);
         const m=line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);return m&&{pid:Number(m[1]),ppid:Number(m[2]),state:m[3],command:m[4]};
       }).filter(Boolean);
       const rows=role=>readCaptures().filter(r=>r.path.includes('/messages')&&JSON.stringify(r.body.messages).includes(`CONCURRENT_ROLE_${role}.`));
-      const healthy=start('b','b1');
-      await waitFor(()=>fs.existsSync(path.join(cwd,'b1.entered')),'healthy sibling tool');
+      // Keep a sibling on the failed owner's account as well as one on the
+      // other route. Killing one owner must not tear down a shared account's
+      // enforcement or interrupt its still-live session.
+      const healthy=[start('a','a2'),start('b','b1')];
+      await waitFor(()=>['a2','b1'].every(role=>fs.existsSync(path.join(cwd,role+'.entered'))),'healthy sibling tools');
       receipt.failures=[];
       for(const role of ['parent-a','supervisor-a']){
         const work=start('a',role,{expectFailure:true});
@@ -201,8 +204,14 @@ console.log('CONCURRENT_TOOL_OK_'+role);
         assert.ok(rows(role).every(r=>r.source==='127.0.0.2'));
         receipt.failures.push({role,nativeExited:true,requestsAfterDeath:rows(role).length-before,allRequestsUsedAssignedRoute:true,exit:completed.code,signal:completed.signal});
       }
-      assert.equal(healthy.exitCode,null);fs.writeFileSync(path.join(cwd,'b1.release'),'ok');await healthy.finished;
-      assert.ok(rows('b1').every(r=>r.source==='127.0.0.3'));
+      for(const [index,role] of ['a2','b1'].entries()){
+        assert.equal(healthy[index].exitCode,null);
+        const before=rows(role).length;
+        fs.writeFileSync(path.join(cwd,role+'.release'),'ok');
+        await healthy[index].finished;
+        assert.ok(rows(role).length>before,'healthy sibling must complete another model request');
+        assert.ok(rows(role).every(r=>r.source===(role==='a2'?'127.0.0.2':'127.0.0.3')));
+      }
       receipt.checks.ownerFailureDoesNotRemoveBoundary=true;
       receipt.checks.healthySiblingAfterOwnerFailure=true;
       // Use the native operator diagnostic for a failed configured dependency.
