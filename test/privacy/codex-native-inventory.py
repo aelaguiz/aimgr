@@ -18,8 +18,7 @@ with (root/'vendor.log').open('wb') as log:
    time.sleep(.1)
   assert entry and 'environment' not in entry,'native process must be discoverable without publishing environment values'
   result=subprocess.run([a.helper,str(child.pid),entry['image'],entry['birth']],capture_output=True,text=True)
-  assert result.returncode==0,'identity-bound native stop failed'
-  child.wait(timeout=5)
-  print('PASS: unchanged signed/native app-server is identified and its exact owner exit is observed')
+  assert result.returncode==125 and child.poll() is None,'read-only inventory must not signal the native owner'
+  print('PASS: unchanged native app-server is identified; inventory has no process-stop operation')
  finally:
   if child.poll() is None: child.terminate(); child.wait(timeout=10)

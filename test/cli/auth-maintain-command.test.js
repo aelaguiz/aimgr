@@ -17,7 +17,7 @@ import {
   resolveAimgrClaudeLabelHomeDir,
   resolveClaudeAuthFilePath,
 } from "../../src/io/paths.js";
-import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
+import { registerCliRedisFixture, runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
@@ -111,6 +111,8 @@ function rotateProjectedClaudeCredential(configDir, {
 async function setup(records) {
   const home = mkTempHome();
   const client = new FakeRedisClient();
+  // These cases cover legacy shared auth. The host runtime must not add local grants.
+  registerCliRedisFixture(home, { readCodexEnvironmentImpl: () => null });
   writeAimgrConfig({
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX }, claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } } },

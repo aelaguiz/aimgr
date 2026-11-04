@@ -58,15 +58,35 @@ export function codexSettingsView({ base, source, home }) {
  * so each replaced inode remains in a recovery record, including late FD writes.
  */
 export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, onWarning = () => {}, fault = () => {} } = {}) {
-  fs.mkdirSync(path.dirname(entry.origin), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.dirname(entry.view), { recursive: true, mode: 0o700 });
-  const target = resolvedTarget(entry.origin);
+  const refuseUnreadableSource = error => {
+    if (["EACCES", "EPERM"].includes(error.code)) {
+      // Preserve the view's bytes and pending writes, but do not let native
+      // read stale settings or atomically replace them while their authoring
+      // source is unreadable. Records and journals live outside this folder.
+      fs.chmodSync(path.dirname(entry.view), 0o000);
+    }
+    throw error;
+  };
+  let target;
+  try {
+    fs.mkdirSync(path.dirname(entry.origin), { recursive: true, mode: 0o700 });
+    target = resolvedTarget(entry.origin);
+  } catch (error) { refuseUnreadableSource(error); }
   // Lock the actual authored target, so two lexical origins cannot write it
   // through independently acquired AIM locks. Each still has its own view.
   const lockTarget = path.join(entry.base, "codex-settings", `source-${digest(target)}`);
   const release = await lockfile.lock(lockTarget, { realpath: false, retries: { retries: 30, minTimeout: 10, maxTimeout: 100 }, stale: 30_000 });
-  let writable = true;
+  let writable = true, sourceReadable = false;
   try {
+    let sourceSnapshot;
+    try { sourceSnapshot = read(target); }
+    catch (error) { refuseUnreadableSource(error); }
+    sourceReadable = true;
+    // Check the source before reopening a previously blocked view. Pending
+    // recovery must be able to inspect every displaced inode: existsSync on
+    // an inaccessible view folder would mistake it for a missing file.
+    if ((fs.statSync(path.dirname(entry.view)).mode & 0o777) === 0o000) fs.chmodSync(path.dirname(entry.view), 0o700);
     writable = stateIO({ operation: "settings-replaceable", path: target }).writable === true;
     let state = JSON.parse(read(entry.record) ?? "null") ?? { schema: 1, source: "", view: "", retained: [], warningKeys: [] };
     const previousRecord = JSON.stringify(state);
@@ -98,7 +118,7 @@ export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, on
       atomicRecord(entry.record, state);
       removeRecord(entry.journal);
     }
-    const sourceSnapshot = read(target), viewSnapshot = read(entry.view);
+    const viewSnapshot = read(entry.view);
     let source = sourceSnapshot, view = viewSnapshot;
     fault("after-read");
     const initial = read(entry.record) === null;
@@ -164,8 +184,8 @@ export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, on
     }
     for (const [kind, file, wanted, expected] of [["source", target, candidate.source, sourceSnapshot], ["view", entry.view, candidate.view, viewSnapshot]]) {
       if (expected === wanted || (expected === null && wanted === "" && kind === "source")) continue;
-      // Vendor grants separately deny writes to a read-only source's view.
-      // AIM still needs to publish authored changes into its own directory.
+      // The view's directory mode follows source replaceability. AIM must
+      // briefly reopen its own directory to publish an authored change.
       if (kind === "view" && (fs.statSync(path.dirname(entry.view)).mode & 0o777) !== 0o700) fs.chmodSync(path.dirname(entry.view), 0o700);
       const staged = path.join(path.dirname(file), `.aim-codex-settings-${randomUUID()}`);
       durableCodexWrite(staged, wanted, { exclusive: true, allowUnreadableParent: kind === "source" });
@@ -219,23 +239,45 @@ export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, on
     return { entry, raced, writable, valid: sourceValid };
   } finally {
     try {
-      const mode = writable ? 0o700 : 0o500;
-      if ((fs.statSync(path.dirname(entry.view)).mode & 0o777) !== mode) fs.chmodSync(path.dirname(entry.view), mode);
+      if (sourceReadable) {
+        const mode = writable ? 0o700 : 0o500;
+        if ((fs.statSync(path.dirname(entry.view)).mode & 0o777) !== mode) fs.chmodSync(path.dirname(entry.view), mode);
+      }
     }
     finally { await release(); }
   }
 }
 
 export async function superviseCodexSettings(entries, options = {}) {
-  let closed = false, running = Promise.resolve();
+  let closed = false, running = Promise.resolve(), observed;
   const watchers = [], timers = new Set(), states = new Map();
+  // A missed-event fallback only checks the current inputs' metadata. It must
+  // not start Python, acquire the source lock or read retained history at idle.
+  // Events and explicit flushes still reconcile retained inodes and journals.
+  const signature = () => JSON.stringify(entries.map(entry => {
+    let target;
+    try { target = resolvedTarget(entry.origin); } catch (error) { target = error.code; }
+    return [target, ...[entry.origin, path.dirname(entry.origin),
+      ...(path.isAbsolute(target ?? "") ? [path.dirname(target)] : []),
+      entry.view, path.dirname(entry.view), entry.record, entry.journal,
+      path.join(entry.directory, "intents")].map(file => {
+      try {
+        const st = fs.statSync(file, { bigint: true });
+        return [st.dev, st.ino, st.size, st.mode, st.mtimeNs, st.ctimeNs].map(String);
+      } catch (error) { return error.code; }
+    })];
+  }));
   const reconcile = () => {
     const job = running.then(async () => {
+      // Remember the pre-read state. A writer racing the transaction must
+      // remain detectable on the following fallback check.
+      const before = signature();
       for (const entry of entries) {
         let result = await reconcileCodexSettings(entry, options);
         if (result.raced) result = await reconcileCodexSettings(entry, options);
         states.set(entry, result);
       }
+      observed = before;
     });
     // A failed flush reports its own error without poisoning final writeback
     // or a subsequent filesystem event's reconciliation.
@@ -270,8 +312,7 @@ export async function superviseCodexSettings(entries, options = {}) {
     for (const timer of timers) clearTimeout(timer);
     throw error;
   }
-  // Covers coalesced/missed filesystem events without a persistent service.
-  const periodic = setInterval(changed, 1000);
+  const periodic = setInterval(() => { if (signature() !== observed) changed(); }, 1000);
   periodic.unref();
   return { entries, states, flush: reconcile, async close() {
     if (closed) return;

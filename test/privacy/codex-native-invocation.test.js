@@ -12,6 +12,8 @@ test("relative --cd is projected once while native retains its original process 
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const homeDir = path.join(root, "home"), cwd = path.join(root, "project"), selected = path.join(cwd, "child");
   fs.mkdirSync(homeDir); fs.mkdirSync(selected, { recursive: true });
+  const defaultTarget = path.join(homeDir, "shared default");
+  fs.mkdirSync(defaultTarget); fs.symlinkSync(defaultTarget, path.join(homeDir, ".codex"));
   const environment = { binding: "a".repeat(64) };
   const prepared = { ...prepareCodexAccountState({ homeDir, accountId: "api-provider:deepseek", label: "fixture", environment }), keyBacked: true };
   const policy = path.join(root, "policy.json");
@@ -32,6 +34,7 @@ test("relative --cd is projected once while native retains its original process 
       },
     });
     try {
+      assert.equal(invocation.prepared.sharedHome, path.join(homeDir, ".codex"), "unset CODEX_HOME retains native lexical default origin");
       assert.equal(invocation.cwd, cwd);
       assert.equal(invocation.inputs.cwd, selected);
       assert.deepEqual(invocation.args.slice(invocation.args.indexOf("--") + 1), ["--no-daemon", "-c", 'mcp_oauth_credentials_store="keyring"', ...args]);

@@ -68,8 +68,8 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME, provision_clone
     common.require(not provision_clone or activate, '--provision-clone requires --activate on the destination machine')
     def activate_codex(user, target, runtime, published):
         provision(user, runtime, provision_clone)
-        # This changes only administrator-owned Codex policy. Unrelated policy
-        # and independent telemetry exporters are preserved by that installer.
+        # Install the approved diagnostics opt-out in native requirements;
+        # unrelated administrator policy remains intact.
         policy = subprocess.run([node, str(REPO / 'scripts/install-codex-policy.mjs')], capture_output=True, text=True)
         common.require(policy.returncode == 0, 'Codex managed privacy policy installation failed')
         module = (REPO / 'src/privacy/codex-managed-policy.js').as_uri()

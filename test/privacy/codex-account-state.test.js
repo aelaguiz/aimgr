@@ -43,6 +43,30 @@ test("custom settings origins share one local account auth target and refresh lo
   assert.notEqual(nested.codexHome,first.codexHome);
 });
 
+test("explicit home aliases use native canonical origins without changing account ownership", t => {
+  const options = fixture(t), shared = path.join(options.homeDir, ".codex");
+  const canonical = prepareCodexAccountState({ ...options, env: { CODEX_HOME: shared } });
+  for (const name of ["alias one", "alias 日本語"]) {
+    const alias = path.join(options.homeDir, name); fs.symlinkSync(shared, alias);
+    const prepared = prepareCodexAccountState({ ...options, env: { CODEX_HOME: alias } });
+    assert.equal(prepared.sharedHome, fs.realpathSync(shared));
+    assert.equal(prepared.codexHome, canonical.codexHome);
+    assert.equal(prepared.accountRoot, canonical.accountRoot);
+    const nested = codexAccountPaths({ ...options, env: { CODEX_HOME: prepared.codexHome }, accountId: "another-account" });
+    assert.equal(nested.sharedHome, prepared.sharedHome);
+    assert.notEqual(nested.accountRoot, canonical.accountRoot);
+  }
+});
+
+test("new explicit homes beneath a directory alias keep the same origin on later launches", t => {
+  const options = fixture(t), parent = path.join(options.homeDir, "actual parent"), alias = path.join(options.homeDir, "parent alias");
+  fs.mkdirSync(parent); fs.symlinkSync(parent, alias);
+  const env = { CODEX_HOME: path.join(alias, "new settings") };
+  const first = prepareCodexAccountState({ ...options, env }), second = prepareCodexAccountState({ ...options, env });
+  assert.equal(first.sharedHome, path.join(fs.realpathSync(parent), "new settings"));
+  for (const key of ["sharedHome", "codexHome", "accountRoot"]) assert.equal(first[key], second[key]);
+});
+
 test("all accounts and settings origins share native default-home MCP lock inodes", t => {
   const options = fixture(t), locks = path.join(options.homeDir, ".codex", "mcp-oauth-locks");
   fs.mkdirSync(locks);

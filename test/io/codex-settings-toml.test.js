@@ -20,14 +20,14 @@ test("source-origin paths normalize before layering; native text/defaults remain
   assert.ok(project(source).startsWith("# untouched\n"));
 });
 
-test("all retained typed families preserve arrays, profile origins and unknown fields", () => {
+test("retained typed families preserve arrays and profile origins; disabled diagnostics stay authored", () => {
   const source = `model_catalog_json="./models.json"\nexperimental_compact_prompt_file="compact"\njs_repl_node_path="~/node"\njs_repl_node_module_dirs=["."]\n[agents."review.one"]\nconfig_file="../../roles/review.toml"\n[[skills.config]]\npath="./one"\nenabled=true\n[[skills.config]]\npath="../two"\nenabled=false\n[sandbox_workspace_write]\nwritable_roots=[".","/absolute"]\n[profiles.work]\nmodel_instructions_file="./profile.md"\n[model_providers.local.auth]\ncommand="token"\ncwd="./auth"\n[otel.exporter.otlp-http.tls]\nca-certificate="./ca.pem"\n`;
   const v=read(project(source));
   assert.equal(v.agents["review.one"].config_file,"/roles/review.toml");
   assert.equal(v.skills.config[1].path,"/fixture/two");
   assert.equal(v.profiles.work.model_instructions_file,"/fixture/shared/profile.md");
   assert.equal(v.model_providers.local.auth.cwd,"/fixture/shared/auth");
-  assert.equal(v.otel.exporter["otlp-http"].tls["ca-certificate"],"/fixture/shared/ca.pem");
+  assert.equal(v.otel.exporter["otlp-http"].tls["ca-certificate"],"./ca.pem");
   assert.equal(project(project(source)),project(source));
 });
 
@@ -66,6 +66,16 @@ test("native additions/deletions preserve surrounding tables and author syntax",
   assert.equal(read(result.source).skills.extra,'new');
   assert.equal(read(result.source).unknown.keep,'yes');
   assert.equal(read(result.source).skills.config[0].path,'./one');
+});
+
+test("concurrently created tables merge independent children and retain real conflicts", () => {
+  const base = 'model="old"\n';
+  const source = base + '\n[tui]\nscreen_reader_detection_done=true\n';
+  const view = base + '\n[tui]\nscreen_reader_detection_done=false\n[tui.model_availability_nux]\n"gpt-6.1-sol"=1\n';
+  const result = reconcile(base, source, view);
+  assert.deepEqual(read(result.source).tui, { screen_reader_detection_done: true, model_availability_nux: { "gpt-6.1-sol": 1 } });
+  assert.deepEqual(result.conflicts, [["tui", "screen_reader_detection_done"]]);
+  assert.match(result.source, /\["tui"\."model_availability_nux"\]/);
 });
 
 test("RPC key grammar and ancestor payloads normalize only typed leaves", () => {

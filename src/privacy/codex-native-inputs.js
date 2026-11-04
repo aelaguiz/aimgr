@@ -57,7 +57,7 @@ export async function prepareCodexNativeInputs({ artifact, prepared, parsedArgs,
     || !path.isAbsolute(response.cwd ?? "")
     || [response.reads, response.writes, response.database_roots, response.database_files, response.project_cwds ?? []]
       .some(items => !Array.isArray(items) || items.some(file => typeof file !== "string" || !path.isAbsolute(file)))
-    || !Array.isArray(response.collectors) || response.collectors.length !== 3) {
+    || typeof response.exporters_disabled !== "boolean") {
     throw new Error("Codex returned an invalid native input inventory.");
   }
   if (request.worktree && (!path.isAbsolute(response.worktree_root ?? "") || typeof response.source_untrusted !== "boolean")) {
@@ -72,7 +72,7 @@ export async function prepareCodexNativeInputs({ artifact, prepared, parsedArgs,
   if (operation === "worktree_owner" && response.owner_thread_id !== null
     && !/^[a-f0-9-]{36}$/.test(response.owner_thread_id ?? "")) throw new Error("Codex returned an invalid worktree owner.");
   if (!response.analytics_disabled || !response.feedback_disabled || !response.updates_disabled
-    || response.collectors.some((collector, index) => collector.provider_destination && !(index === 2 && collector.kind === "statsig"))) {
+    || !response.exporters_disabled) {
     throw new Error("Codex's effective local settings conflict with the required privacy policy.");
   }
   return response;

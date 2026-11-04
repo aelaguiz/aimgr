@@ -41,6 +41,7 @@ def mcp_result(request, transport):
                 'serverInfo': {'name': 'standalone-' + transport, 'version': '1'}}
     if method == 'tools/list':
         return {'tools': [{'name': 'echo', 'description': 'Return the synthetic test marker',
+                          'annotations': {'readOnlyHint': True, 'destructiveHint': False, 'openWorldHint': False},
                           'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}},
                                           'required': ['text']}}]}
     if method == 'tools/call':
@@ -71,7 +72,7 @@ parser.add_argument('--codex', required=True)
 parser.add_argument('--sha256', required=True)
 parser.add_argument('--aim-root')
 parser.add_argument('--aim-cli', action='store_true')
-parser.add_argument('--phase', choices=['exec', 'tui', 'tui-edits', 'concurrent-tui', 'features', 'continuity', 'rotation', 'lifetime', 'routine', 'daemon', 'required-failure', 'all'], default='all')
+parser.add_argument('--phase', choices=['exec', 'tui', 'tui-edits', 'tui-settings', 'concurrent-tui', 'features', 'continuity', 'rotation', 'lifetime', 'routine', 'daemon', 'required-failure', 'all'], default='all')
 parser.add_argument('--terminal-input', action='store_true')
 parser.add_argument('--prepare-database', action='store_true')
 parser.add_argument('--shared-database', action='store_true')
@@ -82,7 +83,7 @@ if args.aim_cli and (not args.aim_root or args.phase in ['daemon', 'routine'] or
     raise SystemExit('AIM CLI mode requires --aim-root and a direct workflow phase without an extra sandbox wrapper.')
 if args.phase == 'rotation' and not args.aim_cli:
     raise SystemExit('Rotation requires the actual AIM CLI driver.')
-if args.phase == 'tui-edits' and not args.aim_cli:
+if args.phase in ['tui-edits', 'tui-settings'] and not args.aim_cli:
     raise SystemExit('Native settings reconciliation requires the actual AIM CLI driver.')
 node = shutil.which('node') if args.aim_cli else None
 if args.aim_cli and not node:
@@ -498,8 +499,16 @@ for label in ['A', 'B']:
         config += 'requires_openai_auth=true\n'
     if args.phase == 'required-failure' and label == 'A':
         config = config.replace(endpoint + '/mcp', endpoint + '/mcp-fail')
-    if args.phase == 'tui-edits':
+    if args.phase in ['tui-edits', 'tui-settings']:
         config += '\n[skills]\nconfig=[{path="../../project/.agents/skills/privacy-proof",enabled=true}]\n'
+    if args.phase == 'tui-settings':
+        # Keep the actual native picker deterministic using two unchanged
+        # entries from the exact source already used to build the AIM helper.
+        catalog = json.loads((Path(args.aim_root) / 'native/codex/config-state/vendor/codex/codex-rs/models-manager/models.json').read_text())
+        catalog['models'] = [model for model in catalog['models'] if model['slug'] in ['gpt-6.1-sol', 'gpt-6-astra']]
+        assert len(catalog['models']) == 2
+        (app / 'models.json').write_text(json.dumps(catalog))
+        config = 'model_catalog_json="./models.json"\nmodel_reasoning_effort="high"\n' + config
     (app / 'config.toml').write_text(config)
     if args.phase == 'rotation':
         # The admitted release selects a complete named user-layer file.
@@ -606,7 +615,9 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None, r
     prompt = 'PROBE_CASE:' + case + ' Use $privacy-proof and both configured MCP echo tools, then do the native shell proof. For FEATURES explicitly spawn and wait for one test subagent.'
     command = [str(binary)]
     if tui:
-        command += ([] if case == 'DAEMON_CONTROL' else ['--no-daemon']) + ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox']
+        command += ([] if case == 'DAEMON_CONTROL' else ['--no-daemon']) + ['--no-alt-screen']
+        if args.phase != 'tui-settings':
+            command += ['--dangerously-bypass-approvals-and-sandbox']
         if resume:
             command += ['resume', resume]
         elif fork:
@@ -649,9 +660,11 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None, r
         open_ptys.append(master)
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
         output = bytearray()
-        deadline = time.monotonic() + 65
+        deadline = time.monotonic() + (120 if args.phase == 'tui-settings' else 65)
         sent_exit = False
         sent_prompt = False
+        settings_stage = 0
+        settings_output_start = 0
         code = None
         try:
             while time.monotonic() < deadline:
@@ -679,6 +692,37 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None, r
                     sent_prompt = True
                 ready_to_exit = (('STANDALONE_DONE:' + history_only).encode() in output if history_only else
                                  states.get(case, {}).get('finished') and ('STANDALONE_DONE:' + case).encode() in output)
+                if args.phase == 'tui-settings':
+                    recent = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', output[settings_output_start:])
+                    if settings_stage == 0 and ready_to_exit and b'\x1b]7501;state=done:' in output:
+                        os.write(master, b'/model')
+                        time.sleep(.15)
+                        os.write(master, b'\r')
+                        settings_stage = 1
+                        settings_output_start = len(output)
+                    elif settings_stage == 1 and b'Select Model and Effort' in recent:
+                        os.write(master, b'\x1b[B\r')  # Sol -> Astra.
+                        settings_stage = 2
+                        settings_output_start = len(output)
+                    elif settings_stage == 2 and b'Select Reasoning Level' in recent:
+                        os.write(master, b'\x1b[B\r')  # New model defaults to Low; select Medium.
+                        settings_stage = 3
+                    elif settings_stage == 3:
+                        authored = (homes[label][1] / 'config.toml').read_text()
+                        if (re.search(r'^model\s*=\s*"gpt-6-astra"', authored, re.MULTILINE) and
+                                re.search(r'^model_reasoning_effort\s*=\s*"medium"', authored, re.MULTILINE)):
+                            os.write(master, b'/permissions :workspace')
+                            time.sleep(.15)
+                            os.write(master, b'\r')
+                            settings_stage = 4
+                            settings_output_start = len(output)
+                    elif settings_stage == 4 and b'Permission selection requested:' in recent:
+                        os.write(master, b'\x1b[200~PROBE_CASE:TUI_SETTINGS_AFTER Use $privacy-proof and both configured MCP echo tools, then do the native shell proof.\x1b[201~')
+                        time.sleep(.15)
+                        os.write(master, b'\r')
+                        settings_stage = 5
+                    ready_to_exit = (settings_stage == 5 and states.get('TUI_SETTINGS_AFTER', {}).get('finished')
+                                     and b'STANDALONE_DONE:TUI_SETTINGS_AFTER' in output)
                 if case == 'DAEMON_CONTROL' and daemon_connections and not sent_exit:
                     os.kill(pid, signal.SIGTERM)
                     sent_exit = True
@@ -737,6 +781,17 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None, r
         ['firstRequestSkillLoaded', 'stdioReturned', 'httpReturned', 'shellReturned', 'finished']))
     if case == 'FEATURES':
         result['toolWorkflowPassed'] &= bool(result['model'].get('resourceReturned') and result['model'].get('subagentReturned'))
+    if args.phase == 'tui-settings':
+        result['nativeSettingsStage'] = settings_stage
+        after = states.get('TUI_SETTINGS_AFTER', {})
+        contexts = [json.loads(line)['payload'] for file in homes[label][1].joinpath('sessions').rglob('*.jsonl')
+                    for line in file.read_text().splitlines() if json.loads(line).get('type') == 'turn_context']
+        result['nativeSelectedSettings'] = any(context.get('model') == 'gpt-6-astra' and context.get('effort') == 'medium'
+            and context.get('sandbox_policy', {}).get('type') == 'workspace-write' for context in contexts)
+        result['continuedToolsAfterSettings'] = all(after.get(key) for key in ['firstRequestSkillLoaded', 'stdioReturned', 'httpReturned', 'shellReturned', 'finished'])
+        result['settingsConflictWarnings'] = stdout.count('[aim] Codex settings conflict')
+        result['toolWorkflowPassed'] &= bool(result['nativeSelectedSettings'] and result['continuedToolsAfterSettings']
+                                             and result['settingsConflictWarnings'] == 0)
     if rotate:
         result['manualWarningPresent'] = 'WARNING:' in stdout and 'links the two accounts' in stdout
         if rotate == 'resume-fresh':
@@ -851,6 +906,8 @@ try:
             results.extend(f.result() for f in futures)
     if args.phase in ['all', 'tui']:
         results.append(execute('TUI', 'A', tui=True))
+    if args.phase == 'tui-settings':
+        results.append(execute('TUI_SETTINGS', 'A', tui=True))
     if args.phase == 'tui-edits':
         parser_module = (Path(args.aim_root).resolve() / 'src/io/codex-settings-toml.js').as_uri()
         for count, case in enumerate(['TUI_ONE', 'TUI_TWO'], 1):

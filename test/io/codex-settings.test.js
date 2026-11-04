@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import { codexStateIO } from "../../src/io/codex-state-io.js";
 import { codexSettingsView, reconcileCodexSettings, superviseCodexSettings } from "../../src/io/codex-settings.js";
 import { parseCodexSettings } from "../../src/io/codex-settings-toml.js";
 
@@ -10,6 +13,7 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-settings-"));
   t.after(() => {
     if (fs.existsSync(path.join(root, "authored"))) fs.chmodSync(path.join(root, "authored"), 0o700);
+    if (fs.existsSync(path.dirname(entry.view))) fs.chmodSync(path.dirname(entry.view), 0o700);
     fs.rmSync(root, { recursive: true, force: true });
   });
   const source = path.join(root, "authored", "config.toml");
@@ -47,6 +51,25 @@ test("source-winning conflict keeps native alternative and emits one warning", a
   assert.equal(read(entry.view).model,"source");
   assert.equal(warnings.length,1);
   assert.equal(read(warnings[0].recovery).model,"native");
+});
+
+test("consecutive native startup additions survive a view exchange without a false conflict", async t => {
+  const { source, entry, read } = fixture(t), warnings = [];
+  await reconcileCodexSettings(entry);
+  fs.appendFileSync(entry.view, '\n[tui]\nscreen_reader_detection_done=true\n');
+  let injected = false;
+  const result = await reconcileCodexSettings(entry, { onWarning: w => warnings.push(w), fault: point => {
+    if (point === "before-view" && !injected) {
+      injected = true;
+      fs.appendFileSync(entry.view, '\n[tui.model_availability_nux]\n"gpt-6.1-sol"=1\n');
+    }
+  } });
+  assert.equal(injected, true);
+  assert.equal(result.raced, true);
+  await reconcileCodexSettings(entry, { onWarning: w => warnings.push(w) });
+  assert.deepEqual(read(source).tui, { screen_reader_detection_done: true, model_availability_nux: { "gpt-6.1-sol": 1 } });
+  assert.deepEqual(read(entry.view).tui, read(source).tui);
+  assert.deepEqual(warnings, []);
 });
 
 for (const boundary of ["after-read", "before-source"]) test(`a writer at ${boundary} is retained and merged on recovery`, async t => {
@@ -128,6 +151,25 @@ test("invocation supervisor flushes native edits and closes its watchers",async 
   await owner.close();
 });
 
+test("idle supervision runs no state helper and missed events still publish settings", async t => {
+  const { source, entry, read } = fixture(t);
+  // Deliberately drop every watcher notification to exercise the fallback.
+  t.mock.method(fs, "watch", () => Object.assign(new EventEmitter(), { close() {} }));
+  let calls = 0;
+  const owner = await superviseCodexSettings([entry], { stateIO: request => { calls++; return codexStateIO(request); } });
+  t.after(() => owner.close());
+  await owner.flush();
+  const idleCalls = calls;
+  await delay(2200);
+  assert.equal(calls, idleCalls, "unchanged fallback checks must not invoke the state helper");
+  fs.writeFileSync(source, 'model="changed-without-an-event"\n');
+  const deadline = Date.now() + 3000;
+  while (read(entry.view).model !== "changed-without-an-event" && Date.now() < deadline) await delay(40);
+  assert.equal(read(entry.view).model, "changed-without-an-event");
+  assert.ok(calls > idleCalls, "a real source change still reconciles");
+  await owner.close();
+});
+
 test("the first repair of invalid input normalizes relative paths",async t=>{
   const {source,entry,read}=fixture(t);
   await reconcileCodexSettings(entry);
@@ -154,6 +196,35 @@ test("read-only sources can refresh and become writable again",async t=>{
   fs.writeFileSync(source,'model="writable"\n');
   assert.equal((await reconcileCodexSettings(entry)).writable,true);
   assert.equal(read(entry.view).model,'writable');
+});
+
+for (const inaccessible of ["file", "parent"]) test(`unreadable source ${inaccessible} blocks native view without consuming pending recovery`, async t => {
+  assert.notEqual(process.getuid?.(), 0, "permission coverage requires an ordinary user");
+  const { source, entry, read } = fixture(t);
+  const viewDirectory = path.dirname(entry.view), target = inaccessible === "file" ? source : path.dirname(source);
+  t.after(() => {
+    for (const directory of [path.dirname(source), viewDirectory]) if (fs.existsSync(directory)) fs.chmodSync(directory, 0o700);
+    if (fs.existsSync(source)) fs.chmodSync(source, 0o600);
+  });
+  await reconcileCodexSettings(entry);
+  fs.writeFileSync(entry.view, fs.readFileSync(entry.view, "utf8").replace('"old"', '"native"'));
+  fs.appendFileSync(source, '\n[authored]\nkept=true\n');
+  await assert.rejects(reconcileCodexSettings(entry, { fault: point => { if (point === "after-view") throw new Error("synthetic interruption"); } }));
+  const journal = fs.readFileSync(entry.journal), record = fs.readFileSync(entry.record);
+  fs.chmodSync(target, 0o000);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(reconcileCodexSettings(entry), error => ["EACCES", "EPERM"].includes(error.code));
+    assert.equal(fs.statSync(viewDirectory).mode & 0o777, 0o000);
+    assert.throws(() => fs.readFileSync(entry.view), { code: "EACCES" });
+    assert.throws(() => fs.writeFileSync(entry.view + ".native", "new"), { code: "EACCES" });
+    assert.deepEqual(fs.readFileSync(entry.journal), journal);
+    assert.deepEqual(fs.readFileSync(entry.record), record);
+  }
+  fs.chmodSync(target, inaccessible === "file" ? 0o600 : 0o700);
+  await reconcileCodexSettings(entry);
+  assert.equal(read(source).model, "native");
+  assert.equal(read(entry.view).authored.kept, true);
+  assert.equal(fs.existsSync(entry.journal), false);
 });
 
 test("idle reconciliation does not rewrite its durable records",async t=>{

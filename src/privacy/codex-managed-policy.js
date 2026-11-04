@@ -9,7 +9,10 @@ import { parseCodexSettings, updateCodexSettings } from "../io/codex-settings-to
 const managedChanges = [{ keys: ["analytics", "enabled"], value: false }, { keys: ["feedback", "enabled"], value: false }];
 const requirementChanges = [{ keys: ["cli_auth_credentials_store"], value: "file" },
   { keys: ["allow_remote_control"], value: false }, { keys: ["check_for_update_on_startup"], value: false },
-  { keys: ["feedback", "enabled"], value: false }];
+  { keys: ["feedback", "enabled"], value: false },
+  // Native token refresh rebuilds exporters from live settings. Requirements
+  // keep that reload disabled too; a startup destination check cannot do so.
+  ...["exporter", "trace_exporter", "metrics_exporter"].map(key => ({ keys: ["otel", key], value: "none" }))];
 export function codexManagedPolicyText({ config = "", requirements = "" } = {}) {
   return { config: updateCodexSettings(config, managedChanges), requirements: updateCodexSettings(requirements, requirementChanges) };
 }

@@ -19,7 +19,7 @@ const admission = createArtifactAdmission({
     error: "the approved Codex runtime lacks its native worktree helper",
   }, {
     field: "processControl", file: "process-control", role: "launcher", executable: true,
-    error: "the approved Codex runtime lacks its maintenance process control helper",
+    error: "the approved Codex runtime lacks its maintenance process inventory helper",
   }, {
     field: "mcpMaintenance", file: "mcp_maintenance.py", role: "launcher", executable: false,
     error: "the approved Codex runtime lacks its MCP maintenance owner",

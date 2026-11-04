@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { PassThrough } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
+import { main } from "../../src/cli/main.js";
+import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
+import { readLocalCodexCredential } from "../../src/credentials/codex-local.js";
+import { CODEX_TEST_ENVIRONMENT } from "../helpers/codex-local.js";
 import { getRedisConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, closeRedisStore, readSnapshot } from "../../src/coordination/redis-store.js";
 import { ensureCodexAccountMetadata, readCodexAccountMetadata } from "../../src/coordination/codex-metadata.js";
@@ -42,4 +49,59 @@ test("Codex metadata crosses the Redis boundary without legacy grants or grant-l
   const created=JSON.parse(await store.client.get(key("new")));
   assert.deepEqual(created.credential,{});
   assert.equal((await readCodexAccountMetadata(store)).length,2);
+});
+
+test("manual Codex login reconnects Redis after the browser handoff", {
+  skip: process.env.AIMGR_TEST_CODEX_REDIS !== "1",
+}, async t => {
+  assert.ok(fs.existsSync("/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST"));
+  const { redis } = getRedisConfig({ homeDir: os.homedir() });
+  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(new URL(redis.url).hostname));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-login-redis-"));
+  const keyPrefix = `aimgr:codex-login-test:${randomUUID()}:`;
+  writeAimgrConfig({ homeDir, config: { redis: { ...redis, keyPrefix } } });
+  const stores = [], events = [], input = new PassThrough();
+  let callback, openAtHandoff;
+  t.after(async () => {
+    input.destroy();
+    await callback;
+    for (const store of stores) await closeRedisStore(store);
+    const cleanup = await connectRedisStore({ ...redis, keyPrefix });
+    try {
+      await cleanup.client.del([cleanup.keys.credential({ provider: "openai-codex", label: "synthetic" }),
+        cleanup.keys.credentials(), cleanup.keys.credentialsByProvider("openai-codex")]);
+    } finally { await closeRedisStore(cleanup); }
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+  const token = `synthetic.${Buffer.from(JSON.stringify({ exp: 4102444800,
+    "https://api.openai.com/auth": { chatgpt_account_id: "synthetic-account" } })).toString("base64url")}.signature`;
+  await main(["codex", "login", "synthetic", "--manual-callback-stdio", "--home", homeDir], {
+    env: {}, stdin: input, setExitCode() {},
+    readCodexEnvironmentImpl: () => CODEX_TEST_ENVIRONMENT,
+    connectRedisStoreImpl: async options => {
+      // Compress the real five-second idle deadline; no fake Redis client.
+      const store = await connectRedisStore({ ...options, initialConnectTimeoutMs: 100 });
+      stores.push(store); return store;
+    },
+    stdout: { write(line) {
+      const event = JSON.parse(line); events.push(event);
+      if (event.type === "auth_url") {
+        openAtHandoff = stores[0].client.isOpen;
+        callback = delay(350).then(() => {
+          const url = new URL("http://localhost:1455/auth/callback");
+          url.search = new URLSearchParams({ code: "SYNTHETIC_CODE", state: new URL(event.url).searchParams.get("state") });
+          input.write(JSON.stringify({ callbackUrl: url.href }) + "\n");
+        });
+      }
+      return true;
+    } },
+    fetchJsonWithTimeoutImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      access_token: token, id_token: token, refresh_token: "SYNTHETIC_LOCAL_REFRESH", expires_in: 3600,
+    }) }),
+  });
+  assert.equal(events.at(-1).ok, true, events.at(-1).error);
+  assert.equal(openAtHandoff, false, "no Redis socket waits on the human login");
+  assert.equal(stores.length, 2, "metadata publication uses a fresh bounded connection");
+  assert.equal(readLocalCodexCredential({ homeDir, environment: CODEX_TEST_ENVIRONMENT,
+    accountId: "synthetic-account" }).credential.refresh, "SYNTHETIC_LOCAL_REFRESH");
 });

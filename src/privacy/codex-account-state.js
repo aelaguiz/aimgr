@@ -19,7 +19,13 @@ function readOwner(home) {
 }
 
 export function codexSharedHome({ homeDir, env = {}, environment }) {
-  const selected = path.resolve(env.CODEX_HOME || path.join(homeDir, ".codex"));
+  let selected = path.resolve(env.CODEX_HOME || path.join(homeDir, ".codex"));
+  // Native canonicalizes an explicitly selected home before interpreting its
+  // config paths. Preserve lexical paths inside files; only the home differs.
+  if (env.CODEX_HOME) {
+    try { selected = fs.realpathSync(selected); }
+    catch (error) { if (error.code !== "ENOENT") throw error; } // AIM may provision a new home below.
+  }
   const owner = readOwner(selected);
   if (owner && owner.environmentId !== environment?.binding) throw new Error("The selected Codex home belongs to another environment. Sign in on this machine; do not import its credentials.");
   return owner?.schema === 1 && path.isAbsolute(owner.sharedHome) ? owner.sharedHome : selected;
@@ -60,8 +66,12 @@ export function codexStateLink(file, target) {
 }
 
 export function prepareCodexAccountState({ homeDir, env = {}, accountId, label, environment }) {
-  const prepared = codexAccountPaths({ homeDir, env, accountId, environment });
-  for (const directory of [prepared.accountRoot, prepared.codexHome, prepared.sharedHome, codexMcpLockDirectory(homeDir)]) durableCodexMkdir(directory);
+  let prepared = codexAccountPaths({ homeDir, env, accountId, environment });
+  durableCodexMkdir(prepared.sharedHome);
+  // New explicit homes can lie beneath a symlinked parent. Resolve their
+  // native origin after provisioning, before recording a private-home owner.
+  prepared = codexAccountPaths({ homeDir, env, accountId, environment });
+  for (const directory of [prepared.accountRoot, prepared.codexHome, codexMcpLockDirectory(homeDir)]) durableCodexMkdir(directory);
   const ownerFile = path.join(prepared.codexHome, ".aim-account.json");
   createOnce(ownerFile, JSON.stringify({ schema: 1, accountId, environmentId: prepared.environmentId, sharedHome: prepared.sharedHome, accountRoot: prepared.accountRoot }) + "\n");
   const owner = readOwner(prepared.codexHome);

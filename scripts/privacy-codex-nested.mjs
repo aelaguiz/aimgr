@@ -18,6 +18,10 @@ import { saveLocalCodexLogin } from "../src/credentials/codex-local.js";
 import { prepareCodexAccountState } from "../src/privacy/codex-account-state.js";
 import { readCodexEnvironment } from "../src/privacy/codex-environment.js";
 import { buildAnthropicClaudeCredential } from "../test/helpers/claude.js";
+import { runClaudeCliNoninteractive, prepareClaudeCliLaunch } from "../src/targets/claude-runner.js";
+import { buildManagedClaudeNativeStorageDescriptor } from "../src/credentials/claude-native-storage.js";
+import { projectClaudeNativeBundleToManagedConfig } from "../src/targets/claude-cli.js";
+import { admitClaudeArtifact } from "../src/privacy/claude-artifacts.js";
 
 assert.equal(process.platform, "linux");
 assert.ok(fs.existsSync("/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST") && process.getuid() !== 0);
@@ -50,6 +54,8 @@ for (const args of [
 const requests = [], models = [], children = [];
 const threadRoles = new Map();
 const reviewerOnly = process.argv.includes("--reviewer-only");
+const protectedClaude = process.argv.includes("--protected-claude");
+let protectedParentObserved = false;
 let serverError;
 const roles = {
   "codex-parent": ["codex", "a", true], "codex-peer": ["claude", "a"],
@@ -72,6 +78,28 @@ function record(req, body, provider) {
   if (provider === "codex") {
     assert.equal(req.headers["chatgpt-account-id"], account.accountId);
     assert.equal(body.client_metadata["x-codex-installation-id"], account.prepared.installationId);
+  }
+  if (protectedClaude && role === "claude-parent") {
+    // The privileged launcher makes vendor processes nondumpable. Inspect
+    // only this fixture's owned descendants as root; never weaken that mode.
+    protectedParentObserved ||= JSON.parse(execFileSync("sudo", ["-n", "/usr/bin/python3", "-I", "-c", `
+import json,os,re,subprocess,sys
+from pathlib import Path
+parents={int(row[0]):int(row[1]) for line in subprocess.check_output(['ps','-eo','pid=,ppid='],text=True).splitlines() if (row:=line.split())}
+owned={int(sys.argv[1])}
+while True:
+ next_owned=owned|{pid for pid,parent in parents.items() if parent in owned}
+ if next_owned==owned: break
+ owned=next_owned
+found=False
+for pid in owned:
+ try:
+  image=Path(os.readlink('/proc/'+str(pid)+'/exe'))
+  profile=Path('/proc/'+str(pid)+'/attr/current').read_text().strip()
+  found|=image.name=='claude' and bool(re.fullmatch(r'aim-claude-p-\\d+-[0-9a-f]+ \\(enforce\\)',profile))
+ except (FileNotFoundError,ProcessLookupError): pass
+print(json.dumps(found))
+`, String(children[0].pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }));
   }
   const row = { role, provider, label, parent: !!parent, headers: req.headers, body };
   models.push(row); return row;
@@ -99,10 +127,10 @@ function claudeFrames(req, body) {
   const row = record(req, body, "claude");
   const blocks = (body.messages ?? []).flatMap(message => Array.isArray(message.content) ? message.content : []);
   const result = blocks.filter(block => block.type === "tool_result").at(-1);
-  if (result) assert.ok(!result.is_error, "Native nested Claude tool failed");
+  if (result?.is_error) serverError ??= Error("Native nested Claude tool failed");
   const done = !row || !!result;
-  if (row && done) assert.match(JSON.stringify(result), row.parent ? /NESTED_PARENT_COMPLETE/ : /SYNTHETIC_NESTED_FILE/);
-  const content = done ? { type: "text", text: "SYNTHETIC_NESTED_DONE" }
+  if (row && done && !JSON.stringify(result).includes(row.parent ? "NESTED_PARENT_COMPLETE" : "SYNTHETIC_NESTED_FILE")) serverError ??= Error("Native nested Claude result did not complete the fixture");
+  const content = done ? { type: "text", text: serverError ? "SYNTHETIC_FAILED" : "SYNTHETIC_NESTED_DONE" }
     : { type: "tool_use", id: "nested-" + models.length, name: "Bash", input: { command: commandFor(row.role), timeout: 180000 } };
   const response = { id: "msg_synthetic", type: "message", role: "assistant", model: body.model,
     content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } };
@@ -173,7 +201,7 @@ const argvFor = role => {
 fs.writeFileSync(path.join(cwd, "children.mjs"), `import fs from 'node:fs';import {spawnSync} from 'node:child_process';import assert from 'node:assert/strict';
 const parent=process.argv[2], commands=${JSON.stringify(Object.fromEntries(Object.keys(roles).filter(role => !roles[role][2]).map(role => [role, argvFor(role)])))};
 fs.writeFileSync(${JSON.stringify(root)}+'/'+parent+'.environment.private.json',JSON.stringify({HOME:process.env.HOME,CODEX_HOME:process.env.CODEX_HOME,CLAUDECODE:process.env.CLAUDECODE}));
-for(const kind of ['peer','same','other']){const role=parent.replace('parent',kind);const r=spawnSync(${JSON.stringify(aim)},commands[role],{cwd:${JSON.stringify(cwd)},env:process.env,encoding:'utf8',timeout:90000,maxBuffer:4*1024*1024});
+for(const kind of ${JSON.stringify(protectedClaude ? ["peer"] : ["peer", "same", "other"])}){const role=parent.replace('parent',kind);const r=spawnSync(${JSON.stringify(aim)},commands[role],{cwd:${JSON.stringify(cwd)},env:process.env,encoding:'utf8',timeout:90000,maxBuffer:4*1024*1024});
 fs.writeFileSync(${JSON.stringify(root)}+'/'+role+'.private.log',(r.stdout??'')+(r.stderr??''));assert.equal(r.status,0,role+' failed');assert.match(r.stdout,/SYNTHETIC_NESTED_DONE/);}
 console.log('NESTED_PARENT_COMPLETE');
 `);
@@ -190,7 +218,30 @@ try {
     { provider: "anthropic", label: account.label, credential: account.credential, identity: account.credential.nativeClaudeBundle.oauthAccount,
       policy: { expect: { email: account.credential.nativeClaudeBundle.oauthAccount.emailAddress }, pool: { enabled: true } }, health: { status: "ready" } },
   ]) }, { updatedBy: "synthetic", observedAt: new Date().toISOString() });
-  for (const role of reviewerOnly ? ["codex-same"] : ["codex-parent", "claude-parent"]) {
+  if (protectedClaude) {
+    const account = accounts[0], managedHome = path.join(homeDir, ".aimgr/claude-homes/a"), configDir = path.join(managedHome, ".claude");
+    const launch = { command: admitClaudeArtifact().command, userHomeDir: homeDir, homeDir: managedHome, configDir, cwd };
+    await prepareClaudeCliLaunch(launch);
+    const descriptor = buildManagedClaudeNativeStorageDescriptor({ configDir, defaultConfigDir: path.join(homeDir, ".claude"),
+      expectedEmail: account.credential.nativeClaudeBundle.oauthAccount.emailAddress, managedRootDir: path.join(homeDir, ".aimgr") });
+    await projectClaudeNativeBundleToManagedConfig({ descriptor, credential: account.credential });
+    let output = "";
+    const result = await runClaudeCliNoninteractive({ ...launch, args: argvFor("claude-parent").slice(4), env, timeoutMs: 240000,
+      expectedIdentity: account.credential.nativeClaudeBundle.oauthAccount, egressProfile: { profileRef: "synthetic-nesting" },
+      // Only routing is replaced: the fixture has no external interface. The
+      // production runner still chooses and enforces protected vendor mode.
+      prepareClaudeNativeRouteImpl: async ({ command, args }) => ({ command, args }),
+      spawnImpl(command, args, options) {
+        const child = spawn(command, args, options); children.push(child);
+        child.stdout.on("data", bytes => { output += bytes; }); child.stderr.on("data", bytes => { output += bytes; });
+        return child;
+      },
+      maxOutputBytes: 1024 * 1024 });
+    fs.writeFileSync(path.join(root, "claude-parent.private.log"), output);
+    assert.equal(result.status, 0, "protected Claude parent failed; private evidence " + root);
+    assert.ok(protectedParentObserved, "the real parent must be observed in enforcing vendor policy");
+  }
+  for (const role of protectedClaude ? [] : reviewerOnly ? ["codex-same"] : ["codex-parent", "claude-parent"]) {
     const log = fs.openSync(path.join(root, role + ".private.log"), "w", 0o600);
     const child = spawn(aim, argvFor(role), { cwd, env, detached: true, stdio: ["ignore", log, log] }); fs.closeSync(log); children.push(child);
     const timer = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 240000);
@@ -199,6 +250,7 @@ try {
     assert.equal(code, 0, role + " failed (" + signal + "); private evidence " + root);
   }
   for (const [role, [provider, label, parent]] of Object.entries(roles)) {
+    if (protectedClaude && !["claude-parent", "claude-peer"].includes(role)) continue;
     if (reviewerOnly && role !== "codex-same") continue;
     const rows = models.filter(row => row.role === role); assert.ok(rows.length >= 2, role + " native tool round trip");
     assert.ok(JSON.stringify(rows.at(-1).body).includes(parent ? "NESTED_PARENT_COMPLETE" : "SYNTHETIC_NESTED_FILE"));
@@ -208,8 +260,10 @@ try {
       assert.ok(ids.has(native.userID));
     }
   }
-  console.log(JSON.stringify({ fixture: root, ...(reviewerOnly ? { nativeReadOnlyReviewer: true } : {
-    protectedParents: 2, nestedChildren: 6, nativeReadOnlyReviewers: 3, unchangedToolEnvironment: true, parentIdentityPreserved: true }) }));
+  console.log(JSON.stringify({ fixture: root, ...(protectedClaude ? { protectedClaudeToNativeReadOnlyCodex: true,
+    enforcingClaudeParentObserved: protectedParentObserved, unchangedToolEnvironment: true, routingNotTested: true } : reviewerOnly ? { nativeReadOnlyReviewer: true } : {
+    officialParents: 2, codexPrivacyEnforced: true, claudeMode: "ordinary", nestedChildren: 6,
+    nativeReadOnlyReviewers: 3, unchangedToolEnvironment: true, parentIdentityPreserved: true }) }));
 } catch (error) { console.error(error.message + "; private evidence " + root); process.exitCode = 1; }
 finally {
   fs.writeFileSync(path.join(root, "models.private.json"), JSON.stringify(models, null, 2));

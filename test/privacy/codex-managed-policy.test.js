@@ -11,14 +11,21 @@ function options({ forced = {}, plan = "plus", config, requirements } = {}) {
   };
 }
 
-test("managed opt-outs preserve independent collector endpoints and content decisions", () => {
+test("native requirements disable every exporter while preserving unrelated authored policy", () => {
   const config = '# keep this\n[otel]\nlog_user_prompt = true\nmetrics_exporter = { "otlp-http" = { endpoint = "https://collector.example/v1", protocol = "binary" } }\n';
   const result = codexManagedPolicyText({ config });
   const before = parseCodexSettings(config).value, after = parseCodexSettings(result.config).value;
   assert.deepEqual(after.otel, before.otel);
   assert.equal(after.analytics.enabled, false);
+  assert.deepEqual(parseCodexSettings(result.requirements).value.otel,
+    { exporter: "none", trace_exporter: "none", metrics_exporter: "none" });
   assert.match(result.config, /# keep this/);
   assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ config })));
+  for (const key of ["exporter", "trace_exporter", "metrics_exporter"]) {
+    assert.throws(() => inspectCodexManagedPolicy(options({ forced: {
+      requirements_toml_base64: `[otel]\n${key}={"otlp-http"={endpoint="https://collector.example/v1",protocol="binary"}}\n`,
+    } })), new RegExp("forced.*otel." + key));
+  }
 });
 
 test("installation preserves existing sessions' MCP backend instead of imposing a global default", () => {

@@ -61,7 +61,7 @@ pub(super) fn same_source(a: &Projection, b: &Projection, explicit_cwd: bool) ->
 
 pub(super) fn privacy_compatible(a: &Projection, b: &Projection) -> bool {
     [a, b].into_iter().all(|p| p.analytics_disabled && p.feedback_disabled && p.updates_disabled
-        && !p.collectors.iter().enumerate().any(|(i,c)| c.provider_destination && !(i==2 && c.kind=="statsig")))
+        && p.exporters_disabled)
         && a.mcp_store == b.mcp_store && a.mcp_keyring_backend == b.mcp_keyring_backend
         && a.worktree_root == b.worktree_root
 }

@@ -20,7 +20,6 @@ import { prepareCodexAccountState } from "../src/privacy/codex-account-state.js"
 import { prepareCodexNativeInvocation } from "../src/privacy/codex-native-invocation.js";
 
 const base = "/opt/aimgr-state-audit";
-const disableExporters = process.argv.includes("--requirements-none");
 assert.ok(fs.existsSync(path.join(base, "OFFSITE_AUDIT_HOST")) && process.getuid() !== 0);
 if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
 assert.equal((await dns.lookup("api.openai.com")).address, "127.0.0.1");
@@ -135,15 +134,12 @@ try {
       && message.params.item.aggregatedOutput.includes("SYNTHETIC_COLLECTOR_TOOL_PROOF")), "actual native shell succeeds");
   };
   await turn("Run the synthetic ordinary tool proof.");
-  if (!disableExporters) await waitFor(() => receipts.some(row => row.url === "/independent/logs"), "independent native exporter positive");
   fs.writeFileSync(source, fs.readFileSync(source, "utf8").replace(permitted, prohibited));
   await invocation.flushSettings();
   const read = await call("config/read", { includeLayers: false, cwd });
-  if (disableExporters) {
-    assert.equal(read.config.otel.exporter, "none");
-    assert.equal(read.config.otel.trace_exporter, "none");
-    assert.equal(read.config.otel.metrics_exporter, "none");
-  } else assert.ok(JSON.stringify(read).includes(prohibited), "native observes the changed exporter");
+  assert.equal(read.config.otel.exporter, "none");
+  assert.equal(read.config.otel.trace_exporter, "none");
+  assert.equal(read.config.otel.metrics_exporter, "none");
   await call("account/read", { refreshToken: true });
   assert.equal(refreshes, 1);
   assert.equal(readLocalCodexCredential(options).credential.access, token(1));
@@ -158,16 +154,17 @@ try {
   } finally { clearTimeout(timer); }
   assert.equal(child.exitCode, 0);
   await invocation.close(); invocation = null;
-  const result = { fixture: path.basename(root), independentNativePositive: receipts.some(row => row.url === "/independent/logs"),
+  const result = { fixture: path.basename(root), independentCollectorRequests: receipts.filter(row => row.url === "/independent/logs").length,
     actualNativeRefresh: refreshes === 1, modelRequests: receipts.filter(row => row.url === "/responses").length,
     providerCollectorRequestsAfterLiveEdit: receipts.filter(row => row.url === "/provider/logs").length,
-    disableExporters, artifactSet,
+    allExportersDisabled: true, artifactSet,
     nativeExporterReloadObserved: stderr.join("").includes("reloaded telemetry exporters after account change"),
     completedOrdinaryTools: messages.filter(message => message.method === "item/completed" && message.params.item.type === "commandExecution"
       && message.params.item.exitCode === 0).length };
   fs.writeFileSync(path.join(root, "result.private.json"), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result));
   assert.ok(result.nativeExporterReloadObserved, "native emitted an exporter reload event after the actual refresh");
+  assert.equal(result.independentCollectorRequests, 0, "The approved removal includes independent Codex exporters");
   assert.equal(result.providerCollectorRequestsAfterLiveEdit, 0, "A live settings/auth reload must not enable provider collection");
 } finally {
   if (child && child.exitCode === null && child.signalCode === null) {

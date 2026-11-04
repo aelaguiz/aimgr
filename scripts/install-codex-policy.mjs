@@ -32,4 +32,4 @@ for (const [key, file] of Object.entries(files)) {
   const directoryFd = fs.openSync(directory, "r");
   try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
 }
-process.stdout.write("Codex managed privacy policy installed; unrelated policy and independent exporters preserved.\n");
+process.stdout.write("Codex privacy policy installed: analytics, feedback and all diagnostic exporters disabled.\n");

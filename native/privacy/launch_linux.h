@@ -349,6 +349,22 @@ static int receive_fd(int socket) {
     if (!cmsg || cmsg->cmsg_level!=SOL_SOCKET || cmsg->cmsg_type!=SCM_RIGHTS || cmsg->cmsg_len!=CMSG_LEN(sizeof(int))) return -1;
     int fd; memcpy(&fd,CMSG_DATA(cmsg),sizeof(fd)); return fd;
 }
+static int vendor_label(const char *label) {
+    /* NNP-compatible self-reentry can retain the tools profile and add the
+     * vendor profile. Every component then applies: a tools component must
+     * never exempt a vendor component from the uname restriction. */
+    const char *part=label;
+    while (*part) {
+        const char *next=strstr(part,"//&");
+        size_t length=next?(size_t)(next-part):strcspn(part," \n");
+        int managed=(length>=13 && !strncmp(part,"aim-claude-p-",13))
+            || (length>=12 && !strncmp(part,"aim-codex-p-",12));
+        if (managed && (length<6 || strncmp(part+length-6,"-tools",6))) return 1;
+        if (!next) break;
+        part=next+3;
+    }
+    return 0;
+}
 static void listen_uname(int channel) {
     drop(); if (setsid()<0) _exit(125);
     int listener=receive_fd(channel); close(channel); if (listener<0) _exit(125);
@@ -365,8 +381,8 @@ static void listen_uname(int channel) {
         char file[80],current[512]={0}; snprintf(file,sizeof(file),"/proc/%u/attr/current",request.pid);
         int fd=open(file,O_RDONLY|O_CLOEXEC); ssize_t size=fd<0?-1:read(fd,current,sizeof(current)-1); if (fd>=0) close(fd);
         // A failed inspection is a denial, never a guessed tool exemption.
-        int vendor=size>0 && (!strncmp(current,"aim-claude-p-",13) || !strncmp(current,"aim-codex-p-",12)) && strstr(current,"-tools")==NULL;
-        response.id=request.id; if (size<=0 || vendor) response.error=-EPERM;
+        int vendor=size>0 && vendor_label(current);
+        response.id=request.id; if (size<=0 || size==(ssize_t)sizeof(current)-1 || vendor) response.error=-EPERM;
         else response.flags=SECCOMP_USER_NOTIF_FLAG_CONTINUE;
         if (ioctl(listener,SECCOMP_IOCTL_NOTIF_ID_VALID,&request.id)) continue;
         if (ioctl(listener,SECCOMP_IOCTL_NOTIF_SEND,&response) && errno!=ENOENT) break;

@@ -8,8 +8,7 @@ const secret = "SYNTHETIC_INPUT_SECRET";
 const artifact = { configState: "/approved/config-state", artifactSet: "a".repeat(64) };
 const valid = () => ({ schema: 1, source_revision: "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856",
   cwd: "/work", reads: ["/inputs/instructions"], writes: ["/work"], database_roots: ["/state"],
-  database_files: ["/state/state.sqlite"], collectors: [{ kind: "none", provider_destination: false },
-    { kind: "none", provider_destination: false }, { kind: "statsig", provider_destination: true }],
+  database_files: ["/state/state.sqlite"], exporters_disabled: true,
   analytics_disabled: true, feedback_disabled: true, updates_disabled: true, initialized: true });
 const options = () => ({ artifact, prepared: { codexHome: "/account" }, parsedArgs: {
   cwd: "/work", profile: "selected", command: "exec", config: [`model_provider.secret=${secret}`],
@@ -69,7 +68,8 @@ test("input inventory rejects malformed paths, incomplete initialization and pol
     v => v.project_cwds = ["relative"], v => v.cwd = "relative", v => v.initialized = false,
     v => v.schema++, v => v.source_revision = "wrong", v => v.analytics_disabled = false,
     v => v.feedback_disabled = false, v => v.updates_disabled = false,
-    v => v.collectors[0] = { kind: "otlp", provider_destination: true }];
+    v => v.exporters_disabled = false, v => delete v.exporters_disabled,
+    v => v.exporters_disabled = "true"];
   for (const mutate of mutations) {
     const response = valid(); mutate(response);
     await assert.rejects(prepareCodexNativeInputs({ ...options(), executeImpl: transport(response) }));

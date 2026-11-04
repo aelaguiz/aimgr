@@ -97,12 +97,6 @@ struct Request {
 }
 
 #[derive(Serialize)]
-struct Collector {
-    kind: &'static str,
-    provider_destination: bool,
-}
-
-#[derive(Serialize)]
 struct McpInput { name: String, url: String, environment_id: String, ordinary_oauth: bool }
 
 #[derive(Serialize)]
@@ -114,7 +108,7 @@ struct Projection {
     writes: BTreeSet<PathBuf>,
     database_roots: BTreeSet<PathBuf>,
     database_files: Vec<PathBuf>,
-    collectors: Vec<Collector>,
+    exporters_disabled: bool,
     analytics_disabled: bool,
     feedback_disabled: bool,
     updates_disabled: bool,
@@ -138,28 +132,6 @@ impl Projection {
         self.database_roots.extend(next.database_roots); self.database_files.extend(next.database_files);
         self.database_files.sort(); self.database_files.dedup();
         self.project_cwds.extend(next.project_cwds);
-    }
-}
-
-fn collector(value: &OtelExporterKind, reads: &mut BTreeSet<PathBuf>) -> Collector {
-    match value {
-        OtelExporterKind::None => Collector { kind: "none", provider_destination: false },
-        OtelExporterKind::Statsig => Collector { kind: "statsig", provider_destination: true },
-        OtelExporterKind::OtlpHttp { endpoint, tls, .. } | OtelExporterKind::OtlpGrpc { endpoint, tls, .. } => {
-            if let Some(tls) = tls {
-                for p in [&tls.ca_certificate, &tls.client_certificate, &tls.client_private_key].into_iter().flatten() {
-                    reads.insert(p.to_path_buf());
-                }
-            }
-            // The URL itself may contain credentials. Emit only this admission
-            // fact, never headers, URL userinfo/query or arbitrary attributes.
-            let provider_destination = url::Url::parse(endpoint).ok().and_then(|u| u.host_str().map(str::to_owned))
-                .is_some_and(|host| {
-                    let host = host.trim_end_matches('.').to_ascii_lowercase();
-                    ["openai.com", "chatgpt.com"].iter().any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
-                });
-            Collector { kind: "otlp", provider_destination }
-        }
     }
 }
 
@@ -266,13 +238,13 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
     writes.insert(config.log_dir.clone());
     let database_files: Vec<_> = config.sqlite_config().runtime_db_paths().into_iter().map(|db| db.path).collect();
     let database_roots = database_files.iter().filter_map(|p| p.parent().map(std::path::Path::to_path_buf)).collect();
-    let collectors = [&config.otel.exporter, &config.otel.trace_exporter, &config.otel.metrics_exporter]
-        .map(|value| collector(value, &mut reads)).into();
+    let exporters_disabled = [&config.otel.exporter, &config.otel.trace_exporter, &config.otel.metrics_exporter]
+        .into_iter().all(|value| matches!(value, OtelExporterKind::None));
     // Read the native typed authored mode; this also avoids any development
     // build fallback being mistaken for the official release's selected store.
     let authored: codex_config::config_toml::ConfigToml = config.config_layer_stack.effective_config().try_into().map_err(|_| ())?;
     Ok(Projection { schema: 1, source_revision: REVISION, cwd: config.cwd.to_path_buf(), reads, writes,
-        database_roots, database_files, collectors, analytics_disabled: config.analytics_enabled == Some(false),
+        database_roots, database_files, exporters_disabled, analytics_disabled: config.analytics_enabled == Some(false),
         feedback_disabled: !config.feedback_enabled, updates_disabled: !config.check_for_update_on_startup,
         used_defaults, initialized: false, source_untrusted: config.active_project.is_untrusted(), worktree_root: None,
         owner_thread_id: None, fork_source: None, oss_choice: None, project_cwds: BTreeSet::new(), mcp_servers: None,
@@ -458,7 +430,7 @@ async fn run_selected(request: &Request, phase: &mut &'static str) -> Result<Pro
         // Admission precedes any native database mutation. Credential backend
         // authority is independently checked from native authored inputs.
         if !output.analytics_disabled || !output.feedback_disabled || !output.updates_disabled
-            || output.collectors.iter().enumerate().any(|(i, c)| c.provider_destination && !(i == 2 && c.kind == "statsig")) { return Err(()); }
+            || !output.exporters_disabled { return Err(()); }
     }
     if matches!(request.operation, Operation::Initialize) {
         *phase = "native database initialization";

@@ -107,6 +107,15 @@ int main(int argc,char **argv) {
       "/sys/devices/system/cpu/{online,possible} r,\n/sys/kernel/mm/transparent_hugepage/hpage_pmd_size r,\n"
       "deny /{etc,usr/lib}/{os-release,lsb-release,machine-id,hostname} r,\n"
       "deny /etc/{mariner,centos,fedora,alpine,redhat}-release r,\n",out);
+    /* Approved Linux metadata exception: native read-only sandbox setup
+     * masks privileged socket aliases using the process mount table. This
+     * permits same-user mount tables, not their mounted file contents. */
+    fprintf(out,"/tmp/codex-daemon-%u/ rw,\n",caller);
+    fputs("owner /proc/[0-9]*/mountinfo r,\n",out);
+    /* Native workspace sandboxing creates empty masks for these names in
+     * /tmp, then removes them after the tool exits. Permit same-user directory
+     * entries only: no listings, descendant reads, or descendant writes. */
+    fputs("owner /tmp/.{git,agents,codex,aws}/ w,\n",out);
     /* os_info 3.14 first execs lsb_release -a. Letting that helper enter the
      * ordinary-tool profile disclosed the distribution/version in HTTP.
      * This rule belongs only to vendor code; requested shell tools retain it. */
@@ -124,7 +133,12 @@ int main(int argc,char **argv) {
     fprintf(out,"profile %s flags=(enforce,attach_disconnected) {\n",tools_profile);
     ordinary_access(out);
     other_exec(out,"/",excluded,5,"ix");
-    literal(out,vendor);fprintf(out," px -> %s,\n",profile);literal(out,helper);fprintf(out," px -> %s,\n",profile);
+    /* Native bubblewrap sets no_new_privs before reentering this exact image.
+     * Keep the existing tools confinement and add vendor restrictions, so
+     * this is a subset transition under NNP. The next ordinary shell returns
+     * to tools through the vendor component's normal px rule. */
+    literal(out,vendor);fprintf(out," px -> \"%s//&%s\",\n",tools_profile,profile);
+    literal(out,helper);fprintf(out," px -> \"%s//&%s\",\n",tools_profile,profile);
     launcher_exec(out);fputs("}\n",out); // No inherited vendor file denials on tools.
     if (fclose(out) || size>2*1024*1024) fail("policy generation");
     immutable(RUNTIME "/policy.lock",0);int lock=open(RUNTIME "/policy.lock",O_RDONLY|O_NOFOLLOW|O_CLOEXEC);

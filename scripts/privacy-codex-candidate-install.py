@@ -98,8 +98,7 @@ with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory
     subprocess.run(['cc', '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
         str(repo / ('native/codex/approved_launch_linux.c' if system == 'Linux' else 'native/codex/approved_launch_macos.c')), '-o', str(stage / 'launcher')], check=True)
     subprocess.run(['cc', '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
-        str(repo / 'native/codex/process_control.c'), '-o', str(stage / 'process-control')]
-        + (['-lbsm'] if system == 'Darwin' else []), check=True)
+        str(repo / 'native/codex/process_control.c'), '-o', str(stage / 'process-control')], check=True)
     if system == 'Darwin':
         subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', '--options', 'runtime', str(stage / 'launcher')], check=True, capture_output=True)
         subprocess.run(['cc', '-O2', '-Wall', '-Wextra', '-Werror', str(repo / 'native/codex/managed_preferences.m'), '-framework', 'Foundation', '-o', str(stage / 'managed-preferences')], check=True)

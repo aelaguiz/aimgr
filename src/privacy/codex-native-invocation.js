@@ -26,7 +26,7 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
   try {
     if (!prepared?.accountId || prepared.environmentId !== environment.binding) throw new Error("Codex needs the selected account's authorization from this environment.");
     const account = prepareCodexAccountState({ homeDir, accountId: prepared.accountId, label: prepared.label,
-      env: { ...env, CODEX_HOME: prepared.sharedHome }, environment });
+      env: { ...env, CODEX_HOME: prepared.codexHome }, environment });
     if (account.codexHome !== prepared.codexHome || account.accountRoot !== prepared.accountRoot) throw new Error("Codex prepared account state changed before launch.");
     const local = prepared.keyBacked && prepared.accountId === "api-provider:deepseek" ? { status: "ready", credential: null }
       : readLocalCodexCredential({ homeDir, env: { CODEX_HOME: account.sharedHome }, accountId: account.accountId, environment });
@@ -65,10 +65,11 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     const inputs = resolveInputs({ prepared: account, parsedArgs, homeDir, env: environmentValues,
       managedFiles: managed.files, effectiveInputs });
     environmentFd = stageLaunchEnvironment(environmentValues, scratch);
-    const writes = [...new Set([...inputs.writes, ...entries.filter(entry => supervisor.states.get(entry)?.writable)
-      .map(entry => codexCanonicalPath(path.dirname(entry.view)))])];
-    const reads = [...new Set([...inputs.reads, ...artifact.readPaths, ...entries.filter(entry => !supervisor.states.get(entry)?.writable)
-      .map(entry => codexCanonicalPath(path.dirname(entry.view)))])];
+    // Only the private view directory is admitted. Its ordinary permissions
+    // mirror source replaceability and can recover within this session; an
+    // initially read-only source must not leave a permanent native read grant.
+    const writes = [...new Set([...inputs.writes, ...entries.map(entry => codexCanonicalPath(path.dirname(entry.view)))])];
+    const reads = [...new Set([...inputs.reads, ...artifact.readPaths])];
     const databases = [...new Set(inputs.databases)];
     const denied = [codexCanonicalPath(path.join(account.sharedHome, "secrets", "codex_auth.age")),
       codexCanonicalPath(path.join(account.codexHome, "secrets", "codex_auth.age"))];

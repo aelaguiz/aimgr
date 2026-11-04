@@ -232,21 +232,15 @@ class Maintenance:
         finally:
             os.close(fd)
 
-    def restore(self):
+    def finish(self):
         # Commit comes first. Once admissions reopen, token refresh/logout may
         # run; recovery from here must never inspect/replay the old tokens.
-        # A restored schedule must not wait for our now-unnecessary refresh
-        # locks. Keep only the setup lock through idempotent control cleanup.
+        # Keep only the setup lock through the final admission update.
         for fd in self.locks[:]:
             if fd != self.setup_lock:
                 os.close(fd)
                 self.locks.remove(fd)
         self.admission(False)
-        for schedule in self.journal['schedules']:
-            if not schedule.get('restored'):
-                self.owner('restore', schedule=schedule)
-                schedule['restored'] = True
-                self.save()
         self.journal['finished'] = True
         self.save()
 
@@ -258,7 +252,7 @@ class Maintenance:
                 raise MaintenanceError('Unsupported maintenance journal; no changes were made.')
             if self.journal.get('committed'):
                 if not self.journal.get('finished'):
-                    self.restore()
+                    self.finish()
                     return
                 if self.request['operation'] == 'recover':
                     return
@@ -275,25 +269,22 @@ class Maintenance:
                               native_access=self.request.get('native_access'),
                               process_control=self.request['process_control'], state_io=self.request['state_io'],
                               cwd=self.request['cwd'], home=self.request['home'])
-            # Check the real keyring before pausing schedules or publishing a
-            # pending operation. A read of a fresh ordinary key changes nothing.
+            # Check the real keyring before publishing pending maintenance.
+            # A read of a fresh ordinary key changes nothing.
             self.keyring('load', dict(serverName='aimgr-maintenance-probe-' + uuid.uuid4().hex, url='https://invalid.invalid/'))
             self.journal = dict(schema=1, operation_id=uuid.uuid4().hex, source_home=plan['source_home'],
-                                schedules=plan['schedules'], plan=plan, intents=None, committed=False, finished=False)
+                                plan=plan, intents=None, committed=False, finished=False)
             self.save()
         self.admission(True)
         # A pre-maintenance admission may have crossed between the initial
         # inventory and publishing pending. Reinventory under pending, before
-        # taking refresh locks or stopping any owner, including on recovery.
+        # taking refresh locks, including on recovery.
         self.journal['plan'] = self.owner('recheck', plan=self.journal['plan'])
         self.save()
         plan = self.journal['plan']
-        # Never TERM a token consumer: legacy native refresh does not take the
-        # observable transaction lock. Current launchers check pending before
-        # account selection; schedule control refuses existing/older consumers.
-        for schedule in self.journal['schedules']:
-            self.owner('pause', schedule=schedule, plan=plan)
-        self.owner('stop', plan=plan, process_control=self.request['process_control'])
+        # No process or schedule is stopped. Supported AIM launches observe
+        # pending before selection and at native exec; external raw launches
+        # must remain stopped for this explicit one-time conversion.
         for directory in plan['lock_directories']:
             Path(directory).mkdir(mode=0o700, parents=True, exist_ok=True)
         for file in plan['refresh_locks']:
@@ -333,7 +324,7 @@ class Maintenance:
         self.owner('verify', plan=plan)
         self.journal['committed'] = True
         self.save()
-        self.restore()
+        self.finish()
 
     def close(self):
         for fd in reversed(self.locks):

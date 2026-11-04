@@ -6,7 +6,6 @@ import { parseTOML, getStaticTOMLValue } from "toml-eslint-parser";
 // MCP cwd and other plain strings intentionally keep native interpretation.
 const ROOT_PATHS = new Set(["model_instructions_file", "sqlite_home", "log_dir", "model_catalog_json", "experimental_compact_prompt_file", "js_repl_node_path"]);
 const PROFILE_PATHS = new Set(["model_instructions_file", "model_catalog_json", "experimental_compact_prompt_file", "js_repl_node_path"]);
-const TLS_PATHS = new Set(["ca-certificate", "client-certificate", "client-private-key"]);
 const equal = isDeepStrictEqual;
 const keyOf = keys => JSON.stringify(keys);
 class TomlAtom {
@@ -32,9 +31,7 @@ export function codexSourcePath(keys) {
     (keys.length === 3 && keys[0] === "agents" && keys[2] === "config_file") ||
     (keys.length === 4 && keys[0] === "skills" && keys[1] === "config" && Number.isInteger(keys[2]) && keys[3] === "path") ||
     (keys.length === 4 && keys[0] === "model_providers" && keys[2] === "auth" && keys[3] === "cwd") ||
-    (keys.length === 3 && keys[0] === "sandbox_workspace_write" && keys[1] === "writable_roots" && Number.isInteger(keys[2])) ||
-    (keys.length === 5 && keys[0] === "otel" && ["exporter", "trace_exporter", "metrics_exporter"].includes(keys[1]) &&
-      ["otlp-http", "otlp-grpc"].includes(keys[2]) && keys[3] === "tls" && TLS_PATHS.has(keys[4]));
+    (keys.length === 3 && keys[0] === "sandbox_workspace_write" && keys[1] === "writable_roots" && Number.isInteger(keys[2]));
 }
 
 function resolvePath(value, source, home) {
@@ -165,10 +162,16 @@ function tableText(keys, value) {
   return text;
 }
 
-function changed(before, after, keys = []) {
+function changed(before, after, keys = [], other) {
   if (equal(before, after)) return [];
-  if (object(before) && object(after)) return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-    .flatMap(k => changed(before[k], after[k], [...keys, k]));
+  // Two writers can independently create the same table. Compare its children
+  // when both sides now have it; otherwise keep a newly added table intact so
+  // publication retains its native-editable block-table form.
+  if (object(after) && (object(before) || (before === undefined && object(other)))) {
+    const previous = before ?? {};
+    return [...new Set([...Object.keys(previous), ...Object.keys(after)])]
+      .flatMap(k => changed(previous[k], after[k], [...keys, k], other?.[k]));
+  }
   return [{ keys, value: after }];
 }
 
@@ -238,8 +241,8 @@ export function mergeCodexSettings({ baseSource, baseView, source, view, origin,
   const baseSourceValue = inspect(projectCodexSettings(baseSource, options)).value;
   const baseViewValue = inspect(baseView).value;
   const viewValue = inspect(projectCodexSettings(view, options)).value;
-  const nativeEdits = changed(baseViewValue, viewValue);
-  const sourceEdits = changed(baseSourceValue, sourceValue);
+  const nativeEdits = changed(baseViewValue, viewValue, [], sourceValue);
+  const sourceEdits = changed(baseSourceValue, sourceValue, [], viewValue);
   const authoredNative = inspect(restoreCodexAuthorPaths(view, baseSource, options)).value;
   const conflicts = [];
   let result = source;

@@ -461,9 +461,14 @@ async function handleRedisCodexResumeFresh(context) {
 
 async function handleCodexLocalLogin(context) {
   const label = normalizeLabel(context.positional[2]);
-  const runtime = await loadCodexRuntime(context);
+  let runtime = await loadCodexRuntime(context);
   try {
     const existing = runtime.snapshot.credentials.find(record => record.label === label);
+    const environment = runtime.environment;
+    // Browser authorization can take minutes; the bounded Redis connection
+    // must not idle through it or its expired socket will discard a good login.
+    await closeRedisRuntime(runtime);
+    runtime = null;
     const handoff = context.opts.manualCallbackStdio
       ? createManualCallbackStdioProtocol({ stdin: context.stdin, stdout: context.stdout, label, provider: OPENAI_CODEX_PROVIDER })
       : { emitAuthUrl: ({ url }) => context.stdout.write(`Open this URL in the account's existing browser, then paste the full callback URL here:\n${url}\n`),
@@ -471,6 +476,8 @@ async function handleCodexLocalLogin(context) {
     const credential = await loginCodexManually({ ...handoff,
       expectedAccountId: existing?.identity?.accountId,
       fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl, signal: context.signal });
+    runtime = await loadCodexRuntime(context);
+    if (runtime.environment.binding !== environment.binding) throw new Error("The local Codex environment changed during login. Sign in again on this machine.");
     await ensureCodexAccountMetadata(runtime.store, { label, accountId: credential.accountId });
     saveLocalCodexLogin({ homeDir: context.homeDir, env: context.env, environment: runtime.environment, label, accountId: credential.accountId }, credential);
     const result = { type: "result", ok: true, label, provider: OPENAI_CODEX_PROVIDER, authority: "environment-local" };
@@ -507,9 +514,9 @@ export async function handleCodex(context) {
   }
   if (subcmd === "mcp-migrate" || subcmd === "mcp-recover") {
     if (positional.length !== 2) throw new Error("Use aim codex mcp-migrate or aim codex mcp-recover in the selected CODEX_HOME environment.");
-    context.stdout.write("MCP maintenance requires existing Codex sessions to finish first and pauses new Codex launches and schedules during conversion.\n");
+    context.stdout.write("MCP maintenance requires existing Codex sessions to finish first and blocks new AIM Codex launches during conversion.\n");
     await maintainCodexMcp({ operation: subcmd === "mcp-migrate" ? "start" : "recover", homeDir: context.homeDir, env: context.env });
-    context.stdout.write("MCP credentials use the shared native keyring. Codex admissions and previously enabled schedules are restored.\n");
+    context.stdout.write("MCP credentials use the shared native keyring. AIM Codex launches are available again.\n");
     return;
   }
   if (!subcmd) {

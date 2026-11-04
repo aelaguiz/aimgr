@@ -4,6 +4,7 @@
 Run as root only on the isolated Linux host. The production launchers are
 compiled unchanged; no real vendor, login, active selector or approval is used.
 """
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -50,7 +51,8 @@ def observation(result, tools=False):
     assert result.returncode == 0, result.stderr
     lines = result.stdout.strip().splitlines()
     assert len(lines) == 3, result.stdout
-    assert ('-tools ' in lines[0]) == tools and '(enforce)' in lines[0], lines[0]
+    ordinary = '//&' not in lines[0] and lines[0].endswith('-tools (enforce)')
+    assert ordinary == tools and '(enforce)' in lines[0], lines[0]
     assert lines[1:] == (['read=1', 'uname=1'] if tools else ['read=0', 'uname=0']), lines
     return lines[0]
 
@@ -75,6 +77,17 @@ if len(sys.argv) > 1:
         for image in images:
             observation(subprocess.run([str(image), 'probe'], capture_output=True, text=True))
             observation(subprocess.run([str(image), 'self'], capture_output=True, text=True))
+            if provider == 'codex':
+                def no_new_privs():
+                    assert ctypes.CDLL(None).prctl(38, 1, 0, 0, 0) == 0
+                label = observation(subprocess.run([str(image), 'probe'], preexec_fn=no_new_privs,
+                                                   capture_output=True, text=True))
+                assert '//&' in label and '-tools' in label
+                ordinary = subprocess.run([str(image), 'exec', '/usr/bin/python3', '-c',
+                    'import os,pathlib; assert "//&" not in pathlib.Path("/proc/self/attr/current").read_text(); '
+                    'assert pathlib.Path(os.environ["SYNTHETIC_CANARY"]).read_text()=="SYNTHETIC_PRIVATE"; '
+                    'assert os.uname().sysname=="Linux"'], preexec_fn=no_new_privs, capture_output=True, text=True)
+                assert ordinary.returncode == 0, ordinary.stderr
         for image in [package / 'launcher-extra', package / 'nested/launcher']:
             label = observation(subprocess.run([str(image), 'probe'], capture_output=True, text=True), tools=True)
             assert label == parent_label
@@ -100,6 +113,7 @@ if len(sys.argv) > 1:
         late = dict(fixture, packages=dict(fixture['packages'], **{provider: json.loads(next_bundle.read_text())}))
         observation(invoke(late, provider, ['probe']))
         print(json.dumps(dict(provider=provider, privateToolRead=True, nativeReentry=True,
+                             noNewPrivilegesReentry=provider == 'codex',
                              sudo=True, build=True, bubblewrap=True, settingsToolWrite=True, nested=nested,
                              laterInstalledBundle=True, launcherLeafOnly=True)))
     elif phase == '--chrome':
@@ -120,6 +134,11 @@ if len(sys.argv) > 1:
         assert phase == '--launch' and os.getuid() != 0
         observation(invoke(fixture, provider, ['probe']))
         observation(invoke(fixture, provider, ['self']))
+        if provider == 'codex':
+            masks = invoke(fixture, provider, ['temp-masks'])
+            assert masks.returncode == 0, masks.stderr
+            assert Path('/tmp/.aws/synthetic-canary').read_text() == 'SYNTHETIC_TEMP_SECRET'
+            print('PASS native temporary-mask directory cleanup without listing or content access')
         result = invoke(fixture, provider, ['exec', '/usr/bin/python3', str(Path(__file__).resolve()), '--tool', file, provider])
         assert result.returncode == 0, result.stderr
         print(result.stdout, end='')
@@ -127,8 +146,28 @@ if len(sys.argv) > 1:
 
 assert os.getuid() == 0 and {name for _, name in socket.if_nameindex()} == {'lo'}
 user = pwd.getpwnam('aimdev')
+# The caller supplies a fresh private /tmp mount; never modify an existing one.
+assert all(not Path('/tmp/' + name).exists() for name in ['.git', '.agents', '.codex', '.aws']), 'fresh private /tmp required'
+Path('/tmp/.aws').mkdir(mode=0o700); os.chown('/tmp/.aws', user.pw_uid, user.pw_gid)
+Path('/tmp/.aws/synthetic-canary').write_text('SYNTHETIC_TEMP_SECRET')
+os.chown('/tmp/.aws/synthetic-canary', user.pw_uid, user.pw_gid)
+Path('/tmp/.aws/synthetic-canary').chmod(0o600)
 root = Path(tempfile.mkdtemp(prefix='tool-boundary-', dir=base))
 root.chmod(0o755)
+classifier = root / 'classifier.c'
+classifier.write_text('#define main original_entry_main\n#include '
+    + json.dumps(str(repo / 'native/codex/approved_launch_linux.c'))
+    + '\n#undef main\nint main(int argc,char **argv){return argc==2?vendor_label(argv[1]):2;}\n')
+subprocess.run(['cc', '-O2', '-Wall', '-Wextra', '-Werror', str(classifier), '-o', str(root / 'classifier')], check=True)
+for label, denied in [
+    ('aim-codex-p-1001-abc (enforce)\n', True),
+    ('aim-codex-p-1001-abc-tools (enforce)\n', False),
+    ('aim-codex-p-1001-abc-tools//&aim-codex-p-1001-abc (enforce)\n', True),
+    ('aim-codex-p-1001-abc//&aim-codex-p-1001-abc-tools (enforce)\n', True),
+    ('aim-codex-p-1001-abc-tools//&aim-claude-p-1001-def (enforce)\n', True),
+    ('aim-claude-p-1001-def-tools//&aim-codex-p-1001-abc-tools (enforce)\n', False),
+]:
+    assert subprocess.run([str(root / 'classifier'), label]).returncode == int(denied)
 source = root / 'probe.c'
 source.write_text(r'''
 #include <stdio.h>
@@ -136,9 +175,17 @@ source.write_text(r'''
 #include <string.h>
 #include <unistd.h>
 #include <sys/utsname.h>
+#include <sys/stat.h>
+#include <dirent.h>
 int main(int argc,char **argv){
  if(argc>1&&!strcmp(argv[1],"exec")){execv(argv[2],argv+2);perror("exec");return 2;}
  if(argc>1&&!strcmp(argv[1],"self")){char *a[]={argv[0],"probe",NULL};execv(a[0],a);return 3;}
+ if(argc>1&&!strcmp(argv[1],"temp-masks")){
+  const char *dirs[]={"/tmp/.git","/tmp/.agents","/tmp/.codex"};
+  for(size_t i=0;i<3;i++){if(mkdir(dirs[i],0700))return 10;if(opendir(dirs[i]))return 11;if(rmdir(dirs[i]))return 12;}
+  if(opendir("/tmp/.aws")||fopen("/tmp/.aws/synthetic-canary","r")||fopen("/tmp/.aws/synthetic-canary","w"))return 13;
+  return 0;
+ }
  FILE *f=fopen("/proc/self/attr/current","r");char line[256];if(!f||!fgets(line,sizeof(line),f))return 4;
  fclose(f);printf("%s",line);f=fopen(getenv("SYNTHETIC_CANARY"),"r");printf("read=%d\n",f!=NULL);if(f)fclose(f);
  struct utsname value;printf("uname=%d\n",uname(&value)==0);return 0;
