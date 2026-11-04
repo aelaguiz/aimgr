@@ -27,7 +27,7 @@ Installed Linux candidate `4f6f4a77cd3f40405484ef9819000645fbe2b7a1c9e995b36c6ff
 
 Linux `nested-gcMMb0` now passes the historical protected-Claude parent to unchanged read-only Codex reviewer case, including an independently observed enforcing parent profile. Linux `tui-settings-166c` passes actual terminal model, effort and workspace permission changes followed by MCP, skill and shell work. A startup false-conflict warning exposed by that test was reproduced deterministically and corrected within the existing settings merger; independent additions to a new table merge while actual same-key conflicts remain visible. All 36 focused settings tests pass, and the native TUI emits no settings-conflict warning.
 
-Still unproven: remaining exact-release macOS acceptance and real-service checks. This review is complete; milestone 1 is not.
+Linux real-service model/tool/MCP, refresh, fresh usage, simultaneous sessions, same-account resume and a real scheduled routine now pass; see the acceptance ledger for the test boundaries. Remaining exact-release macOS acceptance is still unproven. This scope review is complete; milestone 1 is not.
 
 Reviewed checkpoint `a1f83dd` against base `60a7204`, the canonical plan and implementation worklog, and native source `54201ea65a3501d09a87c776376a0c16aa39db70`. The reviewer started without the implementation conversation and performed a read-only source review. This is not the final acceptance review.
 

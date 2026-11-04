@@ -10,7 +10,10 @@ The shared source of truth is Redis Cloud Essentials. Every configured host, inc
 - Local-only adjunct state: `~/.aimgr/local-state.json`
 - Legacy `~/.aimgr/secrets.json`: old artifact only; runtime commands ignore it
 
-The credential pool is in Redis. Local tool files are projections only. There is no Redis VM or container to maintain.
+Redis holds shared account metadata and credentials for the legacy harnesses.
+Codex CLI keeps its primary login and refresh tokens in the environment where
+that account signed in; those tokens are never Redis projections. There is no
+Redis VM or container to maintain.
 
 ## Setup
 
@@ -192,7 +195,8 @@ or exported to another machine. Each destination needs its own login. Prime/Pi
 credentials retain their separate authority. Shared settings remain editable,
 including relative paths and skill enable switches; a new vendor-visible folder
 outside the launch grants needs a new session. Ordinary shell tools keep their
-normal permissions. Organization-owned remote policy is an accepted gap.
+normal permissions. Codex's optional diagnostic exporters are disabled, including
+custom collectors. Organization-owned remote policy is an accepted gap.
 
 Install an explicitly approved complete Codex bundle with
 `scripts/install-local-bin.sh --codex-runtime-bundle /absolute/bundle`. This uses
@@ -208,8 +212,9 @@ logins. Keep the source machine's identity unchanged.
 environment provisioning and pending maintenance without running Codex or
 contacting Redis/OpenAI. For an existing File-backed MCP OAuth store, let the
 current Codex sessions finish and run `aim codex mcp-migrate` once. It converts
-the shared MCP tokens into the native OS keyring, pauses Codex schedules during
-conversion, and preserves conflicting credentials. `aim codex mcp-recover`
+the shared MCP tokens into the native OS keyring and preserves conflicting
+credentials. AIM refuses new Codex launches while conversion is pending;
+conversion does not stop processes or change OS schedules. `aim codex mcp-recover`
 finishes an interrupted conversion. If an interrupted backend write has no
 durable acknowledgement, recovery requires a later machine boot. Ordinary
 launch does not start conversion. The full contract and test plan are in the
