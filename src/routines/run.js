@@ -20,6 +20,7 @@ import {
 } from "../targets/prime-sessions.js";
 import { preparePrimeInvocation, resolvePrimeLauncher } from "../targets/prime-launcher.js";
 import { prepareCodexNativeInvocation } from "../privacy/codex-native-invocation.js";
+import { assertCodexMaintenanceClear } from "../privacy/codex-maintenance.js";
 import { prepareCodexAccountState } from "../privacy/codex-account-state.js";
 import { readCodexEnvironment } from "../privacy/codex-environment.js";
 import { findRolloutPathById } from "../targets/codex-rollout.js";
@@ -601,6 +602,7 @@ export async function launchRoutineOccurrence(context) {
 
   let currentReceipt = baseReceipt;
   try {
+    if (routine.agent === "codex") assertCodexMaintenanceClear();
     const listResponse = runJsonSync("herdr", [
       "--session",
       routine.herdrSession,
@@ -997,6 +999,7 @@ export async function executeRoutineWorker(context) {
 
   try {
     verifyWorkerConfiguration(routine, receipt);
+    if (routine.agent === "codex") assertCodexMaintenanceClear();
     verifyWorkerEnvironment(routine, receipt, context.env, context.cwd ?? process.cwd());
     receipt = writeReceipt(receiptPath, {
       ...receipt,

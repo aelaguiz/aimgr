@@ -2,6 +2,7 @@
 //! unprivileged operation over private pipes; no daemon, HTTP or primary auth.
 use std::io::{self, Read};
 mod receipt;
+mod native_access;
 
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,7 @@ struct Request {
     url: String,
     value: Option<String>,
     maintenance: Option<receipt::Maintenance>,
+    native_access: Option<native_access::NativeAccess>,
 }
 
 // Struct serialization preserves the exact native package's payload order.
@@ -53,9 +55,14 @@ fn run() -> Result<Value, &'static str> {
     io::stdin().take(4 * 1024 * 1024 + 1).read_to_string(&mut input).map_err(|_| "input")?;
     if input.len() > 4 * 1024 * 1024 { return Err("input_size"); }
     let mut request: Request = serde_json::from_str(&input).map_err(|_| "input")?;
+    if let Some(access) = &request.native_access {
+        if request.operation != "insert-if-absent" { return Err("operation"); }
+        access.validate()?;
+    }
+    let access_intent = request.native_access.as_ref().map(|access| access.intent());
     let mut receipt = match request.maintenance.take() {
         Some(context) if request.operation == "insert-if-absent" => Some(receipt::Receipt::open(
-            context, &request.server_name, &request.url, request.value.as_deref().ok_or("value")?)?),
+            context, &request.server_name, &request.url, request.value.as_deref().ok_or("value")?, access_intent.as_deref())?),
         Some(_) => return Err("operation"),
         None => None,
     };
@@ -80,7 +87,8 @@ fn run() -> Result<Value, &'static str> {
             let value = request.value.as_ref().ok_or("value")?;
             validate_token(value, &request)?;
             if let Some(receipt) = &mut receipt { receipt.record("dispatched")?; }
-            entry.set_password(value).map_err(|_| "keyring_write")?;
+            if let Some(access) = &request.native_access { access.create(&account, value)?; }
+            else { entry.set_password(value).map_err(|_| "keyring_write")?; }
             if let Some(receipt) = &mut receipt { receipt.record("acknowledged")?; }
             let verified = entry.get_password().map_err(|_| "keyring_readback")?;
             if &verified != value { return Err("keyring_readback"); }
@@ -121,7 +129,7 @@ mod tests {
 
     #[test]
     fn tokens_keep_the_native_legacy_or_escaped_identity_only() {
-        let request = Request { operation: "insert-if-absent".into(), server_name: "local:docs".into(), url: "https://example.test/mcp".into(), value: None, maintenance: None };
+        let request = Request { operation: "insert-if-absent".into(), server_name: "local:docs".into(), url: "https://example.test/mcp".into(), value: None, maintenance: None, native_access: None };
         for (name, accepted) in [("local:docs", true), ("local:local:docs", true), ("docs", false), ("local:local:local:docs", false)] {
             let value = json!({"server_name":name,"url":request.url,"client_id":"synthetic","token_response":{}}).to_string();
             assert_eq!(validate_token(&value, &request).is_ok(), accepted);

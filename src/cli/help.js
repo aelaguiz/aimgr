@@ -31,6 +31,8 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim auth maintain     # refresh due Redis-backed Claude and Codex OAuth credentials once",
     "  aim codex login <label> [--manual-callback-stdio] # authorize Codex on this machine with a manual callback",
     "  aim codex logout <label> # remove this machine's Codex login",
+    "  aim codex mcp-migrate # one-time File-to-keyring conversion after existing Codex sessions finish",
+    "  aim codex mcp-recover # finish an interrupted one-time MCP conversion",
     "  aim codex use [label] # select a locally authorized account, or explicitly select a label",
     "  aim codex run [label | resume [<session-id>]] [-- <codex args...>] # select the exact label, or rotate when omitted; defaults to -p yolo",
     "  aim codex resume [<session-id>] # rotate, then resume the SAME thread with -p yolo (warns: the thread id continues under the new account, which links the accounts)",

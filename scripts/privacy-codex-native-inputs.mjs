@@ -49,6 +49,21 @@ assert.equal(inventory.database_files.length, 7);
 assert.deepEqual(fs.readdirSync(codexHome), before, "read-only projection must not initialize state");
 console.log("PASS read-only native projection without state creation");
 
+const mcp = { ...base, operation: "mcp_inputs", config: ['mcp_oauth_credentials_store="keyring"',
+  'mcp_servers.synthetic.url="https://fixture.invalid/mcp"'] };
+const token = { server_name: "synthetic", url: "https://fixture.invalid/mcp", client_id: "fixture",
+  token_response: { access_token: "SYNTHETIC_NATIVE_TOKEN", token_type: "bearer" }, expires_at: null };
+const mcpResult = await call({ ...mcp, mcp_values: [JSON.stringify(token)] });
+assert.equal(mcpResult.mcp_store, "keyring", "official input mode must not use the library's development-version File rewrite");
+assert.equal(mcpResult.mcp_keyring_backend, "direct");
+assert.ok(mcpResult.mcp_servers.some(s => s.name === "synthetic" && s.url === token.url && s.ordinary_oauth));
+assert.equal(inventory.mcp_servers, undefined, "credential URLs belong only on the maintenance pipe");
+const invalidToken = await start({ ...mcp, mcp_values: [JSON.stringify({ ...token, token_response: {} })] }).done;
+assert.equal(invalidToken.code, 125);
+assert.ok(!invalidToken.stderr.includes(token.token_response.access_token));
+assert.deepEqual(fs.readdirSync(codexHome), before);
+console.log("PASS maintenance-only HTTP identities and unchanged native token deserialization");
+
 const initialize = { ...base, operation: "initialize" };
 const cold = await Promise.all([call(initialize), call(initialize), call(initialize)]);
 assert.ok(cold.every(result => result.initialized));

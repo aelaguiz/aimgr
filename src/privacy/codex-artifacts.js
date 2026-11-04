@@ -21,6 +21,9 @@ const admission = createArtifactAdmission({
     field: "processControl", file: "process-control", role: "launcher", executable: true,
     error: "the approved Codex runtime lacks its maintenance process control helper",
   }, {
+    field: "mcpMaintenance", file: "mcp_maintenance.py", role: "launcher", executable: false,
+    error: "the approved Codex runtime lacks its MCP maintenance owner",
+  }, {
     field: "mcpKeyring", file: "mcp-keyring", role: "launcher", executable: true,
     error: "the approved Codex runtime lacks its MCP keyring helper",
   }, ...(platform === "darwin" ? [{ field: "managedPreferences", file: "managed-preferences", role: "launcher", executable: true,

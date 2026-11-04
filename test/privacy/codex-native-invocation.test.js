@@ -27,7 +27,7 @@ test("relative --cd is projected once while native retains its original process 
         assert.equal(parsedArgs.cwd, selected);
         assert.equal(parsedArgs.processCwd, cwd);
         if (parsedArgs.worktree) assert.deepEqual(parsedArgs.directories, [path.join(cwd, "extra")]);
-        return { cwd: selected, reads: [], writes: [], database_roots: [prepared.sharedHome] };
+        return { cwd: selected, reads: [], writes: [], database_roots: [prepared.sharedHome], mcp_store: "keyring" };
       },
     });
     try {

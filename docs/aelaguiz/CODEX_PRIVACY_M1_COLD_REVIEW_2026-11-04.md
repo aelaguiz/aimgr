@@ -29,3 +29,11 @@ The MCP helper is now an admitted immutable bundle entry, and native rotating-re
 ## User resolution on November 4
 
 Amir accepted organization-owned policies as a gap and explicitly prohibited Codex changes for this work. The [decision record](CODEX_PRIVACY_NATIVE_DECISION_2026-11-04.md) and canonical plan now reflect that boundary. Finding 1 is closed by the approved scope amendment, not by a technical fix. The remaining findings and native acceptance requirements remain open.
+
+## November 4 transaction and schedule follow-up
+
+A separate read-only Sol 6.1 xhigh reviewer examined the finite MCP transaction, child lock lifetime, durable receipts, native keychain ACL creation, File retirement and committed recovery. Its final focused pass found no remaining safety blocker in credential writes/recovery and judged the finite scope proportional. This does not replace the final whole-implementation review or the remaining native interruption tests.
+
+The review rejected TERM-based quiescence for existing native token consumers because legacy reactive refresh need not take the observable refresh lock. The accepted bounded correction refuses existing consumers without signaling and requires normal exit before explicit conversion; only reviewed non-OAuth updater/installer roles can be stopped. The plan now states that prerequisite. No directory freeze, all-key registry, persistent service or permanent feature restriction was retained.
+
+Schedule review required verifying the effective loaded service as well as the disk plist, the current AIM installation and HOME, and the interpreter actually selected through its PATH. The final source review accepted those corrections and the calendar multiset comparison. The actual Background-domain probe established that disable alone does not pause a loaded timer. A new real GUI-domain fixture is not yet claimed as passed. The reviewer also strengthened that fixture: bind each receipt to its exact intended calendar time, prove pause/restoration bracket the missed and future occurrences, and wait for the restored occurrence's terminal receipt instead of racing its initial file creation. Those fixture corrections are implemented. Overall readiness remains incomplete.

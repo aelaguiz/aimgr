@@ -149,6 +149,7 @@ dependencies = [
  "codex-exec-server",
  "codex-file-system",
  "codex-protocol",
+ "codex-rmcp-client",
  "codex-rollout",
  "codex-skills",
  "codex-state",

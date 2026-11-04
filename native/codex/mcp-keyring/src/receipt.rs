@@ -60,13 +60,14 @@ fn boot_id() -> Result<String, &'static str> {
 }
 
 impl Receipt {
-    pub(super) fn open(input: Maintenance, name: &str, url: &str, value: &str) -> Result<Self, &'static str> {
+    pub(super) fn open(input: Maintenance, name: &str, url: &str, value: &str, access: Option<&str>) -> Result<Self, &'static str> {
         let uid = unsafe { libc::getuid() };
         if uid == 0 || uid != unsafe { libc::geteuid() }
             || !hexadecimal(&input.operation_id, 32) || !hexadecimal(&input.intent_sha256, 64)
             || input.boot_id != boot_id()? || !(2..=128).contains(&input.lock_fds.len()) { return Err("maintenance_input"); }
         let mut digest = Sha256::new();
         for field in [name, url, value] { digest.update((field.len() as u64).to_be_bytes()); digest.update(field.as_bytes()); }
+        if let Some(field) = access { digest.update((field.len() as u64).to_be_bytes()); digest.update(field.as_bytes()); }
         if format!("{:x}", digest.finalize()) != input.intent_sha256 { return Err("maintenance_intent"); }
         let mut identities = std::collections::HashSet::new();
         // Validate the original descriptor set before opening anything: a

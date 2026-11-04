@@ -19,6 +19,8 @@ import { createManualCallbackStdioProtocol, readNonEmptyLineFromStdin, parseManu
 import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { readCodexEnvironment } from "../../privacy/codex-environment.js";
 import { codexSharedHome } from "../../privacy/codex-account-state.js";
+import { maintainCodexMcp } from "../../credentials/codex-mcp-maintenance.js";
+import { assertCodexMaintenanceClear } from "../../privacy/codex-maintenance.js";
 import {
   MAX_COPY_MB_DEFAULT,
   CodexThreadCopyError,
@@ -495,11 +497,19 @@ async function handleCodexLocalLogout(context) {
 export async function handleCodex(context) {
   const { positional } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+  if (subcmd === "mcp-migrate" || subcmd === "mcp-recover") {
+    if (positional.length !== 2) throw new Error("Use aim codex mcp-migrate or aim codex mcp-recover in the selected CODEX_HOME environment.");
+    context.stdout.write("MCP maintenance requires existing Codex sessions to finish first and pauses new Codex launches and schedules during conversion.\n");
+    await maintainCodexMcp({ operation: subcmd === "mcp-migrate" ? "start" : "recover", homeDir: context.homeDir, env: context.env });
+    context.stdout.write("MCP credentials use the shared native keyring. Codex admissions and previously enabled schedules are restored.\n");
+    return;
+  }
   if (!subcmd) {
     throw new Error("Missing codex subcommand. Usage: aim codex use | aim codex run | aim codex resume | aim codex resume-fresh | aim codex watch");
   }
   if (subcmd === "login") return handleCodexLocalLogin(context);
   if (subcmd === "logout") return handleCodexLocalLogout(context);
+  assertCodexMaintenanceClear();
   if (subcmd === "watch") {
     await handleRedisCodexWatch(context);
     return;

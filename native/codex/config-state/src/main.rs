@@ -27,7 +27,7 @@ const REVISION: &str = "54201ea65a3501d09a87c776376a0c16aa39db70";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Operation { Inputs, Initialize, WorktreeOwner, ForkSource }
+enum Operation { Inputs, Initialize, WorktreeOwner, ForkSource, McpInputs }
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +70,8 @@ struct Request {
     worktree: bool,
     owner: Option<owner::Request>,
     fork_source: Option<source::Request>,
+    #[serde(default)]
+    mcp_values: Vec<String>,
     // Captured by the admitted CFPreferences forced-value reader. Both fields
     // are required on macOS, including explicit empty strings for absence.
     forced_config: Option<String>,
@@ -81,6 +83,9 @@ struct Collector {
     kind: &'static str,
     provider_destination: bool,
 }
+
+#[derive(Serialize)]
+struct McpInput { name: String, url: String, environment_id: String, ordinary_oauth: bool }
 
 #[derive(Serialize)]
 struct Projection {
@@ -101,6 +106,10 @@ struct Projection {
     worktree_root: Option<PathBuf>,
     owner_thread_id: Option<String>,
     fork_source: Option<source::Source>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_servers: Option<Vec<McpInput>>,
+    mcp_store: codex_config::types::OAuthCredentialsStoreMode,
+    mcp_keyring_backend: codex_config::types::AuthKeyringBackendKind,
 }
 
 fn collector(value: &OtelExporterKind, reads: &mut BTreeSet<PathBuf>) -> Collector {
@@ -222,11 +231,17 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
     let database_roots = database_files.iter().filter_map(|p| p.parent().map(std::path::Path::to_path_buf)).collect();
     let collectors = [&config.otel.exporter, &config.otel.trace_exporter, &config.otel.metrics_exporter]
         .map(|value| collector(value, &mut reads)).into();
+    // This library is built as 0.0.0; its final Config rewrites keyring modes
+    // to File for local development. Read the unchanged native typed input
+    // instead: the admitted official release does not apply that rewrite.
+    let authored = codex_config::config_toml::ConfigToml::try_from(config.config_layer_stack.effective_config()).map_err(|_| ())?;
     Ok(Projection { schema: 1, source_revision: REVISION, cwd: config.cwd.to_path_buf(), reads, writes,
         database_roots, database_files, collectors, analytics_disabled: config.analytics_enabled == Some(false),
         feedback_disabled: !config.feedback_enabled, updates_disabled: !config.check_for_update_on_startup,
         used_defaults, initialized: false, source_untrusted: config.active_project.is_untrusted(), worktree_root: None,
-        owner_thread_id: None, fork_source: None })
+        owner_thread_id: None, fork_source: None, mcp_servers: None,
+        mcp_store: authored.mcp_oauth_credentials_store.unwrap_or_default(),
+        mcp_keyring_backend: config.auth_keyring_backend_kind() })
 }
 
 async fn load(request: &Request, fallback: bool, restore_reviewer: bool) -> std::io::Result<(Config, BTreeSet<PathBuf>)> {
@@ -309,6 +324,22 @@ async fn run(request: Request, phase: &mut &'static str) -> Result<Projection> {
     };
     *phase = "native input inventory";
     let mut output = projection(&config, reads, fallback).await?;
+    if matches!(request.operation, Operation::McpInputs) {
+        // Verify values obtained through the native keyring backend using the
+        // unchanged native reader's full type, without starting MCP or auth.
+        for value in &request.mcp_values {
+            serde_json::from_str::<codex_rmcp_client::StoredOAuthTokens>(value).map_err(|_| ())?;
+        }
+        // Explicit maintenance receives only configured HTTP identities. URLs
+        // can contain secrets: this field stays on its private maintenance
+        // pipe and is absent from ordinary invocation inventories.
+        output.mcp_servers = Some(config.mcp_servers.get().iter().filter_map(|(name, server)| {
+            if let codex_config::types::McpServerTransportConfig::StreamableHttp { url, .. } = &server.transport {
+                Some(McpInput { name: name.clone(), url: url.clone(), environment_id: server.environment_id.clone(),
+                    ordinary_oauth: matches!(server.auth, codex_config::types::McpServerAuth::OAuth) })
+            } else { None }
+        }).collect());
+    }
     if request.worktree {
         // This only reads native environment selection; it neither builds an
         // environment manager nor connects to a remote execution service.
@@ -377,7 +408,7 @@ fn main() {
         let request: Request = serde_json::from_slice(&input).map_err(|_| ())?;
         input.fill(0);
         phase = "privacy boundary";
-        if unsafe { aim_config_boundary(i32::from(matches!(request.operation, Operation::Inputs))) } != 0 { return Err(()); }
+        if unsafe { aim_config_boundary(i32::from(matches!(request.operation, Operation::Inputs | Operation::McpInputs))) } != 0 { return Err(()); }
         // Native metadata backfill otherwise prints source paths directly when
         // no dispatcher exists. A no-op dispatcher emits no telemetry/logs.
         tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default()).map_err(|_| ())?;

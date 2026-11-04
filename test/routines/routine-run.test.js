@@ -1418,3 +1418,27 @@ test("scheduled Claude occurrences deduplicate and prevent overlap", async () =>
   assert.equal(JSON.parse(await runCli([...argv, "--manual"], deps)).outcome, "overlap");
   assert.equal(calls.filter((call) => call.args.includes("create")).length, 1);
 });
+
+test("Codex maintenance refuses a queued routine before account selection and preserves its failed occurrence", {
+  skip: process.env.AIMGR_TEST_CODEX_MAINTENANCE !== "1",
+}, async () => {
+  assert.notEqual(process.getuid(), 0);
+  assert.ok(fs.existsSync("/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST"));
+  const pending = `/opt/aimgr-codex-runtime/users/${process.getuid()}/maintenance/pending.json`;
+  assert.ok(!fs.existsSync(pending));
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  const runtime = makeCodexRuntime(home);
+  const context = workerContext(home, receipt, runtime);
+  context.spawnSyncImpl = () => assert.fail("pending routine reached account selection");
+  fs.writeFileSync(pending, '{"synthetic":true}\n', { flag: "wx", mode: 0o600 });
+  try {
+    await assert.rejects(executeRoutineWorker(context), /maintenance is pending/);
+    const saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
+    assert.equal(saved.outcome, "failed_before_prompt");
+    assert.equal(runtime.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
+  } finally { fs.unlinkSync(pending); }
+  // The failed occurrence remains consumed; recovery cannot replay it.
+  assert.equal(JSON.parse(fs.readFileSync(receipt.receiptPath)).exitCode, 1);
+});

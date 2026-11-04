@@ -26,6 +26,7 @@ codex-utils-cli = { path = "vendor/codex/codex-rs/utils/cli" }
 codex-worktree = { path = "vendor/codex/codex-rs/worktree" }
 codex-rollout = { path = "vendor/codex/codex-rs/rollout" }
 codex-thread-store = { path = "vendor/codex/codex-rs/thread-store" }
+codex-rmcp-client = { path = "vendor/codex/codex-rs/rmcp-client" }
 chrono = "0.4"
 tracing = "0.1"
 libc = "0.2.182"

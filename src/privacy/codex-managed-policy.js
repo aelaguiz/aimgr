@@ -4,7 +4,10 @@ import { execFileSync } from "node:child_process";
 import { inspectCodexAdministratorPath } from "./codex-artifacts.js";
 import { parseCodexSettings, updateCodexSettings } from "../io/codex-settings-toml.js";
 
-const managedChanges = [{ keys: ["analytics", "enabled"], value: false }, { keys: ["feedback", "enabled"], value: false }];
+const managedChanges = [{ keys: ["analytics", "enabled"], value: false }, { keys: ["feedback", "enabled"], value: false },
+  // Private account homes cannot safely share native File fallback writes.
+  // Explicit authored File/Auto choices require the one-time conversion.
+  { keys: ["mcp_oauth_credentials_store"], value: "keyring" }];
 const requirementChanges = [{ keys: ["cli_auth_credentials_store"], value: "file" },
   { keys: ["allow_remote_control"], value: false }, { keys: ["check_for_update_on_startup"], value: false },
   { keys: ["feedback", "enabled"], value: false }];

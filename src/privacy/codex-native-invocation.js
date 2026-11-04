@@ -52,6 +52,9 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     if (worktree) parsedArgs = worktree.parsedArgs;
     const effectiveInputs = await nativeInputs({ artifact, prepared: account, parsedArgs,
       env: environmentValues, managed, ownedAppServer });
+    if (effectiveInputs.mcp_store !== "keyring" || fs.existsSync(path.join(account.sharedHome, ".credentials.json"))) {
+      throw new Error("Codex's shared MCP credentials need the one-time native keyring conversion. Run `aim codex mcp-migrate` from a terminal before starting Codex.");
+    }
     const worktreeDatabases = worktree ? codexWorktreeDatabases(effectiveInputs) : null;
     const inputs = resolveInputs({ prepared: account, parsedArgs, homeDir, env: environmentValues,
       managedFiles: managed.files, effectiveInputs });
