@@ -31,23 +31,50 @@ test("owned app server accepts only stdio in either native value spelling", () =
 });
 
 test("worktree handoff retains original input origins and escaped prompt text", () => {
-  const before = codexArguments(["-Cchild", "--add-dir=assets", "-w", "fork", "named-source", "--", "-w", "--cd=prompt"], { cwd: "/original" });
+  const before = codexArguments(["-Cchild", "--add-dir=assets", "--worktree", "fork", "named-source", "--", "--worktree", "--cd=prompt"], { cwd: "/original" });
   assert.equal(validateCodexWorktreeArguments(before), true);
   const after = codexWorktreeArguments(before, "/managed/bucket/repo/child", "11111111-2222-4333-8444-555555555555");
   assert.equal(after.cwd, "/managed/bucket/repo/child");
   assert.equal(after.processCwd, "/original");
   assert.deepEqual(after.directories, ["/original/assets"]);
   assert.equal(after.worktree, false);
-  assert.deepEqual(after.args.slice(-3), ["--", "-w", "--cd=prompt"]);
+  assert.deepEqual(after.args.slice(-3), ["--", "--worktree", "--cd=prompt"]);
   assert.equal(after.positionals[0], "11111111-2222-4333-8444-555555555555");
 });
 
 test("inspection and unsupported worktree modes cannot create a checkout", () => {
-  for (const args of [["-w", "--help"], ["exec", "-w", "--version"]]) {
+  for (const args of [["--worktree", "--help"], ["exec", "--worktree", "--version"]]) {
     assert.equal(validateCodexWorktreeArguments(codexArguments(args)), false);
   }
-  for (const args of [["-w", "resume", "thread"], ["-w", "fork", "--last"], ["exec", "-w", "resume", "thread"],
-    ["exec", "-w", "--ephemeral", "prompt"], ["exec", "-w", "--ignore-user-config", "prompt"]]) {
+  for (const args of [["--worktree", "resume", "thread"], ["--worktree", "fork", "--last"], ["exec", "--worktree", "resume", "thread"],
+    ["exec", "--worktree", "--ephemeral", "prompt"], ["exec", "--worktree", "--ignore-user-config", "prompt"]]) {
     assert.throws(() => validateCodexWorktreeArguments(codexArguments(args)), /worktree/);
+  }
+});
+
+test("native subcommand permissions replace inherited groups without dropping root auto-review settings", () => {
+  const readonly = codexArguments(["--yolo", "exec", "--sandbox", "read-only", "prompt"]);
+  assert.equal(readonly.yolo, false);
+  assert.equal(readonly.harness.sandbox, "read-only");
+  const review = codexArguments(["--approve-for-me", "exec", "--sandbox", "read-only", "prompt"]);
+  assert.ok(review.config.includes('approvals_reviewer="auto_review"'));
+  assert.equal(review.harness.sandbox, "read-only");
+  const child = codexArguments(["-a", "untrusted", "-s", "read-only", "fork", "saved", "--approve-for-me"]);
+  assert.equal(child.harness.approval, undefined);
+  assert.equal(child.harness.sandbox, undefined);
+  assert.ok(child.config.includes('sandbox_mode="workspace-write"'));
+});
+
+test("explicit exec input/output files retain process cwd and invalid worktree flags allocate nothing", () => {
+  const parsed = codexArguments(["-C", "project", "exec", "--worktree", "--output-schema", "schema.json", "-oresult.txt", "prompt"], { cwd: "/original" });
+  assert.deepEqual(parsed.files, ["/original/schema.json"]);
+  assert.deepEqual(parsed.outputs, ["/original/result.txt"]);
+  for (const args of [["--worktree", "--unknown"], ["--worktree=false"], ["--worktree", "-wCchild"]]) {
+    assert.throws(() => validateCodexWorktreeArguments(codexArguments(args)), /no checkout/);
+  }
+  for (const args of [["exec", "fork", "saved", "--worktree", "--sandbox", "read-only"],
+    ["exec", "--worktree", "fork", "saved", "--cyber-access-program", "standard"],
+    ["--output-schema", "schema.json", "exec", "--worktree", "prompt"]]) {
+    assert.throws(() => validateCodexWorktreeArguments(codexArguments(args)), /no checkout/);
   }
 });

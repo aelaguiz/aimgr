@@ -55,20 +55,15 @@ assert.ok(cold.every(result => result.initialized));
 for (const filename of inventory.database_files) {
   assert.equal(fs.readFileSync(filename).subarray(0, 16).toString(), "SQLite format 3\0");
 }
-const completion = path.join(codexHome, ".aimgr-codex-db-initialized.json");
-const identities = fs.readFileSync(completion);
-assert.equal(fs.statSync(completion).mode & 0o777, 0o600);
 await call(initialize);
-assert.deepEqual(fs.readFileSync(completion), identities, "warm initialization retains its verified marker");
-console.log("PASS concurrent cold initialization of seven native databases and warm reuse");
+console.log("PASS concurrent cold initialization of seven native databases and native warm reopen");
 
 const lazyHistory = inventory.database_files.find(file => /history/.test(path.basename(file)));
 assert.ok(lazyHistory);
 fs.renameSync(lazyHistory, lazyHistory + ".retained");
 await call(initialize);
 assert.equal(fs.readFileSync(lazyHistory).subarray(0, 16).toString(), "SQLite format 3\0");
-assert.notDeepEqual(fs.readFileSync(completion), identities);
-console.log("PASS missing lazy-history database repairs a stale completion record");
+console.log("PASS missing lazy-history database is restored by native initialization");
 
 const failed = await start({ ...base, config: ['model_instructions_file="SYNTHETIC_SECRET_CANARY'] }).done;
 assert.equal(failed.code, 125);

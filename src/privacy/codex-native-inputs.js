@@ -8,15 +8,16 @@ const execute = promisify(execFile);
  * libraries with outbound traffic denied before their first call. Its private
  * response contains finite path/policy facts, never configuration contents. */
 export async function prepareCodexNativeInputs({ artifact, prepared, parsedArgs, env, managed,
-  ownedAppServer = false, operation = "initialize", executeImpl = execute } = {}) {
+  ownedAppServer = false, operation = "initialize", owner = null, forkSource = null, executeImpl = execute } = {}) {
   const request = { operation, artifact_set: artifact.artifactSet, codex_home: prepared.codexHome,
     cwd: parsedArgs.cwd, profile: parsedArgs.profile, config: parsedArgs.config,
     harness: parsedArgs.harness ?? {}, owned_app_server: ownedAppServer,
     strict_config: parsedArgs.strictConfig ?? false,
     ignore_user_config: ["exec", "e"].includes(parsedArgs.command) && parsedArgs.ignoreUserConfig === true,
     ignore_rules: ["exec", "e"].includes(parsedArgs.command) && parsedArgs.ignoreRules === true,
-    headless: ["exec", "e"].includes(parsedArgs.command), yolo: parsedArgs.yolo === true,
+    headless: ["exec", "e", "review"].includes(parsedArgs.command), yolo: parsedArgs.yolo === true,
     worktree: parsedArgs.worktree === true && !parsedArgs.inspection,
+    owner, fork_source: forkSource,
     forced_config: managed.forced?.config_toml_base64 ?? "",
     forced_requirements: managed.forced?.requirements_toml_base64 ?? "" };
   let response;
@@ -47,6 +48,10 @@ export async function prepareCodexNativeInputs({ artifact, prepared, parsedArgs,
   if (request.worktree && (!path.isAbsolute(response.worktree_root ?? "") || typeof response.source_untrusted !== "boolean")) {
     throw new Error("Codex returned an invalid native worktree input inventory.");
   }
+  if (operation === "fork_source" && (!path.isAbsolute(response.fork_source?.cwd ?? "")
+    || !/^[a-f0-9-]{36}$/.test(response.fork_source?.thread_id ?? ""))) throw new Error("Codex could not resolve the requested worktree fork.");
+  if (operation === "worktree_owner" && response.owner_thread_id !== null
+    && !/^[a-f0-9-]{36}$/.test(response.owner_thread_id ?? "")) throw new Error("Codex returned an invalid worktree owner.");
   if (!response.analytics_disabled || !response.feedback_disabled || !response.updates_disabled
     || response.collectors.some((collector, index) => collector.provider_destination && !(index === 2 && collector.kind === "statsig"))) {
     throw new Error("Codex's effective local settings conflict with the required privacy policy.");

@@ -47,6 +47,7 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
   for (const file of parsedArgs.directories) add(writes, file);
   for (const file of parsedArgs.images) add(reads, file);
   for (const file of parsedArgs.files ?? []) add(reads, file);
+  for (const file of parsedArgs.outputs ?? []) add(writes, file);
   for (const name of fs.readdirSync(prepared.codexHome)) {
     // Shared settings views receive their own permission-aware grants after
     // reconciliation, rather than the generic mutable-state grant.

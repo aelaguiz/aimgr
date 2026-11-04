@@ -19,7 +19,7 @@ test("relative --cd is projected once while native retains its original process 
     settingsManifest: 1, sourceCommit: "b".repeat(40) }));
   const artifact = { command: "/synthetic/codex", launcher: "/synthetic/launcher", artifactSet: "c".repeat(64),
     version: "test", policy, readPaths: [], stateIO: fileURLToPath(new URL("../../native/codex/state_io.py", import.meta.url)) };
-  for (const args of [["-C", "child"], ["-C", "child", "--worktree", "--add-dir", "extra"]]) {
+  for (const args of [["-C", "child"], ["-C", "child", "--add-dir", "extra"]]) {
     const invocation = await prepareCodexNativeInvocation({ prepared, homeDir, cwd, args, environment,
       env: { HOME: homeDir, PATH: "/usr/bin:/bin" }, admitArtifact: () => artifact,
       inspectManagedPolicy: () => ({ files: [] }),

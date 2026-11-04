@@ -1,6 +1,8 @@
 //! Finite AIM adapter for the admitted, unchanged upstream configuration/state
 //! libraries. No auth manager, cloud loader, exporter, model, tool or MCP owner.
 mod state;
+mod owner;
+mod source;
 
 use codex_config::{ConfigLayerSource, LoaderOverrides, ProfileV2Name};
 use codex_config::types::OtelExporterKind;
@@ -25,7 +27,7 @@ const REVISION: &str = "54201ea65a3501d09a87c776376a0c16aa39db70";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Operation { Inputs, Initialize }
+enum Operation { Inputs, Initialize, WorktreeOwner, ForkSource }
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +68,8 @@ struct Request {
     yolo: bool,
     #[serde(default)]
     worktree: bool,
+    owner: Option<owner::Request>,
+    fork_source: Option<source::Request>,
     // Captured by the admitted CFPreferences forced-value reader. Both fields
     // are required on macOS, including explicit empty strings for absence.
     forced_config: Option<String>,
@@ -95,6 +99,8 @@ struct Projection {
     initialized: bool,
     source_untrusted: bool,
     worktree_root: Option<PathBuf>,
+    owner_thread_id: Option<String>,
+    fork_source: Option<source::Source>,
 }
 
 fn collector(value: &OtelExporterKind, reads: &mut BTreeSet<PathBuf>) -> Collector {
@@ -219,7 +225,8 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
     Ok(Projection { schema: 1, source_revision: REVISION, cwd: config.cwd.to_path_buf(), reads, writes,
         database_roots, database_files, collectors, analytics_disabled: config.analytics_enabled == Some(false),
         feedback_disabled: !config.feedback_enabled, updates_disabled: !config.check_for_update_on_startup,
-        used_defaults, initialized: false, source_untrusted: config.active_project.is_untrusted(), worktree_root: None })
+        used_defaults, initialized: false, source_untrusted: config.active_project.is_untrusted(), worktree_root: None,
+        owner_thread_id: None, fork_source: None })
 }
 
 async fn load(request: &Request, fallback: bool, restore_reviewer: bool) -> std::io::Result<(Config, BTreeSet<PathBuf>)> {
@@ -227,6 +234,9 @@ async fn load(request: &Request, fallback: bool, restore_reviewer: bool) -> std:
     let cli = CliConfigOverrides { raw_overrides: request.config.clone() }.parse_overrides().map_err(|_| invalid())?;
     let mut loader = LoaderOverrides::default();
     loader.ignore_user_config = request.ignore_user_config;
+    // Exec gates worktree creation without project config. TUI deliberately
+    // uses the full source config for its saved-thread DB/provider lookup.
+    loader.ignore_project_config = request.worktree && request.headless;
     loader.ignore_user_and_project_exec_policy_rules = request.ignore_rules;
     if let Some(profile) = &request.profile {
         let profile: ProfileV2Name = profile.parse().map_err(|_| invalid())?;
@@ -247,6 +257,10 @@ async fn load(request: &Request, fallback: bool, restore_reviewer: bool) -> std:
         loader.ignore_user_config = true;
         loader.ignore_project_config = true;
         overrides.cwd = Some(request.codex_home.clone());
+    } else if request.worktree && request.headless {
+        // Exec resolves its explicit fork/source against the pre-allocation
+        // gate config before applying runtime model/permission/OSS flags.
+        overrides.cwd = Some(request.cwd.clone());
     } else {
         overrides.cwd = Some(request.cwd.clone());
         overrides.model = request.harness.model.clone();
@@ -296,8 +310,13 @@ async fn run(request: Request, phase: &mut &'static str) -> Result<Projection> {
     *phase = "native input inventory";
     let mut output = projection(&config, reads, fallback).await?;
     if request.worktree {
+        // This only reads native environment selection; it neither builds an
+        // environment manager nor connects to a remote execution service.
+        if codex_exec_server::EnvironmentManager::prepare_from_codex_home(&request.codex_home)
+            .await.map_err(|_| ())?.default_environment_is_remote() { return Err(()); }
         // Native CLI worktree allocation uses host bootstrap settings with no
         // cwd, selected profile, project or CLI overrides.
+        #[allow(unused_mut)] // Only macOS supplies forced native preferences.
         let mut loader = LoaderOverrides::default();
         #[cfg(target_os = "macos")]
         {
@@ -310,15 +329,29 @@ async fn run(request: Request, phase: &mut &'static str) -> Result<Projection> {
         output.worktree_root = Some(codex_worktree::WorktreeSettings::for_cli(
             &request.codex_home, host.config_toml.desktop.as_ref()).map_err(|_| ())?.root);
     }
-    if matches!(request.operation, Operation::Initialize) {
+    if !matches!(request.operation, Operation::Inputs) {
         // Admission precedes any native database mutation. Credential backend
         // authority is intentionally separate from this development library
         // build, whose 0.0.0 version changes native keyring defaults.
         if !output.analytics_disabled || !output.feedback_disabled || !output.updates_disabled
             || output.collectors.iter().enumerate().any(|(i, c)| c.provider_destination && !(i == 2 && c.kind == "statsig")) { return Err(()); }
+    }
+    if matches!(request.operation, Operation::Initialize) {
         *phase = "native database initialization";
-        state::initialize(&config, &request.artifact_set).await?;
+        state::initialize(&config, None, None).await?;
         output.initialized = true;
+    }
+    if matches!(request.operation, Operation::WorktreeOwner) {
+        let owner = request.owner.as_ref().ok_or(())?;
+        // A settings edit may select another DB while the child is running.
+        // That is not evidence about this invocation's saved thread.
+        if owner.matches_databases(&config) {
+            output.owner_thread_id = state::initialize(&config, Some(owner), None).await?.owner;
+        }
+    }
+    if matches!(request.operation, Operation::ForkSource) {
+        let source = request.fork_source.as_ref().ok_or(())?;
+        output.fork_source = state::initialize(&config, None, Some(source)).await?.source;
     }
     Ok(output)
 }
@@ -345,6 +378,9 @@ fn main() {
         input.fill(0);
         phase = "privacy boundary";
         if unsafe { aim_config_boundary(i32::from(matches!(request.operation, Operation::Inputs))) } != 0 { return Err(()); }
+        // Native metadata backfill otherwise prints source paths directly when
+        // no dispatcher exists. A no-op dispatcher emits no telemetry/logs.
+        tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default()).map_err(|_| ())?;
         // Worker threads inherit the already-installed boundary.
         // Filesystem and SQLite work use blocking workers/channels; no network
         // or signal reactor is needed. enable_all would create a signal Unix

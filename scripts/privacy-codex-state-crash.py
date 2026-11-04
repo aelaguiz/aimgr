@@ -58,13 +58,6 @@ assert len({Path(p).resolve() for p in one['database_files'] + two['database_fil
 assert len({Path(p).parent.resolve() for p in one['database_files']}) == 2
 print('PASS separate homes and symlink aliases share physical state/log root locks', flush=True)
 
-marker = state/'.aimgr-codex-db-initialized.json'
-marker.rename(state/'retained-marker.json')
-os.mkfifo(marker, 0o600)
-success(start(first))
-assert marker.is_file() and not marker.is_symlink()
-print('PASS FIFO completion object neither hangs nor supplies false completion', flush=True)
-
 # A helper that survives its AIM-like parent retains its own first physical
 # root lock while waiting for the second. No test-only pause in product code.
 parent_state, parent_logs = root/'b-parent-state', root/'y-parent-logs'
@@ -102,11 +95,6 @@ try:
 except BlockingIOError:
     pass
 fcntl.flock(log_lock, fcntl.LOCK_UN); os.close(log_lock)
-completion = parent_state/'.aimgr-codex-db-initialized.json'
-deadline = time.monotonic()+30
-while not completion.exists():
-    assert time.monotonic() < deadline, 'orphan initializer did not finish'
-    time.sleep(0.01)
 deadline = time.monotonic()+10
 while True:
     try:
@@ -116,12 +104,12 @@ while True:
         assert time.monotonic() < deadline, 'completed initializer retained a lock'
         time.sleep(0.01)
 fcntl.flock(state_lock, fcntl.LOCK_UN); os.close(state_lock)
-success(start(parent_request))
+reopened = success(start(parent_request))
+assert all(Path(p).is_file() for p in reopened['database_files'])
 print('PASS parent death retains helper locks through initialization and allows later reuse', flush=True)
 
 # Kill an actual initializer after its first SQLite file appears, before all
-# seven databases exist. Retry must complete native migrations, not trust a
-# partial or absent completion record.
+# seven databases exist. Retry must complete the native migrations.
 killed = False
 for attempt in range(3):
     crash_state, crash_logs = root/('crash-state-'+str(attempt)), root/('crash-logs-'+str(attempt))
@@ -132,7 +120,6 @@ for attempt in range(3):
         files = list(crash_state.glob('*.sqlite')) + list(crash_logs.glob('*.sqlite'))
         if files and len(files) < 7:
             child.kill(); child.communicate(timeout=5)
-            assert not (crash_state/'.aimgr-codex-db-initialized.json').exists()
             result = success(start(value))
             assert len(result['database_files']) == 7
             killed = True
@@ -142,5 +129,5 @@ for attempt in range(3):
     if killed: break
     success(child)
 assert killed, 'fixture could not observe partial native migration'
-print('PASS killed partial native migration recovers without a false completion marker', flush=True)
+print('PASS killed partial native migration recovers through native migration state', flush=True)
 print(json.dumps(dict(fixture=root.name, platform=sys.platform)))

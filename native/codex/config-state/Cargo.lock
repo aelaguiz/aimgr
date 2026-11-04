@@ -142,23 +142,26 @@ name = "aimgr-codex-config-state"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "chrono",
  "codex-config",
  "codex-core",
  "codex-core-plugins",
  "codex-exec-server",
  "codex-file-system",
  "codex-protocol",
+ "codex-rollout",
  "codex-skills",
  "codex-state",
+ "codex-thread-store",
  "codex-utils-absolute-path",
  "codex-utils-cli",
  "codex-worktree",
  "libc",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "toml 0.9.11+spec-1.1.0",
+ "tracing",
  "url",
 ]
 

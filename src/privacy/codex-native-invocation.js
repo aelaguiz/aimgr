@@ -11,16 +11,18 @@ import { inspectCodexManagedPolicy } from "./codex-managed-policy.js";
 import { prepareCodexNativeInputs } from "./codex-native-inputs.js";
 import { stageLaunchEnvironment } from "./launch-environment.js";
 import { codexStateIO } from "../io/codex-state-io.js";
+import { prepareCodexWorktree, codexWorktreeDatabases, finishCodexWorktree } from "./codex-worktree.js";
 
 /** One launch owner carries the exact selected account through admission,
  * settings supervision and spawn. No global selection is read after this. */
 export async function prepareCodexNativeInvocation({ prepared, command, homeDir, cwd = process.cwd(), env = process.env,
-  args = [], ownedAppServer = false, onWarning = () => {}, onError = () => {},
+  args = [], ownedAppServer = false, onWarning = () => {}, onError = () => {}, onNotice = () => {},
   admitArtifact = admitCodexArtifact, inspectManagedPolicy = inspectCodexManagedPolicy,
   environment = readCodexEnvironment(), resolveInputs = resolveCodexLaunchInputs,
   nativeInputs = prepareCodexNativeInputs,
+  worktreeOperation,
 } = {}) {
-  let supervisor, scratch, environmentFd;
+  let supervisor, scratch, environmentFd, worktree;
   try {
     if (!prepared?.accountId || prepared.environmentId !== environment.binding) throw new Error("Codex needs the selected account's authorization from this environment.");
     const account = prepareCodexAccountState({ homeDir, accountId: prepared.accountId, label: prepared.label,
@@ -29,7 +31,7 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     const local = prepared.keyBacked && prepared.accountId === "api-provider:deepseek" ? { status: "ready", credential: null }
       : readLocalCodexCredential({ homeDir, env: { CODEX_HOME: account.sharedHome }, accountId: account.accountId, environment });
     if (local.status !== "ready") throw new Error(`Codex account ${account.label ?? "selected"} needs a healthy local login (${local.status}).`);
-    const parsedArgs = codexArguments(args, { cwd, ownedAppServer });
+    let parsedArgs = codexArguments(args, { cwd, ownedAppServer });
     const artifact = admitArtifact({ selectedCommand: command, pinnedArtifactSet: env.AIMGR_CODEX_ARTIFACT_SET });
     const policy = JSON.parse(fs.readFileSync(artifact.policy, "utf8"));
     if (policy.schema !== 1 || policy.version !== artifact.version || policy.platform !== process.platform || policy.arch !== process.arch
@@ -45,8 +47,12 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     scratch = fs.realpathSync(fs.mkdtempSync(path.join(account.accountRoot, ".runtime-")));
     fs.chmodSync(scratch, 0o700);
     const environmentValues = codexPrivacyEnvironment({ env, prepared: account, artifact, scratch });
+    worktree = await prepareCodexWorktree({ parsedArgs, nativeInputs, artifact, prepared: account,
+      env: environmentValues, managed, operate: worktreeOperation });
+    if (worktree) parsedArgs = worktree.parsedArgs;
     const effectiveInputs = await nativeInputs({ artifact, prepared: account, parsedArgs,
       env: environmentValues, managed, ownedAppServer });
+    const worktreeDatabases = worktree ? codexWorktreeDatabases(effectiveInputs) : null;
     const inputs = resolveInputs({ prepared: account, parsedArgs, homeDir, env: environmentValues,
       managedFiles: managed.files, effectiveInputs });
     environmentFd = stageLaunchEnvironment(environmentValues, scratch);
@@ -61,20 +67,25 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     const nativeArgs = ["v1", fs.realpathSync(account.accountRoot), fs.realpathSync(account.codexHome), scratch, "3",
       String(writes.length), ...writes, String(reads.length), ...reads, String(databases.length), ...databases,
       String(denied.length), ...denied, "--", ...parsedArgs.args];
-    let closed = false;
+    let closed = false, startedAt, endedAt;
     return { command: artifact.launcher, args: nativeArgs, artifact, prepared: account, entries, inputs, parsedArgs,
       environment: environmentValues, environmentFd,
       // A privileged entry receives only fixed bootstrap variables. All user
       // tool environment crosses the unlinked descriptor after policy entry.
-      // Native still receives the original -C/--worktree arguments. Starting
-      // it in the projected cwd would apply relative -C twice and change the
-      // original-cwd meaning of worktree --add-dir paths.
+      // Keep original process cwd for native argument semantics. A requested
+      // worktree has already been created and receives absolute -C/add-dir.
       env: { PATH: "/usr/bin:/bin" }, cwd: parsedArgs.processCwd,
+      beforeSpawn() { startedAt = new Date().toISOString(); },
+      childClosed() { endedAt = new Date().toISOString(); },
       flushSettings: () => supervisor.flush(),
       closeEnvironment() { if (environmentFd !== undefined) { fs.closeSync(environmentFd); environmentFd = undefined; } },
       async close() {
         if (closed) return; closed = true;
         if (environmentFd !== undefined) { fs.closeSync(environmentFd); environmentFd = undefined; }
+        if (worktree && startedAt && endedAt) await finishCodexWorktree({ worktree, nativeInputs, artifact,
+          prepared: account, parsedArgs, env: environmentValues, managed, databases: worktreeDatabases,
+          startedAt, endedAt, onNotice });
+        else if (worktree) { try { onNotice(`Codex kept the worktree at ${worktree.checkout.root}.`); } catch {} }
         await supervisor.close();
         // Background tools may still refer to their temporary directory. Keep
         // nonempty scratch; empty launch scratch has no surviving state.
@@ -85,6 +96,7 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     if (environmentFd !== undefined) fs.closeSync(environmentFd);
     if (supervisor) await supervisor.close().catch(() => {});
     if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); // No child has been started.
+    if (worktree) error.message += ` The worktree was kept at ${worktree.checkout.root}.`;
     throw error;
   }
 }

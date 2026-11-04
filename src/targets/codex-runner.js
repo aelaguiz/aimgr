@@ -22,9 +22,11 @@ export async function runCodexInteractive({
   const invocation = await prepareInvocation({ prepared, homeDir, cwd, env, args, ownedAppServer,
     onWarning: warning => process.stderr.write(`[aim] Codex settings conflict in ${warning.source}; preserved alternative: ${warning.recovery}\n`),
     onError,
+    onNotice: message => process.stderr.write(`[aim] ${message}\n`),
   });
   let child;
   try {
+    invocation.beforeSpawn?.();
     child = spawnImpl(invocation.command, invocation.args, {
       cwd: invocation.cwd, env: invocation.env,
       stdio: ownedAppServer ? ["pipe", "pipe", "inherit", invocation.environmentFd] : ["inherit", "inherit", "inherit", invocation.environmentFd], shell: false,
@@ -40,10 +42,10 @@ export async function runCodexInteractive({
     entry: invocation.entries.at(-1), flush: invocation.flushSettings, onError }) : null;
   try { return await new Promise((resolve, reject) => {
     child.once("error", reject);
-    child.once("close", (code, signal) => resolve({
-      code: Number.isInteger(code) ? code : 1,
-      signal: signal ?? null,
-    }));
+    child.once("close", (code, signal) => {
+      invocation.childClosed?.();
+      resolve({ code: Number.isInteger(code) ? code : 1, signal: signal ?? null });
+    });
   }); } finally {
     try { await transport?.finished; }
     finally { try { await transport?.close(); } finally { await invocation.close(); } }
