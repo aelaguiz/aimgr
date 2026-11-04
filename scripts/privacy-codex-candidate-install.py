@@ -42,8 +42,9 @@ def digest(file):
 # checksum of whichever incremental transfer happened to arrive last.
 source_files = [repo / 'package.json', repo / 'package-lock.json']
 for folder in ('src', 'native', 'scripts'):
-    source_files.extend(file for file in (repo / folder).rglob('*') if file.is_file()
-        and not file.is_symlink() and not any(part in ('target', '__pycache__', 'node_modules') for part in file.relative_to(repo).parts))
+    for directory, folders, names in os.walk(repo / folder):
+        folders[:] = [name for name in folders if name not in ('target', '__pycache__', 'node_modules', 'vendor', '.git')]
+        source_files.extend(Path(directory) / name for name in names if (Path(directory) / name).is_file() and not (Path(directory) / name).is_symlink())
 source_inventory = [[str(file.relative_to(repo)), digest(file)] for file in sorted(set(source_files))]
 source_sha256 = hashlib.sha256(json.dumps(source_inventory, separators=(',', ':')).encode()).hexdigest()
 
@@ -51,11 +52,35 @@ if system == 'Linux':
     assert digest(vendor) == '1f389f19de064430a227a50af2bfa627699be4c600f1a37c114039fdd027b75b'
     assert digest(helper) == 'd01f7a656bd2a54b26fd99131f252c7371e2e890f3713c5dd977676b54bfb3bf'
 else:
-    raise RuntimeError('Mac candidate hash inventory must be verified on the isolated Mac before enabling installation')
+    assert digest(vendor) == '956f2edd38050f8fa55fac9ecfc570dc37c85d48019800dacee4cfcf9c70e9d1'
+    assert digest(helper) == '506223f47bf53603026ff6c15f887196a5daabccde036e555cdae4875e4871b0'
+    for image in (vendor, helper):
+        subprocess.run(['/usr/bin/codesign', '--verify', '--strict', str(image)], check=True, capture_output=True)
+
+platform_name = 'linux' if system == 'Linux' else 'darwin'
+architecture = 'x64' if system == 'Linux' else 'arm64'
 
 runtime.mkdir(mode=0o755, exist_ok=True)
 assert runtime.lstat().st_uid == 0 and not runtime.is_symlink() and runtime.stat().st_mode & 0o022 == 0
 (runtime / 'artifacts').mkdir(mode=0o755, exist_ok=True)
+(runtime / 'users').mkdir(mode=0o755, exist_ok=True)
+user_runtime = runtime / 'users' / str(user.pw_uid)
+user_runtime.mkdir(mode=0o755, exist_ok=True)
+maintenance = user_runtime / 'maintenance'
+if not maintenance.exists():
+    maintenance.mkdir(mode=0o700)
+    os.chown(maintenance, user.pw_uid, user.pw_gid)
+assert not maintenance.is_symlink() and maintenance.stat().st_uid == user.pw_uid and maintenance.stat().st_mode & 0o077 == 0
+admission = user_runtime / 'admission.lock'
+try:
+    fd = os.open(admission, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+except FileExistsError:
+    pass
+else:
+    os.fchown(fd, user.pw_uid, user.pw_gid)
+    os.fsync(fd)
+    os.close(fd)
+assert not admission.is_symlink() and admission.stat().st_uid == user.pw_uid and admission.stat().st_nlink == 1 and admission.stat().st_mode & 0o077 == 0
 def atomic(file, value, mode=0o644):
     temporary = file.with_name(file.name + '.' + secrets.token_hex(12))
     fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
@@ -71,14 +96,24 @@ def atomic(file, value, mode=0o644):
 with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory:
     stage = Path(directory)
     subprocess.run(['cc', '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
-        str(repo / 'native/codex/approved_launch_linux.c'), '-o', str(stage / 'launcher')], check=True)
-    atomic(stage / 'policy.json', {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '0.163.0-alpha.5',
+        str(repo / ('native/codex/approved_launch_linux.c' if system == 'Linux' else 'native/codex/approved_launch_macos.c')), '-o', str(stage / 'launcher')], check=True)
+    subprocess.run(['cc', '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
+        str(repo / 'native/codex/process_control.c'), '-o', str(stage / 'process-control')]
+        + (['-lbsm'] if system == 'Darwin' else []), check=True)
+    if system == 'Darwin':
+        subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', '--options', 'runtime', str(stage / 'launcher')], check=True, capture_output=True)
+        subprocess.run(['cc', '-O2', '-Wall', '-Wextra', '-Werror', str(repo / 'native/codex/managed_preferences.m'), '-framework', 'Foundation', '-o', str(stage / 'managed-preferences')], check=True)
+    atomic(stage / 'policy.json', {'schema': 1, 'platform': platform_name, 'arch': architecture, 'version': '0.163.0-alpha.5',
         'sourceCommit': '54201ea65a3501d09a87c776376a0c16aa39db70', 'settingsManifest': 1,
         'candidateSourceSha256': source_sha256})
     entries = {'codex': (vendor, 'vendor', True), 'codex-code-mode-host': (helper, 'vendor', True),
         'launcher': (stage / 'launcher', 'launcher', True), 'state_io.py': (repo / 'native/codex/state_io.py', 'launcher', False),
+        'process-control': (stage / 'process-control', 'launcher', True),
         'mcp-keyring': (repo / 'native/codex/mcp-keyring/target/release/aimgr-codex-mcp-keyring', 'launcher', True),
+        'config-state': (repo / 'native/codex/config-state/target/debug/aimgr-codex-config-state', 'launcher', True),
+        'worktree-tool': (repo / 'native/codex/config-state/target/debug/aimgr-codex-worktree', 'launcher', True),
         'policy.json': (stage / 'policy.json', 'policy', False)}
+    if system == 'Darwin': entries['managed-preferences'] = (stage / 'managed-preferences', 'launcher', True)
     files = {name: {'sha256': digest(file), 'size': file.stat().st_size, 'executable': executable, 'role': role}
         for name, (file, role, executable) in entries.items()}
     inventory = [[name, files[name]['sha256'], files[name]['size'], files[name]['executable'], files[name]['role']] for name in sorted(files)]
@@ -91,18 +126,20 @@ with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory
             shutil.copyfileobj(inp, out)
             out.flush()
             os.fsync(out.fileno())
-        (target / name).chmod(0o4755 if name == 'launcher' else 0o755 if executable else 0o644)
-    atomic(target / 'approval.json', {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '0.163.0-alpha.5',
+        (target / name).chmod(0o4755 if name == 'launcher' and system == 'Linux' else 0o755 if executable else 0o644)
+    atomic(target / 'approval.json', {'schema': 1, 'platform': platform_name, 'arch': architecture, 'version': '0.163.0-alpha.5',
         'privacyAbi': 'codex-privacy-v1', 'candidateSourceSha256': source_sha256,
         'entrypoint': 'codex', 'codeModeHost': 'codex-code-mode-host', 'launcher': 'launcher', 'stateIO': 'state_io.py',
-        'mcpKeyring': 'mcp-keyring',
+        'mcpKeyring': 'mcp-keyring', 'configState': 'config-state', 'processControl': 'process-control',
+        'worktreeTool': 'worktree-tool',
+        **({'managedPreferences': 'managed-preferences'} if system == 'Darwin' else {}),
         'policy': 'policy.json', 'files': files, 'approval': {'kind': 'offsite-test', 'normalUseApproved': False,
         'reference': 'Amir authorized isolated Codex milestone 1 implementation and testing'}})
     host_file = base / 'CODEX_TEST_HOST.json'
     if not host_file.exists(): atomic(host_file, {'schema': 1, 'token': secrets.token_hex(32)})
     host = json.loads(host_file.read_text())
     now = datetime.datetime.now(datetime.timezone.utc)
-    atomic(runtime / 'offsite-test.json', {'schema': 1, 'artifactSet': artifact, 'platform': 'linux', 'arch': 'x64',
+    atomic(runtime / 'offsite-test.json', {'schema': 1, 'artifactSet': artifact, 'platform': platform_name, 'arch': architecture,
         'normalUseApproved': False, 'hostTokenSha256': hashlib.sha256(host['token'].encode()).hexdigest(),
         'authorizedAt': now.isoformat(), 'expiresAt': (now + datetime.timedelta(days=2)).isoformat(),
         'reference': 'Designated isolated implementation VM; synthetic fixtures and assigned test accounts only'})

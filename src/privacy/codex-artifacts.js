@@ -12,6 +12,15 @@ const admission = createArtifactAdmission({
     field: "stateIO", file: "state_io.py", role: "launcher", executable: false,
     error: "the approved Codex runtime lacks its state helper",
   }, {
+    field: "configState", file: "config-state", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its native configuration and state helper",
+  }, {
+    field: "worktreeTool", file: "worktree-tool", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its native worktree helper",
+  }, {
+    field: "processControl", file: "process-control", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its maintenance process control helper",
+  }, {
     field: "mcpKeyring", file: "mcp-keyring", role: "launcher", executable: true,
     error: "the approved Codex runtime lacks its MCP keyring helper",
   }, ...(platform === "darwin" ? [{ field: "managedPreferences", file: "managed-preferences", role: "launcher", executable: true,

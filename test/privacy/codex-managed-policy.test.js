@@ -56,3 +56,13 @@ test("selected-workspace claims do not become an unsupported account restriction
   fixture.credential.access = token({ chatgpt_account_id: "workspace", chatgpt_plan_type: "plus", user_id: "user" });
   assert.doesNotThrow(() => inspectCodexManagedPolicy(fixture));
 });
+
+test("hostname-based administrator requirements refuse before discovery, even when empty or shadowed", () => {
+  for (const value of ['remote_sandbox_config=[]', '[[remote_sandbox_config]]\nhostname_patterns=["never-matches.example"]\nallowed_sandbox_modes=["read-only"]']) {
+    assert.throws(() => inspectCodexManagedPolicy(options({ requirements: value })), /requirements.toml sets remote_sandbox_config/);
+    assert.throws(() => inspectCodexManagedPolicy(options({ forced: { requirements_toml_base64: value } })), /forced.*sets remote_sandbox_config/);
+    assert.throws(() => inspectCodexManagedPolicy(options({ requirements: value,
+      forced: { requirements_toml_base64: 'allowed_sandbox_modes=["danger-full-access"]' } })), /sets remote_sandbox_config/);
+    assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ config: value })), "an ordinary config key is not this requirements feature");
+  }
+});

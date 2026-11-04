@@ -6,6 +6,7 @@
 #define NOTIFY_COMPAT_SYSCALLS 1
 #define RUNTIME "/opt/aimgr-codex-runtime"
 #include "../privacy/launch_linux.h"
+#include "maintenance_gate.h"
 
 static void deny_distribution_probe(FILE *out,char **environment) {
     /* Command::new("lsb_release") searches PATH. AppArmor checks a symlink's
@@ -80,6 +81,8 @@ int main(int argc,char **argv) {
     for (int i=0;i<databases;i++) canonical_future(database_roots[i]);
     for (int i=0;i<denies;i++) canonical_future(denied[i]);
     char **private_environment=read_environment(envfd);
+    close_handles();
+    int admission=codex_maintenance_admission();
     require_enforcement();
     unsigned char nonce[16];char hex[33];if (getentropy(nonce,sizeof(nonce))) fail("policy identity");
     for (int i=0;i<16;i++) snprintf(hex+2*i,3,"%02x",nonce[i]);
@@ -127,5 +130,5 @@ int main(int argc,char **argv) {
     parse_policy(policy,0);free(policy);install_uname();enter_profile();close(lock);drop();
     environ=private_environment;unset_environment("LD_PRELOAD");unset_environment("LD_AUDIT");
     set_environment("CODEX_HOME",home,1);set_environment("TMPDIR",scratch,1);
-    close_handles();argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");
+    codex_close_except_admission(admission);argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");
 }

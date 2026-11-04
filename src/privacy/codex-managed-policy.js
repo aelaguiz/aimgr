@@ -36,6 +36,14 @@ export function inspectCodexManagedPolicy({ artifact, platform = process.platfor
     documents.push({ source, value: encoded === undefined ? {} : parsePolicy(Buffer.from(encoded, "base64").toString("utf8"), source) });
   }
   const [config, requirements, mdmConfig, mdmRequirements] = documents;
+  // Even [] invokes the pinned loader's hostname discovery, before matching
+  // or precedence. This organization-policy feature is outside the approved
+  // privacy scope; do not inspect the actual host or silently ignore it.
+  for (const document of [requirements, mdmRequirements]) {
+    if (Object.hasOwn(document.value, "remote_sandbox_config")) {
+      throw new Error(`Codex was not started: ${document.source} sets remote_sandbox_config. Hostname-based sandbox requirements are unavailable with AIM privacy.`);
+    }
+  }
   for (const [changes, lower, higher] of [[managedChanges.slice(0, 1), config, mdmConfig], [requirementChanges, requirements, mdmRequirements]]) {
     for (const { keys, value } of changes) {
       const source = valueAt(higher.value, keys) === undefined ? lower : higher;
@@ -45,7 +53,7 @@ export function inspectCodexManagedPolicy({ artifact, platform = process.platfor
   // Organization-supplied remote requirements are an explicitly accepted gap.
   // A plan snapshot cannot establish session-lifetime eligibility. Keep local
   // policy checks above; do not reject account tiers or patch native loading.
-  return { files, documents };
+  return { files, documents, forced };
 }
 
 export function validateCodexExporters(documents) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codexArguments } from "../../src/privacy/codex-arguments.js";
+import { codexArguments, codexWorktreeArguments, validateCodexWorktreeArguments } from "../../src/privacy/codex-arguments.js";
 
 test("escaped prompt words cannot attach to a shared daemon", () => {
   for (const before of [[], ["resume", "thread"], ["fork", "thread"]]) {
@@ -28,4 +28,26 @@ test("owned app server accepts only stdio in either native value spelling", () =
     assert.throws(() => codexArguments(args), /stdio/);
   }
   assert.throws(() => codexArguments(["-p", "invalid.name"]), /profile/);
+});
+
+test("worktree handoff retains original input origins and escaped prompt text", () => {
+  const before = codexArguments(["-Cchild", "--add-dir=assets", "-w", "fork", "named-source", "--", "-w", "--cd=prompt"], { cwd: "/original" });
+  assert.equal(validateCodexWorktreeArguments(before), true);
+  const after = codexWorktreeArguments(before, "/managed/bucket/repo/child", "11111111-2222-4333-8444-555555555555");
+  assert.equal(after.cwd, "/managed/bucket/repo/child");
+  assert.equal(after.processCwd, "/original");
+  assert.deepEqual(after.directories, ["/original/assets"]);
+  assert.equal(after.worktree, false);
+  assert.deepEqual(after.args.slice(-3), ["--", "-w", "--cd=prompt"]);
+  assert.equal(after.positionals[0], "11111111-2222-4333-8444-555555555555");
+});
+
+test("inspection and unsupported worktree modes cannot create a checkout", () => {
+  for (const args of [["-w", "--help"], ["exec", "-w", "--version"]]) {
+    assert.equal(validateCodexWorktreeArguments(codexArguments(args)), false);
+  }
+  for (const args of [["-w", "resume", "thread"], ["-w", "fork", "--last"], ["exec", "-w", "resume", "thread"],
+    ["exec", "-w", "--ephemeral", "prompt"], ["exec", "-w", "--ignore-user-config", "prompt"]]) {
+    assert.throws(() => validateCodexWorktreeArguments(codexArguments(args)), /worktree/);
+  }
 });

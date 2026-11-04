@@ -7,7 +7,8 @@ import { readLocalCodexCredential } from "../credentials/codex-local.js";
 import { codexArguments } from "./codex-arguments.js";
 import { codexSettingsView, superviseCodexSettings } from "../io/codex-settings.js";
 import { codexCanonicalPath, resolveCodexLaunchInputs, codexPrivacyEnvironment } from "./codex-launch-inputs.js";
-import { inspectCodexManagedPolicy, validateCodexExporters } from "./codex-managed-policy.js";
+import { inspectCodexManagedPolicy } from "./codex-managed-policy.js";
+import { prepareCodexNativeInputs } from "./codex-native-inputs.js";
 import { stageLaunchEnvironment } from "./launch-environment.js";
 import { codexStateIO } from "../io/codex-state-io.js";
 
@@ -17,6 +18,7 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
   args = [], ownedAppServer = false, onWarning = () => {}, onError = () => {},
   admitArtifact = admitCodexArtifact, inspectManagedPolicy = inspectCodexManagedPolicy,
   environment = readCodexEnvironment(), resolveInputs = resolveCodexLaunchInputs,
+  nativeInputs = prepareCodexNativeInputs,
 } = {}) {
   let supervisor, scratch, environmentFd;
   try {
@@ -40,11 +42,13 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     });
     supervisor = await superviseCodexSettings(entries, { onWarning, onError,
       stateIO: request => codexStateIO(request, { helperPath: artifact.stateIO }) });
-    const inputs = resolveInputs({ prepared: account, parsedArgs, homeDir, env, managedFiles: managed.files });
-    validateCodexExporters([...managed.documents, ...inputs.configurations]);
     scratch = fs.realpathSync(fs.mkdtempSync(path.join(account.accountRoot, ".runtime-")));
     fs.chmodSync(scratch, 0o700);
     const environmentValues = codexPrivacyEnvironment({ env, prepared: account, artifact, scratch });
+    const effectiveInputs = await nativeInputs({ artifact, prepared: account, parsedArgs,
+      env: environmentValues, managed, ownedAppServer });
+    const inputs = resolveInputs({ prepared: account, parsedArgs, homeDir, env: environmentValues,
+      managedFiles: managed.files, effectiveInputs });
     environmentFd = stageLaunchEnvironment(environmentValues, scratch);
     const writes = [...new Set([...inputs.writes, ...entries.filter(entry => supervisor.states.get(entry)?.writable)
       .map(entry => codexCanonicalPath(path.dirname(entry.view)))])];
@@ -62,7 +66,10 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
       environment: environmentValues, environmentFd,
       // A privileged entry receives only fixed bootstrap variables. All user
       // tool environment crosses the unlinked descriptor after policy entry.
-      env: { PATH: "/usr/bin:/bin" }, cwd: inputs.cwd,
+      // Native still receives the original -C/--worktree arguments. Starting
+      // it in the projected cwd would apply relative -C twice and change the
+      // original-cwd meaning of worktree --add-dir paths.
+      env: { PATH: "/usr/bin:/bin" }, cwd: parsedArgs.processCwd,
       flushSettings: () => supervisor.flush(),
       closeEnvironment() { if (environmentFd !== undefined) { fs.closeSync(environmentFd); environmentFd = undefined; } },
       async close() {

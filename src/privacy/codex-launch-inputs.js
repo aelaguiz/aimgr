@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { codexSourcePath, parseCodexSettings, projectCodexSettings } from "../io/codex-settings-toml.js";
 
 export function codexCanonicalPath(file) {
   let current = path.resolve(file), missing = [];
@@ -15,16 +14,6 @@ export function codexCanonicalPath(file) {
       } catch (e) { if (e.code !== "ENOENT") throw e; }
       missing.push(path.basename(current)); current = path.dirname(current);
     }
-  }
-}
-
-function parsed(file, home) {
-  try { return parseCodexSettings(projectCodexSettings(fs.readFileSync(file, "utf8"), { source: file, home })).value; }
-  catch (error) {
-    if (error.code && error.code !== "ENOENT") throw error;
-    // Native remains the source of syntax/schema errors. This inspection only
-    // derives file grants; it does not replace configuration precedence.
-    return null;
   }
 }
 
@@ -46,8 +35,9 @@ function keyringSockets(env) {
 }
 
 export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, managedFiles = [], spawnSyncImpl = spawnSync,
-  systemConfigFile = "/etc/codex/config.toml" }) {
-  const cwd = codexCanonicalPath(parsedArgs.cwd);
+  effectiveInputs }) {
+  if (!effectiveInputs) throw new Error("Codex requires an admitted native input inventory.");
+  const cwd = codexCanonicalPath(effectiveInputs.cwd);
   const writes = new Set(), reads = new Set(), databases = new Set();
   const add = (set, file) => { if (typeof file === "string") set.add(codexCanonicalPath(file)); };
   const actualHome = codexCanonicalPath(homeDir);
@@ -56,6 +46,7 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
   if (cwd !== actualHome && cwd !== "/") add(writes, cwd);
   for (const file of parsedArgs.directories) add(writes, file);
   for (const file of parsedArgs.images) add(reads, file);
+  for (const file of parsedArgs.files ?? []) add(reads, file);
   for (const name of fs.readdirSync(prepared.codexHome)) {
     // Shared settings views receive their own permission-aware grants after
     // reconciliation, rather than the generic mutable-state grant.
@@ -70,52 +61,17 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
     cwd, env, encoding: "utf8", timeout: 3000, maxBuffer: 64 * 1024, stdio: ["ignore", "pipe", "ignore"],
   });
   if (git.status === 0) for (const file of git.stdout.trim().split("\n")) add(writes, path.resolve(cwd, file));
-  const configFiles = [path.join(prepared.sharedHome, "config.toml"),
-    ...(parsedArgs.profile ? [path.join(prepared.sharedHome, `${parsedArgs.profile}.config.toml`)] : []), systemConfigFile, ...managedFiles];
-  for (let current = cwd; ; current = path.dirname(current)) {
-    for (const name of ["AGENTS.md", "AGENTS.override.md"]) if (fs.existsSync(path.join(current, name))) add(reads, path.join(current, name));
-    for (const name of [".codex", ".agents/skills"]) {
-      const file = path.join(current, name);
-      if (name === ".codex") configFiles.push(path.join(file, "config.toml"));
-      else if (fs.existsSync(file)) add(reads, file);
-    }
-    if (current === path.dirname(current)) break;
-  }
-  const globalSkills = path.join(homeDir, ".agents", "skills");
-  if (fs.existsSync(globalSkills)) add(reads, globalSkills);
-  const visited = new Set(), configurations = [];
-  function inspect(value, keys = []) {
-    if (typeof value === "string" && codexSourcePath(keys)) {
-      if (keys.length === 1 && keys[0] === "sqlite_home") add(databases, value);
-      else if (keys.length === 1 && keys[0] === "log_dir") add(writes, value);
-      else if (keys[0] === "sandbox_workspace_write" && keys[1] === "writable_roots") add(writes, value);
-      else add(reads, value);
-      if (keys[0] === "agents" && keys.at(-1) === "config_file") configFiles.push(value);
-    } else if (Array.isArray(value)) value.forEach((item, index) => inspect(item, [...keys, index]));
-    else if (value && typeof value === "object") for (const [key, item] of Object.entries(value)) inspect(item, [...keys, key]);
-  }
-  for (let i = 0; i < configFiles.length; i++) {
-    if (i > 256) throw new Error("Codex configured input inventory exceeds native capacity.");
-    const file = configFiles[i];
-    if (visited.has(file)) continue;
-    visited.add(file);
-    if (!fs.existsSync(file)) continue;
-    // Grant the file, never its whole parent merely because it holds config.
-    add(reads, file);
-    const value = parsed(file, homeDir);
-    if (value) { configurations.push({ file, value }); inspect(value); }
-  }
-  for (const override of parsedArgs.config) {
-    try {
-      const value = parseCodexSettings(projectCodexSettings(override, { source: path.join(cwd, "config.toml"), home: homeDir })).value;
-      configurations.push({ source: "CLI override", value }); inspect(value);
-    }
-    catch { /* native validates CLI overrides */ }
-  }
-  add(databases, path.resolve(cwd, env.CODEX_SQLITE_HOME || prepared.sharedHome));
-  for (const name of ["SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"]) if (env[name]) add(reads, path.resolve(cwd, env[name]));
+  // Effective configuration decisions belong to the admitted native helper.
+  // This module inventories only explicit startup inputs, shared state, Git
+  // metadata and existing environment-selected local transport/trust files.
+  for (const file of effectiveInputs.reads) add(reads, file);
+  for (const file of managedFiles) add(reads, file);
+  for (const file of effectiveInputs.writes) add(writes, file);
+  for (const file of effectiveInputs.database_roots) add(databases, file);
+  const selectedCA = env.CODEX_CA_CERTIFICATE || env.SSL_CERT_FILE;
+  for (const file of [selectedCA, env.SSL_CERT_DIR, env.NODE_EXTRA_CA_CERTS]) if (file) add(reads, path.resolve(cwd, file));
   for (const socket of keyringSockets(env)) add(writes, socket);
-  return { cwd, writes: [...writes], reads: [...reads], databases: [...databases], configurations };
+  return { cwd, writes: [...writes], reads: [...reads], databases: [...databases], effectiveInputs };
 }
 
 export function codexPrivacyEnvironment({ env, prepared, artifact, scratch }) {

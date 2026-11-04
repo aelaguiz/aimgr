@@ -3,6 +3,7 @@
 #define VENDOR_NAME "Codex"
 #define RUNTIME_ROOT "/opt/aimgr-codex-runtime/artifacts/"
 #include "../privacy/launch_macos.h"
+#include "maintenance_gate.h"
 
 static void vendor_filter(FILE *out,const char *vendor,const char *helper) {
     fputs("(require-any ",out);rule(out,"process-path",vendor);rule(out,"process-path",helper);fputs(")",out);
@@ -59,6 +60,8 @@ int main(int argc,char **argv) {
     }
     for (int i=0;i<databases;i++) canonical_future(database_roots[i]);
     for (int i=0;i<denies;i++) canonical_future(denied[i]);
+    restore_environment(envfd);close_inherited_descriptors();
+    int admission=codex_maintenance_admission();
     char *policy=NULL;size_t length=0;FILE *out=open_memstream(&policy,&length);if (!out) fail("policy allocation");
     fputs("(version 1)(allow default)\n(allow process-exec (require-not (require-any ",out);
     rule(out,"literal",vendor);rule(out,"literal",helper);fputs(")) (with no-sandbox))\n(with-filter ",out);
@@ -84,7 +87,7 @@ int main(int argc,char **argv) {
       "(deny process-exec (literal \"/usr/bin/sw_vers\")))",out);
     if (fclose(out) || !policy || length>1024*1024) fail("policy generation");
     char *error=NULL;if (sandbox_init_with_parameters(policy,0,NULL,&error)) fail("policy application");
-    free(policy);restore_environment(envfd);
+    free(policy);
     set_environment("CODEX_HOME",home,1);set_environment("TMPDIR",scratch,1);
-    close_inherited_descriptors();argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");
+    codex_close_except_admission(admission);argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");
 }
