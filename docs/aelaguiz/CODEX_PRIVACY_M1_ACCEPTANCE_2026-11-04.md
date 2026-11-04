@@ -1,10 +1,12 @@
 # Codex privacy milestone 1: acceptance
 
-**Milestone 1 still needs exact-release macOS acceptance and final PR review.** The Linux workflow checks and final JavaScript suite pass. The replacement Mac has not reached boot. No PR has been published and milestone 2 implementation has not begun.
+**Milestone 1 still needs Linux distribution-helper verification, exact-release macOS acceptance and final PR review.** The Linux workflow checks and final JavaScript suite pass against the development-profile helper. The replacement Mac has not reached boot. No PR has been published and milestone 2 implementation has not begun.
 
 The [canonical plan](CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md) defines P01–P26. The [worklog](CODEX_PRIVACY_M1_WORKLOG_2026-11-03.md) and [November 4 historical acceptance record](https://github.com/aelaguiz/aimgr/blob/8fe0a6c/docs/aelaguiz/CODEX_PRIVACY_M1_ACCEPTANCE_2026-11-04.md) retain the intermediate candidates, failures and corrections. A result here applies to its stated platform and fixture; a skipped case or an earlier exploratory Mac run does not establish final acceptance.
 
 ## What remains
+
+The documented Linux distribution build uses `cargo build --locked --release`; the completed native checks used stripped development helpers. The reviewer requires a release build because upstream behavior includes `debug_assertions` branches. That build is running on the isolated Linux VM with one job. Repeat only native inputs, one saved-input case, worktree, first-use settings, collector reload and startup measurements against its installed bytes. The full JavaScript suite and unrelated auth/keyring/scheduler/browser matrices do not repeat for this profile-only change.
 
 1. Prove a clean reboot on the replacement Mac before installing AIM. Build the pinned helpers there, verify the unchanged official signatures, and install the candidate.
 2. Execute the applicable native matrix on that Mac, including Chrome, both protected Claude/Codex parent directions, the unchanged read-only reviewer, real launchd calendar/interval jobs and the interrupted MCP conversion across an actual reboot.

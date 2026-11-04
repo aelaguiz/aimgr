@@ -110,8 +110,8 @@ with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory
         'process-control': (stage / 'process-control', 'launcher', True),
         'mcp_maintenance.py': (repo / 'native/codex/mcp_maintenance.py', 'launcher', False),
         'mcp-keyring': (repo / 'native/codex/mcp-keyring/target/release/aimgr-codex-mcp-keyring', 'launcher', True),
-        'config-state': (repo / 'native/codex/config-state/target/debug/aimgr-codex-config-state', 'launcher', True),
-        'worktree-tool': (repo / 'native/codex/config-state/target/debug/aimgr-codex-worktree', 'launcher', True),
+        'config-state': (repo / 'native/codex/config-state/target/release/aimgr-codex-config-state', 'launcher', True),
+        'worktree-tool': (repo / 'native/codex/config-state/target/release/aimgr-codex-worktree', 'launcher', True),
         'policy.json': (stage / 'policy.json', 'policy', False)}
     if system == 'Darwin': entries['managed-preferences'] = (stage / 'managed-preferences', 'launcher', True)
     files = {name: {'sha256': digest(file), 'size': file.stat().st_size, 'executable': executable, 'role': role}
