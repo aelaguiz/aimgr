@@ -53,6 +53,10 @@ const keyring = request => {
   return value;
 };
 let generation = 0, rejectCurrentAccess = false, serverError, refreshGate, releaseOnContention, barrierTimer;
+const backendDeath = process.argv.includes("--backend-death"), activeChildren = new Set();
+let healthyEntered, releaseHealthy, healthyTurns = 0;
+const healthyWaiting = new Promise(resolve => { healthyEntered = resolve; });
+const healthyGate = new Promise(resolve => { releaseHealthy = resolve; });
 const requests = [];
 const service = http.createServer(async (req, res) => {
   const json = (status, value) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); };
@@ -96,9 +100,17 @@ const service = http.createServer(async (req, res) => {
       json(200, { jsonrpc: "2.0", id: body.id, result }); return;
     }
     if (req.method === "POST" && req.url === "/responses") {
+      const healthy = JSON.stringify(JSON.parse(text).input).includes("SYNTHETIC_HEALTHY_SIBLING");
+      if (healthy) {
+        healthyTurns++;
+        if (healthyTurns === 1) { healthyEntered(); await healthyGate; }
+        else assert.match(text, /SYNTHETIC_BACKEND_TOOL/);
+      }
       const response = { id: "synthetic-response", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
       const events = [{ type: "response.created", response }, { type: "response.output_item.done",
-        item: { type: "message", role: "assistant", id: "synthetic-message", content: [{ type: "output_text", text: "Synthetic MCP check complete." }] } },
+        item: healthy && healthyTurns === 1 ? { type: "function_call", name: "exec_command", call_id: "backend-tool",
+          arguments: JSON.stringify({ cmd: "printf SYNTHETIC_BACKEND_TOOL", login: false, max_output_tokens: 100 }) }
+          : { type: "message", role: "assistant", id: "synthetic-message", content: [{ type: "output_text", text: "Synthetic MCP check complete." }] } },
       { type: "response.completed", response }];
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")); return;
@@ -123,7 +135,7 @@ const source = path.join(homeDir, ".codex", "config.toml");
 fs.writeFileSync(source, `model="gpt-5.4"\nmodel_provider="fixture"\nmcp_oauth_credentials_store="keyring"\n[features]\napps=false\ncode_mode=false\nsecret_auth_storage=false\n[mcp_servers.${JSON.stringify(server.name)}]\nurl=${JSON.stringify(server.url)}\nrequired=true\n[model_providers.fixture]\nname="Fixture"\nbase_url=${JSON.stringify(address)}\nwire_api="responses"\nrequest_max_retries=0\nstream_max_retries=0\n`, { mode: 0o600 });
 const environment = readCodexEnvironment();
 const outputs = [];
-async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json"], settingsHome = null) {
+async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json"], settingsHome = null, expectFailure = false) {
   const claims = { exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": {
     chatgpt_account_id: accountId, chatgpt_plan_type: "plus", chatgpt_user_id: "synthetic-user",
   } };
@@ -140,6 +152,7 @@ async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json
       stdio: ["ignore", "pipe", "pipe", ...(protectedLaunch ? [invocation.environmentFd] : [])],
     });
     invocation.closeEnvironment();
+    activeChildren.add(child);
     const stdout = [], stderr = [];
     child.stdout.on("data", bytes => stdout.push(bytes)); child.stderr.on("data", bytes => {
       stderr.push(bytes);
@@ -148,13 +161,48 @@ async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json
     timer = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 60_000);
     const [code, signal] = await once(child, "close");
     outputs.push({ accountId, protectedLaunch, args, code, signal, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString() });
-    assert.equal(code, 0, `Native MCP command failed; private evidence ${root}`);
+    if (expectFailure) {
+      assert.notEqual(code, 0, "Unavailable required MCP must fail visibly");
+      assert.equal(signal, null, "Required failure must precede the fixture timeout");
+      assert.match(Buffer.concat(stderr).toString(), /required.*MCP|MCP.*required/i);
+    } else assert.equal(code, 0, `Native MCP command failed; private evidence ${root}`);
     return Buffer.concat(stdout).toString();
   } finally {
     clearTimeout(timer);
     if (child && child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
     await invocation.close();
+    activeChildren.delete(child);
   }
+}
+
+function observeVendor() {
+  const script = `import hashlib,json,os,subprocess,sys
+from pathlib import Path
+rows=[line.split(None,2) for line in subprocess.check_output(['/bin/ps','-eo','pid=,ppid=,stat='],text=True).splitlines()]
+owned=set(map(int,sys.argv[1:])); previous=set()
+while previous!=owned:
+ previous=set(owned); owned.update(int(p) for p,parent,state in rows if int(parent) in owned)
+result=[]
+for p,parent,state in rows:
+ if int(p) not in owned or state.startswith('Z'): continue
+ try:
+  image=Path(os.readlink('/proc/'+p+'/exe'))
+  if image.name not in ('codex','codex-code-mode-host'): continue
+  result.append(dict(pid=int(p),image=str(image),sha256=hashlib.sha256(image.read_bytes()).hexdigest(),profile=Path('/proc/'+p+'/attr/current').read_text().strip()))
+ except FileNotFoundError: pass
+print(json.dumps(result))`;
+  const result = spawnSync("sudo", ["-n", "/usr/bin/python3", "-I", "-c", script, ...[...activeChildren].map(child => String(child.pid))],
+    { encoding: "utf8" });
+  assert.equal(result.status, 0);
+  const observed = JSON.parse(result.stdout);
+  assert.ok(observed.length);
+  for (const row of observed) {
+    assert.match(row.profile, /^aim-codex-p-\d+-[a-f0-9]+ \(enforce\)$/);
+    assert.equal(row.sha256, row.image.endsWith("/codex")
+      ? "b8a11fedf24b2dfb59a70c9e52b030f9a508dcd49cd2dd0d41956f4c785156b8"
+      : "657f4e902726e05867c937b583049d5997e057f8cd0ab40450633c9c9ef8d630");
+  }
+  return observed;
 }
 
 try {
@@ -180,6 +228,32 @@ try {
     assert.ok(["o_auth", "oauth"].includes(entries.find(entry => entry.name === server.name)?.auth_status), "native recognizes converted OAuth tokens");
   }
   const execArgs = ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "Complete the synthetic MCP check."];
+  if (backendDeath) {
+    await native("synthetic-A", true, execArgs);
+    assert.ok(requests.some(request => request.rpc === "tools/list"));
+    assert.match(server.name, /^[a-zA-Z0-9_]+$/);
+    const healthyArgs = ["-c", `mcp_servers.${server.name}.enabled=false`, ...execArgs.slice(0, -1), "SYNTHETIC_HEALTHY_SIBLING"];
+    const healthy = native("synthetic-B", true, healthyArgs); healthy.catch(() => {});
+    try {
+      await Promise.race([healthyWaiting, healthy.then(() => { throw Error("Sibling exited before its model barrier"); })]);
+      const before = observeVendor();
+      const ended = once(daemon, "close"); daemon.kill("SIGKILL"); await ended;
+      rejectCurrentAccess = true;
+      const modelCount = requests.filter(row => row.url === "/responses").length;
+      await native("synthetic-A", true, execArgs, null, true);
+      assert.equal(requests.filter(row => row.url === "/responses").length, modelCount);
+      assert.ok(!fs.existsSync(path.join(homeDir, ".codex/.credentials.json")), "No fallback File credential created");
+      const owner = spawnSync("gdbus", ["call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus",
+        "--method", "org.freedesktop.DBus.GetNameOwner", "org.freedesktop.secrets"], { env, encoding: "utf8" });
+      assert.notEqual(owner.status, 0, "The dead fixture backend was not automatically replaced");
+      const after = observeVendor();
+      releaseHealthy(); await healthy;
+      assert.equal(healthyTurns, 2);
+      fs.writeFileSync(path.join(root, "backend-death.private.json"), JSON.stringify({ before, after }, null, 2));
+      process.stdout.write(JSON.stringify({ fixture: root, backendDeath: true, requiredFailureBeforeModel: true,
+        healthySiblingToolCompleted: true, actualSurvivingVendorProtected: true }) + "\n");
+    } finally { releaseHealthy(); await healthy; }
+  } else {
   for (const [index, account] of ["synthetic-A", "synthetic-B"].entries()) {
     const before = requests.length;
     rejectCurrentAccess = index === 1;
@@ -231,6 +305,7 @@ try {
   process.stdout.write(JSON.stringify({ fixture: root, configuredNamePrefix: namePrefix, convertedNativeReads: 3, protectedAccountHomes: 2,
     nativeRotatingRefreshes: generation, customSettingsRefreshContention: contention,
     nativeLogoutRemovedKey: true, restartsWithoutResurrection: 2 }) + "\n");
+  }
 } catch (error) {
   process.stderr.write(`${error.message}; private evidence ${root}\n`); process.exitCode = 1;
 } finally {
@@ -240,5 +315,5 @@ try {
   fs.writeFileSync(path.join(root, "requests.json"), JSON.stringify(requests, null, 2), { mode: 0o600 });
   service.closeAllConnections(); await new Promise(resolve => service.close(resolve));
   if (monitor.exitCode === null) { monitor.kill("SIGTERM"); await once(monitor, "close"); }
-  if (daemon.exitCode === null) { daemon.kill("SIGTERM"); await once(daemon, "close"); }
+  if (daemon.exitCode === null && daemon.signalCode === null) { daemon.kill("SIGTERM"); await once(daemon, "close"); }
 }

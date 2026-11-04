@@ -245,7 +245,20 @@ async function run(protectedLaunch, alias = false, builtin = null) {
   fs.writeFileSync(path.join(homeDir, ".codex/auth.json"), foreignAuth, { mode: 0o600 });
   const options = { homeDir, env, environment, accountId, label: name };
   saveLocalCodexLogin(options, { access: token, idToken: token, refresh: initialRefresh, accountId });
-  const prepared = prepareCodexAccountState(options);
+  const defaultPrepared = prepareCodexAccountState(options);
+  if (process.argv.includes("--custom-auth-lock")) {
+    assert.ok(lockProbe);
+    env.CODEX_HOME = path.join(homeDir, "relative settings 日本語");
+    fs.mkdirSync(env.CODEX_HOME);
+    fs.copyFileSync(path.join(homeDir, ".codex/config.toml"), path.join(env.CODEX_HOME, "config.toml"));
+  }
+  const prepared = env.CODEX_HOME ? prepareCodexAccountState(options) : defaultPrepared;
+  if (process.argv.includes("--custom-auth-lock")) {
+    assert.notEqual(prepared.codexHome, defaultPrepared.codexHome);
+    assert.equal(prepared.accountRoot, defaultPrepared.accountRoot);
+    assert.equal(fs.statSync(path.join(prepared.codexHome, "auth.lock")).ino,
+      fs.statSync(path.join(defaultPrepared.codexHome, "auth.lock")).ino);
+  }
   if (process.argv.includes("--account-isolation")) {
     coordination = await coordinateOtherAccount({ homeDir, env, environment, options, token, claims, prepared, root });
     await coordination.select("after-selected-account-preparation");
@@ -391,6 +404,10 @@ try {
     const output = { fixture: root, result: { ...result, userAgent: undefined } };
     fs.writeFileSync(path.join(root, "environment-proof.private.json"), JSON.stringify(output, null, 2));
     process.stdout.write(JSON.stringify(output) + "\n");
+  } else if (process.argv.includes("--custom-auth-lock")) {
+    const result = await run(true, false, "native-lock");
+    process.stdout.write(JSON.stringify({ fixture: root, customSettingsNativeAuthLock: true,
+      result: { ...result, userAgent: undefined } }) + "\n");
   } else if (process.argv.includes("--auth-races")) {
     const results = [];
     // Both successful responses originate from the same snapshot, modeling
