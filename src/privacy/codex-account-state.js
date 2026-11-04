@@ -80,7 +80,8 @@ export function prepareCodexAccountState({ homeDir, env = {}, accountId, label, 
   }
   const installationId = readCodexInstallationId({ codexHome: prepared.accountRoot });
   if (!installationId) throw new Error("Codex account installation identity is invalid.");
-  for (const name of ["auth.json", "installation_id"]) codexStateLink(path.join(prepared.codexHome, name), path.join(prepared.accountRoot, name));
+  createOnce(path.join(prepared.accountRoot, "auth.lock"), "");
+  for (const name of ["auth.json", "auth.lock", "installation_id"]) codexStateLink(path.join(prepared.codexHome, name), path.join(prepared.accountRoot, name));
   codexStateLink(path.join(prepared.codexHome, "mcp-oauth-locks"), codexMcpLockDirectory(homeDir));
   // Native creates these lazily. Link their canonical destinations before the
   // first owner, including an initially empty history, so first use cannot

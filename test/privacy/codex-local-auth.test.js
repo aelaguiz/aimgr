@@ -36,6 +36,20 @@ test("authorization stays in one environment across restart, label rename and cu
   assert.equal(resumed.status, "ready");
 });
 
+test("manual login changes native ownership while refresh retains it", async t => {
+  const options = fixture(t), first = saveLocalCodexLogin(options, credential("first"));
+  const owner = JSON.parse(first.raw).tokens.login_owner_id;
+  assert.equal(owner, JSON.parse(first.grantRaw).id);
+  assert.ok(owner);
+  const refreshed = await maintainLocalCodexCredential(options, { refreshBeforeMs: Infinity,
+    fetchJsonWithTimeoutImpl: async () => reply({ access_token: credential().access,
+      refresh_token: "rotated", id_token: credential().idToken }) });
+  assert.equal(JSON.parse(refreshed.raw).tokens.login_owner_id, owner);
+  const next = saveLocalCodexLogin(options, credential("new-login"));
+  assert.notEqual(JSON.parse(next.raw).tokens.login_owner_id, owner);
+  assert.equal(JSON.parse(next.raw).tokens.login_owner_id, JSON.parse(next.grantRaw).id);
+});
+
 test("copying the entire user state and provenance cannot bootstrap a separately provisioned environment", t => {
   const a = fixture(t), b = fixture(t, "b");
   const saved = saveLocalCodexLogin(a, credential("source-only"));
@@ -101,7 +115,7 @@ for (const outcome of ["success", "invalid_grant"]) test(`a native rotation whil
 
 test("primary auth writes honor a native flock holder and keep the sidecar inode", async t => {
   const options = fixture(t), saved = saveLocalCodexLogin(options, credential());
-  const lock = path.join(saved.paths.accountRoot, "auth.json.lock");
+  const lock = path.join(saved.paths.accountRoot, "auth.lock");
   const inode = fs.statSync(lock).ino;
   const holder = spawn("/usr/bin/python3", ["-I", "-c", "import fcntl,sys,time; f=open(sys.argv[1],'r+'); fcntl.flock(f,fcntl.LOCK_EX); print('held',flush=True); time.sleep(.25)", lock], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => { if (holder.exitCode === null) holder.kill(); });

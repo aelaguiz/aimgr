@@ -42,7 +42,7 @@ function nativeInputs(plan, run, values = []) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     !key.startsWith("LD_") && !key.startsWith("DYLD_") && key !== "GLIBC_TUNABLES"));
   const value = JSON.parse(run(plan.config_state, [], { input: JSON.stringify(input), env }).stdout);
-  if (value.schema !== 1 || value.source_revision !== "54201ea65a3501d09a87c776376a0c16aa39db70"
+  if (value.schema !== 1 || value.source_revision !== "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856"
     || !Array.isArray(value.mcp_servers) || value.mcp_keyring_backend !== "direct") {
     fail("MCP conversion requires the existing ordinary Direct keyring backend and reviewed native configuration.");
   }

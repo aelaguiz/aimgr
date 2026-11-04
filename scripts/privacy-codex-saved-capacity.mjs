@@ -27,7 +27,7 @@ for(let n=0;n<count;n++){
   const project=distinct?path.join(root,"projects",`${n}-synthetic workspace with a descriptive project name`):cwd;
   fs.mkdirSync(project,{recursive:true});
   const lines=[{type:"session_meta",payload:{id,session_id:id,timestamp:stamp,cwd:project,
-    runtime_workspace_roots:n===0?[project,...roots]:[project],originator:"synthetic",cli_version:"0.163.0-alpha.5",source:"cli",model_provider:"openai"}},
+    runtime_workspace_roots:n===0?[project,...roots]:[project],originator:"synthetic",cli_version:"0.166.0",source:"cli",model_provider:"openai"}},
     {type:"event_msg",payload:{type:"user_message",message:"synthetic-capacity",kind:"plain"}}];
   fs.writeFileSync(path.join(sessions,`rollout-2026-11-04T12-00-00-${id}.jsonl`),lines.map(v=>JSON.stringify({timestamp:stamp,...v})).join("\n")+"\n");
 }

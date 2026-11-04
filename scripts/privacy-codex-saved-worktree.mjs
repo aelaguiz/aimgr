@@ -36,7 +36,7 @@ fs.mkdirSync(sessionDir, { recursive: true });
 function rollout(number, label, overrides = {}, contexts = []) {
   const thread = id(number);
   const header = { id: thread, session_id: thread, timestamp: stamp, cwd,
-    originator: "synthetic-offline-fixture", cli_version: "0.163.0-alpha.5",
+    originator: "synthetic-offline-fixture", cli_version: "0.166.0",
     source: "cli", model_provider: "openai", creator_account_id: "synthetic-account-A", ...overrides };
   const lines = [{ timestamp: stamp, type: "session_meta", payload: header },
     { timestamp: stamp, type: "event_msg", payload: { type: "user_message", message: label, kind: "plain" } },
@@ -79,6 +79,7 @@ const owner = { cwd, account_id: "synthetic-account-A", source: "cli", forked_fr
   started_at: "2026-11-04T12:00:00.000Z", ended_at: "2026-11-04T12:01:00.000Z", database_files: files };
 const own = patch => call({ operation: "worktree_owner", owner: { ...owner, ...patch } });
 assert.equal((await own({})).owner_thread_id, id(1));
+assert.equal((await own({ database_files: [...files].reverse() })).owner_thread_id, id(1), "database identity is independent of projection order");
 assert.equal((await own({ account_id: "synthetic-account-B" })).owner_thread_id, null, "same-account multiple matches remain unbound");
 assert.equal((await own({ forked_from_id: id(2) })).owner_thread_id, null);
 assert.equal((await own({ database_files: files.map((file, i) => i ? file : { ...file, inode: file.inode + 1 }) })).owner_thread_id, null);

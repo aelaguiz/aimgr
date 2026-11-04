@@ -3,7 +3,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import http from "node:http";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 import { prepareCodexAccountState } from "../src/privacy/codex-account-state.js";
@@ -39,14 +41,30 @@ const token = payload => `synthetic.${Buffer.from(JSON.stringify(payload)).toStr
 const claims = { "https://api.openai.com/auth": { chatgpt_account_id: options.accountId, chatgpt_plan_type: "plus", chatgpt_user_id: "synthetic-user" } };
 const credential = { access: token({ ...claims, exp: Math.floor(Date.now() / 1000) + 3600 }),
   idToken: token(claims), refresh: "SYNTHETIC_REFRESH_ONLY", accountId: options.accountId };
+const metadataRequests = [];
+const service = http.createServer((req, res) => {
+  metadataRequests.push({ method: req.method, url: req.url });
+  const value = req.url.startsWith("/models") ? { models: [] }
+    : req.url === "/api/codex/accounts/check" ? { accounts: [{ id: options.accountId, plan_type: "plus", structure: "personal",
+      workspace_backend_origin: "NO_CONSTRAINT", account_routing_override: "NO_CONSTRAINT" }],
+      account_ordering: [options.accountId], default_account_id: options.accountId }
+    : req.url === "/api/codex/settings/user" ? {} : null;
+  res.writeHead(value ? 200 : 404, { "content-type": "application/json" });
+  res.end(JSON.stringify(value ?? { error: "not_found" }));
+});
+service.listen(0, "127.0.0.1"); await once(service, "listening");
+const source = path.join(homeDir, ".codex", "config.toml");
+fs.writeFileSync(source, `chatgpt_base_url="http://127.0.0.1:${service.address().port}"\n` + fs.readFileSync(source, "utf8"));
 saveLocalCodexLogin(options, credential);
 const prepared = prepareCodexAccountState(options);
 let invocation, child, transport;
 const output = [], errors = [];
+let launchStarted, initializedAfterMs;
 try {
   invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin", "codex"), homeDir, cwd, env,
     args: ["app-server", "--listen", "stdio://"], ownedAppServer: true });
   if (manyRoots && Number(invocation.args[5]) <= 256) throw new Error("Fixture must exercise more than 256 exact native write grants.");
+  launchStarted = Date.now();
   child = spawn(invocation.command, invocation.args, { cwd: invocation.cwd, env: invocation.env,
     stdio: ["pipe", "pipe", "pipe", invocation.environmentFd], detached: true });
   invocation.closeEnvironment();
@@ -59,6 +77,7 @@ try {
   const handleLine = async line => {
     const value = JSON.parse(line); output.push(value);
     if (value.id === 1) {
+      initializedAfterMs = Date.now() - launchStarted;
       clientInput.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
       clientInput.write(JSON.stringify({ id: 2, method: "config/read", params: { includeLayers: true, cwd } }) + "\n");
     }
@@ -85,18 +104,19 @@ try {
   };
   lines.on("line", line => { handleLine(line).catch(error => { errors.push(`Fixture: ${error.message}\n`); clientInput.end(); }); });
   clientInput.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "aim_privacy_fixture", version: "1" }, capabilities: { experimentalApi: true } } }) + "\n");
-  const timeout = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 25_000);
+  const timeout = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, manyRoots ? 120_000 : 25_000);
   const exit = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
   clearTimeout(timeout); await transport.finished; await transport.close(); lines.close();
   fs.writeFileSync(path.join(root, "stderr.log"), errors.join(""), { mode: 0o600 });
   fs.writeFileSync(path.join(root, "protocol.json"), JSON.stringify(output, null, 2), { mode: 0o600 });
+  fs.writeFileSync(path.join(root, "metadata.json"), JSON.stringify(metadataRequests, null, 2), { mode: 0o600 });
   const config = output.find(value => value.id === 2)?.result?.config;
   const expectedSkill = path.join(homeDir, ".codex", "skills", "review");
   const skillPath = config?.skills?.config?.[0]?.path;
   const live = output.find(value => value.id === 3)?.result?.config;
   const updated = output.find(value => value.id === 5)?.result?.config;
   const authored = parseCodexSettings(fs.readFileSync(path.join(homeDir, ".codex", "config.toml"), "utf8")).value;
-  const summary = { fixture: root, exit, configSeen, nativeWriteRoots: Number(invocation.args[5]), skillPathMatchesOrigin: skillPath === expectedSkill,
+  const summary = { fixture: root, exit, configSeen, initializedAfterMs, nativeWriteRoots: Number(invocation.args[5]), skillPathMatchesOrigin: skillPath === expectedSkill,
     mcpSessionDefault: config?.mcp_oauth_credentials_store === "keyring"
       && output.find(value => value.id === 2)?.result?.origins?.mcp_oauth_credentials_store?.name?.type === "sessionFlags",
     mcpDefaultSurvivesReload: updated?.mcp_oauth_credentials_store === "keyring",
@@ -118,4 +138,5 @@ try {
   if (child && child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
   await transport?.close();
   await invocation?.close();
+  service.closeAllConnections(); await new Promise(resolve => service.close(resolve));
 }

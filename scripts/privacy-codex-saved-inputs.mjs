@@ -40,7 +40,7 @@ const sessions=path.join(codexHome,"sessions/2026/11/04");fs.mkdirSync(sessions,
 function rollout(n,label,metadata={},items=[]){
   const file=path.join(sessions,`rollout-2026-11-04T12-00-05-${id(n)}.jsonl`);
   const lines=[{type:"session_meta",payload:{id:id(n),session_id:id(n),timestamp:stamp,cwd:saved,
-    originator:"synthetic-offline-fixture",cli_version:"0.163.0-alpha.5",source:"cli",model_provider:"openai",...metadata}},
+    originator:"synthetic-offline-fixture",cli_version:"0.166.0",source:"cli",model_provider:"openai",...metadata}},
     {type:"event_msg",payload:{type:"user_message",message:label,kind:"plain"}},...items];
   fs.writeFileSync(file,lines.map(line=>JSON.stringify({timestamp:stamp,...line})).join("\n")+"\n",{mode:0o600});return file;
 }

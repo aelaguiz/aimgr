@@ -49,11 +49,11 @@ source_inventory = [[str(file.relative_to(repo)), digest(file)] for file in sort
 source_sha256 = hashlib.sha256(json.dumps(source_inventory, separators=(',', ':')).encode()).hexdigest()
 
 if system == 'Linux':
-    assert digest(vendor) == '1f389f19de064430a227a50af2bfa627699be4c600f1a37c114039fdd027b75b'
-    assert digest(helper) == 'd01f7a656bd2a54b26fd99131f252c7371e2e890f3713c5dd977676b54bfb3bf'
+    assert digest(vendor) == 'b8a11fedf24b2dfb59a70c9e52b030f9a508dcd49cd2dd0d41956f4c785156b8'
+    assert digest(helper) == '657f4e902726e05867c937b583049d5997e057f8cd0ab40450633c9c9ef8d630'
 else:
-    assert digest(vendor) == '956f2edd38050f8fa55fac9ecfc570dc37c85d48019800dacee4cfcf9c70e9d1'
-    assert digest(helper) == '506223f47bf53603026ff6c15f887196a5daabccde036e555cdae4875e4871b0'
+    assert digest(vendor) == '39acf979729dd290f9a24ee38b2914e036c91b65952872e28ae2a6b88a7db7c1'
+    assert digest(helper) == 'fd37051bfdce0b65cf22a7077e265720a7bd6709d5e400dcbc26197f3041400a'
     for image in (vendor, helper):
         subprocess.run(['/usr/bin/codesign', '--verify', '--strict', str(image)], check=True, capture_output=True)
 
@@ -103,8 +103,8 @@ with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory
     if system == 'Darwin':
         subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', '--options', 'runtime', str(stage / 'launcher')], check=True, capture_output=True)
         subprocess.run(['cc', '-O2', '-Wall', '-Wextra', '-Werror', str(repo / 'native/codex/managed_preferences.m'), '-framework', 'Foundation', '-o', str(stage / 'managed-preferences')], check=True)
-    atomic(stage / 'policy.json', {'schema': 1, 'platform': platform_name, 'arch': architecture, 'version': '0.163.0-alpha.5',
-        'sourceCommit': '54201ea65a3501d09a87c776376a0c16aa39db70', 'settingsManifest': 1,
+    atomic(stage / 'policy.json', {'schema': 1, 'platform': platform_name, 'arch': architecture, 'version': '0.166.0',
+        'sourceCommit': '6ff1e1ca3b30fc8b914720681fcf5fe62e95f856', 'settingsManifest': 1,
         'candidateSourceSha256': source_sha256})
     entries = {'codex': (vendor, 'vendor', True), 'codex-code-mode-host': (helper, 'vendor', True),
         'launcher': (stage / 'launcher', 'launcher', True), 'state_io.py': (repo / 'native/codex/state_io.py', 'launcher', False),
@@ -128,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory
             out.flush()
             os.fsync(out.fileno())
         (target / name).chmod(0o4755 if name == 'launcher' and system == 'Linux' else 0o755 if executable else 0o644)
-    atomic(target / 'approval.json', {'schema': 1, 'platform': platform_name, 'arch': architecture, 'version': '0.163.0-alpha.5',
+    atomic(target / 'approval.json', {'schema': 1, 'platform': platform_name, 'arch': architecture, 'version': '0.166.0',
         'privacyAbi': 'codex-privacy-v1', 'candidateSourceSha256': source_sha256,
         'entrypoint': 'codex', 'codeModeHost': 'codex-code-mode-host', 'launcher': 'launcher', 'stateIO': 'state_io.py',
         'mcpKeyring': 'mcp-keyring', 'mcpMaintenance': 'mcp_maintenance.py', 'configState': 'config-state', 'processControl': 'process-control',

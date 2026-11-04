@@ -52,7 +52,7 @@ request = dict(operation='start', home=str(home), cwd=str(project), source_home=
                owner_script=str(repo / 'src/credentials/codex-mcp-maintenance-owner.js'))
 if platform.system() == 'Darwin':
     request['native_access'] = dict(executable='/opt/aimgr-state-audit/bin/codex',
-        sha256='956f2edd38050f8fa55fac9ecfc570dc37c85d48019800dacee4cfcf9c70e9d1')
+        sha256='39acf979729dd290f9a24ee38b2914e036c91b65952872e28ae2a6b88a7db7c1')
 daemon = None
 default_keychain = None
 keychain = root / 'fixture.keychain-db'

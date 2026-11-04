@@ -52,7 +52,7 @@ const keyring = request => {
   assert.ok(!value.error && Object.hasOwn(value, "value"), "Synthetic keyring operation failed");
   return value;
 };
-let generation = 0, rejectCurrentAccess = false, serverError, refreshGate, releaseOnContention;
+let generation = 0, rejectCurrentAccess = false, serverError, refreshGate, releaseOnContention, barrierTimer;
 const requests = [];
 const service = http.createServer(async (req, res) => {
   const json = (status, value) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); };
@@ -71,7 +71,13 @@ const service = http.createServer(async (req, res) => {
       const form = new URLSearchParams(text);
       assert.equal(form.get("grant_type"), "refresh_token");
       assert.equal(form.get("refresh_token"), generation ? `SYNTHETIC_MCP_REFRESH_${generation}` : "SYNTHETIC_MCP_REFRESH");
-      if (refreshGate) await refreshGate;
+      if (refreshGate) {
+        barrierTimer ??= setTimeout(() => { serverError = new Error("Native custom-home refresh never contended on the shared lock"); releaseOnContention(false); }, 20_000);
+        await refreshGate;
+      }
+      // Validate after the barrier too: a second request must never replay the
+      // predecessor token, even if it arrived before the first completed.
+      assert.equal(form.get("refresh_token"), generation ? `SYNTHETIC_MCP_REFRESH_${generation}` : "SYNTHETIC_MCP_REFRESH");
       generation++; rejectCurrentAccess = false;
       json(200, { access_token: `SYNTHETIC_MCP_ACCESS_${generation}`, refresh_token: `SYNTHETIC_MCP_REFRESH_${generation}`,
         token_type: "Bearer", expires_in: 3600, scope: "read write" }); return;
@@ -139,7 +145,7 @@ async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json
       stderr.push(bytes);
       if (Buffer.concat(stderr).toString().includes("waiting for another process to finish refreshing MCP OAuth credentials")) releaseOnContention?.();
     });
-    timer = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 25_000);
+    timer = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 60_000);
     const [code, signal] = await once(child, "close");
     outputs.push({ accountId, protectedLaunch, args, code, signal, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString() });
     assert.equal(code, 0, `Native MCP command failed; private evidence ${root}`);
@@ -152,6 +158,16 @@ async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json
 }
 
 try {
+  // Do not let a D-Bus activation race make this fixture use any other
+  // credential service, even in the disposable bus namespace.
+  for (let attempt = 0; ; attempt++) {
+    const owner = spawnSync("/usr/bin/gdbus", ["call", "--session", "--dest", "org.freedesktop.DBus",
+      "--object-path", "/org/freedesktop/DBus", "--method", "org.freedesktop.DBus.GetConnectionUnixProcessID",
+      "org.freedesktop.secrets"], { env, encoding: "utf8", timeout: 5_000 });
+    if (owner.status === 0) { assert.equal(Number(owner.stdout.match(/uint32 (\d+)/)?.[1]), daemon.pid); break; }
+    if (attempt === 29 || daemon.exitCode !== null) throw new Error("Fixture did not own Secret Service");
+    await delay(100);
+  }
   for (let attempt = 0; ; attempt++) {
     try { assert.equal((await keyring({ operation: "load", server_name: server.name, url: server.url })).value, null); break; }
     catch (error) { if (attempt === 9 || daemon.exitCode !== null) throw error; await delay(100); }
@@ -178,19 +194,33 @@ try {
   const customSettings = path.join(homeDir, "custom-settings");
   fs.mkdirSync(customSettings);
   fs.copyFileSync(path.join(homeDir, ".codex/config.toml"), path.join(customSettings, "config.toml"));
-  let contended = false, barrierTimer;
-  refreshGate = new Promise(resolve => {
-    releaseOnContention = () => { contended = true; clearTimeout(barrierTimer); resolve(); };
-    barrierTimer = setTimeout(() => { serverError = new Error("Native custom-home refresh never contended on the shared lock"); resolve(); }, 20_000);
-  });
-  const beforeConcurrent = generation;
-  rejectCurrentAccess = true;
-  try {
-    await Promise.all([native("synthetic-A", true, execArgs), native("synthetic-B", true, execArgs, customSettings)]);
-    if (serverError) throw serverError;
-    assert.ok(contended, "two actual native settings origins acquired the same MCP refresh lock");
-    assert.equal(generation, beforeConcurrent + 1, "concurrent custom homes rotate a single-use refresh token once");
-  } finally { clearTimeout(barrierTimer); refreshGate = null; releaseOnContention = null; }
+  // Exercise native's expiry transaction. Reactive HTTP-401 refresh has a
+  // separate upstream path and must not be mistaken for this lock oracle.
+  const expired = JSON.parse((await keyring({ operation: "load", server_name: server.name, url: server.url })).value);
+  expired.expires_at = Date.now() - 1_000;
+  await native("synthetic-A", true, ["mcp", "logout", server.name]);
+  assert.equal((await keyring({ operation: "insert-if-absent", server_name: server.name, url: server.url, value: JSON.stringify(expired) })).inserted, true);
+  const contention = [];
+  for (const mode of ["expiry", "reactive401"]) {
+    let contended = false;
+    barrierTimer = undefined;
+    refreshGate = new Promise(resolve => {
+      releaseOnContention = (observed = true) => { contended ||= observed; clearTimeout(barrierTimer); resolve(); };
+    });
+    const beforeConcurrent = generation;
+    rejectCurrentAccess = true;
+    try {
+      // Await both owners even on failure; never restore/close the disposable
+      // backend while another native credential writer is still running.
+      const completed = await Promise.allSettled([native("synthetic-A", true, execArgs), native("synthetic-B", true, execArgs, customSettings)]);
+      if (serverError) throw serverError;
+      for (const result of completed) if (result.status === "rejected") throw result.reason;
+      assert.ok(contended, "two actual native settings origins acquired the same MCP refresh lock");
+      if (mode === "expiry") assert.equal(generation, beforeConcurrent + 1, "expiry contenders adopt one refreshed result");
+      else assert.ok(generation > beforeConcurrent, "reactive refresh succeeds with single-use latest-lineage checks at the issuer");
+      contention.push({ mode, exchanges: generation - beforeConcurrent });
+    } finally { clearTimeout(barrierTimer); refreshGate = null; releaseOnContention = null; }
+  }
   // Native removal is the interoperability/revocation oracle, not the helper.
   await native("synthetic-B", true, ["mcp", "logout", server.name]);
   assert.equal((await keyring({ operation: "load", server_name: server.name, url: server.url })).value, null);
@@ -199,7 +229,7 @@ try {
     assert.ok(!["o_auth", "oauth"].includes(entries.find(entry => entry.name === server.name)?.auth_status), "native restart cannot resurrect removed tokens");
   }
   process.stdout.write(JSON.stringify({ fixture: root, configuredNamePrefix: namePrefix, convertedNativeReads: 3, protectedAccountHomes: 2,
-    nativeRotatingRefreshes: generation, customSettingsRefreshContention: true,
+    nativeRotatingRefreshes: generation, customSettingsRefreshContention: contention,
     nativeLogoutRemovedKey: true, restartsWithoutResurrection: 2 }) + "\n");
 } catch (error) {
   process.stderr.write(`${error.message}; private evidence ${root}\n`); process.exitCode = 1;

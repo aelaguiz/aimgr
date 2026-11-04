@@ -48,7 +48,7 @@ const sessions=path.join(codexHome,"sessions/2026/11/04");fs.mkdirSync(sessions,
 const ids=["33333333-4444-4555-8666-000000000001","33333333-4444-4555-8666-000000000002"];
 for(const [index,provider] of ["lmstudio","ollama"].entries()){
   const stamp="2026-11-04T12:00:00.000Z",id=ids[index];
-  const lines=[{type:"session_meta",payload:{id,session_id:id,timestamp:stamp,cwd,originator:"synthetic",cli_version:"0.163.0-alpha.5",source:"cli",model_provider:provider}},
+  const lines=[{type:"session_meta",payload:{id,session_id:id,timestamp:stamp,cwd,originator:"synthetic",cli_version:"0.166.0",source:"cli",model_provider:provider}},
     {type:"event_msg",payload:{type:"user_message",message:"same-name",kind:"plain"}}];
   fs.writeFileSync(path.join(sessions,`rollout-2026-11-04T12-00-00-${id}.jsonl`),lines.map(v=>JSON.stringify({timestamp:stamp,...v})).join("\n")+"\n");
 }

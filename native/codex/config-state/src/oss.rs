@@ -19,7 +19,7 @@ impl Choice {
     }
 }
 
-// Exact constants from revision 54201ea65a3501d09a87c776376a0c16aa39db70.
+// Exact constants from revision 6ff1e1ca3b30fc8b914720681fcf5fe62e95f856.
 // Importing utils/oss just for this lookup pulls both service-readiness clients
 // and their mock-server dependencies into this finite offline helper.
 pub(super) fn model(provider: &str, explicit: Option<&str>) -> Option<String> {

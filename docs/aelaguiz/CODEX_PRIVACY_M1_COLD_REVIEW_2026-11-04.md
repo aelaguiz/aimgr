@@ -57,3 +57,15 @@ A fresh Sol 6.1 xhigh reviewer examined the entire branch and uncommitted implem
 The reviewer found no M2 proxy scope creep and no justified broad architectural cut. Local auth authority, settings translation/writeback, finite native configuration/state/worktree helpers, vendor/tool OS boundaries and explicit durable MCP maintenance trace to the approved requirements. Three small cuts were applied: the unused raw-document exporter validator, the unused active-home resolver, and the fixture-only alternate keyring transport exported from production. The fixture now owns its direct synthetic keyring calls without a kill timeout on a mutating child. The 23 affected policy, conversion-codec and maintenance-owner unit cases passed.
 
 This completes whole-branch cold source and overbuild review. It does not certify unfinished acceptance: Mac recovery/reboot, additional native workflows, full suite and final evidence reconciliation remain open.
+
+
+## Exact-release follow-up, November 4
+
+A real native reactive-401 refresh test exposed an incorrect package/source pairing. Official alpha.5 maps to `cf4041fa`, not helper source `54201ea`. The release and helper differed in the native coordination default and one state migration, so preceding source conclusions did not establish exact package parity. The cold reviewer confirmed the mismatch against the official tag and compared the existing official 0.166.0 source at `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`.
+
+The accepted correction pairs the official 0.166.0 executables with a helper built from that exact unchanged source. The state source/migrations, worktree implementation, included saved-permission selectors and MCP lock/credential adapter match the preceding helper tree. The obvious AIM-only API adjustment is typed TOML deserialization. The exact release enables stable native MCP coordination by default; the review rejects a refresh broker, permanent feature gate, session-wide lock or workflow restriction. The review also corrects the test oracle: expiry consumers adopt one refreshed result, while reactive-401 consumers may make successive serialized exchanges using the latest credential lineage.
+
+This source follow-up approves the correction path, not milestone readiness. Rebuild and actual native acceptance on both isolated platforms remain required before final signoff.
+
+
+The same cold reviewer subsequently audited the real native/AIM refresh fixture against exact 0.166 source. It found the mismatched auth sidecar and missing native login-owner identity, plus a single-401 false-positive oracle and an incorrect assumption that native performs token-generation CAS. Those have corrections. It required an intermediate AIM commit assertion, real native flock contention, old-owner refusal after re-login/logout, and awaited native exit before teardown. Linux `exec-VBJVLk` observes those cases. Final whole-milestone acceptance remains pending.

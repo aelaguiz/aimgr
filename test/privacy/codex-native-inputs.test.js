@@ -6,7 +6,7 @@ import { codexArguments } from "../../src/privacy/codex-arguments.js";
 
 const secret = "SYNTHETIC_INPUT_SECRET";
 const artifact = { configState: "/approved/config-state", artifactSet: "a".repeat(64) };
-const valid = () => ({ schema: 1, source_revision: "54201ea65a3501d09a87c776376a0c16aa39db70",
+const valid = () => ({ schema: 1, source_revision: "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856",
   cwd: "/work", reads: ["/inputs/instructions"], writes: ["/work"], database_roots: ["/state"],
   database_files: ["/state/state.sqlite"], collectors: [{ kind: "none", provider_destination: false },
     { kind: "none", provider_destination: false }, { kind: "statsig", provider_destination: true }],

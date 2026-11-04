@@ -69,7 +69,7 @@ parser.add_argument('--codex', required=True)
 parser.add_argument('--sha256', required=True)
 parser.add_argument('--aim-root')
 parser.add_argument('--aim-cli', action='store_true')
-parser.add_argument('--phase', choices=['exec', 'tui', 'concurrent-tui', 'features', 'continuity', 'lifetime', 'routine', 'daemon', 'required-failure', 'all'], default='all')
+parser.add_argument('--phase', choices=['exec', 'tui', 'concurrent-tui', 'features', 'continuity', 'rotation', 'lifetime', 'routine', 'daemon', 'required-failure', 'all'], default='all')
 parser.add_argument('--terminal-input', action='store_true')
 parser.add_argument('--prepare-database', action='store_true')
 parser.add_argument('--shared-database', action='store_true')
@@ -78,6 +78,8 @@ parser.add_argument('--mcp-auth', action='store_true')
 args = parser.parse_args()
 if args.aim_cli and (not args.aim_root or args.phase in ['daemon', 'routine'] or args.sandbox_profile):
     raise SystemExit('AIM CLI mode requires --aim-root and a direct workflow phase without an extra sandbox wrapper.')
+if args.phase == 'rotation' and not args.aim_cli:
+    raise SystemExit('Rotation requires the actual AIM CLI driver.')
 node = shutil.which('node') if args.aim_cli else None
 if args.aim_cli and not node:
     raise SystemExit('AIM CLI integration requires the isolated host Node runtime.')
@@ -94,8 +96,8 @@ if digest != args.sha256:
     raise SystemExit('Candidate differs from the exact artifact authorized for this test.')
 helper = binary.with_name('codex-code-mode-host')
 helper_digest = hashlib.sha256(helper.read_bytes()).hexdigest()
-expected_helper = {'Linux': 'd01f7a656bd2a54b26fd99131f252c7371e2e890f3713c5dd977676b54bfb3bf',
-                   'Darwin': '506223f47bf53603026ff6c15f887196a5daabccde036e555cdae4875e4871b0'}
+expected_helper = {'Linux': '657f4e902726e05867c937b583049d5997e057f8cd0ab40450633c9c9ef8d630',
+                   'Darwin': 'fd37051bfdce0b65cf22a7077e265720a7bd6709d5e400dcbc26197f3041400a'}
 if helper_digest != expected_helper[platform.system()]:
     raise SystemExit('This fixture requires the matching reviewed official code-mode helper.')
 if root.exists() and any(root.iterdir()):
@@ -163,6 +165,13 @@ def events(body, case_hint=None):
     cases = [match.group(1) for item in body.get('input', []) if item.get('type') == 'message' and item.get('role') == 'user'
              for part in item.get('content', []) if isinstance(part, dict)
              for match in [re.match(r'PROBE_CASE:([A-Za-z0-9_]+)', part.get('text', ''))] if match]
+    # Native collaboration delivers the child's task as agent_message content.
+    # Our synthetic endpoint sees its literal marker in encrypted_content; no
+    # production encrypted payload or account state is read by this fixture.
+    cases.extend(match.group(1) for item in body.get('input', []) if item.get('type') == 'agent_message'
+                 and item.get('recipient') == '/root/privacy_child'
+                 for part in item.get('content', []) if isinstance(part, dict)
+                 for match in [re.match(r'PROBE_CASE:([A-Za-z0-9_]+)', part.get('encrypted_content', part.get('text', '')))] if match)
     previous = re.match(r'resp_(.+)_\d+$', str(body.get('previous_response_id', '')))
     case = 'TITLE' if title_request else cases[-1] if cases else previous.group(1) if previous else case_hint or 'unknown'
     with state_lock:
@@ -305,7 +314,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))) or '{}')
         self.capture(body)
-        if self.path in ['/mcp', '/ps/mcp']:
+        if self.path in ['/mcp', '/ps/mcp', '/api/codex/ps/mcp']:
             if args.mcp_auth and self.headers.get('Authorization') != 'Bearer synthetic-mcp-token':
                 return self.reply({'error': 'Synthetic MCP authentication required'}, 401)
             if self.path == '/mcp' and args.phase == 'required-failure':
@@ -313,7 +322,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
             if 'id' not in body:
                 return self.reply('', 202)
             result = mcp_result(body, 'http')
-            if self.path == '/ps/mcp' and body.get('method') == 'tools/list':
+            if self.path.endswith('/ps/mcp') and body.get('method') == 'tools/list':
                 result = {'tools': []}
             return self.reply({'jsonrpc': '2.0', 'id': body['id'], 'result': result})
         if 'responses' in self.path:
@@ -321,7 +330,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
         return self.reply({})
     def do_GET(self):
         if self.headers.get('Upgrade', '').lower() != 'websocket':
-            return self.reply({'data': [], 'models': []}, 405 if self.path == '/mcp' else 200)
+            return self.reply({'data': [], 'models': []}, 405 if self.path == '/mcp' or self.path.endswith('/ps/mcp') else 200)
         key = self.headers['Sec-WebSocket-Key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
         self.send_response(101)
         self.send_header('Upgrade', 'websocket')
@@ -386,6 +395,8 @@ for label in ['A', 'B']:
         config += 'bearer_token_env_var="PRIVACY_MCP_TOKEN"\n'
     if args.aim_cli:
         config = 'model_provider="fixture"\nchatgpt_base_url=' + json.dumps(endpoint) + '\n' + config + '\n[model_providers.fixture]\nname="Fixture"\nbase_url=' + json.dumps(endpoint + '/v1') + '\nwire_api="responses"\n'
+    if args.phase == 'rotation':
+        config += 'requires_openai_auth=true\n[profiles.yolo]\nmodel="gpt-6.1-sol"\n'
     (app / 'config.toml').write_text(config)
     # TUI deliberately does not treat an ambient API key as completed login.
     # Install only a synthetic key in the fresh fixture's native credential file;
@@ -483,7 +494,7 @@ def prepare_database(label):
         raise RuntimeError('Native database preparation failed.')
 
 
-def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
+def execute(case, label, tui=False, resume=None, fork=None, history_only=None, rotate=None):
     prompt = 'PROBE_CASE:' + case + ' Use $privacy-proof and both configured MCP echo tools, then do the native shell proof. For FEATURES explicitly spawn and wait for one test subagent.'
     command = [str(binary)]
     if tui:
@@ -496,9 +507,18 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
             command += [prompt]
     else:
         command += ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--json', prompt]
-    command = wrap(command)
+    if rotate:
+        assert tui and resume and args.aim_cli and rotate in ['resume-fresh', 'resume']
+        command = [node, str(Path(args.aim_root).resolve() / 'test/privacy/codex-cli-fixture.mjs'),
+                   '--aim', 'codex', rotate, resume, '--', '--no-daemon', '--no-alt-screen',
+                   '--dangerously-bypass-approvals-and-sandbox']
+        if not args.terminal_input:
+            command.append(prompt)
+    else:
+        command = wrap(command)
     env = env_for(label)
     started = time.monotonic()
+    request_start = len(requests)
     before_requests = sum(s['count'] for c, s in states.items() if c != 'TITLE')
     forced = False
     if not tui:
@@ -599,6 +619,7 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
     if not thread_ids:
         thread_ids = re.findall(r'codex resume ([0-9a-f-]{36})', stdout)
     result = {'case': case, 'mode': 'standalone-tui' if tui else 'native-exec', 'exitCode': code,
+              'requestStart': request_start, 'requestEnd': len(requests),
               'elapsedSeconds': round(time.monotonic() - started, 2), 'threadId': thread_ids[0] if thread_ids else None,
               'projectEditObserved': (project / (case + '.txt')).exists() and (project / (case + '.txt')).read_text() == 'SHELL_PROOF:' + case,
               'finalMessageReceived': 'STANDALONE_DONE:' + (history_only or case) in stdout,
@@ -608,6 +629,12 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
         ['firstRequestSkillLoaded', 'stdioReturned', 'httpReturned', 'shellReturned', 'finished']))
     if case == 'FEATURES':
         result['toolWorkflowPassed'] &= bool(result['model'].get('resourceReturned') and result['model'].get('subagentReturned'))
+    if rotate:
+        result['manualWarningPresent'] = 'WARNING:' in stdout and 'links the two accounts' in stdout
+        if rotate == 'resume-fresh':
+            fresh = re.findall(r'\[aim\] new thread ([0-9a-f-]{36}) from', stdout)
+            if fresh:
+                result['threadId'] = fresh[0]
     if case == 'DAEMON_CONTROL':
         result['officialClientReachedNativeSocket'] = bool(daemon_connections)
         result['toolWorkflowPassed'] = bool(daemon_connections) and not forced
@@ -697,7 +724,8 @@ try:
     if args.aim_cli:
         for label in homes:
             prepared = subprocess.run([node, str(Path(args.aim_root).resolve() / 'test/privacy/codex-cli-fixture.mjs'),
-                '--prepare', label], env=env_for(label), cwd=project, capture_output=True, text=True, check=True)
+                '--prepare', label, *(['--pool'] if args.phase == 'rotation' and label == 'A' else [])],
+                env=env_for(label), cwd=project, capture_output=True, text=True, check=True)
             aim_prepared[label] = json.loads(prepared.stdout)
     if args.prepare_database:
         for label in homes:
@@ -727,6 +755,42 @@ try:
         results[-1]['forkRestoredHistory'] = results[-1]['model'].get('priorSeedResponsePresent', False)
         results[-2]['toolWorkflowPassed'] &= results[-2]['sameThreadPreserved']
         results[-1]['toolWorkflowPassed'] &= results[-1]['forkHasNewThread'] and results[-1]['forkRestoredHistory']
+    if args.phase == 'rotation':
+        seed = execute('SEED', 'A')
+        results.append(seed)
+        if not seed['toolWorkflowPassed'] or not seed['threadId']:
+            raise RuntimeError('Cannot test rotation without a successful seed.')
+        fresh = execute('FRESH', 'A', tui=True, resume=seed['threadId'], rotate='resume-fresh')
+        results.append(fresh)
+        if not fresh['toolWorkflowPassed'] or not fresh['threadId']:
+            raise RuntimeError('Cannot test manual rotation without a successful fresh continuation.')
+        manual = execute('MANUAL', 'A', tui=True, resume=fresh['threadId'], rotate='resume')
+        results.append(manual)
+        for row, expected_label, fresh_identity in [(seed, 'a', False), (fresh, 'b', True), (manual, 'a', False)]:
+            captured = [request for request in requests[row['requestStart']:row['requestEnd']] if 'responses' in request['path']]
+            account = aim_prepared['A']['accounts'][expected_label]
+            if not captured:
+                raise RuntimeError('Missing captured continuation requests.')
+            for request in captured:
+                headers = {key.lower(): value for key, value in request['headers'].items()}
+                if headers.get('chatgpt-account-id') != account['accountId']:
+                    raise RuntimeError('Continuation used the wrong underlying account.')
+                claims = json.loads(base64.urlsafe_b64decode(headers['authorization'].split('.')[1] + '==='))
+                if claims['https://api.openai.com/auth']['chatgpt_account_id'] != account['accountId']:
+                    raise RuntimeError('Continuation used the wrong local bearer.')
+                metadata = request['body'].get('client_metadata', {})
+                if metadata.get('x-codex-installation-id') != account['installationId']:
+                    raise RuntimeError('Continuation used the wrong installation identity.')
+                wire = json.dumps({'headers': headers, 'metadata': metadata})
+                if fresh_identity and seed['threadId'] in wire:
+                    raise RuntimeError('Rotated continuation sent the source thread identity.')
+                if row['threadId'] not in wire:
+                    raise RuntimeError('Captured request lacks the selected thread identity.')
+            row['capturedAccountAndIdentityPassed'] = True
+        fresh['newThreadWithHistory'] = bool(fresh['threadId'] and fresh['threadId'] != seed['threadId'] and fresh['model'].get('priorSeedResponsePresent'))
+        manual['originalThreadWithWarning'] = manual['threadId'] == fresh['threadId'] and manual['manualWarningPresent']
+        fresh['toolWorkflowPassed'] &= fresh['newThreadWithHistory']
+        manual['toolWorkflowPassed'] &= manual['originalThreadWithWarning']
     if args.phase in ['all', 'lifetime']:
         results.append(execute('OWNER', 'A', tui=True))
         results.append(execute('KILLED', 'B', tui=True))

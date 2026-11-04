@@ -32,7 +32,7 @@ unsafe extern "C" {
 }
 
 type Result<T> = std::result::Result<T, ()>;
-const REVISION: &str = "54201ea65a3501d09a87c776376a0c16aa39db70";
+const REVISION: &str = "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -268,10 +268,9 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
     let database_roots = database_files.iter().filter_map(|p| p.parent().map(std::path::Path::to_path_buf)).collect();
     let collectors = [&config.otel.exporter, &config.otel.trace_exporter, &config.otel.metrics_exporter]
         .map(|value| collector(value, &mut reads)).into();
-    // This library is built as 0.0.0; its final Config rewrites keyring modes
-    // to File for local development. Read the unchanged native typed input
-    // instead: the admitted official release does not apply that rewrite.
-    let authored = codex_config::config_toml::ConfigToml::try_from(config.config_layer_stack.effective_config()).map_err(|_| ())?;
+    // Read the native typed authored mode; this also avoids any development
+    // build fallback being mistaken for the official release's selected store.
+    let authored: codex_config::config_toml::ConfigToml = config.config_layer_stack.effective_config().try_into().map_err(|_| ())?;
     Ok(Projection { schema: 1, source_revision: REVISION, cwd: config.cwd.to_path_buf(), reads, writes,
         database_roots, database_files, collectors, analytics_disabled: config.analytics_enabled == Some(false),
         feedback_disabled: !config.feedback_enabled, updates_disabled: !config.check_for_update_on_startup,
@@ -457,8 +456,7 @@ async fn run_selected(request: &Request, phase: &mut &'static str) -> Result<Pro
     }
     if !matches!(request.operation, Operation::Inputs) {
         // Admission precedes any native database mutation. Credential backend
-        // authority is intentionally separate from this development library
-        // build, whose 0.0.0 version changes native keyring defaults.
+        // authority is independently checked from native authored inputs.
         if !output.analytics_disabled || !output.feedback_disabled || !output.updates_disabled
             || output.collectors.iter().enumerate().any(|(i, c)| c.provider_destination && !(i == 2 && c.kind == "statsig")) { return Err(()); }
     }

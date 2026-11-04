@@ -4,11 +4,11 @@ This is an AIM executable linked to the unchanged upstream libraries identified
 in `source.json`. It is paired with the official package by the runtime's
 content-addressed approval manifest. It does not replace or modify Codex.
 
-Build only on the isolated development hosts. With a source checkout at the
-reviewed commit, produce the input archive without including untracked state:
+Build only on the isolated development hosts. Download the exact official
+release source archive; `prepare-source.py` verifies its recorded digest:
 
 ```sh
-git -C /path/to/codex archive --format=tar.gz 54201ea65a3501d09a87c776376a0c16aa39db70 > codex-source.tar.gz
+curl --fail --location https://github.com/openai/codex/archive/refs/tags/rust-v0.166.0.tar.gz -o codex-source.tar.gz
 python3 prepare-source.py codex-source.tar.gz
 cargo build --locked --release -j 1
 ```
@@ -19,6 +19,11 @@ included in account-state transfer. Linux builds need the platform's C compiler,
 pkg-config, OpenSSL development headers and the upstream native dependencies.
 macOS builds use the platform SDK. The final installer hashes the built helper
 alongside the unchanged official vendor executables.
+
+The approved pair is official Codex 0.166.0 and its release commit
+`6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. A source checkout's embedded
+development version is not release provenance; pair by the release tag/commit
+and published binary digests. Native acceptance is rerun when this pair changes.
 
 The package also builds `aimgr-codex-worktree`, a separate finite executable for
 the explicitly requested Git checkout operation and native ownership binding.

@@ -8,7 +8,7 @@ import { main } from "../../src/cli/main.js";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
-import { saveLocalCodexLogin } from "../../src/credentials/codex-local.js";
+import { saveLocalCodexLogin, readLocalCodexCredential } from "../../src/credentials/codex-local.js";
 import { prepareCodexAccountState } from "../../src/privacy/codex-account-state.js";
 import { readCodexEnvironment } from "../../src/privacy/codex-environment.js";
 
@@ -20,32 +20,51 @@ assert.ok(homeDir.startsWith(base + "/"));
 const file = path.join(homeDir, "aim-synthetic-account.json");
 const keyPrefix = "aimgr:synthetic-native-cli";
 if (process.argv[2] === "--prepare") {
-  assert.equal(process.argv.length, 4);
-  const label = process.argv[3].toLowerCase(), accountId = "synthetic-cli-" + label;
-  assert.match(label, /^[ab]$/);
-  const claims = { exp: Math.floor(Date.now() / 1000) + 6 * 3600,
-    "https://api.openai.com/auth": { chatgpt_account_id: accountId, chatgpt_plan_type: "plus", chatgpt_user_id: "synthetic-user" } };
-  const access = `synthetic.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
+  assert.ok(process.argv.length === 4 || process.argv.length === 5 && process.argv[4] === "--pool");
+  const selected = process.argv[3].toLowerCase();
+  assert.match(selected, /^[ab]$/);
+  const labels = process.argv[4] ? ["a", "b"] : [selected], prepared = {};
   const environment = readCodexEnvironment();
-  saveLocalCodexLogin({ homeDir, env: process.env, accountId, environment },
-    { access, idToken: access, refresh: "SYNTHETIC_LOCAL_REFRESH_" + label, accountId });
-  const prepared = prepareCodexAccountState({ homeDir, env: process.env, accountId, environment, label });
-  fs.writeFileSync(file, JSON.stringify({ label, accountId }), { mode: 0o600, flag: "wx" });
+  for (const label of labels) {
+    const accountId = "synthetic-cli-" + label;
+    const claims = { exp: Math.floor(Date.now() / 1000) + 6 * 3600,
+      "https://api.openai.com/auth": { chatgpt_account_id: accountId, chatgpt_plan_type: "plus", chatgpt_user_id: "synthetic-user" } };
+    const access = `synthetic.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
+    saveLocalCodexLogin({ homeDir, env: process.env, accountId, environment },
+      { access, idToken: access, refresh: "SYNTHETIC_LOCAL_REFRESH_" + label, accountId });
+    prepared[label] = prepareCodexAccountState({ homeDir, env: process.env, accountId, environment, label });
+  }
+  fs.writeFileSync(file, JSON.stringify({ label: selected, labels }), { mode: 0o600, flag: "wx" });
   writeAimgrConfig({ homeDir, config: { redis: { url: "redis://synthetic.invalid:6379", keyPrefix } } });
-  process.stdout.write(JSON.stringify({ codexHome: prepared.codexHome, installationId: prepared.installationId }) + "\n");
+  process.stdout.write(JSON.stringify({ codexHome: prepared[selected].codexHome, installationId: prepared[selected].installationId,
+    accounts: Object.fromEntries(Object.entries(prepared).map(([label, value]) => [label,
+      { codexHome: value.codexHome, installationId: value.installationId, accountId: value.accountId }])) }) + "\n");
 } else {
-  assert.equal(process.argv[2], "--");
-  const { label, accountId } = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.ok(["--", "--aim"].includes(process.argv[2]));
+  const { label, labels } = JSON.parse(fs.readFileSync(file, "utf8"));
   const client = new FakeRedisClient(), store = await connectRedisStore({ client, keyPrefix });
-  await importCredentialsSnapshot(store, { credentials: [{ provider: "openai-codex", label, identity: { accountId },
+  await importCredentialsSnapshot(store, { credentials: labels.map(label => {
+    const accountId = "synthetic-cli-" + label;
+    return { provider: "openai-codex", label, identity: { accountId },
     credential: { access: "SYNTHETIC_FOREIGN_ACCESS", refresh: "SYNTHETIC_FOREIGN_REFRESH", accountId },
-    policy: { pool: { enabled: true } }, health: { status: "ready", reason: null } }] },
+    policy: { pool: { enabled: true } }, health: { status: "ready", reason: null } }; }) },
     { updatedBy: "synthetic", observedAt: new Date().toISOString() });
-  const recordKey = store.keys.credential({ provider: "openai-codex", label });
-  const before = await client.get(recordKey);
-  await main(["codex", "run", label, "--home", homeDir, "--", ...process.argv.slice(3)], {
+  const recordKeys = labels.map(label => store.keys.credential({ provider: "openai-codex", label }));
+  const before = await Promise.all(recordKeys.map(key => client.get(key)));
+  const command = process.argv[2] === "--" ? ["codex", "run", label, "--", ...process.argv.slice(3)] : process.argv.slice(3);
+  await main(["--home", homeDir, ...command], {
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix }),
-    fetchJsonWithTimeoutImpl: async () => { throw new Error("Unexpected AIM auth or usage request in fresh explicit-account fixture"); },
+    fetchJsonWithTimeoutImpl: async (url, request) => {
+      assert.equal(url, "https://chatgpt.com/backend-api/wham/usage");
+      const accountId = request.headers["ChatGPT-Account-Id"];
+      assert.ok(labels.some(label => accountId === "synthetic-cli-" + label));
+      const local = readLocalCodexCredential({ homeDir, env: process.env, accountId, environment: readCodexEnvironment() });
+      assert.equal(request.headers.Authorization, "Bearer " + local.credential.access);
+      fs.appendFileSync(path.join(homeDir, "aim-usage.private.jsonl"), JSON.stringify({ accountId, localAuthority: true }) + "\n", { mode: 0o600 });
+      return { ok: true, status: 200, json: async () => ({ plan_type: "plus", rate_limit: { allowed: true,
+        primary_window: { used_percent: 1, limit_window_seconds: 18000, reset_at: Math.floor(Date.now() / 1000) + 3600 } } }) };
+    },
   });
-  assert.equal(await client.get(recordKey), before, "native launch never publishes local primary credentials into Redis");
+  assert.deepEqual(await Promise.all(recordKeys.map(key => client.get(key))), before,
+    "native launch never publishes local primary credentials into Redis");
 }

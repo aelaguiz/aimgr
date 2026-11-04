@@ -145,12 +145,13 @@ def settings_replaceable(file):
 
 
 def auth_commit(request):
-    # Upstream uses a stable auth.json.lock sidecar and flock on Unix.
+    # The admitted native release locks CODEX_HOME/auth.lock. Each private
+    # home links that name to this stable account-wide inode.
     target = Path(request['path']).resolve(strict=False)
     owner_expected = request['owner']
-    if target.name != 'auth.json' or str(target.parent) != request['accountRoot']:
+    if target.name != 'auth.json' or target.parent != Path(request['accountRoot']).resolve():
         raise RuntimeError('Primary auth target is outside its account')
-    lock = os.open(str(target) + '.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    lock = os.open(target.parent / 'auth.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         info = os.fstat(lock)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
@@ -210,14 +211,22 @@ def auth_commit(request):
         if payload.get('tokens', {}).get('account_id') != owner['accountId']:
             raise RuntimeError('Primary auth account mismatch')
         if mode == 'login':
+            login_owner = str(uuid.uuid4())
+            payload['tokens']['login_owner_id'] = login_owner
             # Remove stale provenance BEFORE replacing auth: interruption at
             # either boundary leaves an unproven grant, requiring a new login.
             if grant_file.exists():
                 grant_file.unlink()
                 flush_parent(grant_file)
             atomic_json(target, payload)
-            atomic_json(grant_file, {**owner, 'source': 'manual-oauth', 'id': str(uuid.uuid4())})
+            atomic_json(grant_file, {**owner, 'source': 'manual-oauth', 'id': login_owner})
         else:
+            # Native uses this identity to reject refreshes from an older
+            # login, including another login to the same underlying account.
+            payload = {**parsed, **payload, 'tokens': {**parsed['tokens'], **payload['tokens']}}
+            # An issuer-specific proof about the previous refresh token is
+            # not proof about this newly returned token.
+            payload['tokens'].pop('oauth_provenance', None)
             atomic_json(target, payload)
             if 'failedGeneration' in grant:
                 del grant['failedGeneration']

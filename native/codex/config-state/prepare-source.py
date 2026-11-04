@@ -12,7 +12,7 @@ import tarfile
 import tempfile
 
 parser = argparse.ArgumentParser()
-parser.add_argument('archive', type=Path, help='git archive --format=tar.gz of source.json revision')
+parser.add_argument('archive', type=Path, help='official release source archive identified by source.json')
 args = parser.parse_args()
 root = Path(__file__).resolve().parent
 source = json.loads((root / 'source.json').read_text())
@@ -37,10 +37,12 @@ with tempfile.TemporaryDirectory(prefix='.source-', dir=vendor) as temporary:
             relative = Path(member.name)
             if relative.is_absolute() or '..' in relative.parts or member.isdev() or member.isfifo():
                 raise SystemExit('Unexpected upstream archive member.')
+            if relative.parts[0] != source['archivePrefix']:
+                raise SystemExit('Unexpected upstream archive root.')
             if member.issym() or member.islnk():
                 target = (stage / relative.parent / member.linkname).resolve()
                 if stage.resolve() not in target.parents:
                     raise SystemExit('Unexpected upstream archive link.')
         archive.extractall(stage)
-    stage.rename(destination)
+    (stage / source['archivePrefix']).rename(destination)
 print('Prepared unchanged upstream source ' + source['revision'])

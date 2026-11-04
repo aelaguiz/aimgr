@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Exact official client, synthetic model server, and synthetic account only.
-// This fixture cannot run outside the offsite host's loopback-only namespace.
+// Linux uses the offsite loopback-only namespace; the rented Mac retains its
+// independent outbound deny policy. Every service here terminates locally.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -10,45 +11,61 @@ import https from "node:https";
 import zlib from "node:zlib";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer } from "ws";
+import { Agent, fetch as fixtureFetch } from "undici";
 import { readCodexEnvironment } from "../src/privacy/codex-environment.js";
-import { saveLocalCodexLogin } from "../src/credentials/codex-local.js";
+import { saveLocalCodexLogin, maintainLocalCodexCredential, logoutLocalCodexCredential, readLocalCodexCredential } from "../src/credentials/codex-local.js";
 import { prepareCodexAccountState } from "../src/privacy/codex-account-state.js";
 import { prepareCodexNativeInvocation } from "../src/privacy/codex-native-invocation.js";
 
 const base = "/opt/aimgr-state-audit";
 assert.ok(fs.existsSync(path.join(base, "OFFSITE_AUDIT_HOST")) && process.getuid() !== 0);
-assert.equal(process.platform, "linux");
-assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
+assert.ok(["linux", "darwin"].includes(process.platform));
+if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
 const root = fs.mkdtempSync(path.join(base, "codex-m1-fixtures", "exec-"));
 const certificate = path.join(root, "loopback-cert.pem"), certificateKey = path.join(root, "loopback-key.pem");
 const authority = path.join(root, "authority.pem"), authorityKey = path.join(root, "authority-key.pem");
+const authorityConfig = path.join(root, "authority.cnf");
 const requestFile = path.join(root, "loopback.csr"), extensions = path.join(root, "loopback.ext");
 const openssl = args => execFileSync("openssl", args, { stdio: "ignore" });
-openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=Synthetic AIM test authority",
-  "-addext", "basicConstraints=critical,CA:TRUE", "-keyout", authorityKey, "-out", authority]);
+fs.writeFileSync(authorityConfig, "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=Synthetic AIM test authority\n[ext]\nbasicConstraints=critical,CA:TRUE\n");
+openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-config", authorityConfig,
+  "-keyout", authorityKey, "-out", authority]);
 openssl(["req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1",
   "-keyout", certificateKey, "-out", requestFile]);
 fs.writeFileSync(extensions, "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1\n");
 openssl(["x509", "-req", "-in", requestFile, "-CA", authority, "-CAkey", authorityKey, "-set_serial", "1",
   "-days", "1", "-extfile", extensions, "-out", certificate]);
-openssl(["verify", "-CAfile", authority, "-purpose", "sslserver", "-verify_ip", "127.0.0.1", certificate]);
+openssl(["verify", "-CAfile", authority, "-purpose", "sslserver", certificate]);
 const privateFile = path.join(root, "ordinary-tool-input.txt");
 const canary = "SYNTHETIC_ORDINARY_TOOL_ACCESS";
 fs.writeFileSync(privateFile, canary, { mode: 0o600 });
 const shellQuote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-const toolScript = `import json,os,pathlib,platform,subprocess; print(json.dumps({"canary":pathlib.Path(${JSON.stringify(privateFile)}).read_text(),"release":platform.release(),"lsb":subprocess.check_output(["lsb_release","-rs"],text=True).strip(),"sdk_key":os.environ["OPENAI_API_KEY"]})); pathlib.Path("tool-output.txt").write_text("tool write succeeded")`;
+const versionProbe = process.platform === "darwin" ? ["sw_vers", "-productVersion"] : ["lsb_release", "-rs"];
+const toolScript = `import json,os,pathlib,platform,subprocess; print(json.dumps({"canary":pathlib.Path(${JSON.stringify(privateFile)}).read_text(),"release":platform.release(),"os_version":subprocess.check_output(${JSON.stringify(versionProbe)},text=True).strip(),"sdk_key":os.environ["OPENAI_API_KEY"]})); pathlib.Path("tool-output.txt").write_text("tool write succeeded")`;
 const command = "/usr/bin/python3 -c " + shellQuote(toolScript);
 const created = id => ({ type: "response.created", response: { id } });
 const completed = id => ({ type: "response.completed", response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
 const done = item => ({ type: "response.output_item.done", item });
 
 async function run(protectedLaunch, alias = false, builtin = null) {
+  const replacedLogin = ["relogin", "logout"].includes(builtin);
+  const lockProbe = builtin === "native-lock";
+  const race = ["native-first", "aim-first"].includes(builtin) || replacedLogin || lockProbe;
+  const needsRefresh = builtin === "refresh" || race;
   const name = (protectedLaunch ? "protected" : "control") + (alias ? "-alias" : "") + (builtin ? "-builtin-" + builtin : "");
   const homeDir = path.join(root, name, "home"), cwd = path.join(root, name, "project");
   fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true, mode: 0o700 }); fs.mkdirSync(cwd);
   const requests = [], errors = [], output = [], metadataRequests = [];
-  let serverError, refreshes = 0, rejectedInitialAuth = false;
+  let serverError, asyncError, refreshes = 0, rejectedInitialAuth = 0, aimTask, raceController;
+  let releaseAim, releaseNative, aimEntered, nativeEntered;
+  const aimGate = new Promise(resolve => { releaseAim = resolve; });
+  const nativeGate = new Promise(resolve => { releaseNative = resolve; });
+  const aimWaiting = new Promise(resolve => { aimEntered = resolve; });
+  const nativeWaiting = new Promise(resolve => { nativeEntered = resolve; });
+  const observe = pending => pending.catch(error => { asyncError ??= error; aimEntered(); releaseAim(); releaseNative(); });
+  const dispatcher = new Agent({ connect: { ca: fs.readFileSync(authority) } });
   const frames = (req, body, transport) => {
     if (body.generate === false) return [created("synthetic-prewarm"), completed("synthetic-prewarm")];
     requests.push({ headers: req.headers, url: req.url, body, transport });
@@ -89,18 +106,26 @@ async function run(protectedLaunch, alias = false, builtin = null) {
       let bytes = Buffer.concat(chunks);
       if (req.headers["content-encoding"] === "gzip") bytes = zlib.gunzipSync(bytes);
       else if (req.headers["content-encoding"] === "zstd") bytes = zlib.zstdDecompressSync(bytes);
-      const body = JSON.parse(bytes.toString());
-      if (builtin === "refresh" && req.url === "/oauth/token") {
+      const fromAim = req.headers["content-type"]?.includes("application/x-www-form-urlencoded");
+      const body = fromAim ? Object.fromEntries(new URLSearchParams(bytes.toString())) : JSON.parse(bytes.toString());
+      if (needsRefresh && req.url === "/oauth/token") {
         assert.equal(body.grant_type, "refresh_token");
         assert.equal(body.refresh_token, "SYNTHETIC_REFRESH");
-        assert.equal(refreshes++, 0, "single-use primary refresh token is exchanged once");
+        refreshes++;
+        if (!race) assert.equal(refreshes, 1, "single-use primary refresh token is exchanged once");
+        else {
+          assert.ok(refreshes <= 2, "the CAS fixture has exactly two successful in-flight responses");
+          if (fromAim) { aimEntered(); if (builtin === "native-first") await aimGate; }
+          else { nativeEntered(); if (builtin !== "native-first") await nativeGate; }
+        }
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ access_token: rotatedToken, id_token: rotatedToken,
-          refresh_token: "SYNTHETIC_ROTATED_REFRESH" })); return;
+        res.end(JSON.stringify({ access_token: fromAim ? aimToken : rotatedToken, id_token: fromAim ? aimToken : rotatedToken,
+          refresh_token: fromAim ? "SYNTHETIC_AIM_REFRESH" : "SYNTHETIC_ROTATED_REFRESH" })); return;
       }
-      if (builtin === "refresh" && req.url === "/responses" && !refreshes) {
-        assert.equal(req.headers.authorization, "Bearer " + token);
-        rejectedInitialAuth = true;
+      if (needsRefresh && req.url === "/responses" && req.headers.authorization === "Bearer " + token) {
+        // Native first reloads storage after a 401, then refreshes after the
+        // unchanged bearer is refused again. Never accept the reload retry.
+        assert.ok(++rejectedInitialAuth <= 3, "bounded native unauthorized recovery");
         res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":{"message":"synthetic expired access"}}'); return;
       }
       const events = frames(req, body, "http");
@@ -136,9 +161,9 @@ async function run(protectedLaunch, alias = false, builtin = null) {
   if (alias) {
     const bin = path.join(homeDir, "bin"), libexec = path.join(homeDir, "libexec");
     fs.mkdirSync(bin); fs.mkdirSync(libexec);
-    fs.copyFileSync("/usr/bin/lsb_release", path.join(libexec, "distribution-info"));
+    fs.copyFileSync("/usr/bin/" + versionProbe[0], path.join(libexec, "distribution-info"));
     fs.chmodSync(path.join(libexec, "distribution-info"), 0o700);
-    fs.symlinkSync(path.join(libexec, "distribution-info"), path.join(bin, "lsb_release"));
+    fs.symlinkSync(path.join(libexec, "distribution-info"), path.join(bin, versionProbe[0]));
     env.PATH = bin + ":" + env.PATH;
   }
   const environment = readCodexEnvironment(), accountId = `synthetic-${name}`;
@@ -147,34 +172,105 @@ async function run(protectedLaunch, alias = false, builtin = null) {
   } };
   const token = `synthetic.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
   const rotatedToken = `synthetic.${Buffer.from(JSON.stringify({ ...claims, synthetic_rotation: 1 })).toString("base64url")}.signature`;
-  if (builtin === "refresh") env.CODEX_REFRESH_TOKEN_URL_OVERRIDE = address + "/oauth/token";
+  const aimToken = `synthetic.${Buffer.from(JSON.stringify({ ...claims, synthetic_rotation: "aim" })).toString("base64url")}.signature`;
+  const expectedToken = needsRefresh ? rotatedToken : token;
+  if (needsRefresh) env.CODEX_REFRESH_TOKEN_URL_OVERRIDE = address + "/oauth/token";
   const foreignAuth = JSON.stringify({ OPENAI_API_KEY: "SYNTHETIC_FOREIGN_DESKTOP_KEY" });
   fs.writeFileSync(path.join(homeDir, ".codex/auth.json"), foreignAuth, { mode: 0o600 });
   const options = { homeDir, env, environment, accountId, label: name };
   saveLocalCodexLogin(options, { access: token, idToken: token, refresh: "SYNTHETIC_REFRESH", accountId });
   const prepared = prepareCodexAccountState(options);
+  const initialOwner = JSON.parse(readLocalCodexCredential(options).raw).tokens.login_owner_id;
+  assert.ok(initialOwner);
+  const refreshAim = () => maintainLocalCodexCredential(options, { refreshBeforeMs: Infinity,
+    fetchJsonWithTimeoutImpl: async (url, request) => {
+      assert.equal(url, "https://auth.openai.com/oauth/token");
+      return fixtureFetch(address + "/oauth/token", { ...request, dispatcher, signal: AbortSignal.timeout(25_000) });
+    } });
   const args = ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "Perform the synthetic tool check."];
-  let invocation, child, timer;
+  let invocation, child, childDone, timer, lockHolder, lockHolderDone, kernelWaitObserved = false;
   try {
     invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin", "codex"), homeDir, cwd, env, args });
+    if (builtin === "native-first") { aimTask = observe(refreshAim()); await aimWaiting; if (asyncError) throw asyncError; }
     child = spawn(protectedLaunch ? invocation.command : path.join(base, "bin", "codex"), protectedLaunch ? invocation.args : args, {
       cwd: invocation.cwd, env: protectedLaunch ? invocation.env : invocation.environment, detached: true,
       stdio: ["ignore", "pipe", "pipe", ...(protectedLaunch ? [invocation.environmentFd] : [])] });
+    childDone = once(child, "close");
     invocation.closeEnvironment?.();
+    if (race && builtin !== "native-first") raceController = observe((async () => {
+      const started = await Promise.race([nativeWaiting.then(() => true), childDone.then(() => false)]);
+      if (started) try {
+        if (builtin === "aim-first") {
+          const result = await refreshAim();
+          assert.equal(result.status, "ready");
+          assert.equal(result.credential.access, aimToken);
+          const stored = JSON.parse(readLocalCodexCredential(options).raw);
+          assert.equal(stored.tokens.access_token, aimToken);
+          assert.equal(stored.tokens.refresh_token, "SYNTHETIC_AIM_REFRESH");
+          assert.equal(stored.tokens.login_owner_id, initialOwner);
+        } else if (builtin === "relogin") {
+          const next = saveLocalCodexLogin(options, { access: aimToken, idToken: aimToken,
+            refresh: "SYNTHETIC_NEW_LOGIN_REFRESH", accountId });
+          assert.notEqual(JSON.parse(next.raw).tokens.login_owner_id, initialOwner);
+        } else if (builtin === "logout") {
+          assert.ok(logoutLocalCodexCredential(options).committed);
+        } else if (lockProbe) {
+          const lock = path.join(prepared.accountRoot, "auth.lock"), inode = fs.statSync(lock).ino;
+          lockHolder = spawn("/usr/bin/python3", ["-I", "-c",
+            "import fcntl,sys; f=open(sys.argv[1],'r+'); fcntl.flock(f,fcntl.LOCK_EX); print('held',flush=True); sys.stdin.read()", lock],
+            { env, stdio: ["pipe", "pipe", "pipe"] });
+          lockHolderDone = once(lockHolder, "close");
+          assert.equal((await once(lockHolder.stdout, "data"))[0].toString().trim(), "held");
+          releaseNative();
+          if (process.platform === "linux") {
+            const deadline = Date.now() + 5000;
+            while (Date.now() < deadline && !kernelWaitObserved) {
+              kernelWaitObserved = fs.readFileSync("/proc/locks", "utf8").split("\n").some(line =>
+                line.includes("-> FLOCK") && line.split(/\s+/)[6]?.endsWith(":" + inode));
+              if (!kernelWaitObserved) await delay(25);
+            }
+            assert.ok(kernelWaitObserved, "actual native refresh must wait on the canonical flock inode");
+          } else await delay(500);
+          assert.equal(JSON.parse(readLocalCodexCredential(options).raw).tokens.access_token, token);
+          assert.equal(requests.length, 0, "native cannot continue before its credential commit");
+          lockHolder.stdin.end(); await lockHolderDone;
+          assert.equal(fs.statSync(lock).ino, inode);
+        }
+      } finally { releaseNative(); lockHolder?.stdin.end(); }
+    })());
     child.stdout.on("data", bytes => output.push(bytes)); child.stderr.on("data", bytes => errors.push(bytes));
     timer = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 40_000);
-    const [code, signal] = await once(child, "close");
+    const [code, signal] = await childDone;
     clearTimeout(timer);
+    releaseAim(); await aimTask; await raceController;
+    if (asyncError) throw asyncError;
     fs.writeFileSync(path.join(root, `${name}-requests.json`), JSON.stringify(requests, null, 2), { mode: 0o600 });
     fs.writeFileSync(path.join(root, `${name}-metadata.json`), JSON.stringify(metadataRequests, null, 2), { mode: 0o600 });
     fs.writeFileSync(path.join(root, `${name}-stdout.log`), Buffer.concat(output), { mode: 0o600 });
     fs.writeFileSync(path.join(root, `${name}-stderr.log`), Buffer.concat(errors), { mode: 0o600 });
     if (serverError) throw serverError;
+    if (replacedLogin) {
+      assert.notEqual(code, 0, "old native refresh must fail across a login boundary");
+      assert.equal(signal, null);
+      assert.equal(refreshes, 1);
+      assert.equal(requests.length, 0);
+      const current = readLocalCodexCredential(options);
+      if (builtin === "relogin") {
+        assert.equal(current.credential.access, aimToken);
+        assert.equal(current.credential.refresh, "SYNTHETIC_NEW_LOGIN_REFRESH");
+        assert.notEqual(JSON.parse(current.raw).tokens.login_owner_id, initialOwner);
+      } else {
+        assert.equal(current.status, "login_required");
+        assert.equal(current.raw, null);
+      }
+      assert.equal(fs.readFileSync(path.join(homeDir, ".codex/auth.json"), "utf8"), foreignAuth);
+      return { name, staleNativeRefreshRefused: true, primaryRefreshes: refreshes };
+    }
     assert.equal(code, 0, `${name} exit=${code}, signal=${signal}; private evidence ${root}`);
     assert.equal(requests.length, 2);
     if (builtin) for (const request of requests) {
       assert.equal(request.transport, builtin === "websocket" ? "websocket" : "http");
-      assert.equal(request.headers.authorization, "Bearer " + (builtin === "refresh" ? rotatedToken : token), "native file auth wins over the independent SDK key");
+      assert.equal(request.headers.authorization, "Bearer " + expectedToken, "native file auth wins over the independent SDK key");
       assert.equal(request.headers["chatgpt-account-id"], accountId);
       assert.equal(request.body.client_metadata["x-codex-installation-id"], prepared.installationId);
       assert.equal(JSON.parse(request.body.client_metadata["x-codex-turn-metadata"]).installation_id, prepared.installationId);
@@ -185,27 +281,40 @@ async function run(protectedLaunch, alias = false, builtin = null) {
     assert.ok(JSON.stringify(toolOutput).includes(os.release()), "ordinary tool retains actual uname");
     assert.equal(fs.readFileSync(path.join(cwd, "tool-output.txt"), "utf8"), "tool write succeeded");
     assert.equal(fs.readFileSync(path.join(homeDir, ".codex/auth.json"), "utf8"), foreignAuth);
-    if (builtin === "refresh") {
-      assert.ok(rejectedInitialAuth); assert.equal(refreshes, 1);
+    if (needsRefresh) {
+      assert.ok(rejectedInitialAuth); assert.equal(refreshes, race && !lockProbe ? 2 : 1);
       const auth = JSON.parse(fs.readFileSync(path.join(prepared.accountRoot, "auth.json"), "utf8"));
-      assert.equal(auth.tokens.access_token, rotatedToken);
+      assert.equal(auth.tokens.access_token, expectedToken);
       assert.equal(auth.tokens.refresh_token, "SYNTHETIC_ROTATED_REFRESH");
+      assert.equal(auth.tokens.login_owner_id, initialOwner);
     }
     return { name, modelRequests: requests.length, ordinaryFileAccess: true, ordinaryUname: true, ordinarySdkKey: true,
-      installationId: prepared.installationId, primaryRefreshes: refreshes,
+      installationId: prepared.installationId, primaryRefreshes: refreshes, kernelWaitObserved,
       optionalEndpointsNotProvided: metadataRequests.filter(r => r.notFound).map(r => r.url),
       userAgent: requests[0].headers["user-agent"] };
   } finally {
     clearTimeout(timer);
+    releaseAim(); releaseNative();
+    lockHolder?.stdin.end();
     if (child && child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
+    await Promise.allSettled([childDone, aimTask, raceController, lockHolderDone]);
     await invocation?.close?.();
     for (const socket of websockets.clients) socket.terminate();
     websockets.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    await dispatcher.close();
   }
 }
 
 try {
-  if (process.argv.includes("--builtin-only")) {
+  if (process.argv.includes("--auth-races")) {
+    const results = [];
+    // Both successful responses originate from the same snapshot, modeling
+    // issuer overlap/grace. AIM keeps its byte CAS; native permits a later successful response
+    // from the same login. This does not assert provider grace policy;
+    // MCP's separate issuer fixture enforces single-use refresh tokens.
+    for (const order of ["native-first", "aim-first", "relogin", "logout", "native-lock"]) results.push(await run(true, false, order));
+    process.stdout.write(JSON.stringify({ fixture: root, results: results.map(row => ({ ...row, userAgent: undefined })) }) + "\n");
+  } else if (process.argv.includes("--builtin-only")) {
     const results = [];
     for (const transport of ["http", "websocket", "refresh"]) results.push(await run(true, false, transport));
     assert.equal(new Set(results.map(row => row.installationId)).size, results.length);

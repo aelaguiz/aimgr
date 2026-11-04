@@ -33,9 +33,12 @@ pub(super) struct Request {
 impl Request {
     pub(super) fn matches_databases(&self, config: &Config) -> bool {
         let paths = config.sqlite_config().runtime_db_paths();
-        paths.len() == self.database_files.len() && paths.iter().zip(&self.database_files).all(|(actual, expected)| {
-            actual.path == expected.path && std::fs::metadata(&actual.path).is_ok_and(|meta|
-                meta.is_file() && meta.dev() == expected.device && meta.ino() == expected.inode)
+        // Projection merges/sorts its inventory. Native's enumeration order
+        // is not part of database identity.
+        paths.len() == self.database_files.len() && paths.iter().all(|actual| {
+            self.database_files.iter().find(|expected| actual.path == expected.path).is_some_and(|expected|
+                std::fs::metadata(&actual.path).is_ok_and(|meta|
+                    meta.is_file() && meta.dev() == expected.device && meta.ino() == expected.inode))
         })
     }
 }

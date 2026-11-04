@@ -32,6 +32,12 @@ test("custom settings origins share one local account auth target and refresh lo
   assert.notEqual(second.codexHome,first.codexHome);
   assert.equal(second.accountRoot,first.accountRoot);
   assert.equal(fs.readlinkSync(path.join(first.codexHome,"auth.json")),fs.readlinkSync(path.join(second.codexHome,"auth.json")));
+  const lock = path.join(first.accountRoot, "auth.lock");
+  fs.writeFileSync(lock, "", { mode: 0o600 });
+  for (const prepared of [first, second]) {
+    assert.equal(fs.realpathSync(path.join(prepared.codexHome, "auth.lock")), fs.realpathSync(lock));
+    assert.equal(fs.statSync(path.join(prepared.codexHome, "auth.lock")).ino, fs.statSync(lock).ino);
+  }
   const nested=codexAccountPaths({...options,env:{CODEX_HOME:first.codexHome},accountId:"nested-other-account"});
   assert.equal(nested.sharedHome,first.sharedHome);
   assert.notEqual(nested.codexHome,first.codexHome);

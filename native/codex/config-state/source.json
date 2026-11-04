@@ -1,6 +1,7 @@
 {
   "repository": "https://github.com/openai/codex",
-  "revision": "54201ea65a3501d09a87c776376a0c16aa39db70",
-  "archiveSha256": "5ece9986473a187401199ccd03ac1661bb001b5433f37d50ae64c5cb8240cc68",
-  "version": "0.163.0-alpha.5"
+  "revision": "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856",
+  "archiveSha256": "718c86dcd7104919f2820aa79db0fa0083b5f240aa16da704f43e4acf7b544e5",
+  "archivePrefix": "codex-rust-v0.166.0",
+  "version": "0.166.0"
 }
