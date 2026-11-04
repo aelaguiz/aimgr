@@ -4,6 +4,7 @@
 #define RUNTIME_ROOT "/opt/aimgr-codex-runtime/artifacts/"
 #include "../privacy/launch_macos.h"
 #include "maintenance_gate.h"
+#include "private_scratch.h"
 
 static void vendor_filter(FILE *out,const char *vendor,const char *helper) {
     fputs("(require-any ",out);rule(out,"process-path",vendor);rule(out,"process-path",helper);fputs(")",out);
@@ -42,8 +43,8 @@ int main(int argc,char **argv) {
     strlcpy(helper,self,sizeof(helper));strcpy(strrchr(helper,'/'),"/codex-code-mode-host");immutable(helper,0);
     if (access(vendor,X_OK) || access(helper,X_OK)) fail("vendor execution access");
     const char *account=argv[2],*home=argv[3],*scratch=argv[4];
-    canonical(account);canonical(home);canonical(scratch);
-    if (!inside(home,account) || !inside(scratch,account)) fail("account state ownership");
+    canonical(account);canonical(home);codex_private_scratch(scratch);
+    if (!inside(home,account)) fail("account state ownership");
     struct passwd *user=getpwuid(getuid());char user_home[PATH_MAX];
     if (!user || !realpath(user->pw_dir,user_home) || inside(user_home,account)) fail("overbroad account root");
     int envfd=number(argv[5],1024),writes=number(argv[6],argc-7),readindex=7+writes;
@@ -68,12 +69,12 @@ int main(int argc,char **argv) {
     rule(out,"literal",vendor);rule(out,"literal",helper);fputs(")) (with no-sandbox))\n(with-filter ",out);
     vendor_filter(out,vendor,helper);fputs("\n(deny file-read* (require-not (require-any ",out);
     rule(out,"literal",vendor);rule(out,"literal",helper);ancestors(out,vendor);
-    rule(out,"subpath",account);ancestors(out,account);runtime_reads(out);
+    rule(out,"subpath",account);ancestors(out,account);rule(out,"subpath",scratch);runtime_reads(out);
     for (int i=0;i<writes;i++) {rule(out,"subpath",write_roots[i]);ancestors(out,write_roots[i]);}
     for (int i=0;i<reads;i++) {rule(out,"subpath",read_roots[i]);ancestors(out,read_roots[i]);}
     for (int i=0;i<databases;i++) database_grants(out,database_roots[i],1);
     fputs(")))\n(deny file-write* (require-not (require-any (subpath \"/dev\")",out);
-    rule(out,"subpath",account);
+    rule(out,"subpath",account);rule(out,"subpath",scratch);
     for (int i=0;i<writes;i++) rule(out,"subpath",write_roots[i]);
     for (int i=0;i<databases;i++) database_grants(out,database_roots[i],0);
     fputs(")))",out);

@@ -50,7 +50,10 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     });
     supervisor = await superviseCodexSettings(entries, { onWarning, onError,
       stateIO: request => codexStateIO(request, { helperPath: artifact.stateIO }) });
-    scratch = fs.realpathSync(fs.mkdtempSync(path.join(account.accountRoot, ".runtime-")));
+    // Chrome and other ordinary tools put Unix sockets under TMPDIR. Account
+    // homes can exceed the OS socket-path limit; keep each private launch
+    // directory short and grant only that directory in the vendor policy.
+    scratch = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), `aim-codex-${process.getuid()}-`));
     fs.chmodSync(scratch, 0o700);
     const environmentValues = codexPrivacyEnvironment({ env, prepared: account, artifact, scratch });
     worktree = await prepareCodexWorktree({ parsedArgs, nativeInputs, artifact, prepared: account,

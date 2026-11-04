@@ -22,16 +22,17 @@ repo = Path(__file__).resolve().parents[2]
 base = Path('/opt/aimgr-state-audit')
 assert sys.platform == 'linux' and (base / 'OFFSITE_AUDIT_HOST').is_file()
 
-def invoke(fixture, provider, arguments):
+def invoke(fixture, provider, arguments, scratch=None):
     case = Path(fixture['root']) / provider
     package = Path(fixture['packages'][provider])
-    env = dict(os.environ, HOME=str(case / 'home'), SYNTHETIC_CANARY=str(Path(fixture['root']) / 'private-canary'))
+    env = dict(os.environ, HOME=str(case / 'home'), SYNTHETIC_CANARY=str(Path(fixture['root']) / 'private-canary'),
+               SYNTHETIC_OTHER_SCRATCH=fixture['otherScratch'])
     with tempfile.TemporaryFile(dir=case) as transfer:
         os.fchmod(transfer.fileno(), 0o600)
         transfer.write(b''.join((k + '=' + v).encode() + b'\0' for k, v in env.items()))
         transfer.flush()
         if provider == 'codex':
-            args = ['v1', str(case), str(case / 'home'), str(case / 'scratch'), str(transfer.fileno()),
+            args = ['v1', str(case), str(case / 'home'), str(scratch or fixture['codexScratch']), str(transfer.fileno()),
                     '1', str(case / 'project'), '0', '0', '0', '--']
         else:
             args = ['v1', 'protected', str(case / 'home'), str(case / 'settings.json'),
@@ -135,6 +136,22 @@ if len(sys.argv) > 1:
         observation(invoke(fixture, provider, ['probe']))
         observation(invoke(fixture, provider, ['self']))
         if provider == 'codex':
+            scratch = Path(fixture['codexScratch'])
+            private = invoke(fixture, provider, ['temp-scratch'])
+            assert private.returncode == 0, private.stderr
+            scratch.chmod(0o755)
+            try:
+                refused = invoke(fixture, provider, ['probe'])
+                assert refused.returncode == 125 and not refused.stdout
+            finally: scratch.chmod(0o700)
+            alias = scratch.with_name(scratch.name[:-6] + 'alias1')
+            alias.symlink_to(scratch)
+            try:
+                for invalid in [alias, Path(fixture['root']) / provider / 'scratch', Path(fixture['foreignScratch'])]:
+                    refused = invoke(fixture, provider, ['probe'], scratch=invalid)
+                    assert refused.returncode == 125 and not refused.stdout
+            finally: alias.unlink()
+            print('PASS private scratch access, sibling/root denial, and native path/owner/mode rejection')
             masks = invoke(fixture, provider, ['temp-masks'])
             assert masks.returncode == 0, masks.stderr
             assert Path('/tmp/.aws/synthetic-canary').read_text() == 'SYNTHETIC_TEMP_SECRET'
@@ -180,6 +197,14 @@ source.write_text(r'''
 int main(int argc,char **argv){
  if(argc>1&&!strcmp(argv[1],"exec")){execv(argv[2],argv+2);perror("exec");return 2;}
  if(argc>1&&!strcmp(argv[1],"self")){char *a[]={argv[0],"probe",NULL};execv(a[0],a);return 3;}
+ if(argc>1&&!strcmp(argv[1],"temp-scratch")){
+  char path[4096];snprintf(path,sizeof(path),"%s/vendor-proof",getenv("TMPDIR"));
+  FILE *f=fopen(path,"w");if(!f)return 14;fputs("private temporary state",f);fclose(f);
+  f=fopen(path,"r");if(!f)return 15;fclose(f);
+  snprintf(path,sizeof(path),"%s/sibling-canary",getenv("SYNTHETIC_OTHER_SCRATCH"));
+  if(fopen(path,"r")||opendir("/tmp"))return 16;
+  return 0;
+ }
  if(argc>1&&!strcmp(argv[1],"temp-masks")){
   const char *dirs[]={"/tmp/.git","/tmp/.agents","/tmp/.codex"};
   for(size_t i=0;i<3;i++){if(mkdir(dirs[i],0700))return 10;if(opendir(dirs[i]))return 11;if(rmdir(dirs[i]))return 12;}
@@ -195,6 +220,13 @@ subprocess.run(['cc', '-O2', '-Wall', '-Wextra', '-Werror', str(source), '-o', s
 (root / 'private-canary').write_text('SYNTHETIC_PRIVATE')
 (root / 'private-canary').chmod(0o644)
 fixture = dict(root=str(root), packages={})
+for key in ['codexScratch', 'otherScratch', 'foreignScratch']:
+    scratch = Path('/tmp') / ('aim-codex-' + str(user.pw_uid) + '-' + secrets.token_hex(3))
+    scratch.mkdir(mode=0o700)
+    if key != 'foreignScratch': os.chown(scratch, user.pw_uid, user.pw_gid)
+    fixture[key] = str(scratch)
+(Path(fixture['otherScratch']) / 'sibling-canary').write_text('SYNTHETIC_OTHER_SCRATCH')
+os.chown(Path(fixture['otherScratch']) / 'sibling-canary', user.pw_uid, user.pw_gid)
 for provider in ['codex', 'claude']:
     runtime = Path('/opt/aimgr-' + provider + '-runtime')
     package = runtime / 'artifacts' / secrets.token_hex(32)

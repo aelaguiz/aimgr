@@ -9,11 +9,11 @@ static void codex_private_acl(int fd) {
 #if defined(__APPLE__)
     errno=0;acl_t acl=acl_get_fd_np(fd,ACL_TYPE_EXTENDED);int error=errno;
     if (!acl && error==ENOENT) return;
-    if (!acl || acl_valid(acl)) fail("maintenance ACL unreadable");
+    if (!acl || acl_valid(acl)) fail("private state ACL unreadable");
     acl_entry_t entry;int index=ACL_FIRST_ENTRY;
     while (acl_get_entry(acl,index,&entry)==0) {
         index=ACL_NEXT_ENTRY;acl_tag_t tag;
-        if (acl_get_tag_type(entry,&tag) || tag!=ACL_EXTENDED_DENY) fail("maintenance ACL grants access");
+        if (acl_get_tag_type(entry,&tag) || tag!=ACL_EXTENDED_DENY) fail("private state ACL grants access");
     }
     acl_free(acl);
 #else

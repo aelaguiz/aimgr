@@ -3,6 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { prepareCodexNativeInvocation } from "../../src/privacy/codex-native-invocation.js";
 import { prepareCodexAccountState } from "../../src/privacy/codex-account-state.js";
@@ -33,7 +34,18 @@ test("relative --cd is projected once while native retains its original process 
         return { cwd: selected, reads: [], writes: [], database_roots: [prepared.sharedHome], mcp_store: "keyring" };
       },
     });
+    const scratch = invocation.environment.TMPDIR;
     try {
+      const socketDirectory = fs.mkdtempSync(path.join(scratch, "com.google.Chrome."));
+      const socket = net.createServer();
+      try {
+        await new Promise((resolve, reject) => socket.once("error", reject).listen(path.join(socketDirectory, "SingletonSocket"), resolve));
+      } finally {
+        if (socket.listening) await new Promise(resolve => socket.close(resolve));
+        fs.rmdirSync(socketDirectory);
+      }
+      assert.equal(fs.statSync(scratch).mode & 0o777, 0o700);
+      if (args.length > 2) fs.writeFileSync(path.join(scratch, "background-tool-state"), "keep working");
       assert.equal(invocation.prepared.sharedHome, path.join(homeDir, ".codex"), "unset CODEX_HOME retains native lexical default origin");
       assert.equal(invocation.cwd, cwd);
       assert.equal(invocation.inputs.cwd, selected);
@@ -42,6 +54,10 @@ test("relative --cd is projected once while native retains its original process 
       if (process.platform === "darwin") assert.ok(invocation.args.includes(path.join(homeDir,
         "Library/Application Support/com.openai.codex/production-appcast-bootstrap.json")));
     } finally { await invocation.close(); }
+    if (args.length > 2) {
+      assert.equal(fs.readFileSync(path.join(scratch, "background-tool-state"), "utf8"), "keep working");
+      fs.rmSync(scratch, { recursive: true });
+    } else assert.equal(fs.existsSync(scratch), false, "empty invocation scratch is removed on close");
   }
   const config = path.join(prepared.sharedHome, "config.toml");
   fs.writeFileSync(config, 'mcp_oauth_credentials_store="auto"\n');

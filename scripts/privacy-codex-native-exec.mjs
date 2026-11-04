@@ -52,7 +52,18 @@ const canary = "SYNTHETIC_ORDINARY_TOOL_ACCESS";
 fs.writeFileSync(privateFile, canary, { mode: 0o600 });
 const shellQuote = value => "'" + value.replaceAll("'", "'\\''") + "'";
 const versionProbe = process.platform === "darwin" ? ["sw_vers", "-productVersion"] : ["lsb_release", "-rs"];
-const toolScript = `import json,os,pathlib,platform,subprocess; print(json.dumps({"canary":pathlib.Path(${JSON.stringify(privateFile)}).read_text(),"release":platform.release(),"os_version":subprocess.check_output(${JSON.stringify(versionProbe)},text=True).strip(),"sdk_key":os.environ["OPENAI_API_KEY"]})); pathlib.Path("tool-output.txt").write_text("tool write succeeded")`;
+const chromePhase = process.argv.includes("--chrome");
+const chrome = chromePhase && (process.platform === "darwin"
+  ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/opt/google/chrome/chrome"].find(file => fs.existsSync(file)));
+if (chromePhase) assert.ok(chrome && fs.existsSync(chrome), "Stock Chrome is required for this phase");
+let toolScript = `import json,os,pathlib,platform,subprocess,tempfile; print(json.dumps({"canary":pathlib.Path(${JSON.stringify(privateFile)}).read_text(),"release":platform.release(),"os_version":subprocess.check_output(${JSON.stringify(versionProbe)},text=True).strip(),"sdk_key":os.environ["OPENAI_API_KEY"]})); pathlib.Path("tool-output.txt").write_text("tool write succeeded")`;
+if (chromePhase) {
+  const chromeArgs = [chrome, "--headless", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
+    "--disable-component-update", "--disable-crash-reporter", "--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=<-loopback>"];
+  // A fresh synthetic profile and dead loopback proxy; Chrome's sandbox remains enabled.
+  toolScript += `; profile=tempfile.mkdtemp(prefix="chrome-",dir=str(pathlib.Path.cwd())); result=subprocess.run(${JSON.stringify(chromeArgs)}+["--user-data-dir="+profile,"--dump-dom","data:text/html,<title>AIM_TOOL_ACCESS_OK</title>"],capture_output=True,text=True,timeout=25); assert result.returncode==0,(result.returncode,result.stderr); assert "AIM_TOOL_ACCESS_OK" in result.stdout; print("AIM_TOOL_ACCESS_OK")`;
+}
 const command = "/usr/bin/python3 -c " + shellQuote(toolScript);
 const created = id => ({ type: "response.created", response: { id } });
 const completed = id => ({ type: "response.completed", response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
@@ -139,7 +150,7 @@ async function run(protectedLaunch, alias = false, builtin = null) {
     assert.ok(number <= 2, "Unexpected model retry or extra turn");
     if (number === 1) await coordination?.duringTurn();
     const items = number === 1 ? [done({ type: "function_call", call_id: "synthetic-call", name: "exec_command",
-      arguments: JSON.stringify({ cmd: command, yield_time_ms: 1000, max_output_tokens: 500 }) })]
+      arguments: JSON.stringify({ cmd: command, yield_time_ms: chromePhase ? 30000 : 1000, max_output_tokens: chromePhase ? 2500 : 500 }) })]
       : [done({ type: "message", role: "assistant", id: "synthetic-message", content: [{ type: "output_text", text: "Synthetic task complete." }] })];
     return [created(`synthetic-${number}`), ...items, completed(`synthetic-${number}`)];
   };
@@ -277,7 +288,8 @@ async function run(protectedLaunch, alias = false, builtin = null) {
     await coordination?.select("after-native-preparation-before-spawn");
     if (builtin === "native-first") { aimTask = observe(refreshAim()); await aimWaiting; if (asyncError) throw asyncError; }
     child = spawn(protectedLaunch ? invocation.command : path.join(base, "bin", "codex"), protectedLaunch ? invocation.args : args, {
-      cwd: invocation.cwd, env: protectedLaunch ? invocation.env : invocation.environment, detached: true,
+      cwd: invocation.cwd, env: protectedLaunch ? invocation.env : { ...invocation.environment,
+        ...(chromePhase ? { TMPDIR: os.tmpdir() } : {}) }, detached: true,
       stdio: ["ignore", "pipe", "pipe", ...(protectedLaunch ? [invocation.environmentFd] : [])] });
     childDone = once(child, "close");
     invocation.closeEnvironment?.();
@@ -363,6 +375,7 @@ async function run(protectedLaunch, alias = false, builtin = null) {
     assert.match(JSON.stringify(toolOutput), new RegExp(canary));
     assert.ok(JSON.stringify(toolOutput).includes(env.OPENAI_API_KEY), "ordinary SDK tools retain their key");
     assert.ok(JSON.stringify(toolOutput).includes(os.release()), "ordinary tool retains actual uname");
+    if (chromePhase) assert.match(JSON.stringify(toolOutput), /AIM_TOOL_ACCESS_OK/, "ordinary native shell launches stock Chrome with its sandbox enabled");
     assert.equal(fs.readFileSync(path.join(cwd, "tool-output.txt"), "utf8"), "tool write succeeded");
     assert.equal(fs.readFileSync(path.join(homeDir, ".codex/auth.json"), "utf8"), foreignAuth);
     if (needsRefresh) {
@@ -374,6 +387,7 @@ async function run(protectedLaunch, alias = false, builtin = null) {
     }
     return { name, modelRequests: requests.length, ordinaryFileAccess: true, ordinaryUname: true, ordinarySdkKey: true,
       installationId: prepared.installationId, primaryRefreshes: refreshes, kernelWaitObserved,
+      ...(chromePhase ? { chromeRenderedWithSandbox: true } : {}),
       ...(coordination ? { coordinationBeforeAndDuringNativeTurn: true } : {}),
       ...(grantEnvironment ? { accountId, environmentId: environment.binding, grantEnvironment,
         localAuthPath: path.join(prepared.accountRoot, "auth.json"),
@@ -395,7 +409,10 @@ async function run(protectedLaunch, alias = false, builtin = null) {
 }
 
 try {
-  if (process.argv.includes("--account-isolation")) {
+  if (chromePhase) {
+    const results = [await run(false), await run(true)];
+    process.stdout.write(JSON.stringify({ fixture: root, results: results.map(row => ({ ...row, userAgent: undefined })) }) + "\n");
+  } else if (process.argv.includes("--account-isolation")) {
     const results = [];
     for (const transport of ["http", "websocket"]) results.push(await run(true, false, transport));
     process.stdout.write(JSON.stringify({ fixture: root, results: results.map(row => ({ ...row, userAgent: undefined })) }) + "\n");

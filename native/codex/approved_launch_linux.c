@@ -7,6 +7,7 @@
 #define RUNTIME "/opt/aimgr-codex-runtime"
 #include "../privacy/launch_linux.h"
 #include "maintenance_gate.h"
+#include "private_scratch.h"
 
 static void deny_distribution_probe(FILE *out,char **environment) {
     /* Command::new("lsb_release") searches PATH. AppArmor checks a symlink's
@@ -61,8 +62,8 @@ int main(int argc,char **argv) {
     snprintf(helper,sizeof(helper),"%s",self);strcpy(strrchr(helper,'/'),"/codex-code-mode-host");immutable(helper,0);
     immutable("/usr/sbin/apparmor_parser",0);chain("/usr/sbin/apparmor_parser");
     const char *account=argv[2],*home=argv[3],*scratch=argv[4];
-    canonical(account);canonical(home);canonical(scratch);
-    if (!inside(home,account) || !inside(scratch,account)) fail("account state ownership");
+    canonical(account);canonical(home);codex_private_scratch(scratch);
+    if (!inside(home,account)) fail("account state ownership");
     struct passwd *user=getpwuid(caller);char user_home[PATH_MAX];
     if (!user || !realpath(user->pw_dir,user_home) || inside(user_home,account)) fail("overbroad account root");
     int envfd=number(argv[5],1024),writes=number(argv[6],argc-7),readindex=7+writes;
@@ -94,7 +95,7 @@ int main(int argc,char **argv) {
     fputs("network,\ncapability,\nsignal,\nptrace,\nunix,\n"
       "dbus (send, receive) bus=session peer=(name=org.freedesktop.DBus),\n"
       "dbus (send, receive) bus=session peer=(name=org.freedesktop.secrets),\n",out);
-    subtree(out,account,"rwmlk");ancestors(out,account,"r","");
+    subtree(out,account,"rwmlk");ancestors(out,account,"r","");subtree(out,scratch,"rwmlk");
     for (int i=0;i<writes;i++) {subtree(out,write_roots[i],"rwmlk");ancestors(out,write_roots[i],"r","");}
     for (int i=0;i<reads;i++) {subtree(out,read_roots[i],"rm");ancestors(out,read_roots[i],"r","");}
     for (int i=0;i<databases;i++) database_grants(out,database_roots[i]);
