@@ -31,7 +31,13 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     const local = prepared.keyBacked && prepared.accountId === "api-provider:deepseek" ? { status: "ready", credential: null }
       : readLocalCodexCredential({ homeDir, env: { CODEX_HOME: account.sharedHome }, accountId: account.accountId, environment });
     if (local.status !== "ready") throw new Error(`Codex account ${account.label ?? "selected"} needs a healthy local login (${local.status}).`);
-    let parsedArgs = codexArguments(args, { cwd, ownedAppServer });
+    // New AIM sessions use native keyring storage without changing the shared
+    // source or any already-running session. Later explicit CLI overrides
+    // retain native precedence and are checked against the effective mode.
+    let parsedArgs = codexArguments(["-c", 'mcp_oauth_credentials_store="keyring"', ...args], { cwd, ownedAppServer });
+    if (fs.existsSync(path.join(account.sharedHome, ".credentials.json"))) {
+      throw new Error("Codex's shared MCP credentials need the one-time native keyring conversion. Run `aim codex mcp-migrate` from a terminal before starting Codex.");
+    }
     const artifact = admitArtifact({ selectedCommand: command, pinnedArtifactSet: env.AIMGR_CODEX_ARTIFACT_SET });
     const policy = JSON.parse(fs.readFileSync(artifact.policy, "utf8"));
     if (policy.schema !== 1 || policy.version !== artifact.version || policy.platform !== process.platform || policy.arch !== process.arch
@@ -52,8 +58,8 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     if (worktree) parsedArgs = worktree.parsedArgs;
     const effectiveInputs = await nativeInputs({ artifact, prepared: account, parsedArgs,
       env: environmentValues, managed, ownedAppServer });
-    if (effectiveInputs.mcp_store !== "keyring" || fs.existsSync(path.join(account.sharedHome, ".credentials.json"))) {
-      throw new Error("Codex's shared MCP credentials need the one-time native keyring conversion. Run `aim codex mcp-migrate` from a terminal before starting Codex.");
+    if (effectiveInputs.mcp_store !== "keyring") {
+      throw new Error('Codex privacy requires mcp_oauth_credentials_store="keyring". Remove the conflicting command-line or administrator setting before starting Codex.');
     }
     const worktreeDatabases = worktree ? codexWorktreeDatabases(effectiveInputs) : null;
     const inputs = resolveInputs({ prepared: account, parsedArgs, homeDir, env: environmentValues,
@@ -66,7 +72,11 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     const databases = [...new Set(inputs.databases)];
     const denied = [codexCanonicalPath(path.join(account.sharedHome, "secrets", "codex_auth.age")),
       codexCanonicalPath(path.join(account.codexHome, "secrets", "codex_auth.age"))];
-    if ([writes, reads, databases, denied].some(list => list.length > 256)) throw new Error("Codex startup inputs exceed the native policy capacity.");
+    // Doctor reads the desktop installation ID outside CODEX_HOME. An explicit
+    // project/import grant must not turn that automatic identity read back on.
+    if (process.platform === "darwin") for (const root of new Set([homeDir, env.HOME || homeDir])) {
+      denied.push(codexCanonicalPath(path.join(root, "Library/Application Support/com.openai.codex/production-appcast-bootstrap.json")));
+    }
     const nativeArgs = ["v1", fs.realpathSync(account.accountRoot), fs.realpathSync(account.codexHome), scratch, "3",
       String(writes.length), ...writes, String(reads.length), ...reads, String(databases.length), ...databases,
       String(denied.length), ...denied, "--", ...parsedArgs.args];

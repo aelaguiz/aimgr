@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { spawn } from "node:child_process";
 
 // This is the ordinary MCP File -> Direct conversion for the admitted native
 // release. Primary Codex, executor and enterprise identities are not inputs.
@@ -74,28 +73,4 @@ export function codexMcpTokensEqual(left, right) {
   };
   const a = normalize(left), b = normalize(right);
   return a !== null && b !== null && isDeepStrictEqual(a, b);
-}
-
-/** No secrets in argv/environment/errors. The helper only owns the native
- * ordinary-MCP keyring service and is invoked in the real user's context. */
-export function codexMcpKeyring(request, { command, env = process.env, spawnImpl = spawn } = {}) {
-  if (typeof command !== "string" || !request || !["load", "insert-if-absent"].includes(request.operation)) throw invalid();
-  return new Promise((resolve, reject) => {
-    const child = spawnImpl(command, [], { env, stdio: ["pipe", "pipe", "ignore"] });
-    const chunks = []; let size = 0, failed = false;
-    const fail = () => { failed = true; child.kill("SIGKILL"); reject(new Error("Codex MCP keyring is unavailable in this execution context.")); };
-    const timer = setTimeout(fail, 15_000);
-    child.on("error", fail);
-    child.stdin.on("error", fail);
-    child.stdout.on("data", bytes => { size += bytes.length; if (size > 4 * 1024 * 1024) fail(); else chunks.push(bytes); });
-    child.on("close", code => {
-      clearTimeout(timer);
-      if (failed) return;
-      let response;
-      try { response = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { fail(); return; }
-      if (code !== 0 || response.error || !Object.hasOwn(response, "value")) { fail(); return; }
-      resolve(response);
-    });
-    child.stdin.end(JSON.stringify(request));
-  });
 }

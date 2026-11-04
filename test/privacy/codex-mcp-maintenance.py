@@ -5,12 +5,15 @@ Linux requires a loopback-only namespace and fresh dbus-run-session. macOS
 uses only a temporary test keychain on the designated rented machine.
 """
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import socket
+import signal
 import subprocess
 import tempfile
 import time
@@ -22,11 +25,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--node', required=True)
 parser.add_argument('--process-control', required=True)
 parser.add_argument('--debug-owner', action='store_true')
+parser.add_argument('--custom-settings', action='store_true')
+parser.add_argument('--cuts', nargs='+', choices=['pending', 'backup', 'intents', 'import', 'publish', 'retire', 'committed'],
+                    default=['pending', 'backup', 'intents', 'import', 'publish', 'retire', 'committed'])
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
 root = Path(tempfile.mkdtemp(prefix='aimgr-mcp-maintenance-'))
 home = root / 'home'
-source = home / '.codex'
+source = home / ('custom-settings' if args.custom_settings else '.codex')
 source.mkdir(parents=True, mode=0o700)
 project = root / 'project'
 project.mkdir()
@@ -63,9 +69,59 @@ def credential(operation, name, url, value=None):
     assert result.stderr == ''
     return json.loads(result.stdout)
 
-def maintain(operation='start', expected=True):
+def maintain(operation='start', expected=True, cut=None):
     command = ['/usr/bin/python3', '-I', str(repo / 'native/codex/mcp_maintenance.py')]
-    if args.debug_owner:
+    if cut:
+        # Kill the actual finite owner at deterministic boundaries. Production
+        # code has no fault switches; backend writes/receipts stay real.
+        command = ['/usr/bin/python3', '-I', '-c', '''
+import importlib.util,json,os,signal,sys
+from pathlib import Path
+s=importlib.util.spec_from_file_location('fixture_owner',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+request=json.load(sys.stdin);owner=m.Maintenance(request);point=sys.argv[2]
+def die(): os.kill(os.getpid(),signal.SIGKILL)
+durable=m.durable
+def durable_cut(file,data,exclusive=False):
+ if exclusive and point=='backup':
+  # Interrupt after creating the staging inode but before writing any bytes.
+  def stop(*args,**kwargs): die()
+  m.os.fdopen=stop
+ return durable(file,data,exclusive)
+m.durable=durable_cut
+save=owner.save
+def save_cut():
+ save()
+ if point=='intents' and owner.journal.get('intents') is not None and not owner.journal.get('committed'): die()
+owner.save=save_cut
+keyring=owner.keyring
+def keyring_cut(operation,item):
+ result=keyring(operation,item)
+ if point=='import' and operation=='insert-if-absent': die()
+ return result
+owner.keyring=keyring_cut
+control=owner.owner
+def control_cut(operation,**values):
+ result=control(operation,**values)
+ if point=='publish' and operation=='publish': die()
+ return result
+owner.owner=control_cut
+flush=m.state_io.flush_parent
+def flush_cut(file,*args,**kwargs):
+ result=flush(file,*args,**kwargs)
+ if point=='retire' and Path(file).resolve()==(Path(request['source_home'])/'.credentials.json').resolve(): die()
+ return result
+m.state_io.flush_parent=flush_cut
+admission=owner.admission
+def admission_cut(pending):
+ result=admission(pending)
+ if point=='pending' and pending: die()
+ if point=='committed' and not pending: die()
+ return result
+owner.admission=admission_cut
+try: owner.run()
+finally: owner.close()
+''', str(repo / 'native/codex/mcp_maintenance.py'), cut]
+    elif args.debug_owner:
         # Synthetic remote fixture only: report exception type and source line,
         # never an exception message containing paths or token values.
         command = ['/usr/bin/python3', '-I', '-c', '''
@@ -84,6 +140,9 @@ finally: owner.close()
     result = subprocess.run(command,
                             input=json.dumps(dict(request, operation=operation)), capture_output=True, text=True, env=env)
     assert result.stderr == '', result.stderr
+    if cut:
+        assert result.returncode == -signal.SIGKILL, (cut, result.returncode)
+        return
     response = json.loads(result.stdout)
     assert (result.returncode == 0 and response.get('ok') is True) == expected, response
     return response
@@ -150,6 +209,11 @@ try:
     print('PASS existing native consumer is refused before pending and exits normally without any credential mutation')
     maintain()
     journal = json.loads((base / 'transaction.json').read_text())
+    if args.custom_settings:
+        plan = journal['plan']
+        expected = {str(source.resolve() / 'mcp-oauth-locks'), str(home.resolve() / '.codex/mcp-oauth-locks')}
+        assert set(plan['lock_directories']) == expected
+        assert Path(plan['file_lock']).parent == source.resolve() / 'mcp-oauth-locks'
     assert journal['committed'] and journal['finished']
     assert not (base / 'pending.json').exists() and not (source / '.credentials.json').exists()
     assert Path(journal['backup']).read_bytes() == original
@@ -171,6 +235,68 @@ try:
     maintain('recover')
     assert credential('load', name, url) == {'value': None}
     print('PASS unchanged native logout reads the migrated entry and committed recovery does not resurrect it')
+    for cut in args.cuts:
+        interrupted_name = name + '_' + cut
+        interrupted_url, original_cut = seed(interrupted_name, 'SYNTHETIC_' + cut)
+        maintain(cut=cut)
+        journal = json.loads((base / 'transaction.json').read_text())
+        assert not journal['finished']
+        if cut == 'backup':
+            assert not (base / ('file-before-' + journal['operation_id'] + '.json')).exists()
+            assert (source / '.credentials.json').read_bytes() == original_cut
+        if cut in ('retire', 'committed'):
+            assert not (source / '.credentials.json').exists()
+        if cut == 'committed':
+            assert journal['committed'] and not (base / 'pending.json').exists()
+            logout = subprocess.run(['/opt/aimgr-state-audit/bin/codex', 'mcp', 'logout', interrupted_name],
+                                    cwd=project, env=env, capture_output=True, text=True, timeout=30)
+            assert logout.returncode == 0
+            assert credential('load', interrupted_name, interrupted_url) == {'value': None}
+        else:
+            assert not journal['committed'] and (base / 'pending.json').exists()
+        if cut == 'pending':
+            late_log = (root / 'late-native.log').open('wb')
+            late = subprocess.Popen(['/opt/aimgr-state-audit/bin/codex', 'app-server', '--listen', 'stdio://'],
+                                    cwd=project, env=env, stdin=subprocess.PIPE, stdout=late_log, stderr=late_log)
+            try:
+                time.sleep(.2)
+                assert late.poll() is None
+                refused = maintain('recover', expected=False)
+                assert 'finish or exit normally' in refused['error']
+                assert late.poll() is None and (base / 'pending.json').exists()
+                assert (source / '.credentials.json').read_bytes() == original_cut
+                assert credential('load', interrupted_name, interrupted_url) == {'value': None}
+            finally:
+                late.stdin.close()
+                late.wait(timeout=15)
+                late_log.close()
+            lock_file = Path(journal['plan']['file_lock'])
+            lock_file.parent.mkdir(parents=True, exist_ok=True)
+            held = os.open(lock_file, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                began = time.monotonic()
+                refused = maintain('recover', expected=False)
+                assert 'credential operation is still running' in refused['error']
+                assert 55 <= time.monotonic() - began < 90
+                assert (base / 'pending.json').exists()
+                assert (source / '.credentials.json').read_bytes() == original_cut
+                assert credential('load', interrupted_name, interrupted_url) == {'value': None}
+            finally:
+                os.close(held)
+        maintain('recover')
+        journal = json.loads((base / 'transaction.json').read_text())
+        assert journal['committed'] and journal['finished']
+        assert not (base / 'pending.json').exists() and not (source / '.credentials.json').exists()
+        assert Path(journal['backup']).read_bytes() == original_cut
+        assert Path(journal['backup']).stat().st_nlink == 1
+        assert re.search(r'mcp_oauth_credentials_store\s*=\s*"keyring"', (source / 'config.toml').read_text())
+        if cut == 'committed':
+            assert credential('load', interrupted_name, interrupted_url) == {'value': None}
+        else:
+            recovered = json.loads(credential('load', interrupted_name, interrupted_url)['value'])
+            assert recovered['token_response']['access_token'] == 'SYNTHETIC_' + cut
+    print('PASS SIGKILL recovery boundaries: ' + ', '.join(args.cuts))
     # A different keyring value is never overwritten, nor is File retired.
     name2 = name + '_conflict'
     url2, original2 = seed(name2, 'SYNTHETIC_FILE_OLDER')

@@ -171,13 +171,18 @@ export function validateCodexWorktreeArguments(parsed) {
 export function codexWorktreeArguments(parsed, destination, forkId = null) {
   if (!path.isAbsolute(destination)) throw new Error("Codex worktree destination must be absolute.");
   const removed = new Set(parsed.worktreeIndices);
-  for (const span of parsed.optionSpans) if (["cwd", "directory"].includes(span.kind)) {
+  for (const span of parsed.optionSpans) if (["cwd", "directory"].includes(span.kind)
+    || (parsed.ossChoice?.provider && span.kind === "provider")) {
     for (let i = span.start; i < span.end; i++) removed.add(i);
   }
   const forkIndex = parsed.command === "fork" ? parsed.positionalIndices[0]
     : ["exec", "e"].includes(parsed.command) && parsed.execSubcommand === "fork" ? parsed.positionalIndices[1] : null;
   const args = parsed.originalArgs.flatMap((value, i) => removed.has(i) ? [] : [forkId && i === forkIndex ? forkId : value]);
-  return codexArguments(["-C", destination, ...parsed.directories.flatMap(dir => ["--add-dir", dir]), ...args], {
+  const result = codexArguments(["-C", destination,
+    ...(parsed.ossChoice?.provider ? ["--local-provider", parsed.ossChoice.provider] : []),
+    ...parsed.directories.flatMap(dir => ["--add-dir", dir]), ...args], {
     cwd: parsed.processCwd,
   });
+  if (parsed.ossChoice) result.ossChoice = parsed.ossChoice;
+  return result;
 }

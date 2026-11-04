@@ -21,6 +21,7 @@ import { readCodexEnvironment } from "../../privacy/codex-environment.js";
 import { codexSharedHome } from "../../privacy/codex-account-state.js";
 import { maintainCodexMcp } from "../../credentials/codex-mcp-maintenance.js";
 import { assertCodexMaintenanceClear } from "../../privacy/codex-maintenance.js";
+import { inspectCodexPrivacyStatus, formatCodexPrivacyStatus } from "../../privacy/codex-status.js";
 import {
   MAX_COPY_MB_DEFAULT,
   CodexThreadCopyError,
@@ -497,6 +498,13 @@ async function handleCodexLocalLogout(context) {
 export async function handleCodex(context) {
   const { positional } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+  if (subcmd === "privacy") {
+    if (positional[2] !== "status" || positional.length !== 3) throw new Error("Usage: aim codex privacy status [--json]");
+    const status = inspectCodexPrivacyStatus({ pinnedArtifactSet: context.env.AIMGR_CODEX_ARTIFACT_SET });
+    context.stdout.write(context.opts.json ? JSON.stringify(status, null, 2) + "\n" : formatCodexPrivacyStatus(status));
+    if (!status.ready) context.setExitCode(1);
+    return;
+  }
   if (subcmd === "mcp-migrate" || subcmd === "mcp-recover") {
     if (positional.length !== 2) throw new Error("Use aim codex mcp-migrate or aim codex mcp-recover in the selected CODEX_HOME environment.");
     context.stdout.write("MCP maintenance requires existing Codex sessions to finish first and pauses new Codex launches and schedules during conversion.\n");

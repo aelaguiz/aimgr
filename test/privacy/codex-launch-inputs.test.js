@@ -53,6 +53,23 @@ test("configured writable roots outside the project keep their native write perm
   assert.ok(inputs.writes.includes(extra)); assert.equal(inputs.reads.includes(extra), false);
 });
 
+test("saved projects retain separate roots and Git metadata without exposing their common parent", t => {
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),"codex-saved-grants-")));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const codexHome=path.join(root,"private"), sharedHome=path.join(root,"shared"), cwd=path.join(root,"first");
+  const saved=path.join(root,"saved"), git=path.join(root,"git-metadata");
+  for(const file of [codexHome,sharedHome,cwd,saved,git])fs.mkdirSync(file);
+  const inputs=resolveCodexLaunchInputs({prepared:{codexHome,sharedHome},homeDir:root,env:{},
+    parsedArgs:{directories:[],images:[]},effectiveInputs:{cwd,project_cwds:[saved],
+      reads:[path.join(saved,"AGENTS.md"),path.join(root,"selected-skill")],writes:[path.join(saved,"nested")],database_roots:[sharedHome]},
+    spawnSyncImpl:(command,args,options)=>options.cwd===saved?{status:0,stdout:`${saved}\n${git}\n`}:{status:1}});
+  assert(inputs.writes.includes(saved)); assert(inputs.writes.includes(git));
+  assert(!inputs.writes.includes(root)); assert(!inputs.reads.includes(root));
+  assert(!inputs.writes.includes(path.join(saved,"nested")));
+  assert(!inputs.reads.includes(path.join(saved,"AGENTS.md")));
+  assert(inputs.reads.includes(path.join(root,"selected-skill")));
+});
+
 test("Linux native MCP gets only the selected existing D-Bus socket, not its directory", { skip: process.platform !== "linux" }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-bus-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

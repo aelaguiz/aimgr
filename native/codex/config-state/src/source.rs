@@ -11,12 +11,15 @@ use std::path::PathBuf;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Request { pub(super) selector: String, pub(super) headless: bool }
+pub(super) struct Request {
+    pub(super) selector: String, pub(super) headless: bool,
+    #[serde(default)] pub(super) resume: bool,
+}
 
 #[derive(Serialize)]
 pub(super) struct Source { pub(super) thread_id: String, pub(super) cwd: PathBuf }
 
-async fn read(store: &LocalThreadStore, id: ThreadId) -> std::result::Result<StoredThread, ThreadStoreError> {
+pub(super) async fn read(store: &LocalThreadStore, id: ThreadId) -> std::result::Result<StoredThread, ThreadStoreError> {
     store.read_thread(ReadThreadParams { thread_id: id, include_archived: true, include_history: false }).await
 }
 
@@ -75,7 +78,7 @@ pub(super) async fn select(config: &Config, runtime: StateDbHandle, request: &Re
     Ok(Source { thread_id: selected.thread_id.to_string(), cwd })
 }
 
-async fn lookup(store: &LocalThreadStore, config: &Config, request: &Request) -> Result<StoredThread> {
+pub(super) async fn lookup(store: &LocalThreadStore, config: &Config, request: &Request) -> Result<StoredThread> {
     if request.selector.trim().is_empty() { return Err(()); }
     let mut cursor = None;
     let mut found: Option<StoredThread> = None;
@@ -84,7 +87,7 @@ async fn lookup(store: &LocalThreadStore, config: &Config, request: &Request) ->
             page_size: 100, cursor: cursor.clone(), sort_key: if request.headless { ThreadSortKey::UpdatedAt } else { ThreadSortKey::CreatedAt },
             sort_direction: SortDirection::Desc,
             allowed_sources: if request.headless { vec![] } else { vec![SessionSource::Cli, SessionSource::VSCode] },
-            model_providers: Some(vec![config.model_provider_id.clone()]),
+            model_providers: Some(if request.resume { vec![] } else { vec![config.model_provider_id.clone()] }),
             cwd_filters: None, section: None, project_id: None, archived: false,
             search_term: request.headless.then(|| request.selector.clone()), relation_filter: None, use_state_db_only: !request.headless,
         }).await.map_err(|_| ())?;

@@ -64,6 +64,13 @@ assert.ok(!invalidToken.stderr.includes(token.token_response.access_token));
 assert.deepEqual(fs.readdirSync(codexHome), before);
 console.log("PASS maintenance-only HTTP identities and unchanged native token deserialization");
 
+for (const mode of ["file", "auto"]) {
+  const overridden = await call({ ...mcp, config: [...mcp.config, `mcp_oauth_credentials_store="${mode}"`] });
+  assert.equal(overridden.mcp_store, mode, "later native flags retain precedence over the AIM default");
+}
+assert.equal(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"), settings);
+console.log("PASS invocation-local MCP default and later explicit overrides leave shared settings unchanged");
+
 const initialize = { ...base, operation: "initialize" };
 const cold = await Promise.all([call(initialize), call(initialize), call(initialize)]);
 assert.ok(cold.every(result => result.initialized));

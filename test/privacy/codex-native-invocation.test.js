@@ -24,6 +24,7 @@ test("relative --cd is projected once while native retains its original process 
       env: { HOME: homeDir, PATH: "/usr/bin:/bin" }, admitArtifact: () => artifact,
       inspectManagedPolicy: () => ({ files: [] }),
       nativeInputs: async ({ parsedArgs }) => {
+        assert.equal(parsedArgs.config[0], 'mcp_oauth_credentials_store="keyring"');
         assert.equal(parsedArgs.cwd, selected);
         assert.equal(parsedArgs.processCwd, cwd);
         if (parsedArgs.worktree) assert.deepEqual(parsedArgs.directories, [path.join(cwd, "extra")]);
@@ -33,7 +34,32 @@ test("relative --cd is projected once while native retains its original process 
     try {
       assert.equal(invocation.cwd, cwd);
       assert.equal(invocation.inputs.cwd, selected);
-      assert.deepEqual(invocation.args.slice(invocation.args.indexOf("--") + 1), ["--no-daemon", ...args]);
+      assert.deepEqual(invocation.args.slice(invocation.args.indexOf("--") + 1), ["--no-daemon", "-c", 'mcp_oauth_credentials_store="keyring"', ...args]);
+      assert.equal(fs.existsSync(path.join(prepared.sharedHome, "config.toml")), false, "default keyring mode does not author shared settings");
+      if (process.platform === "darwin") assert.ok(invocation.args.includes(path.join(homeDir,
+        "Library/Application Support/com.openai.codex/production-appcast-bootstrap.json")));
     } finally { await invocation.close(); }
   }
+  const config = path.join(prepared.sharedHome, "config.toml");
+  fs.writeFileSync(config, 'mcp_oauth_credentials_store="auto"\n');
+  for (const command of [[], ["exec"], ["app-server"]]) {
+    for (const mode of ["file", "auto"]) {
+      await assert.rejects(prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment,
+        args: [...command, "-c", `mcp_oauth_credentials_store="${mode}"`], ownedAppServer: command[0] === "app-server",
+        env: { HOME: homeDir, PATH: "/usr/bin:/bin" }, admitArtifact: () => artifact,
+        inspectManagedPolicy: () => ({ files: [] }), nativeInputs: async ({ parsedArgs }) => {
+          assert.deepEqual(parsedArgs.config, ['mcp_oauth_credentials_store="keyring"', `mcp_oauth_credentials_store="${mode}"`]);
+          return { cwd, reads: [], writes: [], database_roots: [], mcp_store: mode };
+        },
+      }), /conflicting command-line or administrator setting/);
+    }
+  }
+  const file = path.join(prepared.sharedHome, ".credentials.json");
+  fs.writeFileSync(file, '{}');
+  await assert.rejects(prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment,
+    args: ["--worktree", "synthetic"], env: { HOME: homeDir, PATH: "/usr/bin:/bin" },
+    admitArtifact: () => { throw new Error("File refusal must precede artifact/worktree work"); },
+  }), /one-time native keyring conversion/);
+  assert.equal(fs.readFileSync(file, "utf8"), '{}');
+  assert.equal(fs.readFileSync(config, "utf8"), 'mcp_oauth_credentials_store="auto"\n');
 });

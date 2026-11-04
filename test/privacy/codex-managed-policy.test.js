@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codexManagedPolicyText, inspectCodexManagedPolicy, validateCodexExporters } from "../../src/privacy/codex-managed-policy.js";
+import { codexManagedPolicyText, inspectCodexManagedPolicy } from "../../src/privacy/codex-managed-policy.js";
 import { parseCodexSettings } from "../../src/io/codex-settings-toml.js";
 
 function options({ forced = {}, plan = "plus", config, requirements } = {}) {
@@ -21,6 +21,14 @@ test("managed opt-outs preserve independent collector endpoints and content deci
   assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ config })));
 });
 
+test("installation preserves existing sessions' MCP backend instead of imposing a global default", () => {
+  assert.equal(parseCodexSettings(codexManagedPolicyText().config).value.mcp_oauth_credentials_store, undefined);
+  for (const mode of ["file", "auto", "keyring"]) {
+    const config = `mcp_oauth_credentials_store="${mode}"\n`;
+    assert.equal(parseCodexSettings(codexManagedPolicyText({ config }).config).value.mcp_oauth_credentials_store, mode);
+  }
+});
+
 test("actual forced policy is checked by effective privacy-field precedence", () => {
   assert.throws(() => inspectCodexManagedPolicy(options({ forced: { config_toml_base64: "[analytics]\nenabled=true" } })), /forced.*analytics.enabled/);
   assert.throws(() => inspectCodexManagedPolicy(options({ forced: { requirements_toml_base64: "allow_remote_control=true" } })), /forced.*allow_remote_control/);
@@ -37,14 +45,6 @@ test("approved organization-policy gap does not introduce an account-tier or con
     assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ plan })), plan);
   }
   assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ requirements: '[config_server]\nurl="https://policy.example"\n' })));
-});
-
-test("finite known-provider destination check does not pin independent exporters", () => {
-  for (const endpoint of ["https://collector-a.example/v1", "https://collector-b.example/v2", "https://independent.statsig.com/v1"]) {
-    assert.doesNotThrow(() => validateCodexExporters([{ source: "fixture", value: { otel: { exporter: { "otlp-http": { endpoint } } } } }]));
-  }
-  assert.throws(() => validateCodexExporters([{ source: "fixture", value: { otel: { trace_exporter: { "otlp-grpc": { endpoint: "https://api.openai.com" } } } } }]), /known provider/);
-  assert.throws(() => validateCodexExporters([{ source: "fixture", value: { otel: { exporter: { "otlp-http": { endpoint: "https://ab.chatgpt.com./v1" } } } } }]), /known provider/);
 });
 
 test("selected-workspace claims do not become an unsupported account restriction", () => {

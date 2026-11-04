@@ -78,7 +78,7 @@ def durable(file, data, exclusive=False):
     # before replacing the old journal or dispatching any native write.
     if len(data) > MAX_PRIVATE_BYTES:
         raise MaintenanceError('Maintenance state exceeds its supported size; no credential import was dispatched.')
-    temporary = file if exclusive else file.with_name('.' + file.name + '-' + uuid.uuid4().hex)
+    temporary = file.with_name('.' + file.name + '-' + uuid.uuid4().hex)
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         private(fd)
@@ -88,7 +88,16 @@ def durable(file, data, exclusive=False):
             os.fsync(fd)
     finally:
         os.close(fd)
-    if not exclusive:
+    if exclusive:
+        # Never expose a short backup under its final name. No-replace rename
+        # also avoids a crash leaving two hard links to a private record.
+        libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+        rename, cwd, flag = (libc.renameatx_np, -2, 4) if sys.platform == 'darwin' else (libc.renameat2, -100, 1)
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(cwd, os.fsencode(temporary), cwd, os.fsencode(file), flag):
+            raise OSError(ctypes.get_errno(), 'exclusive backup publication failed')
+    else:
         os.replace(temporary, file)
     state_io.flush_parent(file)
 

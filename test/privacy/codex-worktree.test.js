@@ -47,6 +47,33 @@ test("explicit source cwd wins a fork's saved cwd; inspection and refused source
   assert.equal(creations, 1);
 });
 
+test("TUI worktree preserves its original OSS choice through source and destination; exec chooses later", async () => {
+  for (const choice of [{provider:"lmstudio"}, "picker"]) {
+    const calls=[];
+    const result=await prepareCodexWorktree({
+      parsedArgs:codexArguments(["fork",id,"--oss","--worktree"],{cwd:"/synthetic/original"}),
+      artifact:{},prepared:{},env:{},managed:{},
+      nativeInputs:async request=>{
+        calls.push(request);
+        return {oss_choice:choice,worktree_root:"/synthetic/worktrees",source_untrusted:false,
+          fork_source:{thread_id:id,cwd:"/synthetic/saved"}};
+      },operate:async()=>({checkout}),
+    });
+    assert.deepEqual(calls[1].parsedArgs.ossChoice,choice);
+    assert.deepEqual(result.parsedArgs.ossChoice,choice);
+    assert.equal(result.parsedArgs.localProvider,choice.provider??null);
+    assert.equal(result.parsedArgs.worktree,false);
+  }
+  const result=await prepareCodexWorktree({
+    parsedArgs:codexArguments(["exec","--oss","--worktree"],{cwd:"/synthetic/original"}),
+    artifact:{},prepared:{},env:{},managed:{},
+    nativeInputs:async()=>({oss_choice:null,worktree_root:"/synthetic/worktrees",source_untrusted:false}),
+    operate:async()=>({checkout}),
+  });
+  assert.equal(result.parsedArgs.ossChoice,undefined);
+  assert.equal(result.parsedArgs.localProvider,null);
+});
+
 test("post-exit binding preserves account/time/lineage and missing or failed ownership stays informational", async () => {
   const notices = [], requests = [];
   let bind = 0;

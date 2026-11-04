@@ -65,13 +65,13 @@ int main(int argc,char **argv) {
     if (!inside(home,account) || !inside(scratch,account)) fail("account state ownership");
     struct passwd *user=getpwuid(caller);char user_home[PATH_MAX];
     if (!user || !realpath(user->pw_dir,user_home) || inside(user_home,account)) fail("overbroad account root");
-    int envfd=number(argv[5],1024),writes=number(argv[6],MAX_ROOTS),readindex=7+writes;
+    int envfd=number(argv[5],1024),writes=number(argv[6],argc-7),readindex=7+writes;
     if (readindex>=argc) fail("write roots");
-    int reads=number(argv[readindex],MAX_ROOTS),dbindex=readindex+1+reads;
+    int reads=number(argv[readindex],argc-readindex-1),dbindex=readindex+1+reads;
     if (dbindex>=argc) fail("read roots");
-    int databases=number(argv[dbindex],MAX_ROOTS),denyindex=dbindex+1+databases;
+    int databases=number(argv[dbindex],argc-dbindex-1),denyindex=dbindex+1+databases;
     if (denyindex>=argc) fail("database roots");
-    int denies=number(argv[denyindex],MAX_ROOTS),separator=denyindex+1+denies;
+    int denies=number(argv[denyindex],argc-denyindex-1),separator=denyindex+1+denies;
     if (separator>=argc || strcmp(argv[separator],"--")) fail("denied paths");
     const char **write_roots=(const char **)(argv+7),**read_roots=(const char **)(argv+readindex+1),**database_roots=(const char **)(argv+dbindex+1),**denied=(const char **)(argv+denyindex+1);
     for (int i=0;i<writes+reads;i++) {
@@ -84,6 +84,7 @@ int main(int argc,char **argv) {
     close_handles();
     int admission=codex_maintenance_admission();
     require_enforcement();
+    trusted_launcher_namespaces();
     unsigned char nonce[16];char hex[33];if (getentropy(nonce,sizeof(nonce))) fail("policy identity");
     for (int i=0;i<16;i++) snprintf(hex+2*i,3,"%02x",nonce[i]);
     snprintf(profile,sizeof(profile),"aim-codex-p-%u-%s",caller,hex);
@@ -116,14 +117,15 @@ int main(int argc,char **argv) {
     // Privacy policy is administrator-owned; native writes cannot enable an
     // alternative store, remote control or automatic vendor telemetry.
     fputs("deny /etc/codex{,/**} wlk,\n",out);
-    const char *excluded[]={vendor,helper,self};char transition[200];
+    const char *excluded[]={vendor,helper,self,launcher_namespaces[0],launcher_namespaces[1]};char transition[200];
     snprintf(transition,sizeof(transition),"px -> %s",tools_profile);
-    other_exec(out,"/",excluded,3,transition);
-    literal(out,vendor);fputs(" ix,\n",out);literal(out,helper);fputs(" ix,\n",out);literal(out,self);fputs(" Ux,\n}\n",out);
-    fprintf(out,"profile %s flags=(enforce,attach_disconnected) {\nnetwork,\ncapability,\nsignal,\nptrace,\nunix,\ndbus,\n/** rwmlk,\n",tools_profile);
-    other_exec(out,"/",excluded,3,"ix");
+    other_exec(out,"/",excluded,5,transition);
+    literal(out,vendor);fputs(" ix,\n",out);literal(out,helper);fputs(" ix,\n",out);launcher_exec(out);fputs("}\n",out);
+    fprintf(out,"profile %s flags=(enforce,attach_disconnected) {\n",tools_profile);
+    ordinary_access(out);
+    other_exec(out,"/",excluded,5,"ix");
     literal(out,vendor);fprintf(out," px -> %s,\n",profile);literal(out,helper);fprintf(out," px -> %s,\n",profile);
-    literal(out,self);fputs(" Ux,\n}\n",out); // No inherited vendor file denials on tools.
+    launcher_exec(out);fputs("}\n",out); // No inherited vendor file denials on tools.
     if (fclose(out) || size>2*1024*1024) fail("policy generation");
     immutable(RUNTIME "/policy.lock",0);int lock=open(RUNTIME "/policy.lock",O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
     if (lock<0 || flock(lock,LOCK_EX)) fail("policy installation lock");

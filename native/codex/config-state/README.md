@@ -31,8 +31,9 @@ The request arrives on a dedicated private pipe. `inputs` loads the effective
 local configuration under OS-enforced filesystem read-only and outbound/exec
 denial. `initialize` uses the same loader, checks mandatory privacy settings,
 then opens the native databases under short locks on their actual shared roots.
-It closes the native pools before publishing a durable completion record and
-releasing the locks. No model, auth, remote policy, MCP, exporter or long-running
+It closes the native pools before releasing the locks; native migrations remain
+the readiness authority, without a separate completion cache. No model, auth,
+remote policy, MCP, exporter or long-running
 server is started. The output is a finite inventory of paths and policy facts;
 configuration contents, credential values and native error details are omitted.
 

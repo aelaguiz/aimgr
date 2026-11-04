@@ -20,6 +20,7 @@ import pty
 import re
 import select
 import shlex
+import shutil
 import signal
 import socket
 import struct
@@ -67,6 +68,7 @@ parser.add_argument('--root', required=True)
 parser.add_argument('--codex', required=True)
 parser.add_argument('--sha256', required=True)
 parser.add_argument('--aim-root')
+parser.add_argument('--aim-cli', action='store_true')
 parser.add_argument('--phase', choices=['exec', 'tui', 'concurrent-tui', 'features', 'continuity', 'lifetime', 'routine', 'daemon', 'required-failure', 'all'], default='all')
 parser.add_argument('--terminal-input', action='store_true')
 parser.add_argument('--prepare-database', action='store_true')
@@ -74,6 +76,11 @@ parser.add_argument('--shared-database', action='store_true')
 parser.add_argument('--sandbox-profile')
 parser.add_argument('--mcp-auth', action='store_true')
 args = parser.parse_args()
+if args.aim_cli and (not args.aim_root or args.phase in ['daemon', 'routine'] or args.sandbox_profile):
+    raise SystemExit('AIM CLI mode requires --aim-root and a direct workflow phase without an extra sandbox wrapper.')
+node = shutil.which('node') if args.aim_cli else None
+if args.aim_cli and not node:
+    raise SystemExit('AIM CLI integration requires the isolated host Node runtime.')
 harness_digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 root = Path(args.root).resolve()
 base = Path('/opt/aimgr-state-audit')
@@ -103,6 +110,7 @@ skill = project / '.agents/skills/privacy-proof/SKILL.md'
 skill.parent.mkdir(parents=True)
 skill.write_text('---\nname: privacy-proof\ndescription: SKILL_DISCOVERY_CANARY. Use for the synthetic standalone test.\n---\nSKILL_CONTENT_CANARY. Run the configured MCP echo tools and native shell proof.\n')
 homes = {}
+aim_prepared = {}
 requests = []
 states = {}
 tool_sets = {}
@@ -297,14 +305,17 @@ class Mock(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))) or '{}')
         self.capture(body)
-        if self.path == '/mcp':
+        if self.path in ['/mcp', '/ps/mcp']:
             if args.mcp_auth and self.headers.get('Authorization') != 'Bearer synthetic-mcp-token':
                 return self.reply({'error': 'Synthetic MCP authentication required'}, 401)
-            if args.phase == 'required-failure':
+            if self.path == '/mcp' and args.phase == 'required-failure':
                 return self.reply({'error': 'Deliberately unavailable required MCP server'}, 503)
             if 'id' not in body:
                 return self.reply('', 202)
-            return self.reply({'jsonrpc': '2.0', 'id': body['id'], 'result': mcp_result(body, 'http')})
+            result = mcp_result(body, 'http')
+            if self.path == '/ps/mcp' and body.get('method') == 'tools/list':
+                result = {'tools': []}
+            return self.reply({'jsonrpc': '2.0', 'id': body['id'], 'result': result})
         if 'responses' in self.path:
             return self.reply(''.join('event: ' + e['type'] + '\ndata: ' + json.dumps(e) + '\n\n' for e in events(body)), mime='text/event-stream')
         return self.reply({})
@@ -373,6 +384,8 @@ for label in ['A', 'B']:
               '[mcp_servers.http]\nurl=' + json.dumps(endpoint + '/mcp') + '\nrequired=true\n')
     if args.mcp_auth:
         config += 'bearer_token_env_var="PRIVACY_MCP_TOKEN"\n'
+    if args.aim_cli:
+        config = 'model_provider="fixture"\nchatgpt_base_url=' + json.dumps(endpoint) + '\n' + config + '\n[model_providers.fixture]\nname="Fixture"\nbase_url=' + json.dumps(endpoint + '/v1') + '\nwire_api="responses"\n'
     (app / 'config.toml').write_text(config)
     # TUI deliberately does not treat an ambient API key as completed login.
     # Install only a synthetic key in the fresh fixture's native credential file;
@@ -431,6 +444,9 @@ def env_for(label, terminal_extras=False):
 
 
 def wrap(command):
+    if args.aim_cli:
+        assert command[0] == str(binary)
+        return [node, str(Path(args.aim_root).resolve() / 'test/privacy/codex-cli-fixture.mjs'), '--', *command[1:]]
     return ['/usr/bin/sandbox-exec', '-f', args.sandbox_profile] + command if args.sandbox_profile else command
 
 
@@ -678,6 +694,11 @@ def scheduled_routine():
 
 results = []
 try:
+    if args.aim_cli:
+        for label in homes:
+            prepared = subprocess.run([node, str(Path(args.aim_root).resolve() / 'test/privacy/codex-cli-fixture.mjs'),
+                '--prepare', label], env=env_for(label), cwd=project, capture_output=True, text=True, check=True)
+            aim_prepared[label] = json.loads(prepared.stdout)
     if args.prepare_database:
         for label in homes:
             prepare_database(label)
@@ -724,8 +745,9 @@ try:
     live_table = process_table()
     survivors = {pid: live_table[pid] for pid in observed_descendants if pid in live_table and not live_table[pid]['state'].startswith('Z')}
     (root / 'survivors-before-cleanup.private.json').write_text(json.dumps(survivors, indent=2))
-    ids = {label: hashlib.sha256((app / 'installation_id').read_bytes()).hexdigest() for label, (_, app) in homes.items() if (app / 'installation_id').exists()}
-    summary = {'kind': 'synthetic standalone compatibility; not production privacy acceptance',
+    ids = ({label: prepared['installationId'] for label, prepared in aim_prepared.items()} if args.aim_cli else
+           {label: hashlib.sha256((app / 'installation_id').read_bytes()).hexdigest() for label, (_, app) in homes.items() if (app / 'installation_id').exists()})
+    summary = {'kind': 'actual AIM CLI with synthetic Redis transport and loopback model/MCP services' if args.aim_cli else 'synthetic standalone compatibility; not production privacy acceptance',
                'platform': platform.system(), 'codexSha256': digest, 'codeModeHostSha256': helper_digest, 'results': results,
                'harnessSha256': harness_digest,
                'databasePreparedByFiniteNativeProcess': args.prepare_database,

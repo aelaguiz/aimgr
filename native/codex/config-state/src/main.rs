@@ -3,6 +3,15 @@
 mod state;
 mod owner;
 mod source;
+mod saved;
+mod oss;
+extern crate codex_core as legacy_core;
+// Compile these pure selectors from the paired, unchanged upstream tree.
+// They have no app-server, authentication or transport owner.
+#[path = "../vendor/codex/codex-rs/tui/src/resume_permissions.rs"]
+mod resume_permissions;
+#[path = "../vendor/codex/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs"]
+mod persisted_resume_settings;
 
 use codex_config::{ConfigLayerSource, LoaderOverrides, ProfileV2Name};
 use codex_config::types::OtelExporterKind;
@@ -70,6 +79,15 @@ struct Request {
     worktree: bool,
     owner: Option<owner::Request>,
     fork_source: Option<source::Request>,
+    saved: Option<saved::Request>,
+    #[serde(default)]
+    oss: bool,
+    local_provider: Option<String>,
+    oss_choice: Option<oss::Choice>,
+    #[serde(default)]
+    explicit_cwd: bool,
+    #[serde(skip)]
+    selected_oss: Option<String>,
     #[serde(default)]
     mcp_values: Vec<String>,
     // Captured by the admitted CFPreferences forced-value reader. Both fields
@@ -106,10 +124,21 @@ struct Projection {
     worktree_root: Option<PathBuf>,
     owner_thread_id: Option<String>,
     fork_source: Option<source::Source>,
+    oss_choice: Option<oss::Choice>,
+    project_cwds: BTreeSet<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mcp_servers: Option<Vec<McpInput>>,
     mcp_store: codex_config::types::OAuthCredentialsStoreMode,
     mcp_keyring_backend: codex_config::types::AuthKeyringBackendKind,
+}
+
+impl Projection {
+    fn extend_paths(&mut self, next: Self) {
+        self.reads.extend(next.reads); self.writes.extend(next.writes);
+        self.database_roots.extend(next.database_roots); self.database_files.extend(next.database_files);
+        self.database_files.sort(); self.database_files.dedup();
+        self.project_cwds.extend(next.project_cwds);
+    }
 }
 
 fn collector(value: &OtelExporterKind, reads: &mut BTreeSet<PathBuf>) -> Collector {
@@ -226,6 +255,14 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
         }
     }
     for root in config.permissions.profile_workspace_roots() { writes.insert(root.as_uri().to_path_buf()); }
+    // Runtime workspace roots can come from an owned saved-session snapshot,
+    // not only --add-dir. They are project inputs, never additional configs.
+    let actual_home = std::env::var_os("HOME").map(PathBuf::from);
+    for root in &config.workspace_roots {
+        if root.as_path() != std::path::Path::new("/") && Some(root.as_path()) != actual_home.as_deref() {
+            writes.insert(root.to_path_buf());
+        }
+    }
     writes.insert(config.log_dir.clone());
     let database_files: Vec<_> = config.sqlite_config().runtime_db_paths().into_iter().map(|db| db.path).collect();
     let database_roots = database_files.iter().filter_map(|p| p.parent().map(std::path::Path::to_path_buf)).collect();
@@ -239,14 +276,17 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
         database_roots, database_files, collectors, analytics_disabled: config.analytics_enabled == Some(false),
         feedback_disabled: !config.feedback_enabled, updates_disabled: !config.check_for_update_on_startup,
         used_defaults, initialized: false, source_untrusted: config.active_project.is_untrusted(), worktree_root: None,
-        owner_thread_id: None, fork_source: None, mcp_servers: None,
+        owner_thread_id: None, fork_source: None, oss_choice: None, project_cwds: BTreeSet::new(), mcp_servers: None,
         mcp_store: authored.mcp_oauth_credentials_store.unwrap_or_default(),
         mcp_keyring_backend: config.auth_keyring_backend_kind() })
 }
 
 async fn load(request: &Request, fallback: bool, restore_reviewer: bool) -> std::io::Result<(Config, BTreeSet<PathBuf>)> {
+    load_variant(request, fallback, restore_reviewer, None).await
+}
+
+fn loader_options(request: &Request) -> std::io::Result<LoaderOverrides> {
     let invalid = || std::io::Error::other("invalid helper input");
-    let cli = CliConfigOverrides { raw_overrides: request.config.clone() }.parse_overrides().map_err(|_| invalid())?;
     let mut loader = LoaderOverrides::default();
     loader.ignore_user_config = request.ignore_user_config;
     // Exec gates worktree creation without project config. TUI deliberately
@@ -265,6 +305,14 @@ async fn load(request: &Request, fallback: bool, restore_reviewer: bool) -> std:
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (&request.forced_config, &request.forced_requirements);
+    Ok(loader)
+}
+
+async fn load_variant(request: &Request, fallback: bool, restore_reviewer: bool,
+    variant: Option<ConfigOverrides>) -> std::io::Result<(Config, BTreeSet<PathBuf>)> {
+    let mut cli = CliConfigOverrides { raw_overrides: request.config.clone() }.parse_overrides()
+        .map_err(|_| std::io::Error::other("invalid helper input"))?;
+    let mut loader = loader_options(request)?;
     let mut overrides = ConfigOverrides::default();
     if fallback {
         // Exact native non-strict app-server fallback for invalid user/project
@@ -287,6 +335,12 @@ async fn load(request: &Request, fallback: bool, restore_reviewer: bool) -> std:
         overrides.bypass_hook_trust = request.harness.bypass_hook_trust;
     }
     let mut reads = BTreeSet::new();
+    if let Some(variant) = variant { overrides = variant; }
+    if let Some(provider) = &request.selected_oss {
+        overrides.model_provider = Some(provider.clone());
+        overrides.model = oss::model(provider, request.harness.model.as_deref());
+        if !request.headless { cli.push(("model_provider".into(), toml::Value::String(provider.clone()))); }
+    }
     let config = ConfigBuilder::default().codex_home(request.codex_home.clone()).cli_overrides(cli)
         .harness_overrides(overrides).loader_overrides(loader).strict_config(request.strict_config)
         .build_with_validation(|cfg, _, layers| {
@@ -301,9 +355,50 @@ async fn load(request: &Request, fallback: bool, restore_reviewer: bool) -> std:
     Ok((config, reads))
 }
 
-async fn run(request: Request, phase: &mut &'static str) -> Result<Projection> {
+async fn run(mut request: Request, phase: &mut &'static str) -> Result<Projection> {
     if !request.codex_home.is_absolute() || !request.cwd.is_absolute()
         || request.artifact_set.len() != 64 || !request.artifact_set.bytes().all(|b| b.is_ascii_hexdigit()) { return Err(()); }
+    *phase = "native OSS settings";
+    let choice = oss::choice(&request).await?;
+    if request.oss && !request.headless && !request.worktree
+        && matches!(request.oss_choice, Some(oss::Choice::Picker)) {
+        *phase = "OSS worktree provider";
+        if !matches!(oss::configured(&request).await?, Some(oss::Choice::Picker)) { return Err(()); }
+    }
+    let choices = choice.as_ref().map_or_else(|| vec![None], oss::Choice::providers);
+    let branching = choices.len() > 1;
+    let mut output: Option<Projection> = None;
+    for provider in choices {
+        request.selected_oss = provider;
+        let next = match run_selected(&request, phase).await {
+            Ok(next) => next,
+            Err(()) if branching && matches!(request.operation, Operation::ForkSource) => {
+                *phase = "OSS worktree source"; return Err(());
+            },
+            // Native may reject one prospective provider's configuration. It
+            // remains an error if selected; do not disable the other choice.
+            Err(()) if branching && *phase == "native settings" => continue,
+            Err(()) => return Err(()),
+        };
+        if let Some(output) = &mut output {
+            if matches!(request.operation, Operation::ForkSource) && !oss::same_source(output, &next, request.explicit_cwd) {
+                *phase = "OSS worktree source"; return Err(());
+            }
+            if !oss::privacy_compatible(output, &next) { return Err(()); }
+            output.source_untrusted |= next.source_untrusted;
+            output.initialized &= next.initialized;
+            output.used_defaults |= next.used_defaults;
+            if output.owner_thread_id != next.owner_thread_id { output.owner_thread_id = None; }
+            output.extend_paths(next);
+        } else { output = Some(next); }
+    }
+    let mut output = output.ok_or(())?;
+    output.oss_choice = choice;
+    output.database_files.sort(); output.database_files.dedup();
+    Ok(output)
+}
+
+async fn run_selected(request: &Request, phase: &mut &'static str) -> Result<Projection> {
     *phase = "native settings";
     let initial = load(&request, false, false).await;
     let initial = if request.headless && !request.yolo && initial.as_ref().map_or(true, |(config, _)|
@@ -369,7 +464,15 @@ async fn run(request: Request, phase: &mut &'static str) -> Result<Projection> {
     }
     if matches!(request.operation, Operation::Initialize) {
         *phase = "native database initialization";
-        state::initialize(&config, None, None).await?;
+        let inventory = state::initialize(&config, None, None, request.saved.as_ref().map(|_| request)).await?;
+        if let Some(projected) = inventory.saved.projection {
+            if !oss::privacy_compatible(&output, &projected) { return Err(()); }
+            output.extend_paths(projected);
+        }
+        for variant in inventory.saved.databases.into_values() {
+            state::initialize(&variant, None, None, None).await?;
+        }
+        output.database_files.sort(); output.database_files.dedup();
         output.initialized = true;
     }
     if matches!(request.operation, Operation::WorktreeOwner) {
@@ -377,12 +480,12 @@ async fn run(request: Request, phase: &mut &'static str) -> Result<Projection> {
         // A settings edit may select another DB while the child is running.
         // That is not evidence about this invocation's saved thread.
         if owner.matches_databases(&config) {
-            output.owner_thread_id = state::initialize(&config, Some(owner), None).await?.owner;
+            output.owner_thread_id = state::initialize(&config, Some(owner), None, None).await?.owner;
         }
     }
     if matches!(request.operation, Operation::ForkSource) {
         let source = request.fork_source.as_ref().ok_or(())?;
-        output.fork_source = state::initialize(&config, None, Some(source)).await?.source;
+        output.fork_source = state::initialize(&config, None, Some(source), None).await?.source;
     }
     Ok(output)
 }

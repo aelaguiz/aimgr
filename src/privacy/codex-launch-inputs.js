@@ -34,6 +34,29 @@ function keyringSockets(env) {
   });
 }
 
+// Remove only paths already covered by an admitted directory. Never invent a
+// common parent: that would expose unrelated projects or private home files.
+function compactGrants(reads, writes) {
+  const directories = new Map();
+  const directory = file => {
+    if (!directories.has(file)) {
+      try { directories.set(file, fs.statSync(file).isDirectory()); }
+      catch { directories.set(file, false); }
+    }
+    return directories.get(file);
+  };
+  const ancestor = (file, roots) => {
+    for (let parent = path.dirname(file); parent !== file; file = parent, parent = path.dirname(file)) {
+      if (roots.has(parent) && directory(parent)) return true;
+    }
+    return false;
+  };
+  return {
+    writes: [...writes].filter(file => !ancestor(file, writes)),
+    reads: [...reads].filter(file => !writes.has(file) && !ancestor(file, writes) && !ancestor(file, reads)),
+  };
+}
+
 export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, managedFiles = [], spawnSyncImpl = spawnSync,
   effectiveInputs }) {
   if (!effectiveInputs) throw new Error("Codex requires an admitted native input inventory.");
@@ -43,7 +66,8 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
   const actualHome = codexCanonicalPath(homeDir);
   // Starting in the user's home is valid, but it does not implicitly disclose
   // that whole directory to vendor code. Ordinary requested tools retain it.
-  if (cwd !== actualHome && cwd !== "/") add(writes, cwd);
+  const projectCwds = new Set([cwd, ...(effectiveInputs.project_cwds ?? []).map(codexCanonicalPath)]);
+  for (const project of projectCwds) if (project !== actualHome && project !== "/") add(writes, project);
   for (const file of parsedArgs.directories) add(writes, file);
   for (const file of parsedArgs.images) add(reads, file);
   for (const file of parsedArgs.files ?? []) add(reads, file);
@@ -58,10 +82,12 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
   // Git worktrees keep their common metadata outside the worktree. Asking Git
   // for these two local paths preserves worktree behavior without copying Git
   // config or reading/removing remotes and user credentials.
-  const git = spawnSyncImpl("git", ["rev-parse", "--show-toplevel", "--git-common-dir"], {
-    cwd, env, encoding: "utf8", timeout: 3000, maxBuffer: 64 * 1024, stdio: ["ignore", "pipe", "ignore"],
-  });
-  if (git.status === 0) for (const file of git.stdout.trim().split("\n")) add(writes, path.resolve(cwd, file));
+  for (const project of projectCwds) {
+    const git = spawnSyncImpl("git", ["rev-parse", "--show-toplevel", "--git-common-dir"], {
+      cwd: project, env, encoding: "utf8", timeout: 3000, maxBuffer: 64 * 1024, stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (git.status === 0) for (const file of git.stdout.trim().split("\n")) add(writes, path.resolve(project, file));
+  }
   // Effective configuration decisions belong to the admitted native helper.
   // This module inventories only explicit startup inputs, shared state, Git
   // metadata and existing environment-selected local transport/trust files.
@@ -72,7 +98,7 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
   const selectedCA = env.CODEX_CA_CERTIFICATE || env.SSL_CERT_FILE;
   for (const file of [selectedCA, env.SSL_CERT_DIR, env.NODE_EXTRA_CA_CERTS]) if (file) add(reads, path.resolve(cwd, file));
   for (const socket of keyringSockets(env)) add(writes, socket);
-  return { cwd, writes: [...writes], reads: [...reads], databases: [...databases], effectiveInputs };
+  return { cwd, ...compactGrants(reads, writes), databases: [...databases], effectiveInputs };
 }
 
 export function codexPrivacyEnvironment({ env, prepared, artifact, scratch }) {

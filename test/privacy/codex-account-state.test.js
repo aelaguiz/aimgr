@@ -37,6 +37,22 @@ test("custom settings origins share one local account auth target and refresh lo
   assert.notEqual(nested.codexHome,first.codexHome);
 });
 
+test("all accounts and settings origins share native default-home MCP lock inodes", t => {
+  const options = fixture(t), locks = path.join(options.homeDir, ".codex", "mcp-oauth-locks");
+  fs.mkdirSync(locks);
+  const lock = path.join(locks, "synthetic-key.lock");
+  fs.writeFileSync(lock, "existing native lock");
+  const inode = fs.statSync(lock).ino;
+  const cases = [options, { ...options, env: { CODEX_HOME: path.join(options.homeDir, "custom") } },
+    { ...options, accountId: "another-account", env: { CODEX_HOME: path.join(options.homeDir, "third") } }];
+  for (const input of cases) {
+    const prepared = prepareCodexAccountState(input);
+    assert.equal(fs.realpathSync(path.join(prepared.codexHome, "mcp-oauth-locks")), fs.realpathSync(locks));
+    assert.equal(fs.statSync(path.join(prepared.codexHome, "mcp-oauth-locks", "synthetic-key.lock")).ino, inode);
+  }
+  assert.equal(fs.readFileSync(lock, "utf8"), "existing native lock");
+});
+
 test("a destination anchor rejects copied private-home ownership and does not adopt copied auth or IDs", t=>{
   const options=fixture(t);
   const source=prepareCodexAccountState(options);

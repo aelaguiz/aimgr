@@ -130,6 +130,14 @@ static void literal(FILE *out,const char *s) {
     for (const char *p=s;*p;p++) { if (strchr("\\\"*?[]{}^",*p)) fputc('\\',out); fputc(*p,out); }
     fputc('"',out);
 }
+static void ordinary_access(FILE *out) {
+    /* Tools keep normal host operations, including their own sandboxes. Do
+     * not use default_allow/unconfined: those modes bypass the exact vendor
+     * exec transitions below. Do not use `allow all`, which adds conflicting
+     * ix permissions. Keep every non-exec class explicit. */
+    fputs("network,\ncapability,\nsignal,\nptrace,\nunix,\ndbus,\n"
+          "mount,\nremount,\numount,\npivot_root,\nuserns,\nmqueue,\nio_uring,\n/ rwmlk,\n/** rwmlk,\n",out);
+}
 static void resolver_read(FILE *out) {
     /* AppArmor mediates the canonical target, so the literal /etc/resolv.conf
      * rule alone breaks DNS on systemd-resolved hosts. Resolve this fixed OS
@@ -170,7 +178,14 @@ static void ancestors(FILE *out,const char *file,const char *rights,const char *
         if (!strcmp(copy,"/")) break;
     }
 }
+static const char *launcher_namespaces[]={
+    "/opt/aimgr-claude-runtime/artifacts/", "/opt/aimgr-codex-runtime/artifacts/"
+};
+static void artifact_exec(FILE *,const char *,const char **,int,const char *);
 static void other_exec(FILE *out,const char *prefix,const char **excluded,int count,const char *transition) {
+    for (int i=0;i<2;i++) if (!strcmp(prefix,launcher_namespaces[i])) {
+        artifact_exec(out,prefix,excluded,count,transition); return;
+    }
     /* Overlapping ix/px/Ux rules conflict; they do not have a most-specific
      * winner. Emit the exact complement of the two fixed image paths. No
      * generic abstractions with hidden ix rules are included (native v4 test). */
@@ -192,6 +207,80 @@ static void other_exec(FILE *out,const char *prefix,const char **excluded,int co
         for (int j=0;j<count;j++) if (excluded[j][n]==i) next_excluded[next_count++]=excluded[j];
         char next[PATH_MAX]; if (snprintf(next,sizeof(next),"%s%c",prefix,i)>=(int)sizeof(next)) fail("artifact path length");
         other_exec(out,next,next_excluded,next_count,transition);
+    }
+}
+static void nonlauncher_exec(FILE *out,const char *prefix,const char *transition) {
+    /* prefix is a generated AARE for exactly one bundle directory, never a
+     * user path. Partition its descendants around the one literal leaf. */
+    const char *leaf="launcher";
+    for (size_t i=0;i<strlen(leaf);i++) {
+        if (i) fprintf(out,"\"%s%.*s\" %s,\n",prefix,(int)i,leaf,transition);
+        fprintf(out,"\"%s%.*s[^%c]**\" %s,\n",prefix,(int)i,leaf,leaf[i],transition);
+    }
+    fprintf(out,"\"%slauncher?**\" %s,\n",prefix,transition);
+}
+static void artifact_exec(FILE *out,const char *prefix,const char **excluded,int count,const char *transition) {
+    char bundle[65]={0},pattern[PATH_MAX];size_t n=strlen(prefix);
+    const char *local[3];int locals=0;
+    for (int i=0;i<count;i++) if (strlen(excluded[i])>n) {
+        const char *slash=strchr(excluded[i]+n,'/');
+        if (!slash || slash-excluded[i]!=(ptrdiff_t)(n+64) || locals==3) fail("artifact exec partition");
+        if (!locals) memcpy(bundle,excluded[i]+n,64);
+        if (strncmp(bundle,excluded[i]+n,64)) fail("artifact exec partition");
+        local[locals++]=excluded[i];
+    }
+    fprintf(out,"\"%s*\" %s,\n",prefix,transition); // Immediate entries, not descendants.
+    if (!locals) {
+        snprintf(pattern,sizeof(pattern),"%s*/",prefix);nonlauncher_exec(out,pattern,transition);return;
+    }
+    // All other bundle names, partitioned without matching this exact bundle.
+    // A single-component wildcard is sufficient: each immutable launcher
+    // validates its 64-hex installation shape before executing a vendor.
+    char *others=NULL;size_t size=0;FILE *group=open_memstream(&others,&size);
+    if (!group) fail("artifact exec allocation");
+    fprintf(group,"%s{",prefix);
+    for (int i=0;i<64;i++) {
+        if (i) fprintf(group,",%.*s,",i,bundle);
+        fprintf(group,"%.*s[^%c/]*",i,bundle,bundle[i]);
+    }
+    fprintf(group,",%s?*}/",bundle);
+    if (fclose(group)) fail("artifact exec allocation");
+    nonlauncher_exec(out,others,transition);free(others);
+    snprintf(pattern,sizeof(pattern),"%s%s/",prefix,bundle);other_exec(out,pattern,local,locals,transition);
+}
+static void launcher_exec(FILE *out) {
+    for (int i=0;i<2;i++) fprintf(out,"\"%s*/launcher\" Ux,\n",launcher_namespaces[i]);
+}
+static void trusted_launcher_namespaces(void) {
+    for (int i=0;i<2;i++) {
+        char directory[PATH_MAX];snprintf(directory,sizeof(directory),"%s",launcher_namespaces[i]);
+        directory[strlen(directory)-1]=0;
+        struct stat st;
+        if (lstat(directory,&st)) {
+            if (errno!=ENOENT) fail("launcher namespace inspection");
+            // A missing namespace can only be created beneath its first
+            // existing immutable ancestor. No user-created future exception.
+            while (lstat(directory,&st)) {
+                if (errno!=ENOENT) fail("launcher namespace ancestor");
+                char *slash=strrchr(directory,'/');if (!slash || slash==directory) fail("launcher namespace ancestor");*slash=0;
+            }
+            immutable(directory,1);chain(directory);continue;
+        }
+        immutable(directory,1);chain(directory);
+        DIR *dir=opendir(directory);if (!dir) fail("launcher namespace inventory");
+        struct dirent *entry;
+        while ((entry=readdir(dir))) {
+            if (!strcmp(entry->d_name,".") || !strcmp(entry->d_name,"..")) continue;
+            char child[PATH_MAX],launcher[PATH_MAX];
+            if (snprintf(child,sizeof(child),"%s/%s",directory,entry->d_name)>=(int)sizeof(child)) fail("launcher namespace path");
+            if (lstat(child,&st)) fail("launcher namespace entry");
+            if (S_ISREG(st.st_mode)) continue;
+            immutable(child,1);
+            if (snprintf(launcher,sizeof(launcher),"%s/launcher",child)>=(int)sizeof(launcher)) fail("launcher namespace path");
+            if (lstat(launcher,&st)) { if (errno==ENOENT) continue;fail("launcher namespace image"); }
+            immutable(launcher,0);
+        }
+        closedir(dir);
     }
 }
 static void parse_policy(const char *text,int remove) {

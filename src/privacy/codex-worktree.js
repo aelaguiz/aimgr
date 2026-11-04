@@ -31,6 +31,7 @@ export async function prepareCodexWorktree({ parsedArgs, nativeInputs, artifact,
   const common = { nativeInputs, artifact, prepared, env, managed };
   let source = await nativeInputs({ ...common, parsedArgs, operation: selector ? "fork_source" : "inputs",
     forkSource: selector ? { selector, headless } : null });
+  if (parsedArgs.oss && !headless) parsedArgs = { ...parsedArgs, ossChoice: source.oss_choice };
   const forkId = selector ? source.fork_source.thread_id : null;
   const sourceCwd = selector && !parsedArgs.cwdOverride ? source.fork_source.cwd : parsedArgs.cwd;
   if (sourceCwd !== parsedArgs.cwd) {

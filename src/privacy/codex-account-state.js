@@ -6,7 +6,12 @@ import { readCodexInstallationId } from "../targets/codex-installation-id.js";
 import { readCodexEnvironment } from "./codex-environment.js";
 
 const hash = text => createHash("sha256").update(text).digest("hex");
-const SHARED = new Set(["AGENTS.md", "AGENTS.override.md", "instructions.md", "skills", "agents", "rules", "memories", "memory", "sessions", "archived_sessions", "history.jsonl", "session_index.jsonl", "plugins", "marketplaces", "prompts", "thread-writer-locks", "mcp-oauth-locks"]);
+const SHARED = new Set(["AGENTS.md", "AGENTS.override.md", "instructions.md", "skills", "agents", "rules", "memories", "memory", "sessions", "archived_sessions", "history.jsonl", "session_index.jsonl", "plugins", "marketplaces", "prompts", "thread-writer-locks"]);
+
+// Direct MCP keyring entries are OS-user scoped, independent of account or
+// settings origin. Reuse native's ordinary default-home lock inodes so those
+// sessions and every AIM home serialize the same rotating MCP credential.
+export const codexMcpLockDirectory = homeDir => path.join(homeDir, ".codex", "mcp-oauth-locks");
 
 function readOwner(home) {
   try { return JSON.parse(fs.readFileSync(path.join(home, ".aim-account.json"), "utf8")); }
@@ -56,7 +61,7 @@ export function codexStateLink(file, target) {
 
 export function prepareCodexAccountState({ homeDir, env = {}, accountId, label, environment }) {
   const prepared = codexAccountPaths({ homeDir, env, accountId, environment });
-  for (const directory of [prepared.accountRoot, prepared.codexHome, prepared.sharedHome]) durableCodexMkdir(directory);
+  for (const directory of [prepared.accountRoot, prepared.codexHome, prepared.sharedHome, codexMcpLockDirectory(homeDir)]) durableCodexMkdir(directory);
   const ownerFile = path.join(prepared.codexHome, ".aim-account.json");
   createOnce(ownerFile, JSON.stringify({ schema: 1, accountId, environmentId: prepared.environmentId, sharedHome: prepared.sharedHome, accountRoot: prepared.accountRoot }) + "\n");
   const owner = readOwner(prepared.codexHome);
@@ -76,10 +81,11 @@ export function prepareCodexAccountState({ homeDir, env = {}, accountId, label, 
   const installationId = readCodexInstallationId({ codexHome: prepared.accountRoot });
   if (!installationId) throw new Error("Codex account installation identity is invalid.");
   for (const name of ["auth.json", "installation_id"]) codexStateLink(path.join(prepared.codexHome, name), path.join(prepared.accountRoot, name));
+  codexStateLink(path.join(prepared.codexHome, "mcp-oauth-locks"), codexMcpLockDirectory(homeDir));
   // Native creates these lazily. Link their canonical destinations before the
   // first owner, including an initially empty history, so first use cannot
   // silently create a private parallel transcript tree.
-  for (const name of ["thread-writer-locks", "mcp-oauth-locks", "sessions", "archived_sessions", "memories"]) fs.mkdirSync(path.join(prepared.sharedHome, name), { recursive: true, mode: 0o700 });
+  for (const name of ["thread-writer-locks", "sessions", "archived_sessions", "memories"]) fs.mkdirSync(path.join(prepared.sharedHome, name), { recursive: true, mode: 0o700 });
   for (const name of ["history.jsonl", "session_index.jsonl"]) {
     const fd = fs.openSync(path.join(prepared.sharedHome, name), "a", 0o600);
     fs.closeSync(fd);
@@ -88,11 +94,4 @@ export function prepareCodexAccountState({ homeDir, env = {}, accountId, label, 
     if (SHARED.has(name)) codexStateLink(path.join(prepared.codexHome, name), path.join(prepared.sharedHome, name));
   }
   return Object.freeze({ ...prepared, label, installationId });
-}
-
-export function resolveCodexActiveHome({ state, homeDir, env = {}, environment }) {
-  const target = state?.targets?.codexCli;
-  const accountId = target?.expectedAccountId;
-  if (accountId) return codexAccountPaths({ homeDir, env, accountId, environment }).codexHome;
-  return null; // Legacy/global credentials are not a Codex CLI fallback.
 }

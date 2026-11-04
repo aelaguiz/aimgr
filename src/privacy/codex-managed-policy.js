@@ -4,10 +4,9 @@ import { execFileSync } from "node:child_process";
 import { inspectCodexAdministratorPath } from "./codex-artifacts.js";
 import { parseCodexSettings, updateCodexSettings } from "../io/codex-settings-toml.js";
 
-const managedChanges = [{ keys: ["analytics", "enabled"], value: false }, { keys: ["feedback", "enabled"], value: false },
-  // Private account homes cannot safely share native File fallback writes.
-  // Explicit authored File/Auto choices require the one-time conversion.
-  { keys: ["mcp_oauth_credentials_store"], value: "keyring" }];
+// MCP backend selection is invocation-local. Changing it here would redirect
+// already-running native sessions on their next configuration reload.
+const managedChanges = [{ keys: ["analytics", "enabled"], value: false }, { keys: ["feedback", "enabled"], value: false }];
 const requirementChanges = [{ keys: ["cli_auth_credentials_store"], value: "file" },
   { keys: ["allow_remote_control"], value: false }, { keys: ["check_for_update_on_startup"], value: false },
   { keys: ["feedback", "enabled"], value: false }];
@@ -57,19 +56,4 @@ export function inspectCodexManagedPolicy({ artifact, platform = process.platfor
   // A plan snapshot cannot establish session-lifetime eligibility. Keep local
   // policy checks above; do not reject account tiers or patch native loading.
   return { files, documents, forced };
-}
-
-export function validateCodexExporters(documents) {
-  for (const { source, file, value } of documents) for (const key of ["exporter", "trace_exporter", "metrics_exporter"]) {
-    const exporter = value?.otel?.[key];
-    // Statsig's metrics form is controlled by native analytics consent. It is
-    // not a supported independent logs/traces collector.
-    if (exporter === "statsig" && key !== "metrics_exporter") throw new Error(`Codex was not started: ${source ?? file} selects a provider telemetry exporter.`);
-    const endpoint = exporter?.["otlp-http"]?.endpoint ?? exporter?.["otlp-grpc"]?.endpoint;
-    if (typeof endpoint !== "string") continue;
-    let host; try { host = new URL(endpoint).hostname.toLowerCase().replace(/\.$/, ""); } catch { continue; } // Native validates malformed endpoints.
-    if (["openai.com", "chatgpt.com"].some(domain => host === domain || host.endsWith(`.${domain}`))) {
-      throw new Error(`Codex was not started: ${source ?? file} selects a known provider telemetry destination in otel.${key}.`);
-    }
-  }
 }

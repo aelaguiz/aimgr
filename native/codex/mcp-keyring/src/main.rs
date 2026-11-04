@@ -50,6 +50,21 @@ fn validate_token(value: &str, request: &Request) -> Result<(), &'static str> {
     Ok(())
 }
 
+// Only the isolated-host fault fixture compiles with `--cfg test`. Normal
+// helper builds contain no environment switches or interruption barriers.
+#[cfg(test)]
+fn test_barrier(point: &str, name: &str) {
+    use std::os::unix::fs::MetadataExt;
+    if std::env::var("AIMGR_MCP_TEST_BARRIER").as_deref() != Ok(point) { return; }
+    if std::env::var("AIMGR_MCP_TEST_SERVER").is_ok_and(|value| value != name) { return; }
+    assert!(std::path::Path::new("/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST").is_file());
+    let directory = std::path::PathBuf::from(std::env::var_os("AIMGR_MCP_TEST_DIRECTORY").unwrap());
+    let meta = directory.symlink_metadata().unwrap();
+    assert!(directory.is_absolute() && meta.is_dir() && meta.uid() == unsafe { libc::getuid() } && meta.mode() & 0o077 == 0);
+    std::fs::write(directory.join("reached"), std::process::id().to_string()).unwrap();
+    while !directory.join("release").is_file() { std::thread::sleep(std::time::Duration::from_millis(10)); }
+}
+
 fn run() -> Result<Value, &'static str> {
     let mut input = String::new();
     io::stdin().take(4 * 1024 * 1024 + 1).read_to_string(&mut input).map_err(|_| "input")?;
@@ -87,8 +102,10 @@ fn run() -> Result<Value, &'static str> {
             let value = request.value.as_ref().ok_or("value")?;
             validate_token(value, &request)?;
             if let Some(receipt) = &mut receipt { receipt.record("dispatched")?; }
+            #[cfg(test)] test_barrier("dispatched", &request.server_name);
             if let Some(access) = &request.native_access { access.create(&account, value)?; }
             else { entry.set_password(value).map_err(|_| "keyring_write")?; }
+            #[cfg(test)] test_barrier("backend_returned", &request.server_name);
             if let Some(receipt) = &mut receipt { receipt.record("acknowledged")?; }
             let verified = entry.get_password().map_err(|_| "keyring_readback")?;
             if &verified != value { return Err("keyring_readback"); }

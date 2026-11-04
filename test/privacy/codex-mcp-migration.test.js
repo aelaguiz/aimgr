@@ -1,8 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PassThrough } from "node:stream";
-import { EventEmitter } from "node:events";
-import { codexMcpKey, decodeCodexMcpFile, codexMcpTokensEqual, codexMcpKeyring } from "../../src/credentials/codex-mcp-migration.js";
+import { codexMcpKey, decodeCodexMcpFile, codexMcpTokensEqual } from "../../src/credentials/codex-mcp-migration.js";
 
 const server = { name: "synthetic", url: "http://127.0.0.1:12345/mcp" };
 const entry = { server_name: server.name, server_url: server.url, client_id: "synthetic-client",
@@ -69,28 +67,4 @@ test("destination equivalence ignores only native-derived expires_in, never a di
     assert.equal(codexMcpTokensEqual(converted.token, different), false);
   }
   assert.equal(codexMcpTokensEqual(null, null), false);
-});
-
-test("keyring transport keeps credential bytes off argv and diagnostics", async () => {
-  for (const success of [true, false]) {
-    let input = "";
-    const value = JSON.stringify({ token_response: { access_token: "SYNTHETIC_SECRET" } });
-    const result = codexMcpKeyring({ operation: "insert-if-absent", server_name: server.name, url: server.url, value }, {
-      command: "/synthetic/helper", env: { DBUS_SESSION_BUS_ADDRESS: "synthetic-bus" },
-      spawnImpl: (command, args, options) => {
-        assert.deepEqual(args, []); assert.equal(command, "/synthetic/helper");
-        assert.equal(JSON.stringify(options).includes("SYNTHETIC_SECRET"), false);
-        const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.kill = () => {};
-        child.stdin.on("data", bytes => input += bytes);
-        child.stdin.on("finish", () => queueMicrotask(() => {
-          child.stdout.write(success ? JSON.stringify({ inserted: true, value }) : "SYNTHETIC_SECRET malformed failure");
-          child.emit("close", success ? 0 : 1);
-        }));
-        return child;
-      },
-    });
-    if (success) assert.equal((await result).value, value);
-    else await assert.rejects(result, error => !error.message.includes("SYNTHETIC_SECRET"));
-    assert.equal(JSON.parse(input).value, value);
-  }
 });

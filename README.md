@@ -136,6 +136,11 @@ aim auth write hermes <label> --auth-file <abs-path>
 aim codex use [label]
 aim codex resume-fresh <session-id> | --last [--dry-run] [--no-goal] [--keep-reasoning] [--drop-compaction] [--max-copy-mb <n>] [--archive-source]
 aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
+aim codex privacy status [--json]
+aim codex login <label> --manual-callback-stdio
+aim codex logout <label>
+aim codex mcp-migrate
+aim codex mcp-recover
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--verbose] [--json]
@@ -179,6 +184,36 @@ also stages a source transcript when it belongs to a different account.
 Login failures require a successful live usage check
 on the replacement account before launch. `--account` and `--switch-account` also work with
 the picker. For scripts, use `aim claude list --json` and an explicit selector.
+
+Codex uses an approved immutable runtime and a separate account directory for
+each local login. `aim codex login <label>` authorizes that account on this
+machine; `auth.json` and refresh tokens are never imported from the shared pool
+or exported to another machine. Each destination needs its own login. Prime/Pi
+credentials retain their separate authority. Shared settings remain editable,
+including relative paths and skill enable switches; a new vendor-visible folder
+outside the launch grants needs a new session. Ordinary shell tools keep their
+normal permissions. Organization-owned remote policy is an accepted gap.
+
+Install an explicitly approved complete Codex bundle with
+`scripts/install-local-bin.sh --codex-runtime-bundle /absolute/bundle`. This uses
+the same protected copy/admission transaction as Claude, provisions a local
+environment identity, and installs required local Codex policy. It requires
+neither a proxy nor Chrome. An upgrade preserves the environment identity and
+running sessions. On a cloned destination, run
+`sudo python3 scripts/install-codex-runtime.py /absolute/bundle --node /absolute/node --user "$USER" --activate --provision-clone`
+before using Codex; that replaces the copied identity and requires fresh local
+logins. Keep the source machine's identity unchanged.
+
+`aim codex privacy status --json` checks installed bytes, local policy,
+environment provisioning and pending maintenance without running Codex or
+contacting Redis/OpenAI. For an existing File-backed MCP OAuth store, let the
+current Codex sessions finish and run `aim codex mcp-migrate` once. It converts
+the shared MCP tokens into the native OS keyring, pauses Codex schedules during
+conversion, and preserves conflicting credentials. `aim codex mcp-recover`
+finishes an interrupted conversion. If an interrupted backend write has no
+durable acknowledgement, recovery requires a later machine boot. Ordinary
+launch does not start conversion. The full contract and test plan are in the
+[Codex privacy and proxy plan](docs/aelaguiz/CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md).
 
 Claude proxy protection is optional and configured per account. Accounts without
 an assignment do not need proxy infrastructure, Chrome/CDP bindings or route

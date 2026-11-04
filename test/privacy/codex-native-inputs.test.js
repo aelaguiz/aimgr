@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PassThrough } from "node:stream";
 import { prepareCodexNativeInputs } from "../../src/privacy/codex-native-inputs.js";
+import { codexArguments } from "../../src/privacy/codex-arguments.js";
 
 const secret = "SYNTHETIC_INPUT_SECRET";
 const artifact = { configState: "/approved/config-state", artifactSet: "a".repeat(64) };
@@ -65,7 +66,7 @@ test("native failure diagnostics never expose config, output or child errors", a
 
 test("input inventory rejects malformed paths, incomplete initialization and policy changes", async () => {
   const mutations = [v => v.reads.push("relative"), v => v.database_files.push(null),
-    v => v.writes = Array(257).fill("/work"), v => v.cwd = "relative", v => v.initialized = false,
+    v => v.project_cwds = ["relative"], v => v.cwd = "relative", v => v.initialized = false,
     v => v.schema++, v => v.source_revision = "wrong", v => v.analytics_disabled = false,
     v => v.feedback_disabled = false, v => v.updates_disabled = false,
     v => v.collectors[0] = { kind: "otlp", provider_destination: true }];
@@ -84,4 +85,20 @@ test("read-only inventory requires no initialized marker and does not turn TUI f
   assert.equal(request.headless, false);
   assert.equal(request.ignore_user_config, false);
   assert.equal(request.ignore_rules, false);
+});
+
+test("saved TUI selection preserves last-prompt grammar and does not add headless restoration", async () => {
+  for (const command of ["resume", "fork"]) {
+    for (const args of [[command, "--last", "/compact synthetic"], [command, "synthetic-name"], [command, "--all"]]) {
+      const input = options(); input.parsedArgs = codexArguments(args, {cwd:"/work"});
+      let request;
+      await prepareCodexNativeInputs({...input,executeImpl:transport(valid(),v=>request=v.request)});
+      assert.equal(request.saved.selector, args.includes("--last") || args.includes("--all") ? null : "synthetic-name");
+      assert.equal(request.saved.fork,command==="fork");
+      assert.equal(request.saved.last,args.includes("--last"));
+      assert.equal(request.saved.explicit_cwd,false);
+    }
+  }
+  const input=options(); input.parsedArgs=codexArguments(["exec","resume","--last"],{cwd:"/work"});
+  await prepareCodexNativeInputs({...input,executeImpl:transport(valid(),v=>assert.equal(v.request.saved,null))});
 });

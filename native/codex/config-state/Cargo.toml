@@ -23,6 +23,7 @@ codex-state = { path = "vendor/codex/codex-rs/state" }
 codex-protocol = { path = "vendor/codex/codex-rs/protocol" }
 codex-utils-absolute-path = { path = "vendor/codex/codex-rs/utils/absolute-path" }
 codex-utils-cli = { path = "vendor/codex/codex-rs/utils/cli" }
+codex-utils-path = { path = "vendor/codex/codex-rs/utils/path-utils" }
 codex-worktree = { path = "vendor/codex/codex-rs/worktree" }
 codex-rollout = { path = "vendor/codex/codex-rs/rollout" }
 codex-thread-store = { path = "vendor/codex/codex-rs/thread-store" }
@@ -35,6 +36,11 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "0.9.5"
 url = "2"
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+color-eyre = "0.6"
 
 [build-dependencies]
 cc = "1"

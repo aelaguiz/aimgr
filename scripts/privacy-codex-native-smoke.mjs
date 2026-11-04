@@ -23,6 +23,15 @@ fs.mkdirSync(cwd);
 fs.mkdirSync(path.join(homeDir, ".codex", "skills", "review"), { recursive: true });
 fs.mkdirSync(path.join(homeDir, ".codex", "skills", "second"), { recursive: true });
 fs.writeFileSync(path.join(homeDir, ".codex", "config.toml"), 'model="synthetic-model"\nmodel_provider="fixture"\n[model_providers.fixture]\nname="Fixture"\nbase_url="http://127.0.0.1:1"\nwire_api="responses"\n[skills]\nconfig=[{path="./skills/review",enabled=false}]\n');
+const manyRoots = process.argv.includes("--many-roots");
+if (manyRoots) {
+  const config = path.join(homeDir, ".codex", "config.toml");
+  const roots = Array.from({length:300}, (_,i) => path.join(root,"inputs",String(i)));
+  for (const folder of roots) fs.mkdirSync(folder,{recursive:true});
+  fs.writeFileSync(config, 'default_permissions="capacity"\n' + fs.readFileSync(config,"utf8")
+    + '\n[permissions.capacity]\nextends=":workspace"\n[permissions.capacity.workspace_roots]\n'
+    + roots.map(folder => `${JSON.stringify(folder)}=true\n`).join(""));
+}
 const env = { HOME: homeDir, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", TERM: "xterm-256color" };
 const environment = readCodexEnvironment();
 const options = { homeDir, env, environment, accountId: "synthetic-account-A", label: "synthetic-A" };
@@ -37,6 +46,7 @@ const output = [], errors = [];
 try {
   invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin", "codex"), homeDir, cwd, env,
     args: ["app-server", "--listen", "stdio://"], ownedAppServer: true });
+  if (manyRoots && Number(invocation.args[5]) <= 256) throw new Error("Fixture must exercise more than 256 exact native write grants.");
   child = spawn(invocation.command, invocation.args, { cwd: invocation.cwd, env: invocation.env,
     stdio: ["pipe", "pipe", "pipe", invocation.environmentFd], detached: true });
   invocation.closeEnvironment();
@@ -86,7 +96,11 @@ try {
   const live = output.find(value => value.id === 3)?.result?.config;
   const updated = output.find(value => value.id === 5)?.result?.config;
   const authored = parseCodexSettings(fs.readFileSync(path.join(homeDir, ".codex", "config.toml"), "utf8")).value;
-  const summary = { fixture: root, exit, configSeen, skillPathMatchesOrigin: skillPath === expectedSkill,
+  const summary = { fixture: root, exit, configSeen, nativeWriteRoots: Number(invocation.args[5]), skillPathMatchesOrigin: skillPath === expectedSkill,
+    mcpSessionDefault: config?.mcp_oauth_credentials_store === "keyring"
+      && output.find(value => value.id === 2)?.result?.origins?.mcp_oauth_credentials_store?.name?.type === "sessionFlags",
+    mcpDefaultSurvivesReload: updated?.mcp_oauth_credentials_store === "keyring",
+    mcpDefaultNotPublished: authored.mcp_oauth_credentials_store === undefined,
     liveExternalTogglePreserved: live?.skills?.config?.[0]?.path === expectedSkill && live.skills.config[0].enabled === true,
     batchAccepted: ["ok", "okOverridden"].includes(output.find(value => value.id === 4)?.result?.status),
     batchPathMatchesOrigin: updated?.skills?.config?.[0]?.path === path.join(homeDir, ".codex", "skills", "second"),
@@ -96,7 +110,8 @@ try {
     initialized: output.some(value => value.id === 1 && value.result), errorCount: output.filter(value => value.error).length };
   process.stdout.write(JSON.stringify(summary) + "\n");
   if (exit.code !== 0 || !configSeen || !summary.skillPathMatchesOrigin || !summary.liveExternalTogglePreserved || !summary.batchAccepted || !summary.batchPathMatchesOrigin
-    || !summary.authoredRelativePathPreserved || !summary.authoredModelUpdated || !summary.rejectedWritePreserved || summary.errorCount !== 1) {
+    || !summary.authoredRelativePathPreserved || !summary.authoredModelUpdated || !summary.rejectedWritePreserved || summary.errorCount !== 1
+    || !summary.mcpSessionDefault || !summary.mcpDefaultSurvivesReload || !summary.mcpDefaultNotPublished) {
     process.stderr.write(errors.join("").slice(-6000)); process.exitCode = 1;
   }
 } finally {

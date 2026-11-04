@@ -22,7 +22,8 @@ static void database_grants(FILE *out,const char *root,int reading) {
         if (strchr("\\.^$|()[]{}*+?",*p)) pattern[n++]='\\';
         pattern[n++]=*p;
     }
-    snprintf(pattern+n,sizeof(pattern)-n,"/(?:[^/]+\\.sqlite(?:-wal|-shm|-journal)?|\\.sqlite-maintenance\\.lock)$");
+    // Seatbelt uses POSIX extended groups, not PCRE's (?:...) syntax.
+    snprintf(pattern+n,sizeof(pattern)-n,"/([^/]+\\.sqlite(-wal|-shm|-journal)?|\\.sqlite-maintenance\\.lock)$");
     rule(out,"regex",pattern);
     rule(out,"literal",root);
     if (reading) ancestors(out,root);
@@ -45,13 +46,13 @@ int main(int argc,char **argv) {
     if (!inside(home,account) || !inside(scratch,account)) fail("account state ownership");
     struct passwd *user=getpwuid(getuid());char user_home[PATH_MAX];
     if (!user || !realpath(user->pw_dir,user_home) || inside(user_home,account)) fail("overbroad account root");
-    int envfd=number(argv[5],1024),writes=number(argv[6],MAX_ROOTS),readindex=7+writes;
+    int envfd=number(argv[5],1024),writes=number(argv[6],argc-7),readindex=7+writes;
     if (readindex>=argc) fail("write roots");
-    int reads=number(argv[readindex],MAX_ROOTS),dbindex=readindex+1+reads;
+    int reads=number(argv[readindex],argc-readindex-1),dbindex=readindex+1+reads;
     if (dbindex>=argc) fail("read roots");
-    int databases=number(argv[dbindex],MAX_ROOTS),denyindex=dbindex+1+databases;
+    int databases=number(argv[dbindex],argc-dbindex-1),denyindex=dbindex+1+databases;
     if (denyindex>=argc) fail("database roots");
-    int denies=number(argv[denyindex],MAX_ROOTS),separator=denyindex+1+denies;
+    int denies=number(argv[denyindex],argc-denyindex-1),separator=denyindex+1+denies;
     if (separator>=argc || strcmp(argv[separator],"--")) fail("denied paths");
     const char **write_roots=(const char **)(argv+7),**read_roots=(const char **)(argv+readindex+1),**database_roots=(const char **)(argv+dbindex+1),**denied=(const char **)(argv+denyindex+1);
     for (int i=0;i<writes+reads;i++) {

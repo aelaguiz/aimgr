@@ -5,12 +5,17 @@ repo_root="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 node_bin="${AIMGR_NODE_BIN:-$(command -v node)}"
 claude_runtime_bundle=""
+codex_runtime_bundle=""
 if [[ $# -gt 0 ]]; then
-  if [[ $# -ne 2 || $1 != --claude-runtime-bundle ]]; then
-    echo 'Usage: scripts/install-local-bin.sh [--claude-runtime-bundle APPROVED_BUNDLE_DIRECTORY]' >&2
+  if [[ $# -ne 2 || ( $1 != --claude-runtime-bundle && $1 != --codex-runtime-bundle ) ]]; then
+    echo 'Usage: scripts/install-local-bin.sh [--claude-runtime-bundle DIRECTORY | --codex-runtime-bundle DIRECTORY]' >&2
     exit 2
   fi
-  claude_runtime_bundle=$2
+  if [[ $1 == --claude-runtime-bundle ]]; then claude_runtime_bundle=$2; else codex_runtime_bundle=$2; fi
+fi
+if [[ -n $codex_runtime_bundle ]]; then
+  sudo /usr/bin/python3 -I "$repo_root/scripts/install-codex-runtime.py" \
+    "$codex_runtime_bundle" --node "$node_bin" --user "$(id -un)" --activate
 fi
 
 # The common artifact runtime is independent of optional proxy enrollment.
@@ -48,4 +53,5 @@ AIMGR_NODE_BIN="$node_bin" bash "$repo_root/scripts/install-codex-shortcuts.sh"
 printf 'Installed aim wrappers into %s\n' "$target_dir"
 printf 'Repo checkout: %s\n' "$repo_root"
 printf 'Claude runtime status: %s\n' 'aim claude privacy status'
+printf 'Codex runtime status: %s\n' 'aim codex privacy status'
 printf 'Verify with: %s\n' "command -v aim && aim --help"

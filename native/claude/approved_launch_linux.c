@@ -76,6 +76,7 @@ int main(int argc,char **argv) {
         execve(helper,args,env);fail("isolated validator exec");
     }
     require_enforcement();
+    trusted_launcher_namespaces();
     unsigned char nonce[16]; if (getentropy(nonce,sizeof(nonce))) fail("policy identity"); char hex[33];
     for (int i=0;i<16;i++) snprintf(hex+2*i,3,"%02x",nonce[i]);
     snprintf(profile,sizeof(profile),"aim-claude-%c-%u-%s",protected?'p':'o',caller,hex);
@@ -86,7 +87,7 @@ int main(int argc,char **argv) {
         // `allow all` implicitly includes ix and conflicts with the broad
         // vendor-to-tool px transitions. Spell out non-exec access so ordinary
         // file/device access remains unrestricted without conflicting x modes.
-        fputs("network,\ncapability,\nsignal,\nptrace,\nunix,\n/** rwmlk,\n",out);
+        ordinary_access(out);
     }
     else {
         fputs("network,\ncapability,\nsignal,\nptrace,\nunix,\n",out);
@@ -102,18 +103,13 @@ int main(int argc,char **argv) {
             "/proc/[0-9]*/{maps,auxv,status,stat,statm,attr/current} r,\n/proc/[0-9]*/task/[0-9]*/{stat,status} r,\n"
             "/sys/devices/system/cpu/{online,possible} r,\n/sys/kernel/mm/transparent_hugepage/hpage_pmd_size r,\n",out);
     }
-    const char *excluded[]={vendor,self};char transition[200];snprintf(transition,sizeof(transition),"px -> %s",tools_profile);
-    other_exec(out,"/",excluded,2,transition);literal(out,vendor);fputs(" ix,\n",out);literal(out,self);fputs(" Ux,\n",out);
+    const char *excluded[]={vendor,self,launcher_namespaces[0],launcher_namespaces[1]};char transition[200];snprintf(transition,sizeof(transition),"px -> %s",tools_profile);
+    other_exec(out,"/",excluded,4,transition);literal(out,vendor);fputs(" ix,\n",out);launcher_exec(out);
     common_rules(out,settings,updates,updatecount);fputs("}\n",out);
     fprintf(out,"profile %s flags=(enforce,attach_disconnected) {\n",tools_profile);
-    // `allow all` did not grant AF_UNIX stream creation/inheritance on the
-    // tested kernel/parser combination. Node's child-process pipes are Unix
-    // socketpairs, so it broke nested AIM before exec with EACCES. State these
-    // classes explicitly, just as for the ordinary vendor profile; the fixed
-    // exec transitions and common snapshot/update denials still apply.
-    fputs("network,\ncapability,\nsignal,\nptrace,\nunix,\n/** rwmlk,\n",out);
-    other_exec(out,"/",excluded,2,"ix");literal(out,vendor);fprintf(out," px -> %s,\n",profile);literal(out,self);fputs(" Ux,\n",out);
-    common_rules(out,settings,updates,updatecount);fputs("}\n",out);
+    ordinary_access(out);
+    other_exec(out,"/",excluded,4,"ix");literal(out,vendor);fprintf(out," px -> %s,\n",profile);launcher_exec(out);
+    fputs("}\n",out); // Snapshot/update denials belong only to vendor code.
     if (fclose(out) || size>2*1024*1024) fail("policy generation");
     // Root-only runtime file. The installer creates it; no caller-selected
     // lock path or symlink is allowed. Entry occurs before releasing the lock.

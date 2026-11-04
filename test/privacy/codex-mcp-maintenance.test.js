@@ -112,6 +112,14 @@ test("loaded service identity, home and calendar must agree with the reviewed di
   const text = lines.join("\n"), schedule = {file,definition};
   try {
     verifyLoadedRoutine(schedule,text);
+    verifyLoadedRoutine(schedule,text.replace("\tproperties", "\tinherited environment = {\n\t\tSSH_AUTH_SOCK => /synthetic/agent\n\t\tLANG => en_US.UTF-8\n\t\tCODEX_HOME => /synthetic/codex\n\t}\n\tproperties"));
+    for (const group of ["inherited environment", "default environment"]) {
+      for (const key of ["NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS",
+        "BASH_FUNC_exec%%", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "OPENSSL_CONF", "OPENSSL_CONF_INCLUDE", "OPENSSL_MODULES", "OPENSSL_ENGINES"]) {
+        assert.throws(() => verifyLoadedRoutine(schedule,text.replace("\tproperties",
+          `\t${group} = {\n\t\t${key} => synthetic\n\t}\n\tproperties`)), /startup-code override/);
+      }
+    }
     for (const changed of [text.replace("\tprogram = /opt/aim", "\tprogram = /old/aim"),
       text.replace(`\t\tHOME => ${root}`, "\t\tHOME => /another/home"),
       text.replace('"Minute" => 59','"Minute" => 58'),

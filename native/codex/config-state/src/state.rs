@@ -23,9 +23,13 @@ async fn lock(root: &Path, deadline: Instant) -> Result<File> {
 }
 
 #[derive(Default)]
-pub(super) struct Inventory { pub(super) owner: Option<String>, pub(super) source: Option<super::source::Source> }
+pub(super) struct Inventory {
+    pub(super) owner: Option<String>, pub(super) source: Option<super::source::Source>,
+    pub(super) saved: super::saved::Inventory,
+}
 
-pub(super) async fn initialize(config: &Config, owner: Option<&super::owner::Request>, source: Option<&super::source::Request>) -> Result<Inventory> {
+pub(super) async fn initialize(config: &Config, owner: Option<&super::owner::Request>, source: Option<&super::source::Request>,
+    saved: Option<&super::Request>) -> Result<Inventory> {
     let sqlite = config.sqlite_config().clone();
     let paths: Vec<_> = sqlite.runtime_db_paths().into_iter().map(|db| db.path).collect();
     // Canonical physical roots serialize aliases and a separate native logs
@@ -49,7 +53,7 @@ pub(super) async fn initialize(config: &Config, owner: Option<&super::owner::Req
     let mut locks = Vec::new();
     for root in &roots { locks.push(lock(root, deadline).await?); }
     if owner.is_some_and(|owner| !owner.matches_databases(config)) { return Ok(Inventory::default()); }
-    let runtime = if source.is_some() {
+    let runtime = if source.is_some() || saved.is_some() {
         codex_rollout::state_db::try_init(config).await.map_err(|_| ())?
     } else {
         StateRuntime::init(sqlite.clone(), config.model_provider_id.clone()).await.map_err(|_| ())?
@@ -61,6 +65,7 @@ pub(super) async fn initialize(config: &Config, owner: Option<&super::owner::Req
         let mut result = Inventory::default();
         if let Some(owner) = owner { result.owner = super::owner::select(&runtime, owner).await?; }
         if let Some(source) = source { result.source = Some(super::source::select(config, runtime.clone(), source).await?); }
+        if let Some(request) = saved { result.saved = super::saved::resolve(request, config, runtime.clone()).await?; }
         Ok(result)
     }.await;
     runtime.close().await;

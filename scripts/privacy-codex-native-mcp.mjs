@@ -6,10 +6,10 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import http from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { codexMcpKey, decodeCodexMcpFile, codexMcpKeyring, codexMcpTokensEqual } from "../src/credentials/codex-mcp-migration.js";
+import { codexMcpKey, decodeCodexMcpFile, codexMcpTokensEqual } from "../src/credentials/codex-mcp-migration.js";
 import { readCodexEnvironment } from "../src/privacy/codex-environment.js";
 import { saveLocalCodexLogin } from "../src/credentials/codex-local.js";
 import { prepareCodexAccountState } from "../src/privacy/codex-account-state.js";
@@ -41,10 +41,18 @@ daemon.stdin.end("SYNTHETIC_KEYRING_PASSWORD\n");
 const monitorLogs = [];
 const monitor = spawn("/usr/bin/dbus-monitor", ["--session"], { env, stdio: ["ignore", "pipe", "pipe"] });
 monitor.stdout.on("data", bytes => monitorLogs.push(bytes)); monitor.stderr.on("data", bytes => monitorLogs.push(bytes));
-const keyring = request => codexMcpKeyring(request, {
-  command: admitCodexArtifact().mcpKeyring, env,
-});
-let generation = 0, rejectCurrentAccess = false, serverError;
+const keyring = request => {
+  // Fixture-only direct calls. Real conversion uses the durable maintenance
+  // owner; neither path kills a child while a credential write is pending.
+  const result = spawnSync(admitCodexArtifact().mcpKeyring, [], {
+    env, input: JSON.stringify(request), encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], maxBuffer: 4 * 1024 * 1024,
+  });
+  assert.equal(result.status, 0, "Synthetic keyring helper failed");
+  const value = JSON.parse(result.stdout);
+  assert.ok(!value.error && Object.hasOwn(value, "value"), "Synthetic keyring operation failed");
+  return value;
+};
+let generation = 0, rejectCurrentAccess = false, serverError, refreshGate, releaseOnContention;
 const requests = [];
 const service = http.createServer(async (req, res) => {
   const json = (status, value) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); };
@@ -63,6 +71,7 @@ const service = http.createServer(async (req, res) => {
       const form = new URLSearchParams(text);
       assert.equal(form.get("grant_type"), "refresh_token");
       assert.equal(form.get("refresh_token"), generation ? `SYNTHETIC_MCP_REFRESH_${generation}` : "SYNTHETIC_MCP_REFRESH");
+      if (refreshGate) await refreshGate;
       generation++; rejectCurrentAccess = false;
       json(200, { access_token: `SYNTHETIC_MCP_ACCESS_${generation}`, refresh_token: `SYNTHETIC_MCP_REFRESH_${generation}`,
         token_type: "Bearer", expires_in: 3600, scope: "read write" }); return;
@@ -108,15 +117,16 @@ const source = path.join(homeDir, ".codex", "config.toml");
 fs.writeFileSync(source, `model="gpt-5.4"\nmodel_provider="fixture"\nmcp_oauth_credentials_store="keyring"\n[features]\napps=false\ncode_mode=false\nsecret_auth_storage=false\n[mcp_servers.${JSON.stringify(server.name)}]\nurl=${JSON.stringify(server.url)}\nrequired=true\n[model_providers.fixture]\nname="Fixture"\nbase_url=${JSON.stringify(address)}\nwire_api="responses"\nrequest_max_retries=0\nstream_max_retries=0\n`, { mode: 0o600 });
 const environment = readCodexEnvironment();
 const outputs = [];
-async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json"]) {
+async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json"], settingsHome = null) {
   const claims = { exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": {
     chatgpt_account_id: accountId, chatgpt_plan_type: "plus", chatgpt_user_id: "synthetic-user",
   } };
   const token = `synthetic.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
-  const options = { homeDir, env, environment, accountId, label: accountId };
+  const selectedEnv = settingsHome ? { ...env, CODEX_HOME: settingsHome } : env;
+  const options = { homeDir, env: selectedEnv, environment, accountId, label: accountId };
   saveLocalCodexLogin(options, { access: token, idToken: token, refresh: "SYNTHETIC_PRIMARY_REFRESH", accountId });
   const prepared = prepareCodexAccountState(options);
-  const invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin/codex"), homeDir, cwd, env, args });
+  const invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin/codex"), homeDir, cwd, env: selectedEnv, args });
   let child, timer;
   try {
     child = spawn(protectedLaunch ? invocation.command : path.join(base, "bin/codex"), protectedLaunch ? invocation.args : args, {
@@ -125,7 +135,10 @@ async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json
     });
     invocation.closeEnvironment();
     const stdout = [], stderr = [];
-    child.stdout.on("data", bytes => stdout.push(bytes)); child.stderr.on("data", bytes => stderr.push(bytes));
+    child.stdout.on("data", bytes => stdout.push(bytes)); child.stderr.on("data", bytes => {
+      stderr.push(bytes);
+      if (Buffer.concat(stderr).toString().includes("waiting for another process to finish refreshing MCP OAuth credentials")) releaseOnContention?.();
+    });
     timer = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 25_000);
     const [code, signal] = await once(child, "close");
     outputs.push({ accountId, protectedLaunch, args, code, signal, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString() });
@@ -162,6 +175,22 @@ try {
     assert.equal(stored.token_response.access_token, `SYNTHETIC_MCP_ACCESS_${generation}`);
     assert.ok(requests.slice(before).some(request => request.rpc === "tools/list"), "native starts the authenticated MCP integration");
   }
+  const customSettings = path.join(homeDir, "custom-settings");
+  fs.mkdirSync(customSettings);
+  fs.copyFileSync(path.join(homeDir, ".codex/config.toml"), path.join(customSettings, "config.toml"));
+  let contended = false, barrierTimer;
+  refreshGate = new Promise(resolve => {
+    releaseOnContention = () => { contended = true; clearTimeout(barrierTimer); resolve(); };
+    barrierTimer = setTimeout(() => { serverError = new Error("Native custom-home refresh never contended on the shared lock"); resolve(); }, 20_000);
+  });
+  const beforeConcurrent = generation;
+  rejectCurrentAccess = true;
+  try {
+    await Promise.all([native("synthetic-A", true, execArgs), native("synthetic-B", true, execArgs, customSettings)]);
+    if (serverError) throw serverError;
+    assert.ok(contended, "two actual native settings origins acquired the same MCP refresh lock");
+    assert.equal(generation, beforeConcurrent + 1, "concurrent custom homes rotate a single-use refresh token once");
+  } finally { clearTimeout(barrierTimer); refreshGate = null; releaseOnContention = null; }
   // Native removal is the interoperability/revocation oracle, not the helper.
   await native("synthetic-B", true, ["mcp", "logout", server.name]);
   assert.equal((await keyring({ operation: "load", server_name: server.name, url: server.url })).value, null);
@@ -170,7 +199,8 @@ try {
     assert.ok(!["o_auth", "oauth"].includes(entries.find(entry => entry.name === server.name)?.auth_status), "native restart cannot resurrect removed tokens");
   }
   process.stdout.write(JSON.stringify({ fixture: root, configuredNamePrefix: namePrefix, convertedNativeReads: 3, protectedAccountHomes: 2,
-    nativeRotatingRefreshes: generation, nativeLogoutRemovedKey: true, restartsWithoutResurrection: 2 }) + "\n");
+    nativeRotatingRefreshes: generation, customSettingsRefreshContention: true,
+    nativeLogoutRemovedKey: true, restartsWithoutResurrection: 2 }) + "\n");
 } catch (error) {
   process.stderr.write(`${error.message}; private evidence ${root}\n`); process.exitCode = 1;
 } finally {

@@ -10,6 +10,8 @@ import { decodeCodexMcpFile, codexMcpTokensEqual } from "./codex-mcp-migration.j
 import { parseCodexSettings, updateCodexSettings } from "../io/codex-settings-toml.js";
 import { codexSettingsView, reconcileCodexSettings } from "../io/codex-settings.js";
 import { durableCodexWrite } from "../io/codex-state-io.js";
+import { codexMcpLockDirectory } from "../privacy/codex-account-state.js";
+import { codexCanonicalPath } from "../privacy/codex-launch-inputs.js";
 import { readAllRoutineDefinitions } from "../routines/config.js";
 import { renderRoutineLaunchAgent, routineLaunchAgentLabel, routineLaunchAgentPath } from "../routines/launchd.js";
 
@@ -187,11 +189,17 @@ export function verifyLoadedRoutine(schedule, text) {
   delete env.OSLogRateLimit;
   if (env.XPC_SERVICE_NAME !== expected.Label) fail("The loaded Codex schedule has a different service identity.");
   delete env.XPC_SERVICE_NAME;
-  // An inherited NODE_OPTIONS (or another injected setting) would invalidate
-  // the proof that this current CLI reaches its early pending check.
-  if (text.includes("\tinherited environment = {\n")) {
-    const inherited = pairs(block("inherited environment"));
-    if (Object.keys(inherited).some(key => !Object.hasOwn(expected.EnvironmentVariables, key))) fail("The loaded Codex schedule has an unreviewed inherited environment.");
+  // Desktop sessions normally inherit SSH_AUTH_SOCK and other ordinary
+  // settings. Only startup code injection can bypass the pending check;
+  // account/provider settings are read after it. HOME/PATH are verified below.
+  for (const name of ["inherited environment", "default environment"]) {
+    if (!text.includes(`\t${name} = {\n`)) continue;
+    const inherited = pairs(block(name));
+    if (Object.keys(inherited).some(key => /^(?:DYLD_|LD_|BASH_FUNC_)/.test(key)
+      || ["NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS",
+        "OPENSSL_CONF", "OPENSSL_CONF_INCLUDE", "OPENSSL_MODULES", "OPENSSL_ENGINES"].includes(key))) {
+      fail("The loaded Codex schedule has an inherited startup-code override. Remove that override before MCP conversion.");
+    }
   }
   if (canonical(field("path")) !== canonical(schedule.file)
     || field("program") !== expected.ProgramArguments[0]
@@ -331,7 +339,8 @@ export async function maintenanceOperation(request) {
     const items = decodeCodexMcpFile(read(plan.source_file) ?? "{}", servers);
     plan.routine_ids = readAllRoutineDefinitions({ homeDir: plan.home }).routines.filter(r => r.agent === "codex").map(r => r.id);
     const owners = maintenanceControllers(processInventory(plan.process_control, run), process.pid, plan.routine_ids);
-    const lockDirectories = [canonical(path.join(source, "mcp-oauth-locks"))];
+    const lockDirectories = [...new Set([canonical(path.join(source, "mcp-oauth-locks")),
+      codexCanonicalPath(codexMcpLockDirectory(plan.home))])].sort();
     return { ...plan, servers, controllers: identities(owners), schedules: schedules(plan.home, run),
       original_store_setting: parseCodexSettings(read(path.join(source, "config.toml")) ?? "").value.mcp_oauth_credentials_store ?? null,
       lock_directories: [...new Set(lockDirectories)],
