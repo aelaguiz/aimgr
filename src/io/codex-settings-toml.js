@@ -154,6 +154,17 @@ function toml(value) {
 
 function get(value, keys) { return keys.reduce((v, k) => v?.[k], value); }
 
+function tableText(keys, value) {
+  let text = `\n[${keys.map(k => JSON.stringify(k)).join(".")}]\n`;
+  for (const [key, child] of Object.entries(value)) {
+    if (!object(child)) text += `${JSON.stringify(key)} = ${toml(child)}\n`;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (object(child)) text += tableText([...keys, key], child);
+  }
+  return text;
+}
+
 function changed(before, after, keys = []) {
   if (equal(before, after)) return [];
   if (object(before) && object(after)) return [...new Set([...Object.keys(before), ...Object.keys(after)])]
@@ -203,6 +214,12 @@ function applyValue(text, keys, value) {
     return value === undefined ? text : applyValue(text, keys, value);
   }
   if (value === undefined) return text;
+  // Newly added native tables must remain tables. Converting one to an inline
+  // assignment changes toml_edit's later table-conversion path; native can
+  // carry that assignment's newline decor inside an invalid table header.
+  // Existing authored inline assignments were handled above and retain their
+  // form. Append an explicit header so surrounding table scope is unchanged.
+  if (object(value)) return text + tableText(keys, value);
   const parentTable = parsed.tables.filter(item => prefix(item.keys, keys) && item.keys.length < keys.length)
     .sort((a, b) => b.keys.length - a.keys.length)[0];
   const offset = parentTable ? parentTable.node.range[1] : (parsed.tables[0]?.node.range[0] ?? text.length);

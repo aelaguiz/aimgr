@@ -100,7 +100,17 @@ try {
     if (value.id === 5) clientInput.write(JSON.stringify({ id: 6, method: "config/value/write", params: {
       keyPath: "model_instructions_file", mergeStrategy: "replace", value: "./must-not-persist.md", expectedVersion: "synthetic-stale-version",
     } }) + "\n");
-    if (value.id === 6) clientInput.end();
+    if (value.id === 6) clientInput.write(JSON.stringify({ id: 7, method: "config/value/write", params: {
+      keyPath: "tui.screen_reader_detection_done", mergeStrategy: "replace", value: true,
+    } }) + "\n");
+    if (value.id === 7) clientInput.write(JSON.stringify({ id: 8, method: "config/value/write", params: {
+      keyPath: 'tui.model_availability_nux."gpt-6.1-sol"', mergeStrategy: "replace", value: 1,
+    } }) + "\n");
+    if (value.id === 8) clientInput.write(JSON.stringify({ id: 9, method: "config/value/write", params: {
+      keyPath: 'tui.model_availability_nux."gpt-6.1-sol"', mergeStrategy: "replace", value: 2,
+    } }) + "\n");
+    if (value.id === 9) clientInput.write(JSON.stringify({ id: 10, method: "config/read", params: { includeLayers: true, cwd } }) + "\n");
+    if (value.id === 10) clientInput.end();
   };
   lines.on("line", line => { handleLine(line).catch(error => { errors.push(`Fixture: ${error.message}\n`); clientInput.end(); }); });
   clientInput.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "aim_privacy_fixture", version: "1" }, capabilities: { experimentalApi: true } } }) + "\n");
@@ -127,11 +137,14 @@ try {
     authoredRelativePathPreserved: authored.skills?.config?.[0]?.path === "./skills/second",
     authoredModelUpdated: authored.model === "synthetic-second-model",
     rejectedWritePreserved: !authored.model_instructions_file && output.find(value => value.id === 6)?.error?.data?.config_write_error_code === "configVersionConflict",
+    nativeRepeatedTableEdits: [7, 8, 9].every(id => ["ok", "okOverridden"].includes(output.find(value => value.id === id)?.result?.status))
+      && output.find(value => value.id === 10)?.result?.config?.tui?.model_availability_nux?.["gpt-6.1-sol"] === 2
+      && authored.tui?.model_availability_nux?.["gpt-6.1-sol"] === 2,
     initialized: output.some(value => value.id === 1 && value.result), errorCount: output.filter(value => value.error).length };
   process.stdout.write(JSON.stringify(summary) + "\n");
   if (exit.code !== 0 || !configSeen || !summary.skillPathMatchesOrigin || !summary.liveExternalTogglePreserved || !summary.batchAccepted || !summary.batchPathMatchesOrigin
     || !summary.authoredRelativePathPreserved || !summary.authoredModelUpdated || !summary.rejectedWritePreserved || summary.errorCount !== 1
-    || !summary.mcpSessionDefault || !summary.mcpDefaultSurvivesReload || !summary.mcpDefaultNotPublished) {
+    || !summary.mcpSessionDefault || !summary.mcpDefaultSurvivesReload || !summary.mcpDefaultNotPublished || !summary.nativeRepeatedTableEdits) {
     process.stderr.write(errors.join("").slice(-6000)); process.exitCode = 1;
   }
 } finally {

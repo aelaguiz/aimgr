@@ -95,3 +95,21 @@ test("array-of-table edits keep source layout and inner comments",()=>{
   const base='[[skills.config]]\n# Keep my note\npath="./one"\nenabled=true\nunknown=1.0\n';
   assert.equal(reconcile(base,base,project(base).replace('enabled=true','enabled=false')).source,base.replace('enabled=true','enabled=false'));
 });
+
+test("native-created nested tables remain editable block tables across merges", () => {
+  const base = 'model="old"\n[features]\nhooks=false\n';
+  const native = base + '\n[tui]\nscreen_reader_detection_done=true\n[tui.model_availability_nux]\n"gpt-6.1-sol"=1\n';
+  const first = reconcile(base, base, native);
+  assert.deepEqual(read(first.source).tui, { screen_reader_detection_done: true, model_availability_nux: { "gpt-6.1-sol": 1 } });
+  assert.match(first.source, /\["tui"\]/);
+  assert.match(first.source, /\["tui"\."model_availability_nux"\]/);
+  const second = reconcile(first.source, first.source, first.view.replace('"gpt-6.1-sol" = 1', '"gpt-6.1-sol" = 2'));
+  assert.equal(read(second.source).tui.model_availability_nux["gpt-6.1-sol"], 2);
+  assert.equal(read(second.source).features.hooks, false);
+  const authoredInline = 'tui={screen_reader_detection_done=true}\n';
+  const inlineResult = reconcile(authoredInline, authoredInline, authoredInline.replace('true', 'false'));
+  assert.equal(inlineResult.source, authoredInline.replace('true', 'false'));
+  const empty = reconcile(base, base, base + '\n[tui]\n');
+  assert.deepEqual(read(empty.source).tui, {});
+  assert.match(empty.source, /\["tui"\]/);
+});
