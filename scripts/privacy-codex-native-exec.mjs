@@ -9,6 +9,7 @@ import os from "node:os";
 import http from "node:http";
 import https from "node:https";
 import zlib from "node:zlib";
+import { createHash } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
@@ -18,12 +19,20 @@ import { readCodexEnvironment } from "../src/privacy/codex-environment.js";
 import { saveLocalCodexLogin, maintainLocalCodexCredential, logoutLocalCodexCredential, readLocalCodexCredential } from "../src/credentials/codex-local.js";
 import { prepareCodexAccountState } from "../src/privacy/codex-account-state.js";
 import { prepareCodexNativeInvocation } from "../src/privacy/codex-native-invocation.js";
+import { main } from "../src/cli/main.js";
+import { writeAimgrConfig } from "../src/config/aimgr-config.js";
+import { connectRedisStore, importCredentialsSnapshot } from "../src/coordination/redis-store.js";
+import { FakeRedisClient } from "../test/helpers/fake-redis.js";
 
 const base = "/opt/aimgr-state-audit";
 assert.ok(fs.existsSync(path.join(base, "OFFSITE_AUDIT_HOST")) && process.getuid() !== 0);
 assert.ok(["linux", "darwin"].includes(process.platform));
 if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
 const root = fs.mkdtempSync(path.join(base, "codex-m1-fixtures", "exec-"));
+const grantEnvironment = process.argv.includes("--environment-proof") ? process.env.AIMGR_SYNTHETIC_ENVIRONMENT : "";
+assert.ok(["", "A", "B"].includes(grantEnvironment));
+const initialRefresh = "SYNTHETIC_REFRESH" + (grantEnvironment ? "_" + grantEnvironment : "");
+const rotatedRefresh = "SYNTHETIC_ROTATED_REFRESH" + (grantEnvironment ? "_" + grantEnvironment : "");
 const certificate = path.join(root, "loopback-cert.pem"), certificateKey = path.join(root, "loopback-key.pem");
 const authority = path.join(root, "authority.pem"), authorityKey = path.join(root, "authority-key.pem");
 const authorityConfig = path.join(root, "authority.cnf");
@@ -49,6 +58,61 @@ const created = id => ({ type: "response.created", response: { id } });
 const completed = id => ({ type: "response.completed", response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
 const done = item => ({ type: "response.output_item.done", item });
 
+async function coordinateOtherAccount({ homeDir, env, environment, options, token, claims, prepared, root }) {
+  const otherId = options.accountId + "-B";
+  const otherClaims = { ...claims, "https://api.openai.com/auth": { ...claims["https://api.openai.com/auth"], chatgpt_account_id: otherId } };
+  const otherToken = `synthetic.${Buffer.from(JSON.stringify(otherClaims)).toString("base64url")}.signature`;
+  const otherOptions = { homeDir, env, environment, accountId: otherId, label: "b" };
+  saveLocalCodexLogin(otherOptions, { access: otherToken, idToken: otherToken, refresh: "SYNTHETIC_OTHER_REFRESH", accountId: otherId });
+  const other = prepareCodexAccountState(otherOptions);
+  const client = new FakeRedisClient(), keyPrefix = "synthetic:isolation:";
+  writeAimgrConfig({ homeDir, config: { redis: { url: "redis://synthetic.invalid:6379", keyPrefix } } });
+  const store = await connectRedisStore({ client, keyPrefix });
+  await importCredentialsSnapshot(store, { credentials: [["a", options.accountId], ["b", otherId]].map(([label, accountId]) => ({
+    provider: "openai-codex", label, identity: { accountId }, policy: { pool: { enabled: true } }, health: { status: "ready", reason: null },
+    credential: { accountId, access: "SYNTHETIC_FOREIGN_ACCESS", refresh: "SYNTHETIC_FOREIGN_REFRESH", expiresAt: new Date(Date.now() + 3600_000).toISOString() },
+  })) }, { updatedBy: "synthetic", observedAt: new Date().toISOString() });
+  const authFile = path.join(prepared.accountRoot, "auth.json"), originalAuth = fs.readFileSync(authFile);
+  const observations = [], usage = [];
+  const command = async args => {
+    const output = [], errors = []; let code = 0;
+    await main([...args, "--home", homeDir], { env,
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix }),
+      stdout: { write: text => output.push(text) }, stderr: { write: text => errors.push(text) }, setExitCode: value => { code = value; },
+      fetchJsonWithTimeoutImpl: async (url, request) => {
+        assert.equal(url, "https://chatgpt.com/backend-api/wham/usage");
+        const id = request.headers["ChatGPT-Account-Id"];
+        assert.ok([options.accountId, otherId].includes(id));
+        assert.equal(request.headers.Authorization, "Bearer " + (id === options.accountId ? token : otherToken));
+        usage.push({ accountId: id, localAuthority: true });
+        return { ok: true, status: 200, json: async () => ({ plan_type: "plus", rate_limit: { allowed: true,
+          primary_window: { used_percent: 1, limit_window_seconds: 18000, reset_at: Math.floor(Date.now() / 1000) + 3600 } } }) };
+      } });
+    observations.push({ args, code, output: output.join(""), errors: errors.join("") });
+    assert.equal(code, 0, "Actual AIM coordination command succeeds: " + args.join(" "));
+    assert.deepEqual(fs.readFileSync(authFile), originalAuth, "other account operations leave A's local grant unchanged");
+    return output.join("");
+  };
+  return {
+    async select(stage) {
+      const selected = JSON.parse(await command(["codex", "use", "b"]));
+      assert.equal(selected.activated.receipt.accountId, otherId);
+      assert.equal(selected.activated.prepared.codexHome, other.codexHome);
+      observations.push({ stage });
+    },
+    async duringTurn() {
+      await command(["codex", "watch", "--once"]);
+      await command(["status", "--json"]);
+      await command(["auth", "maintain"]);
+      await command(["codex", "logout", "b"]);
+      assert.equal(readLocalCodexCredential(otherOptions).credential, null);
+      const shared = await Promise.all(["a", "b"].map(label => client.get(store.keys.credential({ provider: "openai-codex", label }))));
+      for (const row of shared) { assert.ok(!row.includes(token)); assert.ok(!row.includes(otherToken)); }
+      fs.writeFileSync(path.join(root, path.basename(path.dirname(homeDir)) + "-coordination.private.json"), JSON.stringify({ observations, usage }, null, 2));
+    },
+  };
+}
+
 async function run(protectedLaunch, alias = false, builtin = null) {
   const replacedLogin = ["relogin", "logout"].includes(builtin);
   const lockProbe = builtin === "native-lock";
@@ -66,12 +130,14 @@ async function run(protectedLaunch, alias = false, builtin = null) {
   const nativeWaiting = new Promise(resolve => { nativeEntered = resolve; });
   const observe = pending => pending.catch(error => { asyncError ??= error; aimEntered(); releaseAim(); releaseNative(); });
   const dispatcher = new Agent({ connect: { ca: fs.readFileSync(authority) } });
-  const frames = (req, body, transport) => {
+  let coordination;
+  const frames = async (req, body, transport) => {
     if (body.generate === false) return [created("synthetic-prewarm"), completed("synthetic-prewarm")];
     requests.push({ headers: req.headers, url: req.url, body, transport });
     assert.equal(req.url, "/responses");
     const number = requests.length;
     assert.ok(number <= 2, "Unexpected model retry or extra turn");
+    if (number === 1) await coordination?.duringTurn();
     const items = number === 1 ? [done({ type: "function_call", call_id: "synthetic-call", name: "exec_command",
       arguments: JSON.stringify({ cmd: command, yield_time_ms: 1000, max_output_tokens: 500 }) })]
       : [done({ type: "message", role: "assistant", id: "synthetic-message", content: [{ type: "output_text", text: "Synthetic task complete." }] })];
@@ -110,7 +176,7 @@ async function run(protectedLaunch, alias = false, builtin = null) {
       const body = fromAim ? Object.fromEntries(new URLSearchParams(bytes.toString())) : JSON.parse(bytes.toString());
       if (needsRefresh && req.url === "/oauth/token") {
         assert.equal(body.grant_type, "refresh_token");
-        assert.equal(body.refresh_token, "SYNTHETIC_REFRESH");
+        assert.equal(body.refresh_token, initialRefresh);
         refreshes++;
         if (!race) assert.equal(refreshes, 1, "single-use primary refresh token is exchanged once");
         else {
@@ -120,7 +186,7 @@ async function run(protectedLaunch, alias = false, builtin = null) {
         }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ access_token: fromAim ? aimToken : rotatedToken, id_token: fromAim ? aimToken : rotatedToken,
-          refresh_token: fromAim ? "SYNTHETIC_AIM_REFRESH" : "SYNTHETIC_ROTATED_REFRESH" })); return;
+          refresh_token: fromAim ? "SYNTHETIC_AIM_REFRESH" : rotatedRefresh })); return;
       }
       if (needsRefresh && req.url === "/responses" && req.headers.authorization === "Bearer " + token) {
         // Native first reloads storage after a 401, then refreshes after the
@@ -128,7 +194,7 @@ async function run(protectedLaunch, alias = false, builtin = null) {
         assert.ok(++rejectedInitialAuth <= 3, "bounded native unauthorized recovery");
         res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":{"message":"synthetic expired access"}}'); return;
       }
-      const events = frames(req, body, "http");
+      const events = await frames(req, body, "http");
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       res.end(events
         .map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
@@ -145,8 +211,8 @@ async function run(protectedLaunch, alias = false, builtin = null) {
       socket.end("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); return;
     }
     websockets.handleUpgrade(req, socket, head, ws => {
-      ws.on("message", bytes => {
-        try { for (const event of frames(req, JSON.parse(bytes.toString()), "websocket")) ws.send(JSON.stringify(event)); }
+      ws.on("message", async bytes => {
+        try { for (const event of await frames(req, JSON.parse(bytes.toString()), "websocket")) ws.send(JSON.stringify(event)); }
         catch (error) { serverError = error; ws.close(); }
       });
     });
@@ -167,7 +233,7 @@ async function run(protectedLaunch, alias = false, builtin = null) {
     env.PATH = bin + ":" + env.PATH;
   }
   const environment = readCodexEnvironment(), accountId = `synthetic-${name}`;
-  const claims = { exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": {
+  const claims = { exp: Math.floor(Date.now() / 1000) + 3600, ...(grantEnvironment ? { synthetic_environment: grantEnvironment } : {}), "https://api.openai.com/auth": {
     chatgpt_account_id: accountId, chatgpt_plan_type: "plus", chatgpt_user_id: "synthetic-user",
   } };
   const token = `synthetic.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
@@ -178,8 +244,12 @@ async function run(protectedLaunch, alias = false, builtin = null) {
   const foreignAuth = JSON.stringify({ OPENAI_API_KEY: "SYNTHETIC_FOREIGN_DESKTOP_KEY" });
   fs.writeFileSync(path.join(homeDir, ".codex/auth.json"), foreignAuth, { mode: 0o600 });
   const options = { homeDir, env, environment, accountId, label: name };
-  saveLocalCodexLogin(options, { access: token, idToken: token, refresh: "SYNTHETIC_REFRESH", accountId });
+  saveLocalCodexLogin(options, { access: token, idToken: token, refresh: initialRefresh, accountId });
   const prepared = prepareCodexAccountState(options);
+  if (process.argv.includes("--account-isolation")) {
+    coordination = await coordinateOtherAccount({ homeDir, env, environment, options, token, claims, prepared, root });
+    await coordination.select("after-selected-account-preparation");
+  }
   const initialOwner = JSON.parse(readLocalCodexCredential(options).raw).tokens.login_owner_id;
   assert.ok(initialOwner);
   const refreshAim = () => maintainLocalCodexCredential(options, { refreshBeforeMs: Infinity,
@@ -191,6 +261,7 @@ async function run(protectedLaunch, alias = false, builtin = null) {
   let invocation, child, childDone, timer, lockHolder, lockHolderDone, kernelWaitObserved = false;
   try {
     invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin", "codex"), homeDir, cwd, env, args });
+    await coordination?.select("after-native-preparation-before-spawn");
     if (builtin === "native-first") { aimTask = observe(refreshAim()); await aimWaiting; if (asyncError) throw asyncError; }
     child = spawn(protectedLaunch ? invocation.command : path.join(base, "bin", "codex"), protectedLaunch ? invocation.args : args, {
       cwd: invocation.cwd, env: protectedLaunch ? invocation.env : invocation.environment, detached: true,
@@ -285,11 +356,16 @@ async function run(protectedLaunch, alias = false, builtin = null) {
       assert.ok(rejectedInitialAuth); assert.equal(refreshes, race && !lockProbe ? 2 : 1);
       const auth = JSON.parse(fs.readFileSync(path.join(prepared.accountRoot, "auth.json"), "utf8"));
       assert.equal(auth.tokens.access_token, expectedToken);
-      assert.equal(auth.tokens.refresh_token, "SYNTHETIC_ROTATED_REFRESH");
+      assert.equal(auth.tokens.refresh_token, rotatedRefresh);
       assert.equal(auth.tokens.login_owner_id, initialOwner);
     }
     return { name, modelRequests: requests.length, ordinaryFileAccess: true, ordinaryUname: true, ordinarySdkKey: true,
       installationId: prepared.installationId, primaryRefreshes: refreshes, kernelWaitObserved,
+      ...(coordination ? { coordinationBeforeAndDuringNativeTurn: true } : {}),
+      ...(grantEnvironment ? { accountId, environmentId: environment.binding, grantEnvironment,
+        localAuthPath: path.join(prepared.accountRoot, "auth.json"),
+        localAuthSha256: createHash("sha256").update(fs.readFileSync(path.join(prepared.accountRoot, "auth.json"))).digest("hex"),
+        bearerSha256: createHash("sha256").update(expectedToken).digest("hex") } : {}),
       optionalEndpointsNotProvided: metadataRequests.filter(r => r.notFound).map(r => r.url),
       userAgent: requests[0].headers["user-agent"] };
   } finally {
@@ -306,7 +382,16 @@ async function run(protectedLaunch, alias = false, builtin = null) {
 }
 
 try {
-  if (process.argv.includes("--auth-races")) {
+  if (process.argv.includes("--account-isolation")) {
+    const results = [];
+    for (const transport of ["http", "websocket"]) results.push(await run(true, false, transport));
+    process.stdout.write(JSON.stringify({ fixture: root, results: results.map(row => ({ ...row, userAgent: undefined })) }) + "\n");
+  } else if (process.argv.includes("--environment-proof")) {
+    const result = await run(true, false, "refresh");
+    const output = { fixture: root, result: { ...result, userAgent: undefined } };
+    fs.writeFileSync(path.join(root, "environment-proof.private.json"), JSON.stringify(output, null, 2));
+    process.stdout.write(JSON.stringify(output) + "\n");
+  } else if (process.argv.includes("--auth-races")) {
     const results = [];
     // Both successful responses originate from the same snapshot, modeling
     // issuer overlap/grace. AIM keeps its byte CAS; native permits a later successful response
@@ -322,18 +407,19 @@ try {
     process.stdout.write(JSON.stringify({ fixture: root, results: results.map(row => ({ ...row, userAgent: undefined })) }) + "\n");
   } else {
   const control = await run(false), controlAlias = await run(false, true), protectedResult = await run(true), alias = await run(true, true);
-  const builtinHttp = await run(true, false, "http"), builtinWebsocket = await run(true, false, "websocket");
-  assert.notEqual(builtinHttp.installationId, builtinWebsocket.installationId);
+  const builtinHttp = process.argv.includes("--baseline-only") ? null : await run(true, false, "http");
+  const builtinWebsocket = process.argv.includes("--baseline-only") ? null : await run(true, false, "websocket");
+  if (builtinHttp) assert.notEqual(builtinHttp.installationId, builtinWebsocket.installationId);
   const osLabel = agent => agent?.match(/\(([^;]+);/)?.[1];
   assert.match(osLabel(control.userAgent), /\d+\.\d+/, "control observes the distribution version");
   assert.match(osLabel(controlAlias.userAgent), /\d+\.\d+/, "the unprotected alias remains a working version probe");
   assert.doesNotMatch(osLabel(protectedResult.userAgent), /\d+\.\d+/, "vendor header excludes the distribution version");
   assert.doesNotMatch(osLabel(alias.userAgent), /\d+\.\d+/, "a PATH alias cannot disclose the distribution version");
-  for (const result of [builtinHttp, builtinWebsocket]) assert.doesNotMatch(osLabel(result.userAgent), /\d+\.\d+/);
+  for (const result of [builtinHttp, builtinWebsocket].filter(Boolean)) assert.doesNotMatch(osLabel(result.userAgent), /\d+\.\d+/);
   process.stdout.write(JSON.stringify({ fixture: root, control: { ...control, userAgent: undefined },
     controlAlias: { ...controlAlias, userAgent: undefined },
     protected: { ...protectedResult, userAgent: undefined }, alias: { ...alias, userAgent: undefined },
-    builtinHttp: { ...builtinHttp, userAgent: undefined }, builtinWebsocket: { ...builtinWebsocket, userAgent: undefined },
+    builtinHttp: builtinHttp && { ...builtinHttp, userAgent: undefined }, builtinWebsocket: builtinWebsocket && { ...builtinWebsocket, userAgent: undefined },
     vendorReleaseRemoved: true }) + "\n");
   }
 } catch (error) {
