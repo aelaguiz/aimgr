@@ -29,14 +29,14 @@ test("actual forced policy is checked by effective privacy-field precedence", ()
   assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ forced: { config_toml_base64: '[feedback]\nenabled=true' } })), "requirements still force feedback false");
 });
 
-test("cloud-policy admission follows exact native eligibility, not labels or a guessed Pro restriction", () => {
+test("approved organization-policy gap does not introduce an account-tier or config-server ban", () => {
   for (const plan of ["free", "go", "plus", "pro", "prolite", "promax", "team", "self_serve_business_prolite", "self_serve_business_usage_based"]) {
     assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ plan })), plan);
   }
   for (const plan of ["business", "ent26", "enterprise_cbp_automation", "enterprise_cbp_usage_based", "enterprise", "hc", "edu", "education", "edu_plus", "edu_pro", "sci", "sci_plus"]) {
-    assert.throws(() => inspectCodexManagedPolicy(options({ plan })), /remote managed requirements/, plan);
+    assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ plan })), plan);
   }
-  assert.throws(() => inspectCodexManagedPolicy(options({ requirements: '[config_server]\nurl="https://policy.example"\n' })), /remote managed requirements/);
+  assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ requirements: '[config_server]\nurl="https://policy.example"\n' })));
 });
 
 test("finite known-provider destination check does not pin independent exporters", () => {
@@ -47,12 +47,12 @@ test("finite known-provider destination check does not pin independent exporters
   assert.throws(() => validateCodexExporters([{ source: "fixture", value: { otel: { exporter: { "otlp-http": { endpoint: "https://ab.chatgpt.com./v1" } } } } }]), /known provider/);
 });
 
-test("selected-workspace eligibility mirrors native token user aliases", () => {
+test("selected-workspace claims do not become an unsupported account restriction", () => {
   const token = claims => `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": claims })).toString("base64url")}.signature`;
   const fixture = options();
   fixture.credential = { accountId: "workspace", idToken: token({ chatgpt_plan_type: "plus", user_id: "user" }),
     access: token({ chatgpt_account_id: "workspace", chatgpt_plan_type: "hc", chatgpt_user_id: "user" }) };
-  assert.throws(() => inspectCodexManagedPolicy(fixture), /remote managed requirements/);
+  assert.doesNotThrow(() => inspectCodexManagedPolicy(fixture));
   fixture.credential.access = token({ chatgpt_account_id: "workspace", chatgpt_plan_type: "plus", user_id: "user" });
   assert.doesNotThrow(() => inspectCodexManagedPolicy(fixture));
 });
