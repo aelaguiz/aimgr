@@ -32,11 +32,11 @@ export function parseManualCallbackStdioInput(input) {
   return raw;
 }
 
-export async function readNonEmptyLineFromStdin(stdin) {
+export async function readNonEmptyLineFromStdin(stdin, { signal } = {}) {
   if (!stdin || typeof stdin[Symbol.asyncIterator] !== "function") {
     throw new Error("Cannot read callback URL from stdin.");
   }
-  const rl = readline.createInterface({ input: stdin, crlfDelay: Infinity });
+  const rl = readline.createInterface({ input: stdin, crlfDelay: Infinity, ...(signal ? { signal } : {}) });
   try {
     for await (const line of rl) {
       const value = String(line ?? "").trim();
@@ -50,8 +50,8 @@ export async function readNonEmptyLineFromStdin(stdin) {
 
 export function createManualCallbackStdioProtocol({ stdin, stdout, label, provider }) {
   let callbackInputPromise = null;
-  const readCallbackUrl = async () => {
-    callbackInputPromise ??= readNonEmptyLineFromStdin(stdin).then(parseManualCallbackStdioInput);
+  const readCallbackUrl = async (options) => {
+    callbackInputPromise ??= readNonEmptyLineFromStdin(stdin, options).then(parseManualCallbackStdioInput);
     return await callbackInputPromise;
   };
 

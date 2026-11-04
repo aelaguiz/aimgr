@@ -12,6 +12,7 @@ export async function handleStatus(context) {
     probeUsageSnapshotsByProviderImpl,
     fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl,
+    readCodexEnvironmentImpl,
     nowMs,
   } = context;
   const redisStatus = await buildRedisStatusView({
@@ -20,6 +21,7 @@ export async function handleStatus(context) {
     probeUsageSnapshotsByProviderImpl,
     fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl,
+    readCodexEnvironmentImpl,
     nowMs,
   });
   const view = redisStatus.view;

@@ -49,6 +49,7 @@ test("administrator-owned artifact admission contracts on the offsite host", { s
   const hostToken = JSON.parse(fs.readFileSync(hostFile, "utf8")).token;
   const parent = fs.mkdtempSync(path.join(base, "claude-artifact-contract-"));
   fs.chmodSync(parent, 0o755);
+  fs.writeFileSync(path.join(parent, "package.json"), '{"type":"module"}', { mode: 0o644 });
   t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
   const runtimeUser = process.platform === "darwin" ? "ec2-user" : "aimprivacy";
   const uid = Number(execFileSync("/usr/bin/id", ["-u", runtimeUser], { encoding: "utf8" }).trim());
@@ -57,6 +58,9 @@ test("administrator-owned artifact admission contracts on the offsite host", { s
   const moduleFile = path.join(parent, "admission.mjs");
   fs.copyFileSync(new URL("../../src/privacy/claude-artifacts.js", import.meta.url), moduleFile);
   fs.chmodSync(moduleFile, 0o644);
+  const sharedAdmission = path.join(parent, "artifact-admission.js");
+  fs.copyFileSync(new URL("../../src/privacy/artifact-admission.js", import.meta.url), sharedAdmission);
+  fs.chmodSync(sharedAdmission, 0o644);
   const child = (source) => spawnSync(process.execPath, ["--input-type=module", "-e",
     `process.setgroups([]); process.setgid(${gid}); process.setuid(${uid});\n${source}`], { encoding: "utf8" });
   const runtimeAdmission = (root, selectedCommand, pinnedArtifactSet) => child(`

@@ -3,6 +3,9 @@ import { readAimgrConfig } from "../config/aimgr-config.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { parseExpiresAtToMs, formatExpiresIn } from "../core/time.js";
 import { buildCoordinationView } from "../coordination/snapshot.js";
+import { localCodexRecords } from "../coordination/codex-runtime.js";
+import { readCodexEnvironment } from "../privacy/codex-environment.js";
+import { readReferencedLocalCodexCredential } from "../credentials/codex-local.js";
 import { readHeldRedisCredentialLeaseLabels } from "../coordination/redis-credential-lease.js";
 import {
   closeRedisStore,
@@ -95,6 +98,7 @@ function projectStatusAccount(value) {
   return {
     label,
     provider,
+    ...(provider === OPENAI_CODEX_PROVIDER && /^[a-f0-9]{64}$/.test(value?.localAccountKey ?? "") ? { localAccountKey: value.localAccountKey } : {}),
     ...(provider === ANTHROPIC_PROVIDER ? { egress: projectClaudeEgress(value?.egress) } : {}),
     operator: {
       status: safeToken(value?.operator?.status) ?? "unknown",
@@ -247,8 +251,9 @@ function credentialStatusForCodex(record, nowMs) {
     && typeof credential.refresh === "string" && credential.refresh.trim()
     && typeof credential.accountId === "string" && credential.accountId.trim()
     && expiresAtMs !== null && expiresAtMs > nowMs;
-  if (record?.policy?.reauth?.blockedReason === "oauth_reauth_required") return { status: "reauth", ready: false };
-  if (record?.health?.status === "candidate") return { status: "candidate", ready: false };
+  if (["login_required", "reauth_required", "runtime_required", "expired", "local_auth_unavailable"].includes(record?.health?.reason)) {
+    return { status: record.health.reason, ready: false };
+  }
   if (expiresAtMs !== null && expiresAtMs <= nowMs) return { status: "expired", ready: false };
   return { status: ready ? "ok" : "missing", ready: Boolean(ready) };
 }
@@ -270,13 +275,14 @@ function buildCodexAccounts({ snapshot, usageByLabel, lockedLabels, lockSource, 
     return {
       label: record.label,
       provider: OPENAI_CODEX_PROVIDER,
+      localAccountKey: record.localAccountKey ?? null,
       operator: {
-        status: credentials.ready && record.policy?.pool?.enabled !== false ? "ready" : credentials.status === "reauth" ? "reauth" : "blocked",
+        status: credentials.ready && record.policy?.pool?.enabled !== false ? "ready" : credentials.status === "reauth_required" ? "reauth" : "blocked",
         eligible: credentials.ready && record.policy?.pool?.enabled !== false && lockStatus !== "held",
       },
       credentials: {
         status: credentials.status,
-        source: "redis",
+        source: "environment-local",
         ...(typeof record.credential?.expiresAt === "string" ? {
           expiresAt: record.credential.expiresAt,
           expiresIn: formatExpiresIn(record.credential.expiresAt, nowMs),
@@ -353,6 +359,7 @@ export async function buildRedisStatusView({
   connectRedisStoreImpl = connectRedisStore,
   readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
   readClaudeProxyHealthImpl = readClaudeProxyHealth,
+  readCodexEnvironmentImpl = readCodexEnvironment,
 } = {}) {
   const configRead = readAimgrConfig({ homeDir });
   const redisConfig = configRead.config.redis;
@@ -372,9 +379,13 @@ export async function buildRedisStatusView({
       keyPrefix: redisConfig.keyPrefix,
       connectionPolicy: REDIS_CONNECTION_POLICY_OBSERVE,
     });
-    const snapshot = await readSnapshot(store);
+    const snapshot = await readSnapshot(store, { excludeCodexGrants: true });
+    let environment = null;
+    try { environment = readCodexEnvironmentImpl(); } catch { /* Codex setup cannot hide other providers. */ }
+    snapshot.credentials.push(...await localCodexRecords({ store, homeDir, env, environment }));
     const localState = loadLocalState({ homeDir });
     const state = buildCoordinationView(snapshot, { localState });
+    state.codexEnvironment = environment;
     const targets = readLocalTargetFacts({ state, homeDir, env });
 
     let claudeUsageStatus;
@@ -479,6 +490,22 @@ export async function buildRedisStatusView({
     const cachedRaw = readCachedRedisStatusView({ homeDir, cachePath }).view;
     const cached = cachedRaw ? buildRedisDiagnosticCacheView(cachedRaw) : null;
     if (!cached) return { used: true, view: localFallback, claudeUsageStatus: null };
+
+    // Cached pool metadata is not evidence of a current local authorization.
+    // In particular, logout or copying this cache cannot resurrect a grant.
+    let environment = null;
+    try { environment = readCodexEnvironmentImpl(); } catch { /* report local setup below */ }
+    for (const account of cached.accounts) {
+      if (account.provider !== OPENAI_CODEX_PROVIDER) continue;
+      let local = { status: environment ? "login_required" : "runtime_required", credential: null };
+      if (environment && account.localAccountKey) {
+        try { local = readReferencedLocalCodexCredential({ homeDir, env, environment, accountKey: account.localAccountKey }); }
+        catch { local.status = "local_auth_unavailable"; }
+      }
+      account.credentials = { status: local.status === "ready" ? "ok" : local.status, source: "environment-local",
+        ...(local.credential?.expiresAt ? { expiresAt: local.credential.expiresAt, expiresIn: formatExpiresIn(local.credential.expiresAt, nowMs) } : {}) };
+      if (local.status !== "ready") account.operator = { status: local.status === "reauth_required" ? "reauth" : "blocked", eligible: false };
+    }
 
     // The assignment is cached provider data; local route availability is a
     // current machine fact. Recheck it even while Redis is unreachable. A newly

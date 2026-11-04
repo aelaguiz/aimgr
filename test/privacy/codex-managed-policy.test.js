@@ -1,0 +1,58 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { codexManagedPolicyText, inspectCodexManagedPolicy, validateCodexExporters } from "../../src/privacy/codex-managed-policy.js";
+import { parseCodexSettings } from "../../src/io/codex-settings-toml.js";
+
+function options({ forced = {}, plan = "plus", config, requirements } = {}) {
+  const installed = codexManagedPolicyText({ config, requirements });
+  return { platform: "darwin", etcDirectory: "/etc", readForced: () => Object.fromEntries(Object.entries(forced).map(([key, value]) => [key, Buffer.from(value).toString("base64")])),
+    inspect: file => ({ kind: "file", bytes: Buffer.from(file.endsWith("/managed_config.toml") ? installed.config : installed.requirements) }),
+    credential: { idToken: `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_plan_type: plan } })).toString("base64url")}.signature` },
+  };
+}
+
+test("managed opt-outs preserve independent collector endpoints and content decisions", () => {
+  const config = '# keep this\n[otel]\nlog_user_prompt = true\nmetrics_exporter = { "otlp-http" = { endpoint = "https://collector.example/v1", protocol = "binary" } }\n';
+  const result = codexManagedPolicyText({ config });
+  const before = parseCodexSettings(config).value, after = parseCodexSettings(result.config).value;
+  assert.deepEqual(after.otel, before.otel);
+  assert.equal(after.analytics.enabled, false);
+  assert.match(result.config, /# keep this/);
+  assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ config })));
+});
+
+test("actual forced policy is checked by effective privacy-field precedence", () => {
+  assert.throws(() => inspectCodexManagedPolicy(options({ forced: { config_toml_base64: "[analytics]\nenabled=true" } })), /forced.*analytics.enabled/);
+  assert.throws(() => inspectCodexManagedPolicy(options({ forced: { requirements_toml_base64: "allow_remote_control=true" } })), /forced.*allow_remote_control/);
+  assert.throws(() => inspectCodexManagedPolicy(options({ forced: { requirements_toml_base64: '[feedback]\nenabled=true' } })), /forced.*feedback.enabled/);
+  assert.throws(() => inspectCodexManagedPolicy(options({ forced: { requirements_toml_base64: 'cli_auth_credentials_store="keyring"' } })), /cli_auth_credentials_store/);
+  assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ forced: { config_toml_base64: '[feedback]\nenabled=true' } })), "requirements still force feedback false");
+});
+
+test("cloud-policy admission follows exact native eligibility, not labels or a guessed Pro restriction", () => {
+  for (const plan of ["free", "go", "plus", "pro", "prolite", "promax", "team", "self_serve_business_prolite", "self_serve_business_usage_based"]) {
+    assert.doesNotThrow(() => inspectCodexManagedPolicy(options({ plan })), plan);
+  }
+  for (const plan of ["business", "ent26", "enterprise_cbp_automation", "enterprise_cbp_usage_based", "enterprise", "hc", "edu", "education", "edu_plus", "edu_pro", "sci", "sci_plus"]) {
+    assert.throws(() => inspectCodexManagedPolicy(options({ plan })), /remote managed requirements/, plan);
+  }
+  assert.throws(() => inspectCodexManagedPolicy(options({ requirements: '[config_server]\nurl="https://policy.example"\n' })), /remote managed requirements/);
+});
+
+test("finite known-provider destination check does not pin independent exporters", () => {
+  for (const endpoint of ["https://collector-a.example/v1", "https://collector-b.example/v2", "https://independent.statsig.com/v1"]) {
+    assert.doesNotThrow(() => validateCodexExporters([{ source: "fixture", value: { otel: { exporter: { "otlp-http": { endpoint } } } } }]));
+  }
+  assert.throws(() => validateCodexExporters([{ source: "fixture", value: { otel: { trace_exporter: { "otlp-grpc": { endpoint: "https://api.openai.com" } } } } }]), /known provider/);
+  assert.throws(() => validateCodexExporters([{ source: "fixture", value: { otel: { exporter: { "otlp-http": { endpoint: "https://ab.chatgpt.com./v1" } } } } }]), /known provider/);
+});
+
+test("selected-workspace eligibility mirrors native token user aliases", () => {
+  const token = claims => `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": claims })).toString("base64url")}.signature`;
+  const fixture = options();
+  fixture.credential = { accountId: "workspace", idToken: token({ chatgpt_plan_type: "plus", user_id: "user" }),
+    access: token({ chatgpt_account_id: "workspace", chatgpt_plan_type: "hc", chatgpt_user_id: "user" }) };
+  assert.throws(() => inspectCodexManagedPolicy(fixture), /remote managed requirements/);
+  fixture.credential.access = token({ chatgpt_account_id: "workspace", chatgpt_plan_type: "plus", user_id: "user" });
+  assert.doesNotThrow(() => inspectCodexManagedPolicy(fixture));
+});

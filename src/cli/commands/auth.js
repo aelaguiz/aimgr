@@ -15,6 +15,9 @@ import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.j
 import { getAnthropicCredentialView } from "../../credentials/anthropic.js";
 import { maintainRedisClaudeCredential } from "../../credentials/claude-maintenance.js";
 import { maintainRedisCodexCredential } from "../../credentials/harness-access.js";
+import { maintainLocalCodexCredential, readLocalCodexCredential } from "../../credentials/codex-local.js";
+import { readCodexAccountMetadata } from "../../coordination/codex-metadata.js";
+import { readCodexEnvironment } from "../../privacy/codex-environment.js";
 import { hasXaiRefreshMaterial, maintainRedisXaiCredential } from "../../credentials/xai-login.js";
 
 import { sanitizeForStatus } from "../../core/sanitize.js";
@@ -261,6 +264,24 @@ async function handleOAuthMaintain(context) {
           + (maintenanceResult.detail ? ` detail="${maintenanceResult.detail}"` : "")
           + `\n`,
       );
+    }
+    // The native Codex authority is separate from the legacy Prime/Pi owner
+    // above. It never enters runtime.state, Redis CAS or portable export.
+    let environment = null;
+    try { environment = (context.readCodexEnvironmentImpl ?? readCodexEnvironment)(); } catch { /* No local runtime/grants to maintain. */ }
+    if (environment) for (const item of await readCodexAccountMetadata(runtime.store)) {
+      if (!item.accountId) continue;
+      const options = { homeDir, env: context.env, environment, accountId: item.accountId };
+      let outcome, reason;
+      try {
+        const before = readLocalCodexCredential(options);
+        const after = await maintainLocalCodexCredential(options, { fetchJsonWithTimeoutImpl });
+        outcome = after.status === "reauth_required" ? "reauth_required" : !after.credential ? "skipped"
+          : before.generation !== after.generation ? "refreshed" : "unchanged";
+        reason = after.status;
+      } catch { outcome = "retryable"; reason = "maintenance_failed"; }
+      counts[outcome] += 1;
+      stdout.write(`provider=${OPENAI_CODEX_PROVIDER} authority=environment-local label=${item.label} outcome=${outcome} reason=${reason}\n`);
     }
   } finally {
     await closeRedisRuntime(runtime);
