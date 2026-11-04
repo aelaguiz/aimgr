@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Synthetic keyring interoperability only, on the designated isolated Linux
-// host inside a loopback-only namespace and a fresh dbus-run-session.
+// Synthetic keyring interoperability on designated isolated hosts. Linux uses
+// a loopback namespace/private D-Bus; macOS uses a disposable local keychain.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,10 +18,13 @@ import { admitCodexArtifact } from "../src/privacy/codex-artifacts.js";
 
 const base = "/opt/aimgr-state-audit";
 assert.ok(fs.existsSync(path.join(base, "OFFSITE_AUDIT_HOST")) && process.getuid() !== 0);
-assert.equal(process.platform, "linux");
-assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
-assert.match(process.env.DBUS_SESSION_BUS_ADDRESS ?? "", /^unix:/);
-assert.equal(process.env.AIMGR_SYNTHETIC_DBUS, "1");
+assert.ok(["linux", "darwin"].includes(process.platform));
+const mac = process.platform === "darwin";
+if (!mac) {
+  assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
+  assert.match(process.env.DBUS_SESSION_BUS_ADDRESS ?? "", /^unix:/);
+  assert.equal(process.env.AIMGR_SYNTHETIC_DBUS, "1");
+}
 const root = fs.mkdtempSync(path.join(base, "codex-m1-fixtures", "mcp-"));
 const homeDir = path.join(root, "home"), cwd = path.join(root, "project"), controlDir = path.join(root, "keyring-control");
 for (const dir of [path.join(homeDir, ".codex"), cwd, controlDir]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -30,22 +33,32 @@ const env = { HOME: homeDir, XDG_DATA_HOME: path.join(homeDir, ".local", "share"
   RUST_LOG: "codex_keyring_store=trace,codex_rmcp_client=debug",
   PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", TERM: "xterm-256color" };
 const packageRoot = "/home/aimdev/codex-m1-private/keyring-fixture/runtime";
-const daemon = spawn(path.join(packageRoot, "usr/bin/gnome-keyring-daemon"),
+const daemon = mac ? null : spawn(path.join(packageRoot, "usr/bin/gnome-keyring-daemon"),
   ["--foreground", "--components=secrets", "--control-directory=" + controlDir, "--unlock"], {
     env: { ...env, LD_LIBRARY_PATH: path.join(packageRoot, "usr/lib/x86_64-linux-gnu") },
     stdio: ["pipe", "pipe", "pipe"],
   });
 const daemonLogs = [];
-daemon.stdout.on("data", bytes => daemonLogs.push(bytes)); daemon.stderr.on("data", bytes => daemonLogs.push(bytes));
-daemon.stdin.end("SYNTHETIC_KEYRING_PASSWORD\n");
+daemon?.stdout.on("data", bytes => daemonLogs.push(bytes)); daemon?.stderr.on("data", bytes => daemonLogs.push(bytes));
+daemon?.stdin.end("SYNTHETIC_KEYRING_PASSWORD\n");
 const monitorLogs = [];
-const monitor = spawn("/usr/bin/dbus-monitor", ["--session"], { env, stdio: ["ignore", "pipe", "pipe"] });
-monitor.stdout.on("data", bytes => monitorLogs.push(bytes)); monitor.stderr.on("data", bytes => monitorLogs.push(bytes));
+const monitor = mac ? null : spawn("/usr/bin/dbus-monitor", ["--session"], { env, stdio: ["ignore", "pipe", "pipe"] });
+monitor?.stdout.on("data", bytes => monitorLogs.push(bytes)); monitor?.stderr.on("data", bytes => monitorLogs.push(bytes));
+const keychainFile = path.join(root, "fixture.keychain-db");
+let previousKeychain, keychainCreated = false;
+const security = (...args) => {
+  const result = spawnSync("/usr/bin/security", args, { encoding: "utf8", timeout: 10_000 });
+  assert.equal(result.status, 0, "Disposable keychain operation failed; no credential output logged");
+  return result.stdout.trim().replace(/^"|"$/g, "");
+};
 const keyring = request => {
   // Fixture-only direct calls. Real conversion uses the durable maintenance
   // owner; neither path kills a child while a credential write is pending.
   const result = spawnSync(admitCodexArtifact().mcpKeyring, [], {
-    env, input: JSON.stringify(request), encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], maxBuffer: 4 * 1024 * 1024,
+    env: mac ? { ...env, HOME: os.homedir() } : env,
+    input: JSON.stringify(mac && request.operation === "insert-if-absent" ? { ...request,
+      native_access: { executable: path.join(base, "bin/codex"), sha256: "39acf979729dd290f9a24ee38b2914e036c91b65952872e28ae2a6b88a7db7c1" } } : request),
+    encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], maxBuffer: 4 * 1024 * 1024,
   });
   assert.equal(result.status, 0, "Synthetic keyring helper failed");
   const value = JSON.parse(result.stdout);
@@ -53,7 +66,12 @@ const keyring = request => {
   return value;
 };
 let generation = 0, rejectCurrentAccess = false, serverError, refreshGate, releaseOnContention, barrierTimer;
-const backendDeath = process.argv.includes("--backend-death"), activeChildren = new Set();
+const backendDeath = process.argv.includes("--backend-death"), backendUnavailable = backendDeath || process.argv.includes("--backend-unavailable");
+const activeChildren = new Set();
+assert.ok(!mac || !backendDeath, "Use --backend-unavailable to lock only the disposable macOS keychain");
+const privateCanary = path.join(homeDir, ".ssh/private-canary");
+fs.mkdirSync(path.dirname(privateCanary), { mode: 0o700 });
+fs.writeFileSync(privateCanary, "SYNTHETIC_KEYRING_PRIVATE_CANARY", { mode: 0o600 });
 let healthyEntered, releaseHealthy, healthyTurns = 0;
 const healthyWaiting = new Promise(resolve => { healthyEntered = resolve; });
 const healthyGate = new Promise(resolve => { releaseHealthy = resolve; });
@@ -176,7 +194,23 @@ async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json
 }
 
 function observeVendor() {
-  const script = `import hashlib,json,os,subprocess,sys
+  const script = mac ? `import ctypes,hashlib,json,os,subprocess,sys
+from pathlib import Path
+rows=[line.split(None,2) for line in subprocess.check_output(['/bin/ps','-axo','pid=,ppid=,stat='],text=True).splitlines()]
+owned=set(map(int,sys.argv[2:]));previous=set()
+while previous!=owned:
+ previous=set(owned);owned.update(int(p) for p,parent,state in rows if int(parent) in owned)
+libproc=ctypes.CDLL('/usr/lib/libproc.dylib');sandbox=ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+target=os.fsencode(sys.argv[1]);assert sandbox.sandbox_check(os.getpid(),b'file-read-data',1,target)==0
+result=[]
+for p,parent,state in rows:
+ if int(p) not in owned or state.startswith('Z'):continue
+ buffer=ctypes.create_string_buffer(4096)
+ if libproc.proc_pidpath(int(p),buffer,len(buffer))<=0:continue
+ image=Path(os.fsdecode(buffer.value))
+ if image.name not in ('codex','codex-code-mode-host'):continue
+ result.append(dict(pid=int(p),image=str(image),sha256=hashlib.sha256(image.read_bytes()).hexdigest(),denied=sandbox.sandbox_check(int(p),b'file-read-data',1,target)))
+print(json.dumps(result))` : `import hashlib,json,os,subprocess,sys
 from pathlib import Path
 rows=[line.split(None,2) for line in subprocess.check_output(['/bin/ps','-eo','pid=,ppid=,stat='],text=True).splitlines()]
 owned=set(map(int,sys.argv[1:])); previous=set()
@@ -191,24 +225,33 @@ for p,parent,state in rows:
   result.append(dict(pid=int(p),image=str(image),sha256=hashlib.sha256(image.read_bytes()).hexdigest(),profile=Path('/proc/'+p+'/attr/current').read_text().strip()))
  except FileNotFoundError: pass
 print(json.dumps(result))`;
-  const result = spawnSync("sudo", ["-n", "/usr/bin/python3", "-I", "-c", script, ...[...activeChildren].map(child => String(child.pid))],
+  const result = spawnSync("sudo", ["-n", "/usr/bin/python3", "-I", "-c", script, ...(mac ? [privateCanary] : []), ...[...activeChildren].map(child => String(child.pid))],
     { encoding: "utf8" });
   assert.equal(result.status, 0);
   const observed = JSON.parse(result.stdout);
   assert.ok(observed.length);
   for (const row of observed) {
-    assert.match(row.profile, /^aim-codex-p-\d+-[a-f0-9]+ \(enforce\)$/);
+    if (mac) assert.equal(row.denied, 1);
+    else assert.match(row.profile, /^aim-codex-p-\d+-[a-f0-9]+ \(enforce\)$/);
     assert.equal(row.sha256, row.image.endsWith("/codex")
-      ? "b8a11fedf24b2dfb59a70c9e52b030f9a508dcd49cd2dd0d41956f4c785156b8"
-      : "657f4e902726e05867c937b583049d5997e057f8cd0ab40450633c9c9ef8d630");
+      ? (mac ? "39acf979729dd290f9a24ee38b2914e036c91b65952872e28ae2a6b88a7db7c1" : "b8a11fedf24b2dfb59a70c9e52b030f9a508dcd49cd2dd0d41956f4c785156b8")
+      : (mac ? "fd37051bfdce0b65cf22a7077e265720a7bd6709d5e400dcbc26197f3041400a" : "657f4e902726e05867c937b583049d5997e057f8cd0ab40450633c9c9ef8d630"));
   }
   return observed;
 }
 
 try {
+  if (mac) {
+    const prior = spawnSync("/usr/bin/security", ["default-keychain", "-d", "user"], { encoding: "utf8" });
+    previousKeychain = prior.status === 0 ? prior.stdout.trim().replace(/^"|"$/g, "") : null;
+    security("create-keychain", "-p", "SYNTHETIC_KEYRING_PASSWORD", keychainFile);
+    keychainCreated = true;
+    security("unlock-keychain", "-p", "SYNTHETIC_KEYRING_PASSWORD", keychainFile);
+    security("default-keychain", "-d", "user", "-s", keychainFile);
+  }
   // Do not let a D-Bus activation race make this fixture use any other
   // credential service, even in the disposable bus namespace.
-  for (let attempt = 0; ; attempt++) {
+  for (let attempt = 0; !mac; attempt++) {
     const owner = spawnSync("/usr/bin/gdbus", ["call", "--session", "--dest", "org.freedesktop.DBus",
       "--object-path", "/org/freedesktop/DBus", "--method", "org.freedesktop.DBus.GetConnectionUnixProcessID",
       "org.freedesktop.secrets"], { env, encoding: "utf8", timeout: 5_000 });
@@ -218,7 +261,7 @@ try {
   }
   for (let attempt = 0; ; attempt++) {
     try { assert.equal((await keyring({ operation: "load", server_name: server.name, url: server.url })).value, null); break; }
-    catch (error) { if (attempt === 9 || daemon.exitCode !== null) throw error; await delay(100); }
+    catch (error) { if (attempt === 9 || (daemon && daemon.exitCode !== null)) throw error; await delay(100); }
   }
   const inserted = await keyring({ operation: "insert-if-absent", server_name: server.name, url: server.url, value: JSON.stringify(converted.token) });
   assert.equal(inserted.inserted, true);
@@ -228,7 +271,7 @@ try {
     assert.ok(["o_auth", "oauth"].includes(entries.find(entry => entry.name === server.name)?.auth_status), "native recognizes converted OAuth tokens");
   }
   const execArgs = ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "Complete the synthetic MCP check."];
-  if (backendDeath) {
+  if (backendUnavailable) {
     await native("synthetic-A", true, execArgs);
     assert.ok(requests.some(request => request.rpc === "tools/list"));
     assert.match(server.name, /^[a-zA-Z0-9_]+$/);
@@ -237,20 +280,24 @@ try {
     try {
       await Promise.race([healthyWaiting, healthy.then(() => { throw Error("Sibling exited before its model barrier"); })]);
       const before = observeVendor();
-      const ended = once(daemon, "close"); daemon.kill("SIGKILL"); await ended;
+      if (mac) security("lock-keychain", keychainFile);
+      else { const ended = once(daemon, "close"); daemon.kill("SIGKILL"); await ended; }
       rejectCurrentAccess = true;
       const modelCount = requests.filter(row => row.url === "/responses").length;
       await native("synthetic-A", true, execArgs, null, true);
       assert.equal(requests.filter(row => row.url === "/responses").length, modelCount);
       assert.ok(!fs.existsSync(path.join(homeDir, ".codex/.credentials.json")), "No fallback File credential created");
-      const owner = spawnSync("gdbus", ["call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus",
-        "--method", "org.freedesktop.DBus.GetNameOwner", "org.freedesktop.secrets"], { env, encoding: "utf8" });
-      assert.notEqual(owner.status, 0, "The dead fixture backend was not automatically replaced");
+      if (mac) assert.equal(security("default-keychain", "-d", "user"), keychainFile, "No replacement backend selected");
+      else {
+        const owner = spawnSync("gdbus", ["call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus",
+          "--method", "org.freedesktop.DBus.GetNameOwner", "org.freedesktop.secrets"], { env, encoding: "utf8" });
+        assert.notEqual(owner.status, 0, "The dead fixture backend was not automatically replaced");
+      }
       const after = observeVendor();
       releaseHealthy(); await healthy;
       assert.equal(healthyTurns, 2);
       fs.writeFileSync(path.join(root, "backend-death.private.json"), JSON.stringify({ before, after }, null, 2));
-      process.stdout.write(JSON.stringify({ fixture: root, backendDeath: true, requiredFailureBeforeModel: true,
+      process.stdout.write(JSON.stringify({ fixture: root, backendDeath: !mac, disposableKeychainLocked: mac, requiredFailureBeforeModel: true,
         healthySiblingToolCompleted: true, actualSurvivingVendorProtected: true }) + "\n");
     } finally { releaseHealthy(); await healthy; }
   } else {
@@ -314,6 +361,8 @@ try {
   fs.writeFileSync(path.join(root, "dbus.log"), Buffer.concat(monitorLogs), { mode: 0o600 });
   fs.writeFileSync(path.join(root, "requests.json"), JSON.stringify(requests, null, 2), { mode: 0o600 });
   service.closeAllConnections(); await new Promise(resolve => service.close(resolve));
-  if (monitor.exitCode === null) { monitor.kill("SIGTERM"); await once(monitor, "close"); }
-  if (daemon.exitCode === null && daemon.signalCode === null) { daemon.kill("SIGTERM"); await once(daemon, "close"); }
+  if (monitor && monitor.exitCode === null) { monitor.kill("SIGTERM"); await once(monitor, "close"); }
+  if (daemon && daemon.exitCode === null && daemon.signalCode === null) { daemon.kill("SIGTERM"); await once(daemon, "close"); }
+  if (previousKeychain) security("default-keychain", "-d", "user", "-s", previousKeychain);
+  if (keychainCreated) security("delete-keychain", keychainFile);
 }

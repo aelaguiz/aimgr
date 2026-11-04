@@ -21,9 +21,9 @@ import { prepareCodexAccountState } from "../src/privacy/codex-account-state.js"
 import { readCodexEnvironment } from "../src/privacy/codex-environment.js";
 import { buildRoutineFireKey } from "../src/routines/schedule.js";
 
-assert.equal(process.platform, "linux");
+assert.ok(["linux", "darwin"].includes(process.platform));
 assert.ok(fs.existsSync("/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST") && process.getuid() !== 0);
-assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
+if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
 const root = fs.realpathSync(process.argv[2]);
 assert.ok(root.startsWith("/opt/aimgr-state-audit/")); assert.equal(fs.readdirSync(root).length, 0);
 const homeDir = path.join(root, "home"), cwd = path.join(root, "project"), bin = path.join(root, "bin");
@@ -176,6 +176,17 @@ const receipt = date => fs.existsSync(receiptFile(date)) ? JSON.parse(fs.readFil
 const system = async (...args) => exec("sudo", ["-n", ...args], { maxBuffer: 1024 * 1024 });
 const startTimer = async interval => {
   const unit = id + (interval ? "-interval" : "-calendar"); units.push(unit);
+  if (process.platform === "darwin") {
+    const plist = { Label: unit, ProgramArguments: [aim, "routine", "run", id, "--json"],
+      UserName: os.userInfo().username, WorkingDirectory: cwd, EnvironmentVariables: env,
+      StandardOutPath: path.join(root, "scheduler.private.out"), StandardErrorPath: path.join(root, "scheduler.private.err"),
+      ThrottleInterval: 1, ...(interval ? { RunAtLoad: true, StartInterval: 3 }
+        : { StartCalendarInterval: { Month: target.getMonth() + 1, Day: target.getDate(), Hour: target.getHours(), Minute: target.getMinutes() } }) };
+    execFileSync("/usr/bin/python3", ["-I", "-c", "import json,plistlib,sys;from pathlib import Path;Path(sys.argv[1]).write_bytes(plistlib.dumps(json.load(sys.stdin)))", path.join(root, unit + ".plist")],
+      { input: JSON.stringify(plist), stdio: ["pipe", "ignore", "pipe"] });
+    await system("launchctl", "bootstrap", "system", path.join(root, unit + ".plist"));
+    return unit;
+  }
   await system("systemd-run", "--unit=" + unit,
     ...(interval ? ["--on-active=1s", "--on-unit-inactive=3s"] : ["--on-calendar=" + target.toISOString().replace("T", " ").replace(".000Z", " UTC")]),
     "--timer-property=AccuracySec=100ms", "--timer-property=RandomizedDelaySec=0", "--uid=aimdev", "--gid=aimdev",
@@ -183,6 +194,14 @@ const startTimer = async interval => {
     "--property=StandardOutput=append:" + root + "/scheduler.private.out", "--property=StandardError=append:" + root + "/scheduler.private.err",
     ...Object.entries(env).map(([key, value]) => `--setenv=${key}=${value}`), aim, "routine", "run", id, "--json");
   return unit;
+};
+const stopTimer = unit => process.platform === "darwin"
+  ? system("launchctl", "bootout", "system/" + unit)
+  : system("systemctl", "stop", unit + ".timer", unit + ".service");
+const restartTimer = async unit => {
+  if (process.platform !== "darwin") return system("systemctl", "restart", unit + ".timer");
+  await stopTimer(unit);
+  await system("launchctl", "bootstrap", "system", path.join(root, unit + ".plist"));
 };
 const closePane = async index => {
   const { pane, child } = drivers[index];
@@ -212,7 +231,7 @@ try {
   const failed = fs.readFileSync(receiptFile(times[1])); const requestCount = requests.length;
   const calls = () => fs.readFileSync(path.join(root, "cli.private.jsonl"), "utf8").trim().split("\n").map(JSON.parse)
     .filter(row => row.argv[0] === "routine" && row.argv[1] === "run" && !row.argv.includes("--manual")).length;
-  const beforeRestart = calls(); await system("systemctl", "restart", interval + ".timer");
+  const beforeRestart = calls(); await restartTimer(interval);
   await waitFor(() => calls() >= beforeRestart + 2, "actual interval firings after timer restart");
   assert.deepEqual(fs.readFileSync(receiptFile(times[1])), failed); assert.equal(requests.length, requestCount);
   fs.unlinkSync(failure);
@@ -235,7 +254,7 @@ try {
   fs.writeFileSync(path.join(root, "result.private.json"), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ fixture: root, ...result }));
 } finally {
   releaseFirst();
-  for (const unit of units) await system("systemctl", "stop", unit + ".timer", unit + ".service").catch(() => {});
+  for (const unit of units) await stopTimer(unit).catch(() => {});
   for (const { child } of drivers) if (child.exitCode === null) { child.kill("SIGTERM"); await once(child, "close"); }
   if (store.client.isOpen) await store.client.quit();
   redis.kill("SIGTERM"); await once(redis, "close");

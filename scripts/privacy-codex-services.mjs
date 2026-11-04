@@ -20,9 +20,9 @@ import { prepareCodexAccountState } from "../src/privacy/codex-account-state.js"
 import { prepareCodexNativeInvocation } from "../src/privacy/codex-native-invocation.js";
 
 const base = "/opt/aimgr-state-audit";
-assert.equal(process.platform, "linux");
+assert.ok(["linux", "darwin"].includes(process.platform));
 assert.ok(fs.existsSync(path.join(base, "OFFSITE_AUDIT_HOST")) && process.getuid() !== 0);
-assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
+if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
 const names = ["api.openai.com", "chatgpt.com", "ab.chatgpt.com", "o33249.ingest.us.sentry.io"];
 for (const name of names) assert.equal((await dns.lookup(name)).address, "127.0.0.1");
 const root = fs.mkdtempSync(path.join(base, "codex-m1-fixtures", "services-"));
@@ -52,6 +52,36 @@ const view = path.join(prepared.codexHome, "config.toml"); fs.symlinkSync(source
 const empty = path.join(root, "empty-policy.toml"); fs.writeFileSync(empty, "");
 const baselineLauncher = path.join(root, "baseline.py");
 fs.writeFileSync(baselineLauncher, `import json,os,subprocess,sys\nfrom pathlib import Path\np=json.loads(Path(sys.argv[1]).read_text())\nassert os.getuid()==0\nassert os.readlink('/proc/self/ns/mnt')!=os.readlink('/proc/1/ns/mnt')\nfor target in ['/etc/codex/managed_config.toml','/etc/codex/requirements.toml']:\n subprocess.run(['mount','--bind',p['empty'],target],check=True)\nos.setgroups([]);os.setgid(p['gid']);os.setuid(p['uid']);os.chdir(p['cwd'])\nos.execve(p['command'],[p['command'],'app-server','--listen','stdio://'],p['env'])\n`);
+// The rented Mac is dedicated to this sequential fixture. It has no mount
+// namespace, so keep exact private backups while the baseline owns empty local
+// policy. Restore before any protected launch and after failure. Never run
+// another native fixture concurrently with the macOS baseline.
+let macBaselinePolicy = false;
+const setMacBaselinePolicy = enabled => {
+  if (process.platform !== "darwin" || enabled === macBaselinePolicy) return;
+  if (enabled) macBaselinePolicy = true; // A partial setup must still restore.
+  execFileSync("sudo", ["-n", "/usr/bin/python3", "-I", "-c", `
+import os,sys
+from pathlib import Path
+assert os.getuid()==0 and Path('/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST').is_file()
+root=Path(sys.argv[1]);enabled=sys.argv[2]=='1'
+rows=[(Path('/private/etc/codex')/name,root/(name+'.original')) for name in ['managed_config.toml','requirements.toml']]
+if enabled:
+ for target,backup in rows:
+  assert target.is_file() and not target.is_symlink() and target.stat().st_uid==0
+  if backup.exists(): assert backup.read_bytes()==target.read_bytes()
+  else:
+   fd=os.open(backup,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+   with os.fdopen(fd,'wb') as out: out.write(target.read_bytes());out.flush();os.fsync(out.fileno())
+ for target,backup in rows: target.write_bytes(b'')
+else:
+ for target,backup in rows:
+  if not backup.exists(): continue
+  assert target.read_bytes() in (b'',backup.read_bytes())
+  target.write_bytes(backup.read_bytes())
+`, root, enabled ? "1" : "0"], { stdio: "ignore" });
+  macBaselinePolicy = enabled;
+};
 const requests = [], remoteFrames = [], modelCounts = new Map(), runs = [];
 let phase = "baseline", refreshes = 0, terminalError = false, serverError, current;
 const eventsFor = body => {
@@ -135,6 +165,10 @@ const start = async protectedLaunch => {
     invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin/codex"), homeDir, cwd, env, args, ownedAppServer: true });
     child = spawn(invocation.command, invocation.args, { cwd, env: invocation.env, detached: true, stdio: ["pipe", "pipe", "pipe", invocation.environmentFd] });
     invocation.closeEnvironment();
+  } else if (process.platform === "darwin") {
+    setMacBaselinePolicy(true);
+    child = spawn(path.join(base, "bin/codex"), args, { cwd, env: { ...env, CODEX_HOME: prepared.codexHome },
+      detached: true, stdio: ["pipe", "pipe", "pipe"] });
   } else {
     const launch = path.join(root, phase + "-launch.json");
     fs.writeFileSync(launch, JSON.stringify({ uid: process.getuid(), gid: process.getgid(), cwd, empty, command: path.join(base, "bin/codex"), env: { ...env, CODEX_HOME: prepared.codexHome } }));
@@ -159,6 +193,7 @@ const stop = async () => {
   try { await Promise.race([current.done, new Promise((_, reject) => { timer = setTimeout(() => reject(Error("Native shutdown timeout")), 15_000); })]); }
   finally { clearTimeout(timer); }
   assert.equal(current.child.exitCode, 0); await current.invocation?.close(); current = null;
+  setMacBaselinePolicy(false);
 };
 const foreground = async () => {
   const { thread } = await call("thread/start", { cwd, approvalPolicy: "never", sandbox: "danger-full-access" });
@@ -221,6 +256,7 @@ try {
     if (current.child.exitCode === null) { try { process.kill(-current.child.pid, "SIGKILL"); } catch {} await current.done; }
     await current.invocation?.close();
   }
+  setMacBaselinePolicy(false);
   for (const run of runs) {
     fs.writeFileSync(path.join(root, run.phase + ".rpc.private.json"), JSON.stringify(run.messages, null, 2));
     fs.writeFileSync(path.join(root, run.phase + ".stderr.private.txt"), run.stderr.join(""));

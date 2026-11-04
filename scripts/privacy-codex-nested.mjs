@@ -23,9 +23,9 @@ import { buildManagedClaudeNativeStorageDescriptor } from "../src/credentials/cl
 import { projectClaudeNativeBundleToManagedConfig } from "../src/targets/claude-cli.js";
 import { admitClaudeArtifact } from "../src/privacy/claude-artifacts.js";
 
-assert.equal(process.platform, "linux");
+assert.ok(["linux", "darwin"].includes(process.platform));
 assert.ok(fs.existsSync("/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST") && process.getuid() !== 0);
-assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
+if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
 const root = fs.mkdtempSync("/opt/aimgr-state-audit/codex-m1-fixtures/nested-");
 const homeDir = path.join(root, "home"), cwd = path.join(root, "project"), bin = path.join(root, "bin");
 for (const dir of [path.join(homeDir, ".codex"), path.join(homeDir, ".claude"), cwd, bin]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -55,6 +55,9 @@ const requests = [], models = [], children = [];
 const threadRoles = new Map();
 const reviewerOnly = process.argv.includes("--reviewer-only");
 const protectedClaude = process.argv.includes("--protected-claude");
+const parentCanary = path.join(homeDir, ".ssh/private-canary");
+fs.mkdirSync(path.dirname(parentCanary), { mode: 0o700 });
+fs.writeFileSync(parentCanary, "SYNTHETIC_NESTED_PRIVATE_CANARY", { mode: 0o600 });
 let protectedParentObserved = false;
 let serverError;
 const roles = {
@@ -82,7 +85,25 @@ function record(req, body, provider) {
   if (protectedClaude && role === "claude-parent") {
     // The privileged launcher makes vendor processes nondumpable. Inspect
     // only this fixture's owned descendants as root; never weaken that mode.
-    protectedParentObserved ||= JSON.parse(execFileSync("sudo", ["-n", "/usr/bin/python3", "-I", "-c", `
+    protectedParentObserved ||= JSON.parse(execFileSync("sudo", ["-n", "/usr/bin/python3", "-I", "-c", process.platform === "darwin" ? `
+import ctypes,json,os,subprocess,sys
+from pathlib import Path
+parents={int(row[0]):int(row[1]) for line in subprocess.check_output(['ps','-axo','pid=,ppid='],text=True).splitlines() if (row:=line.split())}
+owned={int(sys.argv[1])}
+while True:
+ next_owned=owned|{pid for pid,parent in parents.items() if parent in owned}
+ if next_owned==owned: break
+ owned=next_owned
+libproc=ctypes.CDLL('/usr/lib/libproc.dylib');sandbox=ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+target=os.fsencode(sys.argv[2]);assert sandbox.sandbox_check(os.getpid(),b'file-read-data',1,target)==0
+found=False
+for pid in owned:
+ buffer=ctypes.create_string_buffer(4096)
+ if libproc.proc_pidpath(pid,buffer,len(buffer))<=0: continue
+ if Path(os.fsdecode(buffer.value)).resolve()!=Path(sys.argv[3]).resolve(): continue
+ found|=sandbox.sandbox_check(pid,b'file-read-data',1,target)==1
+print(json.dumps(found))
+` : `
 import json,os,re,subprocess,sys
 from pathlib import Path
 parents={int(row[0]):int(row[1]) for line in subprocess.check_output(['ps','-eo','pid=,ppid='],text=True).splitlines() if (row:=line.split())}
@@ -99,7 +120,7 @@ for pid in owned:
   found|=image.name=='claude' and bool(re.fullmatch(r'aim-claude-p-\\d+-[0-9a-f]+ \\(enforce\\)',profile))
  except (FileNotFoundError,ProcessLookupError): pass
 print(json.dumps(found))
-`, String(children[0].pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }));
+`, String(children[0].pid), parentCanary, admitClaudeArtifact().command], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }));
   }
   const row = { role, provider, label, parent: !!parent, headers: req.headers, body };
   models.push(row); return row;
@@ -228,7 +249,7 @@ try {
     let output = "";
     const result = await runClaudeCliNoninteractive({ ...launch, args: argvFor("claude-parent").slice(4), env, timeoutMs: 240000,
       expectedIdentity: account.credential.nativeClaudeBundle.oauthAccount, egressProfile: { profileRef: "synthetic-nesting" },
-      // Only routing is replaced: the fixture has no external interface. The
+      // Only routing is replaced: the fixture has independent outbound denial. The
       // production runner still chooses and enforces protected vendor mode.
       prepareClaudeNativeRouteImpl: async ({ command, args }) => ({ command, args }),
       spawnImpl(command, args, options) {
