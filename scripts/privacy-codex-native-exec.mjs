@@ -23,14 +23,14 @@ const privateFile = path.join(root, "ordinary-tool-input.txt");
 const canary = "SYNTHETIC_ORDINARY_TOOL_ACCESS";
 fs.writeFileSync(privateFile, canary, { mode: 0o600 });
 const shellQuote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-const toolScript = `import json,pathlib,platform,subprocess; print(json.dumps({"canary":pathlib.Path(${JSON.stringify(privateFile)}).read_text(),"release":platform.release(),"lsb":subprocess.check_output(["lsb_release","-rs"],text=True).strip()})); pathlib.Path("tool-output.txt").write_text("tool write succeeded")`;
+const toolScript = `import json,os,pathlib,platform,subprocess; print(json.dumps({"canary":pathlib.Path(${JSON.stringify(privateFile)}).read_text(),"release":platform.release(),"lsb":subprocess.check_output(["lsb_release","-rs"],text=True).strip(),"sdk_key":os.environ["OPENAI_API_KEY"]})); pathlib.Path("tool-output.txt").write_text("tool write succeeded")`;
 const command = "/usr/bin/python3 -c " + shellQuote(toolScript);
 const created = id => ({ type: "response.created", response: { id } });
 const completed = id => ({ type: "response.completed", response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
 const done = item => ({ type: "response.output_item.done", item });
 
 async function run(protectedLaunch, alias = false) {
-  const name = protectedLaunch ? alias ? "protected-alias" : "protected" : "control";
+  const name = (protectedLaunch ? "protected" : "control") + (alias ? "-alias" : "");
   const homeDir = path.join(root, name, "home"), cwd = path.join(root, name, "project");
   fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true, mode: 0o700 }); fs.mkdirSync(cwd);
   const requests = [], errors = [], output = [];
@@ -63,7 +63,8 @@ async function run(protectedLaunch, alias = false) {
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const address = `http://127.0.0.1:${server.address().port}`;
   fs.writeFileSync(path.join(homeDir, ".codex", "config.toml"), `model="gpt-5.4"\nmodel_provider="fixture"\n[features]\napps=false\ncode_mode=false\nunified_exec=true\n[model_providers.fixture]\nname="Fixture"\nbase_url=${JSON.stringify(address)}\nwire_api="responses"\nrequest_max_retries=0\nstream_max_retries=0\n`);
-  const env = { HOME: homeDir, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", TERM: "xterm-256color" };
+  const env = { HOME: homeDir, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", TERM: "xterm-256color",
+    OPENAI_API_KEY: "SYNTHETIC_INDEPENDENT_SDK_KEY" };
   if (alias) {
     const bin = path.join(homeDir, "bin"), libexec = path.join(homeDir, "libexec");
     fs.mkdirSync(bin); fs.mkdirSync(libexec);
@@ -100,9 +101,10 @@ async function run(protectedLaunch, alias = false) {
     assert.equal(requests.length, 2);
     const toolOutput = requests[1].body.input.filter(item => item.type === "function_call_output");
     assert.match(JSON.stringify(toolOutput), new RegExp(canary));
+    assert.ok(JSON.stringify(toolOutput).includes(env.OPENAI_API_KEY), "ordinary SDK tools retain their key");
     assert.ok(JSON.stringify(toolOutput).includes(os.release()), "ordinary tool retains actual uname");
     assert.equal(fs.readFileSync(path.join(cwd, "tool-output.txt"), "utf8"), "tool write succeeded");
-    return { name, modelRequests: requests.length, ordinaryFileAccess: true, ordinaryUname: true,
+    return { name, modelRequests: requests.length, ordinaryFileAccess: true, ordinaryUname: true, ordinarySdkKey: true,
       userAgent: requests[0].headers["user-agent"] };
   } finally {
     clearTimeout(timer);
@@ -112,12 +114,14 @@ async function run(protectedLaunch, alias = false) {
 }
 
 try {
-  const control = await run(false), protectedResult = await run(true), alias = await run(true, true);
+  const control = await run(false), controlAlias = await run(false, true), protectedResult = await run(true), alias = await run(true, true);
   const osLabel = agent => agent?.match(/\(([^;]+);/)?.[1];
   assert.match(osLabel(control.userAgent), /\d+\.\d+/, "control observes the distribution version");
+  assert.match(osLabel(controlAlias.userAgent), /\d+\.\d+/, "the unprotected alias remains a working version probe");
   assert.doesNotMatch(osLabel(protectedResult.userAgent), /\d+\.\d+/, "vendor header excludes the distribution version");
   assert.doesNotMatch(osLabel(alias.userAgent), /\d+\.\d+/, "a PATH alias cannot disclose the distribution version");
   process.stdout.write(JSON.stringify({ fixture: root, control: { ...control, userAgent: undefined },
+    controlAlias: { ...controlAlias, userAgent: undefined },
     protected: { ...protectedResult, userAgent: undefined }, alias: { ...alias, userAgent: undefined }, vendorReleaseRemoved: true }) + "\n");
 } catch (error) {
   process.stderr.write(`${error.message}\n`); process.exitCode = 1;

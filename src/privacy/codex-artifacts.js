@@ -11,6 +11,9 @@ const admission = createArtifactAdmission({
   }, {
     field: "stateIO", file: "state_io.py", role: "launcher", executable: false,
     error: "the approved Codex runtime lacks its state helper",
+  }, {
+    field: "mcpKeyring", file: "mcp-keyring", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its MCP keyring helper",
   }, ...(platform === "darwin" ? [{ field: "managedPreferences", file: "managed-preferences", role: "launcher", executable: true,
     error: "the approved Codex runtime lacks its forced-policy reader" }] : [])],
 });

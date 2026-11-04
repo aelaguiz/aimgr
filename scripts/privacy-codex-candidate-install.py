@@ -77,6 +77,7 @@ with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory
         'candidateSourceSha256': source_sha256})
     entries = {'codex': (vendor, 'vendor', True), 'codex-code-mode-host': (helper, 'vendor', True),
         'launcher': (stage / 'launcher', 'launcher', True), 'state_io.py': (repo / 'native/codex/state_io.py', 'launcher', False),
+        'mcp-keyring': (repo / 'native/codex/mcp-keyring/target/release/aimgr-codex-mcp-keyring', 'launcher', True),
         'policy.json': (stage / 'policy.json', 'policy', False)}
     files = {name: {'sha256': digest(file), 'size': file.stat().st_size, 'executable': executable, 'role': role}
         for name, (file, role, executable) in entries.items()}
@@ -94,6 +95,7 @@ with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory
     atomic(target / 'approval.json', {'schema': 1, 'platform': 'linux', 'arch': 'x64', 'version': '0.163.0-alpha.5',
         'privacyAbi': 'codex-privacy-v1', 'candidateSourceSha256': source_sha256,
         'entrypoint': 'codex', 'codeModeHost': 'codex-code-mode-host', 'launcher': 'launcher', 'stateIO': 'state_io.py',
+        'mcpKeyring': 'mcp-keyring',
         'policy': 'policy.json', 'files': files, 'approval': {'kind': 'offsite-test', 'normalUseApproved': False,
         'reference': 'Amir authorized isolated Codex milestone 1 implementation and testing'}})
     host_file = base / 'CODEX_TEST_HOST.json'

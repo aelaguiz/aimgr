@@ -46,7 +46,7 @@ try {
   const lines = createInterface({ input: clientOutput });
   child.stderr.on("data", value => errors.push(value.toString()));
   let configSeen = false;
-  lines.on("line", line => {
+  const handleLine = async line => {
     const value = JSON.parse(line); output.push(value);
     if (value.id === 1) {
       clientInput.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
@@ -54,17 +54,26 @@ try {
     }
     if (value.id === 2) {
       configSeen = !value.error;
-      clientInput.write(JSON.stringify({ id: 3, method: "config/batchWrite", params: { reloadUserConfig: true, edits: [
+      // An ordinary external edit must retain its relative path and become
+      // visible in the same native owner, including the enable/disable switch.
+      const source = path.join(homeDir, ".codex", "config.toml");
+      fs.writeFileSync(source, fs.readFileSync(source, "utf8").replace("enabled=false", "enabled=true"));
+      await invocation.flushSettings();
+      clientInput.write(JSON.stringify({ id: 3, method: "config/read", params: { includeLayers: true, cwd } }) + "\n");
+    }
+    if (value.id === 3) {
+      clientInput.write(JSON.stringify({ id: 4, method: "config/batchWrite", params: { reloadUserConfig: true, edits: [
         { keyPath: "skills.config", mergeStrategy: "replace", value: [{ path: "./skills/second", enabled: false }] },
         { keyPath: "model", mergeStrategy: "replace", value: "synthetic-second-model" },
       ] } }) + "\n");
     }
-    if (value.id === 3) clientInput.write(JSON.stringify({ id: 4, method: "config/read", params: { includeLayers: true, cwd } }) + "\n");
-    if (value.id === 4) clientInput.write(JSON.stringify({ id: 5, method: "config/value/write", params: {
+    if (value.id === 4) clientInput.write(JSON.stringify({ id: 5, method: "config/read", params: { includeLayers: true, cwd } }) + "\n");
+    if (value.id === 5) clientInput.write(JSON.stringify({ id: 6, method: "config/value/write", params: {
       keyPath: "model_instructions_file", mergeStrategy: "replace", value: "./must-not-persist.md", expectedVersion: "synthetic-stale-version",
     } }) + "\n");
-    if (value.id === 5) clientInput.end();
-  });
+    if (value.id === 6) clientInput.end();
+  };
+  lines.on("line", line => { handleLine(line).catch(error => { errors.push(`Fixture: ${error.message}\n`); clientInput.end(); }); });
   clientInput.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "aim_privacy_fixture", version: "1" }, capabilities: { experimentalApi: true } } }) + "\n");
   const timeout = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 25_000);
   const exit = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
@@ -74,17 +83,19 @@ try {
   const config = output.find(value => value.id === 2)?.result?.config;
   const expectedSkill = path.join(homeDir, ".codex", "skills", "review");
   const skillPath = config?.skills?.config?.[0]?.path;
-  const updated = output.find(value => value.id === 4)?.result?.config;
+  const live = output.find(value => value.id === 3)?.result?.config;
+  const updated = output.find(value => value.id === 5)?.result?.config;
   const authored = parseCodexSettings(fs.readFileSync(path.join(homeDir, ".codex", "config.toml"), "utf8")).value;
   const summary = { fixture: root, exit, configSeen, skillPathMatchesOrigin: skillPath === expectedSkill,
-    batchAccepted: ["ok", "okOverridden"].includes(output.find(value => value.id === 3)?.result?.status),
+    liveExternalTogglePreserved: live?.skills?.config?.[0]?.path === expectedSkill && live.skills.config[0].enabled === true,
+    batchAccepted: ["ok", "okOverridden"].includes(output.find(value => value.id === 4)?.result?.status),
     batchPathMatchesOrigin: updated?.skills?.config?.[0]?.path === path.join(homeDir, ".codex", "skills", "second"),
     authoredRelativePathPreserved: authored.skills?.config?.[0]?.path === "./skills/second",
     authoredModelUpdated: authored.model === "synthetic-second-model",
-    rejectedWritePreserved: !authored.model_instructions_file && output.find(value => value.id === 5)?.error?.data?.config_write_error_code === "configVersionConflict",
+    rejectedWritePreserved: !authored.model_instructions_file && output.find(value => value.id === 6)?.error?.data?.config_write_error_code === "configVersionConflict",
     initialized: output.some(value => value.id === 1 && value.result), errorCount: output.filter(value => value.error).length };
   process.stdout.write(JSON.stringify(summary) + "\n");
-  if (exit.code !== 0 || !configSeen || !summary.skillPathMatchesOrigin || !summary.batchAccepted || !summary.batchPathMatchesOrigin
+  if (exit.code !== 0 || !configSeen || !summary.skillPathMatchesOrigin || !summary.liveExternalTogglePreserved || !summary.batchAccepted || !summary.batchPathMatchesOrigin
     || !summary.authoredRelativePathPreserved || !summary.authoredModelUpdated || !summary.rejectedWritePreserved || summary.errorCount !== 1) {
     process.stderr.write(errors.join("").slice(-6000)); process.exitCode = 1;
   }

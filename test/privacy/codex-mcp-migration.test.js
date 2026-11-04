@@ -22,12 +22,31 @@ test("File conversion preserves complete ordinary OAuth identity and token metad
   assert.deepEqual(plain.token.token_response, { access_token: entry.access_token, token_type: "bearer" });
 });
 
-test("local: names require their own native key and cannot consume another escaped identity", () => {
-  const escaped = { ...server, name: "local:" + server.name };
-  assert.equal(codexMcpKey(escaped.name, escaped.url), codexMcpKey(server.name, server.url));
-  assert.throws(() => decodeCodexMcpFile(JSON.stringify({ legacy: entry }), [escaped]), /owner/);
-  const key = codexMcpKey(escaped.name, escaped.url);
-  assert.equal(decodeCodexMcpFile(JSON.stringify({ [key]: entry }), [escaped])[0].key, key);
+test("ordinary configured names preserve repeated and reserved prefixes without aliasing", () => {
+  const names = ["docs", "local:docs", "local:local:docs", "executor:x", "ema-idp:x", "local:executor:x"];
+  const keys = names.map(name => codexMcpKey(name, server.url));
+  assert.equal(new Set(keys).size, names.length);
+  for (const [index, name] of names.entries()) {
+    assert.equal(keys[index].split("|")[0], name);
+    const identity = { name, url: server.url, environment_id: "local" };
+    const spellings = name === "docs" ? [name] : [name, "local:" + name];
+    for (const spelling of spellings) {
+      const original = { ...entry, server_name: spelling, access_token: "SYNTHETIC_" + name };
+      const [converted] = decodeCodexMcpFile(JSON.stringify({ [keys[index]]: original }), [identity]);
+      assert.equal(converted.key, keys[index]);
+      assert.equal(converted.serverName, name);
+      assert.equal(converted.token.server_name, spelling);
+      assert.equal(converted.token.token_response.access_token, original.access_token);
+      if (name !== "docs") assert.throws(() => decodeCodexMcpFile(JSON.stringify({ [keys[0]]: original }), [identity]), /owner/);
+    }
+  }
+});
+
+test("managed namespaces and nonlocal environments cannot become ordinary identities", () => {
+  const managed = { ...entry, server_name: "ema-idp:x" };
+  assert.throws(() => decodeCodexMcpFile(JSON.stringify({ "ema-idp:x|managed-home-digest": managed }), [{ name: managed.server_name, url: server.url }]), /owner/);
+  assert.throws(() => decodeCodexMcpFile(JSON.stringify({ "executor:x:managed-digest": { ...entry, server_name: "executor:x", executor_owned: true } }), [{ name: "executor:x", url: server.url }]));
+  assert.throws(() => decodeCodexMcpFile(JSON.stringify({ legacy: entry }), [{ ...server, environment_id: "remote" }]));
 });
 
 test("mixed, malformed, unconfigured and ambiguous stores are preserved by refusing conversion", () => {
@@ -56,7 +75,7 @@ test("keyring transport keeps credential bytes off argv and diagnostics", async 
   for (const success of [true, false]) {
     let input = "";
     const value = JSON.stringify({ token_response: { access_token: "SYNTHETIC_SECRET" } });
-    const result = codexMcpKeyring({ operation: "insert-if-absent", account: codexMcpKey(server.name, server.url), value }, {
+    const result = codexMcpKeyring({ operation: "insert-if-absent", server_name: server.name, url: server.url, value }, {
       command: "/synthetic/helper", env: { DBUS_SESSION_BUS_ADDRESS: "synthetic-bus" },
       spawnImpl: (command, args, options) => {
         assert.deepEqual(args, []); assert.equal(command, "/synthetic/helper");

@@ -93,6 +93,45 @@ test("cancellation during exchange never returns a credential",async()=>{
   assert.equal(calls.length,1);
 });
 
+test("a callback from a completed login cannot authorize another login",async()=>{
+  let callback;
+  const first=flow({edit:url=>{callback=url.href;return callback;}});
+  await first.promise;
+  const second=flow({edit:()=>callback});
+  await assert.rejects(second.promise,/does not belong to this login/);
+  assert.equal(first.calls.length,1);
+  assert.equal(second.calls.length,0);
+});
+
+test("an unsolicited HTTP callback cannot complete the manual handoff",async t=>{
+  let pasted,auth,requests=0,exchanges=0;
+  const listener=http.createServer((req,res)=>{requests++;res.end("unrelated callback listener");});
+  await new Promise((resolve,reject)=>{listener.once("error",reject);listener.listen(1455,"127.0.0.1",resolve);});
+  t.after(()=>new Promise(resolve=>listener.close(resolve)));
+  const controller=new AbortController();
+  const input=new Promise(resolve=>{pasted=resolve;});
+  let settled=false;
+  const promise=loginCodexManually({
+    emitAuthUrl:({url})=>{auth=new URL(url);},readCallbackUrl:()=>input,signal:controller.signal,
+    fetchJsonWithTimeoutImpl:async()=>{exchanges++;return tokenResponse();},
+  });
+  promise.then(()=>{settled=true;},()=>{settled=true;});
+  t.after(()=>{controller.abort();pasted("");});
+  const callback=new URL(CODEX_MANUAL_REDIRECT);
+  callback.search=new URLSearchParams({code:"SYNTHETIC_HTTP_CODE",state:auth.searchParams.get("state")});
+  await new Promise((resolve,reject)=>{
+    http.get({hostname:"127.0.0.1",port:1455,path:callback.pathname+callback.search},res=>{
+      res.resume();res.on("end",resolve);
+    }).on("error",reject);
+  });
+  assert.equal(requests,1);
+  assert.equal(settled,false);
+  assert.equal(exchanges,0);
+  pasted(callback.href);
+  await promise;
+  assert.equal(exchanges,1);
+});
+
 test("the existing JSONL manual protocol accepts raw and JSON callback inputs",async()=>{
   for(const encoding of [url=>url,url=>JSON.stringify({url}),url=>JSON.stringify({callbackUrl:url})]) {
     const stdin=new PassThrough(),stdout=new PassThrough();

@@ -5,19 +5,22 @@ import { spawn } from "node:child_process";
 // This is the ordinary MCP File -> Direct conversion for the admitted native
 // release. Primary Codex, executor and enterprise identities are not inputs.
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
-const ordinary = name => typeof name === "string" && name.length > 0
-  && !name.startsWith("executor:") && !name.startsWith("ema-idp:");
+const named = name => typeof name === "string" && name.length > 0;
 const invalid = () => new Error("Codex MCP migration requires a valid, classified ordinary credential store.");
 
+const credentialName = name => /^(executor:|ema-idp:|local:)/.test(name) ? `local:${name}` : name;
+
 export function codexMcpKey(name, url) {
-  if (!ordinary(name) || typeof url !== "string") throw invalid();
+  if (!named(name) || typeof url !== "string") throw invalid();
   // serde_json's preserve_order is enabled in the admitted official package.
   const digest = createHash("sha256").update(JSON.stringify({ type: "http", url, headers: {} })).digest("hex").slice(0, 16);
-  return `${name.replace(/^local:/, "")}|${digest}`;
+  // Input is the configured local server name. Native first escapes reserved
+  // names, then removes exactly that escape when deriving the ordinary key.
+  return `${name}|${digest}`;
 }
 
 function validateEntry(entry) {
-  if (!object(entry) || !ordinary(entry.server_name) || entry.executor_owned === true
+  if (!object(entry) || !named(entry.server_name) || entry.executor_owned === true
     || ["server_url", "client_id", "access_token"].some(key => typeof entry[key] !== "string")
     || (entry.executor_owned !== undefined && typeof entry.executor_owned !== "boolean")
     || (entry.issuer != null && typeof entry.issuer !== "string")
@@ -27,7 +30,8 @@ function validateEntry(entry) {
 }
 
 /** Preserve native BTreeMap lookup order and local: escaping. The caller
- * supplies the actual configured server identities, not arbitrary key names. */
+ * supplies actual local-environment configured server identities, not native
+ * credential names or managed executor/EMA descriptors. */
 export function decodeCodexMcpFile(text, servers) {
   let file;
   try { file = JSON.parse(text); } catch { throw invalid(); }
@@ -38,11 +42,12 @@ export function decodeCodexMcpFile(text, servers) {
   for (const [, entry] of entries) validateEntry(entry);
   const result = [], destinations = new Map(), used = new Set();
   for (const server of servers) {
-    if (!ordinary(server?.name) || typeof server.url !== "string") throw invalid();
-    const key = codexMcpKey(server.name, server.url), localName = server.name.replace(/^local:/, "");
+    if (!named(server?.name) || typeof server.url !== "string"
+      || (server.environment_id !== undefined && server.environment_id !== "local")) throw invalid();
+    const key = codexMcpKey(server.name, server.url), nativeName = credentialName(server.name);
     const matched = entries.find(([storedKey, entry]) => entry.server_url === server.url
-      && (!server.name.startsWith("local:") || storedKey === key)
-      && (entry.server_name === localName || (storedKey === key && entry.server_name === server.name)));
+      && (nativeName === server.name || storedKey === key)
+      && (entry.server_name === server.name || (storedKey === key && entry.server_name === nativeName)));
     if (!matched) continue;
     const [sourceKey, entry] = matched;
     const token = { server_name: entry.server_name, url: entry.server_url,
@@ -53,7 +58,7 @@ export function decodeCodexMcpFile(text, servers) {
       expires_at: entry.expires_at ?? null };
     if (destinations.has(key) && !codexMcpTokensEqual(destinations.get(key), token)) throw invalid();
     used.add(sourceKey);
-    if (!destinations.has(key)) { destinations.set(key, token); result.push({ key, sourceKey, token }); }
+    if (!destinations.has(key)) { destinations.set(key, token); result.push({ key, serverName: server.name, url: server.url, sourceKey, token }); }
   }
   // Unused legacy entries stay preserved; silently dropping one could discard
   // a currently disabled integration's only working authorization.
