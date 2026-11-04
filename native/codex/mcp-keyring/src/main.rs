@@ -1,6 +1,7 @@
 //! Same keyring crate/backends as the reviewed native Codex release. One
 //! unprivileged operation over private pipes; no daemon, HTTP or primary auth.
 use std::io::{self, Read};
+mod receipt;
 
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ struct Request {
     server_name: String,
     url: String,
     value: Option<String>,
+    maintenance: Option<receipt::Maintenance>,
 }
 
 // Struct serialization preserves the exact native package's payload order.
@@ -50,7 +52,13 @@ fn run() -> Result<Value, &'static str> {
     let mut input = String::new();
     io::stdin().take(4 * 1024 * 1024 + 1).read_to_string(&mut input).map_err(|_| "input")?;
     if input.len() > 4 * 1024 * 1024 { return Err("input_size"); }
-    let request: Request = serde_json::from_str(&input).map_err(|_| "input")?;
+    let mut request: Request = serde_json::from_str(&input).map_err(|_| "input")?;
+    let mut receipt = match request.maintenance.take() {
+        Some(context) if request.operation == "insert-if-absent" => Some(receipt::Receipt::open(
+            context, &request.server_name, &request.url, request.value.as_deref().ok_or("value")?)?),
+        Some(_) => return Err("operation"),
+        None => None,
+    };
     let account = account_key(&request.server_name, &request.url)?;
     let entry = Entry::new("Codex MCP Credentials", &account).map_err(|_| "keyring_unavailable")?;
     let existing = match entry.get_password() {
@@ -62,12 +70,21 @@ fn run() -> Result<Value, &'static str> {
     match request.operation.as_str() {
         "load" if request.value.is_none() => Ok(json!({"value": existing})),
         "insert-if-absent" => {
-            if let Some(value) = existing { return Ok(json!({"inserted": false, "value": value})); }
+            if let Some(value) = existing {
+                if let Some(receipt) = &mut receipt {
+                    if request.value.as_deref() != Some(value.as_str()) { return Err("maintenance_conflict"); }
+                    receipt.record("verified")?;
+                }
+                return Ok(json!({"inserted": false, "value": value}));
+            }
             let value = request.value.as_ref().ok_or("value")?;
             validate_token(value, &request)?;
+            if let Some(receipt) = &mut receipt { receipt.record("dispatched")?; }
             entry.set_password(value).map_err(|_| "keyring_write")?;
+            if let Some(receipt) = &mut receipt { receipt.record("acknowledged")?; }
             let verified = entry.get_password().map_err(|_| "keyring_readback")?;
             if &verified != value { return Err("keyring_readback"); }
+            if let Some(receipt) = &mut receipt { receipt.record("verified")?; }
             Ok(json!({"inserted": true, "value": verified}))
         }
         _ => Err("operation"),
@@ -104,7 +121,7 @@ mod tests {
 
     #[test]
     fn tokens_keep_the_native_legacy_or_escaped_identity_only() {
-        let request = Request { operation: "insert-if-absent".into(), server_name: "local:docs".into(), url: "https://example.test/mcp".into(), value: None };
+        let request = Request { operation: "insert-if-absent".into(), server_name: "local:docs".into(), url: "https://example.test/mcp".into(), value: None, maintenance: None };
         for (name, accepted) in [("local:docs", true), ("local:local:docs", true), ("docs", false), ("local:local:local:docs", false)] {
             let value = json!({"server_name":name,"url":request.url,"client_id":"synthetic","token_response":{}}).to_string();
             assert_eq!(validate_token(&value, &request).is_ok(), accepted);
