@@ -135,6 +135,15 @@ impl Projection {
     }
 }
 
+fn insert_optional_read(reads: &mut BTreeSet<PathBuf>, file: PathBuf) {
+    // Native discovery treats a missing optional file/directory, including a
+    // dangling authored link, as absent. Required configured inputs keep their
+    // separate strict inventory path below.
+    if !matches!(std::fs::metadata(&file), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+        reads.insert(file);
+    }
+}
+
 async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults: bool) -> Result<Projection> {
     let mut writes = BTreeSet::new();
     // The native loader has already applied project trust, sanitization, profile
@@ -143,19 +152,19 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
         match &layer.name {
             ConfigLayerSource::PackagedDefaults { file } | ConfigLayerSource::System { file }
             | ConfigLayerSource::User { file, .. } | ConfigLayerSource::LegacyManagedConfigTomlFromFile { file } => {
-                reads.insert(file.to_path_buf());
+                insert_optional_read(&mut reads, file.to_path_buf());
             },
-            ConfigLayerSource::Project { dot_codex_folder } => { reads.insert(dot_codex_folder.join("config.toml").to_path_buf()); },
+            ConfigLayerSource::Project { dot_codex_folder } => { insert_optional_read(&mut reads, dot_codex_folder.join("config.toml").to_path_buf()); },
             _ => {},
         }
         if let Some(folder) = layer.config_folder() {
-            reads.insert(folder.join("agents").to_path_buf());
+            insert_optional_read(&mut reads, folder.join("agents").to_path_buf());
         }
         if let Some(folder) = layer.hooks_config_folder() {
             // Linked worktrees substitute hook declarations from the matching
             // main-checkout config before reading hooks.json there.
-            reads.insert(folder.join("config.toml").to_path_buf());
-            reads.insert(folder.join("hooks.json").to_path_buf());
+            insert_optional_read(&mut reads, folder.join("config.toml").to_path_buf());
+            insert_optional_read(&mut reads, folder.join("hooks.json").to_path_buf());
         }
         // Role loading reads every enabled layer before resolving name
         // collisions. Values here were already source-normalized natively.
@@ -184,11 +193,11 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
     for layer in config.config_layer_stack.all_layers_high_to_low() {
         if let Some(folder) = layer.config_folder() {
             match layer.name {
-                ConfigLayerSource::Project { .. } | ConfigLayerSource::System { .. } => { reads.insert(folder.join("skills").to_path_buf()); },
+                ConfigLayerSource::Project { .. } | ConfigLayerSource::System { .. } => { insert_optional_read(&mut reads, folder.join("skills").to_path_buf()); },
                 ConfigLayerSource::User { .. } => {
-                    reads.insert(folder.join("skills").to_path_buf());
-                    reads.insert(codex_skills::system_cache_root_dir(&folder).to_path_buf());
-                    if let Some(home) = std::env::var_os("HOME") { reads.insert(PathBuf::from(home).join(".agents/skills")); }
+                    insert_optional_read(&mut reads, folder.join("skills").to_path_buf());
+                    insert_optional_read(&mut reads, codex_skills::system_cache_root_dir(&folder).to_path_buf());
+                    if let Some(home) = std::env::var_os("HOME") { insert_optional_read(&mut reads, PathBuf::from(home).join(".agents/skills")); }
                 },
                 _ => {},
             }
@@ -209,7 +218,7 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
         codex_file_system::FindUpErrorPolicy::Ignore, None).await.map_err(|_| ())?.unwrap_or_else(|| config.cwd.clone());
     let mut cursor = config.cwd.to_path_buf();
     loop {
-        reads.insert(cursor.join(".agents/skills"));
+        insert_optional_read(&mut reads, cursor.join(".agents/skills"));
         for name in ["AGENTS.override.md", "AGENTS.md"].into_iter().chain(config.project_doc_fallback_filenames.iter().map(String::as_str)) {
             if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) { continue; }
             let candidate = cursor.join(name);

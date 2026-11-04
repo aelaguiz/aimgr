@@ -372,6 +372,47 @@ try {
     assert.equal(read(source).unknown_setting, "keep me");
     console.log(JSON.stringify({ fixture: root, protectedLaunch, nativeModelEffortAndPermissionDefaults: true,
       existingInstructionAndSkillContentEdits: true, liveThreadPermissionsAndContinuedTool: true, accounts: 2 }));
+  } else if (phase === "--first-use") {
+    put(source, initial()); put(path.join(cwd, "ordinary.txt"), "SYNTHETIC_FIRST_USE_SHELL");
+    for (const folder of [homeDir, cwd]) {
+      fs.mkdirSync(path.join(folder, ".agents"), { recursive: true });
+      fs.symlinkSync(path.join(root, "not-installed"), path.join(folder, ".agents/skills"));
+    }
+    const optionalRoles = path.join(shared, "agents");
+    fs.rmdirSync(optionalRoles); fs.symlinkSync(path.join(root, "not-installed-roles"), optionalRoles);
+    const a = await launch("A"), b = await launch("B");
+    const instruction = path.join(shared, "AGENTS.md"), override = path.join(shared, "AGENTS.override.md");
+    assert.equal(fs.existsSync(instruction), false); assert.equal(fs.existsSync(override), false);
+    const turn = async (owner, present, absent) => {
+      const started = await owner.rpc("thread/start", { cwd, approvalPolicy: "never" });
+      assert.ok(started.result, JSON.stringify(started));
+      const first = modelRequests.length;
+      const response = await owner.rpc("turn/start", { threadId: started.result.thread.id,
+        input: [{ type: "text", text: "Complete the synthetic first-use check.", text_elements: [] }] });
+      assert.ok(response.result, JSON.stringify(response));
+      await until(() => owner.notifications.some(value => value.method === "turn/completed" && value.params.turn.id === response.result.turn.id), "first-use native turn", 30_000);
+      const completed = owner.notifications.find(value => value.method === "turn/completed" && value.params.turn.id === response.result.turn.id);
+      assert.equal(completed.params.turn.status, "completed", JSON.stringify(completed));
+      const sent = JSON.stringify(modelRequests.slice(first));
+      for (const marker of present) assert.ok(sent.includes(marker), "native request includes " + marker);
+      for (const marker of absent) assert.ok(!sent.includes(marker), "native request excludes " + marker);
+    };
+    const normal = "SYNTHETIC_GLOBAL_NORMAL", preferred = "SYNTHETIC_GLOBAL_OVERRIDE";
+    await turn(a, [], [normal, preferred]);
+    assert.ok(fs.existsSync(path.join(shared, "skills/.system")), "native first-use system skills are installed in the shared tree");
+    for (const owner of [a, b]) assert.equal(fs.realpathSync(path.join(owner.invocation.prepared.codexHome, "skills")), fs.realpathSync(path.join(shared, "skills")));
+    put(instruction, normal); await turn(a, [normal], [preferred]);
+    put(override, preferred); await turn(b, [preferred], [normal]);
+    fs.unlinkSync(override); await turn(a, [normal], [preferred]);
+    fs.unlinkSync(instruction); await turn(b, [], [normal, preferred]);
+    await a.close(); await b.close();
+    put(instruction, normal); fs.symlinkSync(path.join(root, "not-created.md"), override);
+    const reopened = await launch("A-reopened");
+    assert.ok((await config(reopened)).config);
+    await turn(reopened, [normal], [preferred]);
+    console.log(JSON.stringify({ fixture: root, nativeSystemSkillsSharedFromFirstUse: true,
+      laterGlobalInstructionsVisibleToExistingOwners: true, missingOverridePreservesFallback: true,
+      removedInstructionsDisappear: true, subsequentLaunchSucceeded: true, danglingOptionalInputsPreserveNativeFallback: true }));
   } else if (phase === "--races") {
     put(source, initial());
     for (const name of ["native", "later"]) put(path.join(cwd, name + ".md"), "SYNTHETIC_" + name);

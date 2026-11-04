@@ -6,7 +6,9 @@ import { readCodexInstallationId } from "../targets/codex-installation-id.js";
 import { readCodexEnvironment } from "./codex-environment.js";
 
 const hash = text => createHash("sha256").update(text).digest("hex");
-const SHARED = new Set(["AGENTS.md", "AGENTS.override.md", "instructions.md", "skills", "agents", "rules", "memories", "memory", "sessions", "archived_sessions", "history.jsonl", "session_index.jsonl", "plugins", "marketplaces", "prompts", "thread-writer-locks"]);
+export const CODEX_SHARED_INSTRUCTION_NAMES = Object.freeze(["AGENTS.md", "AGENTS.override.md", "instructions.md"]);
+const SHARED_DIRECTORIES = ["skills", "agents", "rules", "memories", "memory", "sessions", "archived_sessions", "plugins", "marketplaces", "prompts", "thread-writer-locks"];
+const SHARED = new Set([...SHARED_DIRECTORIES, ...CODEX_SHARED_INSTRUCTION_NAMES, "history.jsonl", "session_index.jsonl"]);
 
 // Direct MCP keyring entries are OS-user scoped, independent of account or
 // settings origin. Reuse native's ordinary default-home lock inodes so those
@@ -93,16 +95,23 @@ export function prepareCodexAccountState({ homeDir, env = {}, accountId, label, 
   createOnce(path.join(prepared.accountRoot, "auth.lock"), "");
   for (const name of ["auth.json", "auth.lock", "installation_id"]) codexStateLink(path.join(prepared.codexHome, name), path.join(prepared.accountRoot, name));
   codexStateLink(path.join(prepared.codexHome, "mcp-oauth-locks"), codexMcpLockDirectory(homeDir));
-  // Native creates these lazily. Link their canonical destinations before the
-  // first owner, including an initially empty history, so first use cannot
-  // silently create a private parallel transcript tree.
-  for (const name of ["thread-writer-locks", "sessions", "archived_sessions", "memories"]) fs.mkdirSync(path.join(prepared.sharedHome, name), { recursive: true, mode: 0o700 });
+  // Native and ordinary installers create these lazily. Link every classified
+  // directory before first use so new skills/plugins and history cannot start
+  // private parallel trees or conflict with later shared installations.
+  for (const name of SHARED_DIRECTORIES) {
+    const directory = path.join(prepared.sharedHome, name);
+    try { fs.lstatSync(directory); } // Preserve authored links, including absent optional destinations.
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    }
+  }
   for (const name of ["history.jsonl", "session_index.jsonl"]) {
     const fd = fs.openSync(path.join(prepared.sharedHome, name), "a", 0o600);
     fs.closeSync(fd);
   }
-  for (const name of fs.readdirSync(prepared.sharedHome)) {
-    if (SHARED.has(name)) codexStateLink(path.join(prepared.codexHome, name), path.join(prepared.sharedHome, name));
-  }
+  // An absent override must stay absent so native falls back to AGENTS.md.
+  // Dangling links preserve that behavior and make later authored files visible.
+  for (const name of SHARED) codexStateLink(path.join(prepared.codexHome, name), path.join(prepared.sharedHome, name));
   return Object.freeze({ ...prepared, label, installationId });
 }

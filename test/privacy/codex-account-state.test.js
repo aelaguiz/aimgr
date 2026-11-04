@@ -83,6 +83,52 @@ test("all accounts and settings origins share native default-home MCP lock inode
   assert.equal(fs.readFileSync(lock, "utf8"), "existing native lock");
 });
 
+test("first-use shared capabilities remain shared across accounts and later launches", t => {
+  const options = fixture(t);
+  const first = prepareCodexAccountState(options);
+  const names = ["skills", "agents", "rules", "memory", "memories", "plugins", "marketplaces", "prompts"];
+  // Native system-skill installation and ordinary installers create a directory
+  // beneath CODEX_HOME. No shared source existed before this account launched.
+  for (const name of names) {
+    const installed = path.join(first.codexHome, name, "first-install");
+    fs.mkdirSync(installed, { recursive: true });
+    fs.writeFileSync(path.join(installed, "content"), name);
+    const authored = path.join(first.sharedHome, name);
+    fs.mkdirSync(authored, { recursive: true });
+    fs.writeFileSync(path.join(authored, "later-shared-edit"), "shared");
+  }
+  const reopened = prepareCodexAccountState(options);
+  const second = prepareCodexAccountState({ ...options, accountId: "second-account" });
+  for (const prepared of [reopened, second]) for (const name of names) {
+    assert.equal(fs.realpathSync(path.join(prepared.codexHome, name)), fs.realpathSync(path.join(first.sharedHome, name)));
+    assert.equal(fs.readFileSync(path.join(prepared.codexHome, name, "first-install/content"), "utf8"), name);
+    assert.equal(fs.readFileSync(path.join(prepared.codexHome, name, "later-shared-edit"), "utf8"), "shared");
+  }
+  assert.equal(fs.existsSync(path.join(first.sharedHome, "AGENTS.override.md")), false);
+});
+
+test("absent instructions preserve fallback and later shared edits in existing homes", t => {
+  const options = fixture(t), first = prepareCodexAccountState(options);
+  const second = prepareCodexAccountState({ ...options, accountId: "second-account" });
+  for (const name of ["AGENTS.md", "AGENTS.override.md", "instructions.md"]) {
+    for (const prepared of [first, second]) assert.throws(() => fs.statSync(path.join(prepared.codexHome, name)), { code: "ENOENT" });
+    fs.writeFileSync(path.join(first.sharedHome, name), "later shared instruction");
+    for (const prepared of [first, second]) assert.equal(fs.readFileSync(path.join(prepared.codexHome, name), "utf8"), "later shared instruction");
+    fs.unlinkSync(path.join(first.sharedHome, name));
+    for (const prepared of [first, second]) assert.equal(fs.existsSync(path.join(prepared.codexHome, name)), false);
+  }
+});
+
+test("first-use preparation preserves authored optional directory links", t => {
+  const options = fixture(t), shared = path.join(options.homeDir, ".codex");
+  const missing = path.join(options.homeDir, "not-installed");
+  fs.symlinkSync(missing, path.join(shared, "agents"));
+  const prepared = prepareCodexAccountState(options);
+  assert.equal(fs.readlinkSync(path.join(shared, "agents")), missing);
+  assert.equal(fs.readlinkSync(path.join(prepared.codexHome, "agents")), path.join(shared, "agents"));
+  assert.equal(fs.existsSync(missing), false);
+});
+
 test("a destination anchor rejects copied private-home ownership and does not adopt copied auth or IDs", t=>{
   const options=fixture(t);
   const source=prepareCodexAccountState(options);

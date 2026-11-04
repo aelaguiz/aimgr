@@ -14,6 +14,8 @@ test("only the native effective inventory grants configured paths", t => {
   for (const dir of [sharedHome, codexHome, cwd]) fs.mkdirSync(dir);
   const view = path.join(root, "view.toml"), selected = path.join(root, "selected-input");
   fs.writeFileSync(view, ""); fs.symlinkSync(view, path.join(codexHome, "config.toml"));
+  const futureInstruction = path.join(sharedHome, "AGENTS.override.md");
+  fs.symlinkSync(futureInstruction, path.join(codexHome, "AGENTS.override.md"));
   fs.writeFileSync(path.join(sharedHome, "config.toml"), 'model_instructions_file="../inactive-input"\n');
   const options = { prepared: { sharedHome, codexHome }, homeDir: root, env: {},
     parsedArgs: { cwd, images: [], directories: [], config: ['model_instructions_file=../ignored'] },
@@ -24,6 +26,13 @@ test("only the native effective inventory grants configured paths", t => {
   assert.ok(inputs.reads.includes(selected));
   assert.equal(inputs.reads.includes(path.join(root, "inactive-input")), false);
   assert.equal(inputs.reads.includes(path.join(root, "ignored")), false);
+  assert.ok(inputs.writes.includes(futureInstruction), "an absent shared instruction has an exact future target grant");
+  assert.equal(inputs.writes.includes(sharedHome), false, "future instructions never grant the entire shared home");
+  assert.equal(inputs.writes.includes(path.join(sharedHome, "auth.json")), false);
+  const missingTarget = path.join(root, "not-created-yet.md");
+  fs.symlinkSync(missingTarget, futureInstruction);
+  const absentOptional = resolveCodexLaunchInputs(options);
+  assert.equal(absentOptional.writes.includes(missingTarget), false, "dangling optional instruction stays absent without rejecting launch");
   assert.throws(() => resolveCodexLaunchInputs({ ...options, effectiveInputs: undefined }), /native input inventory/);
 });
 

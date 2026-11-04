@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { CODEX_SHARED_INSTRUCTION_NAMES } from "./codex-account-state.js";
 
 export function codexCanonicalPath(file) {
   let current = path.resolve(file), missing = [];
@@ -78,6 +79,21 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
     if (name === "config.toml" || name.endsWith(".config.toml")) continue;
     const file = path.join(prepared.codexHome, name);
     if (fs.lstatSync(file).isSymbolicLink() && fs.existsSync(file)) add(writes, file);
+  }
+  // Instructions can first appear after launch. Grant only these known targets,
+  // without resolving their deliberately dangling private-home links or exposing
+  // the shared home (which can still contain legacy primary credentials).
+  for (const name of CODEX_SHARED_INSTRUCTION_NAMES) {
+    const file = path.join(prepared.sharedHome, name);
+    try { fs.statSync(file); }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      // Native treats a dangling optional instruction as absent. Its newly
+      // selected destination can receive a grant on the next session.
+      try { if (fs.lstatSync(file).isSymbolicLink()) continue; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+    add(writes, file);
   }
   // Git worktrees keep their common metadata outside the worktree. Asking Git
   // for these two local paths preserves worktree behavior without copying Git
