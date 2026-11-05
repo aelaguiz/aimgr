@@ -281,17 +281,8 @@ try:
                 assert locks_held(False), 'recovery must reacquire every inherited transaction lock'
                 receipt = base / 'receipts' / (item['operation_id'] + '.json')
                 assert json.loads(receipt.read_text())['phase'] == 'dispatched'
-                if not mac and point == 'dispatched':
-                    for _ in range(2):
-                        assert 'not yet verified' in maintain(False)['error']
-                        assert json.loads(receipt.read_text())['phase'] == 'dispatched'
-                        assert credential(name)['value'] is None
-                        assert (source / '.credentials.json').read_bytes() == original_file
-                        assert (source / 'config.toml').read_bytes() == original_config
-                    # This fixture killed before dispatch, so no backend call is
-                    # pending. Seed its exact intended effect explicitly to
-                    # finish this fixture and exercise read-only recovery.
-                    assert credential(name, item['value'])['inserted']
+                assert (source / '.credentials.json').read_bytes() == original_file
+                assert (source / 'config.toml').read_bytes() == original_config
                 if conflict:
                     logout(name)
                     different = json.loads(item['value'])

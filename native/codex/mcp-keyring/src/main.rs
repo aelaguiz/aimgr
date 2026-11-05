@@ -99,9 +99,6 @@ fn run() -> Result<Value, &'static str> {
                 }
                 return Ok(json!({"inserted": false, "value": value}));
             }
-            if receipt.as_ref().is_some_and(|receipt| receipt.read_only_recovery()) {
-                return Err("maintenance_unknown_write");
-            }
             let value = request.value.as_ref().ok_or("value")?;
             validate_token(value, &request)?;
             if let Some(receipt) = &mut receipt { receipt.record("dispatched")?; }

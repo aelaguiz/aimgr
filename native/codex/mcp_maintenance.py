@@ -4,7 +4,7 @@
 The command owner supplies inventory/configuration through private JSON pipes.
 This process owns the actual setup, refresh and File locks, including when its
 AIM parent dies. Mutating keyring children inherit those locks and are never
-terminated for a slow response. The native child receipt fences unknown writes.
+terminated for a slow response. The native child records acknowledged writes; explicit recovery owns any retry.
 """
 import ctypes
 import ctypes.util
@@ -199,8 +199,6 @@ class Maintenance:
             raise MaintenanceError('Keyring maintenance ended without a readable result. Recover the pending operation.') from None
         if process.returncode or result.get('error'):
             code = result.get('error')
-            if code == 'maintenance_unknown_write':
-                raise MaintenanceError('The interrupted keyring write is not yet verified in the keyring. No write was retried; the File store remains preserved and maintenance remains pending.')
             if code == 'maintenance_conflict':
                 raise MaintenanceError('The keyring contains a different credential. It was preserved; maintenance remains pending.')
             raise MaintenanceError('The native keyring is unavailable or could not verify the credential. The File store remains preserved.')

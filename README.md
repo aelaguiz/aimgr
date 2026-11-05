@@ -225,11 +225,11 @@ current Codex sessions finish and run `aim codex mcp-migrate` once. It converts
 the shared MCP tokens into the native OS keyring and preserves conflicting
 credentials. AIM refuses new Codex launches while conversion is pending;
 conversion does not stop processes or change OS schedules. `aim codex mcp-recover`
-finishes an interrupted conversion. Linux can verify an exact completed write
-in the same boot without writing it again; an absent or different destination
-stays pending and preserves the File store. Mac create-only migration can also
-recover an absent destination after reacquiring its locks. Recovery never
-reboots the host or restarts its shared credential service. Ordinary launch
+finishes an interrupted conversion in the same boot after reacquiring its locks.
+It verifies a matching destination without rewriting it, retries the exact saved
+credential if the destination is absent, and preserves a different credential.
+Recovery of an already committed migration never imports old credentials again.
+Recovery never reboots the host or restarts its shared credential service. Ordinary launch
 does not start conversion. The full contract and test plan are in the
 [Codex privacy and proxy plan](docs/aelaguiz/CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md).
 
