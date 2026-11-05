@@ -1,4 +1,6 @@
-# Codex privacy milestone 1: interim cold review
+# Codex privacy milestone 1: cold review
+
+**Final verdict, November 5:** no remaining confirmed source defect, privacy blocker or unnecessary production mechanism. The final Mac calendar occurrence closes acceptance: actual launchd scheduling, real model/MCP/shell, duplicate suppression, same-thread interactive handoff and normal native exit pass (`real-codex-routine-C0dgdT`, 12:57 UTC). The following dated sections preserve findings and corrections rather than reopening their historical pending items. Warm launch overhead remains a disclosed cost, not a performance target accepted on Amir's behalf.
 
 ## Latest correction: ordinary Chrome launch
 
@@ -162,3 +164,6 @@ Final whole-branch source review found a small obsolete prerequisite: MCP receip
 Final whole-source review now has no remaining source, privacy or overbuild blocker. It traced installer/admission, local auth and metadata-only Redis callers, settings sharing, native inputs/state/worktrees, both vendor/tool boundaries, profile cleanup and routine handoff. Mac parent-directory exposure was reproduced and corrected by retaining ancestor metadata while denying data/xattrs unless an explicit readable root already grants them. The actual boundary fixture `aim-temp-metadata-3ombvpwo` passes selected-parent overlap, vendor reentry and ordinary tools. Preserving the previously permitted literal filesystem root resolves the paired dyld-bootstrap failure; no descendant grant is added. Current native inputs/saved/worktree and standard-Keychain import/refresh/recovery reruns pass on candidate7065fcd0.
 
 Both native receipt fixtures pass after removing the boot-ID prerequisite, and Linux conversion/import/committed recovery passes. The Mac verifier no longer rejects unrelated managed MCP output rows; intended identity/status checks remain. The final real calendar event is still running, with its absolute UTC registration now verified from the OS log. The reviewer accepts explicit test timezone alignment and the production renderer, but requires the actual event and same-thread handoff before final acceptance.
+
+
+The final calendar result was reconciled after the whole-source review. The private fixture aligned its timezone with launchd's observed cache and used the production renderer/worker. Its test terminal used its existing allowed directory and the native `/exit` command. No production scheduling or sandbox change was needed. The reviewer closed acceptance and requested only precise PR wording: shared temp-root contents and sibling access remain denied, while exact Mac temp-root metadata is intentionally available for canonicalization.
