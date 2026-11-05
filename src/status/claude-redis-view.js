@@ -916,6 +916,7 @@ export async function collectClaudeRedisAccountUsageStatus({
       return {
         ...account,
         egress,
+        poolEnabled: accountFacts?.record?.policy?.pool?.enabled !== false,
         credentialReady: accountFacts?.credentialReady === true,
         credentialState: accountFacts?.state ?? "unknown",
         credentialExpiresAt: accountFacts?.expiresAt ?? null,
@@ -1138,6 +1139,7 @@ function findOverallWeeklyWindow(usage) {
 
 export function assertClaudeUsageRoutes(result) {
   for (const account of result?.accounts ?? []) {
+    if (account?.poolEnabled === false) continue;
     if (hasNoLocalClaudeRoute(account) && account?.errorKind === "proxy_profile_unavailable") continue;
     if (CLAUDE_ROUTE_ERROR_CODES.has(account?.errorKind)) {
       throw new ClaudeRouteError(account.errorKind, { label: account.label });
@@ -1157,7 +1159,8 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset, requireIn
       // does not make a Team/Enterprise account an individual Pro/Max account.
       // Admission still checks the reconciled credential at launch; keep the
       // route-error check above this filter so outages cannot trigger failover.
-      !hasNoLocalClaudeRoute(account)
+      account?.poolEnabled !== false
+      && !hasNoLocalClaudeRoute(account)
       && (!requireIndividualOAuth || ["pro", "max"].includes(account?.subscriptionType))
       && account?.locked === false
       && (
@@ -1271,7 +1274,7 @@ function formatReset(window, nowMs) {
   return hours >= 48 ? `${(hours / 24).toFixed(1)}d` : `${hours.toFixed(1)}h`;
 }
 
-function formatPlan(entry) {
+export function formatClaudePlan(entry) {
   const subscription = normalizePlan(entry?.subscriptionType);
   const tier = normalizePlan(entry?.rateLimitTier);
   if (subscription && tier && subscription !== tier) return `${subscription}/${tier}`;
@@ -1419,7 +1422,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
   for (const account of accounts) {
     rows.push([
       account.label,
-      formatPlan(account),
+      formatClaudePlan(account),
       account.authState,
       account.locked === null ? "unknown" : account.locked === true ? "yes" : "--",
       ...columns.values(account),
@@ -1469,11 +1472,12 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
     operator: describeClaudeOperatorState(account, nowMs),
   }));
   const countStatus = (status) => describedAccounts.filter((entry) => entry.operator.status === status).length;
-  const rows = [["account", "status", ...columns.headers, "updated", "proxy", "health", "next"]];
+  const rows = [["account", "status", "plan", ...columns.headers, "updated", "proxy", "health", "next"]];
   for (const { account, operator } of describedAccounts) {
     rows.push([
       account.label,
       operator.status,
+      formatClaudePlan(account),
       ...columns.values(account),
       formatClaudeUsageAge(account),
       formatClaudeEgress(account.egress),
@@ -1484,6 +1488,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
   if (accounts.length > 0) {
     rows.push([
       "average",
+      "--",
       "--",
       ...columns.averageValues(),
       "--",
@@ -1513,7 +1518,7 @@ export function renderClaudeRedisAccountInventory(result) {
       account.evidenceAsOf ?? "--",
       account.credentialReady ? "yes" : "no",
       account.state,
-      formatPlan(account),
+      formatClaudePlan(account),
       ...columns.values(account),
       account.source,
     ]);

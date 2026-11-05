@@ -9,10 +9,11 @@ function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }
   const averageAccountRow = accounts.length > 0 ? buildStatusAverageAccountTableRow(accounts, now, { codex }) : null;
   const windowHeaders = codex ? ["wk_used", "wk_in"] : ["5h_used", "5h_in", "wk_used", "wk_in"];
   const accountRows = [
-    ["label", "st", "lock", "login", "exp", ...windowHeaders, "resets", "provider", "usage_src", "flags"],
+    ["label", "st", "plan", "lock", "login", "exp", ...windowHeaders, "resets", "provider", "usage_src", "flags"],
     ...accounts.map((account) => [
       account.label,
       account.operator?.status || "unknown",
+      account.plan || "--",
       account.lock?.status || "unknown",
       formatInteractiveLoginSummary(account.login) || "--",
       formatStatusAccountExpiryCell(account.credentials?.expiresIn),

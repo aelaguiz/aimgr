@@ -1,6 +1,7 @@
 import { redactRedisEndpoint } from "../core/sanitize.js";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { normalizeCodexPlan } from "../core/codex-plan.js";
 import { parseExpiresAtToMs, formatExpiresIn } from "../core/time.js";
 import { buildCoordinationView } from "../coordination/snapshot.js";
 import { localCodexRecords } from "../coordination/codex-runtime.js";
@@ -15,12 +16,13 @@ import {
 } from "../coordination/redis-store.js";
 import { buildClaudeCredentialSummaryFromBundle } from "../credentials/claude-bundle.js";
 import { getAnthropicCredentialView } from "../credentials/anthropic.js";
+import { decodeJwtPayload } from "../credentials/jwt.js";
 import { resolveAimgrRedisCachePath } from "../io/paths.js";
 import { collectCodexUsageSnapshots, probeUsageSnapshotsByProvider } from "../pool/usage.js";
 import { loadLocalState } from "../state/local-state.js";
 import { readClaudeCliTargetStatus } from "../targets/claude-status.js";
 import { readCodexCliTargetStatus } from "../targets/codex-cli.js";
-import { collectClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
+import { collectClaudeRedisAccountUsageStatus, formatClaudePlan } from "./claude-redis-view.js";
 import { describeClaudeEgress, projectClaudeEgress, claudeProxyHealthProblem, hasNoLocalClaudeRoute } from "./claude-egress.js";
 import { readClaudeProxyHealth } from "./claude-proxy-health.js";
 import { readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
@@ -37,6 +39,14 @@ export { AIMGR_REDIS_STATUS_CACHE_KIND };
 
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const SAFE_TEXT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.:/%+<>=~-]{0,127}$/;
+function codexCredentialPlan(credential) {
+  for (const token of [credential?.access, credential?.idToken]) {
+    const claims = decodeJwtPayload(token);
+    const plan = normalizeCodexPlan(claims?.["https://api.openai.com/auth"]?.chatgpt_plan_type);
+    if (plan) return plan;
+  }
+  return null;
+}
 
 function safeToken(value) {
   const token = typeof value === "string" ? value.trim() : "";
@@ -99,6 +109,7 @@ function projectStatusAccount(value) {
     label,
     provider,
     ...(provider === OPENAI_CODEX_PROVIDER && /^[a-f0-9]{64}$/.test(value?.localAccountKey ?? "") ? { localAccountKey: value.localAccountKey } : {}),
+    plan: typeof value?.plan === "string" && /^[a-z0-9_]+(?:\/[a-z0-9_]+)?$/.test(value.plan) ? value.plan : null,
     ...(provider === ANTHROPIC_PROVIDER ? { egress: projectClaudeEgress(value?.egress) } : {}),
     operator: {
       status: safeToken(value?.operator?.status) ?? "unknown",
@@ -276,6 +287,7 @@ function buildCodexAccounts({ snapshot, usageByLabel, lockedLabels, lockSource, 
       label: record.label,
       provider: OPENAI_CODEX_PROVIDER,
       localAccountKey: record.localAccountKey ?? null,
+      plan: normalizeCodexPlan(usage.plan) ?? codexCredentialPlan(record.credential),
       operator: {
         status: credentials.ready && record.policy?.pool?.enabled !== false ? "ready" : credentials.status === "reauth_required" ? "reauth" : "blocked",
         eligible: credentials.ready && record.policy?.pool?.enabled !== false && lockStatus !== "held",
@@ -307,6 +319,7 @@ function buildClaudeAccounts(claudeStatus) {
     return {
       label: account.label,
       provider: ANTHROPIC_PROVIDER,
+      plan: formatClaudePlan(account),
       egress: projectClaudeEgress(account.egress),
       operator: {
         status: hasNoLocalClaudeRoute(account) ? "no_route" : proxyProblem ? proxyProblem.status.toLowerCase().replaceAll(" ", "_") : launchable ? "ready" : account.credentialState === "reauth_required" ? "reauth" : "blocked",

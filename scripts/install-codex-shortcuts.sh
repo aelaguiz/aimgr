@@ -15,15 +15,19 @@ fs.mkdirSync(path.dirname(shortcuts), { recursive: true });
 const body = `# Installed by aimgr/scripts/install-codex-shortcuts.sh.
 # Every command selects a different eligible AIM account before launching.
 #   c   - new thread on a rotated account
+#   cf  - new thread on a rotated account, with Fast enabled for this launch
 #   cr  - rotate, carry the thread into a brand-new thread id, scrubbed, then resume the copy
 #         (no argument means: the most recent thread for this directory, like the old picker default)
+#   crf - same as cr, with Fast enabled for this launch
 # There is deliberately no same-thread resume shortcut: resuming an existing thread id on a
 # different account sends that thread id and session id to the Codex servers under the new
 # account, which links the two accounts. See CLAUDE.md, "Codex account rotation rule".
-unalias c cr crr 2>/dev/null || true
+unalias c cf cr crf crr 2>/dev/null || true
 unfunction crr 2>/dev/null || true
 c()   { command aim codex run "$@"; }
+cf()  { command aim codex run "$@" -- -p yolo -c 'service_tier="fast"'; }
 cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last; else command aim codex resume-fresh "$@"; fi }
+crf() { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last -- -c 'service_tier="fast"'; else command aim codex resume-fresh "$@" -- -c 'service_tier="fast"'; fi }
 `;
 const source = '[ ! -r "$HOME/.config/aimgr/codex-shortcuts.zsh" ] || source "$HOME/.config/aimgr/codex-shortcuts.zsh"';
 
@@ -50,7 +54,7 @@ const hazardous = new Set([
 const lines = current.split("\n").filter(line => line !== source && !hazardous.has(line.trim()));
 const updated = `${lines.join("\n").trimEnd()}\n${source}\n`;
 install(rc, updated);
-console.log(`Installed c/cr (crr removed): ${shortcuts}`);
+console.log(`Installed c/cf/cr/crf (crr removed): ${shortcuts}`);
 console.log(`Startup file: ${rc}`);
 console.log('Reload in an existing shell: source "$HOME/.config/aimgr/codex-shortcuts.zsh"');
 JS

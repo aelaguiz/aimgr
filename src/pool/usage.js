@@ -4,6 +4,7 @@ import { createClaudeAccountTransport } from "../network/claude-transport.js";
 import { ClaudeRouteError, resolveOptionalClaudeEgressProfile } from "../network/claude-egress-policy.js";
 import { rememberClaudeProtection } from "../network/claude-offline-binding.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../core/constants.js";
+import { normalizeCodexPlan } from "../core/codex-plan.js";
 import { getAnthropicCredentialView } from "../credentials/anthropic.js";
 import { buildCodexCredentialFingerprint } from "../credentials/codex.js";
 import { clampPercent } from "../core/numbers.js";
@@ -541,6 +542,7 @@ export async function collectCodexUsageSnapshots({
     ) {
       resolvedCodex[label] = {
         ...cachedEntry.usage,
+        plan: normalizeCodexPlan(cachedEntry.subscriptionType),
         source: "cache",
         stale: usageAgeMs === null || usageAgeMs > CODEX_USAGE_FRESH_MS,
         observedAtMs: Number.isFinite(usageObservedAtMs) ? usageObservedAtMs : null,
@@ -580,6 +582,7 @@ export async function collectCodexUsageSnapshots({
       };
       nextCacheEntries[label] = {
         identityBinding,
+        subscriptionType: normalizeCodexPlan(live.plan),
         usageObservedAtMs: nowMs,
         lastAttemptAtMs: nowMs,
         usage: live,
@@ -590,6 +593,7 @@ export async function collectCodexUsageSnapshots({
       const observedAtMs = Number(cachedEntry.usageObservedAtMs);
       resolvedCodex[label] = {
         ...cachedEntry.usage,
+        plan: normalizeCodexPlan(cachedEntry.subscriptionType),
         source: "cache",
         stale: true,
         observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : null,
