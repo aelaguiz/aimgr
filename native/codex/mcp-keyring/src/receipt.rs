@@ -32,7 +32,7 @@ struct Outcome {
     phase: String,
 }
 
-pub(super) struct Receipt { directory: PathBuf, outcome: Outcome, _locks: Vec<File> }
+pub(super) struct Receipt { directory: PathBuf, outcome: Outcome, _locks: Vec<File>, read_only_recovery: bool }
 
 fn hexadecimal(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|b| b.is_ascii_hexdigit())
@@ -112,6 +112,7 @@ impl Receipt {
         }
         private_directory(&directory)?;
         let target = directory.join(format!("{}.json", input.operation_id));
+        let mut uncertain = None;
         match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&target) {
             Ok(file) => {
                 let meta = file.metadata().map_err(|_| "maintenance_receipt")?;
@@ -120,18 +121,34 @@ impl Receipt {
                 let old: Outcome = serde_json::from_reader(file).map_err(|_| "maintenance_receipt")?;
                 if old.schema != 1 || old.operation_id != input.operation_id || old.intent_sha256 != input.intent_sha256 { return Err("maintenance_intent"); }
                 if !canonical_boot_id(&old.boot_id) { return Err("maintenance_boot"); }
-                if old.phase == "dispatched" && old.boot_id == input.boot_id { return Err("maintenance_unknown_write"); }
+                // The validated Mac native_access path creates an item through
+                // local FileDL: its atomic database commit runs in this helper.
+                // Reacquiring the inherited locks above therefore fences that
+                // writer; exact-intent readback can recover in the same boot.
+                // Generic Secret Service replacement writes remain daemon-owned.
+                let local_creation = cfg!(target_os = "macos") && access.is_some();
                 if !["not_dispatched", "dispatched", "acknowledged", "verified"].contains(&old.phase.as_str()) { return Err("maintenance_receipt"); }
+                if old.phase == "dispatched" && old.boot_id == input.boot_id && !local_creation {
+                    uncertain = Some(old);
+                }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
             Err(_) => return Err("maintenance_receipt"),
         }
-        let mut receipt = Self { directory, _locks: locks, outcome: Outcome { schema: 1,
+        // Preserve uncertainty until exact backend readback verifies the sole
+        // intended write. An absent/error retry must not reset this receipt
+        // and accidentally authorize another write on its next attempt.
+        if let Some(outcome) = uncertain {
+            return Ok(Self { directory, outcome, _locks: locks, read_only_recovery: true });
+        }
+        let mut receipt = Self { directory, _locks: locks, read_only_recovery: false, outcome: Outcome { schema: 1,
             operation_id: input.operation_id, intent_sha256: input.intent_sha256,
             boot_id: input.boot_id, phase: "not_dispatched".to_owned() } };
         receipt.record("not_dispatched")?;
         Ok(receipt)
     }
+
+    pub(super) fn read_only_recovery(&self) -> bool { self.read_only_recovery }
 
     pub(super) fn record(&mut self, phase: &str) -> Result<(), &'static str> {
         self.outcome.phase = phase.to_owned();

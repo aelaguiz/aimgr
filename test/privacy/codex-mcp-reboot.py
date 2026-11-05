@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Real keyring child lifetime and actual reboot recovery, isolated hosts only.
+"""Real keyring child lifetime and interrupted recovery, isolated hosts only.
 
 Build the AIM helper with `cargo rustc --bin aimgr-codex-mcp-keyring -- --cfg test`,
 then copy it to one persistent fixture path before prepare. That executable is
 retained through verify, including its macOS creator ACL identity. No Codex
 source/executable is changed. Linux needs a fresh loopback-only dbus-run-session
 for each phase. Prepare intentionally leaves one pending synthetic transaction.
+Same-boot covers actual interrupted writes without rebooting either platform.
+Verify remains available for an earlier preserved reboot transaction.
 """
 import argparse
 import fcntl
@@ -23,7 +25,7 @@ import uuid
 
 assert Path('/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST').is_file() and os.getuid() != 0
 parser = argparse.ArgumentParser()
-parser.add_argument('phase', choices=['prepare', 'verify'])
+parser.add_argument('phase', choices=['verify', 'same-boot'])
 parser.add_argument('--root', type=Path, required=True)
 parser.add_argument('--helper', type=Path, required=True)
 parser.add_argument('--node', required=True)
@@ -34,7 +36,7 @@ assert args.root.is_absolute() and args.helper.is_absolute()
 root = args.root
 assert root.parent == Path.home() / 'codex-m1-private'
 base = Path(f'/opt/aimgr-codex-runtime/users/{os.getuid()}/maintenance')
-if args.phase == 'prepare':
+if args.phase != 'verify':
     assert not root.exists() and not (base / 'pending.json').exists() and not (base / 'transaction.json').exists()
     root.mkdir(mode=0o700)
 root = root.resolve()
@@ -135,7 +137,7 @@ def inventory():
     return json.loads(subprocess.check_output([args.process_control, '--inventory'], text=True))
 
 def start(point):
-    control = root / point
+    control = root / (point + '-' + uuid.uuid4().hex[:8])
     control.mkdir(mode=0o700)
     log = (root / (point + '.log')).open('wb')
     child = subprocess.Popen(['/usr/bin/python3', '-I', str(repo / 'native/codex/mcp_maintenance.py')],
@@ -230,7 +232,7 @@ default_keychain = None
 success = False
 try:
     if mac:
-        if args.phase == 'prepare':
+        if args.phase != 'verify':
             default_keychain = security('default-keychain', '-d', 'user').stdout.strip().strip('"')
             assert default_keychain and Path(default_keychain).is_file() and Path(default_keychain).resolve() != keychain.resolve()
             info['prior_default_keychain'] = default_keychain
@@ -263,60 +265,56 @@ try:
             break
         time.sleep(.1)
     assert credential('synthetic_probe') == {'value': None}
-    if args.phase == 'prepare':
-        seed('synthetic_parent_' + uuid.uuid4().hex)
-        parent, helper_pid, control, log = start('dispatched')
-        try:
-            parent.kill()
-            parent.wait(timeout=10)
-            assert locks_held(True), 'actual keyring child must retain all inherited transaction locks'
-            item = journal()['intents'][0]
-            receipt = base / 'receipts' / (item['operation_id'] + '.json')
-            assert json.loads(receipt.read_text())['phase'] == 'dispatched'
-            assert credential(item['serverName']) == {'value': None}
-            (control / 'release').touch()
-            wait_for(lambda: json.loads(receipt.read_text())['phase'] == 'verified' and locks_held(False))
-            assert credential(item['serverName'])['value'] == item['value']
-            maintain()
-        finally:
-            (control / 'release').touch()
-            log.close()
-        print('PASS actual keyring child retains setup/refresh/File locks after parent death and writes a verified backend receipt before release', flush=True)
-        name = 'synthetic_reboot_' + uuid.uuid4().hex
-        seed(name)
-        original_file = (source / '.credentials.json').read_bytes()
-        original_config = (source / 'config.toml').read_bytes()
-        parent, helper_pid, control, log = start('backend_returned')
-        try:
-            item = journal()['intents'][0]
-            assert credential(name)['value'] == item['value']
-            os.kill(helper_pid, signal.SIGKILL)
-            parent.wait(timeout=10)
-            receipt = base / 'receipts' / (item['operation_id'] + '.json')
-            assert json.loads(receipt.read_text())['phase'] == 'dispatched'
-            assert 'later machine boot' in maintain(False)['error']
-            assert (base / 'pending.json').exists()
-            assert (source / '.credentials.json').read_bytes() == original_file
-            assert (source / 'config.toml').read_bytes() == original_config
-            # A synthetic independent writer replaces the unacknowledged value.
-            # This is not claimed as a backend completing after helper death.
-            logout(name)
-            different = json.loads(item['value'])
-            different['token_response']['access_token'] = 'SYNTHETIC_DIFFERENT_DESTINATION'
-            different = json.dumps(different, separators=(',', ':'))
-            assert credential(name, different)['inserted']
-            assert 'later machine boot' in maintain(False)['error']
-            assert credential(name)['value'] == different
-            assert (source / '.credentials.json').read_bytes() == original_file
-            assert (source / 'config.toml').read_bytes() == original_config
-            info.update(name=name, expected=item['value'], different=different,
-                        source_sha256=hashlib.sha256(original_file).hexdigest(), config_sha256=hashlib.sha256(original_config).hexdigest())
-            save_info(info)
-        finally:
-            (control / 'release').touch()
-            log.close()
-        print('PASS helper death after backend return leaves dispatched receipt; same-boot recovery refuses both matching and changed destinations', flush=True)
-        print(json.dumps(dict(fixture=root.name, phase='awaiting_actual_reboot', platform=platform.system())), flush=True)
+    if args.phase == 'same-boot':
+        for point, conflict in [('dispatched', False), ('backend_returned', False), ('backend_returned', True)]:
+            name = 'synthetic_same_boot_' + uuid.uuid4().hex
+            seed(name)
+            original_file = (source / '.credentials.json').read_bytes()
+            original_config = (source / 'config.toml').read_bytes()
+            parent, helper_pid, control, log = start(point)
+            try:
+                item = journal()['intents'][0]
+                assert credential(name)['value'] == (None if point == 'dispatched' else item['value'])
+                assert locks_held(True), 'interrupted native writer must hold the transaction locks'
+                os.kill(helper_pid, signal.SIGKILL)
+                parent.wait(timeout=10)
+                assert locks_held(False), 'recovery must reacquire every inherited transaction lock'
+                receipt = base / 'receipts' / (item['operation_id'] + '.json')
+                assert json.loads(receipt.read_text())['phase'] == 'dispatched'
+                if not mac and point == 'dispatched':
+                    for _ in range(2):
+                        assert 'not yet verified' in maintain(False)['error']
+                        assert json.loads(receipt.read_text())['phase'] == 'dispatched'
+                        assert credential(name)['value'] is None
+                        assert (source / '.credentials.json').read_bytes() == original_file
+                        assert (source / 'config.toml').read_bytes() == original_config
+                    # This fixture killed before dispatch, so no backend call is
+                    # pending. Seed its exact intended effect explicitly to
+                    # finish this fixture and exercise read-only recovery.
+                    assert credential(name, item['value'])['inserted']
+                if conflict:
+                    logout(name)
+                    different = json.loads(item['value'])
+                    different['token_response']['access_token'] = 'SYNTHETIC_DIFFERENT_DESTINATION'
+                    different = json.dumps(different, separators=(',', ':'))
+                    assert credential(name, different)['inserted']
+                    assert 'different credential' in maintain(False)['error']
+                    assert credential(name)['value'] == different
+                    assert (source / '.credentials.json').read_bytes() == original_file
+                    assert (source / 'config.toml').read_bytes() == original_config
+                    logout(name)
+                    assert credential(name, item['value'])['inserted']
+                assert boot() == info['boot'], 'this regression must recover without a reboot'
+                maintain()
+                assert credential(name)['value'] == item['value']
+                assert journal()['committed'] and journal()['finished']
+                assert not (base / 'pending.json').exists() and not (source / '.credentials.json').exists()
+            finally:
+                (control / 'release').touch()
+                log.close()
+            print('PASS same-boot ' + platform.system() + ' recovery: ' + ('conflicting destination preserved' if conflict else point), flush=True)
+        success = True
+        print(json.dumps(dict(fixture=root.name, phase='complete', same_boot=True, platform=platform.system())), flush=True)
     else:
         assert boot() != info['boot'], 'this case requires an actual later boot'
         assert (base / 'pending.json').exists()

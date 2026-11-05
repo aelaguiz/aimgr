@@ -121,12 +121,21 @@ try:
     print('PASS native insert, exact readback, idempotence and conflicting token preservation')
     uncertain = request(name + '_uncertain', 'SYNTHETIC_PENDING')
     seed_receipt(uncertain, 'dispatched', boot_id())
-    assert call(uncertain) == {'error': 'maintenance_unknown_write'}
+    for _ in range(2):
+        assert call(uncertain) == {'error': 'maintenance_unknown_write'}
+        assert json.loads(receipt_path(uncertain).read_text())['phase'] == 'dispatched'
     for malformed in ('', 'a' * 36, '00000000_0000-0000-0000-000000000000'):
         seed_receipt(uncertain, 'dispatched', malformed)
         assert call(uncertain) == {'error': 'maintenance_boot'}
     assert call({'operation': 'load', 'server_name': uncertain['server_name'], 'url': uncertain['url']}) == {'value': None}
     print('PASS same-boot unknown write and malformed boot provenance refuse without mutation')
+    seed_receipt(first, 'dispatched', boot_id())
+    assert call(first).get('inserted') is False
+    assert json.loads(receipt_path(first).read_text())['phase'] == 'verified'
+    seed_receipt(different, 'dispatched', boot_id())
+    assert call(different) == {'error': 'maintenance_conflict'}
+    assert json.loads(receipt_path(different).read_text())['phase'] == 'dispatched'
+    print('PASS exact backend readback recovers in the same boot; conflicting receipt stays dispatched')
     duplicate = request(name + '_duplicate', 'SYNTHETIC_DUPLICATE')
     duplicate['maintenance']['lock_fds'] = [locks[0], locks[0]]
     assert call(duplicate) == {'error': 'maintenance_lock'}

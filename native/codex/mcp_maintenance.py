@@ -200,7 +200,7 @@ class Maintenance:
         if process.returncode or result.get('error'):
             code = result.get('error')
             if code == 'maintenance_unknown_write':
-                raise MaintenanceError('An interrupted keyring write has no completion acknowledgement. Recovery requires a later machine boot.')
+                raise MaintenanceError('The interrupted keyring write is not yet verified in the keyring. No write was retried; the File store remains preserved and maintenance remains pending.')
             if code == 'maintenance_conflict':
                 raise MaintenanceError('The keyring contains a different credential. It was preserved; maintenance remains pending.')
             raise MaintenanceError('The native keyring is unavailable or could not verify the credential. The File store remains preserved.')
