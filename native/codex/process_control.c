@@ -115,39 +115,7 @@ static int inventory(void) {
             quoted(args+offset);
             offset+=strnlen(args+offset,size-offset)+1;
         }
-        // Only a native installer classification is exported. No environment
-        // values, including credential-directory paths, leave this helper.
-#if defined(__linux__)
-        memset(args,0,1024*1024+1);size=0;offset=0;
-        snprintf(file,sizeof(file),"/proc/%d/environ",value.pid);
-        fd=open(file,O_RDONLY|O_CLOEXEC);
-        if (fd>=0) { ssize_t n=read(fd,args,1024*1024);close(fd);if (n>0) size=(size_t)n; }
-#endif
-        int env_visible=0;unsigned installer=0,installer_mode=0;int previous_release=0;
-        while (offset<size) {
-            const char *entry=args+offset;size_t length=strnlen(entry,size-offset);
-            if (memchr(entry,'=',length)) env_visible=1;
-            // The pinned updater invokes /bin/sh -s, with its script on stdin.
-            // Export only a classification, never these environment values.
-            const char *flags[]={"CODEX_INSTALL_DEFER_SELECTION=","CODEX_INSTALL_DAEMON_ONLY=",
-                "CODEX_INSTALL_IF_LATEST=","CODEX_INSTALL_IF_CURRENT="};
-            for (unsigned flag=0;flag<4;flag++) {
-                size_t n=strlen(flags[flag]);
-                if (length==n+1 && !strncmp(entry,flags[flag],n) && (entry[n]=='0' || entry[n]=='1')) {
-                    installer|=1u<<flag;
-                    if (entry[n]=='1') installer_mode|=1u<<flag;
-                }
-            }
-            if (!strcmp(entry,"CODEX_RELEASE=latest")) installer|=16;
-            if (!strcmp(entry,"CODEX_NON_INTERACTIVE=1")) installer|=32;
-            if (!strncmp(entry,"CODEX_UPDATE_FROM_RELEASE=",26)) { installer|=64;previous_release=length>26; }
-            if (!strncmp(entry,"CODEX_HOME=/",12)) installer|=128;
-            offset+=length+1;
-        }
-        installer_mode&=13; // Daemon-only selects package layout, not update mode.
-        int native_installer=installer==255 && ((installer_mode==1 && !previous_release)
-            || ((installer_mode==4 || installer_mode==8) && previous_release));
-        printf("],\"environment_visible\":%s,\"native_installer\":%s}",env_visible?"true":"false",native_installer?"true":"false");free(args);
+        fputs("]}",stdout);free(args);
     }
     free(pids);puts("]");return 0;
 }

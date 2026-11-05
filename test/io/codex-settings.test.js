@@ -113,19 +113,23 @@ for (const boundary of ["journal","before-source","after-source","before-view","
   });
 }
 
-test("late writes through an open displaced inode are recovered",async t=>{
-  const {source,entry,read}=fixture(t);
+test("repeated settings edits leave no displaced files or replay history", async t => {
+  const { source, entry, read } = fixture(t);
   await reconcileCodexSettings(entry);
-  const fd=fs.openSync(source,'r+');
-  try {
-    fs.writeFileSync(entry.view,fs.readFileSync(entry.view,"utf8").replace('"old"','"native"'));
+  for (let i = 0; i < 12; i++) {
+    // Cover both an in-place writer and native atomic-save behavior.
+    const updated = fs.readFileSync(entry.view, "utf8").replace(/model="[^"]*"/, `model="edit-${i}"`);
+    if (i % 2) {
+      fs.writeFileSync(entry.view + ".save", updated);
+      fs.renameSync(entry.view + ".save", entry.view);
+    } else fs.writeFileSync(entry.view, updated);
     await reconcileCodexSettings(entry);
-    fs.ftruncateSync(fd,0);
-    fs.writeFileSync(fd,'model="old"\n[skills]\nconfig=[{path="./skill",enabled=true}]\n[late]\nkept=true\n');
-  } finally {fs.closeSync(fd);}
-  await reconcileCodexSettings(entry);
-  assert.equal(read(source).model,'native');
-  assert.equal(read(source).late.kept,true);
+    assert.equal(read(source).model, `edit-${i}`);
+  }
+  assert.deepEqual(JSON.parse(fs.readFileSync(entry.record, "utf8")).retained, []);
+  for (const directory of [path.dirname(source), path.dirname(entry.view)]) {
+    assert.deepEqual(fs.readdirSync(directory).filter(name => name.startsWith(".aim-codex-settings-")), []);
+  }
 });
 
 test("invalid source is visible, deletion restores defaults and new content recovers",async t=>{

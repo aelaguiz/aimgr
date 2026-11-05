@@ -61,7 +61,7 @@ const security = (...args) => {
 const authorizeSynthetic = () => {
   if (standardKeychain) {
     // Only this synthetic item's vendor partition; no GUI-click coverage.
-    const signature = spawnSync("/usr/bin/codesign", ["-d", "--verbose=4", admitCodexArtifact().mcpKeyring], { encoding: "utf8" });
+    const signature = spawnSync("/usr/bin/codesign", ["-d", "--verbose=4", admitCodexArtifact({ maintenance: true }).mcpKeyring], { encoding: "utf8" });
     assert.equal(signature.status, 0);
     const hash = signature.stderr.match(/^CDHash=([a-f0-9]+)$/m)?.[1]; assert.ok(hash);
     security("set-generic-password-partition-list", "-s", "Codex MCP Credentials", "-a", codexMcpKey(server.name, server.url),
@@ -71,7 +71,7 @@ const authorizeSynthetic = () => {
 const keyring = request => {
   // Fixture-only direct calls. Real conversion uses the durable maintenance
   // owner; neither path kills a child while a credential write is pending.
-  const result = spawnSync(admitCodexArtifact().mcpKeyring, [], {
+  const result = spawnSync(admitCodexArtifact({ maintenance: true }).mcpKeyring, [], {
     env: mac ? { ...env, HOME: os.homedir() } : env,
     input: JSON.stringify(mac && request.operation === "insert-if-absent" ? { ...request,
       native_access: { executable: path.join(base, "bin/codex"), sha256: "39acf979729dd290f9a24ee38b2914e036c91b65952872e28ae2a6b88a7db7c1" } } : request),

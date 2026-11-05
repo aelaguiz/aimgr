@@ -55,7 +55,8 @@ export function codexSettingsView({ base, source, home }) {
 
 /** Reconcile one authored file and its shared native view. The caller owns this
  * only while its invocation is alive. Native/editor writers ignore our lock,
- * so each replaced inode remains in a recovery record, including late FD writes.
+ * so an edit detected during exchange is recovered on the next reconciliation.
+ * Completed exchanges do not retain old inodes for future writes through old FDs.
  */
 export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, onWarning = () => {}, fault = () => {} } = {}) {
   fs.mkdirSync(path.dirname(entry.view), { recursive: true, mode: 0o700 });
@@ -109,10 +110,10 @@ export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, on
         }
         if (!fs.existsSync(op.staged)) continue;
         const swapped = identity(op.staged) !== op.stagedIdentity;
-        if (swapped && !state.retained.some(r => r.path === op.staged)) {
-          state.retained.push({ path: op.staged, observed: op.expected, kind: op.kind });
-        } else if (!swapped && identity(op.target) !== op.stagedIdentity) {
-          fs.unlinkSync(op.staged); // Our unpublished candidate, never a writer's file.
+        if (swapped && read(op.staged) !== op.expected) {
+          if (!state.retained.some(r => r.path === op.staged)) state.retained.push({ path: op.staged, observed: op.expected, kind: op.kind });
+        } else if (swapped || identity(op.target) !== op.stagedIdentity) {
+          fs.unlinkSync(op.staged); // Unpublished candidate or unchanged displaced bytes.
         }
       }
       atomicRecord(entry.record, state);
@@ -124,11 +125,15 @@ export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, on
     const initial = read(entry.record) === null;
     if (initial && view !== null) throw new Error(`Unowned Codex settings view for ${entry.origin}.`);
     const recovered = [];
-    // Consume deltas from retained inodes before the ordinary source/view merge.
-    // Keep bytes recoverable even when a conflict or invalid edit prevents apply.
-    for (const retained of state.retained) {
+    // Resolve detected exchange races once. Conflicting/invalid bytes remain
+    // as recovery files, not live inputs watched on every future reconciliation.
+    const settled = [];
+    const pendingEdits = state.retained;
+    state.retained = [];
+    for (const retained of pendingEdits) {
       const current = read(retained.path);
-      if (current === null || current === retained.observed) continue;
+      if (current === null) continue;
+      if (current === retained.observed) { settled.push(retained.path); continue; }
       try {
         const base = retained.observed ?? "";
         const change = mergeCodexSettings({ baseSource: base,
@@ -143,7 +148,7 @@ export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, on
         }
         source = change.source;
         recovered.push(...change.conflicts.map(keys => ({ keys, recovery })));
-        retained.observed = current;
+        if (!change.conflicts.length || retained.kind === "source") settled.push(retained.path);
       } catch {
         recovered.push({ keys: ["invalid retained settings"], recovery: retained.path });
       }
@@ -214,8 +219,10 @@ export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, on
         const publication = stateIO({ operation: "exchange", target: op.target, staged: op.staged, allowUnreadableParent: op.kind === "source" });
         if (publication.directorySynced === false) preservePublication(entry, state, op);
         const actual = read(op.staged);
-        state.retained.push({ path: op.staged, observed: op.expected, kind: op.kind });
-        if (actual !== op.expected) raced = true;
+        if (actual !== op.expected) {
+          state.retained.push({ path: op.staged, observed: op.expected, kind: op.kind });
+          raced = true;
+        } else fs.unlinkSync(op.staged);
       }
       fault(`after-${op.kind}`);
     }
@@ -235,6 +242,7 @@ export async function reconcileCodexSettings(entry, { stateIO = codexStateIO, on
     atomicRecord(entry.record, state);
     fault("after-baseline");
     removeRecord(entry.journal);
+    for (const file of settled) fs.rmSync(file, { force: true });
     if (!raced) consumeCodexSettingsIntents(consumed);
     return { entry, raced, writable, valid: sourceValid };
   } finally {
@@ -252,8 +260,8 @@ export async function superviseCodexSettings(entries, options = {}) {
   let closed = false, running = Promise.resolve(), observed;
   const watchers = [], timers = new Set(), states = new Map();
   // A missed-event fallback only checks the current inputs' metadata. It must
-  // not start Python, acquire the source lock or read retained history at idle.
-  // Events and explicit flushes still reconcile retained inodes and journals.
+  // not start Python or acquire the source lock at idle. Events and explicit
+  // flushes still settle in-flight edits and interrupted transactions.
   const signature = () => JSON.stringify(entries.map(entry => {
     let target;
     try { target = resolvedTarget(entry.origin); } catch (error) { target = error.code; }

@@ -16,7 +16,7 @@ with (root/'vendor.log').open('wb') as log:
    entry=next((v for v in inventory if v['pid']==child.pid),None)
    if entry: break
    time.sleep(.1)
-  assert entry and 'environment' not in entry,'native process must be discoverable without publishing environment values'
+  assert entry and not any(key in entry for key in ('environment', 'environment_visible', 'native_installer')), 'process inventory needs no environment values or installer classification'
   result=subprocess.run([a.helper,str(child.pid),entry['image'],entry['birth']],capture_output=True,text=True)
   assert result.returncode==125 and child.poll() is None,'read-only inventory must not signal the native owner'
   print('PASS: unchanged native app-server is identified; inventory has no process-stop operation')
