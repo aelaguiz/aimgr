@@ -65,7 +65,38 @@ if (chromePhase) {
   // Mac Security.framework requires the logged-in disposable OS user's HOME,
   // as in production. Preserve all other inherited values, including AIM TMPDIR.
   const chromeEnvironment = process.platform === "darwin" ? ',env=dict(os.environ,HOME=__import__("pwd").getpwuid(os.getuid()).pw_dir)' : "";
+  if (process.platform === "darwin") {
+    // This Mac Chrome build crashes during --dump-dom shutdown even without
+    // AIM. Exercise the normal persistent CDP browser and close our own group.
+    const browserProbe = `import urllib.request,time,signal,shutil
+profile=tempfile.mkdtemp(prefix="chrome-",dir=str(pathlib.Path.cwd()))
+browser=subprocess.Popen(${JSON.stringify(chromeArgs)}+["--remote-debugging-port=0","--user-data-dir="+profile,"data:text/html,<title>AIM_TOOL_ACCESS_OK</title>"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=dict(os.environ,HOME=__import__("pwd").getpwuid(os.getuid()).pw_dir),start_new_session=True)
+try:
+ deadline=time.monotonic()+20
+ portfile=pathlib.Path(profile)/"DevToolsActivePort"
+ opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+ while time.monotonic()<deadline:
+  assert browser.poll() is None, "Chrome exited before CDP check"
+  if portfile.exists():
+   port=portfile.read_text().splitlines()[0]
+   try:
+    with opener.open("http://127.0.0.1:"+port+"/json/list",timeout=2) as response: tabs=json.load(response)
+    if any(tab.get("title")=="AIM_TOOL_ACCESS_OK" for tab in tabs): break
+   except OSError: pass
+  time.sleep(.1)
+ else: raise AssertionError("Chrome did not render the synthetic page through CDP")
+ print("AIM_TOOL_ACCESS_OK")
+finally:
+ try: os.killpg(browser.pid,signal.SIGTERM)
+ except ProcessLookupError: pass
+ try: browser.wait(timeout=3)
+ except subprocess.TimeoutExpired: os.killpg(browser.pid,signal.SIGKILL); browser.wait()
+ shutil.rmtree(profile,ignore_errors=True)
+`;
+    toolScript += "; exec(" + JSON.stringify(browserProbe) + ")";
+  } else {
   toolScript += `; profile=tempfile.mkdtemp(prefix="chrome-",dir=str(pathlib.Path.cwd())); result=subprocess.run(${JSON.stringify(chromeArgs)}+["--user-data-dir="+profile,"--dump-dom","data:text/html,<title>AIM_TOOL_ACCESS_OK</title>"],capture_output=True,text=True,timeout=25${chromeEnvironment}); assert result.returncode==0,(result.returncode,result.stderr); assert "AIM_TOOL_ACCESS_OK" in result.stdout; print("AIM_TOOL_ACCESS_OK")`;
+  }
 }
 const command = "/usr/bin/python3 -c " + shellQuote(toolScript);
 const created = id => ({ type: "response.created", response: { id } });

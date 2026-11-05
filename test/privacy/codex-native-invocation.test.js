@@ -5,8 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
-import { prepareCodexNativeInvocation } from "../../src/privacy/codex-native-invocation.js";
+import { prepareCodexNativeInvocation as prepareInvocation } from "../../src/privacy/codex-native-invocation.js";
+import { resolveCodexLaunchInputs } from "../../src/privacy/codex-launch-inputs.js";
 import { prepareCodexAccountState } from "../../src/privacy/codex-account-state.js";
+
+const prepareCodexNativeInvocation = options => prepareInvocation({
+  resolveInputs: inputs => resolveCodexLaunchInputs({ ...inputs, workingDirectories: [] }), ...options,
+});
 
 test("relative --cd is projected once while native retains its original process cwd and arguments", async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codex-invocation-")));

@@ -233,10 +233,34 @@ application when prompted. Import verifies that unchanged Codex can read the
 selected entries before retiring File storage; a denied read preserves the
 original store for explicit recovery. AIM does not request or handle the
 Keychain password.
+OAuth MCP servers require a usable native keyring, including an existing D-Bus/Secret Service session on Linux. Without one, AIM cannot use those OAuth logins; an existing nonempty File store keeps AIM launches refused until conversion can succeed. The original store stays unchanged. Sessions without MCP do not require a running keyring.
 Recovery of an already committed migration never imports old credentials again.
 Recovery never reboots the host or restarts its shared credential service. Ordinary launch
 does not start conversion. The full contract and test plan are in the
 [Codex privacy and proxy plan](docs/aelaguiz/CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md).
+
+Codex's built-in file and image tools can use the whole `~/workspace`, `/tmp`,
+Downloads and the screenshot directory, including subdirectories and files
+created after launch. macOS uses its screenshot-location preference (Desktop by
+default) and its per-user temporary folder, so screenshot thumbnails work too. Linux respects XDG Downloads/Pictures locations and includes
+`Pictures/Screenshots`. Add other workspace or screenshot folders in the
+machine's existing `~/.aimgr/config.yaml`:
+
+```yaml
+codexWorkingDirectories:
+  - ~/another-workspace
+  - /mnt/screenshots
+```
+
+Unavailable optional default folders are skipped; an invalid directory explicitly added to AIM config produces an error. These are recursive read/write grants; the selected native Codex permission
+mode still applies. Paths may be absolute or relative to
+the user's home; `~/` is supported. New directory settings take effect in new
+sessions. `--add-dir` selects an additional directory for a launch; `--image`
+selects the individual outside image without granting its siblings. The whole
+home or disk cannot be granted as a work directory. Ordinary shells, browsers,
+MCP servers and developer tools keep their normal OS permissions; the vendor
+file policy does not impose a blanket sandbox on those tools. Files within an
+approved working directory are readable regardless of their contents.
 
 Claude proxy protection is optional and configured per account. Accounts without
 an assignment do not need proxy infrastructure, Chrome/CDP bindings or route

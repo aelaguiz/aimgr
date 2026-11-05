@@ -118,10 +118,6 @@ int main(int argc,char **argv) {
      * permits same-user mount tables, not their mounted file contents. */
     fprintf(out,"/tmp/codex-daemon-%u/ rw,\n",caller);
     fputs("owner /proc/[0-9]*/mountinfo r,\n",out);
-    /* Native workspace sandboxing creates empty masks for these names in
-     * /tmp, then removes them after the tool exits. Permit same-user directory
-     * entries only: no listings, descendant reads, or descendant writes. */
-    fputs("owner /tmp/.{git,agents,codex,aws}/ w,\n",out);
     /* os_info 3.14 first execs lsb_release -a. Letting that helper enter the
      * ordinary-tool profile disclosed the distribution/version in HTTP.
      * This rule belongs only to vendor code; requested shell tools retain it. */

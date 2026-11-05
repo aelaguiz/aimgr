@@ -36,7 +36,7 @@ def invoke(fixture, provider, arguments, scratch=None):
         transfer.flush()
         if provider == 'codex':
             args = ['v1', str(case), str(case / 'home'), str(scratch or fixture['codexScratch']), str(transfer.fileno()),
-                    '1', str(case / 'project'), '1', str(Path(fixture['root']) / 'inputs/selected'),
+                    '2', str(case / 'project'), '/tmp', '1', str(Path(fixture['root']) / 'inputs/selected'),
                     '1', str(Path(fixture['root']) / 'databases/selected'), '0', '--']
         else:
             args = ['v1', 'protected', str(case / 'home'), str(case / 'settings.json'),
@@ -196,11 +196,11 @@ if len(sys.argv) > 1:
                     refused = invoke(fixture, provider, ['probe'], scratch=invalid)
                     assert refused.returncode == 125 and not refused.stdout
             finally: alias.unlink()
-            print('PASS private scratch access, sibling/root denial, and native path/owner/mode rejection')
+            print('PASS shared temp access and native scratch path/owner/mode rejection')
             masks = invoke(fixture, provider, ['temp-masks'])
             assert masks.returncode == 0, masks.stderr
             assert Path('/tmp/.aws/synthetic-canary').read_text() == 'SYNTHETIC_TEMP_SECRET'
-            print('PASS native temporary-mask directory cleanup without listing or content access')
+            print('PASS native temporary-directory cleanup and shared temp content access')
         result = invoke(fixture, provider, ['exec', '/usr/bin/python3', str(Path(__file__).resolve()), '--tool', file, provider])
         assert result.returncode == 0, result.stderr
         print(result.stdout, end='')
@@ -260,13 +260,14 @@ int main(int argc,char **argv){
   FILE *f=fopen(path,"w");if(!f)return 14;fputs("private temporary state",f);fclose(f);
   f=fopen(path,"r");if(!f)return 15;fclose(f);
   snprintf(path,sizeof(path),"%s/sibling-canary",getenv("SYNTHETIC_OTHER_SCRATCH"));
-  if(fopen(path,"r")||opendir("/tmp"))return 16;
+  f=fopen(path,"r");if(!f)return 16;fclose(f);
+  DIR *d=opendir("/tmp");if(!d)return 16;closedir(d);
   return 0;
  }
  if(argc>1&&!strcmp(argv[1],"temp-masks")){
   const char *dirs[]={"/tmp/.git","/tmp/.agents","/tmp/.codex"};
-  for(size_t i=0;i<3;i++){if(mkdir(dirs[i],0700))return 10;if(opendir(dirs[i]))return 11;if(rmdir(dirs[i]))return 12;}
-  if(opendir("/tmp/.aws")||fopen("/tmp/.aws/synthetic-canary","r")||fopen("/tmp/.aws/synthetic-canary","w"))return 13;
+  for(size_t i=0;i<3;i++){if(mkdir(dirs[i],0700))return 10;DIR *d=opendir(dirs[i]);if(!d)return 11;closedir(d);if(rmdir(dirs[i]))return 12;}
+  FILE *f=fopen("/tmp/.aws/synthetic-canary","r");if(!f)return 13;fclose(f);
   return 0;
  }
  FILE *f=fopen("/proc/self/attr/current","r");char line[256];if(!f||!fgets(line,sizeof(line),f))return 4;

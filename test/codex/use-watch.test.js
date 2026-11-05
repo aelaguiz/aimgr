@@ -259,6 +259,26 @@ test("back-to-back Codex resumes launch with different accounts and show the sel
   assert.match(outputs[2], /Codex account: writer \(previous: boss\)/);
 });
 
+test("manual resume picker and passthrough warn without matching prompt text", async () => {
+  const { home, connectRedisStoreImpl } = await setup();
+  for (const [args, warning] of [
+    [["codex", "resume", "--home", home], true],
+    [["codex", "run", "--home", home, "--", "resume", "same-thread"], true],
+    [["codex", "run", "--home", home, "--", "exec", "resume", "same-thread"], true],
+    [["codex", "run", "--home", home, "--", "explain resume usage"], false],
+  ]) {
+    const output = await runCli(args, {
+      connectRedisStoreImpl, env: {},
+      probeUsageSnapshotsByProviderImpl: async () => ({
+        "openai-codex": { boss: usage("boss", 20), writer: usage("writer", 10) }, anthropic: {},
+      }),
+      runCodexInteractiveImpl: async () => ({ code: 0, signal: null }),
+    });
+    assert.equal(output.includes("WARNING:"), warning);
+    if (warning) assert.match(output, /resume-fresh/);
+  }
+});
+
 test("Codex resume does not launch when no different eligible account exists", async () => {
   const { home, connectRedisStoreImpl } = await setup(["boss"]);
   await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl, env: {} });

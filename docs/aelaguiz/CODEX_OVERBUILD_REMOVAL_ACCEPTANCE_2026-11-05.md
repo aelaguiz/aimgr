@@ -2,7 +2,7 @@
 
 The cuts in [remove unnecessary Codex privacy gates and recovery machinery (#18)](https://github.com/aelaguiz/aimgr/issues/18) are implemented and pass their affected checks on isolated Linux and macOS machines. The [cold auditor's follow-up](CODEX_OVERBUILD_REMOVAL_COLD_REVIEW_2026-11-05.md) covers the implementation, scope and evidence.
 
-**The broader privacy milestone still has an unresolved workflow problem:** native image reads outside the admitted project/input paths remain restricted. That belongs to [adopt Codex privacy without breaking workflows (#16)](https://github.com/aelaguiz/aimgr/issues/16). These results establish the overbuild cuts; they do not establish that every workflow works under the remaining vendor file policy.
+The subsequently authorized [working-directory correction](CODEX_WORKING_DIRECTORIES_ACCEPTANCE_2026-11-05.md) resolves native image access throughout the workspace, temporary folders, Downloads and screenshot folders. The results below remain evidence for the earlier overbuild cuts. New outside roots still use a new invocation; ordinary tools keep their normal OS permissions.
 
 ## What was removed
 

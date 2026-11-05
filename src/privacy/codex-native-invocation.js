@@ -63,7 +63,7 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
       stateIO: request => codexStateIO(request, { helperPath: artifact.stateIO }) });
     // Chrome and other ordinary tools put Unix sockets under TMPDIR. Account
     // homes can exceed the OS socket-path limit; keep each private launch
-    // directory short and grant only that directory in the vendor policy.
+    // directory short; broad work-area grants are resolved separately below.
     scratch = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), `aim-codex-${process.getuid()}-`));
     fs.chmodSync(scratch, 0o700);
     const environmentValues = codexPrivacyEnvironment({ env, prepared: account, artifact, scratch });

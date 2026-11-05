@@ -2,21 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { CODEX_SHARED_INSTRUCTION_NAMES, CODEX_SHARED_STATE_NAMES } from "./codex-account-state.js";
+import { codexCanonicalPath, codexWorkingDirectories } from "./codex-working-directories.js";
 
-export function codexCanonicalPath(file) {
-  let current = path.resolve(file), missing = [];
-  for (;;) {
-    try { return path.join(fs.realpathSync(current), ...missing.reverse()); }
-    catch (error) {
-      if (error.code !== "ENOENT" || current === path.dirname(current)) throw error;
-      // A dangling symlink is an authored target, not a literal missing name.
-      try {
-        if (fs.lstatSync(current).isSymbolicLink()) throw new Error("A required Codex path has a dangling symlink.");
-      } catch (e) { if (e.code !== "ENOENT") throw e; }
-      missing.push(path.basename(current)); current = path.dirname(current);
-    }
-  }
-}
+export { codexCanonicalPath } from "./codex-working-directories.js";
 
 function keyringSockets(env) {
   if (process.platform !== "linux") return [];
@@ -59,12 +47,20 @@ function compactGrants(reads, writes) {
 }
 
 export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, managedFiles = [], spawnSyncImpl = spawnSync, platform = process.platform,
-  effectiveInputs }) {
+  effectiveInputs, workingDirectories = codexWorkingDirectories({ homeDir, env, platform, accountRoot: prepared.accountRoot ?? prepared.codexHome }) }) {
   if (!effectiveInputs) throw new Error("Codex requires an admitted native input inventory.");
   const cwd = codexCanonicalPath(effectiveInputs.cwd);
   const writes = new Set(), reads = new Set(), databases = new Set();
   const add = (set, file) => { if (typeof file === "string") set.add(codexCanonicalPath(file)); };
   const actualHome = codexCanonicalPath(homeDir);
+  for (const directory of workingDirectories) {
+    const root = codexCanonicalPath(directory);
+    const contains = target => target === root || target.startsWith(root === "/" ? "/" : `${root}/`);
+    if (contains(actualHome) || contains(codexCanonicalPath(prepared.accountRoot ?? prepared.codexHome))) {
+      throw new Error("A Codex working directory would expose the whole home or account collection. Select a narrower directory.");
+    }
+    writes.add(root);
+  }
   // Starting in the user's home is valid, but it does not implicitly disclose
   // that whole directory to vendor code. Ordinary requested tools retain it.
   const projectCwds = new Set([cwd, ...(effectiveInputs.project_cwds ?? []).map(codexCanonicalPath)]);

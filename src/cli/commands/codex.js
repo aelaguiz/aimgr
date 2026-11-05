@@ -18,6 +18,7 @@ import { saveLocalCodexLogin, logoutLocalCodexCredential } from "../../credentia
 import { createManualCallbackStdioProtocol, readNonEmptyLineFromStdin, parseManualCallbackStdioInput, writeJsonLine } from "../manual-callback-stdio.js";
 import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { readCodexEnvironment } from "../../privacy/codex-environment.js";
+import { codexArguments } from "../../privacy/codex-arguments.js";
 import { codexSharedHome } from "../../privacy/codex-account-state.js";
 import { maintainCodexMcp } from "../../credentials/codex-mcp-maintenance.js";
 import { assertCodexMaintenanceClear } from "../../privacy/codex-maintenance.js";
@@ -118,13 +119,15 @@ async function handleRedisCodexRun(context) {
   if (stdout.isTTY) {
     stdout.write(`[aim] Codex account: ${label}${previousLabel ? ` (previous: ${previousLabel})` : ""}\n`);
   }
-  const resumedThread = args[2] === "resume" ? args[3] : null;
-  if (resumedThread) {
+  const parsed = codexArguments(args);
+  const resuming = parsed.command === "resume" || (["exec", "e"].includes(parsed.command) && parsed.execSubcommand === "resume");
+  const resumedThread = parsed.positionals[parsed.command === "resume" ? 0 : 1];
+  if (resuming && !parsed.inspection) {
     // Deliberate manual path. Same thread id under a different account links the accounts on
     // the Codex servers; `resume-fresh` is the default that avoids it (CLAUDE.md, rotation rule).
-    stdout.write(`[aim] WARNING: thread ${resumedThread} will continue under account ${label}${previousLabel ? ` (was ${previousLabel})` : ""}. `
+    stdout.write(`[aim] WARNING: ${resumedThread ? `thread ${resumedThread}` : "the selected thread"} will continue under account ${label}${previousLabel ? ` (was ${previousLabel})` : ""}. `
       + "Codex will send this thread id and session id under the new account, which links the two accounts. "
-      + `Use \`aim codex resume-fresh ${resumedThread}\` to avoid that.\n`);
+      + `Use \`aim codex resume-fresh ${resumedThread ?? "<thread-id>"}\` to avoid that.\n`);
   }
   const launched = await runCodexInteractiveImpl({
     homeDir: context.homeDir,

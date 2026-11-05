@@ -2,8 +2,8 @@
 """Native /tmp alias regression on the designated disposable Mac only.
 
 The real-client settings fixture proves read-only shell execution. This probe
-separately proves that permitting its metadata does not permit temp listings,
-extended-attribute values or another invocation's files. No real vendor is executed.
+separately proves shared temp access while unrelated private inputs remain denied.
+No real vendor is executed.
 """
 import hashlib
 import json
@@ -110,13 +110,13 @@ int main(int argc, char **argv) {
     const char *roots[] = {"/tmp", "/private/tmp"};
     for (int i = 0; i < 2; i++) {
         DIR *directory = opendir(roots[i]);
-        check(tool ? directory != NULL : !directory && errno == EPERM, "temp listing boundary");
+        check(directory != NULL, "shared temp listing");
         if (directory) closedir(directory);
         // Listing an empty xattr namespace may return zero without checking
         // file-read-xattr. An actual value lookup must reach that check.
         errno = 0;
         ssize_t value = getxattr(roots[i], "com.aimgr.synthetic-absent", NULL, 0, 0, 0);
-        check(tool ? value < 0 && errno == ENOATTR : value < 0 && errno == EPERM, "temp xattrs boundary");
+        check(value < 0 && errno == ENOATTR, "shared temp xattrs");
     }
     int fd = open(argv[1], O_RDONLY);
     check(tool ? fd >= 0 : fd < 0 && errno == EPERM, "sibling read boundary");
@@ -146,12 +146,12 @@ int main(int argc, char **argv) {
     }
     fd = open(argv[6], O_RDONLY); char value[7] = {0};
     check(fd >= 0 && read(fd, value, 6) == 6 && !strcmp(value, "SHARED"), "shared replacement visible to existing vendor"); close(fd);
-    puts("PASS temp metadata and exact optional shared link; replacement visible; sibling denied; ordinary tools retained");
+    puts("PASS shared temp access and exact optional shared link; replacement visible; sibling denied; ordinary tools retained");
     return 0;
 }
 '''
 
-with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/private/tmp') as temporary:
+with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/opt/aimgr-state-audit/codex-m1-fixtures') as temporary:
     root = Path(temporary)
     account = root / 'account'
     home = account / 'home'
@@ -220,7 +220,7 @@ with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/private/tmp'
                 environment.write((key + '=' + value).encode() + b'\0')
             environment.flush()
             result = subprocess.run([str(installed / 'launcher'), 'v1', str(account), str(home), str(scratch),
-                                     str(environment.fileno()), '1', str(optional), '1', str(read_root), '1', str(database_root), '0', '--', *probe_args],
+                                     str(environment.fileno()), '2', str(optional), '/private/tmp', '1', str(read_root), '1', str(database_root), '0', '--', *probe_args],
                                     pass_fds=(environment.fileno(),), capture_output=True, text=True, timeout=20)
         assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
         print(result.stdout, end='')
@@ -240,7 +240,7 @@ with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/private/tmp'
                 environment.write((key + '=' + value).encode() + b'\0')
             environment.flush()
             no_mcp = subprocess.run([str(installed / 'launcher'), 'v1', str(account), str(home), str(scratch),
-                                     str(environment.fileno()), '1', str(optional), '1', str(read_root.parent), '1', str(database_root), '0', '--', *probe_args],
+                                     str(environment.fileno()), '2', str(optional), '/private/tmp', '1', str(read_root.parent), '1', str(database_root), '0', '--', *probe_args],
                                     pass_fds=(environment.fileno(),), capture_output=True, text=True, timeout=20)
         assert no_mcp.returncode == 0, ('optional preference', no_mcp.returncode, no_mcp.stdout, no_mcp.stderr)
         print(json.dumps({'fixture': root.name, 'realVendorExecuted': False, 'activeSelectorChanged': False,

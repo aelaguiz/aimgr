@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { once } from "node:events";
-import { resolveCodexLaunchInputs, codexPrivacyEnvironment } from "../../src/privacy/codex-launch-inputs.js";
+import { resolveCodexLaunchInputs as resolveInputs, codexPrivacyEnvironment } from "../../src/privacy/codex-launch-inputs.js";
+
+// These fixtures place their synthetic HOME beneath /tmp. Test classified
+// inputs separately from the default work roots, which have their own cases.
+const resolveCodexLaunchInputs = options => resolveInputs({ workingDirectories: [], ...options });
 
 test("only the native effective inventory grants configured paths", t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codex-inputs-")));

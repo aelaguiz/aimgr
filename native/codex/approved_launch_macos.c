@@ -156,11 +156,7 @@ int main(int argc,char **argv) {
     keychain_database_grants(out,&keychain);
     fputs(")))",out);
     for (int i=0;i<denies;i++) {fputs("(deny file-read* file-write* ",out);rule(out,"literal",denied[i]);fputs(")",out);}
-    // The official read-only sandbox canonicalizes /tmp to locate its fixed
-    // daemon socket directory. Permit the physical directory's metadata, while
-    // keeping its listing, extended attributes and ungranted children private.
-    fputs("(deny file-read-data file-read-xattr (literal \"/private/tmp\"))"
-      "(deny file-write* (subpath \"/private/etc/codex\"))"
+    fputs("(deny file-write* (subpath \"/private/etc/codex\"))"
       "(deny iokit-get-properties (iokit-property \"IOPlatformUUID\")(iokit-property \"IOPlatformSerialNumber\"))"
       "(deny sysctl-read (sysctl-name \"kern.hostname\")(sysctl-name \"kern.osproductversion\")(sysctl-name \"kern.osrelease\")"
       "(sysctl-name \"kern.osversion\")(sysctl-name \"kern.version\")(sysctl-name \"hw.model\"))"
