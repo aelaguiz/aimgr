@@ -11,13 +11,14 @@ static void vendor_filter(FILE *out,const char *vendor,const char *helper) {
     fputs("(require-any ",out);rule(out,"process-path",vendor);rule(out,"process-path",helper);fputs(")",out);
 }
 static void runtime_reads(FILE *out) {
-    fputs("(literal \"/etc\")(literal \"/var\")(literal \"/tmp\")(literal \"/private\")(literal \"/private/var\")(literal \"/private/tmp\")"
+    // dyld bootstrap needs the filesystem root itself; this grants no children.
+    fputs("(literal \"/\")(literal \"/etc\")(literal \"/var\")(literal \"/tmp\")(literal \"/private\")(literal \"/private/var\")(literal \"/private/tmp\")"
       "(subpath \"/System\")(subpath \"/usr\")(subpath \"/bin\")(subpath \"/sbin\")(subpath \"/dev\")"
       "(subpath \"/Library/Apple\")(subpath \"/Library/Developer\")(subpath \"/private/etc\")"
       "(subpath \"/private/var/db/dyld\")(subpath \"/private/preboot/Cryptexes/OS\")"
       "(literal \"/private/var/select/developer_dir\")",out);
 }
-static void database_grants(FILE *out,const char *root,int reading) {
+static void database_grants(FILE *out,const char *root) {
     // Escape regex metacharacters in user paths; the suffix is fixed.
     char pattern[PATH_MAX*2+128];size_t n=0;pattern[n++]='^';
     for (const char *p=root;*p;p++) {
@@ -28,7 +29,6 @@ static void database_grants(FILE *out,const char *root,int reading) {
     snprintf(pattern+n,sizeof(pattern)-n,"/([^/]+\\.sqlite(-wal|-shm|-journal)?|\\.sqlite-maintenance\\.lock)$");
     rule(out,"regex",pattern);
     rule(out,"literal",root);
-    if (reading) ancestors(out,root);
 }
 
 // A classified shared entry may itself be an authored dangling link. Preserve
@@ -54,7 +54,8 @@ static int shared_dangling_write(const char *file,const char *home) {
 
 int main(int argc,char **argv) {
     /* Same v1 data-only protocol as the Linux entry. */
-    if (getuid()==0 || geteuid()!=getuid() || argc<10 || strcmp(argv[1],"v1")) fail("invocation");
+    int verifying_mcp=argc>1 && !strcmp(argv[1],"mcp-verify-v1");
+    if (getuid()==0 || geteuid()!=getuid() || argc<10 || (!verifying_mcp && strcmp(argv[1],"v1"))) fail("invocation");
     char image[PATH_MAX],self[PATH_MAX],vendor[PATH_MAX],helper[PATH_MAX];uint32_t size=sizeof(image);
     if (_NSGetExecutablePath(image,&size) || !realpath(image,self)) fail("launcher path");
     size_t prefix=strlen(RUNTIME_ROOT);
@@ -77,6 +78,17 @@ int main(int argc,char **argv) {
     if (denyindex>=argc) fail("database roots");
     int denies=number(argv[denyindex],argc-denyindex-1),separator=denyindex+1+denies;
     if (separator>=argc || strcmp(argv[separator],"--")) fail("denied paths");
+    // This maintenance-only operation cannot execute caller-selected commands
+    // or grant other inputs. It reads credentials through unchanged Codex while
+    // ordinary admissions remain closed and cannot contact any network service.
+    if (verifying_mcp) {
+        char expected[PATH_MAX];
+        if (writes || reads || databases || denies || separator!=argc-1
+            || snprintf(expected,sizeof(expected),CODEX_MAINTENANCE_ROOT "/%u/maintenance/read-",(unsigned)getuid())>=(int)sizeof(expected)
+            || strncmp(account,expected,strlen(expected))
+            || snprintf(expected,sizeof(expected),"%s/home",account)>=(int)sizeof(expected)
+            || strcmp(home,expected) || chdir(home)) fail("maintenance read invocation");
+    }
     const char **write_roots=(const char **)(argv+7),**read_roots=(const char **)(argv+readindex+1),**database_roots=(const char **)(argv+dbindex+1),**denied=(const char **)(argv+denyindex+1);
     for (int i=0;i<writes+reads;i++) {
         const char *root=i<writes?write_roots[i]:read_roots[i-writes];
@@ -86,20 +98,44 @@ int main(int argc,char **argv) {
     for (int i=0;i<databases;i++) canonical_future(database_roots[i]);
     for (int i=0;i<denies;i++) canonical_future(denied[i]);
     restore_environment(envfd);close_inherited_descriptors();
-    int admission=codex_maintenance_admission();
+    int admission=codex_maintenance_admission(verifying_mcp);
     struct codex_keychain_paths keychain=keychain_paths(user_home);
     char *policy=NULL;size_t length=0;FILE *out=open_memstream(&policy,&length);if (!out) fail("policy allocation");
-    fputs("(version 1)(allow default)\n(allow process-exec (require-not (require-any ",out);
-    rule(out,"literal",vendor);rule(out,"literal",helper);fputs(")) (with no-sandbox))\n(with-filter ",out);
+    fputs("(version 1)(allow default)\n",out);
+    if (verifying_mcp) {
+        fputs("(deny network*)(deny process-exec (require-not (require-any ",out);
+        rule(out,"literal",vendor);rule(out,"literal",helper);fputs(")))\n",out);
+    } else {
+        fputs("(allow process-exec (require-not (require-any ",out);
+        rule(out,"literal",vendor);rule(out,"literal",helper);fputs(")) (with no-sandbox))\n",out);
+    }
+    fputs("(with-filter ",out);
     vendor_filter(out,vendor,helper);fputs("\n(deny file-read* (require-not (require-any ",out);
     rule(out,"literal",vendor);rule(out,"literal",helper);ancestors(out,vendor);
-    rule(out,"subpath",account);ancestors(out,account);rule(out,"subpath",scratch);runtime_reads(out);
+    rule(out,"subpath",account);ancestors(out,account);rule(out,"subpath",scratch);ancestors(out,scratch);runtime_reads(out);
     for (int i=0;i<writes;i++) {rule(out,"subpath",write_roots[i]);ancestors(out,write_roots[i]);}
     for (int i=0;i<reads;i++) {rule(out,"subpath",read_roots[i]);ancestors(out,read_roots[i]);}
-    for (int i=0;i<databases;i++) database_grants(out,database_roots[i],1);
+    for (int i=0;i<databases;i++) {database_grants(out,database_roots[i]);ancestors(out,database_roots[i]);}
     if (*keychain.preferences) rule(out,"literal",keychain.preferences);
     keychain_database_grants(out,&keychain);
     fputs(")))\n",out);
+    // Keep traversal metadata in the file-read* exception above, then remove
+    // data/xattrs from ancestors unless another selected root grants that data.
+    // An allow-metadata rule alone cannot override the broader explicit deny.
+    fputs("(deny file-read-data file-read-xattr (require-all (require-any ",out);
+    ancestors(out,vendor);ancestors(out,account);ancestors(out,scratch);
+    for (int i=0;i<writes;i++) ancestors(out,write_roots[i]);
+    for (int i=0;i<reads;i++) ancestors(out,read_roots[i]);
+    for (int i=0;i<databases;i++) ancestors(out,database_roots[i]);
+    fputs(") (require-not (require-any ",out);
+    rule(out,"literal",vendor);rule(out,"literal",helper);
+    rule(out,"subpath",account);rule(out,"subpath",scratch);runtime_reads(out);
+    for (int i=0;i<writes;i++) rule(out,"subpath",write_roots[i]);
+    for (int i=0;i<reads;i++) rule(out,"subpath",read_roots[i]);
+    for (int i=0;i<databases;i++) database_grants(out,database_roots[i]);
+    if (*keychain.preferences) rule(out,"literal",keychain.preferences);
+    keychain_database_grants(out,&keychain);
+    fputs("))))\n",out);
     if (*keychain.preferences || keychain.count) {
         fputs("(allow file-read-metadata ",out);keychain_metadata(out,&keychain);fputs(")",out);
     }
@@ -116,7 +152,7 @@ int main(int argc,char **argv) {
     fputs("\n(deny file-write* (require-not (require-any (subpath \"/dev\")",out);
     rule(out,"subpath",account);rule(out,"subpath",scratch);
     for (int i=0;i<writes;i++) rule(out,"subpath",write_roots[i]);
-    for (int i=0;i<databases;i++) database_grants(out,database_roots[i],0);
+    for (int i=0;i<databases;i++) database_grants(out,database_roots[i]);
     keychain_database_grants(out,&keychain);
     fputs(")))",out);
     for (int i=0;i<denies;i++) {fputs("(deny file-read* file-write* ",out);rule(out,"literal",denied[i]);fputs(")",out);}
@@ -136,5 +172,10 @@ int main(int argc,char **argv) {
     char *error=NULL;if (sandbox_init_with_parameters(policy,0,NULL,&error)) fail("policy application");
     free(policy);
     set_environment("CODEX_HOME",home,1);set_environment("TMPDIR",scratch,1);
-    codex_close_except_admission(admission);argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");
+    codex_close_except_admission(admission);
+    if (verifying_mcp) {
+        char *read_args[]={vendor,"-c","mcp_oauth_credentials_store=\"keyring\"","-c","features.secret_auth_storage=false","mcp","list","--json",NULL};
+        execv(vendor,read_args);
+    } else { argv[separator]=vendor;execv(vendor,argv+separator); }
+    fail("approved vendor exec");
 }

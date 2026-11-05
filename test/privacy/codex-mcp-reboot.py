@@ -61,8 +61,10 @@ request = dict(operation='start', home=str(source.parent), cwd=str(project), sou
                process_control=args.process_control, node=args.node,
                owner_script=str(repo / 'src/credentials/codex-mcp-maintenance-owner.js'))
 if mac:
-    request['native_access'] = dict(executable='/opt/aimgr-state-audit/bin/codex',
-        sha256='39acf979729dd290f9a24ee38b2914e036c91b65952872e28ae2a6b88a7db7c1')
+    admitted = json.loads(subprocess.check_output([args.node, '--input-type=module', '-e',
+        "import {admitCodexArtifact} from './src/privacy/codex-artifacts.js'; console.log(JSON.stringify(admitCodexArtifact()))"], cwd=repo, text=True))
+    request['artifact_set'] = admitted['artifactSet']
+    request['native_access'] = dict(executable=admitted['command'], sha256=admitted['vendorSha256'])
 
 def security(*arguments, check=True):
     return subprocess.run(['/usr/bin/security', *map(str, arguments)], capture_output=True, text=True, check=check)

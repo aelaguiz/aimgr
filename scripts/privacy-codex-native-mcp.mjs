@@ -47,12 +47,26 @@ daemon?.stdin.end("SYNTHETIC_KEYRING_PASSWORD\n");
 const monitorLogs = [];
 const monitor = mac ? null : spawn("/usr/bin/dbus-monitor", ["--session"], { env, stdio: ["ignore", "pipe", "pipe"] });
 monitor?.stdout.on("data", bytes => monitorLogs.push(bytes)); monitor?.stderr.on("data", bytes => monitorLogs.push(bytes));
-const keychainFile = path.join(root, "fixture.keychain-db");
+const standardKeychain = process.argv.includes("--standard-keychain");
+assert.ok(!standardKeychain || mac);
+const keychainFile = standardKeychain
+  ? path.join(os.homedir(), "Library/Keychains", `aim-synthetic-${path.basename(root)}.keychain-db`)
+  : path.join(root, "fixture.keychain-db");
 let previousKeychain, keychainCreated = false;
 const security = (...args) => {
   const result = spawnSync("/usr/bin/security", args, { encoding: "utf8", timeout: 10_000 });
   assert.equal(result.status, 0, "Disposable keychain operation failed; no credential output logged");
   return result.stdout.trim().replace(/^"|"$/g, "");
+};
+const authorizeSynthetic = () => {
+  if (standardKeychain) {
+    // Only this synthetic item's vendor partition; no GUI-click coverage.
+    const signature = spawnSync("/usr/bin/codesign", ["-d", "--verbose=4", admitCodexArtifact().mcpKeyring], { encoding: "utf8" });
+    assert.equal(signature.status, 0);
+    const hash = signature.stderr.match(/^CDHash=([a-f0-9]+)$/m)?.[1]; assert.ok(hash);
+    security("set-generic-password-partition-list", "-s", "Codex MCP Credentials", "-a", codexMcpKey(server.name, server.url),
+      "-S", `cdhash:${hash},teamid:2DC432GLL2`, "-k", "SYNTHETIC_KEYRING_PASSWORD", keychainFile);
+  }
 };
 const keyring = request => {
   // Fixture-only direct calls. Real conversion uses the durable maintenance
@@ -236,7 +250,7 @@ print(json.dumps(result))`;
   assert.ok(observed.length);
   for (const row of observed) {
     if (mac) assert.equal(row.denied, 1);
-    else assert.match(row.profile, /^aim-codex-p-\d+-[a-f0-9]+ \(enforce\)$/);
+    else assert.match(row.profile, /^aim-codex-p-\d+-(?:n\d+-)?[a-f0-9]+ \(enforce\)$/);
     assert.equal(row.sha256, row.image.endsWith("/codex")
       ? (mac ? "39acf979729dd290f9a24ee38b2914e036c91b65952872e28ae2a6b88a7db7c1" : "b8a11fedf24b2dfb59a70c9e52b030f9a508dcd49cd2dd0d41956f4c785156b8")
       : (mac ? "fd37051bfdce0b65cf22a7077e265720a7bd6709d5e400dcbc26197f3041400a" : "657f4e902726e05867c937b583049d5997e057f8cd0ab40450633c9c9ef8d630"));
@@ -270,6 +284,7 @@ try {
   const inserted = await keyring({ operation: "insert-if-absent", server_name: server.name, url: server.url, value: JSON.stringify(converted.token) });
   assert.equal(inserted.inserted, true);
   assert.equal(codexMcpTokensEqual(JSON.parse(inserted.value), converted.token), true);
+  authorizeSynthetic();
   for (const [account, protectedLaunch] of [["synthetic-A", false], ["synthetic-A", true], ["synthetic-B", true]]) {
     const entries = JSON.parse(await native(account, protectedLaunch));
     assert.ok(["o_auth", "oauth"].includes(entries.find(entry => entry.name === server.name)?.auth_status), "native recognizes converted OAuth tokens");
@@ -311,9 +326,17 @@ try {
     await native(account, true, execArgs);
     if (serverError) throw serverError;
     assert.equal(generation, index + 1, "native rotates from the current refresh-token lineage exactly once");
-    const stored = JSON.parse((await keyring({ operation: "load", server_name: server.name, url: server.url })).value);
-    assert.equal(stored.token_response.refresh_token, `SYNTHETIC_MCP_REFRESH_${generation}`);
-    assert.equal(stored.token_response.access_token, `SYNTHETIC_MCP_ACCESS_${generation}`);
+    if (!standardKeychain) {
+      const stored = JSON.parse((await keyring({ operation: "load", server_name: server.name, url: server.url })).value);
+      assert.equal(stored.token_response.refresh_token, `SYNTHETIC_MCP_REFRESH_${generation}`);
+      assert.equal(stored.token_response.access_token, `SYNTHETIC_MCP_ACCESS_${generation}`);
+    } else {
+      // After official Codex replaces the item, its ACL need not authorize the
+      // import helper. Native fresh reads plus the issuer's single-use lineage
+      // are the persistence oracle; do not weaken an item for test observation.
+      const entries = JSON.parse(await native(account, true));
+      assert.equal(entries.find(entry => entry.name === server.name)?.auth_status, "o_auth");
+    }
     assert.ok(requests.slice(before).some(request => request.rpc === "tools/list"), "native starts the authenticated MCP integration");
   }
   const customSettings = path.join(homeDir, "custom-settings");
@@ -321,10 +344,15 @@ try {
   fs.copyFileSync(path.join(homeDir, ".codex/config.toml"), path.join(customSettings, "config.toml"));
   // Exercise native's expiry transaction. Reactive HTTP-401 refresh has a
   // separate upstream path and must not be mistaken for this lock oracle.
-  const expired = JSON.parse((await keyring({ operation: "load", server_name: server.name, url: server.url })).value);
+  const expired = standardKeychain ? structuredClone(converted.token)
+    : JSON.parse((await keyring({ operation: "load", server_name: server.name, url: server.url })).value);
+  if (standardKeychain) Object.assign(expired.token_response, { access_token: `SYNTHETIC_MCP_ACCESS_${generation}`,
+    refresh_token: `SYNTHETIC_MCP_REFRESH_${generation}` });
   expired.expires_at = Date.now() - 1_000;
   await native("synthetic-A", true, ["mcp", "logout", server.name]);
   assert.equal((await keyring({ operation: "insert-if-absent", server_name: server.name, url: server.url, value: JSON.stringify(expired) })).inserted, true);
+  // This is a newly seeded expired item, so it needs its own initial authorization.
+  authorizeSynthetic();
   const contention = [];
   for (const mode of ["expiry", "reactive401"]) {
     let contended = false;

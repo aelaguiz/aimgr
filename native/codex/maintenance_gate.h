@@ -21,7 +21,7 @@ static void codex_private_acl(int fd) {
 #endif
 }
 
-static int codex_maintenance_admission(void) {
+static int codex_maintenance_admission(int verifying_mcp) {
     char directory[PATH_MAX];
     if (snprintf(directory,sizeof(directory),CODEX_MAINTENANCE_ROOT "/%u",(unsigned)getuid()) >= (int)sizeof(directory)) fail("maintenance path");
     immutable(CODEX_MAINTENANCE_ROOT,1);chain(CODEX_MAINTENANCE_ROOT);
@@ -49,10 +49,12 @@ static int codex_maintenance_admission(void) {
         nanosleep(&pause,NULL);
     }
     if (!fstatat(root,"pending.json",&info,AT_SYMLINK_NOFOLLOW)) {
-        dprintf(2,"Codex was not started: MCP credential maintenance is pending. Finish or recover the maintenance operation before starting Codex.\n");
-        _exit(125);
-    }
-    if (errno!=ENOENT) fail("maintenance status");
+        if (!verifying_mcp) {
+            dprintf(2,"Codex was not started: MCP credential maintenance is pending. Finish or recover the maintenance operation before starting Codex.\n");
+            _exit(125);
+        }
+        if (!S_ISREG(info.st_mode) || info.st_uid!=getuid() || (info.st_mode&077)) fail("maintenance verification owner");
+    } else if (errno!=ENOENT || verifying_mcp) fail("maintenance status");
     close(root);
     if (lock<3) {
         int moved=fcntl(lock,F_DUPFD_CLOEXEC,3);

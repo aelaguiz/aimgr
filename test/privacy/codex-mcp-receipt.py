@@ -45,11 +45,6 @@ receipt_files = []
 def security(*arguments, check=True):
     return subprocess.run(['/usr/bin/security', *map(str, arguments)], capture_output=True, text=True, check=check)
 
-def boot_id():
-    if platform.system() == 'Linux':
-        return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-    return subprocess.check_output(['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid'], text=True).strip().lower()
-
 def request(name, value):
     url = 'https://fixture.invalid/mcp'
     token = json.dumps({'server_name': name, 'url': url, 'client_id': 'synthetic',
@@ -60,7 +55,7 @@ def request(name, value):
     receipt_files.append(base / 'receipts' / (operation_id + '.json'))
     return {'operation': 'insert-if-absent', 'server_name': name, 'url': url, 'value': token,
             'maintenance': {'operation_id': operation_id, 'intent_sha256': digest,
-                            'boot_id': boot_id(), 'lock_fds': locks}}
+                            'lock_fds': locks}}
 
 def call(data):
     # No timeout can kill a credential writer. On failure, leave the pending
@@ -73,10 +68,10 @@ def call(data):
 def receipt_path(data):
     return base / 'receipts' / (data['maintenance']['operation_id'] + '.json')
 
-def seed_receipt(data, phase, boot):
+def seed_receipt(data, phase):
     target = receipt_path(data)
     target.write_text(json.dumps({'schema': 1, 'operation_id': data['maintenance']['operation_id'],
-                                 'intent_sha256': data['maintenance']['intent_sha256'], 'boot_id': boot, 'phase': phase}))
+                                 'intent_sha256': data['maintenance']['intent_sha256'], 'phase': phase}))
     target.chmod(0o600)
 
 try:
@@ -120,21 +115,20 @@ try:
     assert call({'operation': 'load', 'server_name': name, 'url': first['url']})['value'] == first['value']
     print('PASS native insert, exact readback, idempotence and conflicting token preservation')
     uncertain = request(name + '_uncertain', 'SYNTHETIC_PENDING')
-    for malformed in ('', 'a' * 36, '00000000_0000-0000-0000-000000000000'):
-        seed_receipt(uncertain, 'dispatched', malformed)
-        assert call(uncertain) == {'error': 'maintenance_boot'}
+    seed_receipt(uncertain, 'invalid_phase')
+    assert call(uncertain) == {'error': 'maintenance_receipt'}
     assert call({'operation': 'load', 'server_name': uncertain['server_name'], 'url': uncertain['url']}) == {'value': None}
-    print('PASS malformed boot provenance refuses without mutation')
-    seed_receipt(uncertain, 'dispatched', boot_id())
+    print('PASS invalid receipt phase refuses without mutation')
+    seed_receipt(uncertain, 'dispatched')
     assert call(uncertain).get('inserted') is True
     assert json.loads(receipt_path(uncertain).read_text())['phase'] == 'verified'
     assert call(uncertain).get('inserted') is False
     assert call({'operation': 'load', 'server_name': uncertain['server_name'], 'url': uncertain['url']})['value'] == uncertain['value']
     print('PASS explicit same-boot recovery writes an absent destination and is idempotent')
-    seed_receipt(first, 'dispatched', boot_id())
+    seed_receipt(first, 'dispatched')
     assert call(first).get('inserted') is False
     assert json.loads(receipt_path(first).read_text())['phase'] == 'verified'
-    seed_receipt(different, 'dispatched', boot_id())
+    seed_receipt(different, 'dispatched')
     assert call(different) == {'error': 'maintenance_conflict'}
     assert json.loads(receipt_path(different).read_text())['phase'] == 'dispatched'
     print('PASS exact backend readback recovers in the same boot; conflicting receipt stays dispatched')

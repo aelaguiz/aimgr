@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assertNoCodexConsumers } from "../../src/credentials/codex-mcp-maintenance-owner.js";
+import { assertNoCodexConsumers, assertNativeMcpRead } from "../../src/credentials/codex-mcp-maintenance-owner.js";
 
 const row = (pid, image, args = [], parent = 1) => ({ pid, parent, image, args, birth: String(pid) });
 test("conversion refuses live affected clients and updaters without controlling their processes", () => {
@@ -30,4 +30,19 @@ test("the maintenance invocation's AIM ancestors do not veto their own operation
     row(10, "/opt/node", ["node", "/repo/aimgr/bin/aimgr.js", "codex", "mcp-migrate"]),
     row(11, "/usr/bin/python3", [], 10), row(12, "/opt/node", [], 11),
   ], 12));
+});
+
+
+test("conversion verifies imported identities while preserving unrelated managed MCP servers", () => {
+  const items = [{ serverName: "calendar", url: "https://calendar.invalid/mcp" }];
+  const entry = { name: "calendar", transport: { type: "streamable_http", url: items[0].url }, auth_status: "o_auth" };
+  assert.doesNotThrow(() => assertNativeMcpRead([entry], items));
+  assert.doesNotThrow(() => assertNativeMcpRead([entry, { name: "managed-extra", transport: { type: "stdio" }, auth_status: "unsupported" }], items));
+  assert.doesNotThrow(() => assertNativeMcpRead([], []));
+  assert.doesNotThrow(() => assertNativeMcpRead([{ ...entry, auth_status: "not_logged_in" }], items));
+  for (const entries of [undefined, [], [entry, entry], [{ ...entry, auth_status: "unknown" }],
+    [{ ...entry, name: "different" }], [{ ...entry, transport: { type: "streamable_http", url: "https://different.invalid/" } }],
+    [{ ...entry, transport: { type: "stdio" } }]]) {
+    assert.throws(() => assertNativeMcpRead(entries, items), /original File credentials remain preserved/);
+  }
 });

@@ -40,6 +40,27 @@ int main(int argc, char **argv) {
     check(argc == 7 || argc == 8, "arguments");
     int tool = argc == 8 && !strcmp(argv[7], "tool");
     char actual[4096]; struct stat st;
+    const char *parents = getenv("AIM_SYNTHETIC_PARENTS");
+    if (parents) {
+        char *copy = strdup(parents), *save = NULL;
+        check(copy != NULL, "parent fixture allocation");
+        for (char *parent = strtok_r(copy, ":", &save); parent; parent = strtok_r(NULL, ":", &save)) {
+            check(!stat(parent, &st) && S_ISDIR(st.st_mode), "ancestor metadata");
+            int allowed = tool || (getenv("AIM_SYNTHETIC_ALLOWED_PARENT")
+                && !strcmp(parent, getenv("AIM_SYNTHETIC_ALLOWED_PARENT")));
+            DIR *directory = opendir(parent);
+            check(allowed ? directory != NULL : !directory && errno == EPERM, "ancestor listing boundary");
+            if (directory) closedir(directory);
+            errno = 0;
+            ssize_t attr = getxattr(parent, "com.aimgr.synthetic-absent", NULL, 0, 0, 0);
+            check(allowed ? attr < 0 && errno == ENOATTR : attr < 0 && errno == EPERM, "ancestor xattr boundary");
+        }
+        free(copy);
+    }
+    const char *selected = getenv("AIM_SYNTHETIC_READ");
+    if (selected) { int fd = open(selected, O_RDONLY); check(fd >= 0, "selected read input"); close(fd); }
+    const char *database = getenv("AIM_SYNTHETIC_DATABASE");
+    if (database) { int fd = open(database, O_CREAT | O_RDWR, 0600); check(fd >= 0, "selected database write"); close(fd); }
     const char *keychain_path = getenv("AIM_SYNTHETIC_KEYCHAIN");
     if (keychain_path) {
         check(!stat(keychain_path, &st), "selected keychain metadata");
@@ -70,6 +91,14 @@ int main(int argc, char **argv) {
         check(!SecKeychainGetPath(keychain, &path_size, actual) && !strcmp(actual, keychain_path), "custom default retained");
         UInt32 size = 0; void *data = NULL;
         const char *service = "AIM Synthetic Path Probe", *account = "synthetic";
+        // This is a filesystem-policy probe. Seed through the same executable
+        // identity as the readers; security(1) has a different native partition
+        // in a standard Keychain. Cross-identity MCP import has its own fixture.
+        if (getenv("AIM_SYNTHETIC_CREATE_KEYCHAIN_ITEM")) {
+            check(!SecKeychainAddGenericPassword(keychain, (UInt32)strlen(service), service,
+                                                 (UInt32)strlen(account), account, 6, "MARKER", NULL),
+                  "seed native item");
+        }
         status = SecKeychainFindGenericPassword(keychain, (UInt32)strlen(service), service,
                                                (UInt32)strlen(account), account, &size, &data, NULL);
         if (status) fprintf(stderr, "native keychain lookup status: %d\n", (int)status);
@@ -129,6 +158,14 @@ with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/private/tmp'
     home.mkdir(parents=True, mode=0o700)
     shared = root / 'shared'
     shared.mkdir()
+    read_root = root / 'inputs' / 'selected'
+    read_root.mkdir(parents=True)
+    read_file = read_root / 'visible'
+    read_file.write_text('SYNTHETIC_SELECTED_READ')
+    database_root = root / 'databases' / 'selected'
+    database_root.mkdir(parents=True)
+    boundary_env = dict(AIM_SYNTHETIC_PARENTS=':'.join(map(str, [root, shared, read_root.parent, database_root.parent])),
+                        AIM_SYNTHETIC_READ=str(read_file), AIM_SYNTHETIC_DATABASE=str(database_root / 'test.sqlite'))
     sibling = shared / 'private-sibling'
     sibling.write_text('SYNTHETIC_PRIVATE_SIBLING')
     optional = shared / 'agents'
@@ -145,7 +182,6 @@ with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/private/tmp'
     keychain.parent.mkdir(exist_ok=True)
     unrelated_keychain = keychain.with_name(keychain.name + '-unrelated')
     unrelated_keychain.write_text('SYNTHETIC_UNRELATED_KEYCHAIN')
-    legacy_keychain = Path(str(keychain)[:-3]) if standard else None
     prior_keychain = None
     keychain_created = False
     def security(*args):
@@ -166,15 +202,11 @@ with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/private/tmp'
         keychain_created = True
         security('unlock-keychain', '-p', 'SYNTHETIC_PATH_PASSWORD', keychain)
         security('default-keychain', '-d', 'user', '-s', keychain)
-        security('add-generic-password', '-a', 'synthetic', '-s', 'AIM Synthetic Path Probe', '-w', 'MARKER',
-                 '-T', installed / 'codex', '-T', installed / 'codex-code-mode-host', '-T', root / 'tool', keychain)
-        if legacy_keychain:
-            assert not legacy_keychain.exists() and not legacy_keychain.is_symlink()
-            legacy_keychain.symlink_to(root / 'absent-legacy-keychain')
         probe_args = [str(sibling), str(scratch / 'own-file'), str(installed / 'codex-code-mode-host'),
                       str(root / 'tool'), str(optional), str(optional / 'visible')]
         control = subprocess.run([str(installed / 'codex'), *probe_args, 'tool'],
-                                 env=dict(os.environ, HOME=pwd.getpwuid(os.getuid()).pw_dir, AIM_SYNTHETIC_KEYCHAIN=str(keychain),
+                                 env=dict(os.environ, **boundary_env, HOME=pwd.getpwuid(os.getuid()).pw_dir, AIM_SYNTHETIC_KEYCHAIN=str(keychain),
+                                          AIM_SYNTHETIC_CREATE_KEYCHAIN_ITEM='1',
                                           AIM_SYNTHETIC_UNRELATED_KEYCHAIN=str(unrelated_keychain)),
                                  capture_output=True, text=True, timeout=20)
         assert control.returncode == 0, ('unrestricted control', control.returncode, control.stderr)
@@ -184,14 +216,17 @@ with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/private/tmp'
             environment.write(b'PATH=/usr/bin:/bin\0HOME=' + pwd.getpwuid(os.getuid()).pw_dir.encode()
                               + b'\0AIM_SYNTHETIC_KEYCHAIN=' + str(keychain).encode()
                               + b'\0AIM_SYNTHETIC_UNRELATED_KEYCHAIN=' + str(unrelated_keychain).encode() + b'\0')
+            for key, value in boundary_env.items():
+                environment.write((key + '=' + value).encode() + b'\0')
             environment.flush()
             result = subprocess.run([str(installed / 'launcher'), 'v1', str(account), str(home), str(scratch),
-                                     str(environment.fileno()), '1', str(optional), '0', '0', '0', '--', *probe_args],
+                                     str(environment.fileno()), '1', str(optional), '1', str(read_root), '1', str(database_root), '0', '--', *probe_args],
                                     pass_fds=(environment.fileno(),), capture_output=True, text=True, timeout=20)
         assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
         print(result.stdout, end='')
         # No MCP use: an absent optional plist under a valid symlinked
         # Preferences parent must not refuse an otherwise healthy launch.
+        boundary_env['AIM_SYNTHETIC_ALLOWED_PARENT'] = str(read_root.parent)
         fake_home = root / 'preference-home'
         (fake_home / 'Library').mkdir(parents=True)
         preference_parent = root / 'preferences-only'
@@ -201,22 +236,23 @@ with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/private/tmp'
         optional.symlink_to(root / 'not-installed')
         with tempfile.TemporaryFile() as environment:
             environment.write(b'PATH=/usr/bin:/bin\0HOME=' + str(fake_home).encode() + b'\0')
+            for key, value in boundary_env.items():
+                environment.write((key + '=' + value).encode() + b'\0')
             environment.flush()
             no_mcp = subprocess.run([str(installed / 'launcher'), 'v1', str(account), str(home), str(scratch),
-                                     str(environment.fileno()), '1', str(optional), '0', '0', '0', '--', *probe_args],
+                                     str(environment.fileno()), '1', str(optional), '1', str(read_root.parent), '1', str(database_root), '0', '--', *probe_args],
                                     pass_fds=(environment.fileno(),), capture_output=True, text=True, timeout=20)
         assert no_mcp.returncode == 0, ('optional preference', no_mcp.returncode, no_mcp.stdout, no_mcp.stderr)
         print(json.dumps({'fixture': root.name, 'realVendorExecuted': False, 'activeSelectorChanged': False,
                           'keychainLocation': 'standard' if standard else 'custom', 'selectedDatabaseReadWrite': True,
                           'unrelatedDatabaseDenied': True, 'keychainXattrsDenied': True,
-                          'missingPreferenceWithSymlinkedParent': True, 'danglingLegacyCounterpart': standard}))
+                          'ancestorMetadataOnly': True, 'selectedInputsAndDatabaseWritable': True,
+                          'missingPreferenceWithSymlinkedParent': True}))
     finally:
         if prior_keychain:
             security('default-keychain', '-d', 'user', '-s', prior_keychain)
         if keychain_created:
             security('delete-keychain', keychain)
-        if legacy_keychain and legacy_keychain.is_symlink():
-            legacy_keychain.unlink()
         unrelated_keychain.unlink()
         if installed.exists():
             for name in ['launcher', 'codex', 'codex-code-mode-host']:

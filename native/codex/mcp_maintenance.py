@@ -106,16 +106,6 @@ def json_bytes(value):
     return (json.dumps(value, separators=(',', ':')) + '\n').encode()
 
 
-def boot_id():
-    if sys.platform.startswith('linux'):
-        value = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-    else:
-        value = subprocess.check_output(['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid'], text=True).strip().lower()
-    if str(uuid.UUID(value)) != value:
-        raise MaintenanceError('Cannot establish the current maintenance boot.')
-    return value
-
-
 def intent_hash(name, url, token, access=None):
     fields = [value.encode() for value in (name, url, token)]
     if access is not None:
@@ -187,7 +177,7 @@ class Maintenance:
                 value['native_access'] = access
             value.update(value=item['value'], maintenance=dict(operation_id=item['operation_id'],
                          intent_sha256=intent_hash(item['serverName'], item['url'], item['value'], access),
-                         boot_id=boot_id(), lock_fds=self.locks))
+                         lock_fds=self.locks))
         # No timeout/kill: the child must retain locks through backend return
         # and durable acknowledgement even when AIM or this owner disappears.
         process = subprocess.run([self.request['keyring']], input=json_bytes(value),
@@ -313,6 +303,9 @@ class Maintenance:
             result = self.keyring('insert-if-absent', item)
             if result.get('value') != item['value']:
                 raise MaintenanceError('Native keyring readback differed from the immutable migration intent.')
+        if plan.get('native_access') is not None:
+            self.owner('native-read', plan=plan, items=[dict(serverName=item['serverName'], url=item['url'])
+                                                     for item in self.journal['intents']])
         self.owner('publish', plan=plan, transaction=self.journal['operation_id'])
         if source.exists():
             if hashlib.sha256(read_private(source)).hexdigest() != self.journal['source_sha256']:

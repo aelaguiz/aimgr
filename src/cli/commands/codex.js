@@ -515,6 +515,7 @@ export async function handleCodex(context) {
   if (subcmd === "mcp-migrate" || subcmd === "mcp-recover") {
     if (positional.length !== 2) throw new Error("Use aim codex mcp-migrate or aim codex mcp-recover in the selected CODEX_HOME environment.");
     context.stdout.write("MCP maintenance requires existing Codex sessions to finish first and blocks new AIM Codex launches during conversion.\n");
+    if (process.platform === "darwin") context.stdout.write("macOS may ask to let Codex read imported MCP credentials. Choose Always Allow so future sessions and schedules can read them unattended. AIM does not receive your Keychain password.\n");
     await maintainCodexMcp({ operation: subcmd === "mcp-migrate" ? "start" : "recover", homeDir: context.homeDir, env: context.env });
     context.stdout.write("MCP credentials use the shared native keyring. AIM Codex launches are available again.\n");
     return;

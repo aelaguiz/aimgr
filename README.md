@@ -228,6 +228,11 @@ conversion does not stop processes or change OS schedules. `aim codex mcp-recove
 finishes an interrupted conversion in the same boot after reacquiring its locks.
 It verifies a matching destination without rewriting it, retries the exact saved
 credential if the destination is absent, and preserves a different credential.
+On Mac, use the native Keychain **Always Allow** choice for the approved Codex
+application when prompted. Import verifies that unchanged Codex can read the
+selected entries before retiring File storage; a denied read preserves the
+original store for explicit recovery. AIM does not request or handle the
+Keychain password.
 Recovery of an already committed migration never imports old credentials again.
 Recovery never reboots the host or restarts its shared credential service. Ordinary launch
 does not start conversion. The full contract and test plan are in the

@@ -26,7 +26,8 @@ parser.add_argument('--node', required=True)
 parser.add_argument('--process-control', required=True)
 parser.add_argument('--debug-owner', action='store_true')
 parser.add_argument('--custom-settings', action='store_true')
-parser.add_argument('--cuts', nargs='+', choices=['pending', 'backup', 'intents', 'import', 'publish', 'retire', 'committed'],
+parser.add_argument('--standard-keychain', action='store_true')
+parser.add_argument('--cuts', nargs='+', choices=['pending', 'backup', 'intents', 'import', 'native-read-before', 'native-read-after', 'publish', 'retire', 'committed'],
                     default=['pending', 'backup', 'intents', 'import', 'publish', 'retire', 'committed'])
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
@@ -51,11 +52,14 @@ request = dict(operation='start', home=str(home), cwd=str(project), source_home=
                process_control=args.process_control, node=args.node,
                owner_script=str(repo / 'src/credentials/codex-mcp-maintenance-owner.js'))
 if platform.system() == 'Darwin':
-    request['native_access'] = dict(executable='/opt/aimgr-state-audit/bin/codex',
-        sha256='39acf979729dd290f9a24ee38b2914e036c91b65952872e28ae2a6b88a7db7c1')
+    admitted = json.loads(subprocess.check_output([args.node, '--input-type=module', '-e',
+        "import {admitCodexArtifact} from './src/privacy/codex-artifacts.js'; console.log(JSON.stringify(admitCodexArtifact()))"], cwd=repo, text=True))
+    request['artifact_set'] = admitted['artifactSet']
+    request['native_access'] = dict(executable=admitted['command'], sha256=admitted['vendorSha256'])
 daemon = None
 default_keychain = None
-keychain = root / 'fixture.keychain-db'
+assert not args.standard_keychain or platform.system() == 'Darwin'
+keychain = (Path.home() / 'Library/Keychains' / (root.name + '.keychain-db')) if args.standard_keychain else root / 'fixture.keychain-db'
 keychain_created = False
 
 def security(*arguments, check=True):
@@ -101,7 +105,9 @@ def keyring_cut(operation,item):
 owner.keyring=keyring_cut
 control=owner.owner
 def control_cut(operation,**values):
+ if point=='native-read-before' and operation=='native-read': die()
  result=control(operation,**values)
+ if point=='native-read-after' and operation=='native-read': die()
  if point=='publish' and operation=='publish': die()
  return result
 owner.owner=control_cut
@@ -163,6 +169,13 @@ def seed(name, access):
     (source / '.credentials.json').chmod(0o600)
     return url, original
 
+def authorize_synthetic(name, url):
+    key = name + '|' + hashlib.sha256(json.dumps(dict(type='http', url=url, headers={}), separators=(',', ':')).encode()).hexdigest()[:16]
+    signature = subprocess.run(['/usr/bin/codesign', '-d', '--verbose=4', str(keyring)], capture_output=True, text=True, check=True).stderr
+    cdhash = re.search(r'^CDHash=([0-9a-f]+)$', signature, re.M).group(1)
+    security('set-generic-password-partition-list', '-s', 'Codex MCP Credentials', '-a', key,
+             '-S', 'cdhash:' + cdhash + ',teamid:2DC432GLL2', '-k', 'SYNTHETIC_FIXTURE_PASSWORD', keychain)
+
 try:
     if platform.system() == 'Linux':
         assert os.environ.get('AIMGR_SYNTHETIC_DBUS') == '1'
@@ -207,7 +220,20 @@ try:
         live.wait(timeout=15)
         live_log.close()
     print('PASS existing native consumer is refused before pending and exits normally without any credential mutation')
-    maintain()
+    if args.standard_keychain:
+        config_before = (source / 'config.toml').read_bytes()
+        refused = maintain(expected=False)
+        assert 'Codex could not read every imported MCP credential' in refused['error'], refused
+        assert (source / '.credentials.json').read_bytes() == original
+        assert (source / 'config.toml').read_bytes() == config_before
+        assert (base / 'pending.json').exists()
+        # Test-only persistent authorization for this one synthetic item.
+        # No product password handling and no claim of GUI-click coverage.
+        authorize_synthetic(name, url)
+        maintain('recover')
+        print('PASS official-client denial preserves File/config/pending; synthetic authorization enables recovery')
+    else:
+        maintain()
     journal = json.loads((base / 'transaction.json').read_text())
     if args.custom_settings:
         plan = journal['plan']
@@ -235,7 +261,29 @@ try:
     maintain('recover')
     assert credential('load', name, url) == {'value': None}
     print('PASS unchanged native logout reads the migrated entry and committed recovery does not resurrect it')
-    for cut in args.cuts:
+    # An expired optional login is still a readable native credential. It must
+    # not leave every unrelated Codex workflow waiting for reauthentication.
+    expired_name = name + '_expired'
+    expired_url, _ = seed(expired_name, 'SYNTHETIC_EXPIRED')
+    expired_file = source / '.credentials.json'
+    expired = json.loads(expired_file.read_text())
+    for entry in expired.values():
+        entry['expires_at'] = 1
+        entry.pop('refresh_token')
+    expired_file.write_text(json.dumps(expired))
+    with (source / 'config.toml').open('a') as config:
+        config.write('enabled=false\n')
+    if args.standard_keychain:
+        refused = maintain(expected=False)
+        assert 'Codex could not read every imported MCP credential' in refused['error'], refused
+        authorize_synthetic(expired_name, expired_url)
+        maintain('recover')
+    else:
+        maintain()
+    assert not expired_file.exists() and not (base / 'pending.json').exists()
+    assert json.loads(credential('load', expired_name, expired_url)['value'])['expires_at'] == 1
+    print('PASS expired disabled MCP login imports without blocking unrelated sessions')
+    for cut in ([] if args.standard_keychain else args.cuts):
         interrupted_name = name + '_' + cut
         interrupted_url, original_cut = seed(interrupted_name, 'SYNTHETIC_' + cut)
         maintain(cut=cut)
@@ -296,7 +344,8 @@ try:
         else:
             recovered = json.loads(credential('load', interrupted_name, interrupted_url)['value'])
             assert recovered['token_response']['access_token'] == 'SYNTHETIC_' + cut
-    print('PASS SIGKILL recovery boundaries: ' + ', '.join(args.cuts))
+    if not args.standard_keychain:
+        print('PASS SIGKILL recovery boundaries: ' + ', '.join(args.cuts))
     # A different keyring value is never overwritten, nor is File retired.
     name2 = name + '_conflict'
     url2, original2 = seed(name2, 'SYNTHETIC_FILE_OLDER')

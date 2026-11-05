@@ -64,6 +64,39 @@ def observation(result, tools=False):
 if len(sys.argv) > 1:
     phase, file, provider = sys.argv[1:]
     fixture = json.loads(Path(file).read_text())
+    if phase == '--background':
+        # This root-owned ordinary tool outlives its launching foreground and
+        # retains the original user's tools profile across the UID transition.
+        assert os.getuid() == 0
+        case = Path(fixture['root']) / provider
+        label = Path('/proc/self/attr/current').read_text().strip()
+        assert label.endswith('-tools (enforce)'), label
+        (case / 'lifetime-ready.json').write_text(json.dumps(dict(pid=os.getpid(), label=label)))
+        deadline = time.monotonic() + 50
+        while not (case / 'lifetime-reenter').exists():
+            assert time.monotonic() < deadline
+            time.sleep(.03)
+        def no_new_privs():
+            assert ctypes.CDLL(None).prctl(38, 1, 0, 0, 0) == 0
+        result = subprocess.run([str(Path(fixture['packages'][provider]) / provider), 'probe'],
+                                preexec_fn=no_new_privs, capture_output=True, text=True)
+        assert '//&' in observation(result), result.stdout
+        (case / 'lifetime-reentered').touch()
+        while not (case / 'lifetime-exit').exists():
+            assert time.monotonic() < deadline
+            time.sleep(.03)
+        sys.exit(0)
+    if phase == '--spawn-background':
+        command = [sys.executable, '-c',
+                   'import subprocess; subprocess.Popen(' + repr(['sudo', '-n', sys.executable,
+                     str(Path(__file__).resolve()), '--background', file, provider])
+                   + ', stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)']
+        result = invoke(fixture, provider, ['exec', *command])
+        assert result.returncode == 0, result.stderr
+        sys.exit(0)
+    if phase == '--quiet-launch':
+        observation(invoke(fixture, provider, ['probe']))
+        sys.exit(0)
     if phase == '--tool':
         assert os.getuid() != 0
         case = Path(fixture['root']) / provider
@@ -303,6 +336,41 @@ for provider in ['codex', 'claude']:
         finally:
             if child.poll() is None: child.terminate(); child.wait(timeout=10)
     print((root / (provider + '.log')).read_text(), end='', flush=True)
+# A foreground can finish while an ordinary background tool still needs its
+# original pair, including sudo and no_new_privs vendor reentry.
+case = root / 'codex'
+def phase_run(phase):
+    subprocess.run(['sudo', '-n', '-u', user.pw_name, '/usr/bin/python3', str(Path(__file__).resolve()),
+                    phase, str(file), 'codex'], check=True, capture_output=True)
+def wait_file(target):
+    deadline = time.monotonic() + 20
+    while not target.exists():
+        assert time.monotonic() < deadline, str(target)
+        time.sleep(.03)
+def installed(name):
+    labels = Path('/sys/kernel/security/apparmor/profiles').read_text().splitlines()
+    return any(line.split(' ', 1)[0] == name for line in labels)
+phase_run('--spawn-background')
+wait_file(case / 'lifetime-ready.json')
+lifetime = json.loads((case / 'lifetime-ready.json').read_text())
+name = lifetime['label'].split(' ', 1)[0].removesuffix('-tools')
+try:
+    phase_run('--quiet-launch')
+    assert installed(name) and installed(name + '-tools')
+    (case / 'lifetime-reenter').touch()
+    wait_file(case / 'lifetime-reentered')
+finally:
+    (case / 'lifetime-exit').touch()
+for _ in range(100):
+    status = Path('/proc') / str(lifetime['pid']) / 'stat'
+    if not status.exists() or status.read_text().split(') ', 1)[1].startswith('Z '): break
+    time.sleep(.03)
+else: raise AssertionError('owned background tool did not exit')
+for _ in range(8):
+    phase_run('--quiet-launch')
+    if not installed(name) and not installed(name + '-tools'): break
+else: raise AssertionError('quiet next launches did not reclaim unused policy pair')
+print('PASS background different-UID tool retains both profiles and protected reentry; final exit permits reclamation')
 unsafe = Path(fixture['packages']['claude']).parent / secrets.token_hex(32)
 unsafe.mkdir(mode=0o755)
 shutil.copyfile(root / 'probe', unsafe / 'launcher')

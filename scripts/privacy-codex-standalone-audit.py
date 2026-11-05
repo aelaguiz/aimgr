@@ -191,7 +191,7 @@ def observe_vendor_confinement():
             approved = image_digests[key] == (digest if image.name == 'codex' else helper_digest)
             if platform.system() == 'Linux':
                 boundary = observed['profile']
-                confined = bool(re.fullmatch(r'aim-codex-p-\d+-[0-9a-f]+ \(enforce\)', boundary))
+                confined = bool(re.fullmatch(r'aim-codex-p-\d+-(?:n\d+-)?[0-9a-f]+ \(enforce\)', boundary))
             else:
                 sandbox = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
                 # Apple arm64 passes variadic arguments separately; describe

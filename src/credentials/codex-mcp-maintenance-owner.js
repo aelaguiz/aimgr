@@ -2,6 +2,9 @@
 // owner supplies held lock descriptors; every mutating child inherits them.
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { admitCodexArtifact } from "../privacy/codex-artifacts.js";
+import { stageLaunchEnvironment } from "../privacy/launch-environment.js";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -24,12 +27,55 @@ export function maintenanceCommands(lockFds = []) {
   // pipes. Capture stderr for that boundary, but never include it in errors.
   const stdio = ["pipe", "pipe", "pipe"];
   for (const fd of lockFds) { fs.fstatSync(fd); while (stdio.length <= fd) stdio.push("ignore"); stdio[fd] = fd; }
-  return (command, args, { input, allowed = [0], env = process.env } = {}) => {
+  return (command, args, { input, allowed = [0], env = process.env, passFds = [] } = {}) => {
+    const childStdio = [...stdio];
+    for (const fd of passFds) { fs.fstatSync(fd); while (childStdio.length <= fd) childStdio.push("ignore"); childStdio[fd] = fd; }
     // No timeout/kill for a mutating command. Retain the locks until its return.
-    const result = spawnSync(command, args, { input, env, stdio, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+    const result = spawnSync(command, args, { input, env, stdio: childStdio, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
     if (result.error || !allowed.includes(result.status)) fail(`MCP maintenance could not complete ${path.basename(command)} (${result.error?.code ?? result.signal ?? result.status}).`);
     return result;
   };
+}
+
+/** Codex exits zero even when Keychain denies access. Only its native OAuth
+ * status for every imported identity establishes that conversion can commit.
+ * A readable expired credential can require login; it must not block all other
+ * integrations. This fixed network-denied command cannot discover a login. */
+export function assertNativeMcpRead(entries, items) {
+  if (!Array.isArray(entries)
+    || new Set(entries.map(entry => entry?.name)).size !== entries.length
+    || items.some(item => !entries.some(entry => entry?.name === item.serverName
+      && entry.transport?.type === "streamable_http" && entry.transport.url === item.url
+      && ["o_auth", "not_logged_in"].includes(entry.auth_status)))) {
+    fail("Codex could not read every imported MCP credential. In the macOS Keychain prompt choose Always Allow, then run aim codex mcp-recover. The original File credentials remain preserved.");
+  }
+}
+
+function nativeRead(plan, items, run) {
+  if (process.platform !== "darwin" || !plan.native_access) fail("Native Keychain verification requires macOS.");
+  const artifact = admitCodexArtifact({ pinnedArtifactSet: plan.artifact_set });
+  if (artifact.command !== plan.native_access.executable || artifact.vendorSha256 !== plan.native_access.sha256) {
+    fail("The admitted Codex changed during MCP conversion. The original credentials remain preserved.");
+  }
+  let root, scratch, environmentFd;
+  try {
+    root = fs.mkdtempSync(`/opt/aimgr-codex-runtime/users/${process.getuid()}/maintenance/read-`);
+    const home = path.join(root, "home"); fs.mkdirSync(home, { mode: 0o700 });
+    const config = ['mcp_oauth_credentials_store="keyring"', '[features]', 'secret_auth_storage=false',
+      ...items.flatMap(item => [`[mcp_servers.${JSON.stringify(item.serverName)}]`, `url=${JSON.stringify(item.url)}`])].join("\n") + "\n";
+    fs.writeFileSync(path.join(home, "config.toml"), config, { mode: 0o600, flag: "wx" });
+    scratch = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), `aim-codex-${process.getuid()}-`));
+    fs.chmodSync(scratch, 0o700);
+    environmentFd = stageLaunchEnvironment({ HOME: os.userInfo().homedir, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8" }, scratch);
+    const result = run(artifact.launcher, ["mcp-verify-v1", root, home, scratch, String(environmentFd),
+      "0", "0", "0", "0", "--"], { env: { PATH: "/usr/bin:/bin" }, passFds: [environmentFd] });
+    let entries; try { entries = JSON.parse(result.stdout); } catch { /* fixed error below */ }
+    assertNativeMcpRead(entries, items);
+  } finally {
+    if (environmentFd !== undefined) fs.closeSync(environmentFd);
+    if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function nativeInputs(plan, run, values = []) {
@@ -140,6 +186,7 @@ export async function maintenanceOperation(request) {
     if (!codexMcpTokensEqual(JSON.parse(request.existing), JSON.parse(request.item.value))) fail("The native keyring contains a different credential. Both versions were preserved.");
     return { value: request.existing };
   }
+  if (request.operation === "native-read") { nativeRead(plan, request.items, run); return {}; }
   if (request.operation === "publish") { await publish(plan, run); return {}; }
   if (request.operation === "validate") { nativeInputs(plan, run, [request.value]); return {}; }
   if (request.operation === "verify") {
