@@ -10,7 +10,7 @@ static void vendor_filter(FILE *out,const char *vendor,const char *helper) {
     fputs("(require-any ",out);rule(out,"process-path",vendor);rule(out,"process-path",helper);fputs(")",out);
 }
 static void runtime_reads(FILE *out) {
-    fputs("(literal \"/etc\")(literal \"/var\")(literal \"/tmp\")(literal \"/private\")(literal \"/private/var\")"
+    fputs("(literal \"/etc\")(literal \"/var\")(literal \"/tmp\")(literal \"/private\")(literal \"/private/var\")(literal \"/private/tmp\")"
       "(subpath \"/System\")(subpath \"/usr\")(subpath \"/bin\")(subpath \"/sbin\")(subpath \"/dev\")"
       "(subpath \"/Library/Apple\")(subpath \"/Library/Developer\")(subpath \"/private/etc\")"
       "(subpath \"/private/var/db/dyld\")(subpath \"/private/preboot/Cryptexes/OS\")"
@@ -28,6 +28,27 @@ static void database_grants(FILE *out,const char *root,int reading) {
     rule(out,"regex",pattern);
     rule(out,"literal",root);
     if (reading) ancestors(out,root);
+}
+
+// A classified shared entry may itself be an authored dangling link. Preserve
+// its exact lexical grant so native sees NotFound and a later replacement stays
+// shared. This exception applies only to writes backed by the account-home link;
+// configured reads, deny paths and their canonicalization remain unchanged.
+static int shared_dangling_write(const char *file,const char *home) {
+    if (!file || file[0]!='/' || strlen(file)>=PATH_MAX) return 0;
+    const char *name=strrchr(file,'/');
+    if (!name || !name[1] || !strcmp(name+1,".") || !strcmp(name+1,"..")) return 0;
+    struct stat st;
+    if (lstat(file,&st) || !S_ISLNK(st.st_mode) || !stat(file,&st) || errno!=ENOENT) return 0;
+    char parent[PATH_MAX],link[PATH_MAX],target[PATH_MAX];
+    strlcpy(parent,file,sizeof(parent));parent[name-file]=0;
+    canonical(parent);
+    for (const unsigned char *p=(const unsigned char *)name;*p;p++) if (*p<32 || *p==127) fail("invalid shared path");
+    if (snprintf(link,sizeof(link),"%s/%s",home,name+1)>=(int)sizeof(link)) return 0;
+    ssize_t size=readlink(link,target,sizeof(target)-1);
+    if (size<0) return 0;
+    target[size]=0;
+    return !strcmp(target,file);
 }
 
 int main(int argc,char **argv) {
@@ -57,7 +78,8 @@ int main(int argc,char **argv) {
     if (separator>=argc || strcmp(argv[separator],"--")) fail("denied paths");
     const char **write_roots=(const char **)(argv+7),**read_roots=(const char **)(argv+readindex+1),**database_roots=(const char **)(argv+dbindex+1),**denied=(const char **)(argv+denyindex+1);
     for (int i=0;i<writes+reads;i++) {
-        const char *root=i<writes?write_roots[i]:read_roots[i-writes];canonical_future(root);
+        const char *root=i<writes?write_roots[i]:read_roots[i-writes];
+        if (!(i<writes && shared_dangling_write(root,home))) canonical_future(root);
         if (inside(user_home,root) || (inside(account,root) && strcmp(root,account))) fail("overbroad input root");
     }
     for (int i=0;i<databases;i++) canonical_future(database_roots[i]);
@@ -79,7 +101,11 @@ int main(int argc,char **argv) {
     for (int i=0;i<databases;i++) database_grants(out,database_roots[i],0);
     fputs(")))",out);
     for (int i=0;i<denies;i++) {fputs("(deny file-read* file-write* ",out);rule(out,"literal",denied[i]);fputs(")",out);}
-    fputs("(deny file-write* (subpath \"/private/etc/codex\"))"
+    // The official read-only sandbox canonicalizes /tmp to locate its fixed
+    // daemon socket directory. Permit the physical directory's metadata, while
+    // keeping its listing, extended attributes and ungranted children private.
+    fputs("(deny file-read-data file-read-xattr (literal \"/private/tmp\"))"
+      "(deny file-write* (subpath \"/private/etc/codex\"))"
       "(deny iokit-get-properties (iokit-property \"IOPlatformUUID\")(iokit-property \"IOPlatformSerialNumber\"))"
       "(deny sysctl-read (sysctl-name \"kern.hostname\")(sysctl-name \"kern.osproductversion\")(sysctl-name \"kern.osrelease\")"
       "(sysctl-name \"kern.osversion\")(sysctl-name \"kern.version\")(sysctl-name \"hw.model\"))"

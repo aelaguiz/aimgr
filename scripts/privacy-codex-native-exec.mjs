@@ -62,7 +62,10 @@ if (chromePhase) {
   const chromeArgs = [chrome, "--headless", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
     "--disable-component-update", "--disable-crash-reporter", "--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=<-loopback>"];
   // A fresh synthetic profile and dead loopback proxy; Chrome's sandbox remains enabled.
-  toolScript += `; profile=tempfile.mkdtemp(prefix="chrome-",dir=str(pathlib.Path.cwd())); result=subprocess.run(${JSON.stringify(chromeArgs)}+["--user-data-dir="+profile,"--dump-dom","data:text/html,<title>AIM_TOOL_ACCESS_OK</title>"],capture_output=True,text=True,timeout=25); assert result.returncode==0,(result.returncode,result.stderr); assert "AIM_TOOL_ACCESS_OK" in result.stdout; print("AIM_TOOL_ACCESS_OK")`;
+  // Mac Security.framework requires the logged-in disposable OS user's HOME,
+  // as in production. Preserve all other inherited values, including AIM TMPDIR.
+  const chromeEnvironment = process.platform === "darwin" ? ',env=dict(os.environ,HOME=__import__("pwd").getpwuid(os.getuid()).pw_dir)' : "";
+  toolScript += `; profile=tempfile.mkdtemp(prefix="chrome-",dir=str(pathlib.Path.cwd())); result=subprocess.run(${JSON.stringify(chromeArgs)}+["--user-data-dir="+profile,"--dump-dom","data:text/html,<title>AIM_TOOL_ACCESS_OK</title>"],capture_output=True,text=True,timeout=25${chromeEnvironment}); assert result.returncode==0,(result.returncode,result.stderr); assert "AIM_TOOL_ACCESS_OK" in result.stdout; print("AIM_TOOL_ACCESS_OK")`;
 }
 const command = "/usr/bin/python3 -c " + shellQuote(toolScript);
 const created = id => ({ type: "response.created", response: { id } });

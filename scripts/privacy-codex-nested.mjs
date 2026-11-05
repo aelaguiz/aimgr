@@ -197,7 +197,12 @@ server.on("upgrade", (req, socket, head) => ws.handleUpgrade(req, socket, head, 
   client.on("message", bytes => { try { for (const event of codexFrames(req, JSON.parse(bytes.toString()))) client.send(JSON.stringify(event)); }
     catch (error) { serverError ??= error; client.close(); } });
 }));
-server.listen(443, "0.0.0.0"); await once(server, "listening");
+if (process.platform === "darwin") {
+  const fd = Number(process.env.AIMGR_SYNTHETIC_HTTPS_FD);
+  assert.ok(Number.isInteger(fd) && fd >= 3, "Use test/privacy/macos-loopback-https.py for the rental's privileged loopback port");
+  server.listen({ fd });
+} else server.listen(443, "0.0.0.0");
+await once(server, "listening");
 const env = { HOME: homeDir, PATH: `${bin}:/opt/aimgr-state-audit/bin:/usr/local/bin:/usr/bin:/bin`, LANG: "C.UTF-8", TERM: "xterm-256color",
   CODEX_CA_CERTIFICATE: ca, NODE_EXTRA_CA_CERTS: ca };
 const config = 'model="gpt-6.1-sol"\napproval_policy="never"\n[features]\napps=false\ncode_mode=false\nhooks=false\n[analytics]\nenabled=false\n[feedback]\nenabled=false\n[otel]\nexporter="none"\ntrace_exporter="none"\nmetrics_exporter="none"\n';

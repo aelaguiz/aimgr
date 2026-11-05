@@ -8,7 +8,8 @@ import { readCodexEnvironment } from "./codex-environment.js";
 const hash = text => createHash("sha256").update(text).digest("hex");
 export const CODEX_SHARED_INSTRUCTION_NAMES = Object.freeze(["AGENTS.md", "AGENTS.override.md", "instructions.md"]);
 const SHARED_DIRECTORIES = ["skills", "agents", "rules", "memories", "memory", "sessions", "archived_sessions", "plugins", "marketplaces", "prompts", "thread-writer-locks"];
-const SHARED = new Set([...SHARED_DIRECTORIES, ...CODEX_SHARED_INSTRUCTION_NAMES, "history.jsonl", "session_index.jsonl"]);
+export const CODEX_SHARED_STATE_NAMES = Object.freeze([...SHARED_DIRECTORIES, ...CODEX_SHARED_INSTRUCTION_NAMES, "history.jsonl", "session_index.jsonl"]);
+const SHARED = new Set(CODEX_SHARED_STATE_NAMES);
 
 // Direct MCP keyring entries are OS-user scoped, independent of account or
 // settings origin. Reuse native's ordinary default-home lock inodes so those

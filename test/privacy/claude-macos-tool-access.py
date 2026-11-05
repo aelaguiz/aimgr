@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import pwd
 import shutil
 import signal
 import subprocess
@@ -17,6 +18,7 @@ import tempfile
 
 if platform.system() != 'Darwin' or os.getuid() == 0:
     raise SystemExit('Run as the ordinary macOS user with sudo -n available')
+assert Path('/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST').is_file()
 repo = Path(__file__).resolve().parents[2]
 source = Path(sys.argv[1]) if len(sys.argv) > 1 else repo / 'native/claude/approved_launch_macos.c'
 
@@ -74,7 +76,9 @@ with tempfile.TemporaryDirectory(prefix='aim-tool-access-') as temporary:
         results = []
         for mode in ['ordinary', 'protected']:
             with tempfile.TemporaryFile() as environment:
-                environment.write(b'PATH=/usr/bin:/bin\0HOME=' + str(root).encode() + b'\0')
+                # Security.framework expects the logged-in test OS user's home.
+                # Production preserves HOME; browser profile and inputs remain disposable.
+                environment.write(b'PATH=/usr/bin:/bin\0HOME=' + pwd.getpwuid(os.getuid()).pw_dir.encode() + b'\0')
                 environment.flush()
                 args = [str(installed / 'launcher'), 'v1', mode, str(root / 'config'), str(settings), str(root / 'scratch'), str(environment.fileno()), '1', str(root / 'tool'), '1', str(root / 'updates'), '--', 'parent', str(settings), str(update), str(root / 'tool')]
                 if chrome.is_file():

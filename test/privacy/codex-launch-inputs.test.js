@@ -48,6 +48,27 @@ test("selected account cannot be replaced by inherited vendor auth or originator
   assert.equal(result.HOME, env.HOME); assert.equal(result.CODEX_HOME, "/private/codex");
 });
 
+test("Mac optional shared links retain only their exact entry while configured dangling paths still fail", t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codex-shared-link-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sharedHome = path.join(root, "shared"), codexHome = path.join(root, "private"), cwd = path.join(root, "project");
+  for (const dir of [sharedHome, codexHome, cwd]) fs.mkdirSync(dir);
+  const shared = path.join(sharedHome, "agents"), missing = path.join(root, "not-installed"), unrelated = path.join(sharedHome, "private.txt");
+  fs.symlinkSync(missing, shared); fs.symlinkSync(shared, path.join(codexHome, "agents"));
+  fs.writeFileSync(unrelated, "synthetic private sibling");
+  const options = { prepared: { sharedHome, codexHome }, homeDir: root, env: {}, platform: "darwin",
+    parsedArgs: { cwd, images: [], directories: [] }, spawnSyncImpl: () => ({ status: 1 }),
+    effectiveInputs: { cwd, reads: [], writes: [], database_roots: [] } };
+  const inputs = resolveCodexLaunchInputs(options);
+  assert.ok(inputs.writes.includes(shared));
+  for (const file of [sharedHome, missing, unrelated]) assert.ok(!inputs.writes.includes(file));
+  assert.ok(!resolveCodexLaunchInputs({ ...options, platform: "linux" }).writes.includes(shared));
+  for (const permission of ["reads", "writes"]) assert.throws(() => resolveCodexLaunchInputs({ ...options,
+    effectiveInputs: { ...options.effectiveInputs, [permission]: [shared] } }), /dangling symlink/);
+  fs.unlinkSync(shared); fs.mkdirSync(shared);
+  assert.ok(resolveCodexLaunchInputs(options).writes.includes(shared), "replacing the optional link preserves shared state");
+});
+
 test("configured writable roots outside the project keep their native write permission", t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codex-writable-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

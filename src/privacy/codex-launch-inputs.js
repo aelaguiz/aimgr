@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { CODEX_SHARED_INSTRUCTION_NAMES } from "./codex-account-state.js";
+import { CODEX_SHARED_INSTRUCTION_NAMES, CODEX_SHARED_STATE_NAMES } from "./codex-account-state.js";
 
 export function codexCanonicalPath(file) {
   let current = path.resolve(file), missing = [];
@@ -58,7 +58,7 @@ function compactGrants(reads, writes) {
   };
 }
 
-export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, managedFiles = [], spawnSyncImpl = spawnSync,
+export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, managedFiles = [], spawnSyncImpl = spawnSync, platform = process.platform,
   effectiveInputs }) {
   if (!effectiveInputs) throw new Error("Codex requires an admitted native input inventory.");
   const cwd = codexCanonicalPath(effectiveInputs.cwd);
@@ -78,7 +78,21 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
     // reconciliation, rather than the generic mutable-state grant.
     if (name === "config.toml" || name.endsWith(".config.toml")) continue;
     const file = path.join(prepared.codexHome, name);
-    if (fs.lstatSync(file).isSymbolicLink() && fs.existsSync(file)) add(writes, file);
+    if (!fs.lstatSync(file).isSymbolicLink()) continue;
+    if (fs.existsSync(file)) add(writes, file);
+    else if (platform === "darwin" && CODEX_SHARED_STATE_NAMES.includes(name)) {
+      const shared = path.join(fs.realpathSync(prepared.sharedHome), name);
+      // Seatbelt checks the shared link before native can observe an absent
+      // optional destination. Retain that exact classified entry, not its
+      // missing target or the shared home containing legacy credentials.
+      if (path.resolve(path.dirname(file), fs.readlinkSync(file)) !== shared) continue;
+      try {
+        if (fs.lstatSync(shared).isSymbolicLink()) {
+          try { fs.statSync(shared); }
+          catch (error) { if (error.code !== "ENOENT") throw error; writes.add(shared); }
+        }
+      } catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
   }
   // Instructions can first appear after launch. Grant only these known targets,
   // without resolving their deliberately dangling private-home links or exposing

@@ -1,6 +1,6 @@
 # Codex privacy milestone 1: acceptance
 
-**Milestone 1 still needs Linux distribution-helper verification, exact-release macOS acceptance and final PR review.** The Linux workflow checks and final JavaScript suite pass against the development-profile helper. The replacement Mac has not reached boot. No PR has been published and milestone 2 implementation has not begun.
+**Milestone 1 still needs Linux distribution-helper verification, the remaining macOS acceptance checks and final PR review.** The replacement Mac now runs the unchanged official client with release-built helpers. Its configuration, primary-auth, diagnostic-suppression and actual Chrome checks pass. Linux's distribution build is still running. No PR has been published and milestone 2 implementation has not begun.
 
 The [canonical plan](CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md) defines P01–P26. The [worklog](CODEX_PRIVACY_M1_WORKLOG_2026-11-03.md) and [November 4 historical acceptance record](https://github.com/aelaguiz/aimgr/blob/8fe0a6c/docs/aelaguiz/CODEX_PRIVACY_M1_ACCEPTANCE_2026-11-04.md) retain the intermediate candidates, failures and corrections. A result here applies to its stated platform and fixture; a skipped case or an earlier exploratory Mac run does not establish final acceptance.
 
@@ -8,8 +8,7 @@ The [canonical plan](CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md) defines P01–P26. 
 
 The documented Linux distribution build uses `cargo build --locked --release`; the completed native checks used stripped development helpers. The reviewer requires a release build because upstream behavior includes `debug_assertions` branches. That build is running on the isolated Linux VM with one job. Repeat only native inputs, one saved-input case, worktree, first-use settings, collector reload and startup measurements against its installed bytes. The full JavaScript suite and unrelated auth/keyring/scheduler/browser matrices do not repeat for this profile-only change.
 
-1. Prove a clean reboot on the replacement Mac before installing AIM. Build the pinned helpers there, verify the unchanged official signatures, and install the candidate.
-2. Execute the applicable native matrix on that Mac, including Chrome, both protected Claude/Codex parent directions, the unchanged read-only reviewer, real launchd calendar/interval jobs and the interrupted MCP conversion across an actual reboot.
+1. Finish the applicable Mac native matrix: MCP interoperability/recovery, both protected Claude/Codex parent directions, the unchanged read-only reviewer, actual CLI/TUI continuation, real launchd calendar/interval jobs and interrupted MCP conversion across an actual reboot. Release builds, original signatures and actual Chrome already pass.
 3. Authorize a separate sacrificial-account login on the Mac through the original local browser and assigned test route. Complete real model/MCP/shell work, concurrency, resume, refresh/usage and a calendar occurrence with interactive handoff. Never transfer the Linux primary login.
 4. Record Mac release-build size, time and startup cost. Run the final Mac JavaScript suite, reconcile the complete evidence with the same cold reviewer, and publish the complete PR.
 
@@ -75,11 +74,28 @@ Warm attribution measured 3.17 seconds for complete-artifact admission, 0.16 sec
 
 ## Mac infrastructure and outstanding evidence
 
+The replacement Mac's release configuration/worktree build completed in 1,504.91 seconds with two jobs; the keyring build took 9.86 seconds. Original Codex and code-mode-host signatures pass strict verification, without re-signing. The installed candidate after the two bounded Mac path corrections is `f2189923475b6decac230db6dfc5cadff5f35c471a35a923ef4c941059ae870a`.
+
+| Mac workflow | Observed result | Private fixture |
+| --- | --- | --- |
+| Native inputs, saved state and worktrees | Effective inputs, seven-database initialization, saved inputs/worktrees, OSS selection and interrupted state writes pass. | `aimgr-inputs-ABMVFH`, `aimgr-saved-inputs-P7lxOh`, `aimgr-saved-worktree-Y3pbUt`, `aimgr-worktree-7ejcsl`, `aimgr-oss-inputs-nGv549`, `aimgr-state-crash-t294v80_` |
+| Shared settings | 323 roots, path types, precedence, profiles, native edits, races, read-only startup and permission repair pass. | `native-RxmrDl`; `mac-settings-batch.json`; `settings-wuIkjv`, `settings-YMxwWz`, `settings-fGLvcF` |
+| Live permissions and first use | Read-only/workspace-write/read-only tool execution, model/effort and selected-content edits pass. Optional shared links preserve first use and instruction fallback. | `settings-Rxumcq`, `settings-kKfqtA` |
+| Primary auth and ordinary tools | HTTP/WebSocket, selected identity, both refresh commit orders, re-login/logout fencing, kernel lock and custom-home lock pass. | `exec-Z7YVA5`, `exec-B0UEZd`, `exec-L2azu7` |
+| Diagnostics | Positive baseline collectors work; protected model/tool/compaction/error and token refresh continue with zero diagnostic traffic. Live settings/refresh reloader also passes. | `services-DWC5mX`, `collector-reload-HKVYZ4` |
+| Chrome | Both ordinary/protected Claude transitions and stock/protected official Codex render and exit zero with Chrome's own sandbox enabled. | `mac-chrome-common-home.log`, `exec-rTGMfh` |
+
+The official Mac read-only sandbox canonicalizes `/tmp` to `/private/tmp` while locating its daemon directory. Its metadata was incorrectly denied. The launcher now grants that literal directory's metadata, while explicitly denying data/listing and extended-attribute values. Actual read-only shell work passes; the native boundary probe separately checks private siblings and ordinary tools.
+
+Mac also needs to inspect an authored dangling shared entry before observing native NotFound. The inventory retains only the exact classified shared entry, and the native exception requires its canonical parent and matching account-home link. Required configured paths and deny paths keep strict validation. Whole first-use testing passes, including dangling HOME/project skills, shared agents and instruction override. The cold reviewer found no source correctness or scope blocker in either correction.
+
+Chrome's synthetic-HOME control rendered but failed shutdown waiting for Keychain authorization; the identical stock command succeeded with the disposable OS user's actual HOME. The cold reviewer approved correcting only this fixture environment to match production, which preserves caller HOME. Fresh profiles, dead loopback proxy, signed browser, sandbox flags and inherited AIM TMPDIR remain unchanged. No product Chrome or Keychain workaround was introduced.
+
 The original rental still cannot reach SSH after the approved same-instance root-disk replacement completed at 21:46:39 UTC on November 4. System/EBS checks pass but guest reachability fails. Its original encrypted disk and interrupted synthetic transaction remain retained. No successful boot or recovery is claimed.
 
-Amir approved one replacement at $15.60 minimum plus storage. One distinct physical host was allocated at 22:13 UTC. Alternative supported zones had definite capacity failures; allocation succeeded in the original zone. The first guest terminated with `Server.InsufficientInstanceCapacity`, and the host was subsequently observed in `pending` with no guest. Its pre-launch state was not captured, so that later state is not an established cause. The same-host waiter may launch one guest only after the host becomes available; no further rental is authorized.
+Amir approved one replacement at $15.60 minimum plus storage. One distinct physical host was allocated at 22:13 UTC. Alternative supported zones had definite capacity failures; allocation succeeded in the original zone. The first guest terminated with `Server.InsufficientInstanceCapacity`, and the host was subsequently observed in `pending` with no guest. Its pre-launch state was not captured, so that later state is not an established cause. At 00:09 UTC on November 5, the host became available and one guest was launched on it; no further rental is authorized.
 
-Both rentals' termination and bounded host-release schedules are enabled. The replacement's first check is a clean macOS reboot before AIM installation. Public code, official binaries, toolchains and package caches are prepared for transfer; no account home, primary grant or browser profile is included.
+Both rentals' termination and bounded host-release schedules are enabled. The replacement passed a clean macOS reboot before AIM installation at 00:25 UTC on November 5: SSH recovered with a distinct boot identity and AIM was absent before and after. AWS made the host available after its preparation interval; the guest now passes its health checks. The initial SSH timeout was the GCP control firewall retaining only the original Mac address. Adding the replacement's exact /32 to the existing SSH-only rule restored access. Public code, official binaries, toolchains and package caches are now being transferred; no account home, primary grant or browser profile is included.
 
 The existing fixtures have Mac branches for disposable-Keychain interoperability/unavailability, native parent-boundary observations, launchd calendar/interval occurrences and default-service controls. Their syntax checks pass remotely; Mac execution is pending. The default-service baseline temporarily uses empty local policy with exact backup/restoration and must run exclusively. The interrupted-conversion fixture must keep the same helper bytes, transaction and Keychain across its actual reboot. Preserve the original failed rental's evidence independently.
 

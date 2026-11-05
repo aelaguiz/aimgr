@@ -148,7 +148,12 @@ server.on("upgrade", (req, socket, head) => websockets.handleUpgrade(req, socket
     } catch (error) { serverError ??= error; client.close(); }
   });
 }));
-server.listen(443, "127.0.0.1"); await once(server, "listening");
+if (process.platform === "darwin") {
+  const fd = Number(process.env.AIMGR_SYNTHETIC_HTTPS_FD);
+  assert.ok(Number.isInteger(fd) && fd >= 3, "Use test/privacy/macos-loopback-https.py for the rental's privileged loopback port");
+  server.listen({ fd });
+} else server.listen(443, "127.0.0.1");
+await once(server, "listening");
 const waitFor = async (test, description, timeout = 30_000) => {
   const end = Date.now() + timeout;
   while (!test()) {
