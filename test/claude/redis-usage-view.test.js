@@ -261,6 +261,26 @@ test("real status collection preserves Team visibility but automatic selection c
   assert.equal(requests, 2, "second read uses the identity-bound cache without more provider calls");
 });
 
+test("automatic Claude selection honors disabled pool accounts on fresh and cached status", async t => {
+  const excluded = anthropicRecord("excluded");
+  excluded.policy.pool.enabled = false;
+  const { homeDir, connectRedisStoreImpl } = await setup([excluded, anthropicRecord("available")]);
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  for (const offset of [0, 1]) {
+    const result = await collectClaudeRedisAccountUsageStatus({
+      homeDir, connectRedisStoreImpl, nowMs: NOW_MS + offset,
+      fetchClaudeUsageSnapshotImpl: async ({ record }) => successSnapshot(record.label === "excluded" ? 0 : 70),
+    });
+    const disabled = result.accounts.find(account => account.label === "excluded");
+    assert.equal(disabled.poolEnabled, false);
+    for (const select of [selectClaudeAccountForSession, selectLeastUsedUnlockedClaudeAccount]) {
+      assert.deepEqual(select(result, { preset: "opus", requireIndividualOAuth: true }), { label: "available", usedPercent: 70 });
+      assert.deepEqual(select({ accounts: [{ ...disabled, errorKind: "proxy_unavailable" }, result.accounts.find(account => account.label === "available")] },
+        { preset: "opus", requireIndividualOAuth: true }), { label: "available", usedPercent: 70 });
+    }
+  }
+});
+
 test("Redis Claude inventory is provider-filtered, offline, candidate-safe, and strictly allowlisted", async () => {
   const ready = anthropicRecord("ready");
   ready.provenance = {
@@ -415,7 +435,7 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   assert.deepEqual(first.missingAccounts, ["candidate"]);
   assert.deepEqual(Object.keys(first.accounts[1]).sort(), [
     "ageMs", "authState", "credentialExpiresAt", "credentialReady", "credentialState", "egress", "errorKind", "label",
-    "lastAttemptAtMs", "lock", "locked", "rateLimitTier", "source", "stale", "subscriptionType",
+    "lastAttemptAtMs", "lock", "locked", "poolEnabled", "rateLimitTier", "source", "stale", "subscriptionType",
     "usage", "usageObservedAtMs",
   ]);
 
@@ -441,7 +461,8 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   assert.match(rendered, /^CLAUDE: 0 ready · 0 limited · 1 in use · 1 needs you · 0 unknown/m);
   assert.match(rendered, /candidate\s+NEEDS YOU.*aim login candidate/);
   assert.match(rendered, /ready\s+IN USE.*session active/);
-  assert.doesNotMatch(rendered, /max\/max_20x|usage_readable/);
+  assert.match(rendered, /ready\s+IN USE\s+max\/max_20x/);
+  assert.doesNotMatch(rendered, /usage_readable/);
   assert.match(
     renderClaudeRedisAccountUsageStatus(first, { verbose: true }),
     /ready\s+max\/max_20x\s+usage_readable\s+yes/,
@@ -591,7 +612,7 @@ test("Claude usage status renders one fleet average across every readable window
   // zero wait rather than a missing measurement, so Op_in averages to 0h.
   assert.match(
     rendered,
-    /average\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+0h\s+60%\s+6\.0d\s+--\s+--/,
+    /average\s+--\s+--\s+20%\s+2\.0h\s+20%\s+2\.0d\s+60%\s+5\.0d\s+50%\s+0h\s+60%\s+6\.0d\s+--\s+--/,
   );
   assert.equal(rendered.match(/^average\s/gm)?.length, 1);
 });
@@ -634,7 +655,7 @@ test("fleet reset averages count free accounts as zero wait instead of dropping 
   // 5h_in averages busy (2h) and idle (0h) over two accounts, not busy alone.
   // Fable at 100% with no reset on "blocked" is excluded, so Fb_in averages
   // busy (4d), idle (0d), and blocked (4d) -> 2.7d.
-  assert.match(rendered, /average\s+--\s+47%\s+1\.0h\s+--\s+--\s+67%\s+2\.7d\s+--\s+--/);
+  assert.match(rendered, /average\s+--\s+--\s+47%\s+1\.0h\s+--\s+--\s+67%\s+2\.7d\s+--\s+--/);
 });
 
 test("failed refresh keeps last-known usage and caches provider backoff without re-aging it", async () => {
@@ -1455,7 +1476,7 @@ test("idle accounts keep last-known usage for days and read LIMITED until the fu
   assert.equal(limited.accounts[0].ageMs, 2 * DAY_MS);
   const limitedText = renderClaudeRedisAccountUsageStatus(limited);
   assert.match(limitedText, /^CLAUDE: 0 ready · 1 limited · 0 in use · 0 needs you · 0 unknown$/m);
-  assert.match(limitedText, /idle\s+LIMITED\s+0%\s+--\s+100%\s+24\.0h\s.*2\.0d\s+none\s+--\s+free in 24\.0h/);
+  assert.match(limitedText, /idle\s+LIMITED\s+max\/max_20x\s+0%\s+--\s+100%\s+24\.0h\s.*2\.0d\s+none\s+--\s+free in 24\.0h/);
   assert.equal(selectLeastUsedUnlockedClaudeAccount(limited, { preset: "opus" }), null);
 
   // After the weekly reset the account is free again.
@@ -1467,7 +1488,7 @@ test("idle accounts keep last-known usage for days and read LIMITED until the fu
   });
   assert.equal(free.requestCount, 0);
   assert.equal(free.accounts[0].authState, "usage_readable");
-  assert.match(renderClaudeRedisAccountUsageStatus(free), /idle\s+READY\s+0%\s+--\s+0%\s+--\s.*use now/);
+  assert.match(renderClaudeRedisAccountUsageStatus(free), /idle\s+READY\s+max\/max_20x\s+0%\s+--\s+0%\s+--\s.*use now/);
   assert.deepEqual(selectLeastUsedUnlockedClaudeAccount(free, { preset: "opus" }), { label: "idle", usedPercent: 0 });
 });
 

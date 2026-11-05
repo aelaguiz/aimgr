@@ -116,6 +116,7 @@ export function buildStatusAverageAccountTableRow(accounts, now = Date.now(), { 
       "--",
       "--",
       "--",
+      "--",
       Number.isFinite(averageExpiryDeltaMs) ? formatDurationRough(averageExpiryDeltaMs) : "--",
       Number.isFinite(averageWeeklyUsedPct) ? `${Math.round(averageWeeklyUsedPct)}%` : "--",
       formatStatusDeltaMsCell(averageWeeklyResetDeltaMs),
@@ -128,6 +129,7 @@ export function buildStatusAverageAccountTableRow(accounts, now = Date.now(), { 
 
   return [
     "average",
+    "--",
     "--",
     "--",
     "--",
