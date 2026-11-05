@@ -9,6 +9,7 @@ const admission = createArtifactAdmission({
   // root changing installed bytes is outside the privacy boundary. Explicit
   // external executable selections still require their own content hash.
   hashInstalledFiles: false,
+  maxTestAuthorizationMs: Infinity,
   offsiteHostFile: "/opt/aimgr-state-audit/CODEX_TEST_HOST.json",
   requiredEntries: platform => [{
     field: "codeModeHost", file: "codex-code-mode-host", role: "vendor", executable: true,
@@ -22,7 +23,9 @@ const admission = createArtifactAdmission({
   }, {
     field: "worktreeTool", file: "worktree-tool", role: "launcher", executable: true,
     error: "the approved Codex runtime lacks its native worktree helper",
-  }, {
+  }, ...(platform === "darwin" ? [{ field: "managedPreferences", file: "managed-preferences", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its forced-policy reader" }] : [])],
+  maintenanceEntries: () => [{
     field: "processControl", file: "process-control", role: "launcher", executable: true,
     error: "the approved Codex runtime lacks its maintenance process inventory helper",
   }, {
@@ -31,8 +34,7 @@ const admission = createArtifactAdmission({
   }, {
     field: "mcpKeyring", file: "mcp-keyring", role: "launcher", executable: true,
     error: "the approved Codex runtime lacks its MCP keyring helper",
-  }, ...(platform === "darwin" ? [{ field: "managedPreferences", file: "managed-preferences", role: "launcher", executable: true,
-    error: "the approved Codex runtime lacks its forced-policy reader" }] : [])],
+  }],
 });
 export const {
   AdmissionError: CodexAdmissionError,

@@ -9,7 +9,7 @@ const MAX_FILES = 512;
 
 /** Shared immutable-file and approval checks. Provider-specific policy,
  * request inputs and runtime owners stay in their respective modules. */
-export function createArtifactAdmission({ provider, runtimeRootDefault, privacyAbi, offsiteHostFile, requiredEntries, hashInstalledFiles = true }) {
+export function createArtifactAdmission({ provider, runtimeRootDefault, privacyAbi, offsiteHostFile, requiredEntries, maintenanceEntries = () => [], hashInstalledFiles = true, maxTestAuthorizationMs = 7 * 24 * 60 * 60 * 1000 }) {
   class AdmissionError extends Error {
     constructor(reason) {
       super(`${provider} was not started: ${reason}. Run AIM's privacy status to inspect the selected and approved builds.`);
@@ -84,13 +84,15 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
     fail("the runtime user can write an artifact or its containing directory");
   }
 
-  function directoryChain(directory, fsImpl) {
+  function directoryChain(directory, fsImpl, checked = new Set()) {
     let current = directory;
     while (true) {
+      if (checked.has(current)) return;
       const stat = fsImpl.lstatSync(current);
       owned(stat, "an artifact directory");
       if (!stat.isDirectory()) fail("an artifact ancestor is not a directory");
       runtimeCannotWrite(current, fsImpl);
+      checked.add(current);
       const parent = path.dirname(current);
       if (parent === current) return;
       current = parent;
@@ -173,12 +175,12 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
     }
   }
 
-  function authorizeOffsiteTest({ runtimeRoot, artifactSet, platform, arch, fsImpl }) {
+  function authorizeOffsiteTest({ runtimeRoot, artifactSet, platform, arch, fsImpl, checked }) {
     // Test authorization is local administrator state, never an inherited flag.
     // Keep the host token OUTSIDE the copied artifact/runtime tree so moving a
     // test package cannot authorize a personal machine. Root tampering is outside
     // the threat model; this record grants no normal-use approval (T02/T21).
-    directoryChain(path.dirname(offsiteHostFile), fsImpl);
+    directoryChain(path.dirname(offsiteHostFile), fsImpl, checked);
     const host = readRecord(offsiteHostFile, fsImpl);
     const authorization = readRecord(path.join(runtimeRoot, "offsite-test.json"), fsImpl);
     const issued = Date.parse(authorization.authorizedAt), expires = Date.parse(authorization.expiresAt);
@@ -188,7 +190,7 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
       || authorization.platform !== platform || authorization.arch !== arch
       || authorization.normalUseApproved !== false || !text(authorization.reference)
       || !Number.isFinite(issued) || !Number.isFinite(expires) || issued > now
-      || expires <= now || expires <= issued || expires - issued > 7 * 24 * 60 * 60 * 1000
+      || expires <= now || expires <= issued || expires - issued > maxTestAuthorizationMs
       || authorization.hostTokenSha256 !== crypto.createHash("sha256").update(host.token).digest("hex")) {
       fail("the offsite test authorization is absent, expired or belongs to another host/build");
     }
@@ -223,16 +225,17 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
     return crypto.createHash("sha256").update(JSON.stringify(inventory)).digest("hex");
   }
 
-  function enumerate(directory, fsImpl, prefix = "") {
+  function enumerate(directory, fsImpl, ignored, prefix = "") {
     const result = [];
     for (const entry of fsImpl.readdirSync(directory, { withFileTypes: true })) {
       const name = prefix + entry.name;
+      if (ignored.has(name)) continue;
       if (!relativeFile(name)) fail("an artifact directory contains an unsupported name");
       const absolute = path.join(directory, entry.name);
       const stat = fsImpl.lstatSync(absolute);
       owned(stat, "an artifact entry");
       runtimeCannotWrite(absolute, fsImpl);
-      if (stat.isDirectory()) result.push(...enumerate(absolute, fsImpl, `${name}/`));
+      if (stat.isDirectory()) result.push(...enumerate(absolute, fsImpl, ignored, `${name}/`));
       else if (stat.isFile()) result.push(name);
       else fail("an artifact entry is not a regular file or directory");
       if (result.length > MAX_FILES) fail("the artifact directory exceeds its approved inventory");
@@ -256,6 +259,7 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
     runtimeRoot = runtimeRootDefault,
     selectedCommand,
     pinnedArtifactSet,
+    maintenance = false,
     platform = process.platform,
     arch = process.arch,
     fsImpl = fs,
@@ -265,7 +269,10 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
       if (!["linux", "darwin"].includes(platform) || !path.isAbsolute(runtimeRoot)) {
         fail("the native platform or artifact root is unsupported");
       }
-      directoryChain(runtimeRoot, fsImpl);
+      // Reuse ancestor checks only within this synchronous admission. Each new
+      // launch starts fresh; native privileged-entry checks remain independent.
+      const checked = new Set();
+      directoryChain(runtimeRoot, fsImpl, checked);
       const selector = readRecord(path.join(runtimeRoot, "active.json"), fsImpl);
       if (selector.schema !== 1 || typeof selector.artifactSet !== "string" || !HASH.test(selector.artifactSet)) fail("the active build selector is invalid");
       // A trusted nested launch defaults to its parent's still-approved set.
@@ -276,7 +283,7 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
       if (pinnedArtifactSet !== undefined && (typeof pinnedArtifactSet !== "string" || !HASH.test(pinnedArtifactSet))) fail("the inherited approved build selection is invalid");
       const artifactSet = pinnedArtifactSet ?? selector.artifactSet;
       const root = path.join(runtimeRoot, "artifacts", artifactSet);
-      directoryChain(root, fsImpl);
+      directoryChain(root, fsImpl, checked);
       const manifest = readRecord(path.join(root, "approval.json"), fsImpl);
       if (manifest.schema !== 1 || manifest.platform !== platform || manifest.arch !== arch
         || manifest.privacyAbi !== privacyAbi || !text(manifest.version)) {
@@ -291,7 +298,7 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
         // Candidate testing is not a reviewed production revision. Bind its
         // source archive separately rather than inventing review signoff.
         if (!HASH.test(manifest.candidateSourceSha256 ?? "")) fail("the offsite candidate source is unidentified");
-        authorizeOffsiteTest({ runtimeRoot, artifactSet, platform, arch, fsImpl });
+        authorizeOffsiteTest({ runtimeRoot, artifactSet, platform, arch, fsImpl, checked });
       } else fail("the selected build lacks explicit normal-use approval");
       // Display only an administrator-owned, compatible, authorized record.
       // This is explanatory context: remaining inventory/immutability checks
@@ -308,16 +315,23 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
           fail("the approved runtime has no valid vendor, launcher or policy entry");
         }
       }
-      const required = requiredEntries(platform);
+      const conversion = maintenanceEntries(platform);
+      const required = [...requiredEntries(platform), ...(maintenance ? conversion : [])];
+      // These fixed conversion tools are never read or executed during normal
+      // launch. Admit them only when the explicit maintenance command needs them.
+      const runtimeFiles = new Set([manifest.entrypoint, manifest.launcher, manifest.policy, ...required.map(entry => entry.file)]);
+      const ignored = new Set(maintenance ? [] : conversion.map(entry => entry.file).filter(name =>
+        !runtimeFiles.has(name) && !["vendor", "resource"].includes(manifest.files[name]?.role)));
+      const files = Object.entries(manifest.files).filter(([name]) => !ignored.has(name));
       for (const entry of required) {
         if ((entry.field && manifest[entry.field] !== entry.file) ||
           manifest.files[entry.file]?.role !== entry.role || manifest.files[entry.file]?.executable !== entry.executable) fail(entry.error);
       }
-      const actual = enumerate(root, fsImpl).filter((name) => name !== "approval.json");
-      if (JSON.stringify(actual) !== JSON.stringify(Object.keys(manifest.files).sort())) {
+      const actual = enumerate(root, fsImpl, ignored).filter((name) => name !== "approval.json");
+      if (JSON.stringify(actual) !== JSON.stringify(files.map(([name]) => name).sort())) {
         fail("the installed files do not match the complete approved inventory");
       }
-      for (const [name, expected] of Object.entries(manifest.files)) {
+      for (const [name, expected] of files) {
         const { fd, stat } = openProtected(path.join(root, name), fsImpl);
         try {
           // Linux's fixed native entry needs setuid solely to load AppArmor and

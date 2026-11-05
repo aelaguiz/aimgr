@@ -8,7 +8,6 @@ test("conversion refuses live affected clients and updaters without controlling 
     row(12, "/opt/codex", ["codex", "app-server", "daemon", "pid-update-loop"]),
     row(13, "/opt/node", ["node", "/repo/aimgr/bin/aimgr.js", "codex", "run"]),
     row(14, "/opt/node", ["node", "/repo/aimgr/bin/aimgr.js", "routine", "__execute", "codex-review"]),
-    {...row(15, "/bin/sh", ["sh", "-s"]), native_installer:true},
     row(16, "/opt/old/codex (deleted)")]) {
     assert.throws(() => assertNoCodexConsumers([owner], 99, ["codex-review"]), /finish or exit normally/);
   }
@@ -28,6 +27,7 @@ test("unrelated scripts, IDEs and other providers do not veto credential convers
 test("the maintenance invocation's AIM ancestors do not veto their own operation", () => {
   assert.doesNotThrow(() => assertNoCodexConsumers([
     row(10, "/opt/node", ["node", "/repo/aimgr/bin/aimgr.js", "codex", "mcp-migrate"]),
+    row(15, "/bin/sh", ["sh", "-s"]),
     row(11, "/usr/bin/python3", [], 10), row(12, "/opt/node", [], 11),
   ], 12));
 });

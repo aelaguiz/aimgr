@@ -21,10 +21,12 @@ test("Codex complete-package admission uses protected files and includes every v
   const user=process.platform==="darwin"?"ec2-user":"aimprivacy";
   const uid=Number(execFileSync("/usr/bin/id",["-u",user],{encoding:"utf8"}).trim());
   const gid=Number(execFileSync("/usr/bin/id",["-g",user],{encoding:"utf8"}).trim());
-  const admit=(root,selectedCommand)=>spawnSync(process.execPath,["--input-type=module","-e",`
+  const admit=(root,selectedCommand,maintenance=false,repeats=1)=>spawnSync(process.execPath,["--input-type=module","-e",`
     process.setgroups([]);process.setgid(${gid});process.setuid(${uid});
     const {admitCodexArtifact}=await import(${JSON.stringify(path.join(parent,"codex-artifacts.js"))});
-    try {console.log(JSON.stringify(admitCodexArtifact({runtimeRoot:${JSON.stringify(root)},selectedCommand:${JSON.stringify(selectedCommand)}})));}
+    const fs=await import("node:fs"), checks={};
+    const fsImpl={...fs,accessSync(file,mode){if(mode===fs.constants.W_OK)checks[file]=(checks[file]??0)+1;return fs.accessSync(file,mode);}};
+    try {let result;for(let i=0;i<${repeats};i++)result=admitCodexArtifact({runtimeRoot:${JSON.stringify(root)},selectedCommand:${JSON.stringify(selectedCommand)},maintenance:${maintenance},fsImpl});console.log(JSON.stringify({...result,checks}));}
     catch(e){console.log(JSON.stringify({code:e.code}));process.exitCode=77;}
   `],{encoding:"utf8"});
   function fixture(name,change=()=>{}) {
@@ -51,8 +53,11 @@ test("Codex complete-package admission uses protected files and includes every v
     const approved=JSON.parse(result.stdout);
     assert.equal(approved.codeModeHost,path.join(f.bundle,"codex-code-mode-host"));
     assert.ok(approved.readPaths.includes(approved.codeModeHost));
-    assert.equal(approved.mcpKeyring,path.join(f.bundle,"mcp-keyring"));
-    assert.equal(approved.mcpMaintenance,path.join(f.bundle,"mcp_maintenance.py"));
+    assert.equal(approved.mcpKeyring,undefined);
+    assert.equal(approved.mcpMaintenance,undefined);
+    const conversion=JSON.parse(admit(f.root,undefined,true).stdout);
+    assert.equal(conversion.mcpKeyring,path.join(f.bundle,"mcp-keyring"));
+    assert.equal(conversion.mcpMaintenance,path.join(f.bundle,"mcp_maintenance.py"));
   });
   await t.test("explicit selection accepts the installed entry or matching copy and rejects different same-size bytes",()=>{
     const f=fixture("selected"),installed=path.join(f.bundle,"codex");
@@ -68,23 +73,60 @@ test("Codex complete-package admission uses protected files and includes every v
     assert.equal(result.status,77,result.stderr||result.stdout);
     assert.equal(JSON.parse(result.stdout).code,"AIMGR_CODEX_BUILD_NOT_APPROVED");
   });
-  for(const variant of ["missing","wrong-role","changed-size","writable-parent","missing-mcp-helper","mutable-mcp-helper","missing-maintenance-owner","mutable-maintenance-owner","missing-config-helper","mutable-config-helper","missing-process-helper","missing-worktree-helper"]) await t.test(`refuses ${variant} before execution`,()=>{
+  for(const variant of ["missing","wrong-role","changed-size","writable-parent","missing-config-helper","mutable-config-helper","missing-worktree-helper"]) await t.test(`refuses ${variant} before execution`,()=>{
     const f=fixture(variant,files=>{
       if(variant==="missing") delete files["codex-code-mode-host"];
-      if(variant==="missing-mcp-helper") delete files["mcp-keyring"];
-      if(variant==="missing-maintenance-owner") delete files["mcp_maintenance.py"];
       if(variant==="missing-config-helper") delete files["config-state"];
-      if(variant==="missing-process-helper") delete files["process-control"];
       if(variant==="missing-worktree-helper") delete files["worktree-tool"];
       if(variant==="wrong-role") files["codex-code-mode-host"].role="resource";
     });
     if(variant==="changed-size") fs.truncateSync(path.join(f.bundle,"codex-code-mode-host"),1);
     if(variant==="writable-parent") fs.chmodSync(f.bundle,0o777);
-    if(variant==="mutable-mcp-helper") fs.chmodSync(path.join(f.bundle,"mcp-keyring"),0o777);
-    if(variant==="mutable-maintenance-owner") fs.chmodSync(path.join(f.bundle,"mcp_maintenance.py"),0o777);
     if(variant==="mutable-config-helper") fs.chmodSync(path.join(f.bundle,"config-state"),0o777);
     const result=admit(f.root);
     assert.equal(result.status,77,result.stderr||result.stdout);
     assert.equal(JSON.parse(result.stdout).code,"AIMGR_CODEX_BUILD_NOT_APPROVED");
   });
+  for(const helper of ["mcp-keyring","mcp_maintenance.py","process-control"]) for(const defect of ["absent-manifest","absent-file","mutable","changed-size"]) {
+    await t.test(`normal launch ignores unused ${helper} ${defect}; conversion refuses it`,()=>{
+      const f=fixture(`${helper}-${defect}`,files=>{if(defect==="absent-manifest")delete files[helper];});
+      if(defect==="absent-file") fs.unlinkSync(path.join(f.bundle,helper));
+      if(defect==="mutable") fs.chmodSync(path.join(f.bundle,helper),0o777);
+      if(defect==="changed-size") fs.truncateSync(path.join(f.bundle,helper),1);
+      assert.equal(admit(f.root).status,0);
+      assert.equal(admit(f.root,undefined,true).status,77);
+    });
+  }
+  await t.test("a conversion filename cannot hide a selected runtime file",()=>{
+    const f=fixture("conversion-selected",files=>{files["mcp-keyring"].role="vendor";});
+    const record=path.join(f.bundle,"approval.json"), manifest=JSON.parse(fs.readFileSync(record));
+    manifest.entrypoint="mcp-keyring";fs.writeFileSync(record,JSON.stringify(manifest));
+    fs.chmodSync(path.join(f.bundle,"mcp-keyring"),0o777);
+    assert.equal(admit(f.root).status,77);
+  });
+  await t.test("ancestor inspection is reused only within each admission",()=>{
+    const f=fixture("ancestors"), result=admit(f.root,undefined,false,2);
+    assert.equal(result.status,0,result.stdout);
+    const {checks}=JSON.parse(result.stdout);
+    for(const directory of ["/",parent,f.root]) assert.equal(checks[directory],2,directory);
+  });
+  await t.test("offsite approval honors its explicit expiry and host without a seven-day cap",()=>{
+    const f=fixture("offsite"), file=path.join(f.bundle,"approval.json"), manifest=JSON.parse(fs.readFileSync(file));
+    manifest.candidateSourceSha256="b".repeat(64);
+    manifest.approval={kind:"offsite-test",normalUseApproved:false,reference:"synthetic fixture"};
+    fs.writeFileSync(file,JSON.stringify(manifest));
+    const host=JSON.parse(fs.readFileSync("/opt/aimgr-state-audit/CODEX_TEST_HOST.json"));
+    const authorization={schema:1,artifactSet:path.basename(f.bundle),platform:process.platform,arch:process.arch,
+      normalUseApproved:false,reference:"synthetic fixture",authorizedAt:new Date(Date.now()-1000).toISOString(),
+      expiresAt:new Date(Date.now()+30*24*60*60*1000).toISOString(),
+      hostTokenSha256:crypto.createHash("sha256").update(host.token).digest("hex")};
+    const record=path.join(f.root,"offsite-test.json");
+    fs.writeFileSync(record,JSON.stringify(authorization));
+    assert.equal(admit(f.root).status,0);
+    fs.writeFileSync(record,JSON.stringify({...authorization,expiresAt:new Date(Date.now()-500).toISOString()}));
+    assert.equal(admit(f.root).status,77);
+    fs.writeFileSync(record,JSON.stringify({...authorization,hostTokenSha256:"0".repeat(64)}));
+    assert.equal(admit(f.root).status,77);
+  });
+
 });

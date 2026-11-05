@@ -28,7 +28,7 @@ use std::path::PathBuf;
 
 unsafe extern "C" {
     fn aim_config_channels() -> libc::c_int;
-    fn aim_config_boundary(readonly: libc::c_int) -> libc::c_int;
+    fn aim_config_boundary() -> libc::c_int;
 }
 
 type Result<T> = std::result::Result<T, ()>;
@@ -490,7 +490,7 @@ fn main() {
         let request: Request = serde_json::from_slice(&input).map_err(|_| ())?;
         input.fill(0);
         phase = "privacy boundary";
-        if unsafe { aim_config_boundary(i32::from(matches!(request.operation, Operation::Inputs | Operation::McpInputs))) } != 0 { return Err(()); }
+        if unsafe { aim_config_boundary() } != 0 { return Err(()); }
         // Native metadata backfill otherwise prints source paths directly when
         // no dispatcher exists. A no-op dispatcher emits no telemetry/logs.
         tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default()).map_err(|_| ())?;

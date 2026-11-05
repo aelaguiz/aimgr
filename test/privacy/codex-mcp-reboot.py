@@ -62,7 +62,7 @@ request = dict(operation='start', home=str(source.parent), cwd=str(project), sou
                owner_script=str(repo / 'src/credentials/codex-mcp-maintenance-owner.js'))
 if mac:
     admitted = json.loads(subprocess.check_output([args.node, '--input-type=module', '-e',
-        "import {admitCodexArtifact} from './src/privacy/codex-artifacts.js'; console.log(JSON.stringify(admitCodexArtifact()))"], cwd=repo, text=True))
+        "import {admitCodexArtifact} from './src/privacy/codex-artifacts.js'; console.log(JSON.stringify(admitCodexArtifact({ maintenance: true })))"], cwd=repo, text=True))
     request['artifact_set'] = admitted['artifactSet']
     request['native_access'] = dict(executable=admitted['command'], sha256=admitted['vendorSha256'])
 

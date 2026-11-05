@@ -75,11 +75,21 @@ test("relative --cd is projected once while native retains its original process 
   }
   const file = path.join(prepared.sharedHome, ".credentials.json");
   fs.writeFileSync(file, '{}');
-  await assert.rejects(prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment,
-    args: ["--worktree", "synthetic"], env: { HOME: homeDir, PATH: "/usr/bin:/bin" },
-    admitArtifact: () => { throw new Error("File refusal must precede artifact/worktree work"); },
-  }), /one-time native keyring conversion/);
+  const emptyStore = await prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment,
+    env: { HOME: homeDir, PATH: "/usr/bin:/bin" }, admitArtifact: () => artifact,
+    inspectManagedPolicy: () => ({ files: [] }),
+    nativeInputs: async () => ({ cwd, reads: [], writes: [], database_roots: [], mcp_store: "keyring" }),
+  });
+  await emptyStore.close();
   assert.equal(fs.readFileSync(file, "utf8"), '{}');
+  for (const bytes of ['{"unclassified":{}}', 'null', '[]', '{invalid', '']) {
+    fs.writeFileSync(file, bytes);
+    await assert.rejects(prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment,
+      args: ["--worktree", "synthetic"], env: { HOME: homeDir, PATH: "/usr/bin:/bin" },
+      admitArtifact: () => { throw new Error("File refusal must precede artifact/worktree work"); },
+    }), /one-time native keyring conversion/);
+    assert.equal(fs.readFileSync(file, "utf8"), bytes);
+  }
   assert.equal(fs.readFileSync(config, "utf8"), 'mcp_oauth_credentials_store="auto"\n');
   fs.writeFileSync(config, 'model = [\n');
   for (const args of [["--version"], ["-V"], ["--help"], ["-h"], ["exec", "--help"], ["sandbox", "-h"]]) {

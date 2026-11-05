@@ -9,7 +9,7 @@ import { codexSharedHome } from "../privacy/codex-account-state.js";
 /** Explicit maintenance only. No ordinary launch calls this operation. Primary
  * auth and Redis are not inputs. A surviving native child owns its write locks. */
 export async function maintainCodexMcp({ operation, homeDir, env = process.env, cwd = process.cwd() }) {
-  const artifact = admitCodexArtifact();
+  const artifact = admitCodexArtifact({ maintenance: true });
   const managed = inspectCodexManagedPolicy({ artifact });
   const environment = readCodexEnvironment();
   const sourceHome = codexSharedHome({ homeDir, env, environment });

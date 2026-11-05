@@ -39,8 +39,15 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     // Do not use parsedArgs.inspection: passthrough child argv can contain help.
     const inspectionOnly = (args.length === 1 && ["--help", "-h", "--version", "-V"].includes(args[0]))
       || (args.length === 2 && parsedArgs.command === args[0] && ["--help", "-h"].includes(args[1]));
-    if (!inspectionOnly && fs.existsSync(path.join(account.sharedHome, ".credentials.json"))) {
-      throw new Error("Codex's shared MCP credentials need the one-time native keyring conversion. Run `aim codex mcp-migrate` from a terminal before starting Codex.");
+    if (!inspectionOnly) {
+      let legacy;
+      try { legacy = JSON.parse(fs.readFileSync(path.join(account.sharedHome, ".credentials.json"), "utf8")); }
+      catch (error) { if (error.code !== "ENOENT") legacy = null; }
+      // Native File storage is a JSON object. An empty store has no logins to
+      // convert; retain the refusal for unreadable or unclassified contents.
+      if (legacy !== undefined && (!legacy || typeof legacy !== "object" || Array.isArray(legacy) || Object.keys(legacy).length)) {
+        throw new Error("Codex's shared MCP credentials need the one-time native keyring conversion. Run `aim codex mcp-migrate` from a terminal before starting Codex.");
+      }
     }
     const artifact = admitArtifact({ selectedCommand: command, pinnedArtifactSet: env.AIMGR_CODEX_ARTIFACT_SET });
     const policy = JSON.parse(fs.readFileSync(artifact.policy, "utf8"));

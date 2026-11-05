@@ -53,7 +53,7 @@ export function assertNativeMcpRead(entries, items) {
 
 function nativeRead(plan, items, run) {
   if (process.platform !== "darwin" || !plan.native_access) fail("Native Keychain verification requires macOS.");
-  const artifact = admitCodexArtifact({ pinnedArtifactSet: plan.artifact_set });
+  const artifact = admitCodexArtifact({ maintenance: true, pinnedArtifactSet: plan.artifact_set });
   if (artifact.command !== plan.native_access.executable || artifact.vendorSha256 !== plan.native_access.sha256) {
     fail("The admitted Codex changed during MCP conversion. The original credentials remain preserved.");
   }
@@ -107,7 +107,6 @@ const aimOwner = (p, routineIds) => p.args.some(arg => /(?:^|\/)aim(?:gr)?(?:\.j
   && (p.args.includes("codex") || (p.args.includes("routine") && ["run", "__execute"].includes(p.args[p.args.indexOf("routine") + 1])
     && routineIds.includes(p.args[p.args.indexOf("routine") + 2])));
 const nativeWrapper = p => p.args.some(arg => /\/(?:@openai\/codex\/bin\/codex\.js|codex\/bin\/codex(?:\.js)?)$/.test(arg));
-const installer = p => p.native_installer === true;
 /** Conversion needs existing token consumers to finish. It does not control
  * their launchers, schedules or unrelated processes. New AIM admissions use
  * the existing maintenance marker; raw launches outside AIM are out of scope. */
@@ -118,8 +117,8 @@ export function assertNoCodexConsumers(values, self = process.pid, routineIds = 
   if (values.some(p => ancestors.has(p.pid) && nativeOwner(p))) {
     fail("Run one-time MCP maintenance from a terminal outside a running Codex session.");
   }
-  if (values.some(p => !ancestors.has(p.pid) && (nativeOwner(p) || aimOwner(p, routineIds) || nativeWrapper(p) || installer(p)))) {
-    fail("Codex sessions, launchers or updaters are still running. Let them finish or exit normally, then retry MCP maintenance; no process was stopped.");
+  if (values.some(p => !ancestors.has(p.pid) && (nativeOwner(p) || aimOwner(p, routineIds) || nativeWrapper(p)))) {
+    fail("Codex sessions or launchers are still running. Let them finish or exit normally, then retry MCP maintenance; no process was stopped.");
   }
 }
 

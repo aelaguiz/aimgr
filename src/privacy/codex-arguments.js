@@ -21,7 +21,7 @@ const EXEC_GLOBAL = new Set(["-c", "--config", "--enable", "--disable", "-m", "-
   "--yolo", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "--worktree",
   "--strict-config", ...[...EXEC_ONLY].filter(key => key !== "--color"), "--help", "-h", "--version", "-V"]);
 const COMMANDS = new Set(["agents", "exec", "e", "review", "login", "logout", "mcp", "plugin", "app-server", "remote-control", "app", "completion", "update", "doctor", "sandbox", "debug", "execpolicy", "apply", "a", "resume", "queue", "archive", "delete", "migrate-rollouts", "migrate-nfs-db", "unarchive", "fork", "cloud", "cloud-tasks", "responses-api-proxy", "stdio-to-uds", "exec-server", "features", "tcp-tunnel"]);
-const UNSUPPORTED = new Set(["agents", "remote-control", "app", "update", "responses-api-proxy", "stdio-to-uds", "exec-server", "tcp-tunnel", "queue"]);
+const UNSUPPORTED = new Set(["agents", "remote-control", "app", "update", "responses-api-proxy", "exec-server", "tcp-tunnel", "queue"]);
 const SANDBOX_VALUES = new Map(["-P", "--permission-profile", "--permissions-profile", "--sandbox-state-json",
   "--sandbox-state-readable-root", "--allow-unix-socket"].map(key => [key, "value"]));
 const MCP_ADD_VALUES = new Map(["--env", "--url", "--bearer-token-env-var", "--oauth-client-id",
@@ -144,6 +144,9 @@ export function codexArguments(args, { cwd = process.cwd(), ownedAppServer = fal
   if (command === "app-server" && (!ownedAppServer || positionals.length || (listen !== null && listen !== "stdio://"))) throw new Error("AIM only starts an invocation-owned stdio app server.");
   if (command === "debug" && positionals[0] === "app-server") throw new Error("AIM does not start the native shared app-server debug client.");
   if (profile !== null && !/^[A-Za-z0-9_-]+$/.test(profile)) throw new Error("Invalid Codex profile name.");
+  // Connecting and writing to the explicitly selected Unix socket needs an
+  // exact read/write grant on Linux; it grants no access to sibling files.
+  if (command === "stdio-to-uds" && positionals[0]) outputs.push(path.resolve(cwd, positionals[0]));
   const standalone = command === null || command === "resume" || command === "fork";
   config.push(...enabled.map(name => `features.${name}=true`), ...disabled.map(name => `features.${name}=false`));
   if (rootApproveForMe) config.push('approvals_reviewer="auto_review"', 'approval_policy="on-request"', 'sandbox_mode="workspace-write"');

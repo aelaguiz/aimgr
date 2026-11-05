@@ -33,8 +33,8 @@ preserves the configuration/state executable's unconditional process-exec
 denial. The final runtime manifest admits both binaries together.
 
 The request arrives on a dedicated private pipe. `inputs` loads the effective
-local configuration under OS-enforced filesystem read-only and outbound/exec
-denial. `initialize` uses the same loader, checks mandatory privacy settings,
+local configuration under OS-enforced outbound/exec denial. The loader
+performs reads normally; AIM adds no filesystem-integrity sandbox to it. `initialize` uses the same loader, checks mandatory privacy settings,
 then opens the native databases under short locks on their actual shared roots.
 It closes the native pools before releasing the locks; native migrations remain
 the readiness authority, without a separate completion cache. No model, auth,

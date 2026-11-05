@@ -104,3 +104,9 @@ test("explicit exec input/output files retain process cwd and invalid worktree f
     assert.throws(() => validateCodexWorktreeArguments(codexArguments(args)), /no checkout/);
   }
 });
+
+test("finite stdio-to-uds utility keeps its native arguments", () => {
+  const args=["stdio-to-uds", "/tmp/synthetic.sock"];
+  assert.deepEqual(codexArguments(args).args, args);
+  assert.deepEqual(codexArguments(args).outputs, ["/tmp/synthetic.sock"]);
+});
