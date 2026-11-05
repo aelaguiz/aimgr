@@ -28,7 +28,10 @@ if (!mac) {
 const root = fs.mkdtempSync(path.join(base, "codex-m1-fixtures", "mcp-"));
 const homeDir = path.join(root, "home"), cwd = path.join(root, "project"), controlDir = path.join(root, "keyring-control");
 for (const dir of [path.join(homeDir, ".codex"), cwd, controlDir]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-const env = { HOME: homeDir, XDG_DATA_HOME: path.join(homeDir, ".local", "share"),
+// Security.framework must see the disposable OS user's real home in both the
+// stock and protected client, as in production. AIM/config/grants remain under
+// the explicitly supplied fixture home; the keychain itself is disposable.
+const env = { HOME: mac ? os.userInfo().homedir : homeDir, XDG_DATA_HOME: path.join(homeDir, ".local", "share"),
   DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
   RUST_LOG: "codex_keyring_store=trace,codex_rmcp_client=debug",
   PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", TERM: "xterm-256color" };
@@ -201,6 +204,7 @@ owned=set(map(int,sys.argv[2:]));previous=set()
 while previous!=owned:
  previous=set(owned);owned.update(int(p) for p,parent,state in rows if int(parent) in owned)
 libproc=ctypes.CDLL('/usr/lib/libproc.dylib');sandbox=ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+sandbox.sandbox_check.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int]
 target=os.fsencode(sys.argv[1]);assert sandbox.sandbox_check(os.getpid(),b'file-read-data',1,target)==0
 result=[]
 for p,parent,state in rows:

@@ -184,6 +184,8 @@ const startTimer = async interval => {
         : { StartCalendarInterval: { Month: target.getMonth() + 1, Day: target.getDate(), Hour: target.getHours(), Minute: target.getMinutes() } }) };
     execFileSync("/usr/bin/python3", ["-I", "-c", "import json,plistlib,sys;from pathlib import Path;Path(sys.argv[1]).write_bytes(plistlib.dumps(json.load(sys.stdin)))", path.join(root, unit + ".plist")],
       { input: JSON.stringify(plist), stdio: ["pipe", "ignore", "pipe"] });
+    await system("chown", "root:wheel", path.join(root, unit + ".plist"));
+    await system("chmod", "644", path.join(root, unit + ".plist"));
     await system("launchctl", "bootstrap", "system", path.join(root, unit + ".plist"));
     return unit;
   }

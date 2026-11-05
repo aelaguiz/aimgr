@@ -194,6 +194,9 @@ def observe_vendor_confinement():
                 confined = bool(re.fullmatch(r'aim-codex-p-\d+-[0-9a-f]+ \(enforce\)', boundary))
             else:
                 sandbox = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+                # Apple arm64 passes variadic arguments separately; describe
+                # the three fixed parameters before passing the path vararg.
+                sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
                 target = os.fsencode(str(homes['A'][0] / '.ssh/private-canary'))
                 # The same kernel query must permit this unrestricted fixture.
                 if sandbox.sandbox_check(os.getpid(), b'file-read-data', 1, target) != 0:

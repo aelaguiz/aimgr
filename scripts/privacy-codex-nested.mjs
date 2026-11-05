@@ -95,6 +95,7 @@ while True:
  if next_owned==owned: break
  owned=next_owned
 libproc=ctypes.CDLL('/usr/lib/libproc.dylib');sandbox=ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+sandbox.sandbox_check.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int]
 target=os.fsencode(sys.argv[2]);assert sandbox.sandbox_check(os.getpid(),b'file-read-data',1,target)==0
 found=False
 for pid in owned:

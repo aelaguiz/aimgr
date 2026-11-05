@@ -143,7 +143,10 @@ int main(int argc,char **argv) {
     launcher_exec(out);fputs("}\n",out); // No inherited vendor file denials on tools.
     if (fclose(out) || size>2*1024*1024) fail("policy generation");
     immutable(RUNTIME "/policy.lock",0);int lock=open(RUNTIME "/policy.lock",O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
-    if (lock<0 || flock(lock,LOCK_EX)) fail("policy installation lock");
+    // Each invocation has unique policy names. Share the maintenance lock so
+    // independent launches can compile/load together; exclusive maintenance
+    // still waits until every launch has entered its enforcing profile.
+    if (lock<0 || flock(lock,LOCK_SH)) fail("policy installation lock");
     parse_policy(policy,0);free(policy);install_uname();enter_profile();close(lock);drop();
     environ=private_environment;unset_environment("LD_PRELOAD");unset_environment("LD_AUDIT");
     set_environment("CODEX_HOME",home,1);set_environment("TMPDIR",scratch,1);
