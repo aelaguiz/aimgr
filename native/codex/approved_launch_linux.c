@@ -43,7 +43,6 @@ static void database_grants(FILE *out,const char *root) {
     literal(buffer,root);fclose(buffer);escaped[length-1]=0;
     fprintf(out,"%s/*.sqlite{,-wal,-shm,-journal}\" rwmlk,\n",escaped);
     fprintf(out,"%s/.sqlite-maintenance.lock\" rwlk,\n",escaped);free(escaped);
-    ancestors(out,root,"r","");
 }
 
 int main(int argc,char **argv) {
@@ -96,12 +95,14 @@ int main(int argc,char **argv) {
     fputs("network,\ncapability,\nsignal,\nptrace,\nunix,\n"
       "dbus (send, receive) bus=session peer=(name=org.freedesktop.DBus),\n"
       "dbus (send, receive) bus=session peer=(name=org.freedesktop.secrets),\n",out);
-    subtree(out,account,"rwmlk");ancestors(out,account,"r","");subtree(out,scratch,"rwmlk");
-    for (int i=0;i<writes;i++) {subtree(out,write_roots[i],"rwmlk");ancestors(out,write_roots[i],"r","");}
-    for (int i=0;i<reads;i++) {subtree(out,read_roots[i],"rm");ancestors(out,read_roots[i],"r","");}
+    // AppArmor permits path traversal without directory-read grants. Granting
+    // ancestors would expose unrelated sibling names above the selected roots.
+    subtree(out,account,"rwmlk");subtree(out,scratch,"rwmlk");
+    for (int i=0;i<writes;i++) subtree(out,write_roots[i],"rwmlk");
+    for (int i=0;i<reads;i++) subtree(out,read_roots[i],"rm");
     for (int i=0;i<databases;i++) database_grants(out,database_roots[i]);
     literal(out,vendor);fputs(" rm,\n",out);literal(out,helper);fputs(" rm,\n",out);
-    ancestors(out,vendor,"r","");resolver_read(out);
+    resolver_read(out);
     fputs("/{usr,bin,sbin,lib,lib64}{,/**} rm,\n/dev/{null,zero,random,urandom,tty,ptmx} rw,\n/dev/pts/{,**} rw,\n"
       "/etc/{resolv.conf,hosts,nsswitch.conf,gai.conf,localtime,ld.so.cache,passwd,group} r,\n/etc/{ssl,ca-certificates,codex}{,/**} r,\n"
       "/proc/{meminfo,stat,filesystems,loadavg,uptime} r,\n/proc/sys/{vm/overcommit_memory,kernel/ngroups_max} r,\n"

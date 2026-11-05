@@ -22,6 +22,13 @@ const EXEC_GLOBAL = new Set(["-c", "--config", "--enable", "--disable", "-m", "-
   "--strict-config", ...[...EXEC_ONLY].filter(key => key !== "--color"), "--help", "-h", "--version", "-V"]);
 const COMMANDS = new Set(["agents", "exec", "e", "review", "login", "logout", "mcp", "plugin", "app-server", "remote-control", "app", "completion", "update", "doctor", "sandbox", "debug", "execpolicy", "apply", "a", "resume", "queue", "archive", "delete", "migrate-rollouts", "migrate-nfs-db", "unarchive", "fork", "cloud", "cloud-tasks", "responses-api-proxy", "stdio-to-uds", "exec-server", "features", "tcp-tunnel"]);
 const UNSUPPORTED = new Set(["agents", "remote-control", "app", "update", "responses-api-proxy", "stdio-to-uds", "exec-server", "tcp-tunnel", "queue"]);
+const SANDBOX_VALUES = new Map(["-P", "--permission-profile", "--permissions-profile", "--sandbox-state-json",
+  "--sandbox-state-readable-root", "--allow-unix-socket"].map(key => [key, "value"]));
+const MCP_ADD_VALUES = new Map(["--env", "--url", "--bearer-token-env-var", "--oauth-client-id",
+  "--oauth-client-secret", "--oauth-client-registration", "--oauth-resource"].map(key => [key, "value"]));
+const EXECPOLICY_VALUES = new Map([["-r", "input"], ["--rules", "input"]]);
+const EXECPOLICY_OPTIONS = new Set(["--rules", "--pretty", "--resolve-host-executables", "--help",
+  "--config", "--enable", "--disable"]);
 
 /** Inspect the pinned public CLI grammar without treating prompt contents as
  * commands. Keep arguments and values byte-for-byte except the standalone pin. */
@@ -42,10 +49,29 @@ export function codexArguments(args, { cwd = process.cwd(), ownedAppServer = fal
       if (command) for (let j = i + 1; j < args.length; j++) { positionals.push(args[j]); positionalIndices.push(j); }
       break;
     }
+    // These native commands own a trailing child argv. Once its first token
+    // begins, flags such as sh's -c and a server's --remote are child data.
+    const tailReady = command === "sandbox"
+      || (command === "mcp" && positionals[0] === "add" && positionals.length >= 2)
+      || (command === "execpolicy" && positionals[0] === "check");
+    // execpolicy alone accepts unknown leading-hyphen command tokens. Native
+    // clap checks every short character before decoding attached values here.
+    const policyTail = command === "execpolicy" && positionals[0] === "check"
+      && (arg.startsWith("--") ? !EXECPOLICY_OPTIONS.has(arg.split("=", 1)[0])
+        : arg.startsWith("-") && !/^[rch]+$/.test(arg.slice(1)));
+    if (tailReady && (!arg.startsWith("-") || arg === "-" || policyTail)) {
+      for (let j = i; j < args.length; j++) { positionals.push(args[j]); positionalIndices.push(j); }
+      break;
+    }
+    const scopedValues = command === "sandbox" ? SANDBOX_VALUES
+      : command === "mcp" && positionals[0] === "add" ? MCP_ADD_VALUES
+      : command === "execpolicy" && positionals[0] === "check" ? EXECPOLICY_VALUES : null;
     if (arg === "--no-daemon") noDaemon = true;
     let key = arg, value;
     if (arg.startsWith("--") && arg.includes("=")) { key = arg.slice(0, arg.indexOf("=")); value = arg.slice(arg.indexOf("=") + 1); }
-    else if (/^-[cpCimsao].+/.test(arg)) { key = arg.slice(0, 2); value = arg.slice(2).replace(/^=/, ""); }
+    else if (/^-[cpCimsao].+/.test(arg) || (scopedValues?.has(arg.slice(0, 2)) && arg.length > 2)) {
+      key = arg.slice(0, 2); value = arg.slice(2).replace(/^=/, "");
+    }
     if (arg.startsWith("-") && arg !== "-") optionFacts.push({ key, command, execSubcommand });
     if (["--remote", "--remote-auth", "--remote-auth-token-env", "--exec-server", "--code-mode-host", "--remote-control", "--managed-daemon", "--analytics-default-enabled"].includes(key)) throw new Error("AIM Codex does not attach to a remote or shared background server.");
     const permissionChoice = ["--yolo", "--dangerously-bypass-approvals-and-sandbox", "--approve-for-me", "--not-so-yolo", "--sandbox", "-s"].includes(key);
@@ -68,7 +94,7 @@ export function codexArguments(args, { cwd = process.cwd(), ownedAppServer = fal
     if (["--approve-for-me", "--not-so-yolo"].includes(key)) approveForMe = true;
     if (key === "--search") search = true;
     if (key === "--oss") oss = true;
-    const kind = VALUES.get(key);
+    const kind = scopedValues?.get(key) ?? VALUES.get(key);
     if (kind) {
       value ??= args[++i];
       if (value === undefined) throw new Error(`Codex option ${key} needs a value.`);

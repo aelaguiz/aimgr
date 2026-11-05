@@ -35,7 +35,11 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     // source or any already-running session. Later explicit CLI overrides
     // retain native precedence and are checked against the effective mode.
     let parsedArgs = codexArguments(["-c", 'mcp_oauth_credentials_store="keyring"', ...args], { cwd, ownedAppServer });
-    if (fs.existsSync(path.join(account.sharedHome, ".credentials.json"))) {
+    // Native Clap exits before reading configuration for these exact forms.
+    // Do not use parsedArgs.inspection: passthrough child argv can contain help.
+    const inspectionOnly = (args.length === 1 && ["--help", "-h", "--version", "-V"].includes(args[0]))
+      || (args.length === 2 && parsedArgs.command === args[0] && ["--help", "-h"].includes(args[1]));
+    if (!inspectionOnly && fs.existsSync(path.join(account.sharedHome, ".credentials.json"))) {
       throw new Error("Codex's shared MCP credentials need the one-time native keyring conversion. Run `aim codex mcp-migrate` from a terminal before starting Codex.");
     }
     const artifact = admitArtifact({ selectedCommand: command, pinnedArtifactSet: env.AIMGR_CODEX_ARTIFACT_SET });
@@ -43,12 +47,12 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     if (policy.schema !== 1 || policy.version !== artifact.version || policy.platform !== process.platform || policy.arch !== process.arch
       || policy.settingsManifest !== 1 || !/^[a-f0-9]{40}$/.test(policy.sourceCommit ?? "")) throw new Error("Codex approved settings compatibility record is invalid.");
     const managed = inspectManagedPolicy({ artifact, credential: local.credential });
-    const entries = ["config.toml", ...(parsedArgs.profile ? [`${parsedArgs.profile}.config.toml`] : [])].map(name => {
+    const entries = (inspectionOnly ? [] : ["config.toml", ...(parsedArgs.profile ? [`${parsedArgs.profile}.config.toml`] : [])]).map(name => {
       const entry = codexSettingsView({ base: account.base, source: path.join(account.sharedHome, name), home: homeDir });
       codexStateLink(path.join(account.codexHome, name), entry.view);
       return entry;
     });
-    supervisor = await superviseCodexSettings(entries, { onWarning, onError,
+    if (!inspectionOnly) supervisor = await superviseCodexSettings(entries, { onWarning, onError,
       stateIO: request => codexStateIO(request, { helperPath: artifact.stateIO }) });
     // Chrome and other ordinary tools put Unix sockets under TMPDIR. Account
     // homes can exceed the OS socket-path limit; keep each private launch
@@ -56,16 +60,16 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     scratch = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), `aim-codex-${process.getuid()}-`));
     fs.chmodSync(scratch, 0o700);
     const environmentValues = codexPrivacyEnvironment({ env, prepared: account, artifact, scratch });
-    worktree = await prepareCodexWorktree({ parsedArgs, nativeInputs, artifact, prepared: account,
+    if (!inspectionOnly) worktree = await prepareCodexWorktree({ parsedArgs, nativeInputs, artifact, prepared: account,
       env: environmentValues, managed, operate: worktreeOperation });
     if (worktree) parsedArgs = worktree.parsedArgs;
-    const effectiveInputs = await nativeInputs({ artifact, prepared: account, parsedArgs,
+    const effectiveInputs = inspectionOnly ? null : await nativeInputs({ artifact, prepared: account, parsedArgs,
       env: environmentValues, managed, ownedAppServer });
-    if (effectiveInputs.mcp_store !== "keyring") {
+    if (!inspectionOnly && effectiveInputs.mcp_store !== "keyring") {
       throw new Error('Codex privacy requires mcp_oauth_credentials_store="keyring". Remove the conflicting command-line or administrator setting before starting Codex.');
     }
     const worktreeDatabases = worktree ? codexWorktreeDatabases(effectiveInputs) : null;
-    const inputs = resolveInputs({ prepared: account, parsedArgs, homeDir, env: environmentValues,
+    const inputs = inspectionOnly ? { cwd: parsedArgs.cwd, writes: [], reads: [], databases: [] } : resolveInputs({ prepared: account, parsedArgs, homeDir, env: environmentValues,
       managedFiles: managed.files, effectiveInputs });
     environmentFd = stageLaunchEnvironment(environmentValues, scratch);
     // Only the private view directory is admitted. Its ordinary permissions
@@ -94,7 +98,7 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
       env: { PATH: "/usr/bin:/bin" }, cwd: parsedArgs.processCwd,
       beforeSpawn() { startedAt = new Date().toISOString(); },
       childClosed() { endedAt = new Date().toISOString(); },
-      flushSettings: () => supervisor.flush(),
+      flushSettings: async () => supervisor?.flush(),
       closeEnvironment() { if (environmentFd !== undefined) { fs.closeSync(environmentFd); environmentFd = undefined; } },
       async close() {
         if (closed) return; closed = true;
@@ -103,7 +107,7 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
           prepared: account, parsedArgs, env: environmentValues, managed, databases: worktreeDatabases,
           startedAt, endedAt, onNotice });
         else if (worktree) { try { onNotice(`Codex kept the worktree at ${worktree.checkout.root}.`); } catch {} }
-        await supervisor.close();
+        await supervisor?.close();
         // Background tools may still refer to their temporary directory. Keep
         // nonempty scratch; empty launch scratch has no surviving state.
         try { fs.rmdirSync(scratch); } catch (error) { if (!["ENOTEMPTY", "EEXIST"].includes(error.code)) throw error; }

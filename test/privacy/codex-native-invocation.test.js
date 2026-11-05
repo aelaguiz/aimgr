@@ -81,4 +81,30 @@ test("relative --cd is projected once while native retains its original process 
   }), /one-time native keyring conversion/);
   assert.equal(fs.readFileSync(file, "utf8"), '{}');
   assert.equal(fs.readFileSync(config, "utf8"), 'mcp_oauth_credentials_store="auto"\n');
+  fs.writeFileSync(config, 'model = [\n');
+  for (const args of [["--version"], ["-V"], ["--help"], ["-h"], ["exec", "--help"], ["sandbox", "-h"]]) {
+    let admitted = false;
+    const invocation = await prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment, args,
+      env: { HOME: homeDir, PATH: "/usr/bin:/bin" },
+      admitArtifact: () => { admitted = true; return artifact; }, inspectManagedPolicy: () => ({ files: [] }),
+      nativeInputs: () => assert.fail("Native help/version must not initialize databases"),
+      resolveInputs: () => assert.fail("Native help/version must not inventory project/config inputs"),
+    });
+    try {
+      assert.ok(admitted);
+      assert.equal(invocation.command, artifact.launcher, "Inspection still enters the approved privacy boundary");
+      assert.deepEqual(invocation.entries, []);
+      assert.deepEqual(invocation.inputs, { cwd, writes: [], reads: [], databases: [] });
+      await invocation.flushSettings();
+    } finally { await invocation.close(); }
+  }
+  fs.unlinkSync(file); fs.writeFileSync(config, '');
+  for (const args of [["sandbox", "linux", "echo", "--help"], ["mcp", "add", "fixture", "echo", "--help"],
+    ["execpolicy", "check", "echo", "--help"], ["exec", "--", "--help"], ["Please explain --help"]]) {
+    await assert.rejects(prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment, args,
+      env: { HOME: homeDir, PATH: "/usr/bin:/bin" }, admitArtifact: () => artifact,
+      inspectManagedPolicy: () => ({ files: [] }),
+      nativeInputs: () => { throw new Error("ordinary preparation retained"); },
+    }), /ordinary preparation retained/);
+  }
 });

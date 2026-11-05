@@ -19,6 +19,32 @@ test("native greedy images admit every path without interpreting names as comman
   assert.deepEqual(codexArguments(["exec", "resume", "thread", "--image", "one.png", "prompt"], { cwd: "/work" }).images, ["/work/one.png"]);
 });
 
+test("native trailing child argv stays opaque while command options retain their inputs", () => {
+  const child = ["/bin/sh", "-c", "printf ok", "--remote", "-C", "child-dir", "-i", "child.png", "-p", "child-profile", "--help"];
+  for (const prefix of [["sandbox"], ["sandbox", "-P", "read-only"],
+    ["mcp", "add", "--env", "LABEL=fixture", "example"],
+    ["execpolicy", "check", "-r", "outside.rules", "--rules=other.rules"]]) {
+    const args = ["-c", 'model="synthetic"', ...prefix, ...child];
+    const parsed = codexArguments(args, { cwd: "/project" });
+    assert.deepEqual(parsed.args, args);
+    assert.deepEqual(parsed.config, ['model="synthetic"']);
+    assert.equal(parsed.cwd, "/project"); assert.equal(parsed.profile, null);
+    assert.deepEqual(parsed.images, []); assert.equal(parsed.inspection, false);
+    assert.deepEqual(parsed.files, prefix[0] === "execpolicy" ? ["/project/outside.rules", "/project/other.rules"] : []);
+    assert.deepEqual(parsed.positionals.slice(-child.length), child);
+  }
+  const http = codexArguments(["mcp", "add", "--url", "https://example.invalid/mcp", "fixture", "--oauth-client-id", "client"]);
+  assert.deepEqual(http.positionals, ["add", "fixture"]);
+  for (const tail of [["--remote", "endpoint", "-c", "child-data"], ["-p", "child-profile"], ["-rpolicy.rules", "echo"]]) {
+    const parsed = codexArguments(["execpolicy", "check", "-r", "outside.rules", ...tail], { cwd: "/project" });
+    assert.deepEqual(parsed.files, ["/project/outside.rules"]);
+    assert.deepEqual(parsed.positionals, ["check", ...tail]);
+    assert.deepEqual(parsed.config, []); assert.equal(parsed.profile, null);
+  }
+  assert.throws(() => codexArguments(["--remote", "example", "execpolicy", "check", "-r", "outside.rules", "echo"]), /shared background server/);
+  assert.throws(() => codexArguments(["sandbox", "--remote", "example", ...child]), /shared background server/);
+});
+
 test("owned app server accepts only stdio in either native value spelling", () => {
   for (const args of [["app-server", "--listen", "tcp://127.0.0.1:9000"], ["app-server", "--listen=tcp://127.0.0.1:9000"]]) {
     assert.throws(() => codexArguments(args, { ownedAppServer: true }), /stdio/);

@@ -26,14 +26,18 @@ def invoke(fixture, provider, arguments, scratch=None):
     case = Path(fixture['root']) / provider
     package = Path(fixture['packages'][provider])
     env = dict(os.environ, HOME=str(case / 'home'), SYNTHETIC_CANARY=str(Path(fixture['root']) / 'private-canary'),
-               SYNTHETIC_OTHER_SCRATCH=fixture['otherScratch'])
+               SYNTHETIC_OTHER_SCRATCH=fixture['otherScratch'],
+               SYNTHETIC_ACCOUNT_PARENT=fixture['root'],
+               SYNTHETIC_INPUT_PARENT=str(Path(fixture['root']) / 'inputs'),
+               SYNTHETIC_DATABASE_PARENT=str(Path(fixture['root']) / 'databases'))
     with tempfile.TemporaryFile(dir=case) as transfer:
         os.fchmod(transfer.fileno(), 0o600)
         transfer.write(b''.join((k + '=' + v).encode() + b'\0' for k, v in env.items()))
         transfer.flush()
         if provider == 'codex':
             args = ['v1', str(case), str(case / 'home'), str(scratch or fixture['codexScratch']), str(transfer.fileno()),
-                    '1', str(case / 'project'), '0', '0', '0', '--']
+                    '1', str(case / 'project'), '1', str(Path(fixture['root']) / 'inputs/selected'),
+                    '1', str(Path(fixture['root']) / 'databases/selected'), '0', '--']
         else:
             args = ['v1', 'protected', str(case / 'home'), str(case / 'settings.json'),
                     str(case / 'scratch'), str(transfer.fileno()), '1', str(case / 'project'), '0', '--']
@@ -79,6 +83,11 @@ if len(sys.argv) > 1:
             observation(subprocess.run([str(image), 'probe'], capture_output=True, text=True))
             observation(subprocess.run([str(image), 'self'], capture_output=True, text=True))
             if provider == 'codex':
+                # An ordinary requested tool still sees the directory entries.
+                for key in ['SYNTHETIC_ACCOUNT_PARENT', 'SYNTHETIC_INPUT_PARENT', 'SYNTHETIC_DATABASE_PARENT']:
+                    assert list(Path(os.environ[key]).iterdir())
+                denied = subprocess.run([str(image), 'private-parents'], capture_output=True, text=True)
+                assert denied.returncode == 0, (denied.returncode, denied.stderr)
                 def no_new_privs():
                     assert ctypes.CDLL(None).prctl(38, 1, 0, 0, 0) == 0
                 label = observation(subprocess.run([str(image), 'probe'], preexec_fn=no_new_privs,
@@ -136,6 +145,9 @@ if len(sys.argv) > 1:
         observation(invoke(fixture, provider, ['probe']))
         observation(invoke(fixture, provider, ['self']))
         if provider == 'codex':
+            private_parents = invoke(fixture, provider, ['private-parents'])
+            assert private_parents.returncode == 0, (private_parents.returncode, private_parents.stderr)
+            print('PASS selected input/database access without account or input ancestor listings')
             scratch = Path(fixture['codexScratch'])
             private = invoke(fixture, provider, ['temp-scratch'])
             assert private.returncode == 0, private.stderr
@@ -194,9 +206,22 @@ source.write_text(r'''
 #include <sys/utsname.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <errno.h>
 int main(int argc,char **argv){
  if(argc>1&&!strcmp(argv[1],"exec")){execv(argv[2],argv+2);perror("exec");return 2;}
  if(argc>1&&!strcmp(argv[1],"self")){char *a[]={argv[0],"probe",NULL};execv(a[0],a);return 3;}
+ if(argc>1&&!strcmp(argv[1],"private-parents")){
+  const char *keys[]={"SYNTHETIC_ACCOUNT_PARENT","SYNTHETIC_INPUT_PARENT","SYNTHETIC_DATABASE_PARENT"};
+  for(size_t i=0;i<3;i++){
+   errno=0;DIR *d=opendir(getenv(keys[i]));
+   if(d){closedir(d);fprintf(stderr,"unexpected ancestor listing: %s\n",keys[i]);return 17;}
+   if(errno!=EACCES&&errno!=EPERM)return 18;
+  }
+  char path[4096];snprintf(path,sizeof(path),"%s/selected/visible",getenv("SYNTHETIC_INPUT_PARENT"));
+  FILE *f=fopen(path,"r");if(!f)return 19;fclose(f);
+  snprintf(path,sizeof(path),"%s/selected/check.sqlite",getenv("SYNTHETIC_DATABASE_PARENT"));
+  f=fopen(path,"w");if(!f)return 20;fclose(f);return 0;
+ }
  if(argc>1&&!strcmp(argv[1],"temp-scratch")){
   char path[4096];snprintf(path,sizeof(path),"%s/vendor-proof",getenv("TMPDIR"));
   FILE *f=fopen(path,"w");if(!f)return 14;fputs("private temporary state",f);fclose(f);
@@ -220,6 +245,12 @@ subprocess.run(['cc', '-O2', '-Wall', '-Wextra', '-Werror', str(source), '-o', s
 (root / 'private-canary').write_text('SYNTHETIC_PRIVATE')
 (root / 'private-canary').chmod(0o644)
 fixture = dict(root=str(root), packages={})
+for name in ['inputs', 'databases']:
+    for directory in [root / name, root / name / 'selected']:
+        directory.mkdir(mode=0o700)
+        os.chown(directory, user.pw_uid, user.pw_gid)
+(root / 'inputs/selected/visible').write_text('SYNTHETIC_SELECTED_INPUT')
+(root / 'inputs/selected/visible').chmod(0o644)
 for key in ['codexScratch', 'otherScratch', 'foreignScratch']:
     scratch = Path('/tmp') / ('aim-codex-' + str(user.pw_uid) + '-' + secrets.token_hex(3))
     scratch.mkdir(mode=0o700)

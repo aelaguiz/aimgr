@@ -168,7 +168,7 @@ static void subtree(FILE *out,const char *file,const char *rights) {
      * libapparmor's query interface alone reported a misleading allow here. */
     text[length-1]=0; fprintf(out,"%s{,**}\" %s,\n",text,rights); free(text);
 }
-static void ancestors(FILE *out,const char *file,const char *rights,const char *qualifier) {
+static inline void ancestors(FILE *out,const char *file,const char *rights,const char *qualifier) {
     char copy[PATH_MAX]; snprintf(copy,sizeof(copy),"%s",file);
     for (;;) { char *slash=strrchr(copy,'/'); if (!slash) fail("path ancestor");
         if (slash==copy) copy[1]=0; else *slash=0;
