@@ -85,6 +85,9 @@ bash scripts/install-auth-maintainer.sh
 bash scripts/install-auth-maintainer.sh --uninstall
 ```
 
+Codex maintenance uses only logins authorized in this environment; it never retrieves or refreshes legacy shared Codex tokens. Claude and Grok retain their existing maintenance behavior.
+
+
 Redis administration and repair:
 
 ```bash
@@ -215,16 +218,19 @@ running sessions. On a cloned destination, run
 before using Codex; that replaces the copied identity and requires fresh local
 logins. Keep the source machine's identity unchanged.
 
-`aim codex privacy status --json` checks installed bytes, local policy,
+`aim codex privacy status --json` checks the approved immutable installation, local policy,
 environment provisioning and pending maintenance without running Codex or
 contacting Redis/OpenAI. For an existing File-backed MCP OAuth store, let the
 current Codex sessions finish and run `aim codex mcp-migrate` once. It converts
 the shared MCP tokens into the native OS keyring and preserves conflicting
 credentials. AIM refuses new Codex launches while conversion is pending;
 conversion does not stop processes or change OS schedules. `aim codex mcp-recover`
-finishes an interrupted conversion. If an interrupted backend write has no
-durable acknowledgement, recovery requires a later machine boot. Ordinary
-launch does not start conversion. The full contract and test plan are in the
+finishes an interrupted conversion. Linux can verify an exact completed write
+in the same boot without writing it again; an absent or different destination
+stays pending and preserves the File store. Mac create-only migration can also
+recover an absent destination after reacquiring its locks. Recovery never
+reboots the host or restarts its shared credential service. Ordinary launch
+does not start conversion. The full contract and test plan are in the
 [Codex privacy and proxy plan](docs/aelaguiz/CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md).
 
 Claude proxy protection is optional and configured per account. Accounts without
