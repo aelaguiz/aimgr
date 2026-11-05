@@ -256,11 +256,13 @@ try {
   fs.writeFileSync(path.join(root, "result.private.json"), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ fixture: root, ...result }));
 } finally {
   releaseFirst();
-  for (const unit of units) await stopTimer(unit).catch(() => {});
+  const cleanupErrors = [];
+  for (const unit of units) await stopTimer(unit).catch(error => cleanupErrors.push(error));
   for (const { child } of drivers) if (child.exitCode === null) { child.kill("SIGTERM"); await once(child, "close"); }
   if (store.client.isOpen) await store.client.quit();
   redis.kill("SIGTERM"); await once(redis, "close");
   for (const client of ws.clients) client.terminate(); ws.close(); server.closeAllConnections();
   await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => ui.close(resolve))]);
   fs.writeFileSync(path.join(root, "model.private.json"), JSON.stringify(requests, null, 2));
+  if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Failed to unload fixture schedules");
 }

@@ -349,6 +349,9 @@ finally:
         daemon.wait(timeout=15)
     if children_finished and default_keychain:
         security('default-keychain', '-d', 'user', '-s', default_keychain)
+        selected = security('default-keychain', '-d', 'user').stdout.strip().strip('"')
+        assert Path(selected).resolve() == Path(default_keychain).resolve(), 'default Keychain restoration failed'
+        print('PASS fixture writers exited and original default Keychain restored', flush=True)
     if success and children_finished:
         if mac:
             selected = security('default-keychain', '-d', 'user').stdout.strip().strip('"')
@@ -371,3 +374,4 @@ finally:
                     (base / 'receipts' / (receipt_id + '.json')).unlink(missing_ok=True)
         finally:
             os.close(fd)
+    assert children_finished, 'fixture cleanup incomplete: keyring writer still active'

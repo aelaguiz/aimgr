@@ -96,7 +96,9 @@ def atomic(file, value, mode=0o644):
 with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory:
     stage = Path(directory)
     subprocess.run(['cc', '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
-        str(repo / ('native/codex/approved_launch_linux.c' if system == 'Linux' else 'native/codex/approved_launch_macos.c')), '-o', str(stage / 'launcher')], check=True)
+        str(repo / ('native/codex/approved_launch_linux.c' if system == 'Linux' else 'native/codex/approved_launch_macos.c')),
+        *(['-framework', 'Security', '-framework', 'CoreFoundation'] if system == 'Darwin' else []),
+        '-o', str(stage / 'launcher')], check=True)
     subprocess.run(['cc', '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
         str(repo / 'native/codex/process_control.c'), '-o', str(stage / 'process-control')], check=True)
     if system == 'Darwin':

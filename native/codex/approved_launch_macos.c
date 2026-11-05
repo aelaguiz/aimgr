@@ -5,6 +5,7 @@
 #include "../privacy/launch_macos.h"
 #include "maintenance_gate.h"
 #include "private_scratch.h"
+#include "keychain_paths_macos.h"
 
 static void vendor_filter(FILE *out,const char *vendor,const char *helper) {
     fputs("(require-any ",out);rule(out,"process-path",vendor);rule(out,"process-path",helper);fputs(")",out);
@@ -86,6 +87,7 @@ int main(int argc,char **argv) {
     for (int i=0;i<denies;i++) canonical_future(denied[i]);
     restore_environment(envfd);close_inherited_descriptors();
     int admission=codex_maintenance_admission();
+    struct codex_keychain_paths keychain=keychain_paths(user_home);
     char *policy=NULL;size_t length=0;FILE *out=open_memstream(&policy,&length);if (!out) fail("policy allocation");
     fputs("(version 1)(allow default)\n(allow process-exec (require-not (require-any ",out);
     rule(out,"literal",vendor);rule(out,"literal",helper);fputs(")) (with no-sandbox))\n(with-filter ",out);
@@ -95,10 +97,27 @@ int main(int argc,char **argv) {
     for (int i=0;i<writes;i++) {rule(out,"subpath",write_roots[i]);ancestors(out,write_roots[i]);}
     for (int i=0;i<reads;i++) {rule(out,"subpath",read_roots[i]);ancestors(out,read_roots[i]);}
     for (int i=0;i<databases;i++) database_grants(out,database_roots[i],1);
-    fputs(")))\n(deny file-write* (require-not (require-any (subpath \"/dev\")",out);
+    if (*keychain.preferences) rule(out,"literal",keychain.preferences);
+    keychain_database_grants(out,&keychain);
+    fputs(")))\n",out);
+    if (*keychain.preferences || keychain.count) {
+        fputs("(allow file-read-metadata ",out);keychain_metadata(out,&keychain);fputs(")",out);
+    }
+    // Security.framework checks this sentinel before opening any keychain.
+    // Denying its stat sends native into a blocking system-keychain repair wait.
+    fputs("(allow file-read-metadata ",out);
+    rule(out,"literal","/private/var/run/systemkeychaincheck.done");
+    rule(out,"literal","/var/run/systemkeychaincheck.done");
+    ancestors(out,"/private/var/run/systemkeychaincheck.done");fputs(")",out);
+    for (int i=0;i<keychain.count;i++) {
+        fputs(i?"(deny file-read-data file-read-xattr ":"(deny file-read-xattr ",out);
+        rule(out,"literal",keychain.files[i]);fputs(")",out);
+    }
+    fputs("\n(deny file-write* (require-not (require-any (subpath \"/dev\")",out);
     rule(out,"subpath",account);rule(out,"subpath",scratch);
     for (int i=0;i<writes;i++) rule(out,"subpath",write_roots[i]);
     for (int i=0;i<databases;i++) database_grants(out,database_roots[i],0);
+    keychain_database_grants(out,&keychain);
     fputs(")))",out);
     for (int i=0;i<denies;i++) {fputs("(deny file-read* file-write* ",out);rule(out,"literal",denied[i]);fputs(")",out);}
     // The official read-only sandbox canonicalizes /tmp to locate its fixed

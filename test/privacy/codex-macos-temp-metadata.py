@@ -10,9 +10,11 @@ import json
 import os
 from pathlib import Path
 import platform
+import pwd
 import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 
 assert platform.system() == 'Darwin' and os.getuid() != 0
@@ -29,6 +31,8 @@ probe = r'''
 #include <sys/wait.h>
 #include <sys/xattr.h>
 #include <unistd.h>
+#include <Security/Security.h>
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 static void check(int ok, const char *name) {
     if (!ok) { perror(name); exit(1); }
 }
@@ -36,6 +40,42 @@ int main(int argc, char **argv) {
     check(argc == 7 || argc == 8, "arguments");
     int tool = argc == 8 && !strcmp(argv[7], "tool");
     char actual[4096]; struct stat st;
+    const char *keychain_path = getenv("AIM_SYNTHETIC_KEYCHAIN");
+    if (keychain_path) {
+        check(!stat(keychain_path, &st), "selected keychain metadata");
+        int raw = open(keychain_path, O_RDONLY);
+        check(raw >= 0, "approved selected keychain read"); close(raw);
+        raw = open(keychain_path, O_WRONLY);
+        check(raw >= 0, "approved selected keychain write"); close(raw);
+        errno = 0;
+        ssize_t attr = getxattr(keychain_path, "com.aimgr.synthetic-absent", NULL, 0, 0, 0);
+        check(tool ? attr < 0 && errno == ENOATTR : attr < 0 && errno == EPERM, "keychain xattr boundary");
+        const char *unrelated = getenv("AIM_SYNTHETIC_UNRELATED_KEYCHAIN");
+        check(unrelated != NULL, "unrelated keychain fixture");
+        raw = open(unrelated, O_RDONLY);
+        check(tool ? raw >= 0 : raw < 0 && errno == EPERM, "unrelated keychain read boundary");
+        if (raw >= 0) close(raw);
+        raw = open(unrelated, O_WRONLY);
+        check(tool ? raw >= 0 : raw < 0 && errno == EPERM, "unrelated keychain write boundary");
+        if (raw >= 0) close(raw);
+        check(strlen(keychain_path) < sizeof(actual), "keychain path size");
+        strcpy(actual, keychain_path); *strrchr(actual, '/') = 0;
+        DIR *directory = opendir(actual);
+        check(tool ? directory != NULL : !directory && errno == EPERM, "keychain parent listing boundary");
+        if (directory) closedir(directory);
+        SecKeychainRef keychain = NULL;
+        OSStatus status = SecKeychainCopyDomainDefault(kSecPreferencesDomainUser, &keychain);
+        check(status == 0 && keychain != NULL, "native default keychain");
+        UInt32 path_size = sizeof(actual);
+        check(!SecKeychainGetPath(keychain, &path_size, actual) && !strcmp(actual, keychain_path), "custom default retained");
+        UInt32 size = 0; void *data = NULL;
+        const char *service = "AIM Synthetic Path Probe", *account = "synthetic";
+        status = SecKeychainFindGenericPassword(keychain, (UInt32)strlen(service), service,
+                                               (UInt32)strlen(account), account, &size, &data, NULL);
+        if (status) fprintf(stderr, "native keychain lookup status: %d\n", (int)status);
+        check(status == 0 && size == 6 && !memcmp(data, "MARKER", 6), "native item lookup");
+        SecKeychainItemFreeContent(NULL, data); CFRelease(keychain);
+    }
     check(realpath("/tmp", actual) && !strcmp(actual, "/private/tmp"), "physical temp alias");
     check(!stat(actual, &st) && S_ISDIR(st.st_mode), "temp metadata");
     const char *roots[] = {"/tmp", "/private/tmp"};
@@ -99,27 +139,85 @@ with tempfile.TemporaryDirectory(prefix='aim-temp-metadata-', dir='/private/tmp'
     (root / 'probe.c').write_text(probe)
     artifact = hashlib.sha256(str(root).encode()).hexdigest()
     installed = Path('/opt/aimgr-codex-runtime/artifacts') / artifact
+    standard = '--standard-keychain' in sys.argv
+    keychain = ((Path(pwd.getpwuid(os.getuid()).pw_dir) / 'Library/Keychains' / ('aim.synthetic+[' + secrets.token_hex(6) + '].keychain-db'))
+                if standard else root / 'keychain-only' / 'fixture+[literal].keychain-db')
+    keychain.parent.mkdir(exist_ok=True)
+    unrelated_keychain = keychain.with_name(keychain.name + '-unrelated')
+    unrelated_keychain.write_text('SYNTHETIC_UNRELATED_KEYCHAIN')
+    legacy_keychain = Path(str(keychain)[:-3]) if standard else None
+    prior_keychain = None
+    keychain_created = False
+    def security(*args):
+        result = subprocess.run(['/usr/bin/security', *map(str, args)], capture_output=True, text=True, check=True)
+        return result.stdout.strip().strip('"')
     try:
         for source, name in [(repo / 'native/codex/approved_launch_macos.c', 'launcher'), (root / 'probe.c', 'codex')]:
-            subprocess.run(['clang', '-O2', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(root / name)], check=True)
+            subprocess.run(['clang', '-O2', '-Wall', '-Wextra', '-Werror', str(source),
+                            '-framework', 'Security', '-framework', 'CoreFoundation', '-o', str(root / name)], check=True)
         shutil.copy2(root / 'codex', root / 'tool')
         subprocess.run(['codesign', '--force', '--sign', '-', '--options', 'runtime', str(root / 'launcher')], check=True, capture_output=True)
         subprocess.run(['sudo', '-n', 'mkdir', '-m', '755', str(installed)], check=True)
         for name in ['launcher', 'codex', 'codex-code-mode-host']:
             subprocess.run(['sudo', '-n', 'install', '-o', 'root', '-g', 'wheel', '-m', '755',
                             str(root / ('codex' if name == 'codex-code-mode-host' else name)), str(installed / name)], check=True)
+        prior_keychain = security('default-keychain', '-d', 'user')
+        security('create-keychain', '-p', 'SYNTHETIC_PATH_PASSWORD', keychain)
+        keychain_created = True
+        security('unlock-keychain', '-p', 'SYNTHETIC_PATH_PASSWORD', keychain)
+        security('default-keychain', '-d', 'user', '-s', keychain)
+        security('add-generic-password', '-a', 'synthetic', '-s', 'AIM Synthetic Path Probe', '-w', 'MARKER',
+                 '-T', installed / 'codex', '-T', installed / 'codex-code-mode-host', '-T', root / 'tool', keychain)
+        if legacy_keychain:
+            assert not legacy_keychain.exists() and not legacy_keychain.is_symlink()
+            legacy_keychain.symlink_to(root / 'absent-legacy-keychain')
+        probe_args = [str(sibling), str(scratch / 'own-file'), str(installed / 'codex-code-mode-host'),
+                      str(root / 'tool'), str(optional), str(optional / 'visible')]
+        control = subprocess.run([str(installed / 'codex'), *probe_args, 'tool'],
+                                 env=dict(os.environ, HOME=pwd.getpwuid(os.getuid()).pw_dir, AIM_SYNTHETIC_KEYCHAIN=str(keychain),
+                                          AIM_SYNTHETIC_UNRELATED_KEYCHAIN=str(unrelated_keychain)),
+                                 capture_output=True, text=True, timeout=20)
+        assert control.returncode == 0, ('unrestricted control', control.returncode, control.stderr)
+        shutil.rmtree(optional)
+        optional.symlink_to(root / 'not-installed')
         with tempfile.TemporaryFile() as environment:
-            environment.write(b'PATH=/usr/bin:/bin\0HOME=' + str(root).encode() + b'\0')
+            environment.write(b'PATH=/usr/bin:/bin\0HOME=' + pwd.getpwuid(os.getuid()).pw_dir.encode()
+                              + b'\0AIM_SYNTHETIC_KEYCHAIN=' + str(keychain).encode()
+                              + b'\0AIM_SYNTHETIC_UNRELATED_KEYCHAIN=' + str(unrelated_keychain).encode() + b'\0')
             environment.flush()
             result = subprocess.run([str(installed / 'launcher'), 'v1', str(account), str(home), str(scratch),
-                                     str(environment.fileno()), '1', str(optional), '0', '0', '0', '--', str(sibling),
-                                     str(scratch / 'own-file'), str(installed / 'codex-code-mode-host'), str(root / 'tool'),
-                                     str(optional), str(optional / 'visible')],
+                                     str(environment.fileno()), '1', str(optional), '0', '0', '0', '--', *probe_args],
                                     pass_fds=(environment.fileno(),), capture_output=True, text=True, timeout=20)
         assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
         print(result.stdout, end='')
-        print(json.dumps({'fixture': root.name, 'realVendorExecuted': False, 'activeSelectorChanged': False}))
+        # No MCP use: an absent optional plist under a valid symlinked
+        # Preferences parent must not refuse an otherwise healthy launch.
+        fake_home = root / 'preference-home'
+        (fake_home / 'Library').mkdir(parents=True)
+        preference_parent = root / 'preferences-only'
+        preference_parent.mkdir()
+        (fake_home / 'Library/Preferences').symlink_to(preference_parent)
+        shutil.rmtree(optional)
+        optional.symlink_to(root / 'not-installed')
+        with tempfile.TemporaryFile() as environment:
+            environment.write(b'PATH=/usr/bin:/bin\0HOME=' + str(fake_home).encode() + b'\0')
+            environment.flush()
+            no_mcp = subprocess.run([str(installed / 'launcher'), 'v1', str(account), str(home), str(scratch),
+                                     str(environment.fileno()), '1', str(optional), '0', '0', '0', '--', *probe_args],
+                                    pass_fds=(environment.fileno(),), capture_output=True, text=True, timeout=20)
+        assert no_mcp.returncode == 0, ('optional preference', no_mcp.returncode, no_mcp.stdout, no_mcp.stderr)
+        print(json.dumps({'fixture': root.name, 'realVendorExecuted': False, 'activeSelectorChanged': False,
+                          'keychainLocation': 'standard' if standard else 'custom', 'selectedDatabaseReadWrite': True,
+                          'unrelatedDatabaseDenied': True, 'keychainXattrsDenied': True,
+                          'missingPreferenceWithSymlinkedParent': True, 'danglingLegacyCounterpart': standard}))
     finally:
+        if prior_keychain:
+            security('default-keychain', '-d', 'user', '-s', prior_keychain)
+        if keychain_created:
+            security('delete-keychain', keychain)
+        if legacy_keychain and legacy_keychain.is_symlink():
+            legacy_keychain.unlink()
+        unrelated_keychain.unlink()
         if installed.exists():
             for name in ['launcher', 'codex', 'codex-code-mode-host']:
                 subprocess.run(['sudo', '-n', 'rm', '-f', str(installed / name)], check=True)
