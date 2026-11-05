@@ -218,6 +218,49 @@ running sessions. On a cloned destination, run
 before using Codex; that replaces the copied identity and requires fresh local
 logins. Keep the source machine's identity unchanged.
 
+Codex proxy support is optional. Install an approved route with the existing
+Claude proxy installer, including a distinct numeric-loopback `httpPort` and
+the numeric TLS exit check (`https://1.1.1.1/cdn-cgi/trace`,
+`exitCheckFormat: cloudflare-trace`). Codex can reuse a physical route from
+`claudeProxyProfiles`; `codexProxyProfiles` overrides individual definitions.
+Provider credentials and account assignments remain separate.
+
+```bash
+aim codex proxy set <label> <profile>
+aim codex proxy show <label>
+aim codex login <new-label> --proxy <profile>
+```
+
+Assignment changes require only that account to be idle. Another account may
+continue using the same physical route. **For the initial upgrade from the
+privacy-only version**, finish affected older Codex invocations and update their
+AIM launchers and schedules before first enrollment. Those older invocations
+predate the assignment lock; installing a new bundle preserves them. Subsequent
+launches hold the account lock until Codex exits, including app-server and routine
+handoffs. Installing or replacing shared route configuration still requires the
+existing stopped installation transition.
+
+An assigned account uses its route for AIM token exchange, refresh and usage,
+and for native Codex HTTP, WebSocket and tool traffic. Short connection outages
+retry the same route for 60 seconds after the first failed probe while existing
+work remains routed and new launches wait. Detection, the final probe and
+termination add time; isolated tests measured about 75 to 76 seconds from outage
+to termination. Wrong exits and dead route owners are fatal. Repair does not
+replay a conversation or scheduled occurrence. Status checks the current route
+service independently of cached usage; `proxy show` does not claim a fresh exit
+verification.
+
+For headless login, keep `aim codex login <label> --manual-callback-stdio` on the
+destination machine. The private handoff owner first runs
+`node scripts/codex-login-browser.mjs validate <profile>` on the original browser
+host, then starts/releases the destination's `auth_url` event to
+`node scripts/codex-login-browser.mjs open <profile>`. The helper validates again
+before navigation and keeps its one tab until its stdin closes. Relay the complete
+callback privately to the destination, then close the helper's stdin. Chrome,
+its profile and its CDP listener stay on their original machine. The browser
+host needs its existing SOCKS/CDP configuration; only the CLI host needs the
+Codex HTTP inbound. No `auth.json`, cookies or browser state are transferred.
+
 `aim codex privacy status --json` checks the approved immutable installation, local policy,
 environment provisioning and pending maintenance without running Codex or
 contacting Redis/OpenAI. For an existing File-backed MCP OAuth store, let the

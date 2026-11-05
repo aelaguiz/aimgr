@@ -7,6 +7,8 @@ import { checkClaudeRouteExit } from "./claude-transport.js";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { resolveOptionalClaudeEgressProfile } from "./claude-egress-policy.js";
 import { rememberClaudeProtection } from "./claude-offline-binding.js";
+import { CodexRouteError } from "./route-error.js";
+import { checkCodexRouteExit } from "./codex-egress.js";
 
 const helper = fileURLToPath(new URL("../../native/claude/linux_proxy.py", import.meta.url));
 const exec = promisify(execFile);
@@ -43,28 +45,55 @@ export async function assertLocalClaudeProfileStopped(profileRef, { cgroupRoot =
 // nativeCommand must name Claude itself even when command is its Node supervisor:
 // otherwise an existing unwrapped --bg daemon could receive the new work.
 // Regressions: claude-native-route.test.js and claude-native-background.test.js.
-export async function prepareClaudeNativeRoute({ profile, command, args, nativeCommand = command, approvedPrivacyEntry = false, signal, deadlineMs, platform = process.platform }) {
-  if (!profile) throw new ClaudeRouteError("missing_proxy_assignment");
-  if (!["linux", "darwin"].includes(platform)) throw new ClaudeRouteError("native_proxy_platform_unverified", profile);
+async function prepareAccountNativeRoute({ profile, command, args, nativeCommand = command, approvedPrivacyEntry = false, signal, deadlineMs, platform = process.platform },
+  { codex = false, RouteError = ClaudeRouteError, checkExit = checkClaudeRouteExit } = {}) {
+  if (!profile) throw new RouteError("missing_proxy_assignment");
+  if (!["linux", "darwin"].includes(platform)) throw new RouteError("native_proxy_platform_unverified", profile);
+  if (codex && (!/^\/opt\/aimgr-codex-runtime\/artifacts\/[a-f0-9]{64}\/launcher$/.test(command)
+    || args[0] !== "assigned-v1")) throw new RouteError("native_proxy_unavailable", profile);
   let installed;
   try { installed = JSON.parse(await fs.readFile(`/opt/aimgr-claude-proxy/${profile.profileRef}.json`, "utf8")); }
-  catch (cause) { throw new ClaudeRouteError("native_proxy_unavailable", { ...profile, cause }); }
+  catch (cause) { throw new RouteError("native_proxy_unavailable", { ...profile, cause }); }
   if (installed.socksHost !== profile.socksHost || installed.socksPort !== profile.socksPort
-      || JSON.stringify([...(installed.expectedExits ?? [])].sort()) !== JSON.stringify([...profile.expectedExits].sort())) {
-    throw new ClaudeRouteError("native_proxy_mismatch", profile);
+      || JSON.stringify([...(installed.expectedExits ?? [])].sort()) !== JSON.stringify([...profile.expectedExits].sort())
+      || (codex && (installed.httpPort !== profile.httpPort || installed.exitCheckFormat !== profile.exitCheckFormat
+        || installed.exitCheckUrl !== profile.exitCheckUrl))) {
+    throw new RouteError("native_proxy_mismatch", profile);
   }
   const timeoutMs = Number.isFinite(deadlineMs) ? Math.max(1, Math.min(8000, deadlineMs - Date.now())) : 8000;
-  await checkClaudeRouteExit(profile, { timeoutMs, signal });
-  const binding = JSON.stringify({ label: profile.label, socksHost: profile.socksHost, socksPort: profile.socksPort, expectedExits: profile.expectedExits, nativeCommand });
+  // Codex's native entry owns admission and its bounded transient recovery.
+  // A separate one-shot JS probe would reject the launch before that wait.
+  if (!codex) await checkExit(profile, { timeoutMs, signal });
+  const binding = JSON.stringify({ label: profile.label, socksHost: profile.socksHost, socksPort: profile.socksPort,
+    expectedExits: profile.expectedExits, nativeCommand,
+    ...(codex ? { provider: "openai-codex", httpPort: profile.httpPort } : {}) });
   if (platform === "darwin") {
-    if (approvedPrivacyEntry) {
-      if (!/^\/opt\/aimgr-claude-runtime\/artifacts\/[a-f0-9]{64}\/launcher$/.test(command)
-        || args[0] !== "v1" || args[1] !== "protected") throw new ClaudeRouteError("native_proxy_unavailable", profile);
+    if (approvedPrivacyEntry || codex) {
+      if (!codex && (!/^\/opt\/aimgr-claude-runtime\/artifacts\/[a-f0-9]{64}\/launcher$/.test(command)
+        || args[0] !== "v1" || args[1] !== "protected")) throw new ClaudeRouteError("native_proxy_unavailable", profile);
       return { command, args: ["route-v1", profile.profileRef, binding, "--", ...args] };
     }
     return { command: "/opt/aimgr-claude-proxy/darwin_launch", args: [profile.profileRef, binding, "--", command, ...args] };
   }
   return { command: "/usr/bin/python3", args: [helper, "run", profile.profileRef, binding, "--", command, ...args] };
+}
+
+export const prepareClaudeNativeRoute = options => prepareAccountNativeRoute(options);
+export const prepareCodexNativeRoute = options => prepareAccountNativeRoute(options,
+  { codex: true, RouteError: CodexRouteError, checkExit: checkCodexRouteExit });
+
+export function codexProxyEnvironment(env, profile) {
+  const next = { ...env };
+  for (const key of Object.keys(next)) {
+    if (["http_proxy", "https_proxy", "all_proxy", "no_proxy"].includes(key.toLowerCase())) delete next[key];
+  }
+  // A parent tool's marker describes that tool, not the fresh vendor process.
+  // Preserve the actual native sandbox and every ordinary tool environment.
+  delete next.CODEX_SANDBOX;
+  const proxy = `http://${profile.socksHost === "::1" ? "[::1]" : profile.socksHost}:${profile.httpPort}`;
+  for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) next[key] = next[key.toLowerCase()] = proxy;
+  next.NO_PROXY = next.no_proxy = "localhost,127.0.0.1,::1";
+  return next;
 }
 
 // R0/R7: apply only after explicit protection is resolved, never in common

@@ -19,6 +19,8 @@ import time
 import tempfile
 import termios
 import urllib.parse
+import ipaddress
+import ssl
 from contextlib import contextmanager
 
 ROOT = pathlib.Path('/opt/aimgr-claude-proxy')
@@ -29,6 +31,18 @@ SOURCE_REVISION = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(
 
 class TransientProxyError(RuntimeError):
     """The assigned route is temporarily unreachable, not a different exit."""
+
+
+def approved_exit(config, body):
+    if config.get('exitCheckFormat') == 'cloudflare-trace':
+        values = [line[3:] for line in body.decode('utf-8').splitlines() if line.startswith('ip=')]
+        if len(values) != 1 or ipaddress.ip_address(values[0]).version != 4:
+            raise ValueError('invalid numeric exit response')
+        address = values[0]
+    else:
+        address = json.loads(body).get('ip')
+    if address not in config['expectedExits']:
+        raise RuntimeError('native route exit mismatch')
 
 
 def command(args, **kwargs):
@@ -247,7 +261,12 @@ def run(name, expected, env_fd, argv, *, install_lock=None):
 
 def run_child(name, expected, env_fd, argv, *, replace_with_approved=False, install_lock=None):
     config = profile(name)
-    for key in ('socksHost', 'socksPort'):
+    codex = expected.get('provider') == 'openai-codex'
+    if codex and (not replace_with_approved or len(argv) < 11
+                  or not re.fullmatch(r'/opt/aimgr-codex-runtime/artifacts/[a-f0-9]{64}/launcher', argv[0])
+                  or argv[1] != 'assigned-v1'):
+        raise RuntimeError('invalid approved Codex privacy entry')
+    for key in (('socksHost', 'socksPort', 'httpPort') if codex else ('socksHost', 'socksPort')):
         if config[key] != expected[key]:
             raise RuntimeError('native proxy binding changed before launch')
     if sorted(config['expectedExits']) != sorted(expected['expectedExits']):
@@ -308,19 +327,30 @@ def run_child(name, expected, env_fd, argv, *, replace_with_approved=False, inst
     # The child must enter its routing GID before stop/reconfiguration can acquire
     # the exclusive lock; otherwise a late child could escape the stop inventory.
     with lock(ROOT / f'{name}.lock') as admission_lock:
-        current_ready(name, allow_starting=argv == probe_args)
-        require_existing_owners_routed(config, expected, env)
+        current_ready(name, allow_starting=True)
+        if not codex:
+            require_existing_owners_routed(config, expected, env)
         # The service invokes this exact internal probe too. Avoid recursion;
         # every other command proves the native path before it can start.
         if argv != probe_args:
-            checking = spawn_routed(probe_args)
-            try:
-                if checking.wait(timeout=8) != 0:
-                    raise RuntimeError('native routing health check failed before launch')
-            except subprocess.TimeoutExpired:
-                checking.kill()
-                checking.wait()
-                raise RuntimeError('native routing health check timed out before launch')
+            deadline = time.monotonic() + 60
+            while True:
+                current_ready(name, allow_starting=True)
+                code = 75
+                if not (state_dir(name) / 'starting').exists():
+                    checking = spawn_routed(probe_args)
+                    try:
+                        code = checking.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        checking.kill(); checking.wait()
+                    current_ready(name, allow_starting=True)
+                    if code == 0 and not (state_dir(name) / 'starting').exists():
+                        break
+                    if code not in (0, 75):
+                        raise RuntimeError('native routing health check failed before launch')
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('native route unavailable before launch')
+                time.sleep(max(0, min(2, deadline - time.monotonic())))
         current_ready(name, allow_starting=argv == probe_args)
         if replace_with_approved:
             # The hardened launcher reaches this role with a minimal routing
@@ -408,8 +438,17 @@ def probe(name):
     try:
         connection.request('GET', urllib.parse.urlunsplit(('', '', url.path or '/', url.query, '')), headers={'Connection': 'close'})
         response = connection.getresponse()
-        if response.status != 200 or json.loads(response.read(1024)).get('ip') not in config['expectedExits']:
-            raise RuntimeError('native route exit mismatch')
+        limit = 16384 if config.get('exitCheckFormat') == 'cloudflare-trace' else 1024
+        body = response.read(limit + 1)
+        if len(body) > limit:
+            raise ValueError('oversized native exit response')
+        if response.status != 200:
+            raise TransientProxyError('native route check HTTP error')
+        approved_exit(config, body)
+    except ssl.SSLCertVerificationError:
+        raise
+    except (OSError, http.client.HTTPException) as error:
+        raise TransientProxyError('native route check could not connect') from error
     finally:
         connection.close()
 
@@ -442,11 +481,12 @@ def check_native_path(name, config):
             os._exit(125)
     # Stop marks failure before waiting for admission. Hold the shared lock
     # until this child exits so it cannot enter the GID after stop's scan.
+    limit = 16384 if config.get('exitCheckFormat') == 'cloudflare-trace' else 1024
     with lock(ROOT / f'{name}.lock'):
         current_ready(name, allow_starting=True)
         try:
             result = command(['/usr/bin/curl', '--disable', '--proxy', '', '--noproxy', '*',
-                              '--proto', '=http,https', '--max-time', '6', '--max-filesize', '1024',
+                              '--proto', '=http,https', '--max-time', '6', '--max-filesize', str(limit),
                               '--silent', '--show-error', '--fail', '--write-out', '\n%{http_code}', '--', url],
                              env={'PATH': '/usr/bin:/bin'}, preexec_fn=routed_identity,
                              timeout=8, capture_output=True, text=True)
@@ -457,9 +497,9 @@ def check_native_path(name, config):
                 raise TransientProxyError(f'native route check could not connect (curl {error.returncode})') from error
             raise
         body, separator, status = result.stdout.rpartition('\n')
-        if (not separator or status != '200' or len(body) > 1024
-                or json.loads(body).get('ip') not in config['expectedExits']):
+        if not separator or status != '200' or len(body.encode()) > limit:
             raise RuntimeError('native route exit mismatch')
+        approved_exit(config, body.encode())
 
 
 def check_native_path_with_retry(name, config):
@@ -693,6 +733,13 @@ def install():
             if not value.get('expectedExits'):
                 raise RuntimeError('approved exit addresses are required')
             gids.add(value['gid']); ports.add(value['socksPort']); interfaces.add(value['interface']); subnets.add(value['subnetIndex'])
+            if 'httpPort' in value:
+                port = value['httpPort']
+                if type(port) is not int or not 1 <= port <= 65535 or port in ports:
+                    raise RuntimeError('profiles require distinct valid HTTP ports')
+                ports.add(port)
+                if value.get('exitCheckFormat') != 'cloudflare-trace' or value.get('exitCheckUrl') != 'https://1.1.1.1/cdn-cgi/trace':
+                    raise RuntimeError('Codex-enabled routes require the numeric TLS exit check')
         reload_ready = {}
         same_assignments = profiles == old['profiles']
         if same_assignments:
@@ -758,6 +805,13 @@ def install():
                                     'mtu': 1500, 'auto_route': False, 'auto_redirect': False, 'dns_mode': 'disabled', 'stack': 'gvisor'}],
                       'outbounds': [{'type': 'socks', 'tag': 'assigned', 'server': config['socksHost'], 'server_port': config['socksPort'], 'version': '5'}],
                       'route': {'final': 'assigned'}}
+            if 'httpPort' in config:
+                router['inbounds'].append({'type': 'http', 'tag': 'codex-http', 'listen': config['socksHost'], 'listen_port': config['httpPort']})
+                router['outbounds'].append({'type': 'direct', 'tag': 'local'})
+                router['route']['rules'] = [
+                    {'inbound': ['codex-http'], 'ip_cidr': ['127.0.0.0/8', '::1/128'], 'action': 'route', 'outbound': 'local'},
+                    {'inbound': ['codex-http'], 'domain': ['localhost'], 'action': 'route', 'outbound': 'local'},
+                ]
             router_file = ROOT / f'{name}-sing-box.json'
             router_file.write_text(json.dumps(router))
             command(['/usr/local/bin/sing-box', 'check', '-c', str(router_file)])
@@ -826,11 +880,13 @@ if __name__ == '__main__':
                     # fixed final launcher and native protocol below. Calls
                     # from ordinary sandboxed tools still inherit their policy.
                     argv = sys.argv[6:]
-                    if (len(argv) < 11 or not re.fullmatch(r'/opt/aimgr-claude-runtime/artifacts/[a-f0-9]{64}/launcher', argv[0])
-                            or argv[1:3] != ['v1', 'protected']):
+                    claude_entry = len(argv) >= 11 and re.fullmatch(r'/opt/aimgr-claude-runtime/artifacts/[a-f0-9]{64}/launcher', argv[0]) and argv[1:3] == ['v1', 'protected']
+                    codex_entry = len(argv) >= 11 and re.fullmatch(r'/opt/aimgr-codex-runtime/artifacts/[a-f0-9]{64}/launcher', argv[0]) and argv[1] == 'assigned-v1'
+                    expected = json.loads(sys.argv[3])
+                    if not (codex_entry if expected.get('provider') == 'openai-codex' else claude_entry):
                         raise RuntimeError('invalid approved privacy entry')
                     os.set_inheritable(install_lock.fileno(), True)
-                    sys.exit(run_child(name, json.loads(sys.argv[3]), int(sys.argv[4]), argv, replace_with_approved=True))
+                    sys.exit(run_child(name, expected, int(sys.argv[4]), argv, replace_with_approved=True))
                 sys.exit(run(name, json.loads(sys.argv[3]), int(sys.argv[4]), sys.argv[6:], install_lock=install_lock))
         elif action == 'serve':
             serve(name)
@@ -848,13 +904,16 @@ if __name__ == '__main__':
             raise RuntimeError('invalid native proxy operation')
     except Exception as error:
         label = 'unknown'
+        provider = 'Claude'
         if len(sys.argv) > 3 and sys.argv[1] in ('run', 'launch-approved'):
             try:
-                candidate = json.loads(sys.argv[3]).get('label', 'unknown')
+                binding = json.loads(sys.argv[3])
+                provider = 'Codex' if binding.get('provider') == 'openai-codex' else 'Claude'
+                candidate = binding.get('label', 'unknown')
                 if isinstance(candidate, str) and re.fullmatch(r'[a-zA-Z0-9_.@+-]+', candidate):
                     label = candidate
             except (ValueError, AttributeError):
                 pass
         detail = str(error) if isinstance(error, RuntimeError) else type(error).__name__
-        print(f'Claude account {label}, proxy {name} unavailable during {action}: {detail}. Repair the proxy/tunnel, then explicitly retry or resume.', file=sys.stderr)
-        sys.exit(125)
+        print(f'{provider} account {label}, proxy {name} unavailable during {action}: {detail}. Repair the proxy/tunnel, then explicitly retry or resume.', file=sys.stderr)
+        sys.exit(75 if isinstance(error, TransientProxyError) else 125)

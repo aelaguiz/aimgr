@@ -13,7 +13,7 @@ import { CODEX_TEST_ENVIRONMENT } from "../helpers/codex-local.js";
 import { getRedisConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, closeRedisStore, readSnapshot } from "../../src/coordination/redis-store.js";
 import { loadRedisRuntime, refreshRedisRuntimeSnapshot, refreshRedisRuntimeState } from "../../src/coordination/runtime.js";
-import { ensureCodexAccountMetadata, readCodexAccountMetadata } from "../../src/coordination/codex-metadata.js";
+import { ensureCodexAccountMetadata, readCodexAccountMetadata, setCodexAccountEgress } from "../../src/coordination/codex-metadata.js";
 
 test("Codex metadata crosses the Redis boundary without legacy grants or grant-local failures",{
   skip:process.env.AIMGR_TEST_CODEX_REDIS!=="1",
@@ -71,13 +71,31 @@ test("Codex metadata crosses the Redis boundary without legacy grants or grant-l
   const legacyRuntime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl: async () => store });
   assert.equal(legacyRuntime.snapshot.credentials[0].credential.refresh, "SYNTHETIC_FOREIGN_REFRESH");
   assert.deepEqual(await ensureCodexAccountMetadata(store,{label:"legacy",accountId:"fixture-account"}),{outcome:"unchanged"});
+  await assert.rejects(ensureCodexAccountMetadata(store, { label: "legacy", accountId: "fixture-account", expectedEgress: null }), /assignment changed/);
+  await assert.rejects(ensureCodexAccountMetadata(store, { label: "legacy", accountId: "fixture-account", expectedEgress: { profileRef: "foreign" } }), /assignment changed/);
+  assert.deepEqual(await ensureCodexAccountMetadata(store, { label: "legacy", accountId: "fixture-account",
+    expectedEgress: { profileRef: "synthetic-route" } }), { outcome: "unchanged" });
   assert.equal(await store.client.get(key("legacy")),existing);
   await assert.rejects(ensureCodexAccountMetadata(store,{label:"legacy",accountId:"another-account"}),/different/);
   assert.equal(await store.client.get(key("legacy")),existing);
-  assert.deepEqual(await ensureCodexAccountMetadata(store,{label:"new",accountId:"new-account"}),{outcome:"created"});
+  assert.deepEqual(await ensureCodexAccountMetadata(store,{label:"new",accountId:"new-account",
+    egress: { profileRef: "first-login-route" }, expectedEgress: { profileRef: "first-login-route" }}),{outcome:"created"});
   const created=JSON.parse(await store.client.get(key("new")));
   assert.deepEqual(created.credential,{});
+  assert.deepEqual(created.policy.egress, { profileRef: "first-login-route" });
   assert.equal((await readCodexAccountMetadata(store)).length,2);
+  replies.length = 0;
+  const options = { label: "legacy", accountId: "fixture-account", expectedVersion: 9, egress: { profileRef: "new-route" } };
+  assert.deepEqual(await setCodexAccountEgress(store, options), { version: 10 });
+  await assert.rejects(setCodexAccountEgress(store, options), /changed/);
+  await assert.rejects(setCodexAccountEgress(store, { ...options, expectedVersion: 10, accountId: "foreign" }), /changed/);
+  assert.equal(JSON.stringify(replies).includes("SYNTHETIC_FOREIGN"), false);
+  const changed = JSON.parse(await store.client.get(key("legacy")));
+  assert.deepEqual(changed.credential, JSON.parse(existing).credential);
+  assert.equal(changed.version, 10);
+  assert.equal(changed.policy.egress.profileRef, "new-route");
+  assert.equal((await readCodexAccountMetadata(store))[0].version, 10);
+
 });
 
 test("manual Codex login reconnects Redis after the browser handoff", {

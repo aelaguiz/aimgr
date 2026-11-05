@@ -117,7 +117,7 @@ try {
     args: ["app-server", "--listen", "stdio://"], ownedAppServer: true });
   const artifactSet = invocation.artifact.artifactSet;
   child = spawn(invocation.command, invocation.args, { cwd, env: invocation.env, detached: true,
-    stdio: ["pipe", "pipe", "pipe", invocation.environmentFd] });
+    stdio: ["pipe", "pipe", "pipe", invocation.environmentFd, invocation.assignmentFd] });
   done = once(child, "close"); invocation.closeEnvironment();
   createInterface({ input: child.stdout }).on("line", line => messages.push(JSON.parse(line)));
   child.stderr.on("data", data => stderr.push(data.toString()));

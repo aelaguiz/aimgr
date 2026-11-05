@@ -293,7 +293,7 @@ async function run(protectedLaunch, alias = false, builtin = null) {
     child = spawn(protectedLaunch ? invocation.command : path.join(base, "bin", "codex"), protectedLaunch ? invocation.args : args, {
       cwd: invocation.cwd, env: protectedLaunch ? invocation.env : { ...invocation.environment,
         ...(chromePhase ? { TMPDIR: os.tmpdir() } : {}) }, detached: true,
-      stdio: ["ignore", "pipe", "pipe", ...(protectedLaunch ? [invocation.environmentFd] : [])] });
+      stdio: ["ignore", "pipe", "pipe", ...(protectedLaunch ? [invocation.environmentFd, invocation.assignmentFd] : [])] });
     childDone = once(child, "close");
     invocation.closeEnvironment?.();
     if (race && builtin !== "native-first") raceController = observe((async () => {

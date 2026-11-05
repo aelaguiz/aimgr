@@ -52,3 +52,12 @@ test("Linux health distinguishes running, stopped, starting and missing services
   });
   assert.deepEqual(result, { running: "running", stopped: "stopped", starting: "starting", absent: "not_installed" });
 });
+
+test("Linux transient recovery is current service state, not cached healthy usage", async () => {
+  const result = await readClaudeProxyHealth(["recovering", "other"], {
+    platform: "linux", existsSync: file => file === "/run/aimgr-claude-proxy-recovering/starting",
+    execFileImpl: async () => ({ stdout: ["recovering", "other"].map(name =>
+      `Id=aimgr-claude-proxy-${name}.service\nLoadState=loaded\nActiveState=active\nSubState=running`).join("\n\n") }),
+  });
+  assert.deepEqual(result, { recovering: "starting", other: "running" });
+});

@@ -100,10 +100,10 @@ test("existing separate Chrome instances keep account routes/state and fail on t
       dns_prefetching: { enabled: false }, net: { network_prediction_options: 2 },
     }));
     const child = spawn(process.env.AIMGR_TEST_CHROME_BIN ?? "google-chrome", [
-      `--ignore-certificate-errors-spki-list=${spki}`, "--headless=new", `--user-data-dir=${userDataDir}`, `--remote-debugging-port=${cdpPort}`,
+      `--ignore-certificate-errors-spki-list=${spki}`, "--headless=new", `--user-data-dir=${userDataDir}`,
       `--proxy-server=${proxy}`, "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
       "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-quic", "--disable-sync",
-      "--no-first-run", "--no-default-browser-check", "about:blank",
+      "--no-first-run", "--no-default-browser-check", `--remote-debugging-port=${cdpPort}`, "about:blank",
     ], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (part) => { stderr = (stderr + part).slice(-4000); });

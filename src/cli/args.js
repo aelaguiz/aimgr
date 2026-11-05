@@ -262,6 +262,13 @@ export function parseArgs(argv) {
       opts.manualCallbackStdio = true;
       continue;
     }
+    if (arg === "--proxy") {
+      if (argv[0] !== "codex" || argv[1] !== "login") throw new Error("--proxy is available for aim codex login.");
+      const value = argv[++i];
+      if (!value || value.startsWith("-")) throw new Error("--proxy requires an installed profile name.");
+      opts.codexLoginProxy = value;
+      continue;
+    }
     if (arg === "--manual") {
       if (argv[0] !== "routine" || argv[1] !== "run") {
         throw new Error("Unknown option: --manual");

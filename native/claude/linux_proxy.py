@@ -21,10 +21,43 @@ import time
 import termios
 import http.client
 import urllib.parse
+import ipaddress
+import ssl
 from contextlib import contextmanager
 
 ROOT = pathlib.Path("/opt/aimgr-claude-proxy")
 CGROUP = pathlib.Path("/sys/fs/cgroup/aimgr-claude")
+
+
+class TransientProxyError(RuntimeError):
+    pass
+
+
+def approved_exit(profile, body):
+    if profile.get("exitCheckFormat") == "cloudflare-trace":
+        values = [line[3:] for line in body.decode('utf-8').splitlines() if line.startswith('ip=')]
+        if len(values) != 1 or ipaddress.ip_address(values[0]).version != 4:
+            raise ValueError("invalid numeric exit response")
+        address = values[0]
+    else:
+        address = json.loads(body).get('ip')
+    if address not in profile['expectedExits']:
+        raise ValueError("native route exit mismatch")
+
+
+def check_native_path(name):
+    try:
+        command([sys.executable, str(ROOT / "linux_proxy.py"), "probe", name], timeout=8)
+    except subprocess.TimeoutExpired as error:
+        raise TransientProxyError("native route check timed out") from error
+    except subprocess.CalledProcessError as error:
+        if error.returncode == 75:
+            raise TransientProxyError("native route check could not connect") from error
+        raise
+
+
+def transient_marker(name):
+    return pathlib.Path(f'/run/aimgr-claude-proxy-{name}/starting')
 
 
 @contextmanager
@@ -71,27 +104,52 @@ def probe(name):
     try:
         connection.request("GET", urllib.parse.urlunsplit(("", "", url.path or "/", url.query, "")), headers={"Connection": "close"})
         response = connection.getresponse()
-        body = response.read(1024)
-        if response.status != 200 or json.loads(body).get("ip") not in profile["expectedExits"]:
-            raise ConnectionError("proxy exit mismatch")
+        limit = 16384 if profile.get('exitCheckFormat') == 'cloudflare-trace' else 1024
+        body = response.read(limit + 1)
+        if len(body) > limit:
+            raise ValueError("oversized native exit response")
+        if response.status != 200:
+            raise TransientProxyError("native route check HTTP error")
+        approved_exit(profile, body)
+    except ssl.SSLCertVerificationError:
+        raise
+    except (OSError, http.client.HTTPException) as error:
+        raise TransientProxyError("native route check could not connect") from error
     finally:
         connection.close()
 
 
 def serve(name):
     validate_name(name)
+    config = json.loads((ROOT / f'{name}.json').read_text())
+    tunnel = os.pidfd_open(listener_pid(config['socksPort']))
     child = subprocess.Popen(["/usr/local/bin/sing-box", "run", "-c", str(ROOT / f"{name}-sing-box.json")])
+    adapter = os.pidfd_open(child.pid)
+    owners = select.poll()
+    for fd in (tunnel, adapter):
+        owners.register(fd, select.POLLIN)
+    deadline = None
     try:
         while True:
-            try:
-                child.wait(timeout=5)
-                raise RuntimeError("native proxy adapter exited")
-            except subprocess.TimeoutExpired:
-                pass
-            if "populated 1" in (CGROUP / name / "cgroup.events").read_text():
+            if owners.poll(5000):
+                raise RuntimeError("native proxy owner exited")
+            if deadline is not None or "populated 1" in (CGROUP / name / "cgroup.events").read_text():
                 # A short-lived probe joins the same route as Claude; checking
                 # SSH alone would miss a live but stalled forwarding adapter.
-                command([sys.executable, str(ROOT / "linux_proxy.py"), "probe", name], timeout=8)
+                try:
+                    check_native_path(name)
+                    if deadline is not None:
+                        transient_marker(name).unlink(missing_ok=True)
+                        deadline = None
+                except TransientProxyError:
+                    now = time.monotonic()
+                    if deadline is None:
+                        deadline = now + 60
+                        transient_marker(name).touch(mode=0o600)
+                    if now >= deadline:
+                        raise RuntimeError("native route remained unavailable for 60 seconds")
+                if owners.poll(0):
+                    raise RuntimeError("native proxy owner exited")
     finally:
         child.terminate()
         try:
@@ -99,6 +157,8 @@ def serve(name):
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait()
+        for fd in (tunnel, adapter):
+            os.close(fd)
 
 
 def command(args, **kwargs):
@@ -161,7 +221,10 @@ def install():
             raise ValueError("SOCKS listener must be loopback")
         if not profile.get("expectedExits"):
             raise ValueError("approved exit IP addresses are required")
-        for key in ("socksPort", "redirectPort"):
+        if 'httpPort' in profile and (profile.get('exitCheckFormat') != 'cloudflare-trace'
+                or profile.get('exitCheckUrl') != 'https://1.1.1.1/cdn-cgi/trace'):
+            raise ValueError("Codex-enabled routes require the numeric TLS exit check")
+        for key in ("socksPort", "redirectPort", *(("httpPort",) if 'httpPort' in profile else ())):
             port = profile[key]
             if type(port) is not int or not 1 <= port <= 65535 or port in ports:
                 raise ValueError("ports must be valid and distinct across profiles")
@@ -182,6 +245,13 @@ def install():
             "outbounds": [{"type": "socks", "tag": "office", "server": binding["socksHost"], "server_port": profile["socksPort"], "version": "5"}],
             "route": {"final": "office"},
         }
+        if 'httpPort' in profile:
+            router['inbounds'].append({'type': 'http', 'tag': 'codex-http', 'listen': binding['socksHost'], 'listen_port': profile['httpPort']})
+            router['outbounds'].append({'type': 'direct', 'tag': 'local'})
+            router['route']['rules'] = [
+                {'inbound': ['codex-http'], 'ip_cidr': ['127.0.0.0/8', '::1/128'], 'action': 'route', 'outbound': 'local'},
+                {'inbound': ['codex-http'], 'domain': ['localhost'], 'action': 'route', 'outbound': 'local'},
+            ]
         router_path = ROOT / f"{name}-sing-box.json"
         router_path.write_text(json.dumps(router))
         command(["/usr/local/bin/sing-box", "check", "-c", str(router_path)])
@@ -191,6 +261,8 @@ Requires=aimgr-claude-routing.service
 After=network.target aimgr-claude-routing.service
 [Service]
 User={user.pw_name}
+RuntimeDirectory=aimgr-claude-proxy-{name}
+RuntimeDirectoryMode=0700
 ExecStart=/usr/bin/python3 {ROOT / "linux_proxy.py"} serve {name}
 ExecStopPost=/usr/bin/python3 {ROOT / "linux_proxy.py"} stop {name}
 Restart=no
@@ -345,18 +417,22 @@ def run_child(name, expected_binding, argv):
     expected = json.loads(expected_binding)
     # Admission holds the installation lock. The JS preflight may have run
     # before an update, so compare the operation's binding here as well.
+    codex = expected.get("provider") == "openai-codex"
+    provider = "Codex" if codex else "Claude"
+    if codex and (len(argv) < 11 or not re.fullmatch(r'/opt/aimgr-codex-runtime/artifacts/[a-f0-9]{64}/launcher', argv[0])
+                  or argv[1] != 'assigned-v1'):
+        raise RuntimeError("invalid approved Codex privacy entry")
+    keys = ("socksHost", "socksPort", "httpPort") if codex else ("socksHost", "socksPort")
     if any(profile.get(key, "127.0.0.1" if key == "socksHost" else None) != expected.get(key)
-           for key in ("socksHost", "socksPort")) or sorted(profile["expectedExits"]) != sorted(expected["expectedExits"]):
+           for key in keys) or sorted(profile["expectedExits"]) != sorted(expected["expectedExits"]):
         raise RuntimeError("native proxy binding changed before launch")
     group = CGROUP / name
     # Inspect only our installed table. Never infer protection from proxy env.
     rules = command(["sudo", "-n", "nft", "list", "table", "inet", "aimgr_claude"], capture_output=True, text=True).stdout
     if f'"aimgr-claude/{name}"' not in rules or f'redirect to :{profile["redirectPort"]}' not in rules:
         raise RuntimeError("native proxy routing is not installed")
-    require_existing_native_owners_routed(name, expected.get("nativeCommand", argv[0]))
-    # A listening SOCKS socket does not establish that the native adapter is
-    # forwarding. Prove the actual cgroup path before starting Claude.
-    command([sys.executable, str(ROOT / "linux_proxy.py"), "probe", name], timeout=8)
+    if not codex:
+        require_existing_native_owners_routed(name, expected.get("nativeCommand", argv[0]))
     # Watch exact process lifetimes, not whether a port currently answers.
     # A quick restart on the same port must still stop the interrupted session.
     # Regression: native-route matrix quick-restart and detached-owner cases.
@@ -364,6 +440,23 @@ def run_child(name, expected_binding, argv):
     poll = select.poll()
     for fd in watched:
         poll.register(fd, select.POLLIN)
+    # New work waits for the same bounded transient recovery as live work.
+    # Exact pinned owner death/replacement remains fatal even during retries.
+    deadline = time.monotonic() + 60
+    while True:
+        if poll.poll(0):
+            raise RuntimeError("native proxy owner exited before launch")
+        try:
+            check_native_path(name)
+            if poll.poll(0):
+                raise RuntimeError("native proxy owner exited during admission")
+            if not transient_marker(name).exists():
+                break
+        except TransientProxyError:
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError("native route unavailable before launch")
+        time.sleep(max(0, min(2, deadline - time.monotonic())))
     owner_pid = os.getpid()
     child = os.fork()
     if child == 0:
@@ -376,7 +469,7 @@ def run_child(name, expected_binding, argv):
                     input=str(os.getpid()), text=True, stdout=subprocess.DEVNULL)
             os.execvpe(argv[0], argv, os.environ)
         except Exception:
-            os.write(2, b"Claude native proxy launch failed.\n")
+            os.write(2, f"{provider} native proxy launch failed.\n".encode())
             os._exit(125)
     child_fd = os.pidfd_open(child)
     poll.register(child_fd, select.POLLIN)
@@ -392,7 +485,7 @@ def run_child(name, expected_binding, argv):
         events = poll.poll()
         if any(fd in watched for fd, _event in events):
             failed = True
-            os.write(2, f"Claude stopped: {name} tunnel or proxy exited. Repair it, then explicitly resume.\n".encode())
+            os.write(2, f"{provider} stopped: {name} tunnel or proxy exited. Repair it, then explicitly resume.\n".encode())
             # An outage drops every session using this route, including tool
             # descendants. Do not leave a graceful-shutdown retry window.
             command(["sudo", "-n", "tee", str(group / "cgroup.kill")],
@@ -438,12 +531,15 @@ if __name__ == "__main__":
         detail = str(error) if isinstance(error, RuntimeError) else type(error).__name__
         profile = sys.argv[2] if len(sys.argv) > 2 and re.fullmatch(r"[a-z0-9][a-z0-9_-]*", sys.argv[2]) else "unknown"
         label = "unknown"
+        provider = "Claude"
         if len(sys.argv) > 3 and sys.argv[1] == "run":
             try:
-                candidate = json.loads(sys.argv[3]).get("label", "unknown")
+                binding = json.loads(sys.argv[3])
+                provider = "Codex" if binding.get("provider") == "openai-codex" else "Claude"
+                candidate = binding.get("label", "unknown")
                 if isinstance(candidate, str) and re.fullmatch(r"[a-zA-Z0-9_.@+-]+", candidate):
                     label = candidate
             except (ValueError, AttributeError):
                 pass
-        print(f"Claude account {label}, proxy {profile} unavailable during {sys.argv[1]}: {detail}. Repair the proxy/tunnel, then explicitly retry or resume.", file=sys.stderr)
-        sys.exit(125)
+        print(f"{provider} account {label}, proxy {profile} unavailable during {sys.argv[1]}: {detail}. Repair the proxy/tunnel, then explicitly retry or resume.", file=sys.stderr)
+        sys.exit(75 if isinstance(error, TransientProxyError) else 125)

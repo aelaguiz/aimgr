@@ -20,10 +20,16 @@ import { saveLocalCodexLogin } from "../src/credentials/codex-local.js";
 import { prepareCodexAccountState } from "../src/privacy/codex-account-state.js";
 import { readCodexEnvironment } from "../src/privacy/codex-environment.js";
 import { buildRoutineFireKey } from "../src/routines/schedule.js";
+import { renderRoutineLaunchAgent } from "../src/routines/launchd.js";
 
 assert.ok(["linux", "darwin"].includes(process.platform));
 assert.ok(fs.existsSync("/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST") && process.getuid() !== 0);
-if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
+const proxyIndex = process.argv.indexOf("--proxy-profile");
+const proxyRef = proxyIndex >= 0 ? process.argv[proxyIndex + 1] : null;
+const proxyFaults = process.argv.includes("--proxy-faults");
+assert.ok(!proxyFaults || proxyRef);
+if (process.platform === "linux" && !proxyRef) assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
+const proxyProfile = proxyRef ? JSON.parse(fs.readFileSync(`/opt/aimgr-claude-proxy/${proxyRef}.json`)) : null;
 const root = fs.realpathSync(process.argv[2]);
 assert.ok(root.startsWith("/opt/aimgr-state-audit/")); assert.equal(fs.readdirSync(root).length, 0);
 const homeDir = path.join(root, "home"), cwd = path.join(root, "project"), bin = path.join(root, "bin");
@@ -102,7 +108,8 @@ const endpoint = `https://127.0.0.1:${server.address().port}`;
 const config = `model="gpt-6.1-sol"\nopenai_base_url=${JSON.stringify(endpoint)}\nchatgpt_base_url=${JSON.stringify(endpoint)}\napproval_policy="never"\nsandbox_mode="danger-full-access"\n[features]\napps=false\ncode_mode=false\nhooks=false\n[analytics]\nenabled=false\n[feedback]\nenabled=false\n[otel]\nexporter="none"\ntrace_exporter="none"\nmetrics_exporter="none"\n`;
 for (const name of ["config.toml", "yolo.config.toml"]) fs.writeFileSync(path.join(homeDir, ".codex", name), config);
 const env = { HOME: homeDir, PATH: `${bin}:/opt/aimgr-state-audit/bin:/usr/local/bin:/usr/bin:/bin`,
-  LANG: "C.UTF-8", TERM: "xterm-256color", CODEX_CA_CERTIFICATE: ca };
+  LANG: "C.UTF-8", TERM: "xterm-256color", CODEX_CA_CERTIFICATE: ca,
+  ...(process.env.TZ ? { TZ: process.env.TZ } : {}) };
 const environment = readCodexEnvironment();
 for (const account of accounts) {
   const { accountId, label, token } = account;
@@ -125,7 +132,7 @@ const redisUrl = "redis://127.0.0.1:6381", keyPrefix = "aimgr:routine-synthetic:
 const store = await connectRedisStore({ url: redisUrl, keyPrefix, connectionPolicy: "leased" });
 await importCredentialsSnapshot(store, { credentials: accounts.map(({ accountId, label }) => ({ provider: "openai-codex", label, identity: { accountId },
   credential: { access: "SYNTHETIC_FOREIGN_ACCESS", refresh: "SYNTHETIC_FOREIGN_REFRESH", accountId },
-  policy: { pool: { enabled: true } }, health: { status: "ready", reason: null } })) }, { updatedBy: "synthetic", observedAt: new Date().toISOString() });
+  policy: { pool: { enabled: true }, ...(proxyRef ? { egress: { profileRef: proxyRef } } : {}) }, health: { status: "ready", reason: null } })) }, { updatedBy: "synthetic", observedAt: new Date().toISOString() });
 const wrapper = path.join(root, "aim.mjs");
 fs.writeFileSync(wrapper, `import assert from 'node:assert/strict';import fs from 'node:fs';import {main} from ${JSON.stringify(main)};
 assert.equal(process.env.HOME,${JSON.stringify(homeDir)});
@@ -170,23 +177,30 @@ const times = [0, 60_000, 120_000].map(offset => new Date(target.getTime() + off
 const promptFile = path.join(cwd, "prompt.md"); fs.writeFileSync(promptFile, "Run the synthetic routine tool exactly once, then finish.\n");
 const routine = { id, agent: "codex", provider: "openai-codex", model: "gpt-6.1-sol", thinking: "xhigh", profile: "yolo",
   calendar: times.map(date => ({ hour: date.getHours(), minute: date.getMinutes() })), cwd, promptFile, herdrSession: session, spaceTitleFormat: "Synthetic {scheduled_local}" };
-writeAimgrConfig({ homeDir, config: { redis: { url: redisUrl, keyPrefix }, routines: { [id]: routine } } });
+writeAimgrConfig({ homeDir, config: { redis: { url: redisUrl, keyPrefix }, routines: { [id]: routine },
+  ...(proxyRef ? { codexProxyProfiles: { [proxyRef]: proxyProfile } } : {}) } });
 const receiptFile = date => path.join(homeDir, ".aimgr/routine-runs", buildRoutineFireKey(id, date) + ".json");
 const receipt = date => fs.existsSync(receiptFile(date)) ? JSON.parse(fs.readFileSync(receiptFile(date))) : null;
 const system = async (...args) => exec("sudo", ["-n", ...args], { maxBuffer: 1024 * 1024 });
+const calls = () => fs.readFileSync(path.join(root, "cli.private.jsonl"), "utf8").trim().split("\n").map(JSON.parse)
+  .filter(row => row.argv[0] === "routine" && row.argv[1] === "run" && !row.argv.includes("--manual")).length;
 const startTimer = async interval => {
-  const unit = id + (interval ? "-interval" : "-calendar"); units.push(unit);
+  const unit = id + (interval ? "-interval" : "-calendar");
   if (process.platform === "darwin") {
+    const plistFile = path.join(root, unit + ".plist");
+    fs.writeFileSync(plistFile, renderRoutineLaunchAgent({ ...routine, calendar: [routine.calendar[0]] }, { homeDir, aimPath: aim }));
     const plist = { Label: unit, ProgramArguments: [aim, "routine", "run", id, "--json"],
       UserName: os.userInfo().username, WorkingDirectory: cwd, EnvironmentVariables: env,
       StandardOutPath: path.join(root, "scheduler.private.out"), StandardErrorPath: path.join(root, "scheduler.private.err"),
-      ThrottleInterval: 1, ...(interval ? { RunAtLoad: true, StartInterval: 3 }
-        : { StartCalendarInterval: { Month: target.getMonth() + 1, Day: target.getDate(), Hour: target.getHours(), Minute: target.getMinutes() } }) };
-    execFileSync("/usr/bin/python3", ["-I", "-c", "import json,plistlib,sys;from pathlib import Path;Path(sys.argv[1]).write_bytes(plistlib.dumps(json.load(sys.stdin)))", path.join(root, unit + ".plist")],
+      ThrottleInterval: 1, ...(interval ? { RunAtLoad: true, StartInterval: 3 } : {}) };
+    execFileSync("/usr/bin/python3", ["-I", "-c", "import json,plistlib,sys;from pathlib import Path;p=Path(sys.argv[1]);v=plistlib.loads(p.read_bytes());v.update(json.load(sys.stdin));v.pop('StartCalendarInterval',None) if 'StartInterval' in v else None;p.write_bytes(plistlib.dumps(v))", plistFile],
       { input: JSON.stringify(plist), stdio: ["pipe", "ignore", "pipe"] });
-    await system("chown", "root:wheel", path.join(root, unit + ".plist"));
-    await system("chmod", "644", path.join(root, unit + ".plist"));
-    await system("launchctl", "bootstrap", "system", path.join(root, unit + ".plist"));
+    const installed = `/Library/LaunchDaemons/${unit}.plist`;
+    await system("install", "-o", "root", "-g", "wheel", "-m", "644", path.join(root, unit + ".plist"), installed);
+    try { await system("launchctl", "bootstrap", "system", installed); }
+    catch (error) { await system("rm", installed); throw error; }
+    units.push(unit);
+    fs.writeFileSync(path.join(root, unit + ".registered.txt"), (await system("launchctl", "print", "system/" + unit)).stdout);
     return unit;
   }
   await system("systemd-run", "--unit=" + unit,
@@ -195,15 +209,23 @@ const startTimer = async interval => {
     "--property=NetworkNamespacePath=/proc/" + process.pid + "/ns/net", "--property=WorkingDirectory=" + cwd,
     "--property=StandardOutput=append:" + root + "/scheduler.private.out", "--property=StandardError=append:" + root + "/scheduler.private.err",
     ...Object.entries(env).map(([key, value]) => `--setenv=${key}=${value}`), aim, "routine", "run", id, "--json");
+  units.push(unit);
   return unit;
 };
-const stopTimer = unit => process.platform === "darwin"
-  ? system("launchctl", "bootout", "system/" + unit)
-  : system("systemctl", "stop", unit + ".timer", unit + ".service");
+const stopTimer = async unit => {
+  if (process.platform === "darwin") return system("launchctl", "bootout", "system/" + unit);
+  // systemd garbage-collects completed transient units. Stop each surviving
+  // component, while retaining errors other than that expected absence.
+  for (const suffix of [".timer", ".service"]) {
+    await system("systemctl", "stop", unit + suffix).catch(error => {
+      if (!error.stderr?.includes(`Unit ${unit + suffix} not loaded.`)) throw error;
+    });
+  }
+};
 const restartTimer = async unit => {
   if (process.platform !== "darwin") return system("systemctl", "restart", unit + ".timer");
   await stopTimer(unit);
-  await system("launchctl", "bootstrap", "system", path.join(root, unit + ".plist"));
+  await system("launchctl", "bootstrap", "system", `/Library/LaunchDaemons/${unit}.plist`);
 };
 const closePane = async index => {
   const { pane, child } = drivers[index];
@@ -219,6 +241,56 @@ const closePane = async index => {
   assert.equal(JSON.parse(fs.readFileSync(path.join(pane, "pty-exit.json"))).exit, 0);
 };
 try {
+  if (proxyFaults) {
+    const routeUnit = process.platform === "darwin" ? "system/com.aimgr.claude-proxy." + proxyRef : "aimgr-claude-proxy-" + proxyRef + ".service";
+    const restartRoute = () => process.platform === "darwin" ? system("launchctl", "kickstart", "-k", routeUnit) : system("systemctl", "start", routeUnit);
+    const profilePath = `/opt/aimgr-claude-proxy/${proxyRef}.json`, heldProfile = path.join(root, "installed-profile-held.json");
+    let hidden = false;
+    try {
+      await startTimer(false);
+      await waitFor(() => {
+        if (drivers.some(({ child }) => child.exitCode !== null)) throw Error("Owned terminal driver exited before first model request; inspect private driver log");
+        if (["failed_before_prompt", "needs_attention"].includes(receipt(times[0])?.outcome)) throw Error("First routed occurrence failed; inspect private receipt");
+        return firstRequest;
+      }, "routed calendar model turn", target.getTime() - Date.now() + 60_000);
+      if (process.platform === "darwin") await system("launchctl", "kill", "SIGKILL", routeUnit);
+      else await system("systemctl", "stop", routeUnit);
+      await waitFor(() => ["needs_attention", "failed_before_prompt"].includes(receipt(times[0])?.outcome), "route interruption recorded", 30_000);
+      assert.equal(receipt(times[0]).interactiveTui, null);
+      const interrupted = fs.readFileSync(receiptFile(times[0])), count = requests.length;
+      releaseFirst(); await restartRoute();
+      const interval = await startTimer(true), firstCalls = calls(); await restartTimer(interval);
+      await waitFor(() => calls() >= firstCalls + 2, "actual firings after interrupted occurrence restart");
+      assert.deepEqual(fs.readFileSync(receiptFile(times[0])), interrupted); assert.equal(requests.length, count);
+      assert.equal(receipt(times[0]).interactiveTui, null);
+      // Hide only this test host's installed metadata, retaining its exact inode.
+      // The next occurrence must fail preparation before a vendor is spawned.
+      await system("mv", profilePath, heldProfile); hidden = true;
+      await waitFor(() => receipt(times[1])?.outcome === "failed_before_prompt", "missing route before spawn", times[1].getTime() - Date.now() + 40_000);
+      const beforeSpawn = fs.readFileSync(receiptFile(times[1]));
+      assert.equal(receipt(times[1]).interactiveTui, null);
+      await system("mv", heldProfile, profilePath); hidden = false; await restartRoute();
+      const secondCalls = calls(); await restartTimer(interval);
+      await waitFor(() => calls() >= secondCalls + 2, "actual firings after before-spawn failure restart");
+      assert.deepEqual(fs.readFileSync(receiptFile(times[1])), beforeSpawn); assert.equal(requests.length, count);
+      assert.equal(receipt(times[1]).interactiveTui, null);
+      const completedDrivers = drivers.length;
+      await waitFor(() => {
+        for (const { child } of drivers.slice(completedDrivers)) if (child.exitCode !== null && child.exitCode !== 0) throw Error("Owned terminal driver failed");
+        return receipt(times[2])?.interactiveTui?.status === "live";
+      }, "distinct routed occurrence succeeds", times[2].getTime() - Date.now() + 60_000);
+      const liveIndex = drivers.findLastIndex(({ child }) => child.exitCode === null);
+      await closePane(liveIndex);
+      assert.equal(receipt(times[2]).outcome, "completed");
+      const result = { passed: true, actualCalendar: true, actualInterval: true, proxyFaults: true,
+        midTurnFailureNotReplayed: true, beforeSpawnFailureNotReplayed: true, failedTurnsHaveNoHandoff: true,
+        distinctOccurrenceSucceeded: true, sameThreadHandoff: receipt(times[2]).codex.sessionId === receipt(times[2]).interactiveTui.sessionId };
+      fs.writeFileSync(path.join(root, "result.private.json"), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ fixture: root, ...result }));
+    } finally {
+      if (hidden) await system("mv", heldProfile, profilePath);
+      await restartRoute();
+    }
+  } else {
   await startTimer(false); await waitFor(() => firstRequest, "calendar-triggered model turn", target.getTime() - Date.now() + 60_000);
   const overlap = await exec(process.execPath, [wrapper, "routine", "run", id, "--manual", "--json"], { cwd, env });
   assert.equal(JSON.parse(overlap.stdout).outcome, "overlap"); releaseFirst();
@@ -231,8 +303,6 @@ try {
   const interval = await startTimer(true);
   await waitFor(() => receipt(times[1])?.outcome === "failed_before_prompt", "failed interval occurrence", times[1].getTime() - Date.now() + 30_000);
   const failed = fs.readFileSync(receiptFile(times[1])); const requestCount = requests.length;
-  const calls = () => fs.readFileSync(path.join(root, "cli.private.jsonl"), "utf8").trim().split("\n").map(JSON.parse)
-    .filter(row => row.argv[0] === "routine" && row.argv[1] === "run" && !row.argv.includes("--manual")).length;
   const beforeRestart = calls(); await restartTimer(interval);
   await waitFor(() => calls() >= beforeRestart + 2, "actual interval firings after timer restart");
   assert.deepEqual(fs.readFileSync(receiptFile(times[1])), failed); assert.equal(requests.length, requestCount);
@@ -254,10 +324,14 @@ try {
     ordinaryToolRuns: 2, sameThreadHandoff: true, overlapSuppressed: true, failedOccurrenceNotReplayedAfterRestart: true,
     localAuthOnly: true, subsequentDistinctOccurrenceSucceeded: true };
   fs.writeFileSync(path.join(root, "result.private.json"), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ fixture: root, ...result }));
+  }
 } finally {
   releaseFirst();
   const cleanupErrors = [];
-  for (const unit of units) await stopTimer(unit).catch(error => cleanupErrors.push(error));
+  for (const unit of units) {
+    await stopTimer(unit).catch(error => cleanupErrors.push(error));
+    if (process.platform === "darwin") await system("rm", `/Library/LaunchDaemons/${unit}.plist`).catch(error => cleanupErrors.push(error));
+  }
   for (const { child } of drivers) if (child.exitCode === null) { child.kill("SIGTERM"); await once(child, "close"); }
   if (store.client.isOpen) await store.client.quit();
   redis.kill("SIGTERM"); await once(redis, "close");

@@ -14,10 +14,15 @@ import { saveLocalCodexLogin } from "../src/credentials/codex-local.js";
 import { prepareCodexNativeInvocation } from "../src/privacy/codex-native-invocation.js";
 import { superviseCodexAppServerStdio } from "../src/io/codex-app-server-stdio.js";
 import { parseCodexSettings } from "../src/io/codex-settings-toml.js";
+import { codexProxyArguments } from "../src/privacy/codex-arguments.js";
+import { acquireCodexAssignmentLock } from "../src/network/codex-egress.js";
+import { writeAimgrConfig } from "../src/config/aimgr-config.js";
 
 const base = "/opt/aimgr-state-audit";
+const proxyProfile = process.argv.includes("--proxy-profile") ? process.argv[process.argv.indexOf("--proxy-profile") + 1] : null;
+if (proxyProfile && !/^[a-z0-9][a-z0-9_-]*$/.test(proxyProfile)) throw new Error("Invalid fixture proxy profile");
 if (!fs.existsSync(path.join(base, "OFFSITE_AUDIT_HOST")) || process.getuid() === 0) throw new Error("Ordinary user on designated offsite host required.");
-if (process.platform === "linux" && Object.keys(os.networkInterfaces()).join() !== "lo") throw new Error("A fresh loopback-only network namespace is required.");
+if (process.platform === "linux" && !proxyProfile && Object.keys(os.networkInterfaces()).join() !== "lo") throw new Error("A fresh loopback-only network namespace is required.");
 const root = fs.mkdtempSync(path.join(base, "codex-m1-fixtures", "native-"));
 const homeDir = path.join(root, "home"), cwd = path.join(root, "project");
 fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true, mode: 0o700 });
@@ -56,17 +61,26 @@ service.listen(0, "127.0.0.1"); await once(service, "listening");
 const source = path.join(homeDir, ".codex", "config.toml");
 fs.writeFileSync(source, `chatgpt_base_url="http://127.0.0.1:${service.address().port}"\n` + fs.readFileSync(source, "utf8"));
 saveLocalCodexLogin(options, credential);
-const prepared = prepareCodexAccountState(options);
+const prepared = { ...prepareCodexAccountState(options) };
+if (proxyProfile) {
+  const profile = JSON.parse(fs.readFileSync(`/opt/aimgr-claude-proxy/${proxyProfile}.json`, "utf8"));
+  writeAimgrConfig({ homeDir, config: { codexProxyProfiles: { [proxyProfile]: profile } } });
+  prepared.routeRecord = { label: options.label, accountId: options.accountId, version: 1, policy: { egress: { profileRef: proxyProfile } } };
+}
 let invocation, child, transport;
 const output = [], errors = [];
 let launchStarted, initializedAfterMs;
+let assignmentHeldByVendor = false, assignmentReleasedAfterExit = false;
+const proxySettings = process.argv.includes("--proxy-settings") || Boolean(proxyProfile);
 try {
+  const args = ["app-server", "--listen", "stdio://",
+    ...(proxySettings ? ["-c", "features={respect_system_proxy=true,system_proxy_fallback=true}", "--enable", "respect_system_proxy"] : [])];
   invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin", "codex"), homeDir, cwd, env,
-    args: ["app-server", "--listen", "stdio://"], ownedAppServer: true });
+    args: proxySettings && !proxyProfile ? codexProxyArguments(args, { ownedAppServer: true }) : args, ownedAppServer: true });
   if (manyRoots && Number(invocation.args[5]) <= 256) throw new Error("Fixture must exercise more than 256 exact native write grants.");
   launchStarted = Date.now();
   child = spawn(invocation.command, invocation.args, { cwd: invocation.cwd, env: invocation.env,
-    stdio: ["pipe", "pipe", "pipe", invocation.environmentFd], detached: true });
+    stdio: ["pipe", "pipe", "pipe", invocation.environmentFd, invocation.assignmentFd], detached: true });
   invocation.closeEnvironment();
   const clientInput = new PassThrough(), clientOutput = new PassThrough();
   transport = superviseCodexAppServerStdio({ input: clientInput, output: clientOutput, child, entry: invocation.entries.at(-1),
@@ -110,13 +124,24 @@ try {
       keyPath: 'tui.model_availability_nux."gpt-6.1-sol"', mergeStrategy: "replace", value: 2,
     } }) + "\n");
     if (value.id === 9) clientInput.write(JSON.stringify({ id: 10, method: "config/read", params: { includeLayers: true, cwd } }) + "\n");
-    if (value.id === 10) clientInput.end();
+    if (value.id === 10) {
+      // Release AIM's own descriptor while the actual vendor is still alive.
+      // Its inherited descriptor must continue excluding assignment changes.
+      await invocation.close();
+      try {
+        const unexpected = await acquireCodexAssignmentLock(options, { exclusive: true });
+        await unexpected.release();
+      } catch (error) { assignmentHeldByVendor = error.code === "AIMGR_CODEX_ASSIGNMENT_BUSY"; }
+      clientInput.end();
+    }
   };
   lines.on("line", line => { handleLine(line).catch(error => { errors.push(`Fixture: ${error.message}\n`); clientInput.end(); }); });
   clientInput.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "aim_privacy_fixture", version: "1" }, capabilities: { experimentalApi: true } } }) + "\n");
   const timeout = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, manyRoots ? 120_000 : 25_000);
   const exit = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
   clearTimeout(timeout); await transport.finished; await transport.close(); lines.close();
+  const released = await acquireCodexAssignmentLock(options, { exclusive: true });
+  await released.release();assignmentReleasedAfterExit = true;
   fs.writeFileSync(path.join(root, "stderr.log"), errors.join(""), { mode: 0o600 });
   fs.writeFileSync(path.join(root, "protocol.json"), JSON.stringify(output, null, 2), { mode: 0o600 });
   fs.writeFileSync(path.join(root, "metadata.json"), JSON.stringify(metadataRequests, null, 2), { mode: 0o600 });
@@ -126,7 +151,9 @@ try {
   const live = output.find(value => value.id === 3)?.result?.config;
   const updated = output.find(value => value.id === 5)?.result?.config;
   const authored = parseCodexSettings(fs.readFileSync(path.join(homeDir, ".codex", "config.toml"), "utf8")).value;
-  const summary = { fixture: root, exit, configSeen, initializedAfterMs, nativeWriteRoots: Number(invocation.args[5]), skillPathMatchesOrigin: skillPath === expectedSkill,
+  const summary = { fixture: root, exit, configSeen, initializedAfterMs, assignmentHeldByVendor, assignmentReleasedAfterExit,
+    proxySettingsPinned: !proxySettings || (config?.features?.respect_system_proxy === false && config?.features?.system_proxy_fallback === false),
+    nativeWriteRoots: Number(invocation.args[5]), skillPathMatchesOrigin: skillPath === expectedSkill,
     mcpSessionDefault: config?.mcp_oauth_credentials_store === "keyring"
       && output.find(value => value.id === 2)?.result?.origins?.mcp_oauth_credentials_store?.name?.type === "sessionFlags",
     mcpDefaultSurvivesReload: updated?.mcp_oauth_credentials_store === "keyring",
@@ -143,6 +170,7 @@ try {
     initialized: output.some(value => value.id === 1 && value.result), errorCount: output.filter(value => value.error).length };
   process.stdout.write(JSON.stringify(summary) + "\n");
   if (exit.code !== 0 || !configSeen || !summary.skillPathMatchesOrigin || !summary.liveExternalTogglePreserved || !summary.batchAccepted || !summary.batchPathMatchesOrigin
+    || !assignmentHeldByVendor || !assignmentReleasedAfterExit || !summary.proxySettingsPinned
     || !summary.authoredRelativePathPreserved || !summary.authoredModelUpdated || !summary.rejectedWritePreserved || summary.errorCount !== 1
     || !summary.mcpSessionDefault || !summary.mcpDefaultSurvivesReload || !summary.mcpDefaultNotPublished || !summary.nativeRepeatedTableEdits) {
     process.stderr.write(errors.join("").slice(-6000)); process.exitCode = 1;

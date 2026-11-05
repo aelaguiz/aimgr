@@ -34,7 +34,7 @@ for (const scenario of ['malformed-settings','readonly-database']) {
     try {invocation=await prepareCodexNativeInvocation({prepared,homeDir,cwd,env,args});}
     catch(error){if(!before)throw error;rows.push({scenario,args,stockPassed:true,preparationRefused:true});continue;}
     assert.ok(!before,'Expected the before-fix preparation failure');
-    const pending=run(invocation.command,invocation.args,{cwd,env:invocation.env,stdio:['ignore','pipe','pipe',invocation.environmentFd]});
+    const pending=run(invocation.command,invocation.args,{cwd,env:invocation.env,stdio:['ignore','pipe','pipe',invocation.environmentFd, invocation.assignmentFd]});
     invocation.closeEnvironment();const actual=await pending;
     assert.equal(actual.code,0,actual.stderr);assert.equal(actual.stdout,stock.stdout);
     assert.deepEqual(fs.readdirSync(db),[],'Help/version must not initialize databases');

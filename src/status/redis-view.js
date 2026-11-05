@@ -1,10 +1,11 @@
 import { redactRedisEndpoint } from "../core/sanitize.js";
-import { readAimgrConfig } from "../config/aimgr-config.js";
+import { codexProxyProfiles, readAimgrConfig } from "../config/aimgr-config.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { parseExpiresAtToMs, formatExpiresIn } from "../core/time.js";
 import { buildCoordinationView } from "../coordination/snapshot.js";
 import { localCodexRecords } from "../coordination/codex-runtime.js";
 import { readCodexEnvironment } from "../privacy/codex-environment.js";
+import { readCodexOfflineBinding, resolveCodexProxyProfile } from "../network/codex-egress.js";
 import { readReferencedLocalCodexCredential } from "../credentials/codex-local.js";
 import { readHeldRedisCredentialLeaseLabels } from "../coordination/redis-credential-lease.js";
 import {
@@ -99,7 +100,7 @@ function projectStatusAccount(value) {
     label,
     provider,
     ...(provider === OPENAI_CODEX_PROVIDER && /^[a-f0-9]{64}$/.test(value?.localAccountKey ?? "") ? { localAccountKey: value.localAccountKey } : {}),
-    ...(provider === ANTHROPIC_PROVIDER ? { egress: projectClaudeEgress(value?.egress) } : {}),
+    ...([ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER].includes(provider) ? { egress: projectClaudeEgress(value?.egress) } : {}),
     operator: {
       status: safeToken(value?.operator?.status) ?? "unknown",
       eligible: value?.operator?.eligible === true,
@@ -258,7 +259,16 @@ function credentialStatusForCodex(record, nowMs) {
   return { status: ready ? "ok" : "missing", ready: Boolean(ready) };
 }
 
-function buildCodexAccounts({ snapshot, usageByLabel, lockedLabels, lockSource, nowMs }) {
+function describeCodexEgress(account, profiles, options) {
+  const described = describeClaudeEgress(account, profiles, options);
+  if (described.mode === "proxy" && described.localStatus === "configured") {
+    try { resolveCodexProxyProfile({ egress: { profileRef: described.profileRef }, profiles }); }
+    catch { described.localStatus = "not_configured"; }
+  }
+  return described;
+}
+
+function buildCodexAccounts({ snapshot, usageByLabel, lockedLabels, lockSource, nowMs, homeDir, environment, profiles }) {
   return (snapshot?.credentials ?? []).filter((record) => record.provider === OPENAI_CODEX_PROVIDER).map((record) => {
     const credentials = credentialStatusForCodex(record, nowMs);
     const usage = usageByLabel?.[record.label] ?? {
@@ -272,13 +282,26 @@ function buildCodexAccounts({ snapshot, usageByLabel, lockedLabels, lockSource, 
     const lockStatus = lockSource === "redis"
       ? lockedLabels.has(record.label) ? "held" : "free"
       : "unknown";
+    let egress;
+    try {
+      const remembered = record.identity?.accountId && environment && readCodexOfflineBinding({ homeDir,
+        accountId: record.identity.accountId, environment });
+      egress = describeCodexEgress({ egress: record.policy?.egress }, profiles, { previouslyProtected: Boolean(remembered) });
+      if ((remembered || record.policy?.egress !== undefined) && (!Number.isSafeInteger(record.version)
+        || record.version < 1 || (remembered?.version && record.version < remembered.version))) {
+        egress = { mode: "missing_assignment" };
+      }
+    } catch { egress = { mode: "invalid" }; }
+    const noRoute = egress.mode === "proxy" && egress.localStatus === "not_configured";
+    const invalidRoute = ["invalid", "missing_assignment"].includes(egress.mode);
     return {
       label: record.label,
       provider: OPENAI_CODEX_PROVIDER,
+      egress,
       localAccountKey: record.localAccountKey ?? null,
       operator: {
-        status: credentials.ready && record.policy?.pool?.enabled !== false ? "ready" : credentials.status === "reauth_required" ? "reauth" : "blocked",
-        eligible: credentials.ready && record.policy?.pool?.enabled !== false && lockStatus !== "held",
+        status: noRoute ? "no_route" : invalidRoute ? "proxy_unavailable" : credentials.ready && record.policy?.pool?.enabled !== false ? "ready" : credentials.status === "reauth_required" ? "reauth" : "blocked",
+        eligible: !noRoute && !invalidRoute && credentials.ready && record.policy?.pool?.enabled !== false && lockStatus !== "held",
       },
       credentials: {
         status: credentials.status,
@@ -448,10 +471,17 @@ export async function buildRedisStatusView({
         usageByLabel: usageByProvider?.[OPENAI_CODEX_PROVIDER] ?? {},
         lockedLabels: lockedCodexLabels,
         lockSource: codexLockSource,
-        nowMs,
+        nowMs, homeDir, environment, profiles: codexProxyProfiles(configRead.config),
       }),
       ...buildClaudeAccounts(claudeUsageStatus),
     ].sort((left, right) => left.label.localeCompare(right.label));
+    const codexHealth = await readClaudeProxyHealthImpl(accounts.filter(account => account.provider === OPENAI_CODEX_PROVIDER
+      && account.egress.mode === "proxy" && account.egress.localStatus === "configured").map(account => account.egress.profileRef));
+    for (const account of accounts.filter(account => account.provider === OPENAI_CODEX_PROVIDER && account.egress.mode === "proxy")) {
+      account.egress.health = codexHealth[account.egress.profileRef] ?? "unknown";
+      const problem = claudeProxyHealthProblem(account);
+      if (problem) account.operator = { status: problem.status.toLowerCase().replaceAll(" ", "_"), eligible: false };
+    }
     const view = {
       generatedAt: new Date(nowMs).toISOString(),
       nowMs,
@@ -502,6 +532,14 @@ export async function buildRedisStatusView({
         try { local = readReferencedLocalCodexCredential({ homeDir, env, environment, accountKey: account.localAccountKey }); }
         catch { local.status = "local_auth_unavailable"; }
       }
+      if (local.paths?.accountId && environment) {
+        try {
+          const remembered = readCodexOfflineBinding({ homeDir, accountId: local.paths.accountId, environment });
+          if (remembered) account.egress = remembered.invalidated ? { mode: "missing_assignment" }
+            : describeCodexEgress({ egress: remembered.egress }, codexProxyProfiles(configRead.config));
+        } catch { account.egress = { mode: "invalid" }; }
+      }
+      if (["invalid", "missing_assignment"].includes(account.egress?.mode)) account.operator = { status: "proxy_unavailable", eligible: false };
       account.credentials = { status: local.status === "ready" ? "ok" : local.status, source: "environment-local",
         ...(local.credential?.expiresAt ? { expiresAt: local.credential.expiresAt, expiresIn: formatExpiresIn(local.credential.expiresAt, nowMs) } : {}) };
       if (local.status !== "ready") account.operator = { status: local.status === "reauth_required" ? "reauth" : "blocked", eligible: false };
@@ -511,15 +549,16 @@ export async function buildRedisStatusView({
     // current machine fact. Recheck it even while Redis is unreachable. A newly
     // installed route does not establish fresh account readiness while offline.
     for (const account of cached.accounts) {
-      if (account.provider !== ANTHROPIC_PROVIDER) continue;
+      if (![ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER].includes(account.provider)) continue;
       if (account.egress?.mode !== "proxy") {
-        if (readClaudeOfflineBinding(homeDir, account.label) && ["direct", "unknown"].includes(account.egress?.mode)) {
+        if (account.provider === ANTHROPIC_PROVIDER && readClaudeOfflineBinding(homeDir, account.label) && ["direct", "unknown"].includes(account.egress?.mode)) {
           account.egress = { mode: "missing_assignment" };
           account.operator = { status: "blocked", eligible: false };
         }
         continue;
       }
-      account.egress = describeClaudeEgress({ egress: account.egress }, configRead.config.claudeProxyProfiles ?? {});
+      account.egress = (account.provider === OPENAI_CODEX_PROVIDER ? describeCodexEgress : describeClaudeEgress)({ egress: account.egress },
+        (account.provider === OPENAI_CODEX_PROVIDER ? codexProxyProfiles(configRead.config) : configRead.config.claudeProxyProfiles) ?? {});
       if (hasNoLocalClaudeRoute(account)) account.operator = { status: "no_route", eligible: false };
       else if (account.operator.status === "no_route" || account.operator.status.startsWith("proxy_")) account.operator = { status: "unknown", eligible: false };
     }

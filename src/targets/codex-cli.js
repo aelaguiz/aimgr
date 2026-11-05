@@ -1,3 +1,4 @@
+import { codexRouteRecord } from "../network/codex-egress.js";
 import path from "node:path";
 import { getCodexCredential } from "../browser/seed.js";
 import { CODEX_AUTH_STORE_MODE_FILE, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
@@ -24,7 +25,8 @@ export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
   const environment = state.codexEnvironment ?? readCodexEnvironment();
   const local = readLocalCodexCredential({ homeDir, env, environment, accountId: selected.accountId });
   if (local.status !== "ready") throw new Error(`Codex login is ${local.status} on this machine. Run \`aim codex login ${normalizedLabel}\`.`);
-  const prepared = prepareCodexAccountState({ homeDir, env, environment, accountId: selected.accountId, label: normalizedLabel });
+  const prepared = Object.freeze({ ...prepareCodexAccountState({ homeDir, env, environment, accountId: selected.accountId, label: normalizedLabel }),
+    routeRecord: codexRouteRecord(state, normalizedLabel, selected.accountId) });
   const target = getCodexTargetState(state);
   target.homeDir = prepared.codexHome;
   target.activeLabel = normalizedLabel;

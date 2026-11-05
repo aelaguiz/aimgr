@@ -4,7 +4,7 @@ import { admitCodexArtifact } from "./codex-artifacts.js";
 import { prepareCodexAccountState, codexStateLink } from "./codex-account-state.js";
 import { readCodexEnvironment } from "./codex-environment.js";
 import { readLocalCodexCredential } from "../credentials/codex-local.js";
-import { codexArguments } from "./codex-arguments.js";
+import { codexArguments, codexProxyArguments } from "./codex-arguments.js";
 import { codexSettingsView, superviseCodexSettings } from "../io/codex-settings.js";
 import { codexCanonicalPath, resolveCodexLaunchInputs, codexPrivacyEnvironment } from "./codex-launch-inputs.js";
 import { inspectCodexManagedPolicy } from "./codex-managed-policy.js";
@@ -12,6 +12,8 @@ import { prepareCodexNativeInputs } from "./codex-native-inputs.js";
 import { stageLaunchEnvironment } from "./launch-environment.js";
 import { codexStateIO } from "../io/codex-state-io.js";
 import { prepareCodexWorktree, codexWorktreeDatabases, finishCodexWorktree } from "./codex-worktree.js";
+import { acquireCodexAssignmentLock, resolveCodexRoute } from "../network/codex-egress.js";
+import { prepareCodexNativeRoute, codexProxyEnvironment } from "../network/claude-native-route.js";
 
 /** One launch owner carries the exact selected account through admission,
  * settings supervision and spawn. No global selection is read after this. */
@@ -20,11 +22,16 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
   admitArtifact = admitCodexArtifact, inspectManagedPolicy = inspectCodexManagedPolicy,
   environment = readCodexEnvironment(), resolveInputs = resolveCodexLaunchInputs,
   nativeInputs = prepareCodexNativeInputs,
+  prepareRoute = prepareCodexNativeRoute,
   worktreeOperation,
 } = {}) {
-  let supervisor, scratch, environmentFd, worktree;
+  let supervisor, scratch, environmentFd, worktree, assignment;
   try {
     if (!prepared?.accountId || prepared.environmentId !== environment.binding) throw new Error("Codex needs the selected account's authorization from this environment.");
+    const routing = { homeDir, accountId: prepared.accountId, label: prepared.label, environment,
+      record: prepared.routeRecord, offline: !prepared.routeRecord };
+    assignment = await acquireCodexAssignmentLock(routing);
+    const route = resolveCodexRoute(routing);
     const account = prepareCodexAccountState({ homeDir, accountId: prepared.accountId, label: prepared.label,
       env: { ...env, CODEX_HOME: prepared.codexHome }, environment });
     if (account.codexHome !== prepared.codexHome || account.accountRoot !== prepared.accountRoot) throw new Error("Codex prepared account state changed before launch.");
@@ -34,7 +41,8 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     // New AIM sessions use native keyring storage without changing the shared
     // source or any already-running session. Later explicit CLI overrides
     // retain native precedence and are checked against the effective mode.
-    let parsedArgs = codexArguments(["-c", 'mcp_oauth_credentials_store="keyring"', ...args], { cwd, ownedAppServer });
+    const privacyArgs = ["-c", 'mcp_oauth_credentials_store="keyring"', ...args];
+    let parsedArgs = codexArguments(route ? codexProxyArguments(privacyArgs, { cwd, ownedAppServer }) : privacyArgs, { cwd, ownedAppServer });
     // Native Clap exits before reading configuration for these exact forms.
     // Do not use parsedArgs.inspection: passthrough child argv can contain help.
     const inspectionOnly = (args.length === 1 && ["--help", "-h", "--version", "-V"].includes(args[0]))
@@ -59,7 +67,8 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     // directory short and grant only that directory in the vendor policy.
     scratch = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), `aim-codex-${process.getuid()}-`));
     fs.chmodSync(scratch, 0o700);
-    const environmentValues = codexPrivacyEnvironment({ env, prepared: account, artifact, scratch });
+    const privateEnvironment = codexPrivacyEnvironment({ env, prepared: account, artifact, scratch });
+    const environmentValues = route ? codexProxyEnvironment(privateEnvironment, route) : privateEnvironment;
     if (!inspectionOnly) worktree = await prepareCodexWorktree({ parsedArgs, nativeInputs, artifact, prepared: account,
       env: environmentValues, managed, operate: worktreeOperation });
     if (worktree) parsedArgs = worktree.parsedArgs;
@@ -85,39 +94,45 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     if (process.platform === "darwin") for (const root of new Set([homeDir, env.HOME || homeDir])) {
       denied.push(codexCanonicalPath(path.join(root, "Library/Application Support/com.openai.codex/production-appcast-bootstrap.json")));
     }
-    const nativeArgs = ["v1", fs.realpathSync(account.accountRoot), fs.realpathSync(account.codexHome), scratch, "3",
+    const nativeArgs = ["assigned-v1", fs.realpathSync(account.accountRoot), fs.realpathSync(account.codexHome), scratch, "3",
       String(writes.length), ...writes, String(reads.length), ...reads, String(databases.length), ...databases,
       String(denied.length), ...denied, "--", ...parsedArgs.args];
+    const launch = route ? await prepareRoute({ profile: route, command: artifact.launcher, args: nativeArgs,
+      nativeCommand: artifact.command, signal: assignment.signal }) : { command: artifact.launcher, args: nativeArgs };
     let closed = false, startedAt, endedAt;
-    return { command: artifact.launcher, args: nativeArgs, artifact, prepared: account, entries, inputs, parsedArgs,
-      environment: environmentValues, environmentFd,
+    return { ...launch, artifact, prepared: account, entries, inputs, parsedArgs,
+      environment: environmentValues, environmentFd, assignmentFd: assignment.fd, route,
       // A privileged entry receives only fixed bootstrap variables. All user
       // tool environment crosses the unlinked descriptor after policy entry.
       // Keep original process cwd for native argument semantics. A requested
       // worktree has already been created and receives absolute -C/add-dir.
       env: { PATH: "/usr/bin:/bin" }, cwd: parsedArgs.processCwd,
-      beforeSpawn() { startedAt = new Date().toISOString(); },
+      beforeSpawn() { assignment.assertOwned(); startedAt = new Date().toISOString(); },
       childClosed() { endedAt = new Date().toISOString(); },
       flushSettings: async () => supervisor?.flush(),
       closeEnvironment() { if (environmentFd !== undefined) { fs.closeSync(environmentFd); environmentFd = undefined; } },
       async close() {
         if (closed) return; closed = true;
-        if (environmentFd !== undefined) { fs.closeSync(environmentFd); environmentFd = undefined; }
-        if (worktree && startedAt && endedAt) await finishCodexWorktree({ worktree, nativeInputs, artifact,
-          prepared: account, parsedArgs, env: environmentValues, managed, databases: worktreeDatabases,
-          startedAt, endedAt, onNotice });
-        else if (worktree) { try { onNotice(`Codex kept the worktree at ${worktree.checkout.root}.`); } catch {} }
-        await supervisor?.close();
-        // Background tools may still refer to their temporary directory. Keep
-        // nonempty scratch; empty launch scratch has no surviving state.
-        try { fs.rmdirSync(scratch); } catch (error) { if (!["ENOTEMPTY", "EEXIST"].includes(error.code)) throw error; }
+        try {
+          if (environmentFd !== undefined) { fs.closeSync(environmentFd); environmentFd = undefined; }
+          if (worktree && startedAt && endedAt) await finishCodexWorktree({ worktree, nativeInputs, artifact,
+            prepared: account, parsedArgs, env: environmentValues, managed, databases: worktreeDatabases,
+            startedAt, endedAt, onNotice });
+          else if (worktree) { try { onNotice(`Codex kept the worktree at ${worktree.checkout.root}.`); } catch {} }
+          await supervisor?.close();
+          // Background tools may still refer to their temporary directory. Keep
+          // nonempty scratch; empty launch scratch has no surviving state.
+          try { fs.rmdirSync(scratch); } catch (error) { if (!["ENOTEMPTY", "EEXIST"].includes(error.code)) throw error; }
+        } finally { await assignment.release(); }
       },
     };
   } catch (error) {
-    if (environmentFd !== undefined) fs.closeSync(environmentFd);
-    if (supervisor) await supervisor.close().catch(() => {});
-    if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); // No child has been started.
-    if (worktree) error.message += ` The worktree was kept at ${worktree.checkout.root}.`;
+    try {
+      if (environmentFd !== undefined) fs.closeSync(environmentFd);
+      if (supervisor) await supervisor.close().catch(() => {});
+      if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); // No child has been started.
+      if (worktree) error.message += ` The worktree was kept at ${worktree.checkout.root}.`;
+    } finally { await assignment?.release(); }
     throw error;
   }
 }

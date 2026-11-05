@@ -31,7 +31,7 @@ static int inside(const char *file,const char *directory) {
     size_t n=strlen(directory);
     return !strcmp(file,directory) || (!strncmp(file,directory,n) && file[n]=='/');
 }
-static void close_descriptors_except(int retained) {
+static void close_descriptors_except_two(int retained,int second) {
     /* A descriptor opened before RLIMIT_NOFILE was lowered can remain above
      * the current hard limit. Inventory the kernel's actual handles; a bound
      * derived from that limit silently leaks such a handle to the vendor. */
@@ -42,9 +42,10 @@ static void close_descriptors_except(int retained) {
     if (!fds) fail("descriptor inventory allocation");
     int got=proc_pidinfo(getpid(),PROC_PIDLISTFDS,0,fds,capacity);
     if (got<=0 || got>=capacity || got%(int)sizeof(*fds)) fail("descriptor inventory changed");
-    for (int i=0;i<got/(int)sizeof(*fds);i++) if (fds[i].proc_fd>=3 && fds[i].proc_fd!=retained) close(fds[i].proc_fd);
+    for (int i=0;i<got/(int)sizeof(*fds);i++) if (fds[i].proc_fd>=3 && fds[i].proc_fd!=retained && fds[i].proc_fd!=second) close(fds[i].proc_fd);
     free(fds);
 }
+static void close_descriptors_except(int retained) { close_descriptors_except_two(retained,-1); }
 static void close_inherited_descriptors(void) { close_descriptors_except(-1); }
 static void canonical(const char *file) {
     char resolved[PATH_MAX];

@@ -168,7 +168,7 @@ const start = async protectedLaunch => {
   const args = ["app-server", "--listen", "stdio://"];
   if (protectedLaunch) {
     invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin/codex"), homeDir, cwd, env, args, ownedAppServer: true });
-    child = spawn(invocation.command, invocation.args, { cwd, env: invocation.env, detached: true, stdio: ["pipe", "pipe", "pipe", invocation.environmentFd] });
+    child = spawn(invocation.command, invocation.args, { cwd, env: invocation.env, detached: true, stdio: ["pipe", "pipe", "pipe", invocation.environmentFd, invocation.assignmentFd] });
     invocation.closeEnvironment();
   } else if (process.platform === "darwin") {
     setMacBaselinePolicy(true);

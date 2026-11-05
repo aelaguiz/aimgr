@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codexArguments, codexWorktreeArguments, validateCodexWorktreeArguments } from "../../src/privacy/codex-arguments.js";
+import { codexArguments, codexProxyArguments, codexWorktreeArguments, validateCodexWorktreeArguments } from "../../src/privacy/codex-arguments.js";
+
+test("proxy flags follow child config overrides without consuming tool or prompt arguments", () => {
+  for (const prefix of [[], ["exec"], ["exec", "resume", "synthetic-thread"], ["app-server"], ["features", "list"]]) {
+    const args = [...prefix, "-c", "features={respect_system_proxy=true,system_proxy_fallback=true}", "--enable", "respect_system_proxy"];
+    const fixed = codexProxyArguments(args, { ownedAppServer: true });
+    const config = codexArguments(fixed, { ownedAppServer: true }).config;
+    assert.equal(config.filter(value => value.startsWith("features.respect_system_proxy=")).at(-1), "features.respect_system_proxy=false");
+    assert.equal(config.filter(value => value.startsWith("features.system_proxy_fallback=")).at(-1), "features.system_proxy_fallback=false");
+    assert.ok(fixed.indexOf("features.respect_system_proxy=false") > fixed.indexOf(args[prefix.length + 1]));
+  }
+  for (const args of [["sandbox", "linux", "sh", "-c", "--enable respect_system_proxy"],
+    ["mcp", "add", "fixture", "--", "sh", "-c", "features.respect_system_proxy=true"],
+    ["exec", "--", "literal -c features.respect_system_proxy=true"]]) {
+    const fixed = codexProxyArguments(args);
+    assert.deepEqual(fixed.slice(-args.length), args);
+  }
+});
 
 test("escaped prompt words cannot attach to a shared daemon", () => {
   for (const before of [[], ["resume", "thread"], ["fork", "thread"]]) {

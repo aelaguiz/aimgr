@@ -29,7 +29,8 @@ export async function runCodexInteractive({
     invocation.beforeSpawn?.();
     child = spawnImpl(invocation.command, invocation.args, {
       cwd: invocation.cwd, env: invocation.env,
-      stdio: ownedAppServer ? ["pipe", "pipe", "inherit", invocation.environmentFd] : ["inherit", "inherit", "inherit", invocation.environmentFd], shell: false,
+      stdio: ownedAppServer ? ["pipe", "pipe", "inherit", invocation.environmentFd, invocation.assignmentFd]
+        : ["inherit", "inherit", "inherit", invocation.environmentFd, invocation.assignmentFd], shell: false,
     });
   } catch (error) { await invocation.close(); throw error; }
   finally { invocation.closeEnvironment(); }

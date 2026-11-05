@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import fs from "node:fs";
 
 const execute = promisify(execFile);
 export const CLAUDE_PROXY_HEALTH_STATES = new Set(["running", "stopped", "starting", "not_installed", "unknown"]);
@@ -30,7 +31,7 @@ print(json.dumps(result))
  * "running" describes the installed service, not an end-to-end exit probe;
  * the normal native launch still verifies the actual assigned network path.
  */
-export async function readClaudeProxyHealth(profileRefs, { platform = process.platform, execFileImpl = execute } = {}) {
+export async function readClaudeProxyHealth(profileRefs, { platform = process.platform, execFileImpl = execute, existsSync = fs.existsSync } = {}) {
   const names = [...new Set(profileRefs)].filter(name => typeof name === "string" && /^[a-z0-9][a-z0-9_-]{0,127}$/.test(name));
   const health = Object.fromEntries(names.map(name => [name, "unknown"]));
   if (!names.length) return health;
@@ -53,6 +54,7 @@ export async function readClaudeProxyHealth(profileRefs, { platform = process.pl
           : fields.ActiveState === "active" && fields.SubState === "running" ? "running"
           : fields.ActiveState === "activating" ? "starting"
           : ["inactive", "failed", "deactivating"].includes(fields.ActiveState) ? "stopped" : "unknown";
+        if (health[name] === "running" && existsSync(`/run/aimgr-claude-proxy-${name}/starting`)) health[name] = "starting";
       }
     }
   } catch { /* A failed observation must remain unknown, never look healthy. */ }

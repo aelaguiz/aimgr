@@ -166,6 +166,19 @@ export function codexArguments(args, { cwd = process.cwd(), ownedAppServer = fal
     harness: command === "app-server" ? {} : harness };
 }
 
+/** Enrolled routes must ignore OS proxy discovery even when a subcommand has
+ * its own config overrides. Root --disable wins native feature toggles; final
+ * -c values follow the last actual config option, never a tool's trailing argv.
+ * Native prepends root config before subcommand config, so root flags alone
+ * cannot enforce this for `exec -c features={...}`. */
+export function codexProxyArguments(args, options) {
+  const parsed = codexArguments(args, options);
+  const insertion = parsed.optionSpans.filter(option => option.kind === "config").at(-1)?.end ?? 0;
+  const fixed = ["-c", "features.respect_system_proxy=false", "-c", "features.system_proxy_fallback=false"];
+  return ["--disable", "respect_system_proxy", "--disable", "system_proxy_fallback",
+    ...args.slice(0, insertion), ...fixed, ...args.slice(insertion)];
+}
+
 /** Preserve native eligibility before doing the explicitly requested Git work. */
 export function validateCodexWorktreeArguments(parsed) {
   if (!parsed.worktree || parsed.inspection) return false;

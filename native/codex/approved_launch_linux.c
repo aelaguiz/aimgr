@@ -8,6 +8,7 @@
 #define RUNTIME "/opt/aimgr-codex-runtime"
 #include "../privacy/launch_linux.h"
 #include "maintenance_gate.h"
+#include "assignment_lock.h"
 #include "private_scratch.h"
 #include "profile_gc_linux.h"
 
@@ -50,7 +51,8 @@ int main(int argc,char **argv) {
     /* v1 ACCOUNT HOME SCRATCH ENVFD WRITECOUNT ROOT... READCOUNT ROOT...
      * DBCOUNT ROOT... DENYCOUNT PATH... -- VENDOR_ARGS... */
     caller=getuid();caller_group=getgid();
-    if (!caller || !caller_group || geteuid()!=0 || argc<10 || strcmp(argv[1],"v1")) fail("invocation");
+    int assigned=argc>1 && !strcmp(argv[1],"assigned-v1");
+    if (!caller || !caller_group || geteuid()!=0 || argc<10 || (!assigned && strcmp(argv[1],"v1"))) fail("invocation");
     char self[PATH_MAX],vendor[PATH_MAX],helper[PATH_MAX];
     ssize_t n=readlink("/proc/self/exe",self,sizeof(self)-1);
     if (n<0 || n>=(ssize_t)sizeof(self)-1) fail("launcher path");
@@ -82,8 +84,10 @@ int main(int argc,char **argv) {
     }
     for (int i=0;i<databases;i++) canonical_future(database_roots[i]);
     for (int i=0;i<denies;i++) canonical_future(denied[i]);
+    if (assigned && envfd!=3) fail("assignment environment descriptor");
+    int assignment=assigned?codex_assignment_lock(account):-1;
     char **private_environment=read_environment(envfd);
-    close_handles();
+    codex_close_descriptors(-1,assignment);
     int admission=codex_maintenance_admission(0);
     require_enforcement();
     trusted_launcher_namespaces();
@@ -157,5 +161,5 @@ int main(int argc,char **argv) {
     parse_policy(policy,0);free(policy);install_uname();enter_profile();close(lock);drop();
     environ=private_environment;unset_environment("LD_PRELOAD");unset_environment("LD_AUDIT");
     set_environment("CODEX_HOME",home,1);set_environment("TMPDIR",scratch,1);
-    codex_close_except_admission(admission);argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");
+    codex_close_descriptors(admission,assignment);argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");
 }

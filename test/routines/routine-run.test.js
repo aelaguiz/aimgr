@@ -1,6 +1,7 @@
 import test from "node:test";
 import { CODEX_TEST_ENVIRONMENT, readCodexTestEnvironment } from "../helpers/codex-local.js";
 import { codexAccountPaths } from "../../src/privacy/codex-account-state.js";
+import { acquireCodexAssignmentLock } from "../../src/network/codex-egress.js";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -755,12 +756,21 @@ function makeCodexRuntime(home, options = {}) {
     `rollout-2026-08-15T12-34-00-${sessionId}.jsonl`);
   const runtime = {
     sessionId, calls, kills, prepared,
+    invocations: [],
     async prepareCodexNativeInvocationImpl(request) {
       assert.equal(request.prepared.codexHome, request.env.CODEX_HOME);
       assert.equal(request.command, undefined, "normal routine selects the admitted artifact independently of PATH");
       let closed = false;
-      return { ...request, command: "codex", environmentFd: 3, closeEnvironment() {}, async close() { closed = true; },
+      const binding = { homeDir: home, accountId: prepared.accountId, environment: CODEX_TEST_ENVIRONMENT };
+      if (options.assignment && runtime.invocations.length) {
+        await assert.rejects(acquireCodexAssignmentLock(binding, { exclusive: true }), { code: "AIMGR_CODEX_ASSIGNMENT_BUSY" });
+      }
+      const assignment = options.assignment ? await acquireCodexAssignmentLock(binding) : null;
+      const invocation = { ...request, command: "codex", environmentFd: 3, assignmentFd: assignment?.fd ?? 4,
+        closeEnvironment() {}, async close() { closed = true; await assignment?.release(); },
         get closed() { return closed; } };
+      runtime.invocations.push(invocation);
+      return invocation;
     },
     get submitted() { return submitted; },
     get rolloutPath() { return rolloutPath; },
@@ -779,7 +789,7 @@ function makeCodexRuntime(home, options = {}) {
       assert.equal(command, "codex");
       const child = new EventEmitter();
       if (args.includes("resume")) {
-        assert.deepEqual(spawnOptions.stdio, ["inherit", "inherit", "inherit", 3]);
+        assert.deepEqual(spawnOptions.stdio, ["inherit", "inherit", "inherit", 3, runtime.invocations.at(-1).assignmentFd]);
         assert.equal(args.at(-1), sessionId);
         assert.equal(args.includes("--last"), false);
         tui = child;
@@ -858,6 +868,21 @@ test("Codex routine executes the prompt once, saves events, and resumes that ses
   // Without its thread file AIM cannot tell whether someone replied, so it keeps the Space.
   assert.equal(result.interactiveTui.followUp, "unwatched");
   assert.deepEqual(context.herdr.calls, []);
+});
+
+test("Codex routine keeps its assignment continuously held through same-thread TUI handoff", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  const runtime = makeCodexRuntime(home, { assignment: true });
+  const worker = executeRoutineWorker(workerContext(home, receipt, runtime));
+  await waitUntil(() => runtime.calls.length === 2, "Codex TUI did not open");
+  const binding = { homeDir: home, accountId: runtime.prepared.accountId, environment: CODEX_TEST_ENVIRONMENT };
+  await assert.rejects(acquireCodexAssignmentLock(binding, { exclusive: true }), { code: "AIMGR_CODEX_ASSIGNMENT_BUSY" });
+  assert.equal(runtime.invocations[0].closed, true);
+  runtime.closeTui();
+  await worker;
+  const changed = await acquireCodexAssignmentLock(binding, { exclusive: true });
+  await changed.release();
 });
 
 test("finished Codex job nobody replied to is stopped after the grace period and its Space closed", async () => {

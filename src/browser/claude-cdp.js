@@ -56,9 +56,9 @@ export async function connectCdp(url, { timeoutMs = 8000 } = {}) {
 // Chrome honoring its validated fixed proxy is the agreed trust boundary;
 // adding another browser firewall or changing its fingerprint is out of scope.
 // Regression: test/network/claude-chrome.test.js.
-export async function validateClaudeChrome(profile) {
+export async function validateAccountChrome(profile, { RouteError = ClaudeRouteError, checkRouteExitImpl = checkClaudeRouteExit } = {}) {
   const chrome = profile.chrome;
-  const reject = (field) => { throw new ClaudeRouteError("chrome_binding_mismatch", { ...profile, cause: new Error(field ?? "configuration") }); };
+  const reject = (field) => { throw new RouteError("chrome_binding_mismatch", { ...profile, cause: new Error(field ?? "configuration") }); };
   if (!Number.isInteger(chrome?.cdpPort) || chrome.cdpPort < 1 || chrome.cdpPort > 65535
       || !path.isAbsolute(chrome?.userDataDir ?? "")) reject();
   const expectedProxy = `socks5://${profile.socksHost === "::1" ? "[::1]" : profile.socksHost}:${profile.socksPort}`;
@@ -82,9 +82,11 @@ export async function validateClaudeChrome(profile) {
   }
   const argument = (name) => args.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
   if (argument("user-data-dir") !== chrome.userDataDir) reject("user-data-dir");
-  if (argument("remote-debugging-port") !== String(chrome.cdpPort)) reject("remote-debugging-port");
-  if (argument("proxy-server") && argument("proxy-server") !== expectedProxy) reject("proxy-server");
-  await checkClaudeRouteExit(profile);
+  // ps joins the final switch and any startup URL. These two switch values
+  // cannot contain whitespace; the profile directory above can.
+  if (argument("remote-debugging-port")?.split(/\s/, 1)[0] !== String(chrome.cdpPort)) reject("remote-debugging-port");
+  if (argument("proxy-server") && argument("proxy-server").split(/\s/, 1)[0] !== expectedProxy) reject("proxy-server");
+  await checkRouteExitImpl(profile);
   const response = await fetch(`http://127.0.0.1:${chrome.cdpPort}/json/version`, { signal: AbortSignal.timeout(8000), redirect: "error" });
   if (!response.ok) reject();
   const version = await response.json();
@@ -93,6 +95,8 @@ export async function validateClaudeChrome(profile) {
       || endpoint.protocol !== "ws:" || endpoint.port !== String(chrome.cdpPort)) reject();
   return { webSocketDebuggerUrl: endpoint.href, version: version.Browser };
 }
+
+export const validateClaudeChrome = validateAccountChrome;
 
 export async function openClaudeLoginInChrome(profile, url, { receiptPath } = {}) {
   const destination = new URL(url);

@@ -19,6 +19,8 @@ import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { renderStatusText } from "../../src/status/render.js";
 import { invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
+import { resolveCodexRoute, invalidateCodexOfflineBinding } from "../../src/network/codex-egress.js";
+import { readCodexAccountMetadata, setCodexAccountEgress } from "../../src/coordination/codex-metadata.js";
 import { writeCachedRedisStatusView } from "../../src/status/redis-cache.js";
 
 test("Codex cache projects the legacy 168h window as Week", () => {
@@ -92,6 +94,55 @@ async function seedRedis(client, home) {
     { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
 }
+
+test("Codex proxy status rechecks the service while usage is cached and rejects an invalidated offline assignment", async () => {
+  const homeDir = mkTempHome(), client = new FakeRedisClient();
+  const profiles = { assigned: { socksHost: "127.0.0.1", socksPort: 1086, httpPort: 2086, expectedExits: ["192.0.2.1"] } };
+  writeAimgrConfig({ homeDir, config: { redis: { url: "redis://fixture", keyPrefix: "aimgr:status-test" }, codexProxyProfiles: profiles } });
+  await seedRedis(client, homeDir);
+  const store = await connectRedisStore({ client, keyPrefix: "aimgr:status-test" });
+  const record = (await readCodexAccountMetadata(store))[0];
+  const updated = await setCodexAccountEgress(store, { label: "boss", accountId: "acct_boss",
+    expectedVersion: record.version, egress: { profileRef: "assigned" } });
+  const binding = { homeDir, accountId: "acct_boss", label: "boss", environment: CODEX_TEST_ENVIRONMENT };
+  resolveCodexRoute({ ...binding, record: { ...record, version: updated.version,
+    policy: { ...record.policy, egress: { profileRef: "assigned" } } }, profiles });
+  let service = "running", probes = 0;
+  const context = { homeDir, nowMs: Date.now(), readCodexEnvironmentImpl: readCodexTestEnvironment,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
+    readClaudeProxyHealthImpl: async refs => Object.fromEntries(refs.map(ref => [ref, service])),
+    probeUsageSnapshotsByProviderImpl: async () => {
+      probes++;
+      return { [OPENAI_CODEX_PROVIDER]: { boss: { provider: OPENAI_CODEX_PROVIDER, ok: true,
+        windows: [{ label: "Week", usedPercent: 10 }] } } };
+    } };
+  const first = await buildRedisStatusView(context);
+  assert.equal(first.view.accounts[0].egress.health, "running");
+  service = "stopped";
+  const second = await buildRedisStatusView({ ...context, nowMs: context.nowMs + 1000 });
+  const account = second.view.accounts.find(item => item.label === "boss");
+  assert.equal(account.usage.source, "cache");
+  assert.equal(account.usage.ok, true);
+  assert.equal(account.operator.status, "proxy_down");
+  assert.equal(account.operator.eligible, false);
+  assert.equal(probes, 1);
+  service = "starting";
+  const offline = { ...context, nowMs: context.nowMs + 2000, connectRedisStoreImpl: async () => { throw new Error("offline"); } };
+  assert.equal((await buildRedisStatusView(offline)).view.accounts.find(item => item.label === "boss").operator.status, "proxy_starting");
+  const { httpPort, ...browserOnly } = profiles.assigned;
+  writeAimgrConfig({ homeDir, config: { redis: { url: "redis://fixture", keyPrefix: "aimgr:status-test" },
+    claudeProxyProfiles: { assigned: browserOnly } } });
+  const unavailable = (await buildRedisStatusView(offline)).view.accounts.find(item => item.label === "boss");
+  assert.equal(unavailable.egress.localStatus, "not_configured");
+  assert.equal(unavailable.operator.status, "no_route");
+  invalidateCodexOfflineBinding(binding, updated.version + 1);
+  const invalidated = (await buildRedisStatusView(offline)).view.accounts.find(item => item.label === "boss");
+  assert.equal(invalidated.egress.mode, "missing_assignment");
+  assert.equal(invalidated.operator.status, "proxy_unavailable");
+  const liveInvalidated = (await buildRedisStatusView({ ...context, nowMs: context.nowMs + 3000 })).view.accounts.find(item => item.label === "boss");
+  assert.equal(liveInvalidated.egress.mode, "missing_assignment");
+  assert.equal(liveInvalidated.operator.eligible, false);
+});
 
 test("Redis status view uses local Codex credentials, writes redacted cache, and has no session matrix", async () => {
   const home = mkTempHome();

@@ -1,4 +1,5 @@
 import net from "node:net";
+import { AccountRouteError } from "./route-error.js";
 import tls from "node:tls";
 import { Agent, fetch } from "undici";
 import { SocksClient } from "socks";
@@ -45,21 +46,37 @@ function watchSocksListener(profile, timeoutMs, onFailure) {
 // The probe carries no account token and uses the same assigned SOCKS path.
 // expectedExits is approved configuration: never learn/trust the observed IP
 // here, which would turn a wrong-route result into successful admission.
-export async function checkClaudeRouteExit(profile, { timeoutMs = 8000, signal } = {}) {
+export async function checkAccountRouteExit(profile, { timeoutMs = 8000, signal, RouteError = ClaudeRouteError } = {}) {
   signal?.throwIfAborted();
-  const probe = createClaudeTransport(profile, { timeoutMs, isProbe: true });
+  const probe = createAccountTransport(profile, { timeoutMs, isProbe: true, RouteError });
   try {
     const deadline = AbortSignal.timeout(timeoutMs);
     const response = await probe.fetch(profile.exitCheckUrl ?? "https://api.ipify.org?format=json", { signal: signal ? AbortSignal.any([signal, deadline]) : deadline, redirect: "error" });
-    const address = response.ok ? (await response.json()).ip : null;
-    if (!profile.expectedExits?.includes(address)) throw new ClaudeRouteError("proxy_exit_mismatch", profile);
+    let address = null;
+    if (response.ok && profile.exitCheckFormat === "cloudflare-trace") {
+      const reader = response.body.getReader();
+      let bytes = 0, chunks = [];
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > 16 * 1024) throw new RouteError("proxy_exit_mismatch", profile);
+          chunks.push(Buffer.from(value));
+        }
+      } finally { await reader.cancel().catch(() => {}); }
+      const ips = Buffer.concat(chunks).toString("utf8").split(/\r?\n/).filter(line => line.startsWith("ip="));
+      if (ips.length === 1 && net.isIPv4(ips[0].slice(3))) address = ips[0].slice(3);
+    } else if (response.ok) address = (await response.json()).ip;
+    if (!profile.expectedExits?.includes(address)) throw new RouteError("proxy_exit_mismatch", profile);
   } catch (cause) {
     if (signal?.aborted) throw signal.reason;
-    throw cause instanceof ClaudeRouteError ? cause : new ClaudeRouteError("proxy_unavailable", { ...profile, cause });
+    throw cause instanceof AccountRouteError ? cause : new RouteError("proxy_unavailable", { ...profile, cause });
   } finally { await probe.close(); }
 }
 
-export function createClaudeTransport(profile, { timeoutMs = 8000, healthIntervalMs = 5000, onFailure = () => {}, isProbe = false, checkRouteExitImpl = checkClaudeRouteExit } = {}) {
+export function createAccountTransport(profile, { timeoutMs = 8000, healthIntervalMs = 5000, onFailure = () => {}, isProbe = false,
+  RouteError = ClaudeRouteError, checkRouteExitImpl = (profile, options) => checkAccountRouteExit(profile, { ...options, RouteError }) } = {}) {
   let terminalError = null;
   let disposed = false;
   let ready = null;
@@ -72,8 +89,8 @@ export function createClaudeTransport(profile, { timeoutMs = 8000, healthInterva
   // Regression: test/network/claude-transport.test.js (outage and recovery).
   const fail = (cause) => {
     if (!terminalError) {
-      terminalError = cause instanceof ClaudeRouteError ? cause
-        : new ClaudeRouteError("proxy_unavailable", { ...profile, cause });
+      terminalError = cause instanceof AccountRouteError ? cause
+        : new RouteError("proxy_unavailable", { ...profile, cause });
       clearTimeout(healthTimer);
       requests.abort(terminalError);
       void dispatcher.destroy(terminalError);
@@ -84,7 +101,7 @@ export function createClaudeTransport(profile, { timeoutMs = 8000, healthInterva
   const dispatcher = new Agent({
     connect(options, callback) {
       if (terminalError || disposed) {
-        callback(terminalError ?? new ClaudeRouteError("operation_closed", profile));
+        callback(terminalError ?? new RouteError("operation_closed", profile));
         return;
       }
       // Passing the hostname to SOCKS5 makes the SSH exit perform DNS lookup.
@@ -100,7 +117,7 @@ export function createClaudeTransport(profile, { timeoutMs = 8000, healthInterva
       }).then(({ socket }) => {
         if (terminalError || disposed) {
           socket.destroy();
-          callback(terminalError ?? new ClaudeRouteError("operation_closed", profile));
+          callback(terminalError ?? new RouteError("operation_closed", profile));
           return;
         }
         if (options.protocol === "http:") {
@@ -155,13 +172,13 @@ export function createClaudeTransport(profile, { timeoutMs = 8000, healthInterva
     get failure() { return terminalError; },
     async check() {
       if (terminalError) throw terminalError;
-      if (disposed) throw new ClaudeRouteError("operation_closed", profile);
+      if (disposed) throw new RouteError("operation_closed", profile);
       try { await checkRouteExitImpl(profile, { timeoutMs, signal: requests.signal }); }
       catch (error) { throw fail(error); }
     },
     async fetch(input, init = {}) {
       if (terminalError) throw terminalError;
-      if (disposed) throw new ClaudeRouteError("operation_closed", profile);
+      if (disposed) throw new RouteError("operation_closed", profile);
       const callerSignal = init.signal ?? input?.signal;
       const signal = callerSignal ? AbortSignal.any([callerSignal, requests.signal]) : requests.signal;
       signal.throwIfAborted();
@@ -214,6 +231,10 @@ export function createClaudeTransport(profile, { timeoutMs = 8000, healthInterva
     },
   };
 }
+
+// Existing Claude callers keep their deployed API and defaults.
+export const createClaudeTransport = createAccountTransport;
+export const checkClaudeRouteExit = checkAccountRouteExit;
 
 // Resolve account and route together; callers cannot supply a token/dispatcher pair.
 // R4/R5: credential and immutable route come from the same provider-qualified

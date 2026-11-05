@@ -1,3 +1,4 @@
+import { AccountRouteError } from "../network/route-error.js";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -123,7 +124,7 @@ export async function maintainLocalCodexCredential(options, { fetchJsonWithTimeo
     body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.credential.refresh, client_id: "app_EMoamEEZ73f0CkXaXp7hrann" }),
   }, 8_000);
   let body;
-  try { body = await response.json(); } catch { throw new Error("Codex refresh returned malformed JSON."); }
+  try { body = await response.json(); } catch (error) { if (error instanceof AccountRouteError) throw error; throw new Error("Codex refresh returned malformed JSON."); }
   if (body?.error === "invalid_grant") {
     commit(current, { mode: "invalidate" });
     return readLocalCodexCredential(options);

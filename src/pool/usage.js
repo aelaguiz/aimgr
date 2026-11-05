@@ -1,3 +1,5 @@
+import { withCodexAccountTransport, codexRouteRecord } from "../network/codex-egress.js";
+import { AccountRouteError } from "../network/route-error.js";
 import os from "node:os";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { createClaudeAccountTransport } from "../network/claude-transport.js";
@@ -92,8 +94,9 @@ export async function fetchCodexUsageSnapshot({
       if (typeof rawError === "string" && rawError.trim()) {
         error = rawError.trim();
       }
-    } catch {
-      // ignore parse errors
+    } catch (error) {
+      if (error instanceof AccountRouteError) throw error;
+      // A healthy origin's malformed body is still an application response.
     }
     return {
       provider: OPENAI_CODEX_PROVIDER,
@@ -433,19 +436,18 @@ export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeou
       (async () => {
         const accountId = typeof cred.accountId === "string" ? cred.accountId.trim() : null;
         try {
-          usageByProvider[OPENAI_CODEX_PROVIDER][label] = await fetchCodexUsageSnapshot({
-            accessToken: cred.access,
-            accountId,
-            timeoutMs: 8000,
-            fetchJsonWithTimeoutImpl,
-          });
+          const probe = fetch => fetchCodexUsageSnapshot({ accessToken: cred.access, accountId, timeoutMs: 8000, fetchJsonWithTimeoutImpl: fetch });
+          usageByProvider[OPENAI_CODEX_PROVIDER][label] = cred.authority === "environment-local"
+            ? await withCodexAccountTransport({ homeDir, label, accountId, environment: state.codexEnvironment,
+                record: codexRouteRecord(state, label, accountId) }, probe, { fetchJsonWithTimeoutImpl })
+            : await probe(fetchJsonWithTimeoutImpl);
         } catch (err) {
           usageByProvider[OPENAI_CODEX_PROVIDER][label] = {
             provider: OPENAI_CODEX_PROVIDER,
             ok: false,
             status: "error",
             error: String(err?.message ?? err),
-            ...(err instanceof ClaudeRouteError ? { routeError: { code: err.code, label: err.label, profileRef: err.profileRef } } : {}),
+            ...(err instanceof AccountRouteError ? { routeError: { code: err.code, label: err.label, profileRef: err.profileRef } } : {}),
           };
         }
       })(),
@@ -470,7 +472,7 @@ export async function probeUsageSnapshotsByProvider(state, { fetchJsonWithTimeou
             ok: false,
             status: "error",
             error: String(err?.message ?? err),
-            ...(err instanceof ClaudeRouteError ? { routeError: { code: err.code, label: err.label, profileRef: err.profileRef } } : {}),
+            ...(err instanceof AccountRouteError ? { routeError: { code: err.code, label: err.label, profileRef: err.profileRef } } : {}),
           };
         }
       })(),
@@ -559,7 +561,7 @@ export async function collectCodexUsageSnapshots({
     reducedState.credentials[OPENAI_CODEX_PROVIDER] = credentialsToProbe;
     reducedState.credentials[ANTHROPIC_PROVIDER] = {};
     try {
-      liveByProvider = await probeUsageSnapshotsByProviderImpl(reducedState, { env });
+      liveByProvider = await probeUsageSnapshotsByProviderImpl(reducedState, { env, homeDir });
     } catch {
       liveByProvider = {};
     }

@@ -68,6 +68,8 @@ export function codexStateLink(file, target) {
   catch (error) { if (error.code !== "EEXIST") throw error; codexStateLink(file, target); }
 }
 
+/** Returns an immutable account descriptor. Invocation owners add their own
+ * fields by copying it, so selected account identity cannot change in place. */
 export function prepareCodexAccountState({ homeDir, env = {}, accountId, label, environment }) {
   let prepared = codexAccountPaths({ homeDir, env, accountId, environment });
   durableCodexMkdir(prepared.sharedHome);

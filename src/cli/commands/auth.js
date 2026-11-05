@@ -1,3 +1,4 @@
+import { withCodexAccountTransport, CodexRouteError } from "../../network/codex-egress.js";
 import { rememberClaudeProtection } from "../../network/claude-offline-binding.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import {
@@ -171,11 +172,12 @@ async function handleOAuthMaintain(context) {
       let outcome, reason;
       try {
         const before = readLocalCodexCredential(options);
-        const after = await maintainLocalCodexCredential(options, { fetchJsonWithTimeoutImpl });
+        const after = await withCodexAccountTransport({ ...options, label: item.label, record: item },
+          fetch => maintainLocalCodexCredential(options, { fetchJsonWithTimeoutImpl: fetch }), { fetchJsonWithTimeoutImpl });
         outcome = after.status === "reauth_required" ? "reauth_required" : !after.credential ? "skipped"
           : before.generation !== after.generation ? "refreshed" : "unchanged";
         reason = after.status;
-      } catch { outcome = "retryable"; reason = "maintenance_failed"; }
+      } catch (error) { outcome = "retryable"; reason = error instanceof CodexRouteError ? error.code : "maintenance_failed"; }
       counts[outcome] += 1;
       stdout.write(`provider=${OPENAI_CODEX_PROVIDER} authority=environment-local label=${item.label} outcome=${outcome} reason=${reason}\n`);
     }

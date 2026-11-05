@@ -26,7 +26,7 @@ function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }
       account.provider || "unknown",
       account.usage?.source || "unavailable",
       [buildStatusAccountFlags(account),
-        ...(account.provider === ANTHROPIC_PROVIDER ? [`proxy=${formatClaudeEgress(account.egress)}`] : []),
+        ...([ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER].includes(account.provider) ? [`proxy=${formatClaudeEgress(account.egress)}`] : []),
         ...(account.egress?.mode === "proxy" ? [`proxy_health=${formatClaudeProxyHealth(account.egress)}`] : []),
         ...(hasNoLocalClaudeRoute(account) ? ["don't have a route to this account"] : []),
       ].filter(Boolean).join(" "),

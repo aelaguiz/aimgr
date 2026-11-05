@@ -4,6 +4,7 @@
 #define RUNTIME_ROOT "/opt/aimgr-codex-runtime/artifacts/"
 #include "../privacy/launch_macos.h"
 #include "maintenance_gate.h"
+#include "assignment_lock.h"
 #include "private_scratch.h"
 #include "keychain_paths_macos.h"
 
@@ -52,10 +53,40 @@ static int shared_dangling_write(const char *file,const char *home) {
     return !strcmp(target,file);
 }
 
+static _Noreturn void enter_route(int argc,char **argv,const char *self) {
+    // The hardened fixed entry sheds inherited Seatbelt before routing setup.
+    // Its only payload is this same approved entry. Caller environment FD3
+    // stays unopened; FD4 contains only the validated assignment lock.
+    if (argc<14 || strcmp(argv[4],"--") || strcmp(argv[5],"assigned-v1")
+        || number(argv[9],1024)!=3 || strlen(argv[3])>16384) fail("route invocation");
+    canonical(argv[6]);codex_assignment_lock(argv[6]);
+    const char *helper="/opt/aimgr-claude-proxy/darwin_proxy.py";
+    const char *identity="/opt/aimgr-claude-proxy/darwin_identity";
+    immutable(helper,0);chain(helper);immutable(identity,0);chain(identity);
+    struct stat transfer;
+    if (fstat(3,&transfer) || !S_ISREG(transfer.st_mode) || transfer.st_uid!=getuid()
+        || transfer.st_nlink!=0 || (transfer.st_mode&077) || transfer.st_size<1 || transfer.st_size>MAX_ENV) fail("route private environment");
+    close_descriptors_except_two(3,4);
+    FILE *environment=tmpfile();if (!environment) fail("route environment");
+    const char *base[]={"PATH=/usr/bin:/bin:/usr/sbin:/sbin","LANG=C.UTF-8",NULL};
+    for (int i=0;base[i];i++) if (fwrite(base[i],1,strlen(base[i])+1,environment)!=strlen(base[i])+1) fail("route environment write");
+    if (fflush(environment) || fseek(environment,0,SEEK_SET)) fail("route environment write");
+    int fd=fileno(environment);
+    if (fd<=4 || fcntl(fd,F_SETFD,0) || fcntl(3,F_SETFD,0)) fail("route descriptors");
+    char descriptor[24];snprintf(descriptor,sizeof(descriptor),"%d",fd);
+    char **args=calloc((size_t)argc+6,sizeof(char *));if (!args) fail("route allocation");
+    args[0]="/usr/bin/python3";args[1]="-I";args[2]=(char *)helper;args[3]="launch-approved";
+    args[4]=argv[2];args[5]=argv[3];args[6]=descriptor;args[7]="--";args[8]=(char *)self;
+    for (int i=5;i<argc;i++) args[i+4]=argv[i];
+    char *clean[]={"PATH=/usr/bin:/bin:/usr/sbin:/sbin","LANG=C.UTF-8",NULL};
+    execve(args[0],args,clean);fail("route entry exec");
+}
+
 int main(int argc,char **argv) {
     /* Same v1 data-only protocol as the Linux entry. */
     int verifying_mcp=argc>1 && !strcmp(argv[1],"mcp-verify-v1");
-    if (getuid()==0 || geteuid()!=getuid() || argc<10 || (!verifying_mcp && strcmp(argv[1],"v1"))) fail("invocation");
+    int assigned=argc>1 && !strcmp(argv[1],"assigned-v1"),route=argc>1 && !strcmp(argv[1],"route-v1");
+    if (getuid()==0 || geteuid()!=getuid() || argc<10 || (!verifying_mcp && !assigned && !route && strcmp(argv[1],"v1"))) fail("invocation");
     char image[PATH_MAX],self[PATH_MAX],vendor[PATH_MAX],helper[PATH_MAX];uint32_t size=sizeof(image);
     if (_NSGetExecutablePath(image,&size) || !realpath(image,self)) fail("launcher path");
     size_t prefix=strlen(RUNTIME_ROOT);
@@ -65,6 +96,7 @@ int main(int argc,char **argv) {
     strlcpy(vendor,self,sizeof(vendor));strcpy(strrchr(vendor,'/'),"/codex");immutable(vendor,0);
     strlcpy(helper,self,sizeof(helper));strcpy(strrchr(helper,'/'),"/codex-code-mode-host");immutable(helper,0);
     if (access(vendor,X_OK) || access(helper,X_OK)) fail("vendor execution access");
+    if (route) enter_route(argc,argv,self);
     const char *account=argv[2],*home=argv[3],*scratch=argv[4];
     canonical(account);canonical(home);codex_private_scratch(scratch);
     if (!inside(home,account)) fail("account state ownership");
@@ -97,7 +129,9 @@ int main(int argc,char **argv) {
     }
     for (int i=0;i<databases;i++) canonical_future(database_roots[i]);
     for (int i=0;i<denies;i++) canonical_future(denied[i]);
-    restore_environment(envfd);close_inherited_descriptors();
+    if (assigned && envfd!=3) fail("assignment environment descriptor");
+    int assignment=assigned?codex_assignment_lock(account):-1;
+    restore_environment(envfd);codex_close_descriptors(-1,assignment);
     int admission=codex_maintenance_admission(verifying_mcp);
     struct codex_keychain_paths keychain=keychain_paths(user_home);
     char *policy=NULL;size_t length=0;FILE *out=open_memstream(&policy,&length);if (!out) fail("policy allocation");
@@ -172,7 +206,7 @@ int main(int argc,char **argv) {
     char *error=NULL;if (sandbox_init_with_parameters(policy,0,NULL,&error)) fail("policy application");
     free(policy);
     set_environment("CODEX_HOME",home,1);set_environment("TMPDIR",scratch,1);
-    codex_close_except_admission(admission);
+    codex_close_descriptors(admission,assignment);
     if (verifying_mcp) {
         char *read_args[]={vendor,"-c","mcp_oauth_credentials_store=\"keyring\"","-c","features.secret_auth_storage=false","mcp","list","--json",NULL};
         execv(vendor,read_args);

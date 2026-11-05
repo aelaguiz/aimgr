@@ -91,17 +91,32 @@ export class FakeRedisClient {
           throw new Error("invalid Codex metadata index");
         }
         const policy = item.policy ?? {};
-        result.push({ label: item.label, accountId: item.identity?.accountId,
+        result.push({ label: item.label, accountId: item.identity?.accountId, version: item.version,
           policy: { egress: policy.egress, expect: policy.expect, browser: policy.browser, pool: policy.pool } });
       }
       return JSON.stringify(result);
+    }
+    if (script.includes("AIMGR_CODEX_METADATA_EGRESS_V1")) {
+      const raw = this.values.get(key);
+      if (!raw) return "missing";
+      const current = JSON.parse(raw);
+      if (current.provider !== args[0] || current.label !== args[1] || current.identity?.accountId !== args[2]) return "identity_conflict";
+      if (current.version !== Number(args[3])) return "version_conflict";
+      current.policy = { ...current.policy, egress: JSON.parse(args[4]) };
+      Object.assign(current, { version: current.version + 1, updatedAt: args[5], updatedBy: "aimgr-codex-proxy" });
+      await this.set(key, JSON.stringify(current));
+      return "updated";
     }
     if (script.includes("AIMGR_CODEX_METADATA_CREATE_V1")) {
       const raw = this.values.get(key);
       if (raw) {
         const current = JSON.parse(raw);
-        return current.provider === args[1] && current.label === args[2] && current.identity?.accountId === args[3]
-          ? "unchanged" : "identity_conflict";
+        if (!(current.provider === args[1] && current.label === args[2] && current.identity?.accountId === args[3])) return "identity_conflict";
+        if (args[4]) {
+          const expected = JSON.parse(args[4]), assigned = current.policy?.egress;
+          if (expected === null ? assigned !== undefined : assigned?.profileRef !== expected.profileRef) return "assignment_conflict";
+        }
+        return "unchanged";
       }
       await this.set(key, args[0]);
       await this.sAdd(keys[1], key); await this.sAdd(keys[2], key);

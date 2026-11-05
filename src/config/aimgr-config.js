@@ -64,6 +64,7 @@ export function normalizeAimgrConfig(raw = {}) {
     },
     routines: normalizeRoutineStorageMap(source.routines),
     ...(isObject(source.claudeProxyProfiles) ? { claudeProxyProfiles: source.claudeProxyProfiles } : {}),
+    ...(isObject(source.codexProxyProfiles) ? { codexProxyProfiles: source.codexProxyProfiles } : {}),
   };
 }
 
@@ -87,6 +88,13 @@ export function readAimgrConfig({ homeDir }) {
     exists: true,
     config: normalizeAimgrConfig(parsed),
   };
+}
+
+// Routes describe this machine's network services, not provider credentials.
+// Existing Claude routes can serve Codex after their HTTP inbound is installed;
+// a Codex-specific entry overrides a shared route without duplicating the rest.
+export function codexProxyProfiles(config) {
+  return { ...config.claudeProxyProfiles, ...config.codexProxyProfiles };
 }
 
 export function writeAimgrConfig({ homeDir, config }) {

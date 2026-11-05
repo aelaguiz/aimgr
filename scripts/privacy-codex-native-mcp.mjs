@@ -184,7 +184,7 @@ async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json
   try {
     child = spawn(protectedLaunch ? invocation.command : path.join(base, "bin/codex"), protectedLaunch ? invocation.args : args, {
       cwd, env: protectedLaunch ? invocation.env : invocation.environment, detached: true,
-      stdio: ["ignore", "pipe", "pipe", ...(protectedLaunch ? [invocation.environmentFd] : [])],
+      stdio: ["ignore", "pipe", "pipe", ...(protectedLaunch ? [invocation.environmentFd, invocation.assignmentFd] : [])],
     });
     invocation.closeEnvironment();
     activeChildren.add(child);

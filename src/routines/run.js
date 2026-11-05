@@ -1213,7 +1213,7 @@ export async function executeRoutineWorker(context) {
         args: codexInvocation.args,
         cwd: codexInvocation.cwd,
         env: codexInvocation.env,
-        stdio: ["pipe", "pipe", "pipe", codexInvocation.environmentFd],
+        stdio: ["pipe", "pipe", "pipe", codexInvocation.environmentFd, codexInvocation.assignmentFd],
         prompt: effectivePrompt,
         eventsPath,
         stdout: context.stdout,
@@ -1259,13 +1259,16 @@ export async function executeRoutineWorker(context) {
       const readNewRolloutEvents = openCodexRolloutTail(account.codexHome, result.sessionId);
       // Resume by exact ID with no prompt, so opening the TUI never executes
       // the scheduled task a second time. Keep it as a child of the pane shell.
-      await codexInvocation.close();
+      const previousInvocation = codexInvocation;
       codexInvocation = await prepareCodexInvocation({ prepared: account.prepared, homeDir: context.homeDir,
         cwd: routine.cwd, env: codexEnv, args: [...commonArgs, "resume", result.sessionId] });
+      // Keep the assignment held across exec -> same-thread TUI handoff.
+      // The outer finally owns the new invocation even if old cleanup fails.
+      await previousInvocation.close();
       try {
         tui = startInteractiveAgent(codexInvocation.command, codexInvocation.args, {
           cwd: codexInvocation.cwd, env: codexInvocation.env,
-          stdio: ["inherit", "inherit", "inherit", codexInvocation.environmentFd], spawnImpl: context.spawnImpl,
+          stdio: ["inherit", "inherit", "inherit", codexInvocation.environmentFd, codexInvocation.assignmentFd], spawnImpl: context.spawnImpl,
         });
       } finally { codexInvocation.closeEnvironment(); }
       receipt = writeReceipt(receiptPath, {

@@ -64,11 +64,19 @@ static int codex_maintenance_admission(int verifying_mcp) {
     return lock;
 }
 
-static void codex_close_except_admission(int retained) {
+static void codex_close_descriptors(int retained,int assignment) {
 #if defined(__linux__)
-    if ((retained>3 && syscall(SYS_close_range,3u,(unsigned)retained-1,0))
-        || syscall(SYS_close_range,(unsigned)retained+1,~0u,0)) fail("descriptor closure");
+    int first=retained,second=assignment;
+    if (first>second) { int swap=first;first=second;second=swap; }
+    unsigned start=3;
+    int keep[]={first,second};
+    for (int i=0;i<2;i++) if (keep[i]>=3) {
+        if ((unsigned)keep[i]>start && syscall(SYS_close_range,start,(unsigned)keep[i]-1,0)) fail("descriptor closure");
+        start=(unsigned)keep[i]+1;
+    }
+    if (syscall(SYS_close_range,start,~0u,0)) fail("descriptor closure");
 #else
-    close_descriptors_except(retained);
+    if (retained<3 && assignment<3) close_inherited_descriptors();
+    else close_descriptors_except_two(retained,assignment);
 #endif
 }

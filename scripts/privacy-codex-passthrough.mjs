@@ -53,7 +53,7 @@ for(const [name,args] of cases){
     argv=argv.map((arg,index)=>index>=vendorStart&&arg===selected?neighbor:arg);
    }
    const pending=run(invocation?.command??'/opt/aimgr-state-audit/bin/codex',argv,{cwd,env:invocation?.env??env,
-    stdio:['ignore','pipe','pipe',...(invocation?[invocation.environmentFd]:[])]});
+    stdio:['ignore','pipe','pipe',...(invocation?[invocation.environmentFd, invocation.assignmentFd]:[])]});
    invocation?.closeEnvironment();result=await pending;await invocation?.flushSettings();
    if(before&&protect){assert.notEqual(result.code,0,'Expected before-fix failure');rows.push({name,protected:true,failedDuringExecution:true});continue;}
    if(name==='neighbor-denial'&&protect){assert.notEqual(result.code,0);assert.match(result.stderr,/policy|Permission denied/i);}

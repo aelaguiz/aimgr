@@ -1,3 +1,4 @@
+import { AccountRouteError } from "../network/route-error.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { extractOpenAICodexAccountIdFromToken, isLikelyJwt } from "./jwt.js";
 
@@ -58,7 +59,7 @@ export async function loginCodexManually({ emitAuthUrl, readCallbackUrl, fetchJs
       body: new URLSearchParams({ grant_type: "authorization_code", client_id: CLIENT_ID,
         code, code_verifier: verifier, redirect_uri: CODEX_MANUAL_REDIRECT }) }, 8_000);
     let body;
-    try { body = await response.json(); } catch { throw new Error("Codex token exchange returned invalid JSON."); }
+    try { body = await response.json(); } catch (error) { if (error instanceof AccountRouteError) throw error; throw new Error("Codex token exchange returned invalid JSON."); }
     if (!response.ok || body?.error) throw new Error(`Codex token exchange failed (HTTP ${Number(response.status) || "unknown"}).`);
     if (!body || typeof body.access_token !== "string" || !body.access_token || typeof body.refresh_token !== "string" || !body.refresh_token ||
         !isLikelyJwt(body.id_token) || !Number.isFinite(body.expires_in) || body.expires_in <= 0) throw new Error("Codex token exchange returned incomplete credentials.");

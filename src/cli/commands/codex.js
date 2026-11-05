@@ -1,3 +1,8 @@
+import { codexProxyProfiles, readAimgrConfig } from "../../config/aimgr-config.js";
+import { acquireCodexAssignmentLock, invalidateCodexOfflineBinding, writeCodexOfflineBinding, readCodexOfflineBinding, CodexRouteError,
+  normalizeCodexEgress, resolveCodexProxyProfile, withCodexAccountTransport, withCodexProxyTransport } from "../../network/codex-egress.js";
+import { validateCodexChrome, openCodexLoginInChrome } from "../../browser/codex-cdp.js";
+import { readClaudeProxyHealth } from "../../status/claude-proxy-health.js";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,7 +17,7 @@ import { resolveAimgrStateDir } from "../../io/paths.js";
 import { activateCodexLabelSelection } from "../../targets/codex-cli.js";
 import { resolveBlobPolicy } from "../../targets/codex-thread-copy.js";
 import { loadCodexRuntime } from "../../coordination/codex-runtime.js";
-import { ensureCodexAccountMetadata } from "../../coordination/codex-metadata.js";
+import { ensureCodexAccountMetadata, readCodexAccountMetadata, setCodexAccountEgress } from "../../coordination/codex-metadata.js";
 import { loginCodexManually } from "../../credentials/codex-manual-login.js";
 import { saveLocalCodexLogin, logoutLocalCodexCredential } from "../../credentials/codex-local.js";
 import { createManualCallbackStdioProtocol, readNonEmptyLineFromStdin, parseManualCallbackStdioInput, writeJsonLine } from "../manual-callback-stdio.js";
@@ -459,12 +464,56 @@ async function handleRedisCodexResumeFresh(context) {
   if (launched?.code !== 0) setExitCode(Number.isInteger(launched?.code) ? launched.code : 1);
 }
 
+async function handleCodexProxy(context) {
+  const { positional, homeDir, stdout, opts } = context;
+  const action = positional[2], label = normalizeLabel(positional[3]);
+  if (!((action === "set" && positional.length === 5) || (action === "show" && positional.length === 4))) {
+    throw new Error("Usage: aim codex proxy set <label> <profileRef> | aim codex proxy show <label>");
+  }
+  const runtime = await loadCodexRuntime(context);
+  let lock;
+  try {
+    let record = (await readCodexAccountMetadata(runtime.store)).find(item => item.label === label);
+    if (!record?.accountId) throw new Error(`Unknown Codex account: ${label}`);
+    const binding = { homeDir, label, accountId: record.accountId, environment: runtime.environment };
+    if (action === "show") {
+      const profileRef = record.policy?.egress === undefined ? null : normalizeCodexEgress(record.policy.egress).profileRef;
+      if (!profileRef && readCodexOfflineBinding(binding)) throw new CodexRouteError("missing_proxy_assignment", { label });
+      const health = profileRef ? (await readClaudeProxyHealth([profileRef]))[profileRef] : null;
+      const result = { label, profileRef: profileRef ?? null, service: health, exit: "not_checked" };
+      if (opts.json) writeJsonLine(stdout, result);
+      else stdout.write(profileRef ? `Codex ${label} uses proxy ${profileRef}; service ${health}; exit not checked.\n` : `Codex ${label} has no proxy assignment.\n`);
+      return;
+    }
+    const egress = normalizeCodexEgress({ profileRef: positional[4] });
+    resolveCodexProxyProfile({ label, egress, profiles: codexProxyProfiles(readAimgrConfig({ homeDir }).config) });
+    lock = await acquireCodexAssignmentLock(binding, { exclusive: true });
+    record = (await readCodexAccountMetadata(runtime.store)).find(item => item.label === label);
+    if (record?.accountId !== binding.accountId) throw new Error(`Codex ${label}: account identity changed; retry.`);
+    invalidateCodexOfflineBinding(binding, record.version + 1);
+    lock.assertOwned();
+    const updated = await setCodexAccountEgress(runtime.store, { label, accountId: binding.accountId,
+      expectedVersion: record.version, egress });
+    writeCodexOfflineBinding(binding, { required: true, version: updated.version, egress });
+    stdout.write(`Codex ${label} uses proxy ${egress.profileRef}.\n`);
+  } finally {
+    try { await lock?.release(); } finally { await closeRedisRuntime(runtime); }
+  }
+}
+
 async function handleCodexLocalLogin(context) {
   const label = normalizeLabel(context.positional[2]);
   let runtime = await loadCodexRuntime(context);
   try {
     const existing = runtime.snapshot.credentials.find(record => record.label === label);
     const environment = runtime.environment;
+    const requested = context.opts.codexLoginProxy ? normalizeCodexEgress({ profileRef: context.opts.codexLoginProxy }) : null;
+    const assigned = existing?.policy?.egress === undefined ? null : normalizeCodexEgress(existing.policy.egress);
+    if (existing && requested && requested.profileRef !== assigned?.profileRef) {
+      throw new Error(`Codex ${label}: use aim codex proxy set to change this account's assignment before login.`);
+    }
+    const firstProfile = !existing && requested ? resolveCodexProxyProfile({ label, egress: requested,
+      profiles: codexProxyProfiles(readAimgrConfig({ homeDir: context.homeDir }).config) }) : null;
     // Browser authorization can take minutes; the bounded Redis connection
     // must not idle through it or its expired socket will discard a good login.
     await closeRedisRuntime(runtime);
@@ -473,13 +522,56 @@ async function handleCodexLocalLogin(context) {
       ? createManualCallbackStdioProtocol({ stdin: context.stdin, stdout: context.stdout, label, provider: OPENAI_CODEX_PROVIDER })
       : { emitAuthUrl: ({ url }) => context.stdout.write(`Open this URL in the account's existing browser, then paste the full callback URL here:\n${url}\n`),
           readCallbackUrl: async options => parseManualCallbackStdioInput(await readNonEmptyLineFromStdin(context.stdin, options)) };
-    const credential = await loginCodexManually({ ...handoff,
-      expectedAccountId: existing?.identity?.accountId,
-      fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl, signal: context.signal });
-    runtime = await loadCodexRuntime(context);
-    if (runtime.environment.binding !== environment.binding) throw new Error("The local Codex environment changed during login. Sign in again on this machine.");
-    await ensureCodexAccountMetadata(runtime.store, { label, accountId: credential.accountId });
-    saveLocalCodexLogin({ homeDir: context.homeDir, env: context.env, environment: runtime.environment, label, accountId: credential.accountId }, credential);
+    const login = async (fetch, profile, checkRoute) => {
+      let tab, commitLock;
+      try {
+        if (profile) await checkRoute();
+        // A headless login's private JSONL caller owns browser admission on the
+        // original browser host. The VM owns PKCE, exchange and local storage.
+        // See scripts/codex-login-browser.mjs; never copy Chrome to the VM.
+        if (profile && !context.opts.manualCallbackStdio) await (context.validateCodexChromeImpl ?? validateCodexChrome)(profile);
+        const credential = await loginCodexManually({ ...handoff,
+          emitAuthUrl: async event => {
+            if (profile && !context.opts.manualCallbackStdio) tab = await (context.openCodexLoginInChromeImpl ?? openCodexLoginInChrome)(profile, event.url);
+            await handoff.emitAuthUrl(event);
+          }, expectedAccountId: existing?.identity?.accountId,
+          fetchJsonWithTimeoutImpl: fetch, signal: context.signal });
+        // Keep the same assignment owner through the local commit. A remote
+        // metadata edit during browser authorization must not silently change
+        // the route associated with this freshly exchanged local grant.
+        const binding = { homeDir: context.homeDir, label, accountId: credential.accountId, environment };
+        if (!existing) commitLock = await acquireCodexAssignmentLock(binding, { exclusive: true });
+        runtime = await loadCodexRuntime(context);
+        if (runtime.environment.binding !== environment.binding) throw new Error("The local Codex environment changed during login. Sign in again on this machine.");
+        const current = runtime.snapshot.credentials.find(record => record.label === label);
+        if ((current && current.identity?.accountId !== credential.accountId)
+          || (current && JSON.stringify(current.policy?.egress ?? null) !== JSON.stringify(assigned ?? requested))) {
+          throw new Error(`Codex ${label}: account or proxy assignment changed during login. Retry using its current assignment.`);
+        }
+        const egress = assigned ?? requested;
+        const remembered = readCodexOfflineBinding(binding);
+        if (remembered && (remembered.invalidated || !egress || remembered.egress.profileRef !== egress.profileRef
+          || (current?.version ?? 1) < remembered.version)) {
+          throw new Error(`Codex ${label}: remembered account routing is newer or different. Restore its current metadata before login.`);
+        }
+        await ensureCodexAccountMetadata(runtime.store, { label, accountId: credential.accountId,
+          ...(egress ? { egress } : {}), expectedEgress: egress });
+        if (egress) {
+          const saved = (await readCodexAccountMetadata(runtime.store)).find(item => item.label === label);
+          if (saved?.accountId !== credential.accountId || saved.policy?.egress?.profileRef !== egress.profileRef) {
+            throw new Error(`Codex ${label}: proxy assignment changed before the local login could be saved.`);
+          }
+          writeCodexOfflineBinding(binding, { required: true, version: saved.version, egress });
+        }
+        saveLocalCodexLogin({ homeDir: context.homeDir, env: context.env, environment: runtime.environment, label, accountId: credential.accountId }, credential);
+      } finally { try { await tab?.close(); } finally { await commitLock?.release(); } }
+    };
+    await (existing?.identity?.accountId
+      ? await withCodexAccountTransport({ homeDir: context.homeDir, label, accountId: existing.identity.accountId, environment,
+          record: { label, accountId: existing.identity.accountId, version: existing.version, policy: existing.policy } }, login,
+          { fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl, createTransport: context.createCodexAccountTransportImpl })
+      : withCodexProxyTransport(firstProfile, login, { fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl,
+          createTransport: context.createCodexAccountTransportImpl }));
     const result = { type: "result", ok: true, label, provider: OPENAI_CODEX_PROVIDER, authority: "environment-local" };
     if (context.opts.manualCallbackStdio || context.opts.json) writeJsonLine(context.stdout, result);
     else context.stdout.write(`Codex ${label} is signed in on this machine.\n`);
@@ -505,6 +597,7 @@ async function handleCodexLocalLogout(context) {
 export async function handleCodex(context) {
   const { positional } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+  if (subcmd === "proxy") return handleCodexProxy(context);
   if (subcmd === "privacy") {
     if (positional[2] !== "status" || positional.length !== 3) throw new Error("Usage: aim codex privacy status [--json]");
     const status = inspectCodexPrivacyStatus({ pinnedArtifactSet: context.env.AIMGR_CODEX_ARTIFACT_SET });

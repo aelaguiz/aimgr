@@ -89,7 +89,7 @@ async function launch(name, { protectedLaunch = true, settingsHome = shared, pro
       env: actualEnv, args, ownedAppServer: true, onWarning: value => warnings.push(value), onError: value => errors.push(String(value)) });
   }
   const child = spawn(invocation?.command ?? path.join(base, "bin/codex"), invocation?.args ?? args,
-    { cwd, env: invocation?.env ?? actualEnv, stdio: invocation ? ["pipe", "pipe", "pipe", invocation.environmentFd] : ["pipe", "pipe", "pipe"], detached: true });
+    { cwd, env: invocation?.env ?? actualEnv, stdio: invocation ? ["pipe", "pipe", "pipe", invocation.environmentFd, invocation.assignmentFd] : ["pipe", "pipe", "pipe"], detached: true });
   invocation?.closeEnvironment();
   const input = new PassThrough(), output = new PassThrough();
   let transport, gated;
@@ -244,7 +244,7 @@ try {
           }
         }
         const child = spawn(invocation?.command ?? path.join(base, "bin/codex"), invocation?.args ?? args,
-          { cwd, env: invocation?.env ?? env, stdio: invocation ? ["ignore", "pipe", "pipe", invocation.environmentFd] : ["ignore", "pipe", "pipe"], detached: true });
+          { cwd, env: invocation?.env ?? env, stdio: invocation ? ["ignore", "pipe", "pipe", invocation.environmentFd, invocation.assignmentFd] : ["ignore", "pipe", "pipe"], detached: true });
         invocation?.closeEnvironment();
         let stdout = "", stderr = "";
         child.stdout.on("data", bytes => stdout += bytes); child.stderr.on("data", bytes => stderr += bytes);

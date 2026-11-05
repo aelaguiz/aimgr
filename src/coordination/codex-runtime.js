@@ -1,3 +1,4 @@
+import { withCodexAccountTransport, CodexRouteError } from "../network/codex-egress.js";
 import { getRedisConfig } from "../config/aimgr-config.js";
 import path from "node:path";
 import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
@@ -15,15 +16,21 @@ export async function localCodexRecords({ store, homeDir, env = {}, environment,
     let local = { status: environment ? "login_required" : "runtime_required", credential: null };
     if (item.accountId && environment) {
       try {
-        local = maintain ? await maintainLocalCodexCredential(options, { fetchJsonWithTimeoutImpl, signal })
+        local = maintain ? await withCodexAccountTransport({ ...options, label: item.label, record: item },
+          fetch => maintainLocalCodexCredential(options, { fetchJsonWithTimeoutImpl: fetch, signal }), { fetchJsonWithTimeoutImpl })
           : readLocalCodexCredential(options);
-      } catch {
+      } catch (error) {
         // One broken local grant or unavailable refresh must not hide healthy
         // accounts or make another account fall back to its legacy Redis grant.
-        local = { status: "local_auth_unavailable", credential: null };
+        if (error instanceof CodexRouteError || ["AIMGR_CODEX_ASSIGNMENT_BUSY", "AIMGR_ASSIGNMENT_UNAVAILABLE"].includes(error.code)) {
+          const code = error.code === "AIMGR_CODEX_ASSIGNMENT_BUSY" ? "assignment_busy"
+            : error.code === "AIMGR_ASSIGNMENT_UNAVAILABLE" ? "assignment_unavailable" : error.code;
+          local = { ...readLocalCodexCredential(options), status: "route_unavailable", routeError: { code, label: item.label, profileRef: error.profileRef } };
+        } else local = { status: "local_auth_unavailable", credential: null };
       }
     }
-    records.push({ provider: OPENAI_CODEX_PROVIDER, label: item.label, identity: { accountId: item.accountId },
+    records.push({ provider: OPENAI_CODEX_PROVIDER, label: item.label, version: item.version, identity: { accountId: item.accountId },
+      ...(local.routeError ? { routeError: local.routeError } : {}),
       localAccountKey: local.paths ? path.basename(local.paths.accountRoot) : null,
       credential: local.credential ?? {}, policy: { ...item.policy,
         reauth: { mode: "manual-callback", required: !local.credential } },
