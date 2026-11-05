@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
-import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
 import { buildStableIdentityForCredential } from "../../src/coordination/login-publish.js";
 import {
   connectRedisStore,
@@ -22,11 +21,15 @@ import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 
+import { readLocalCodexCredential } from "../../src/credentials/codex-local.js";
+import { localCodexFixture, CODEX_TEST_ENVIRONMENT, readCodexTestEnvironment } from "../helpers/codex-local.js";
+
 const NOW_MS = Date.parse("2026-07-24T12:00:00.000Z");
 const PREFIX = "aimgr:auth-maintain-test";
 
-function codexAccess(accountId) {
+function codexAccess(accountId, expiresAtMs = Date.now() + 3_600_000) {
   return makeFakeJwt({
+    exp: Math.floor(expiresAtMs / 1000),
     "https://api.openai.com/auth": {
       chatgpt_account_id: accountId,
     },
@@ -111,7 +114,7 @@ function rotateProjectedClaudeCredential(configDir, {
 async function setup(records) {
   const home = mkTempHome();
   const client = new FakeRedisClient();
-  // These cases cover legacy shared auth. The host runtime must not add local grants.
+  // Only an explicitly provisioned fixture may contribute local Codex grants.
   registerCliRedisFixture(home, { readCodexEnvironmentImpl: () => null });
   writeAimgrConfig({
     homeDir: home,
@@ -131,7 +134,7 @@ async function setup(records) {
   };
 }
 
-test("auth maintain refreshes only due records serially and marks missing refresh material", async () => {
+test("auth maintain refreshes Claude and only local Codex grants without reading legacy tokens", async t => {
   const dueClaude = claudeRecord("claude-due");
   const dueCodex = codexRecord("codex-due", { expiresAtMs: NOW_MS + 60 * 60_000 });
   const freshCodex = codexRecord("codex-fresh", { expiresAtMs: NOW_MS + 3 * 24 * 60 * 60_000 });
@@ -167,6 +170,24 @@ test("auth maintain refreshes only due records serially and marks missing refres
     incompleteClaude,
     dueClaude,
   ]);
+  t.after(() => fs.rmSync(runtime.home, { recursive: true, force: true }));
+  registerCliRedisFixture(runtime.home, { readCodexEnvironmentImpl: readCodexTestEnvironment });
+  localCodexFixture(runtime.home, "acct_codex-due", {
+    ...dueCodex.credential,
+    access: codexAccess("acct_codex-due", Date.now() - 60_000),
+  });
+  const legacyBefore = await Promise.all([dueCodex, freshCodex, terminalCodex].map(record => runtime.client.get(runtime.store.keys.credential(record))));
+  const replies = [], reads = [], originalEval = runtime.client.eval.bind(runtime.client);
+  runtime.client.eval = async (...args) => {
+    const reply = await originalEval(...args); replies.push(reply); return reply;
+  };
+  for (const method of ["get", "mGet"]) {
+    const original = runtime.client[method].bind(runtime.client);
+    runtime.client[method] = async (...args) => {
+      reads.push(...args.flat());
+      return original(...args);
+    };
+  }
   const providerOrder = [];
   let codexRequests = 0;
   let claudeRuns = 0;
@@ -209,7 +230,7 @@ test("auth maintain refreshes only due records serially and marks missing refres
         assert.equal(url, "https://auth.openai.com/oauth/token");
         assert.equal(timeoutMs, 8_000);
         const refresh = new URLSearchParams(init.body).get("refresh_token");
-        assert.equal(refresh, "REFRESH_codex-due");
+        assert.equal(refresh, "LOCAL_REFRESH_codex-due");
         return {
           ok: true,
           status: 200,
@@ -228,9 +249,9 @@ test("auth maintain refreshes only due records serially and marks missing refres
       "provider=anthropic label=claude-candidate outcome=skipped reason=credential_missing\n"
       + "provider=anthropic label=claude-incomplete outcome=reauth_required reason=refresh_material_missing\n"
       + "provider=anthropic label=claude-due outcome=refreshed reason=credential_rotated\n"
-      + "provider=openai-codex label=codex-terminal outcome=skipped reason=reauth_already_required\n"
-      + "provider=openai-codex label=codex-due outcome=refreshed reason=credential_rotated\n"
-      + "provider=openai-codex label=codex-fresh outcome=skipped reason=not_due\n"
+      + "provider=openai-codex authority=environment-local label=codex-due outcome=refreshed reason=ready\n"
+      + "provider=openai-codex authority=environment-local label=codex-fresh outcome=skipped reason=login_required\n"
+      + "provider=openai-codex authority=environment-local label=codex-terminal outcome=skipped reason=login_required\n"
       + "refreshed=2 unchanged=0 reauth_required=1 retryable=0 skipped=3\n",
     exitCode: 0,
   });
@@ -241,13 +262,22 @@ test("auth maintain refreshes only due records serially and marks missing refres
   assert.equal(claudeRuns, 1);
   assert.equal(codexRequests, 1);
 
+  assert.ok(replies.filter(reply => typeof reply === "string").length > 1,
+    "the command must preserve its server-side projection across Claude snapshot refreshes");
+  assert.equal(JSON.stringify(replies).includes("REFRESH_codex"), false);
+  assert.equal(reads.some(key => String(key).includes("credential:openai-codex:")), false,
+    "no client GET or MGET may retrieve a legacy Codex grant");
+  const legacyAfter = await Promise.all([dueCodex, freshCodex, terminalCodex].map(record => runtime.client.get(runtime.store.keys.credential(record))));
+  assert.deepEqual(legacyAfter, legacyBefore);
+  assert.equal(readLocalCodexCredential({ homeDir: runtime.home, environment: CODEX_TEST_ENVIRONMENT,
+    accountId: "acct_codex-due" }).credential.refresh, "REFRESH_CODEX_ROTATED");
   const snapshot = await readSnapshot(runtime.store);
   const byLabel = new Map(snapshot.credentials.map((record) => [record.label, record]));
   assert.equal(
     byLabel.get("claude-due").credential.nativeClaudeBundle.claudeAiOauth.refreshToken,
     "REFRESH_CLAUDE_ROTATED",
   );
-  assert.equal(byLabel.get("codex-due").credential.refresh, "REFRESH_CODEX_ROTATED");
+  assert.equal(byLabel.get("codex-due").credential.refresh, "REFRESH_codex-due");
   assert.equal(
     byLabel.get("claude-incomplete").policy.reauth.blockedReason,
     "oauth_reauth_required",
@@ -291,8 +321,7 @@ test("auth maintain marks incomplete Anthropic material under a same-label Codex
   assert.deepEqual(result, {
     stdout:
       "provider=anthropic label=shared outcome=reauth_required reason=refresh_material_missing\n"
-      + "provider=openai-codex label=shared outcome=skipped reason=not_due\n"
-      + "refreshed=0 unchanged=0 reauth_required=1 retryable=0 skipped=1\n",
+      + "refreshed=0 unchanged=0 reauth_required=1 retryable=0 skipped=0\n",
     exitCode: 0,
   });
 
@@ -310,95 +339,40 @@ test("auth maintain marks incomplete Anthropic material under a same-label Codex
   assert.deepEqual(afterCodex, beforeCodex);
 });
 
-test("auth maintain continues after transient and stale-CAS failures while a busy lease skips", async () => {
-  const records = [
-    codexRecord("network", { expiresAtMs: NOW_MS + 60_000 }),
-    codexRecord("cas", { expiresAtMs: NOW_MS + 2 * 60_000 }),
-    codexRecord("busy", { expiresAtMs: NOW_MS + 3 * 60_000 }),
-    codexRecord("invalid", { expiresAtMs: NOW_MS + 4 * 60_000 }),
-    codexRecord("later", { expiresAtMs: NOW_MS + 5 * 60_000 }),
-  ];
-  const runtime = await setup(records);
-  const busyLease = await acquireRedisCredentialLease(runtime.store, {
-    provider: "openai-codex",
-    label: "busy",
+test("local Codex maintenance continues after a network failure and rejected grant", async t => {
+  const labels = ["invalid", "later", "network"];
+  const runtime = await setup(labels.map(label => codexRecord(label)));
+  t.after(() => fs.rmSync(runtime.home, { recursive: true, force: true }));
+  registerCliRedisFixture(runtime.home, { readCodexEnvironmentImpl: readCodexTestEnvironment });
+  for (const label of labels) localCodexFixture(runtime.home, `acct_${label}`, {
+    ...codexRecord(label).credential, access: codexAccess(`acct_${label}`, Date.now() - 60_000),
   });
-  const attempted = [];
-
-  const result = await runCliWithExitCode(
-    ["auth", "maintain", "--home", runtime.home],
-    {
-      env: {},
-      nowImpl: () => NOW_MS,
-      connectRedisStoreImpl: runtime.connectRedisStoreImpl,
-      fetchJsonWithTimeoutImpl: async (_url, init) => {
-        const refresh = new URLSearchParams(init.body).get("refresh_token");
-        const label = refresh.replace("REFRESH_", "");
-        attempted.push(label);
-        if (label === "network") {
-          throw new Error("network unavailable");
-        }
-        if (label === "cas") {
-          const snapshot = await readSnapshot(runtime.store);
-          const current = snapshot.credentials.find((record) => record.label === "cas");
-          const concurrent = {
-            ...current,
-            credential: {
-              ...current.credential,
-              access: codexAccess("acct_cas"),
-              refresh: "REFRESH_CONCURRENT",
-              idToken: codexAccess("acct_cas"),
-              expiresAt: new Date(NOW_MS + 6 * 60 * 60_000).toISOString(),
-            },
-          };
-          const published = await publishCredential(runtime.store, {
-            expectedVersion: current.version,
-            updatedBy: "concurrent-test",
-            observedAt: new Date(NOW_MS).toISOString(),
-            credentialRecord: concurrent,
-          });
-          assert.equal(published.ok, true);
-        }
-        if (label === "invalid") {
-          return {
-            ok: false,
-            status: 400,
-            json: async () => ({ error: "invalid_grant" }),
-          };
-        }
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            access_token: codexAccess(`acct_${label}`),
-            refresh_token: `REFRESH_ROTATED_${label}`,
-            expires_in: 7200,
-          }),
-        };
-      },
+  const before = await readSnapshot(runtime.store), attempted = [];
+  const result = await runCliWithExitCode(["auth", "maintain", "--home", runtime.home], {
+    env: {}, nowImpl: () => NOW_MS, connectRedisStoreImpl: runtime.connectRedisStoreImpl,
+    fetchJsonWithTimeoutImpl: async (_url, init) => {
+      const refresh = new URLSearchParams(init.body).get("refresh_token");
+      assert.ok(refresh.startsWith("LOCAL_REFRESH_"));
+      const label = refresh.slice("LOCAL_REFRESH_".length); attempted.push(label);
+      if (label === "network") throw new Error("synthetic network unavailable");
+      if (label === "invalid") return { ok: false, status: 400, json: async () => ({ error: "invalid_grant" }) };
+      return { ok: true, status: 200, json: async () => ({ access_token: codexAccess(`acct_${label}`),
+        refresh_token: `LOCAL_ROTATED_${label}` }) };
     },
-  );
-  assert.equal(await busyLease.release(), true);
-
-  assert.deepEqual(result, {
-    stdout:
-      "provider=openai-codex label=network outcome=retryable reason=maintenance_failed detail=\"network unavailable\"\n"
-      + "provider=openai-codex label=cas outcome=retryable reason=maintenance_failed detail=\"AIM credential coordination is unavailable.\"\n"
-      + "provider=openai-codex label=busy outcome=skipped reason=lease_busy\n"
-      + "provider=openai-codex label=invalid outcome=reauth_required reason=refresh_rejected\n"
-      + "provider=openai-codex label=later outcome=refreshed reason=credential_rotated\n"
-      + "refreshed=1 unchanged=0 reauth_required=1 retryable=2 skipped=1\n",
-    exitCode: 0,
   });
-  assert.deepEqual(attempted, ["network", "cas", "invalid", "later"]);
-  const snapshot = await readSnapshot(runtime.store);
-  const byLabel = new Map(snapshot.credentials.map((record) => [record.label, record]));
-  assert.equal(byLabel.get("cas").credential.refresh, "REFRESH_CONCURRENT");
-  assert.equal(byLabel.get("cas").version, 2);
-  assert.equal(byLabel.get("invalid").policy.reauth.blockedReason, "oauth_reauth_required");
-  assert.equal(byLabel.get("later").credential.refresh, "REFRESH_ROTATED_later");
-  assert.equal(byLabel.get("later").version, 2);
-  assert.equal(byLabel.get("busy").version, 1);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /label=invalid outcome=reauth_required reason=reauth_required/);
+  assert.match(result.stdout, /label=later outcome=refreshed reason=ready/);
+  assert.match(result.stdout, /label=network outcome=retryable reason=maintenance_failed/);
+  assert.match(result.stdout, /refreshed=1 unchanged=0 reauth_required=1 retryable=1 skipped=0/);
+  assert.deepEqual(attempted, labels);
+  assert.deepEqual((await readSnapshot(runtime.store)).credentials, before.credentials,
+    "local refresh and rejection must leave shared credentials and health unchanged");
+  const local = label => readLocalCodexCredential({ homeDir: runtime.home,
+    environment: CODEX_TEST_ENVIRONMENT, accountId: `acct_${label}` });
+  assert.equal(local("invalid").status, "reauth_required");
+  assert.equal(local("later").credential.refresh, "LOCAL_ROTATED_later");
+  assert.equal(local("network").credential.refresh, "LOCAL_REFRESH_network");
 });
 
 test("auth maintain still fails the run when the coordination store is unavailable", async () => {
@@ -424,7 +398,7 @@ test("auth maintain still fails the run when the coordination store is unavailab
 });
 
 
-test("auth maintain durably marks incomplete Codex refresh material under the shared leased owner", async () => {
+test("auth maintain leaves incomplete legacy Codex material untouched without a local environment", async () => {
   const incomplete = codexRecord("codex-incomplete", { expiresAtMs: NOW_MS + 60 * 60_000 });
   delete incomplete.credential.refresh;
   const runtime = await setup([incomplete]);
@@ -442,14 +416,13 @@ test("auth maintain durably marks incomplete Codex refresh material under the sh
   );
   assert.deepEqual(result, {
     stdout:
-      "provider=openai-codex label=codex-incomplete outcome=reauth_required reason=refresh_material_missing\n"
-      + "refreshed=0 unchanged=0 reauth_required=1 retryable=0 skipped=0\n",
+      "refreshed=0 unchanged=0 reauth_required=0 retryable=0 skipped=0\n",
     exitCode: 0,
   });
   assert.equal(providerRequests, 0);
   const snapshot = await readSnapshot(runtime.store);
-  assert.equal(snapshot.credentials[0].policy.reauth.blockedReason, "oauth_reauth_required");
-  assert.equal(snapshot.credentials[0].version, 2);
+  assert.equal(snapshot.credentials[0].policy.reauth?.blockedReason, undefined);
+  assert.equal(snapshot.credentials[0].version, 1);
 });
 
 

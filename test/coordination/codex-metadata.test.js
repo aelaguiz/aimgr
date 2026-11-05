@@ -12,6 +12,7 @@ import { readLocalCodexCredential } from "../../src/credentials/codex-local.js";
 import { CODEX_TEST_ENVIRONMENT } from "../helpers/codex-local.js";
 import { getRedisConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, closeRedisStore, readSnapshot } from "../../src/coordination/redis-store.js";
+import { loadRedisRuntime, refreshRedisRuntimeSnapshot, refreshRedisRuntimeState } from "../../src/coordination/runtime.js";
 import { ensureCodexAccountMetadata, readCodexAccountMetadata } from "../../src/coordination/codex-metadata.js";
 
 test("Codex metadata crosses the Redis boundary without legacy grants or grant-local failures",{
@@ -28,7 +29,7 @@ test("Codex metadata crosses the Redis boundary without legacy grants or grant-l
   });
   const existing=JSON.stringify({provider,label:"legacy",identity:{accountId:"fixture-account"},
     credential:{access:"SYNTHETIC_FOREIGN_ACCESS",refresh:"SYNTHETIC_FOREIGN_REFRESH"},
-    policy:{pool:{enabled:true},reauth:{blockedReason:"oauth_reauth_required"},egress:{mode:"synthetic-route"}},version:9});
+    policy:{pool:{enabled:true},reauth:{blockedReason:"oauth_reauth_required"},egress:{profileRef:"synthetic-route"}},version:9});
   await store.client.set(key("legacy"),existing);
   await store.client.sAdd(store.keys.credentials(),key("legacy"));
   await store.client.sAdd(store.keys.credentialsByProvider(provider),key("legacy"));
@@ -41,6 +42,34 @@ test("Codex metadata crosses the Redis boundary without legacy grants or grant-l
   assert.equal(JSON.stringify(replies).includes("SYNTHETIC_FOREIGN"),false);
   assert.equal((await readSnapshot(store,{excludeCodexGrants:true})).credentials.length,0);
   assert.equal(JSON.stringify(replies).includes("SYNTHETIC_FOREIGN"),false);
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-snapshot-scope-"));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  writeAimgrConfig({ homeDir, config: { redis: { ...redis, keyPrefix: store.keyPrefix } } });
+  const originalGet = store.client.get.bind(store.client), originalMGet = store.client.mGet.bind(store.client);
+  store.client.get = async keyName => {
+    assert.notEqual(keyName, key("legacy"), "scoped readers cannot retrieve the legacy grant");
+    return originalGet(keyName);
+  };
+  store.client.mGet = async keyNames => {
+    assert.equal(keyNames.includes(key("legacy")), false, "scoped readers cannot retrieve the legacy grant");
+    return originalMGet(keyNames);
+  };
+  try {
+    for (const scope of [{ provider: "anthropic" }, { provider: "xai" }, { excludeCodexGrants: true }]) {
+      const runtime = await loadRedisRuntime({ homeDir, ...scope, connectRedisStoreImpl: async () => store });
+      assert.deepEqual(runtime.snapshot.credentials, []);
+      assert.deepEqual((await refreshRedisRuntimeSnapshot(runtime)).credentials, []);
+      await refreshRedisRuntimeState(runtime);
+      assert.deepEqual(runtime.snapshot.credentials, []);
+    }
+    assert.equal(JSON.stringify(replies).includes("SYNTHETIC_FOREIGN"), false);
+  } finally {
+    store.client.get = originalGet; store.client.mGet = originalMGet;
+  }
+  // Separately scoped Prime/Pi owners retain their existing authority. This
+  // test does not authorize native Codex or generic maintenance to use it.
+  const legacyRuntime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl: async () => store });
+  assert.equal(legacyRuntime.snapshot.credentials[0].credential.refresh, "SYNTHETIC_FOREIGN_REFRESH");
   assert.deepEqual(await ensureCodexAccountMetadata(store,{label:"legacy",accountId:"fixture-account"}),{outcome:"unchanged"});
   assert.equal(await store.client.get(key("legacy")),existing);
   await assert.rejects(ensureCodexAccountMetadata(store,{label:"legacy",accountId:"another-account"}),/different/);
