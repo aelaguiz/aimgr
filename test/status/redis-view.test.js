@@ -47,14 +47,14 @@ test("Codex cache projects the legacy 168h window as Week", () => {
   assert.equal(view.accounts[1].usage.windows[0].label, "168h");
 });
 
-async function seedRedis(client) {
+async function seedRedis(client, { plan = "pro" } = {}) {
   const store = await connectRedisStore({ client, keyPrefix: "aimgr:status-test" });
   const exp = Math.floor(Date.now() / 1000) + 3600;
   const token = makeFakeJwt({
     exp,
     "https://api.openai.com/auth": {
       chatgpt_account_id: "acct_boss",
-      chatgpt_plan_type: "pro",
+      chatgpt_plan_type: plan,
     },
   });
   await importCredentialsSnapshot(
@@ -130,6 +130,7 @@ test("Redis status view reads shared credentials, writes redacted cache, and has
   assert.equal(result.view.redis.url, "redis://fake:6379/0");
   assert.equal(result.view.redis.credentialCount, 1);
   assert.equal(result.view.accounts[0].label, "boss");
+  assert.equal(result.view.accounts[0].plan, "pro");
   assert.equal(result.view.codexCli.activeLabel, "boss");
   assert.equal(result.view.redisCredentials[0].status, "ready");
   assert.equal(Object.hasOwn(result.view, "redisSessionMatrix"), false);
@@ -140,12 +141,27 @@ test("Redis status view reads shared credentials, writes redacted cache, and has
   const cache = fs.readFileSync(cachePath, "utf8");
   const cacheEnvelope = JSON.parse(cache);
   assert.equal(cacheEnvelope.statusView.kind, AIMGR_REDIS_STATUS_CACHE_KIND);
+  assert.equal(cacheEnvelope.statusView.accounts[0].plan, "pro");
   assert.doesNotMatch(cache, /REFRESH_BOSS/);
   assert.doesNotMatch(
     cache,
     /cache-user|cache-password|cache-query-secret|cache-private@example|acct_boss|org-cache-private|private\/cache\/browser|RAW_PRIVATE_HEALTH_REASON/,
   );
   assert.doesNotMatch(cache, /"identity"|"policy"|"reason"/);
+});
+
+test("Codex Pro Max is shown from account credentials when usage has no plan", async () => {
+  const home = mkTempHome();
+  const client = new FakeRedisClient();
+  writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-test" } } });
+  await seedRedis(client, { plan: "promax" });
+  const result = await buildRedisStatusView({
+    homeDir: home,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
+    probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }),
+  });
+  assert.equal(result.view.accounts[0].plan, "promax");
+  assert.match(renderStatusText(result.view), /boss\s+ready\s+promax/);
 });
 
 test("Redis status view uses diagnostic cache when Redis is unavailable", async () => {
@@ -158,7 +174,7 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
   await seedRedis(client);
   const observedAtMs = Date.parse("2026-07-22T18:00:00.000Z");
 
-  await buildRedisStatusView({
+  const live = await buildRedisStatusView({
     homeDir: home,
     nowMs: observedAtMs,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
@@ -167,12 +183,21 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
         boss: {
           provider: OPENAI_CODEX_PROVIDER,
           ok: true,
+          plan: "promax ($12.50)",
           resetCreditsAvailable: 4,
           windows: [{ label: "5h", usedPercent: 10 }],
         },
       },
     }),
   });
+  assert.equal(live.view.accounts[0].plan, "promax");
+  const freshCache = await buildRedisStatusView({
+    homeDir: home,
+    nowMs: observedAtMs + 10_000,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
+    probeUsageSnapshotsByProviderImpl: async () => { throw new Error("unexpected probe"); },
+  });
+  assert.equal(freshCache.view.accounts[0].plan, "promax");
   const cached = await buildRedisStatusView({
     homeDir: home,
     nowMs: observedAtMs + 60_000,
@@ -186,6 +211,7 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
   assert.equal(cached.view.redis.status, "cache");
   assert.equal(cached.view.redis.error, "unavailable");
   assert.equal(cached.view.accounts[0].usage.resetCreditsAvailable, 4);
+  assert.equal(cached.view.accounts[0].plan, "promax");
   assert.equal(cached.view.warnings.at(-1).kind, "redis_status_cache_used");
 
   const oldCached = await buildRedisStatusView({
@@ -197,7 +223,7 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
     probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }),
   });
   assert.equal(oldCached.view.redis.status, "cache");
-  assert.equal(oldCached.view.redis.cacheAgeMs, 24 * 60 * 60_000);
+  assert.equal(oldCached.view.redis.cacheAgeMs, 24 * 60 * 60_000 - 10_000);
 });
 
 test("ordinary Redis status routes Claude through the bounded canonical cache", async () => {
@@ -260,6 +286,7 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   const second = await buildRedisStatusView({ ...deps, nowMs: nowMs + 60_000 });
 
   assert.equal(first.view.accounts[0].usage.ok, true);
+  assert.equal(first.view.accounts[0].plan, "max/max_20x");
   assert.equal(first.view.accounts[0].usage.status, "usage_readable");
   assert.equal(first.view.accounts[0].lock.status, "held");
   assert.equal(first.claudeUsageStatus.accounts[0].label, "claude");
@@ -272,6 +299,7 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   assert.match(text, /claude\s+IN USE.*\s+test\s+running\s+session active/);
   assert.equal(second.view.accounts[0].usage.ok, true);
   assert.equal(second.claudeUsageStatus.accounts[0].source, "cache");
+  assert.equal(buildRedisDiagnosticCacheView(first.view).accounts[0].plan, "max/max_20x");
   assert.deepEqual(second.view.accounts[0].egress, first.view.accounts[0].egress);
   // A fresh usage cache cannot hide a service that has stopped since that read.
   proxyHealth = "stopped";
