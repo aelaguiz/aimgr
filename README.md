@@ -198,6 +198,13 @@ outside the launch grants needs a new session. Ordinary shell tools keep their
 normal permissions. Codex's optional diagnostic exporters are disabled, including
 custom collectors. Organization-owned remote policy is an accepted gap.
 
+Independent MCP credentials retain their native OS-user scope across Codex
+account homes. On Mac, native MCP requires the approved read/write exception
+for the selected default Keychain database and its own lock and temporary files.
+This exposes unrelated account/service names and permits whole-database writes;
+native password encryption and item permissions remain. Linux allows same-user
+mount-table reads so unchanged native read-only reviewers keep working.
+
 Install an explicitly approved complete Codex bundle with
 `scripts/install-local-bin.sh --codex-runtime-bundle /absolute/bundle`. This uses
 the same protected copy/admission transaction as Claude, provisions a local

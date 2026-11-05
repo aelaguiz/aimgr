@@ -16,7 +16,7 @@ No additional Linux suite rerun is required unless code changes or a new failure
 
 ## Current source and cold review
 
-The latest committed source correction is `8e4ed25`, preserving independent Linux policy loading and correcting Mac workflow fixtures. The release-helper Linux candidate was `2f42a05725b6db782bc3b8e1a2a1adebed5b3f87f77b3897597285253a78def3`; the bounded shared-lock correction is installed as `ed1830e20698ebf996f25ddfd09470ad0939fd49d497b946ed436bd821be6745`. The approved Mac Keychain implementation is uncommitted and awaits native verification.
+The latest committed source correction is `9feb079`, adding the approved Mac Keychain exception and preserving optional-path startup. Earlier `8e4ed25` preserves independent Linux policy loading and corrects Mac workflow fixtures. The release-helper Linux candidate was `2f42a05725b6db782bc3b8e1a2a1adebed5b3f87f77b3897597285253a78def3`; the bounded shared-lock correction is installed as `ed1830e20698ebf996f25ddfd09470ad0939fd49d497b946ed436bd821be6745`. The approved Mac Keychain implementation awaits native verification.
 
 The fresh whole-code reviewer found two concrete first-use defects: absent shared directories could become conflicting account-private directories, and optional dangling skill/agent/config paths could reject a launch that stock Codex accepts. Both are corrected and reproduced before/after. The same reviewer approved the later bounded Chrome correction and found no further confirmed source or scope defect. This is source review, not final Mac or PR acceptance. The [cold review record](CODEX_PRIVACY_M1_COLD_REVIEW_2026-11-04.md) contains the findings and disposition.
 
