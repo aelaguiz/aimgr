@@ -9,7 +9,7 @@ const MAX_FILES = 512;
 
 /** Shared immutable-file and approval checks. Provider-specific policy,
  * request inputs and runtime owners stay in their respective modules. */
-export function createArtifactAdmission({ provider, runtimeRootDefault, privacyAbi, offsiteHostFile, requiredEntries }) {
+export function createArtifactAdmission({ provider, runtimeRootDefault, privacyAbi, offsiteHostFile, requiredEntries, hashInstalledFiles = true }) {
   class AdmissionError extends Error {
     constructor(reason) {
       super(`${provider} was not started: ${reason}. Run AIM's privacy status to inspect the selected and approved builds.`);
@@ -294,7 +294,8 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
         authorizeOffsiteTest({ runtimeRoot, artifactSet, platform, arch, fsImpl });
       } else fail("the selected build lacks explicit normal-use approval");
       // Display only an administrator-owned, compatible, authorized record.
-      // This is explanatory context: all inventory/hash checks below still run.
+      // This is explanatory context: remaining inventory/immutability checks
+      // and the provider's content-verification policy still apply.
       approvedBuild = { version: /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(manifest.version)
         ? manifest.version : "version label unavailable", kind: approval.kind };
       if (artifactSetDigest(manifest.files) !== artifactSet) {
@@ -325,7 +326,8 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
           // arbitrary helpers or vendor images to gain privilege (T02/T03).
           const requiredPrivilege = platform === "linux" && name === manifest.launcher ? 0o4000 : 0;
           if (stat.size !== expected.size || Boolean(stat.mode & 0o111) !== expected.executable
-            || (stat.mode & 0o6000) !== requiredPrivilege || fileDigest(fd, fsImpl) !== expected.sha256) {
+            || (stat.mode & 0o6000) !== requiredPrivilege
+            || (hashInstalledFiles && fileDigest(fd, fsImpl) !== expected.sha256)) {
             fail("a selected executable, helper, resource or privacy policy has changed");
           }
           // A root-only execute bit (0744), or an ACL denying execution, must
@@ -346,11 +348,12 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
         }
         const selected = fsImpl.realpathSync(selectedCommand);
         const expected = manifest.files[manifest.entrypoint];
+        const verifiedInstalledEntry = !hashInstalledFiles && selected === path.join(root, manifest.entrypoint);
         const fd = fsImpl.openSync(selected, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
         try {
           const stat = fsImpl.fstatSync(fd);
           if (!stat.isFile() || stat.size !== expected.size || !(stat.mode & 0o111)
-            || fileDigest(fd, fsImpl) !== expected.sha256) {
+            || (!verifiedInstalledEntry && fileDigest(fd, fsImpl) !== expected.sha256)) {
             fail(`the selected ${provider} executable differs from the approved build; review that update before running it`);
           }
           fsImpl.accessSync(selected, fs.constants.X_OK);

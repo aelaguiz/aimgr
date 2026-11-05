@@ -21,10 +21,10 @@ test("Codex complete-package admission uses protected files and includes every v
   const user=process.platform==="darwin"?"ec2-user":"aimprivacy";
   const uid=Number(execFileSync("/usr/bin/id",["-u",user],{encoding:"utf8"}).trim());
   const gid=Number(execFileSync("/usr/bin/id",["-g",user],{encoding:"utf8"}).trim());
-  const admit=root=>spawnSync(process.execPath,["--input-type=module","-e",`
+  const admit=(root,selectedCommand)=>spawnSync(process.execPath,["--input-type=module","-e",`
     process.setgroups([]);process.setgid(${gid});process.setuid(${uid});
     const {admitCodexArtifact}=await import(${JSON.stringify(path.join(parent,"codex-artifacts.js"))});
-    try {console.log(JSON.stringify(admitCodexArtifact({runtimeRoot:${JSON.stringify(root)}})));}
+    try {console.log(JSON.stringify(admitCodexArtifact({runtimeRoot:${JSON.stringify(root)},selectedCommand:${JSON.stringify(selectedCommand)}})));}
     catch(e){console.log(JSON.stringify({code:e.code}));process.exitCode=77;}
   `],{encoding:"utf8"});
   function fixture(name,change=()=>{}) {
@@ -54,7 +54,21 @@ test("Codex complete-package admission uses protected files and includes every v
     assert.equal(approved.mcpKeyring,path.join(f.bundle,"mcp-keyring"));
     assert.equal(approved.mcpMaintenance,path.join(f.bundle,"mcp_maintenance.py"));
   });
-  for(const variant of ["missing","wrong-role","changed-bytes","writable-parent","missing-mcp-helper","mutable-mcp-helper","missing-maintenance-owner","mutable-maintenance-owner","missing-config-helper","mutable-config-helper","missing-process-helper","missing-worktree-helper"]) await t.test(`refuses ${variant} before execution`,()=>{
+  await t.test("explicit selection accepts the installed entry or matching copy and rejects different same-size bytes",()=>{
+    const f=fixture("selected"),installed=path.join(f.bundle,"codex");
+    const copy=path.join(parent,"selected-copy");
+    fs.copyFileSync(installed,copy);fs.chmodSync(copy,0o755);
+    for(const selected of [installed,copy]) {
+      const result=admit(f.root,selected);
+      assert.equal(result.status,0,result.stderr||result.stdout);
+    }
+    fs.writeFileSync(copy,"ALTERED!!!");
+    assert.equal(fs.statSync(copy).size,fs.statSync(installed).size);
+    const result=admit(f.root,copy);
+    assert.equal(result.status,77,result.stderr||result.stdout);
+    assert.equal(JSON.parse(result.stdout).code,"AIMGR_CODEX_BUILD_NOT_APPROVED");
+  });
+  for(const variant of ["missing","wrong-role","changed-size","writable-parent","missing-mcp-helper","mutable-mcp-helper","missing-maintenance-owner","mutable-maintenance-owner","missing-config-helper","mutable-config-helper","missing-process-helper","missing-worktree-helper"]) await t.test(`refuses ${variant} before execution`,()=>{
     const f=fixture(variant,files=>{
       if(variant==="missing") delete files["codex-code-mode-host"];
       if(variant==="missing-mcp-helper") delete files["mcp-keyring"];
@@ -64,7 +78,7 @@ test("Codex complete-package admission uses protected files and includes every v
       if(variant==="missing-worktree-helper") delete files["worktree-tool"];
       if(variant==="wrong-role") files["codex-code-mode-host"].role="resource";
     });
-    if(variant==="changed-bytes") fs.writeFileSync(path.join(f.bundle,"codex-code-mode-host"),"ALTERED!!!");
+    if(variant==="changed-size") fs.truncateSync(path.join(f.bundle,"codex-code-mode-host"),1);
     if(variant==="writable-parent") fs.chmodSync(f.bundle,0o777);
     if(variant==="mutable-mcp-helper") fs.chmodSync(path.join(f.bundle,"mcp-keyring"),0o777);
     if(variant==="mutable-maintenance-owner") fs.chmodSync(path.join(f.bundle,"mcp_maintenance.py"),0o777);

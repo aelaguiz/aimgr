@@ -294,7 +294,14 @@ static void parse_policy(const char *text,int remove) {
         if (dup2(input[0],0)<0) _exit(125);
         close_handles();
         char *env[]={"PATH=/usr/sbin:/usr/bin:/sbin:/bin","LANG=C",NULL};
-        char *args[]={"/usr/sbin/apparmor_parser",remove?"-R":"-a","-T",NULL};
+        char *args[]={"/usr/sbin/apparmor_parser",remove?"-R":"-a","-T",
+#ifdef APPARMOR_SKIP_EXPR_NORMALIZE
+            // Codex generates fresh policies per launch. Its literal-root
+            // rules compile faster without this expression-reordering pass;
+            // DFA minimization and permission enforcement remain enabled.
+            "-O", "no-expr-normalize",
+#endif
+            NULL};
         execve(args[0],args,env); _exit(125);
     }
     close(input[0]); size_t size=strlen(text), offset=0;

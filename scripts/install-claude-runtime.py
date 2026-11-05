@@ -295,7 +295,8 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='cl
                 if parent == staged: break
                 parent.chmod(0o755)
             # Copy bytes only: source ACLs, capabilities and privilege bits must
-            # never survive. The common gate validates every copied byte again.
+            # never survive. Verify each destination's bytes before publication;
+            # Codex launch admission relies on this immutable installation.
             with source.open('rb') as inp, target.open('xb') as out:
                 shutil.copyfileobj(inp, out); out.flush(); os.fsync(out.fileno())
             target.chmod(0o4755 if platform.system() == 'Linux' and name == 'launcher' else 0o755 if expected['executable'] else 0o644)

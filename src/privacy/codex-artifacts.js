@@ -4,6 +4,11 @@ export const CODEX_RUNTIME_ROOT = "/opt/aimgr-codex-runtime";
 export const CODEX_PRIVACY_ABI = "codex-privacy-v1";
 const admission = createArtifactAdmission({
   provider: "Codex", runtimeRootDefault: CODEX_RUNTIME_ROOT, privacyAbi: CODEX_PRIVACY_ABI,
+  // The privileged installer verifies every destination byte before publishing
+  // this immutable bundle. Launch rechecks ownership, ACLs, inventory and modes;
+  // root changing installed bytes is outside the privacy boundary. Explicit
+  // external executable selections still require their own content hash.
+  hashInstalledFiles: false,
   offsiteHostFile: "/opt/aimgr-state-audit/CODEX_TEST_HOST.json",
   requiredEntries: platform => [{
     field: "codeModeHost", file: "codex-code-mode-host", role: "vendor", executable: true,

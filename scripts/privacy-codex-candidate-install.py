@@ -129,6 +129,7 @@ with tempfile.TemporaryDirectory(prefix='.candidate-', dir=runtime) as directory
             out.flush()
             os.fsync(out.fileno())
         (target / name).chmod(0o4755 if name == 'launcher' and system == 'Linux' else 0o755 if executable else 0o644)
+        assert (target / name).stat().st_size == files[name]['size'] and digest(target / name) == files[name]['sha256'], 'candidate bytes changed during copying'
     atomic(target / 'approval.json', {'schema': 1, 'platform': platform_name, 'arch': architecture, 'version': '0.166.0',
         'privacyAbi': 'codex-privacy-v1', 'candidateSourceSha256': source_sha256,
         'entrypoint': 'codex', 'codeModeHost': 'codex-code-mode-host', 'launcher': 'launcher', 'stateIO': 'state_io.py',

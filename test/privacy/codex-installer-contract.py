@@ -105,7 +105,9 @@ try:
     else: raise AssertionError('test-only bundle accepted')
     assert (runtime / 'active.json').read_bytes() == previous
     invalid = bundle('changed')
-    (invalid / 'codex-code-mode-host').write_text('CHANGED')
+    image = invalid / 'codex-code-mode-host'
+    original = image.read_bytes()
+    image.write_bytes(b'X' + original[1:])  # Same size: installation must verify content, not metadata alone.
     try: install(invalid)
     except RuntimeError as error: assert 'approved bytes changed' in str(error)
     else: raise AssertionError('changed helper accepted')

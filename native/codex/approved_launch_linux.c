@@ -4,6 +4,7 @@
  */
 #define VENDOR_NAME "Codex"
 #define NOTIFY_COMPAT_SYSCALLS 1
+#define APPARMOR_SKIP_EXPR_NORMALIZE 1
 #define RUNTIME "/opt/aimgr-codex-runtime"
 #include "../privacy/launch_linux.h"
 #include "maintenance_gate.h"
