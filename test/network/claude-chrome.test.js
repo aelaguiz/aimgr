@@ -152,47 +152,50 @@ test("existing separate Chrome instances keep account routes/state and fail on t
   }
   assert.ok(arrivals.some(r => r.path === "/redirect" && r.source === "127.0.0.2"));
   assert.ok(arrivals.some(r => r.path === "/redirect" && r.source === "127.0.0.3"));
-  // Exercise actual AIM login, its native wrapper and BROWSER cleanup together.
-  // Only the Claude executable and credential store are synthetic here.
-  const home = path.join(root, "managed-home");
-  const client = new FakeRedisClient();
-  const keyPrefix = "aimgr:browser-native-login";
-  const profiles = Object.fromEntries([chromeA, chromeB].map(chrome => [chrome.profile.profileRef, chrome.profile]));
-  writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix }, claudeProxyProfiles: profiles } });
-  const store = await connectRedisStore({ client, keyPrefix });
-  await importCredentialsSnapshot(store, { credentials: ["a", "b"].map(label => ({
-    provider: "anthropic", label, identity: {}, credential: {},
-    policy: { expect: { email: `${label}@example.test` }, egress: { profileRef: `${mac ? "mac" : "login"}_${label}` } },
-    health: { status: "candidate", reason: "credential_missing" },
-  })) }, { updatedBy: "synthetic-login-test" });
-  const manifestPath = path.join(root, "native-manifest.json");
-  await fs.writeFile(manifestPath, JSON.stringify({ user: process.env.USER, profiles: Object.fromEntries(
-    Object.entries(profiles).map(([name, profile], index) => [name, { ...profile, ...(mac
-      ? { gid: 64084 + index, interface: `utun${84 + index}`, subnetIndex: 84 + index }
-      : { redirectPort: 15088 + index }) }]),
-  ) }));
-  units = Object.keys(profiles).map(name => mac ? name : `aimgr-claude-proxy-${name}.service`);
-  await exec("sudo", ["bash", fileURLToPath(new URL(`../../scripts/install-claude-proxy-${mac ? "macos" : "linux"}.sh`, import.meta.url)), manifestPath]);
-  const loginFixture = path.join(root, "synthetic-claude-login.mjs");
-  const finish = path.join(root, "finish-login");
-  // The actual 2.1.316 client starts OAuth at claude.com, then redirects to
-  // claude.ai. Account routing must not depend on a hardcoded login hostname.
-  await fs.writeFile(loginFixture, `#!${process.execPath}\nimport { spawnSync } from "node:child_process"; import fs from "node:fs"; const p = JSON.parse(process.env.AIMGR_CLAUDE_LOGIN_PROFILE); const child = spawnSync(process.execPath, [process.env.BROWSER, "https://claude.com/managed-login-" + p.label], { stdio: "inherit" }); if (child.status !== 0) process.exit(1); setInterval(() => { if (fs.existsSync(${JSON.stringify(finish)})) process.exit(1); }, 50);`, { mode: 0o700 });
-  const resolver = () => loginFixture;
-  resolver.prepareClaudeCliLaunchImpl = options => options;
-  managed.push(...["a", "b"].map(label => runCli(["login", label, "--home", home], {
-    env: { ...process.env, NODE_EXTRA_CA_CERTS: certPath }, resolveExecutableOnPathImpl: resolver,
-    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix }),
-  }).then(() => null, error => { t.diagnostic(`managed ${label}: ${error.message}`); return error; })));
-  const managedReceipt = label => path.join(resolveAimgrClaudeLabelHomeDir({ homeDir: home, label }), ".login-staging", "login-tabs.jsonl");
-  let loginTargets;
-  for (let n = 0; n < 100; n++) {
-    try { loginTargets = await Promise.all(["a", "b"].map(async label => JSON.parse((await fs.readFile(managedReceipt(label), "utf8")).trim()))); if (arrivals.some(r => r.path === "/managed-login-a") && arrivals.some(r => r.path === "/managed-login-b")) break; } catch {}
-    await delay(50);
+  const managedLogin = process.env.AIMGR_TEST_CHROME_BROWSER_ONLY !== "1";
+  let loginTargets, finish;
+  if (managedLogin) {
+    // Exercise actual AIM login, its native wrapper and BROWSER cleanup together.
+    // Only the Claude executable and credential store are synthetic here.
+    const home = path.join(root, "managed-home");
+    const client = new FakeRedisClient();
+    const keyPrefix = "aimgr:browser-native-login";
+    const profiles = Object.fromEntries([chromeA, chromeB].map(chrome => [chrome.profile.profileRef, chrome.profile]));
+    writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix }, claudeProxyProfiles: profiles } });
+    const store = await connectRedisStore({ client, keyPrefix });
+    await importCredentialsSnapshot(store, { credentials: ["a", "b"].map(label => ({
+      provider: "anthropic", label, identity: {}, credential: {},
+      policy: { expect: { email: `${label}@example.test` }, egress: { profileRef: `${mac ? "mac" : "login"}_${label}` } },
+      health: { status: "candidate", reason: "credential_missing" },
+    })) }, { updatedBy: "synthetic-login-test" });
+    const manifestPath = path.join(root, "native-manifest.json");
+    await fs.writeFile(manifestPath, JSON.stringify({ user: process.env.USER, profiles: Object.fromEntries(
+      Object.entries(profiles).map(([name, profile], index) => [name, { ...profile, ...(mac
+        ? { gid: 64084 + index, interface: `utun${84 + index}`, subnetIndex: 84 + index }
+        : { redirectPort: 15088 + index }) }]),
+    ) }));
+    units = Object.keys(profiles).map(name => mac ? name : `aimgr-claude-proxy-${name}.service`);
+    await exec("sudo", ["bash", fileURLToPath(new URL(`../../scripts/install-claude-proxy-${mac ? "macos" : "linux"}.sh`, import.meta.url)), manifestPath]);
+    const loginFixture = path.join(root, "synthetic-claude-login.mjs");
+    finish = path.join(root, "finish-login");
+    // The actual 2.1.316 client starts OAuth at claude.com, then redirects to
+    // claude.ai. Account routing must not depend on a hardcoded login hostname.
+    await fs.writeFile(loginFixture, `#!${process.execPath}\nimport { spawnSync } from "node:child_process"; import fs from "node:fs"; const p = JSON.parse(process.env.AIMGR_CLAUDE_LOGIN_PROFILE); const child = spawnSync(process.execPath, [process.env.BROWSER, "https://claude.com/managed-login-" + p.label], { stdio: "inherit" }); if (child.status !== 0) process.exit(1); setInterval(() => { if (fs.existsSync(${JSON.stringify(finish)})) process.exit(1); }, 50);`, { mode: 0o700 });
+    const resolver = () => loginFixture;
+    resolver.prepareClaudeCliLaunchImpl = options => options;
+    managed.push(...["a", "b"].map(label => runCli(["login", label, "--home", home], {
+      env: { ...process.env, NODE_EXTRA_CA_CERTS: certPath }, resolveExecutableOnPathImpl: resolver,
+      connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix }),
+    }).then(() => null, error => { t.diagnostic(`managed ${label}: ${error.message}`); return error; })));
+    const managedReceipt = label => path.join(resolveAimgrClaudeLabelHomeDir({ homeDir: home, label }), ".login-staging", "login-tabs.jsonl");
+    for (let n = 0; n < 100; n++) {
+      try { loginTargets = await Promise.all(["a", "b"].map(async label => JSON.parse((await fs.readFile(managedReceipt(label), "utf8")).trim()))); if (arrivals.some(r => r.path === "/managed-login-a") && arrivals.some(r => r.path === "/managed-login-b")) break; } catch {}
+      await delay(50);
+    }
+    assert.equal(loginTargets?.length, 2);
+    assert.ok(arrivals.some(r => r.path === "/managed-login-a" && r.source === "127.0.0.2"));
+    assert.ok(arrivals.some(r => r.path === "/managed-login-b" && r.source === "127.0.0.3"));
   }
-  assert.equal(loginTargets?.length, 2);
-  assert.ok(arrivals.some(r => r.path === "/managed-login-a" && r.source === "127.0.0.2"));
-  assert.ok(arrivals.some(r => r.path === "/managed-login-b" && r.source === "127.0.0.3"));
   const receiptPath = chromeA.receiptPath;
   const oldPort = a.port;
   await a.stop();
@@ -201,17 +204,19 @@ test("existing separate Chrome instances keep account routes/state and fail on t
   assert.equal(arrivals.filter(row => row.path === "/after-tunnel-loss").length, 0, "failed navigation produces no origin request; B health checks may continue");
   assert.equal((await chromeB.navigate("/still-works")).text, "127.0.0.3");
   a = await startProxy("127.0.0.2", oldPort);
-  assert.match((await managed[0]).message, /cancelled or failed/);
-  const liveA = await chromeA.cdp.call("Target.getTargets");
-  const liveB = await chromeB.cdp.call("Target.getTargets");
-  assert.equal(liveA.targetInfos.some(target => target.targetId === loginTargets[0].targetId), false, "actual failed login closes its own tab despite rapid repair");
-  assert.ok(liveA.targetInfos.some(target => target.targetId === chromeA.targetId), "unrelated A tab remains open");
-  assert.ok(liveB.targetInfos.some(target => target.targetId === loginTargets[1].targetId), "healthy B login remains open");
-  const attempts = arrivals.filter(r => r.path === "/managed-login-a").length;
-  await delay(400);
-  assert.equal(arrivals.filter(r => r.path === "/managed-login-a").length, attempts, "failed sign-in is not automatically replayed");
-  await fs.writeFile(finish, "done");
-  assert.match((await managed[1]).message, /cancelled or failed/);
+  if (managedLogin) {
+    assert.match((await managed[0]).message, /cancelled or failed/);
+    const liveA = await chromeA.cdp.call("Target.getTargets");
+    const liveB = await chromeB.cdp.call("Target.getTargets");
+    assert.equal(liveA.targetInfos.some(target => target.targetId === loginTargets[0].targetId), false, "actual failed login closes its own tab despite rapid repair");
+    assert.ok(liveA.targetInfos.some(target => target.targetId === chromeA.targetId), "unrelated A tab remains open");
+    assert.ok(liveB.targetInfos.some(target => target.targetId === loginTargets[1].targetId), "healthy B login remains open");
+    const attempts = arrivals.filter(r => r.path === "/managed-login-a").length;
+    await delay(400);
+    assert.equal(arrivals.filter(r => r.path === "/managed-login-a").length, attempts, "failed sign-in is not automatically replayed");
+    await fs.writeFile(finish, "done");
+    assert.match((await managed[1]).message, /cancelled or failed/);
+  }
   await closeClaudeLoginTabs(receiptPath);
   const targets = await chromeA.cdp.call("Target.getTargets");
   assert.equal(targets.targetInfos.some((target) => target.targetId === chromeA.targetId), false, "failed login tab stays closed after the tunnel returns");
