@@ -261,6 +261,10 @@ print('DELIBERATE_FAILURE_AND_RESTORE_OK')
     // 139 ordinary skills plus four valid linked skills, with two repair cases.
     for (let index = 0; index < 139; index++) put(path.join(shared, "skills", `synthetic-installed-${String(index).padStart(3, "0")}`, "SKILL.md"),
       `---\nname: synthetic-installed-${index}\ndescription: Synthetic installed workload skill ${index}.\n---\nUse only the fictional workload inputs.\n`);
+    const repoPrivateTarget = path.join(homeDir, "Private/repo-linked-target"), repoSkillAlias = path.join(cwd, ".agents/skills/private-external");
+    put(path.join(repoPrivateTarget, "private.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC", "base64"));
+    fs.mkdirSync(path.dirname(repoSkillAlias), { recursive: true }); fs.symlinkSync(repoPrivateTarget, repoSkillAlias);
+    steps.push(image("native-repo-skill-private-read", path.join(repoSkillAlias, "private.png")));
     put(privateNeighbor, "PRIVATE_NEIGHBOR_ORIGINAL\n");
     extraConfig = `[skills]\nconfig=[{path=${JSON.stringify(linked[2].link)},enabled=false}]\n`;
     steps.push(patch("native-linked-private-neighbor-edit", privateNeighbor, "PRIVATE_NEIGHBOR_ORIGINAL", "PRIVATE_NEIGHBOR_CHANGED"));
@@ -284,8 +288,11 @@ print('DELIBERATE_FAILURE_AND_RESTORE_OK')
       });
       assert.equal(fs.readFileSync(privateNeighbor, "utf8"), protectedLaunch ? "PRIVATE_NEIGHBOR_ORIGINAL\n" : "PRIVATE_NEIGHBOR_CHANGED\n");
       assert.match(String(outputs.get("native-linked-private-neighbor-edit")), protectedLaunch ? /denied|not permitted/i : /Success/);
+      assert.match(JSON.stringify(outputs.get("native-repo-skill-private-read")), protectedLaunch ? /permission denied|operation not permitted/i : /input_image|data:image\//);
+      if (protectedLaunch) assert.ok(!invocations[0].nativeReads.includes(repoPrivateTarget) && !invocations[0].nativeWrites.includes(repoPrivateTarget));
       return { linkedSkillChecks: checks, syntheticValidInstalledSkills: 143, additionalRepairDirectories: 2,
-        disabledTargetStillEditable: true, privateNeighbor: protectedLaunch ? "denied" : "stock allowed" };
+        disabledTargetStillEditable: true, privateNeighbor: protectedLaunch ? "denied" : "stock allowed",
+        repoChildLinkPrivateRead: protectedLaunch ? "denied" : "stock readable" };
     };
   }
 

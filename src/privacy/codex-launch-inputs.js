@@ -162,8 +162,11 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
     }
   };
   addSkillLinks(writes, [...skillRoots, ...(effectiveInputs.writable_skill_roots ?? [])]);
-  addSkillLinks(reads, effectiveInputs.skill_roots ?? []);
-  // Native bundled-system discovery ignores directory links.
+  // Project/admin discovery cannot turn a repository-authored link into
+  // authority for a private target. Only installed User-scope roots above
+  // extend access through links; other scopes retain their exact root grant.
+  for (const file of effectiveInputs.skill_roots ?? []) addSkill(reads, file);
+  // Native bundled-system discovery also ignores directory links.
   for (const file of effectiveInputs.system_skill_roots ?? []) addSkill(reads, file);
   // Git worktrees keep their common metadata outside the worktree. Asking Git
   // for these two local paths preserves worktree behavior without copying Git

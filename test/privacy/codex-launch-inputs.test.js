@@ -129,7 +129,7 @@ test("native skill roots inventory directory links independently of skill conten
     parsedArgs: { images: [], directories: [] }, spawnSyncImpl: () => ({ status: 1 }),
     effectiveInputs: { cwd, reads: [], writes: [], database_roots: [], skill_roots: [userRoot, repoRoot], writable_skill_roots: [userRoot], system_skill_roots: [systemRoot] } });
   for (const directory of targets.slice(0, 4)) assert.ok(inputs.writes.includes(directory), "invalid, empty, nested and visible linked targets remain editable");
-  assert.ok(inputs.reads.includes(targets[5])); assert.ok(!inputs.writes.includes(targets[5]));
+  assert.ok(!inputs.reads.includes(targets[5])); assert.ok(!inputs.writes.includes(targets[5]), "a repository child alias cannot admit a private target");
   assert.ok(inputs.writes.includes(targets[7]), "a directory link at native discovery depth six is followed");
   for (const file of [sources, targets[4], targets[6], targets[8], linkedFile]) {
     assert.ok(!inputs.reads.includes(file)); assert.ok(!inputs.writes.includes(file));
