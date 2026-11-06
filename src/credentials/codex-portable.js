@@ -1,4 +1,5 @@
 import { normalizeLabel } from "../core/normalize.js";
+import { assertCodexCredentialExportable } from "./codex-local.js";
 import { normalizeRequestedAnthropicLabels } from "./anthropic-portable.js";
 import { assertCodexCredentialShape } from "./codex.js";
 import { getImportedCodexLabels } from "../state/accounts.js";
@@ -6,6 +7,7 @@ import { getAuthorityAnthropicImport, getAuthorityAnthropicImportLabelStatus, ge
 import { getAuthorityCodexImport, getAuthorityCodexImportLabelStatus } from "../state/authority-codex.js";
 
 export function buildPortableCodexCredential({ label, credential }) {
+  assertCodexCredentialExportable(credential);
   const cred = assertCodexCredentialShape({ label, credential, requireFresh: false });
   const next = {
     access: cred.access,

@@ -5,10 +5,15 @@ import path from "node:path";
 import {
   activateCodexLabelSelection,
   activateCodexPoolSelection,
-  reconcileCodexCliAuth,
 } from "../../src/targets/codex-cli.js";
+import { CODEX_TEST_ENVIRONMENT, localCodexFixture } from "../helpers/codex-local.js";
+import { codexAccountPaths } from "../../src/privacy/codex-account-state.js";
+import { logoutLocalCodexCredential } from "../../src/credentials/codex-local.js";
+import { localCodexRecords } from "../../src/coordination/codex-runtime.js";
+import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
+import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { collectCodexUsageSnapshots } from "../../src/pool/usage.js";
-import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
+import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 
 function credential(accountId, expiresAtMs, marker) {
   const token = makeFakeJwt({
@@ -25,7 +30,8 @@ function credential(accountId, expiresAtMs, marker) {
   };
 }
 
-function stateFor(credentials) {
+function stateFor(credentials, home) {
+  if (home) credentials = Object.fromEntries(Object.entries(credentials).map(([label, value]) => [label, localCodexFixture(home, value.accountId, value).credential]));
   const accounts = Object.fromEntries(
     Object.keys(credentials).map((label) => [
       label,
@@ -34,6 +40,7 @@ function stateFor(credentials) {
   );
   return {
     schemaVersion: "0.2",
+    codexEnvironment: CODEX_TEST_ENVIRONMENT,
     accounts,
     credentials: { "openai-codex": credentials, anthropic: {} },
     imports: { authority: { codex: {}, anthropic: {} } },
@@ -42,94 +49,72 @@ function stateFor(credentials) {
   };
 }
 
-function writeAuth(home, value) {
-  writeJson(path.join(home, ".aimgr", "codex-cli", "auth.json"), {
-    OPENAI_API_KEY: null,
-    tokens: {
-      id_token: value.idToken,
-      access_token: value.access,
-      refresh_token: value.refresh,
-      account_id: value.accountId,
-    },
-    last_refresh: new Date().toISOString(),
-  });
-}
-
-test("Codex reconciliation chooses identical, newer-local, newer-Redis, and conflict deterministically", () => {
-  const baseMs = Date.now() + 4 * 3_600_000;
-
-  {
-    const home = mkTempHome();
-    const stored = credential("acct_boss", baseMs, "same");
-    const state = stateFor({ boss: stored });
-    state.targets.codexCli = { activeLabel: "boss", expectedAccountId: "acct_boss" };
-    writeAuth(home, stored);
-    assert.equal(reconcileCodexCliAuth({ state, homeDir: home }).status, "identical");
-  }
-
-  {
-    const home = mkTempHome();
-    const stored = credential("acct_boss", baseMs, "old");
-    const local = credential("acct_boss", baseMs + 3_600_000, "new");
-    const state = stateFor({ boss: stored });
-    state.targets.codexCli = { activeLabel: "boss", expectedAccountId: "acct_boss" };
-    writeAuth(home, local);
-    const result = reconcileCodexCliAuth({ state, homeDir: home });
-    assert.equal(result.status, "local_newer");
-    assert.equal(state.credentials["openai-codex"].boss.refresh, "REFRESH_new");
-  }
-
-  {
-    const home = mkTempHome();
-    const stored = credential("acct_boss", baseMs + 3_600_000, "new");
-    const local = credential("acct_boss", baseMs, "old");
-    const state = stateFor({ boss: stored });
-    state.targets.codexCli = { activeLabel: "boss", expectedAccountId: "acct_boss" };
-    writeAuth(home, local);
-    const result = reconcileCodexCliAuth({ state, homeDir: home });
-    assert.equal(result.status, "redis_newer");
-    const projected = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "codex-cli", "auth.json"), "utf8"));
-    assert.equal(projected.tokens.refresh_token, "REFRESH_new");
-  }
-
-  {
-    const home = mkTempHome();
-    const stored = credential("acct_boss", baseMs, "redis");
-    const local = credential("acct_boss", baseMs, "local");
-    const state = stateFor({ boss: stored });
-    state.targets.codexCli = { activeLabel: "boss", expectedAccountId: "acct_boss" };
-    writeAuth(home, local);
-    const result = reconcileCodexCliAuth({ state, homeDir: home });
-    assert.deepEqual(
-      { status: result.status, reason: result.reason },
-      { status: "conflict", reason: "token_conflict_at_equal_expiry" },
-    );
-    assert.equal(state.credentials["openai-codex"].boss.refresh, "REFRESH_redis");
-  }
+test("pool metadata never hydrates or replaces environment-local grants, regardless of global expiry", async () => {
+  const home = mkTempHome(), client = new FakeRedisClient();
+  const store = await connectRedisStore({ client, keyPrefix: "fixture:local-authority" });
+  const foreign = credential("acct_boss", Date.now() + 8 * 3_600_000, "foreign");
+  await importCredentialsSnapshot(store, { credentials: [{ provider: "openai-codex", label: "boss",
+    identity: { accountId: foreign.accountId }, credential: foreign, policy: { pool: { enabled: true } } }] }, { updatedBy: "test" });
+  // A client-side GET would transfer the foreign tokens before any filtering.
+  client.get = async () => assert.fail("Codex metadata must be projected inside Redis");
+  const options = { homeDir: home, environment: CODEX_TEST_ENVIRONMENT, store };
+  assert.equal((await localCodexRecords(options))[0].health.reason, "login_required");
+  const local = credential("acct_boss", Date.now() + 3_600_000, "independent");
+  const saved = localCodexFixture(home, local.accountId, local);
+  const record = (await localCodexRecords(options))[0];
+  assert.equal(record.credential.refresh, "LOCAL_REFRESH_independent");
+  assert.equal(record.health.status, "ready");
+  logoutLocalCodexCredential({ ...options, accountId: local.accountId });
+  assert.equal((await localCodexRecords(options))[0].health.reason, "login_required");
+  assert.equal(fs.existsSync(path.join(saved.paths.accountRoot, "auth.json")), false);
 });
 
-test("Codex activation receipt reports the native account as the true previous label", () => {
-  const home = mkTempHome();
-  const expiresAtMs = Date.now() + 4 * 3_600_000;
-  const boss = credential("acct_boss", expiresAtMs, "boss");
-  const pro3 = credential("acct_pro3", expiresAtMs, "pro3");
-  const state = stateFor({ boss, pro3 });
-  state.targets.codexCli = { activeLabel: "boss", expectedAccountId: "acct_boss" };
-  writeAuth(home, pro3);
-
+test("account selection preserves the previous account's authorization and installation identity", () => {
+  const home = mkTempHome(), expiresAtMs = Date.now() + 4 * 3_600_000;
+  const state = stateFor({ boss: credential("acct_boss", expiresAtMs, "boss"),
+    pro3: credential("acct_pro3", expiresAtMs, "pro3") }, home);
+  const previous = activateCodexLabelSelection({ state, homeDir: home, label: "pro3" });
+  const previousAuth = path.join(previous.prepared.accountRoot, "auth.json");
+  const before = fs.readFileSync(previousAuth, "utf8");
   const result = activateCodexLabelSelection({ state, homeDir: home, label: "boss" });
-
   assert.equal(result.receipt.previousLabel, "pro3");
   assert.equal(result.receipt.label, "boss");
+  assert.notEqual(result.prepared.accountRoot, previous.prepared.accountRoot);
+  assert.notEqual(result.prepared.installationId, previous.prepared.installationId);
+  assert.equal(fs.readFileSync(previousAuth, "utf8"), before);
+});
+
+test("damaged active authorization cannot prevent selecting a healthy account", async t => {
+  for (const corruption of ["invalid-json", "permissions"]) for (const selection of ["explicit", "pool"]) {
+    await t.test(`${corruption}, ${selection}`, async () => {
+      const home = mkTempHome(), expiry = Date.now() + 4 * 3_600_000;
+      const state = stateFor({ boss: credential("acct_boss", expiry, "boss"), writer: credential("acct_writer", expiry, "writer") }, home);
+      const first = activateCodexLabelSelection({ state, homeDir: home, label: "boss" });
+      const auth = path.join(first.prepared.accountRoot, "auth.json");
+      if (corruption === "invalid-json") fs.writeFileSync(auth, "{bad");
+      else fs.chmodSync(auth, 0o644);
+      const result = selection === "explicit"
+        ? activateCodexLabelSelection({ state, homeDir: home, label: "writer" })
+        : await activateCodexPoolSelection({ state, homeDir: home, avoidCurrentLabel: true,
+          selectLeastUsed: true, usageByProvider: { "openai-codex": {
+            boss: { ok: true, windows: [{ label: "Week", usedPercent: 20 }] },
+            writer: { ok: true, windows: [{ label: "Week", usedPercent: 10 }] },
+          } } });
+      assert.equal(result.status, "activated");
+      assert.equal(result.prepared.accountId, "acct_writer");
+      assert.equal(result.receipt.previousLabel, "boss");
+      fs.rmSync(home, { recursive: true, force: true });
+    });
+  }
 });
 
 test("reselecting the current Codex account is a true file no-op", () => {
   const home = mkTempHome();
   const boss = credential("acct_boss", Date.now() + 4 * 3_600_000, "boss");
-  const state = stateFor({ boss });
+  const state = stateFor({ boss }, home);
 
   const first = activateCodexLabelSelection({ state, homeDir: home, label: "boss" });
-  const authPath = path.join(home, ".aimgr", "codex-cli", "auth.json");
+  const authPath = path.join(codexAccountPaths({ homeDir: home, accountId: "acct_boss", environment: CODEX_TEST_ENVIRONMENT }).accountRoot, "auth.json");
   const before = fs.readFileSync(authPath, "utf8");
   const second = activateCodexLabelSelection({ state, homeDir: home, label: "boss" });
 
@@ -203,12 +188,12 @@ test("Codex snapshot is cache-first, probes stale labels only, and binds cache t
   assert.equal(rejectedStale["openai-codex"].boss.source, "unavailable");
 });
 
-test("automatic Codex choice keeps a valid projected target when telemetry and cache are unavailable", async () => {
+test("automatic Codex choice keeps a valid local target when telemetry and cache are unavailable", async () => {
   const home = mkTempHome();
   const boss = credential("acct_boss", Date.now() + 4 * 3_600_000, "boss");
-  const state = stateFor({ boss });
+  const state = stateFor({ boss }, home);
   assert.notEqual(activateCodexLabelSelection({ state, homeDir: home, label: "boss" }).status, "blocked");
-  const authPath = path.join(home, ".aimgr", "codex-cli", "auth.json");
+  const authPath = path.join(codexAccountPaths({ homeDir: home, accountId: "acct_boss", environment: CODEX_TEST_ENVIRONMENT }).accountRoot, "auth.json");
   const before = fs.readFileSync(authPath, "utf8");
 
   const result = await activateCodexPoolSelection({

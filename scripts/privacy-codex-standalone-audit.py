@@ -9,6 +9,7 @@ Model-selected tool calls execute in the official binary; the model is a fixture
 import argparse
 import base64
 import concurrent.futures
+import ctypes
 import fcntl
 import hashlib
 import http.server
@@ -20,8 +21,10 @@ import pty
 import re
 import select
 import shlex
+import shutil
 import signal
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -38,6 +41,7 @@ def mcp_result(request, transport):
                 'serverInfo': {'name': 'standalone-' + transport, 'version': '1'}}
     if method == 'tools/list':
         return {'tools': [{'name': 'echo', 'description': 'Return the synthetic test marker',
+                          'annotations': {'readOnlyHint': True, 'destructiveHint': False, 'openWorldHint': False},
                           'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}},
                                           'required': ['text']}}]}
     if method == 'tools/call':
@@ -67,13 +71,23 @@ parser.add_argument('--root', required=True)
 parser.add_argument('--codex', required=True)
 parser.add_argument('--sha256', required=True)
 parser.add_argument('--aim-root')
-parser.add_argument('--phase', choices=['exec', 'tui', 'concurrent-tui', 'features', 'continuity', 'lifetime', 'routine', 'daemon', 'required-failure', 'all'], default='all')
+parser.add_argument('--aim-cli', action='store_true')
+parser.add_argument('--phase', choices=['exec', 'tui', 'tui-edits', 'tui-settings', 'concurrent-tui', 'features', 'continuity', 'rotation', 'lifetime', 'routine', 'daemon', 'required-failure', 'all'], default='all')
 parser.add_argument('--terminal-input', action='store_true')
 parser.add_argument('--prepare-database', action='store_true')
 parser.add_argument('--shared-database', action='store_true')
 parser.add_argument('--sandbox-profile')
 parser.add_argument('--mcp-auth', action='store_true')
 args = parser.parse_args()
+if args.aim_cli and (not args.aim_root or args.phase in ['daemon', 'routine'] or args.sandbox_profile):
+    raise SystemExit('AIM CLI mode requires --aim-root and a direct workflow phase without an extra sandbox wrapper.')
+if args.phase == 'rotation' and not args.aim_cli:
+    raise SystemExit('Rotation requires the actual AIM CLI driver.')
+if args.phase in ['tui-edits', 'tui-settings'] and not args.aim_cli:
+    raise SystemExit('Native settings reconciliation requires the actual AIM CLI driver.')
+node = shutil.which('node') if args.aim_cli else None
+if args.aim_cli and not node:
+    raise SystemExit('AIM CLI integration requires the isolated host Node runtime.')
 harness_digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 root = Path(args.root).resolve()
 base = Path('/opt/aimgr-state-audit')
@@ -87,8 +101,8 @@ if digest != args.sha256:
     raise SystemExit('Candidate differs from the exact artifact authorized for this test.')
 helper = binary.with_name('codex-code-mode-host')
 helper_digest = hashlib.sha256(helper.read_bytes()).hexdigest()
-expected_helper = {'Linux': 'd01f7a656bd2a54b26fd99131f252c7371e2e890f3713c5dd977676b54bfb3bf',
-                   'Darwin': '506223f47bf53603026ff6c15f887196a5daabccde036e555cdae4875e4871b0'}
+expected_helper = {'Linux': '657f4e902726e05867c937b583049d5997e057f8cd0ab40450633c9c9ef8d630',
+                   'Darwin': 'fd37051bfdce0b65cf22a7077e265720a7bd6709d5e400dcbc26197f3041400a'}
 if helper_digest != expected_helper[platform.system()]:
     raise SystemExit('This fixture requires the matching reviewed official code-mode helper.')
 if root.exists() and any(root.iterdir()):
@@ -103,6 +117,7 @@ skill = project / '.agents/skills/privacy-proof/SKILL.md'
 skill.parent.mkdir(parents=True)
 skill.write_text('---\nname: privacy-proof\ndescription: SKILL_DISCOVERY_CANARY. Use for the synthetic standalone test.\n---\nSKILL_CONTENT_CANARY. Run the configured MCP echo tools and native shell proof.\n')
 homes = {}
+aim_prepared = {}
 requests = []
 states = {}
 tool_sets = {}
@@ -114,6 +129,9 @@ daemon_socket_paths = []
 daemon_connections = []
 observed_descendants = {}
 open_ptys = []
+sibling_ready = threading.Event()
+sibling_release = threading.Event()
+image_digests = {}
 
 
 def process_table():
@@ -133,6 +151,65 @@ def observe_descendants():
     for pid in owned:
         if pid in table:
             observed_descendants[pid] = table[pid]
+
+
+def observe_vendor_confinement():
+    """Inspect actual survivor images and their kernel boundary, before cleanup."""
+    observe_descendants()
+    table = process_table()
+    result = []
+    for pid in observed_descendants:
+        if pid not in table or table[pid]['state'].startswith('Z'):
+            continue
+        try:
+            if platform.system() == 'Linux':
+                # The privileged launcher intentionally makes native processes
+                # nondumpable. Observe only this owned PID's executable/profile
+                # as root rather than changing that production protection.
+                probe = subprocess.run(['sudo', '-n', '/usr/bin/python3', '-I', '-c',
+                    'import json,os,sys; from pathlib import Path; p="/proc/"+sys.argv[1]; '
+                    'print(json.dumps({"image":os.readlink(p+"/exe"),"profile":Path(p+"/attr/current").read_text().strip()}))',
+                    str(pid)], capture_output=True, text=True)
+                if probe.returncode:
+                    if pid not in process_table() or process_table()[pid]['state'].startswith('Z'):
+                        continue
+                    raise RuntimeError('Cannot independently observe a live owned process boundary.')
+                observed = json.loads(probe.stdout)
+                image = Path(observed['image'])
+            else:
+                libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+                buffer = ctypes.create_string_buffer(4096)
+                if libproc.proc_pidpath(pid, buffer, len(buffer)) <= 0:
+                    raise ProcessLookupError(pid)
+                image = Path(os.fsdecode(buffer.value))
+            if image.name not in ['codex', 'codex-code-mode-host']:
+                continue  # AIM and ordinary background tools have separate lifetimes.
+            stat = image.stat()
+            key = (str(image), stat.st_ino, stat.st_mtime_ns, stat.st_size)
+            if key not in image_digests:
+                image_digests[key] = hashlib.sha256(image.read_bytes()).hexdigest()
+            approved = image_digests[key] == (digest if image.name == 'codex' else helper_digest)
+            if platform.system() == 'Linux':
+                boundary = observed['profile']
+                confined = bool(re.fullmatch(r'aim-codex-p-\d+-(?:n\d+-)?[0-9a-f]+ \(enforce\)', boundary))
+            else:
+                sandbox = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+                # Apple arm64 passes variadic arguments separately; describe
+                # the three fixed parameters before passing the path vararg.
+                sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+                target = os.fsencode(str(homes['A'][0] / '.ssh/private-canary'))
+                # The same kernel query must permit this unrestricted fixture.
+                if sandbox.sandbox_check(os.getpid(), b'file-read-data', 1, target) != 0:
+                    raise RuntimeError('Sandbox observation control did not permit the fixture read.')
+                boundary = sandbox.sandbox_check(pid, b'file-read-data', 1, target)
+                confined = boundary == 1
+            result.append({'pid': pid, 'image': str(image), 'approved': approved,
+                           'kernelBoundary': boundary, 'confined': confined})
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # A process that exited during observation cannot survive.
+    if any(not row['approved'] or not row['confined'] for row in result):
+        raise RuntimeError('A live native vendor image lost its admitted image or kernel confinement.')
+    return result
 
 
 def names(tools, namespace=None):
@@ -155,6 +232,13 @@ def events(body, case_hint=None):
     cases = [match.group(1) for item in body.get('input', []) if item.get('type') == 'message' and item.get('role') == 'user'
              for part in item.get('content', []) if isinstance(part, dict)
              for match in [re.match(r'PROBE_CASE:([A-Za-z0-9_]+)', part.get('text', ''))] if match]
+    # Native collaboration delivers the child's task as agent_message content.
+    # Our synthetic endpoint sees its literal marker in encrypted_content; no
+    # production encrypted payload or account state is read by this fixture.
+    cases.extend(match.group(1) for item in body.get('input', []) if item.get('type') == 'agent_message'
+                 and item.get('recipient') == '/root/privacy_child'
+                 for part in item.get('content', []) if isinstance(part, dict)
+                 for match in [re.match(r'PROBE_CASE:([A-Za-z0-9_]+)', part.get('encrypted_content', part.get('text', '')))] if match)
     previous = re.match(r'resp_(.+)_\d+$', str(body.get('previous_response_id', '')))
     case = 'TITLE' if title_request else cases[-1] if cases else previous.group(1) if previous else case_hint or 'unknown'
     with state_lock:
@@ -200,6 +284,10 @@ def events(body, case_hint=None):
             barrier.wait(timeout=35)
         except threading.BrokenBarrierError:
             state['barrierFailed'] = True
+    if first and case == 'SIBLING':
+        sibling_ready.set()
+        if not sibling_release.wait(timeout=60):
+            raise RuntimeError('Owner-death sibling barrier was not released.')
     selected = None
     parameters = None
     executor_code = None
@@ -285,7 +373,10 @@ class Mock(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(raw)))
         self.send_header('Connection', 'close')
         self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
+            pass  # Native cancels optional metadata requests during shutdown.
         self.close_connection = True
     def capture(self, body):
         observe_descendants()
@@ -297,20 +388,30 @@ class Mock(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))) or '{}')
         self.capture(body)
-        if self.path == '/mcp':
+        if self.path == '/mcp-fail':
+            return self.reply({'error': 'Deliberately unavailable required MCP server'}, 503)
+        if self.path in ['/mcp', '/ps/mcp', '/api/codex/ps/mcp']:
             if args.mcp_auth and self.headers.get('Authorization') != 'Bearer synthetic-mcp-token':
                 return self.reply({'error': 'Synthetic MCP authentication required'}, 401)
-            if args.phase == 'required-failure':
-                return self.reply({'error': 'Deliberately unavailable required MCP server'}, 503)
             if 'id' not in body:
                 return self.reply('', 202)
-            return self.reply({'jsonrpc': '2.0', 'id': body['id'], 'result': mcp_result(body, 'http')})
+            result = mcp_result(body, 'http')
+            if self.path.endswith('/ps/mcp') and body.get('method') == 'tools/list':
+                result = {'tools': []}
+            return self.reply({'jsonrpc': '2.0', 'id': body['id'], 'result': result})
         if 'responses' in self.path:
             return self.reply(''.join('event: ' + e['type'] + '\ndata: ' + json.dumps(e) + '\n\n' for e in events(body)), mime='text/event-stream')
         return self.reply({})
     def do_GET(self):
         if self.headers.get('Upgrade', '').lower() != 'websocket':
-            return self.reply({'data': [], 'models': []}, 405 if self.path == '/mcp' else 200)
+            self.capture({})
+            if self.path.split('?', 1)[0] == '/api/codex/accounts/check':
+                accounts = [{'id': 'synthetic-cli-' + label, 'plan_type': 'plus', 'structure': 'personal',
+                             'workspace_backend_origin': 'NO_CONSTRAINT', 'account_routing_override': 'NO_CONSTRAINT'}
+                            for label in ['a', 'b']]
+                return self.reply({'accounts': accounts, 'account_ordering': [row['id'] for row in accounts],
+                                   'default_account_id': accounts[0]['id']})
+            return self.reply({'data': [], 'models': []}, 405 if self.path == '/mcp' or self.path.endswith('/ps/mcp') else 200)
         key = self.headers['Sec-WebSocket-Key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
         self.send_response(101)
         self.send_header('Upgrade', 'websocket')
@@ -357,13 +458,35 @@ class Mock(http.server.BaseHTTPRequestHandler):
 
 
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Mock)
+authority = None
+if args.phase == 'rotation':
+    # ChatGPT account/read validates workspace origins as HTTPS. Use a private
+    # fixture CA, retaining the exact native validation rather than bypassing it.
+    authority, authority_key = root / 'authority.pem', root / 'authority.key'
+    certificate, certificate_key = root / 'loopback.pem', root / 'loopback.key'
+    config, request, extensions = root / 'authority.cnf', root / 'loopback.csr', root / 'loopback.ext'
+    config.write_text('[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=Synthetic AIM fixture authority\n[ext]\nbasicConstraints=critical,CA:TRUE\n')
+    extensions.write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1\n')
+    commands = [
+        ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-config', config, '-keyout', authority_key, '-out', authority],
+        ['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=127.0.0.1', '-keyout', certificate_key, '-out', request],
+        ['x509', '-req', '-in', request, '-CA', authority, '-CAkey', authority_key, '-set_serial', '1', '-days', '1', '-extfile', extensions, '-out', certificate],
+        ['verify', '-CAfile', authority, '-purpose', 'sslserver', certificate],
+    ]
+    for command in commands:
+        subprocess.run(['openssl', *map(str, command)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(certificate, certificate_key)
+    server.socket = tls.wrap_socket(server.socket, server_side=True)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-endpoint = 'http://127.0.0.1:' + str(server.server_port)
+endpoint = ('https' if authority else 'http') + '://127.0.0.1:' + str(server.server_port)
 for label in ['A', 'B']:
     home = root / ('home-' + label)
     app = home / '.codex'
     app.mkdir(parents=True)
     (home / 'tmp').mkdir()
+    (home / '.ssh').mkdir()
+    (home / '.ssh/private-canary').write_text('SYNTHETIC_VENDOR_PRIVATE_FILE\n')
     config = ('model="gpt-6.1-sol"\nopenai_base_url=' + json.dumps(endpoint + '/v1') + '\n'
               'cli_auth_credentials_store="file"\napproval_policy="never"\nsandbox_mode="danger-full-access"\n'
               '[features]\nhooks=false\n[analytics]\nenabled=false\n[feedback]\nenabled=false\n'
@@ -373,7 +496,26 @@ for label in ['A', 'B']:
               '[mcp_servers.http]\nurl=' + json.dumps(endpoint + '/mcp') + '\nrequired=true\n')
     if args.mcp_auth:
         config += 'bearer_token_env_var="PRIVACY_MCP_TOKEN"\n'
+    if args.aim_cli:
+        config = 'model_provider="fixture"\nchatgpt_base_url=' + json.dumps(endpoint) + '\n' + config + '\n[model_providers.fixture]\nname="Fixture"\nbase_url=' + json.dumps(endpoint + '/v1') + '\nwire_api="responses"\n'
+    if args.phase == 'rotation':
+        config += 'requires_openai_auth=true\n'
+    if args.phase == 'required-failure' and label == 'A':
+        config = config.replace(endpoint + '/mcp', endpoint + '/mcp-fail')
+    if args.phase in ['tui-edits', 'tui-settings']:
+        config += '\n[skills]\nconfig=[{path="../../project/.agents/skills/privacy-proof",enabled=true}]\n'
+    if args.phase == 'tui-settings':
+        # Keep the actual native picker deterministic using two unchanged
+        # entries from the exact source already used to build the AIM helper.
+        catalog = json.loads((Path(args.aim_root) / 'native/codex/config-state/vendor/codex/codex-rs/models-manager/models.json').read_text())
+        catalog['models'] = [model for model in catalog['models'] if model['slug'] in ['gpt-6.1-sol', 'gpt-6-astra']]
+        assert len(catalog['models']) == 2
+        (app / 'models.json').write_text(json.dumps(catalog))
+        config = 'model_catalog_json="./models.json"\nmodel_reasoning_effort="high"\n' + config
     (app / 'config.toml').write_text(config)
+    if args.phase == 'rotation':
+        # The admitted release selects a complete named user-layer file.
+        (app / 'yolo.config.toml').write_text(config)
     # TUI deliberately does not treat an ambient API key as completed login.
     # Install only a synthetic key in the fresh fixture's native credential file;
     # never activate a browser/device-login route to get past onboarding.
@@ -423,6 +565,8 @@ def env_for(label, terminal_extras=False):
            'OPENAI_API_KEY': 'sk-synthetic-standalone-not-real'}
     if args.mcp_auth:
         env['PRIVACY_MCP_TOKEN'] = 'synthetic-mcp-token'
+    if authority:
+        env['CODEX_CA_CERTIFICATE'] = str(authority)
     if args.shared_database:
         env['CODEX_SQLITE_HOME'] = str(root / 'shared-database')
     if terminal_extras:
@@ -431,6 +575,9 @@ def env_for(label, terminal_extras=False):
 
 
 def wrap(command):
+    if args.aim_cli:
+        assert command[0] == str(binary)
+        return [node, str(Path(args.aim_root).resolve() / 'test/privacy/codex-cli-fixture.mjs'), '--', *command[1:]]
     return ['/usr/bin/sandbox-exec', '-f', args.sandbox_profile] + command if args.sandbox_profile else command
 
 
@@ -467,11 +614,13 @@ def prepare_database(label):
         raise RuntimeError('Native database preparation failed.')
 
 
-def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
+def execute(case, label, tui=False, resume=None, fork=None, history_only=None, rotate=None):
     prompt = 'PROBE_CASE:' + case + ' Use $privacy-proof and both configured MCP echo tools, then do the native shell proof. For FEATURES explicitly spawn and wait for one test subagent.'
     command = [str(binary)]
     if tui:
-        command += ([] if case == 'DAEMON_CONTROL' else ['--no-daemon']) + ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox']
+        command += ([] if case == 'DAEMON_CONTROL' else ['--no-daemon']) + ['--no-alt-screen']
+        if args.phase != 'tui-settings':
+            command += ['--dangerously-bypass-approvals-and-sandbox']
         if resume:
             command += ['resume', resume]
         elif fork:
@@ -480,9 +629,18 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
             command += [prompt]
     else:
         command += ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--json', prompt]
-    command = wrap(command)
+    if rotate:
+        assert tui and resume and args.aim_cli and rotate in ['resume-fresh', 'resume']
+        command = [node, str(Path(args.aim_root).resolve() / 'test/privacy/codex-cli-fixture.mjs'),
+                   '--aim', 'codex', rotate, resume, '--', '--no-daemon', '--no-alt-screen',
+                   '--dangerously-bypass-approvals-and-sandbox']
+        if not args.terminal_input:
+            command.append(prompt)
+    else:
+        command = wrap(command)
     env = env_for(label)
     started = time.monotonic()
+    request_start = len(requests)
     before_requests = sum(s['count'] for c, s in states.items() if c != 'TITLE')
     forced = False
     if not tui:
@@ -505,9 +663,11 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
         open_ptys.append(master)
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
         output = bytearray()
-        deadline = time.monotonic() + 65
+        deadline = time.monotonic() + (120 if args.phase == 'tui-settings' else 65)
         sent_exit = False
         sent_prompt = False
+        settings_stage = 0
+        settings_output_start = 0
         code = None
         try:
             while time.monotonic() < deadline:
@@ -535,6 +695,37 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
                     sent_prompt = True
                 ready_to_exit = (('STANDALONE_DONE:' + history_only).encode() in output if history_only else
                                  states.get(case, {}).get('finished') and ('STANDALONE_DONE:' + case).encode() in output)
+                if args.phase == 'tui-settings':
+                    recent = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', output[settings_output_start:])
+                    if settings_stage == 0 and ready_to_exit and b'\x1b]7501;state=done:' in output:
+                        os.write(master, b'/model')
+                        time.sleep(.15)
+                        os.write(master, b'\r')
+                        settings_stage = 1
+                        settings_output_start = len(output)
+                    elif settings_stage == 1 and b'Select Model and Effort' in recent:
+                        os.write(master, b'\x1b[B\r')  # Sol -> Astra.
+                        settings_stage = 2
+                        settings_output_start = len(output)
+                    elif settings_stage == 2 and b'Select Reasoning Level' in recent:
+                        os.write(master, b'\x1b[B\r')  # New model defaults to Low; select Medium.
+                        settings_stage = 3
+                    elif settings_stage == 3:
+                        authored = (homes[label][1] / 'config.toml').read_text()
+                        if (re.search(r'^model\s*=\s*"gpt-6-astra"', authored, re.MULTILINE) and
+                                re.search(r'^model_reasoning_effort\s*=\s*"medium"', authored, re.MULTILINE)):
+                            os.write(master, b'/permissions :workspace')
+                            time.sleep(.15)
+                            os.write(master, b'\r')
+                            settings_stage = 4
+                            settings_output_start = len(output)
+                    elif settings_stage == 4 and b'Permission selection requested:' in recent:
+                        os.write(master, b'\x1b[200~PROBE_CASE:TUI_SETTINGS_AFTER Use $privacy-proof and both configured MCP echo tools, then do the native shell proof.\x1b[201~')
+                        time.sleep(.15)
+                        os.write(master, b'\r')
+                        settings_stage = 5
+                    ready_to_exit = (settings_stage == 5 and states.get('TUI_SETTINGS_AFTER', {}).get('finished')
+                                     and b'STANDALONE_DONE:TUI_SETTINGS_AFTER' in output)
                 if case == 'DAEMON_CONTROL' and daemon_connections and not sent_exit:
                     os.kill(pid, signal.SIGTERM)
                     sent_exit = True
@@ -583,6 +774,7 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
     if not thread_ids:
         thread_ids = re.findall(r'codex resume ([0-9a-f-]{36})', stdout)
     result = {'case': case, 'mode': 'standalone-tui' if tui else 'native-exec', 'exitCode': code,
+              'requestStart': request_start, 'requestEnd': len(requests),
               'elapsedSeconds': round(time.monotonic() - started, 2), 'threadId': thread_ids[0] if thread_ids else None,
               'projectEditObserved': (project / (case + '.txt')).exists() and (project / (case + '.txt')).read_text() == 'SHELL_PROOF:' + case,
               'finalMessageReceived': 'STANDALONE_DONE:' + (history_only or case) in stdout,
@@ -592,6 +784,23 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
         ['firstRequestSkillLoaded', 'stdioReturned', 'httpReturned', 'shellReturned', 'finished']))
     if case == 'FEATURES':
         result['toolWorkflowPassed'] &= bool(result['model'].get('resourceReturned') and result['model'].get('subagentReturned'))
+    if args.phase == 'tui-settings':
+        result['nativeSettingsStage'] = settings_stage
+        after = states.get('TUI_SETTINGS_AFTER', {})
+        contexts = [json.loads(line)['payload'] for file in homes[label][1].joinpath('sessions').rglob('*.jsonl')
+                    for line in file.read_text().splitlines() if json.loads(line).get('type') == 'turn_context']
+        result['nativeSelectedSettings'] = any(context.get('model') == 'gpt-6-astra' and context.get('effort') == 'medium'
+            and context.get('sandbox_policy', {}).get('type') == 'workspace-write' for context in contexts)
+        result['continuedToolsAfterSettings'] = all(after.get(key) for key in ['firstRequestSkillLoaded', 'stdioReturned', 'httpReturned', 'shellReturned', 'finished'])
+        result['settingsConflictWarnings'] = stdout.count('[aim] Codex settings conflict')
+        result['toolWorkflowPassed'] &= bool(result['nativeSelectedSettings'] and result['continuedToolsAfterSettings']
+                                             and result['settingsConflictWarnings'] == 0)
+    if rotate:
+        result['manualWarningPresent'] = 'WARNING:' in stdout and 'links the two accounts' in stdout
+        if rotate == 'resume-fresh':
+            fresh = re.findall(r'\[aim\] new thread ([0-9a-f-]{36}) from', stdout)
+            if fresh:
+                result['threadId'] = fresh[0]
     if case == 'DAEMON_CONTROL':
         result['officialClientReachedNativeSocket'] = bool(daemon_connections)
         result['toolWorkflowPassed'] = bool(daemon_connections) and not forced
@@ -623,6 +832,9 @@ def execute(case, label, tui=False, resume=None, fork=None, history_only=None):
         result['toolWorkflowPassed'] = (code == (-signal.SIGKILL if case == 'KILLED' else 0) and not forced and
             result['finalMessageReceived'] and result['backgroundCommandStarted'] and result['projectEditObserved'])
         result['ownedBackgroundStopped'] = result['backgroundCommandStarted'] and not result['backgroundSurvivesOwner'] and not result['backgroundStillWrites']
+        if args.aim_cli:
+            result['liveVendorOwnersBeforePtyClose'] = observe_vendor_confinement()
+            result['allObservedVendorOwnersApprovedAndConfined'] = True
     if tui:
         os.close(master)
         open_ptys.remove(master)
@@ -678,6 +890,12 @@ def scheduled_routine():
 
 results = []
 try:
+    if args.aim_cli:
+        for label in homes:
+            prepared = subprocess.run([node, str(Path(args.aim_root).resolve() / 'test/privacy/codex-cli-fixture.mjs'),
+                '--prepare', label, *(['--pool'] if args.phase == 'rotation' and label == 'A' else [])],
+                env=env_for(label), cwd=project, capture_output=True, text=True, check=True)
+            aim_prepared[label] = json.loads(prepared.stdout)
     if args.prepare_database:
         for label in homes:
             prepare_database(label)
@@ -691,6 +909,36 @@ try:
             results.extend(f.result() for f in futures)
     if args.phase in ['all', 'tui']:
         results.append(execute('TUI', 'A', tui=True))
+    if args.phase == 'tui-settings':
+        results.append(execute('TUI_SETTINGS', 'A', tui=True))
+    if args.phase == 'tui-edits':
+        parser_module = (Path(args.aim_root).resolve() / 'src/io/codex-settings-toml.js').as_uri()
+        for count, case in enumerate(['TUI_ONE', 'TUI_TWO'], 1):
+            result = execute(case, 'A', tui=True)
+            results.append(result)
+            source = homes['A'][1] / 'config.toml'
+            view = Path(aim_prepared['A']['codexHome']) / 'config.toml'
+            values = []
+            for file in [source, view]:
+                parsed = subprocess.run([node, '--input-type=module', '-e',
+                    'import fs from "node:fs"; import {parseCodexSettings} from ' + json.dumps(parser_module) + ';'
+                    'console.log(JSON.stringify(parseCodexSettings(fs.readFileSync(process.argv[1],"utf8")).value));',
+                    str(file)], capture_output=True, text=True, check=True)
+                value = json.loads(parsed.stdout)
+                values.append(value)
+                text = file.read_text()
+                if not re.search(r'^\[(?:tui|"tui")\]$', text, re.MULTILINE):
+                    raise RuntimeError('Native-created settings did not retain their editable block table.')
+                if (value['tui']['model_availability_nux']['gpt-6.1-sol'] != count or
+                        value['tui']['screen_reader_detection_done'] is not True or value['features']['hooks'] is not False):
+                    raise RuntimeError('Consecutive native settings saves did not preserve their values.')
+            if (values[0]['skills']['config'][0]['path'] != '../../project/.agents/skills/privacy-proof' or
+                    values[1]['skills']['config'][0]['path'] != str(skill.parent) or
+                    not all(value['skills']['config'][0]['enabled'] for value in values)):
+                raise RuntimeError('Consecutive native saves changed the authored relative skill path.')
+            result['nativeTableWriteCount'] = count
+            result['sourceAndViewValidBlockTables'] = True
+            result['relativeSkillPathPreserved'] = True
     if args.phase in ['all', 'features']:
         results.append(execute('FEATURES', 'A'))
     if args.phase in ['all', 'continuity']:
@@ -706,13 +954,79 @@ try:
         results[-1]['forkRestoredHistory'] = results[-1]['model'].get('priorSeedResponsePresent', False)
         results[-2]['toolWorkflowPassed'] &= results[-2]['sameThreadPreserved']
         results[-1]['toolWorkflowPassed'] &= results[-1]['forkHasNewThread'] and results[-1]['forkRestoredHistory']
+    if args.phase == 'rotation':
+        seed = execute('SEED', 'A')
+        results.append(seed)
+        if not seed['toolWorkflowPassed'] or not seed['threadId']:
+            raise RuntimeError('Cannot test rotation without a successful seed.')
+        fresh = execute('FRESH', 'A', tui=True, resume=seed['threadId'], rotate='resume-fresh')
+        results.append(fresh)
+        if not fresh['toolWorkflowPassed'] or not fresh['threadId']:
+            raise RuntimeError('Cannot test manual rotation without a successful fresh continuation.')
+        manual = execute('MANUAL', 'A', tui=True, resume=fresh['threadId'], rotate='resume')
+        results.append(manual)
+        for row, expected_label, fresh_identity in [(seed, 'a', False), (fresh, 'b', True), (manual, 'a', False)]:
+            captured = [request for request in requests[row['requestStart']:row['requestEnd']] if 'responses' in request['path']]
+            account = aim_prepared['A']['accounts'][expected_label]
+            if not captured:
+                raise RuntimeError('Missing captured continuation requests.')
+            for request in captured:
+                headers = {key.lower(): value for key, value in request['headers'].items()}
+                if headers.get('chatgpt-account-id') != account['accountId']:
+                    raise RuntimeError('Continuation used the wrong underlying account.')
+                claims = json.loads(base64.urlsafe_b64decode(headers['authorization'].split('.')[1] + '==='))
+                if claims['https://api.openai.com/auth']['chatgpt_account_id'] != account['accountId']:
+                    raise RuntimeError('Continuation used the wrong local bearer.')
+                metadata = request['body'].get('client_metadata', {})
+                if metadata.get('x-codex-installation-id') != account['installationId']:
+                    raise RuntimeError('Continuation used the wrong installation identity.')
+                wire = json.dumps({'headers': headers, 'metadata': metadata})
+                if fresh_identity and seed['threadId'] in wire:
+                    raise RuntimeError('Rotated continuation sent the source thread identity.')
+                # Native title generation is its own short child thread. It
+                # still must use the selected account/install identity and no
+                # retired source ID, but cannot carry the foreground thread ID.
+                title = request['body'].get('text', {}).get('format', {}).get('name') == 'codex_output_schema'
+                thread = metadata.get('thread_id')
+                if (not re.fullmatch(r'[0-9a-f-]{36}', thread or '') or metadata.get('session_id') != thread or
+                        headers.get('thread-id') != thread or headers.get('session-id') != thread or
+                        not title and thread != row['threadId']):
+                    raise RuntimeError('Captured request lacks consistent selected thread/session identities.')
+            row['capturedAccountAndIdentityPassed'] = True
+        fresh['newThreadWithHistory'] = bool(fresh['threadId'] and fresh['threadId'] != seed['threadId'] and fresh['model'].get('priorSeedResponsePresent'))
+        manual['originalThreadWithWarning'] = manual['threadId'] == fresh['threadId'] and manual['manualWarningPresent']
+        fresh['toolWorkflowPassed'] &= fresh['newThreadWithHistory']
+        manual['toolWorkflowPassed'] &= manual['originalThreadWithWarning']
     if args.phase in ['all', 'lifetime']:
         results.append(execute('OWNER', 'A', tui=True))
-        results.append(execute('KILLED', 'B', tui=True))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            sibling = pool.submit(execute, 'SIBLING', 'A')
+            try:
+                if not sibling_ready.wait(timeout=45):
+                    raise RuntimeError('Healthy sibling did not reach its model barrier.')
+                killed = execute('KILLED', 'B', tui=True)
+                results.append(killed)
+            finally:
+                sibling_release.set()
+            continued = sibling.result()
+            continued['continuedAfterSiblingOwnerDeath'] = continued['toolWorkflowPassed']
+            results.append(continued)
     if args.phase == 'routine':
         scheduled_routine()
     if args.phase == 'required-failure':
-        results.append(execute('REQUIRED_FAILURE', 'A'))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            sibling = pool.submit(execute, 'SIBLING', 'B')
+            try:
+                if not sibling_ready.wait(timeout=45):
+                    raise RuntimeError('Healthy sibling did not reach its model barrier.')
+                failed = execute('REQUIRED_FAILURE', 'A')
+                failed['liveVendorOwnersAfterFailedIntegration'] = observe_vendor_confinement()
+                results.append(failed)
+            finally:
+                sibling_release.set()
+            continued = sibling.result()
+            continued['continuedAfterSiblingIntegrationFailure'] = continued['toolWorkflowPassed']
+            results.append(continued)
     if args.phase == 'daemon':
         positive = execute('DAEMON_CONTROL', 'A', tui=True)
         results.append(positive)
@@ -724,8 +1038,9 @@ try:
     live_table = process_table()
     survivors = {pid: live_table[pid] for pid in observed_descendants if pid in live_table and not live_table[pid]['state'].startswith('Z')}
     (root / 'survivors-before-cleanup.private.json').write_text(json.dumps(survivors, indent=2))
-    ids = {label: hashlib.sha256((app / 'installation_id').read_bytes()).hexdigest() for label, (_, app) in homes.items() if (app / 'installation_id').exists()}
-    summary = {'kind': 'synthetic standalone compatibility; not production privacy acceptance',
+    ids = ({label: prepared['installationId'] for label, prepared in aim_prepared.items()} if args.aim_cli else
+           {label: hashlib.sha256((app / 'installation_id').read_bytes()).hexdigest() for label, (_, app) in homes.items() if (app / 'installation_id').exists()})
+    summary = {'kind': 'actual AIM CLI with synthetic Redis transport and loopback model/MCP services' if args.aim_cli else 'synthetic standalone compatibility; not production privacy acceptance',
                'platform': platform.system(), 'codexSha256': digest, 'codeModeHostSha256': helper_digest, 'results': results,
                'harnessSha256': harness_digest,
                'databasePreparedByFiniteNativeProcess': args.prepare_database,

@@ -31,7 +31,7 @@ installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(insta
 parent = Path(tempfile.mkdtemp(prefix='claude-install-contract-', dir=base)); parent.chmod(0o755)
 os.umask(0o022)
 runtime = parent / 'runtime'
-owner = pwd.getpwnam('ec2-user' if platform.system() == 'Darwin' else 'aimprivacy')
+owner = pwd.getpwnam(sys.argv[2] if len(sys.argv) > 2 else 'ec2-user' if platform.system() == 'Darwin' else 'aimprivacy')
 home = parent / 'home'; home.mkdir(mode=0o755); os.chown(home, owner.pw_uid, owner.pw_gid)
 user = SimpleNamespace(pw_dir=str(home), pw_uid=owner.pw_uid, pw_gid=owner.pw_gid, pw_name=owner.pw_name)
 passed = []

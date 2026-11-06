@@ -29,6 +29,7 @@
     "proper-lockfile": "^4.1.2",
     "redis": "^6.0.0",
     "socks": "2.8.10",
+    "toml-eslint-parser": "1.0.3",
     "undici": "6.23.0",
     "ws": "8.18.3",
     "yaml": "^2.8.3",

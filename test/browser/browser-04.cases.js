@@ -11,7 +11,7 @@ import {
 } from "../../src/browser/openclaw.js";
 import { seedAimBrowserProfileFromOpenclaw } from "../../src/browser/seed.js";
 import { derivePoolAccountStatus } from "../../src/pool/account-status.js";
-import { runCli } from "../helpers/cli-runner.js";
+import { registerCliRedisFixture, runCli } from "../helpers/cli-runner.js";
 import {
   makeFakeJwt,
   mkTempHome,
@@ -20,10 +20,14 @@ import {
 } from "../helpers/files.js";
 import { attachRedisFixtureFromLegacyState } from "../helpers/redis-fixture.js";
 
+import { activeCodexAuthFile, localCodexFixture, readCodexTestEnvironment } from "../helpers/codex-local.js";
+
 test("codex use selects fresh browser-managed labels even when the AIM browser dir is missing", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
+  const exp = Math.floor(Date.now() / 1000) + 2 * 24 * 3600;
   const lessonsJwt = makeFakeJwt({
+    exp,
     email: "lessons@example.com",
     "https://api.openai.com/auth": {
       chatgpt_account_id: "acct_lessons",
@@ -31,6 +35,7 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     },
   });
   const coder2Jwt = makeFakeJwt({
+    exp,
     email: "coder2@example.com",
     "https://api.openai.com/auth": {
       chatgpt_account_id: "acct_coder2",
@@ -38,6 +43,7 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     },
   });
   const cratejoyJwt = makeFakeJwt({
+    exp,
     email: "cratejoy@example.com",
     "https://api.openai.com/auth": {
       chatgpt_account_id: "acct_cratejoy",
@@ -97,7 +103,13 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     },
     pool: { openaiCodex: { history: [] } },
   });
-  await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const fixture = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+  for (const credential of Object.values(state.credentials["openai-codex"])) {
+    // A separate synthetic OAuth grant is created locally; it is not copied from Redis.
+    localCodexFixture(home, credential.accountId, credential);
+  }
+  registerCliRedisFixture(home, { ...fixture, readCodexEnvironmentImpl: readCodexTestEnvironment });
   const fetchImpl = async (url, init) => {
     const u = String(url ?? "");
     if (u.includes("/backend-api/wham/usage")) {
@@ -136,13 +148,13 @@ test("codex use selects fresh browser-managed labels even when the AIM browser d
     assert.equal(result.activated.receipt.label, "coder2");
     assert.deepEqual(result.activated.receipt.reasons, ["lowest_weekly_used"]);
 
-    const auth = JSON.parse(fs.readFileSync(path.join(home, ".aimgr", "codex-cli", "auth.json"), "utf8"));
+    const auth = JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8"));
     assert.equal(auth.tokens.account_id, "acct_coder2");
 
     const status = JSON.parse(await runCli(["status", "--json", "--home", home], { fetchImpl }));
     const coder2 = status.accounts.find((account) => account.label === "coder2");
     assert.equal(coder2.operator.status, "ready");
-    assert.equal(coder2.credentials.source, "redis");
+    assert.equal(coder2.credentials.source, "environment-local");
     assert.equal(status.codexCli.activeLabel, "coder2");
 });
 

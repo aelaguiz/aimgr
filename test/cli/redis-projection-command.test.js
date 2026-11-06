@@ -36,10 +36,13 @@ import { buildClaudeTokenLineageFingerprint } from "../../src/targets/claude-cli
 import { writeLocalState } from "../../src/state/local-state.js";
 import { readClaudeOfflineBinding, acquireClaudeAssignmentLock } from "../../src/network/claude-offline-binding.js";
 import { assertLocalClaudeProfileStopped } from "../../src/network/claude-native-route.js";
-import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
+import { registerCliRedisFixture, runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
+
+import { activeCodexAuthFile, localCodexFixture, readCodexTestEnvironment } from "../helpers/codex-local.js";
+import { readLocalCodexCredential } from "../../src/credentials/codex-local.js";
 
 const PREFIX = "aimgr:projection-test";
 
@@ -286,6 +289,8 @@ async function seedOpenAiRedis({ home, client, records = [codexRecord("boss", "a
     },
     { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
+  for (const record of records) localCodexFixture(home, record.identity.accountId, record.credential);
+  registerCliRedisFixture(home, { readCodexEnvironmentImpl: readCodexTestEnvironment });
   return store;
 }
 
@@ -336,7 +341,7 @@ function assertCanonicalAnthropicCredential(record, expectedRefreshToken) {
   }
 }
 
-test("redis-configured codex use projects from Redis and writes only local adjunct state", async () => {
+test("redis-configured codex use selects its separate local grant and keeps secrets out of adjunct state", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   await seedOpenAiRedis({ home, client });
@@ -350,7 +355,7 @@ test("redis-configured codex use projects from Redis and writes only local adjun
   assert.equal(result.activated.receipt.label, "boss");
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 
-  const auth = JSON.parse(fs.readFileSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home, env: {} })), "utf8"));
+  const auth = JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8"));
   assert.equal(auth.tokens.account_id, "acct_boss");
   const local = JSON.parse(fs.readFileSync(resolveAimgrLocalStatePath({ homeDir: home }), "utf8"));
   assert.equal(local.targets.codexCli.activeLabel, "boss");
@@ -422,14 +427,14 @@ test("redis-configured codex use does not publish stale local auth before projec
 
   const result = JSON.parse(out);
   assert.equal(result.ok, true);
-  assert.equal(result.reconciliation.status, "redis_newer");
+  assert.equal(Object.hasOwn(result, "reconciliation"), false);
   const snapshot = await readSnapshot(store);
   assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_BOSS");
-  const auth = JSON.parse(fs.readFileSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home, env: {} })), "utf8"));
-  assert.equal(auth.tokens.refresh_token, "REFRESH_BOSS");
+  const auth = JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8"));
+  assert.equal(auth.tokens.refresh_token, "LOCAL_REFRESH_BOSS");
 });
 
-test("redis-configured codex watch publishes live auth rotation before exit", async () => {
+test("codex watch reads native rotation from its environment without publishing it", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedOpenAiRedis({ home, client });
@@ -439,7 +444,7 @@ test("redis-configured codex watch publishes live auth rotation before exit", as
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
   });
   const rotated = codexCredential("acct_boss", "REFRESH_ROTATED", Date.now() + 2 * 3600_000);
-  writeJson(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home, env: {} })), {
+  writeJson(activeCodexAuthFile(home), {
     tokens: {
       access_token: rotated.access,
       refresh_token: rotated.refresh,
@@ -460,12 +465,13 @@ test("redis-configured codex watch publishes live auth rotation before exit", as
   });
   const result = JSON.parse(out);
   assert.equal(result.ok, true);
-  assert.equal(result.reconciliation.status, "local_newer");
+  assert.equal(Object.hasOwn(result, "reconciliation"), false);
+  assert.equal(readLocalCodexCredential({ homeDir: home, accountId: "acct_boss", environment: readCodexTestEnvironment() }).credential.refresh, "REFRESH_ROTATED");
   const snapshot = await readSnapshot(store);
-  assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_ROTATED");
+  assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_BOSS");
 });
 
-test("two Redis-configured AIM homes read and update the same shared credential", async () => {
+test("two Redis-configured AIM homes keep separate authorizations when one rotates", async () => {
   const homeA = mkTempHome();
   const homeB = mkTempHome();
   const client = new FakeRedisClient();
@@ -474,6 +480,9 @@ test("two Redis-configured AIM homes read and update the same shared credential"
     homeDir: homeB,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } },
   });
+
+  localCodexFixture(homeB, "acct_boss", codexCredential("acct_boss", "REFRESH_HOME_B"));
+  registerCliRedisFixture(homeB, { readCodexEnvironmentImpl: readCodexTestEnvironment });
 
   await runCli(["codex", "use", "boss", "--home", homeA], {
     env: {},
@@ -489,7 +498,7 @@ test("two Redis-configured AIM homes read and update the same shared credential"
     "REFRESH_ROTATED_BY_HOME_A",
     Date.now() + 2 * 3600_000,
   );
-  writeJson(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: homeA, env: {} })), {
+  writeJson(activeCodexAuthFile(homeA), {
     tokens: {
       access_token: rotated.access,
       refresh_token: rotated.refresh,
@@ -508,16 +517,17 @@ test("two Redis-configured AIM homes read and update the same shared credential"
       },
     }),
   });
-  assert.equal(JSON.parse(watchOut).reconciliation.status, "local_newer");
+  assert.equal(Object.hasOwn(JSON.parse(watchOut), "reconciliation"), false);
 
   await runCli(["codex", "use", "boss", "--home", homeB], {
     env: {},
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
   });
-  const homeBAuth = JSON.parse(fs.readFileSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: homeB, env: {} })), "utf8"));
-  assert.equal(homeBAuth.tokens.refresh_token, "REFRESH_ROTATED_BY_HOME_A");
+  const homeBAuth = JSON.parse(fs.readFileSync(activeCodexAuthFile(homeB), "utf8"));
+  assert.equal(homeBAuth.tokens.refresh_token, "LOCAL_REFRESH_HOME_B");
+  assert.equal(JSON.parse(fs.readFileSync(activeCodexAuthFile(homeA), "utf8")).tokens.refresh_token, "REFRESH_ROTATED_BY_HOME_A");
   const snapshot = await readSnapshot(store);
-  assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_ROTATED_BY_HOME_A");
+  assert.equal(snapshot.credentials.find((credential) => credential.label === "boss").credential.refresh, "REFRESH_BOSS");
   assert.equal(fs.existsSync(path.join(homeA, ".aimgr", "secrets.json")), false);
   assert.equal(fs.existsSync(path.join(homeB, ".aimgr", "secrets.json")), false);
 });

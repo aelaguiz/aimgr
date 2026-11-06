@@ -12,6 +12,8 @@ import {
   buildRedisDiagnosticCacheView,
   buildRedisStatusView,
 } from "../../src/status/redis-view.js";
+import { CODEX_TEST_ENVIRONMENT, localCodexFixture, readCodexTestEnvironment } from "../helpers/codex-local.js";
+import { logoutLocalCodexCredential, maintainLocalCodexCredential } from "../../src/credentials/codex-local.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
@@ -47,7 +49,7 @@ test("Codex cache projects the legacy 168h window as Week", () => {
   assert.equal(view.accounts[1].usage.windows[0].label, "168h");
 });
 
-async function seedRedis(client, { plan = "pro" } = {}) {
+async function seedRedis(client, home, { plan = "pro" } = {}) {
   const store = await connectRedisStore({ client, keyPrefix: "aimgr:status-test" });
   const exp = Math.floor(Date.now() / 1000) + 3600;
   const token = makeFakeJwt({
@@ -57,6 +59,7 @@ async function seedRedis(client, { plan = "pro" } = {}) {
       chatgpt_plan_type: plan,
     },
   });
+  localCodexFixture(home, "acct_boss", { access: token, idToken: token, refresh: "REFRESH_BOSS", accountId: "acct_boss", expiresAt: new Date(exp * 1000).toISOString() });
   await importCredentialsSnapshot(
     store,
     {
@@ -90,7 +93,7 @@ async function seedRedis(client, { plan = "pro" } = {}) {
   );
 }
 
-test("Redis status view reads shared credentials, writes redacted cache, and has no session matrix", async () => {
+test("Redis status view uses local Codex credentials, writes redacted cache, and has no session matrix", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   writeAimgrConfig({
@@ -115,9 +118,9 @@ test("Redis status view reads shared credentials, writes redacted cache, and has
       },
     },
   });
-  await seedRedis(client);
+  await seedRedis(client, home);
 
-  const result = await buildRedisStatusView({
+  const result = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment,
     homeDir: home,
     nowMs: Date.parse("2026-05-30T14:01:00.000Z"),
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
@@ -154,8 +157,8 @@ test("Codex Pro Max is shown from account credentials when usage has no plan", a
   const home = mkTempHome();
   const client = new FakeRedisClient();
   writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-test" } } });
-  await seedRedis(client, { plan: "promax" });
-  const result = await buildRedisStatusView({
+  await seedRedis(client, home, { plan: "promax" });
+  const result = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment,
     homeDir: home,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
     probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }),
@@ -171,10 +174,10 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-test" } },
   });
-  await seedRedis(client);
+  await seedRedis(client, home);
   const observedAtMs = Date.parse("2026-07-22T18:00:00.000Z");
 
-  const live = await buildRedisStatusView({
+  const live = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment,
     homeDir: home,
     nowMs: observedAtMs,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
@@ -191,14 +194,14 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
     }),
   });
   assert.equal(live.view.accounts[0].plan, "promax");
-  const freshCache = await buildRedisStatusView({
+  const freshCache = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment,
     homeDir: home,
     nowMs: observedAtMs + 10_000,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
     probeUsageSnapshotsByProviderImpl: async () => { throw new Error("unexpected probe"); },
   });
   assert.equal(freshCache.view.accounts[0].plan, "promax");
-  const cached = await buildRedisStatusView({
+  const cached = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment,
     homeDir: home,
     nowMs: observedAtMs + 60_000,
     connectRedisStoreImpl: async () => {
@@ -214,7 +217,7 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
   assert.equal(cached.view.accounts[0].plan, "promax");
   assert.equal(cached.view.warnings.at(-1).kind, "redis_status_cache_used");
 
-  const oldCached = await buildRedisStatusView({
+  const oldCached = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment,
     homeDir: home,
     nowMs: observedAtMs + 24 * 60 * 60_000,
     connectRedisStoreImpl: async () => {
@@ -224,6 +227,49 @@ test("Redis status view uses diagnostic cache when Redis is unavailable", async 
   });
   assert.equal(oldCached.view.redis.status, "cache");
   assert.equal(oldCached.view.redis.cacheAgeMs, 24 * 60 * 60_000 - 10_000);
+});
+
+test("live and offline status report the same local reauthorization requirement", async t => {
+  const home = mkTempHome(), client = new FakeRedisClient();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-test" } } });
+  await seedRedis(client, home);
+  await maintainLocalCodexCredential({ homeDir: home, accountId: "acct_boss", environment: CODEX_TEST_ENVIRONMENT }, {
+    refreshBeforeMs: 24 * 3600_000, fetchJsonWithTimeoutImpl: async () => ({ ok: false, json: async () => ({ error: "invalid_grant" }) }),
+  });
+  const options = { homeDir: home, readCodexEnvironmentImpl: readCodexTestEnvironment,
+    probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }) };
+  const online = await buildRedisStatusView({ ...options, connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }) });
+  const offline = await buildRedisStatusView({ ...options, connectRedisStoreImpl: async () => { throw new Error("offline"); } });
+  for (const { view } of [online, offline]) {
+    assert.equal(view.accounts[0].credentials.status, "reauth_required");
+    assert.equal(view.accounts[0].operator.status, "reauth");
+    assert.equal(view.accounts[0].operator.eligible, false);
+  }
+});
+
+test("offline status revalidates local login after logout and complete user-state copying", async t => {
+  const home = mkTempHome(), destination = mkTempHome(), client = new FakeRedisClient();
+  t.after(() => { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(destination, { recursive: true, force: true }); });
+  writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-test" } } });
+  await seedRedis(client, home);
+  const deps = { homeDir: home, readCodexEnvironmentImpl: readCodexTestEnvironment,
+    probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }) };
+  await buildRedisStatusView({ ...deps, connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }) });
+  const offline = { ...deps, connectRedisStoreImpl: async () => { throw new Error("offline"); } };
+  const healthy = await buildRedisStatusView(offline);
+  assert.equal(healthy.view.accounts[0].credentials.status, "ok");
+  fs.cpSync(home, destination, { recursive: true });
+  const copied = await buildRedisStatusView({ ...offline, homeDir: destination,
+    readCodexEnvironmentImpl: () => ({ binding: "d".repeat(64) }) });
+  assert.equal(copied.view.accounts[0].credentials.status, "login_required");
+  assert.equal(copied.view.accounts[0].operator.status, "blocked");
+  logoutLocalCodexCredential({ homeDir: home, accountId: "acct_boss", environment: CODEX_TEST_ENVIRONMENT });
+  const loggedOut = await buildRedisStatusView(offline);
+  assert.equal(loggedOut.view.accounts[0].credentials.status, "login_required");
+  assert.equal(loggedOut.view.accounts[0].operator.eligible, false);
+  const missingRuntime = await buildRedisStatusView({ ...offline, readCodexEnvironmentImpl: () => { throw new Error("unconfigured"); } });
+  assert.equal(missingRuntime.view.accounts[0].credentials.status, "runtime_required");
 });
 
 test("ordinary Redis status routes Claude through the bounded canonical cache", async () => {
@@ -282,8 +328,8 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
     },
   };
 
-  const first = await buildRedisStatusView({ ...deps, nowMs });
-  const second = await buildRedisStatusView({ ...deps, nowMs: nowMs + 60_000 });
+  const first = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps, nowMs });
+  const second = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps, nowMs: nowMs + 60_000 });
 
   assert.equal(first.view.accounts[0].usage.ok, true);
   assert.equal(first.view.accounts[0].plan, "max/max_20x");
@@ -303,37 +349,37 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   assert.deepEqual(second.view.accounts[0].egress, first.view.accounts[0].egress);
   // A fresh usage cache cannot hide a service that has stopped since that read.
   proxyHealth = "stopped";
-  const stopped = await buildRedisStatusView({ ...deps, nowMs: nowMs + 61_000 });
+  const stopped = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps, nowMs: nowMs + 61_000 });
   assert.equal(stopped.claudeUsageStatus.accounts[0].source, "cache");
   assert.equal(stopped.view.accounts[0].egress.health, "stopped");
   assert.deepEqual(stopped.view.accounts[0].operator, { status: "proxy_down", eligible: false });
   assert.match(renderStatusText(stopped.view, { claudeUsageStatus: stopped.claudeUsageStatus }), /claude\s+PROXY DOWN.*test\s+stopped\s+restart assigned proxy/);
   assert.match(renderStatusText(stopped.view), /claude\s+proxy_down.*proxy_health=stopped/);
-  const offline = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_000,
+  const offline = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps, nowMs: nowMs + 120_000,
     connectRedisStoreImpl: async () => { throw new Error("offline"); } });
   assert.deepEqual(offline.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured", health: "stopped" });
   assert.deepEqual(offline.view.accounts[0].operator, { status: "proxy_down", eligible: false });
   assert.match(renderStatusText(offline.view), /proxy=test/);
   // Local recovery is visible even without Redis, but does not claim fresh account readiness.
   proxyHealth = "running";
-  const recovered = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_000,
+  const recovered = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps, nowMs: nowMs + 120_000,
     connectRedisStoreImpl: async () => { throw new Error("offline"); } });
   assert.equal(recovered.view.accounts[0].egress.health, "running");
   assert.deepEqual(recovered.view.accounts[0].operator, { status: "unknown", eligible: false });
   writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-claude-test" } } });
-  const absentOffline = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_001,
+  const absentOffline = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps, nowMs: nowMs + 120_001,
     connectRedisStoreImpl: async () => { throw new Error("offline"); } });
   assert.equal(absentOffline.view.accounts[0].egress.localStatus, "not_configured");
   assert.deepEqual(absentOffline.view.accounts[0].operator, { status: "no_route", eligible: false });
   assert.match(renderStatusText(absentOffline.view), /don't have a route to this account/);
 
   // Persist a NO ROUTE view, then install the profile while Redis is offline.
-  await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_002 });
+  await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps, nowMs: nowMs + 120_002 });
   writeAimgrConfig({ homeDir: home, config: {
     redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-claude-test" },
     claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } },
   } });
-  const installedOffline = await buildRedisStatusView({ ...deps, nowMs: nowMs + 120_003,
+  const installedOffline = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps, nowMs: nowMs + 120_003,
     connectRedisStoreImpl: async () => { throw new Error("offline"); } });
   assert.equal(installedOffline.view.accounts[0].egress.localStatus, "configured");
   assert.deepEqual(installedOffline.view.accounts[0].operator, { status: "unknown", eligible: false });
@@ -350,7 +396,7 @@ test("offline status does not call an account ordinary when a local protection b
       nowMs: Date.now(), accounts: [{ label: "protected", provider: ANTHROPIC_PROVIDER,
         egress, operator: { status: "ready", eligible: true } }],
     }) });
-    const result = await buildRedisStatusView({ homeDir,
+    const result = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, homeDir,
       connectRedisStoreImpl: async () => { throw new Error("offline"); } });
     assert.deepEqual(result.view.accounts[0].egress, { mode: "missing_assignment" });
     assert.deepEqual(result.view.accounts[0].operator, { status: "blocked", eligible: false });
@@ -389,7 +435,7 @@ test("unconfigured status returns local active facts without reading legacy cred
     },
   });
 
-  const result = await buildRedisStatusView({ homeDir: home, nowMs: Date.now() });
+  const result = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, homeDir: home, nowMs: Date.now() });
 
   assert.equal(result.used, true);
   assert.equal(result.view.redis.status, "unconfigured");
@@ -405,9 +451,9 @@ test("lock observation failure degrades independently from Redis credentials and
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: "aimgr:status-test" } },
   });
-  await seedRedis(client);
+  await seedRedis(client, home);
 
-  const result = await buildRedisStatusView({
+  const result = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment,
     homeDir: home,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-test" }),
     probeUsageSnapshotsByProviderImpl: async () => ({

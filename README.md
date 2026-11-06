@@ -10,7 +10,10 @@ The shared source of truth is Redis Cloud Essentials. Every configured host, inc
 - Local-only adjunct state: `~/.aimgr/local-state.json`
 - Legacy `~/.aimgr/secrets.json`: old artifact only; runtime commands ignore it
 
-The credential pool is in Redis. Local tool files are projections only. There is no Redis VM or container to maintain.
+Redis holds shared account metadata and credentials for the legacy harnesses.
+Codex CLI keeps its primary login and refresh tokens in the environment where
+that account signed in; those tokens are never Redis projections. There is no
+Redis VM or container to maintain.
 
 ## Setup
 
@@ -82,6 +85,9 @@ bash scripts/install-auth-maintainer.sh
 bash scripts/install-auth-maintainer.sh --uninstall
 ```
 
+Codex maintenance uses only logins authorized in this environment; it never retrieves or refreshes legacy shared Codex tokens. Claude and Grok retain their existing maintenance behavior.
+
+
 Redis administration and repair:
 
 ```bash
@@ -136,6 +142,11 @@ aim auth write hermes <label> --auth-file <abs-path>
 aim codex use [label]
 aim codex resume-fresh <session-id> | --last [--dry-run] [--no-goal] [--keep-reasoning] [--drop-compaction] [--max-copy-mb <n>] [--archive-source]
 aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
+aim codex privacy status [--json]
+aim codex login <label> --manual-callback-stdio
+aim codex logout <label>
+aim codex mcp-migrate
+aim codex mcp-recover
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--verbose] [--json]
@@ -179,6 +190,77 @@ also stages a source transcript when it belongs to a different account.
 Login failures require a successful live usage check
 on the replacement account before launch. `--account` and `--switch-account` also work with
 the picker. For scripts, use `aim claude list --json` and an explicit selector.
+
+Codex uses an approved immutable runtime and a separate account directory for
+each local login. `aim codex login <label>` authorizes that account on this
+machine; `auth.json` and refresh tokens are never imported from the shared pool
+or exported to another machine. Each destination needs its own login. Prime/Pi
+credentials retain their separate authority. Shared settings remain editable,
+including relative paths and skill enable switches; a new vendor-visible folder
+outside the launch grants needs a new session. Ordinary shell tools keep their
+normal permissions. Codex's optional diagnostic exporters are disabled, including
+custom collectors. Organization-owned remote policy is an accepted gap.
+
+Independent MCP credentials retain their native OS-user scope across Codex
+account homes. On Mac, native MCP requires the approved read/write exception
+for the selected default Keychain database and its own lock and temporary files.
+This exposes unrelated account/service names and permits whole-database writes;
+native password encryption and item permissions remain. Linux allows same-user
+mount-table reads so unchanged native read-only reviewers keep working.
+
+Install an explicitly approved complete Codex bundle with
+`scripts/install-local-bin.sh --codex-runtime-bundle /absolute/bundle`. This uses
+the same protected copy/admission transaction as Claude, provisions a local
+environment identity, and installs required local Codex policy. It requires
+neither a proxy nor Chrome. An upgrade preserves the environment identity and
+running sessions. On a cloned destination, run
+`sudo python3 scripts/install-codex-runtime.py /absolute/bundle --node /absolute/node --user "$USER" --activate --provision-clone`
+before using Codex; that replaces the copied identity and requires fresh local
+logins. Keep the source machine's identity unchanged.
+
+`aim codex privacy status --json` checks the approved immutable installation, local policy,
+environment provisioning and pending maintenance without running Codex or
+contacting Redis/OpenAI. For an existing File-backed MCP OAuth store, let the
+current Codex sessions finish and run `aim codex mcp-migrate` once. It converts
+the shared MCP tokens into the native OS keyring and preserves conflicting
+credentials. AIM refuses new Codex launches while conversion is pending;
+conversion does not stop processes or change OS schedules. `aim codex mcp-recover`
+finishes an interrupted conversion in the same boot after reacquiring its locks.
+It verifies a matching destination without rewriting it, retries the exact saved
+credential if the destination is absent, and preserves a different credential.
+On Mac, use the native Keychain **Always Allow** choice for the approved Codex
+application when prompted. Import verifies that unchanged Codex can read the
+selected entries before retiring File storage; a denied read preserves the
+original store for explicit recovery. AIM does not request or handle the
+Keychain password.
+OAuth MCP servers require a usable native keyring, including an existing D-Bus/Secret Service session on Linux. Without one, AIM cannot use those OAuth logins; an existing nonempty File store keeps AIM launches refused until conversion can succeed. The original store stays unchanged. Sessions without MCP do not require a running keyring.
+Recovery of an already committed migration never imports old credentials again.
+Recovery never reboots the host or restarts its shared credential service. Ordinary launch
+does not start conversion. The full contract and test plan are in the
+[Codex privacy and proxy plan](docs/aelaguiz/CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md).
+
+Codex's built-in file and image tools can use the whole `~/workspace`, `/tmp`,
+Downloads and the screenshot directory, including subdirectories and files
+created after launch. macOS uses its screenshot-location preference (Desktop by
+default) and its per-user temporary folder, so screenshot thumbnails work too. Linux respects XDG Downloads/Pictures locations and includes
+`Pictures/Screenshots`. Add other workspace or screenshot folders in the
+machine's existing `~/.aimgr/config.yaml`:
+
+```yaml
+codexWorkingDirectories:
+  - ~/another-workspace
+  - /mnt/screenshots
+```
+
+Unavailable optional default folders are skipped; an invalid directory explicitly added to AIM config produces an error. These are recursive read/write grants; the selected native Codex permission
+mode still applies. Paths may be absolute or relative to
+the user's home; `~/` is supported. New directory settings take effect in new
+sessions. `--add-dir` selects an additional directory for a launch; `--image`
+selects the individual outside image without granting its siblings. The whole
+home or disk cannot be granted as a work directory. Ordinary shells, browsers,
+MCP servers and developer tools keep their normal OS permissions; the vendor
+file policy does not impose a blanket sandbox on those tools. Files within an
+approved working directory are readable regardless of their contents.
 
 Claude proxy protection is optional and configured per account. Accounts without
 an assignment do not need proxy infrastructure, Chrome/CDP bindings or route

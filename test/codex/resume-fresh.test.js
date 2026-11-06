@@ -4,11 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
-import { resolveManagedCodexHomeDir } from "../../src/io/paths.js";
-import { resolveCodexLabelInstallationId } from "../../src/targets/codex-installation-id.js";
+import { activeCodexAuthFile, localCodexFixture, readCodexTestEnvironment } from "../helpers/codex-local.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
-import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
+import { registerCliRedisFixture, runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 
 const KEY_PREFIX = "aimgr:codex-resume-fresh-test";
 const SOURCE_THREAD = "01a0b222-95ce-7fa3-96d8-680acb15cbcc";
@@ -164,7 +163,12 @@ async function setup(labels = ["boss", "writer"], options = {}) {
   await importCredentialsSnapshot(store, {
     credentials: labels.map((label, index) => codexRecord(label, `acct_${index + 1}`, nowMs)),
   }, { updatedBy: "test", observedAt: new Date(nowMs).toISOString() });
-  const codexHome = resolveManagedCodexHomeDir({ homeDir: home, env: {} });
+  for (const [index, label] of labels.entries()) {
+    const record = codexRecord(label, `acct_${index + 1}`, nowMs);
+    localCodexFixture(home, record.identity.accountId, record.credential);
+  }
+  registerCliRedisFixture(home, { readCodexEnvironmentImpl: readCodexTestEnvironment });
+  const codexHome = path.join(home, ".codex");
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(path.join(codexHome, "yolo.config.toml"), "model = \"gpt-6-astra\"\n\n[features]\ngoals = true\n", "utf8");
   const sourcePath = writeRollout({ codexHome, options });
@@ -179,10 +183,6 @@ async function setup(labels = ["boss", "writer"], options = {}) {
       anthropic: {},
     }),
   };
-}
-
-function authCodexHome(homeDir) {
-  return homeDir;
 }
 
 function listCopiedRollouts({ codexHome, exclude }) {
@@ -239,12 +239,13 @@ test("resume-fresh rotates, copies the thread into a new id, scrubs it, and resu
   assert.match(out, new RegExp(`\\[aim\\] new thread ${newId} from ${SOURCE_THREAD}`));
   assert.match(out, /\[aim\] source thread untouched/);
 
-  // Analytics is disabled in the profile aim launches with.
-  assert.match(fs.readFileSync(path.join(codexHome, "yolo.config.toml"), "utf8"), /\[analytics\]\nenabled = false/);
+  // Launch admission owns privacy policy; thread copying leaves shared settings alone.
+  assert.equal(fs.readFileSync(path.join(codexHome, "yolo.config.toml"), "utf8"),
+    'model = "gpt-6-astra"\n\n[features]\ngoals = true\n');
+  const installationId = fs.readFileSync(path.join(launched.prepared.accountRoot, "installation_id"), "utf8").trim();
+  assert.equal(installationId, launched.prepared.installationId);
+  assert.match(installationId, /^[a-f0-9-]{36}$/);
 
-  // The selected label gets its own Codex installation id, written wherever auth.json is written.
-  const installationId = fs.readFileSync(path.join(codexHome, "installation_id"), "utf8").trim();
-  assert.equal(installationId, resolveCodexLabelInstallationId({ label: "writer" }));
 });
 
 test("resume-fresh chains: the copy becomes the next source and the account rotates again", async () => {
@@ -291,9 +292,8 @@ test("resume-fresh does not copy or launch when no alternate account exists", as
 
 test("resume-fresh --dry-run is side-effect free: no rotation, no copy, no profile or install-id write", async () => {
   const { home, codexHome, sourcePath, connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl } = await setup();
-  const authPath = resolveManagedCodexHomeDir({ homeDir: home, env: {} });
   await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl, env: {} });
-  const authBefore = fs.readFileSync(path.join(authCodexHome(authPath), "auth.json"), "utf8");
+  const authBefore = fs.readFileSync(activeCodexAuthFile(home), "utf8");
   const profileBefore = fs.readFileSync(path.join(codexHome, "yolo.config.toml"), "utf8");
   const installBefore = fs.existsSync(path.join(codexHome, "installation_id"))
     ? fs.readFileSync(path.join(codexHome, "installation_id"), "utf8")
@@ -313,12 +313,12 @@ test("resume-fresh --dry-run is side-effect free: no rotation, no copy, no profi
   assert.equal(plan.scrub.dropReasoning, true);
   assert.equal(plan.scrub.dropCompaction, false);
   assert.equal(plan.source.childThreads, 0);
-  assert.equal(plan.analytics.disabled, false, "the profile is untouched by a dry run");
+  assert.equal(Object.hasOwn(plan, "analytics"), false);
   assert.equal(plan.scan.ids > 0, true);
   assert.ok(plan.target.id);
 
   assert.deepEqual(listCopiedRollouts({ codexHome, exclude: sourcePath }), []);
-  assert.equal(fs.readFileSync(path.join(authCodexHome(authPath), "auth.json"), "utf8"), authBefore);
+  assert.equal(fs.readFileSync(activeCodexAuthFile(home), "utf8"), authBefore);
   assert.equal(fs.readFileSync(path.join(codexHome, "yolo.config.toml"), "utf8"), profileBefore);
   assert.equal(
     fs.existsSync(path.join(codexHome, "installation_id")) ? fs.readFileSync(path.join(codexHome, "installation_id"), "utf8") : null,

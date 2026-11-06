@@ -9,7 +9,6 @@ import {
   resolveAimgrRoutineLocksDir,
   resolveAimgrRoutineRunsDir,
   resolveManagedPrimeAgentDir,
-  resolveManagedCodexHomeDir,
 } from "../io/paths.js";
 import { writeJsonFileIfChanged } from "../io/json-store.js";
 import {
@@ -20,7 +19,10 @@ import {
   resolvePrimeSessionDir,
 } from "../targets/prime-sessions.js";
 import { preparePrimeInvocation, resolvePrimeLauncher } from "../targets/prime-launcher.js";
-import { resolveCodexCommand } from "../targets/codex-runner.js";
+import { prepareCodexNativeInvocation } from "../privacy/codex-native-invocation.js";
+import { assertCodexMaintenanceClear } from "../privacy/codex-maintenance.js";
+import { prepareCodexAccountState } from "../privacy/codex-account-state.js";
+import { readCodexEnvironment } from "../privacy/codex-environment.js";
 import { findRolloutPathById } from "../targets/codex-rollout.js";
 import { isPrimeKeyBackedProvider } from "../core/constants.js";
 import { readRoutineDefinition } from "./config.js";
@@ -288,10 +290,9 @@ function selectAccount(routine, context) {
   if (routine.agent === "codex" && routine.provider === "deepseek") {
     // Codex resolves this provider's API key from its existing profile/env.
     // Never rotate or project an unrelated ChatGPT account for an API job.
-    return {
-      binding: null, keyBacked: true,
-      codexHome: resolveManagedCodexHomeDir({ homeDir: context.homeDir, env: context.env }),
-    };
+    const prepared = prepareCodexAccountState({ homeDir: context.homeDir, env: context.env,
+      accountId: "api-provider:deepseek", environment: (context.readCodexEnvironmentImpl ?? readCodexEnvironment)() });
+    return { binding: null, keyBacked: true, codexHome: prepared.codexHome, prepared: { ...prepared, keyBacked: true } };
   }
   if (routine.agent === "prime" && isPrimeKeyBackedProvider(routine.provider)) {
     return selectKeyBackedPrimeAccount(routine, context);
@@ -310,14 +311,14 @@ function selectAccount(routine, context) {
   }, context.spawnSyncImpl);
   if (routine.agent === "codex") {
     const selected = output?.activated?.receipt;
-    const codexHome = resolveManagedCodexHomeDir({ homeDir: context.homeDir, env: context.env });
+    const prepared = output?.activated?.prepared;
     if (!output?.ok || !selected?.label || !selected?.accountId) {
       throw new Error("AIM did not select an eligible Codex account.");
     }
-    if (readJson(path.join(codexHome, "auth.json"))?.tokens?.account_id !== selected.accountId) {
-      throw new Error("Codex auth did not preserve the selected AIM account.");
+    if (!prepared?.codexHome || prepared.accountId !== selected.accountId) {
+      throw new Error("AIM did not carry the selected Codex account into its prepared launch.");
     }
-    return { binding: selected.label, accountId: selected.accountId, codexHome };
+    return { binding: selected.label, accountId: selected.accountId, codexHome: prepared.codexHome, prepared };
   }
   const selected = output?.receipt?.providers?.find((entry) => (
     entry.provider === routine.provider && typeof entry.binding === "string"
@@ -601,6 +602,7 @@ export async function launchRoutineOccurrence(context) {
 
   let currentReceipt = baseReceipt;
   try {
+    if (routine.agent === "codex") assertCodexMaintenanceClear();
     const listResponse = runJsonSync("herdr", [
       "--session",
       routine.herdrSession,
@@ -833,11 +835,11 @@ function lifecycleSleep(context, milliseconds) {
   return sleepImpl(milliseconds);
 }
 
-function startInteractiveAgent(command, args, { cwd, env, spawnImpl = spawn } = {}) {
+function startInteractiveAgent(command, args, { cwd, env, stdio = "inherit", spawnImpl = spawn } = {}) {
   const child = spawnImpl(command, args, {
     cwd,
     env,
-    stdio: "inherit",
+    stdio,
     detached: false,
   });
   let running = true;
@@ -986,6 +988,7 @@ export async function executeRoutineWorker(context) {
   let bootstrapLease = null;
   let tui = null;
   let nativeTurn = null;
+  let codexInvocation = null;
   let promptSubmissionStarted = false;
   let ownershipReleased = false;
   const releaseRoutineOwnership = () => {
@@ -996,6 +999,7 @@ export async function executeRoutineWorker(context) {
 
   try {
     verifyWorkerConfiguration(routine, receipt);
+    if (routine.agent === "codex") assertCodexMaintenanceClear();
     verifyWorkerEnvironment(routine, receipt, context.env, context.cwd ?? process.cwd());
     receipt = writeReceipt(receiptPath, {
       ...receipt,
@@ -1182,12 +1186,10 @@ export async function executeRoutineWorker(context) {
     });
 
     if (routine.agent === "codex") {
-      const command = resolveCodexCommand({ homeDir: context.homeDir, spawnImpl: context.spawnImpl });
       const codexEnv = { ...context.env, CODEX_HOME: account.codexHome };
       // Routine auth comes from the AIM-selected file, including exec runs
       // launched from shells which also carry API credentials.
       delete codexEnv.CODEX_API_KEY;
-      delete codexEnv.OPENAI_API_KEY;
       const promptSource = fs.readFileSync(routine.promptFile, "utf8");
       const effectivePrompt = promptSource.trim();
       if (!effectivePrompt || sha256(promptSource) !== receipt.prompt.sourceSha256
@@ -1196,16 +1198,22 @@ export async function executeRoutineWorker(context) {
       }
       const eventsPath = receiptPath.replace(/\.json$/, ".codex.jsonl");
       const commonArgs = codexRoutineArgs(routine);
+      const prepareCodexInvocation = context.prepareCodexNativeInvocationImpl ?? prepareCodexNativeInvocation;
+      codexInvocation = await prepareCodexInvocation({ prepared: account.prepared, homeDir: context.homeDir,
+        cwd: routine.cwd, env: codexEnv,
+        args: [...commonArgs, "exec", "--json", "--color", "never", "--skip-git-repo-check", "-"],
+      });
       receipt = writeReceipt(receiptPath, {
         ...receipt,
         codex: { sessionId: null, eventsPath, codexHome: account.codexHome },
         outcome: "starting_codex",
       });
       nativeTurn = startCodexRoutineTurn({
-        command,
-        args: [...commonArgs, "exec", "--json", "--color", "never", "--skip-git-repo-check", "-"],
-        cwd: routine.cwd,
-        env: codexEnv,
+        command: codexInvocation.command,
+        args: codexInvocation.args,
+        cwd: codexInvocation.cwd,
+        env: codexInvocation.env,
+        stdio: ["pipe", "pipe", "pipe", codexInvocation.environmentFd],
         prompt: effectivePrompt,
         eventsPath,
         stdout: context.stdout,
@@ -1229,6 +1237,7 @@ export async function executeRoutineWorker(context) {
           }
         },
       });
+      codexInvocation.closeEnvironment();
       const ready = await nativeTurn.ready;
       bootstrapLease.assertHealthy();
       await bootstrapLease.release();
@@ -1250,9 +1259,15 @@ export async function executeRoutineWorker(context) {
       const readNewRolloutEvents = openCodexRolloutTail(account.codexHome, result.sessionId);
       // Resume by exact ID with no prompt, so opening the TUI never executes
       // the scheduled task a second time. Keep it as a child of the pane shell.
-      tui = startInteractiveAgent(command, [...commonArgs, "resume", result.sessionId], {
-        cwd: routine.cwd, env: codexEnv, spawnImpl: context.spawnImpl,
-      });
+      await codexInvocation.close();
+      codexInvocation = await prepareCodexInvocation({ prepared: account.prepared, homeDir: context.homeDir,
+        cwd: routine.cwd, env: codexEnv, args: [...commonArgs, "resume", result.sessionId] });
+      try {
+        tui = startInteractiveAgent(codexInvocation.command, codexInvocation.args, {
+          cwd: codexInvocation.cwd, env: codexInvocation.env,
+          stdio: ["inherit", "inherit", "inherit", codexInvocation.environmentFd], spawnImpl: context.spawnImpl,
+        });
+      } finally { codexInvocation.closeEnvironment(); }
       receipt = writeReceipt(receiptPath, {
         ...receipt,
         interactiveTui: { ...receipt.interactiveTui, status: "live" },
@@ -1554,7 +1569,8 @@ export async function executeRoutineWorker(context) {
     }
     throw error;
   } finally {
-    if (bootstrapLease) {
+    try { if (codexInvocation) await codexInvocation.close(); }
+    finally { if (bootstrapLease) {
       try {
         await bootstrapLease.release();
       } catch {
@@ -1563,6 +1579,7 @@ export async function executeRoutineWorker(context) {
       }
     }
     releaseRoutineOwnership();
+    }
   }
 }
 
