@@ -54,6 +54,7 @@ test("Mac uses its screenshot location without granting an enclosing home direct
   assert(roots.includes(temporary), "OS temporary folder survives an invocation TMPDIR override");
   const defaults = spawnSyncImpl => codexWorkingDirectories({ homeDir, platform: "darwin", spawnSyncImpl,
     env: { TMPDIR: "/tmp/aim-private-scratch" } });
+  assert(!defaults(() => ({ status: 0, stdout: temporary })).includes("/tmp/aim-private-scratch"), "caller TMPDIR never adds a native root");
   assert(!defaults(() => ({ status: 0, stdout: homeDir })).includes(homeDir), "home preference is skipped");
   assert(defaults(() => ({ status: 1 })).includes(path.join(homeDir, "Desktop")), "unreadable preferences use the normal default");
   fs.symlinkSync(path.join(root, "unmounted-volume"), path.join(homeDir, "workspace"));

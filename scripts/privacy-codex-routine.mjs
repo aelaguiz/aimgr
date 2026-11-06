@@ -25,7 +25,8 @@ assert.ok(["linux", "darwin"].includes(process.platform));
 assert.ok(fs.existsSync("/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST") && process.getuid() !== 0);
 if (process.platform === "linux") assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
 const root = fs.realpathSync(process.argv[2]);
-assert.ok(root.startsWith("/opt/aimgr-state-audit/")); assert.equal(fs.readdirSync(root).length, 0);
+assert.ok(["/opt/aimgr-state-audit/", "/Users/ec2-user/verification/"].some(prefix => root.startsWith(prefix)));
+assert.equal(fs.readdirSync(root).length, 0);
 const homeDir = path.join(root, "home"), cwd = path.join(root, "project"), bin = path.join(root, "bin");
 for (const dir of [path.join(homeDir, ".codex"), cwd, bin]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 const exec = promisify(execFile), q = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
@@ -197,9 +198,18 @@ const startTimer = async interval => {
     ...Object.entries(env).map(([key, value]) => `--setenv=${key}=${value}`), aim, "routine", "run", id, "--json");
   return unit;
 };
-const stopTimer = unit => process.platform === "darwin"
-  ? system("launchctl", "bootout", "system/" + unit)
-  : system("systemctl", "stop", unit + ".timer", unit + ".service");
+const stopTimer = async unit => {
+  if (process.platform === "darwin") return system("launchctl", "bootout", "system/" + unit);
+  try { return await system("systemctl", "stop", unit + ".timer", unit + ".service"); }
+  catch (error) {
+    // systemd unloads completed transient calendar units. Confirm both owned
+    // units are absent before treating its "not loaded" result as cleanup.
+    if (error.code !== 5) throw error;
+    const state = await system("systemctl", "show", "--property=LoadState", "--value", unit + ".timer", unit + ".service");
+    const states = state.stdout.trim().split(/\s+/);
+    if (states.length !== 2 || states.some(value => value !== "not-found")) throw error;
+  }
+};
 const restartTimer = async unit => {
   if (process.platform !== "darwin") return system("systemctl", "restart", unit + ".timer");
   await stopTimer(unit);
@@ -218,6 +228,7 @@ const closePane = async index => {
   await waitFor(() => child.exitCode !== null, "native handoff exit");
   assert.equal(JSON.parse(fs.readFileSync(path.join(pane, "pty-exit.json"))).exit, 0);
 };
+let primaryFailure;
 try {
   await startTimer(false); await waitFor(() => firstRequest, "calendar-triggered model turn", target.getTime() - Date.now() + 60_000);
   const overlap = await exec(process.execPath, [wrapper, "routine", "run", id, "--manual", "--json"], { cwd, env });
@@ -254,6 +265,8 @@ try {
     ordinaryToolRuns: 2, sameThreadHandoff: true, overlapSuppressed: true, failedOccurrenceNotReplayedAfterRestart: true,
     localAuthOnly: true, subsequentDistinctOccurrenceSucceeded: true };
   fs.writeFileSync(path.join(root, "result.private.json"), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ fixture: root, ...result }));
+} catch (error) {
+  primaryFailure = error; throw error;
 } finally {
   releaseFirst();
   const cleanupErrors = [];
@@ -264,5 +277,8 @@ try {
   for (const client of ws.clients) client.terminate(); ws.close(); server.closeAllConnections();
   await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => ui.close(resolve))]);
   fs.writeFileSync(path.join(root, "model.private.json"), JSON.stringify(requests, null, 2));
-  if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Failed to unload fixture schedules");
+  if (cleanupErrors.length) {
+    if (primaryFailure) primaryFailure.cleanupErrors = cleanupErrors;
+    else throw new AggregateError(cleanupErrors, "Failed to unload fixture schedules");
+  }
 }

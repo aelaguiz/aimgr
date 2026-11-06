@@ -120,6 +120,9 @@ struct Projection {
     fork_source: Option<source::Source>,
     oss_choice: Option<oss::Choice>,
     project_cwds: BTreeSet<PathBuf>,
+    skill_roots: BTreeSet<PathBuf>,
+    system_skill_roots: BTreeSet<PathBuf>,
+    writable_skill_roots: BTreeSet<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mcp_servers: Option<Vec<McpInput>>,
     mcp_store: codex_config::types::OAuthCredentialsStoreMode,
@@ -132,6 +135,9 @@ impl Projection {
         self.database_roots.extend(next.database_roots); self.database_files.extend(next.database_files);
         self.database_files.sort(); self.database_files.dedup();
         self.project_cwds.extend(next.project_cwds);
+        self.skill_roots.extend(next.skill_roots);
+        self.system_skill_roots.extend(next.system_skill_roots);
+        self.writable_skill_roots.extend(next.writable_skill_roots);
     }
 }
 
@@ -187,17 +193,26 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
     }
     if let Some(auth) = &config.model_provider.auth { reads.insert(auth.cwd.to_path_buf()); }
     if let Some(file) = &config.model_provider.credential_file { reads.insert(file.clone()); }
-    // Native skill discovery deliberately includes disabled config layers.
-    // Only their fixed discovery directories are inputs; disabled settings
-    // still do not grant arbitrary configured paths.
+    // Native skill discovery includes disabled layers. Keep fixed optional
+    // roots typed so optional aliases cannot become strict configured inputs.
+    let mut skill_roots = BTreeSet::new();
+    let mut writable_skill_roots = BTreeSet::new();
+    let mut system_skill_roots = BTreeSet::new();
     for layer in config.config_layer_stack.all_layers_high_to_low() {
         if let Some(folder) = layer.config_folder() {
             match layer.name {
-                ConfigLayerSource::Project { .. } | ConfigLayerSource::System { .. } => { insert_optional_read(&mut reads, folder.join("skills").to_path_buf()); },
+                ConfigLayerSource::Project { .. } | ConfigLayerSource::System { .. } => {
+                    insert_optional_read(&mut skill_roots, folder.join("skills").to_path_buf());
+                },
                 ConfigLayerSource::User { .. } => {
-                    insert_optional_read(&mut reads, folder.join("skills").to_path_buf());
-                    insert_optional_read(&mut reads, codex_skills::system_cache_root_dir(&folder).to_path_buf());
-                    if let Some(home) = std::env::var_os("HOME") { insert_optional_read(&mut reads, PathBuf::from(home).join(".agents/skills")); }
+                    insert_optional_read(&mut skill_roots, folder.join("skills").to_path_buf());
+                    insert_optional_read(&mut writable_skill_roots, folder.join("skills").to_path_buf());
+                    insert_optional_read(&mut system_skill_roots, codex_skills::system_cache_root_dir(&folder).to_path_buf());
+                    if let Some(home) = std::env::var_os("HOME") {
+                        let root = PathBuf::from(home).join(".agents/skills");
+                        insert_optional_read(&mut skill_roots, root.clone());
+                        insert_optional_read(&mut writable_skill_roots, root);
+                    }
                 },
                 _ => {},
             }
@@ -218,7 +233,7 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
         codex_file_system::FindUpErrorPolicy::Ignore, None).await.map_err(|_| ())?.unwrap_or_else(|| config.cwd.clone());
     let mut cursor = config.cwd.to_path_buf();
     loop {
-        insert_optional_read(&mut reads, cursor.join(".agents/skills"));
+        insert_optional_read(&mut skill_roots, cursor.join(".agents/skills"));
         for name in ["AGENTS.override.md", "AGENTS.md"].into_iter().chain(config.project_doc_fallback_filenames.iter().map(String::as_str)) {
             if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) { continue; }
             let candidate = cursor.join(name);
@@ -256,7 +271,8 @@ async fn projection(config: &Config, mut reads: BTreeSet<PathBuf>, used_defaults
         database_roots, database_files, exporters_disabled, analytics_disabled: config.analytics_enabled == Some(false),
         feedback_disabled: !config.feedback_enabled, updates_disabled: !config.check_for_update_on_startup,
         used_defaults, initialized: false, source_untrusted: config.active_project.is_untrusted(), worktree_root: None,
-        owner_thread_id: None, fork_source: None, oss_choice: None, project_cwds: BTreeSet::new(), mcp_servers: None,
+        owner_thread_id: None, fork_source: None, oss_choice: None, project_cwds: BTreeSet::new(),
+        skill_roots, system_skill_roots, writable_skill_roots, mcp_servers: None,
         mcp_store: authored.mcp_oauth_credentials_store.unwrap_or_default(),
         mcp_keyring_backend: config.auth_keyring_backend_kind() })
 }

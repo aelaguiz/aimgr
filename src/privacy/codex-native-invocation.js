@@ -61,12 +61,11 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     });
     if (!inspectionOnly) supervisor = await superviseCodexSettings(entries, { onWarning, onError,
       stateIO: request => codexStateIO(request, { helperPath: artifact.stateIO }) });
-    // Chrome and other ordinary tools put Unix sockets under TMPDIR. Account
-    // homes can exceed the OS socket-path limit; keep each private launch
-    // directory short; broad work-area grants are resolved separately below.
+    // Only the unlinked environment descriptor is staged here. Native Codex
+    // and ordinary tools retain the caller's TMPDIR, including after exit.
     scratch = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), `aim-codex-${process.getuid()}-`));
     fs.chmodSync(scratch, 0o700);
-    const environmentValues = codexPrivacyEnvironment({ env, prepared: account, artifact, scratch });
+    const environmentValues = codexPrivacyEnvironment({ env, prepared: account, artifact });
     if (!inspectionOnly) worktree = await prepareCodexWorktree({ parsedArgs, nativeInputs, artifact, prepared: account,
       env: environmentValues, managed, operate: worktreeOperation });
     if (worktree) parsedArgs = worktree.parsedArgs;
@@ -115,8 +114,7 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
           startedAt, endedAt, onNotice });
         else if (worktree) { try { onNotice(`Codex kept the worktree at ${worktree.checkout.root}.`); } catch {} }
         await supervisor?.close();
-        // Background tools may still refer to their temporary directory. Keep
-        // nonempty scratch; empty launch scratch has no surviving state.
+        // Environment staging is independent of native/tool temporary files.
         try { fs.rmdirSync(scratch); } catch (error) { if (!["ENOTEMPTY", "EEXIST"].includes(error.code)) throw error; }
       },
     };

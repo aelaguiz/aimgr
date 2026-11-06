@@ -55,7 +55,8 @@ export async function prepareCodexNativeInputs({ artifact, prepared, parsedArgs,
   if (response.schema !== 1 || response.source_revision !== "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856"
     || (operation === "initialize" && response.initialized !== true)
     || !path.isAbsolute(response.cwd ?? "")
-    || [response.reads, response.writes, response.database_roots, response.database_files, response.project_cwds ?? []]
+    || [response.reads, response.writes, response.database_roots, response.database_files, response.project_cwds ?? [],
+      response.skill_roots ?? [], response.system_skill_roots ?? [], response.writable_skill_roots ?? []]
       .some(items => !Array.isArray(items) || items.some(file => typeof file !== "string" || !path.isAbsolute(file)))
     || typeof response.exporters_disabled !== "boolean") {
     throw new Error("Codex returned an invalid native input inventory.");

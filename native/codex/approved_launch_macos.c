@@ -167,7 +167,7 @@ int main(int argc,char **argv) {
     if (fclose(out) || !policy || length>1024*1024) fail("policy generation");
     char *error=NULL;if (sandbox_init_with_parameters(policy,0,NULL,&error)) fail("policy application");
     free(policy);
-    set_environment("CODEX_HOME",home,1);set_environment("TMPDIR",scratch,1);
+    set_environment("CODEX_HOME",home,1);
     codex_close_except_admission(admission);
     if (verifying_mcp) {
         char *read_args[]={vendor,"-c","mcp_oauth_credentials_store=\"keyring\"","-c","features.secret_auth_storage=false","mcp","list","--json",NULL};

@@ -53,6 +53,21 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
   const writes = new Set(), reads = new Set(), databases = new Set();
   const add = (set, file) => { if (typeof file === "string") set.add(codexCanonicalPath(file)); };
   const actualHome = codexCanonicalPath(homeDir);
+  const userHome = env.HOME || homeDir;
+  const skillRoots = new Set([path.join(userHome, ".agents/skills"), path.join(prepared.codexHome, "skills"),
+    path.join(prepared.sharedHome, "skills")].map(file => path.resolve(file)));
+  const protectedSkillParents = [homeDir, userHome, prepared.accountRoot ?? prepared.codexHome,
+    prepared.sharedHome, path.join(userHome, ".agents")].map(file => {
+    try { return codexCanonicalPath(file); } catch { return path.resolve(file); }
+  });
+  const addSkill = (set, file) => {
+    // Optional discovery aliases must neither veto launch when dangling nor
+    // expose home, account collections or the shared/private parent of skills.
+    let root;
+    try { root = codexCanonicalPath(file); } catch { return; }
+    if (protectedSkillParents.some(target => target === root || target.startsWith(root === "/" ? "/" : `${root}/`))) return;
+    set.add(root); return root;
+  };
   for (const directory of workingDirectories) {
     const root = codexCanonicalPath(directory);
     const contains = target => target === root || target.startsWith(root === "/" ? "/" : `${root}/`);
@@ -75,7 +90,10 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
     if (name === "config.toml" || name.endsWith(".config.toml")) continue;
     const file = path.join(prepared.codexHome, name);
     if (!fs.lstatSync(file).isSymbolicLink()) continue;
-    if (fs.existsSync(file)) add(writes, file);
+    if (fs.existsSync(file)) {
+      if (name === "skills") addSkill(writes, file);
+      else add(writes, file);
+    }
     else if (platform === "darwin" && CODEX_SHARED_STATE_NAMES.includes(name)) {
       const shared = path.join(fs.realpathSync(prepared.sharedHome), name);
       // Seatbelt checks the shared link before native can observe an absent
@@ -105,6 +123,48 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
     }
     add(writes, file);
   }
+  // Installed skills are editable shared state. Native roots retain their
+  // scope; directory aliases inherit it even before a SKILL.md is created.
+  addSkill(writes, path.join(userHome, ".agents/skills"));
+  const scannedSkillRoots = new Set();
+  const addSkillLinks = (set, roots) => {
+    for (const root of roots) {
+      const canonical = addSkill(set, root);
+      if (!canonical || scannedSkillRoots.has(canonical)) continue;
+      scannedSkillRoots.add(canonical);
+      // Pinned 0.166 discovery: ext/skills/src/loader/{mod,discovery}.rs
+      // and exec-server/src/local_file_system.rs. Inventory only directory
+      // links, with the same sorted breadth-first bounds; never parse SKILL.md.
+      const queue = [[root, 0]], visited = new Set([canonical]);
+      let entries = 0;
+      scan: for (let cursor = 0; cursor < queue.length; cursor++) {
+        const [directory, depth] = queue[cursor];
+        let children;
+        try { children = fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name))); }
+        catch { continue; }
+        for (const child of children) {
+          if (entries++ === 20_000) break scan;
+          if (child.name.startsWith(".")) continue;
+          // Root is depth zero: native reads skill files in directories at
+          // depth six, but never follows another directory below that depth.
+          if (depth >= 6) continue;
+          const file = path.join(directory, child.name);
+          let target;
+          try {
+            if (!fs.statSync(file).isDirectory()) continue;
+            target = child.isSymbolicLink() ? addSkill(set, file) : codexCanonicalPath(file);
+          } catch { continue; }
+          if (!target || visited.has(target)) continue;
+          visited.add(target);
+          if (queue.length < 2_000) queue.push([file, depth + 1]);
+        }
+      }
+    }
+  };
+  addSkillLinks(writes, [...skillRoots, ...(effectiveInputs.writable_skill_roots ?? [])]);
+  addSkillLinks(reads, effectiveInputs.skill_roots ?? []);
+  // Native bundled-system discovery ignores directory links.
+  for (const file of effectiveInputs.system_skill_roots ?? []) addSkill(reads, file);
   // Git worktrees keep their common metadata outside the worktree. Asking Git
   // for these two local paths preserves worktree behavior without copying Git
   // config or reading/removing remotes and user credentials.
@@ -117,7 +177,10 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
   // Effective configuration decisions belong to the admitted native helper.
   // This module inventories only explicit startup inputs, shared state, Git
   // metadata and existing environment-selected local transport/trust files.
-  for (const file of effectiveInputs.reads) add(reads, file);
+  for (const file of effectiveInputs.reads) {
+    if (skillRoots.has(path.resolve(file))) addSkill(reads, file);
+    else add(reads, file);
+  }
   for (const file of managedFiles) add(reads, file);
   for (const file of effectiveInputs.writes) add(writes, file);
   for (const file of effectiveInputs.database_roots) add(databases, file);
@@ -127,8 +190,8 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
   return { cwd, ...compactGrants(reads, writes), databases: [...databases], effectiveInputs };
 }
 
-export function codexPrivacyEnvironment({ env, prepared, artifact, scratch }) {
-  const output = { ...env, CODEX_HOME: prepared.codexHome, TMPDIR: scratch,
+export function codexPrivacyEnvironment({ env, prepared, artifact }) {
+  const output = { ...env, CODEX_HOME: prepared.codexHome,
     CODEX_SQLITE_HOME: env.CODEX_SQLITE_HOME || prepared.sharedHome,
     CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1",
     AIMGR_CODEX_ARTIFACT_SET: artifact.artifactSet,

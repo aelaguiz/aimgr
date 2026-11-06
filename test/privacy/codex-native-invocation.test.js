@@ -27,9 +27,11 @@ test("relative --cd is projected once while native retains its original process 
     settingsManifest: 1, sourceCommit: "b".repeat(40) }));
   const artifact = { command: "/synthetic/codex", launcher: "/synthetic/launcher", artifactSet: "c".repeat(64),
     version: "test", policy, readPaths: [], stateIO: fileURLToPath(new URL("../../native/codex/state_io.py", import.meta.url)) };
+  const callerTemp = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "codex-caller-"));
+  t.after(() => fs.rmSync(callerTemp, { recursive: true, force: true }));
   for (const args of [["-C", "child"], ["-C", "child", "--add-dir", "extra"]]) {
     const invocation = await prepareCodexNativeInvocation({ prepared, homeDir, cwd, args, environment,
-      env: { HOME: homeDir, PATH: "/usr/bin:/bin" }, admitArtifact: () => artifact,
+      env: { HOME: homeDir, PATH: "/usr/bin:/bin", TMPDIR: callerTemp }, admitArtifact: () => artifact,
       inspectManagedPolicy: () => ({ files: [] }),
       nativeInputs: async ({ parsedArgs }) => {
         assert.equal(parsedArgs.config[0], 'mcp_oauth_credentials_store="keyring"');
@@ -39,9 +41,11 @@ test("relative --cd is projected once while native retains its original process 
         return { cwd: selected, reads: [], writes: [], database_roots: [prepared.sharedHome], mcp_store: "keyring" };
       },
     });
-    const scratch = invocation.environment.TMPDIR;
+    const scratch = invocation.args[3];
     try {
-      const socketDirectory = fs.mkdtempSync(path.join(scratch, "com.google.Chrome."));
+      assert.equal(invocation.environment.TMPDIR, callerTemp);
+      assert.notEqual(scratch, callerTemp);
+      const socketDirectory = fs.mkdtempSync(path.join(callerTemp, "com.google.Chrome."));
       const socket = net.createServer();
       try {
         await new Promise((resolve, reject) => socket.once("error", reject).listen(path.join(socketDirectory, "SingletonSocket"), resolve));
@@ -50,7 +54,7 @@ test("relative --cd is projected once while native retains its original process 
         fs.rmdirSync(socketDirectory);
       }
       assert.equal(fs.statSync(scratch).mode & 0o777, 0o700);
-      if (args.length > 2) fs.writeFileSync(path.join(scratch, "background-tool-state"), "keep working");
+      assert.deepEqual(fs.readdirSync(scratch), [], "environment transfer is unlinked inside private staging");
       assert.equal(invocation.prepared.sharedHome, path.join(homeDir, ".codex"), "unset CODEX_HOME retains native lexical default origin");
       assert.equal(invocation.cwd, cwd);
       assert.equal(invocation.inputs.cwd, selected);
@@ -59,10 +63,9 @@ test("relative --cd is projected once while native retains its original process 
       if (process.platform === "darwin") assert.ok(invocation.args.includes(path.join(homeDir,
         "Library/Application Support/com.openai.codex/production-appcast-bootstrap.json")));
     } finally { await invocation.close(); }
-    if (args.length > 2) {
-      assert.equal(fs.readFileSync(path.join(scratch, "background-tool-state"), "utf8"), "keep working");
-      fs.rmSync(scratch, { recursive: true });
-    } else assert.equal(fs.existsSync(scratch), false, "empty invocation scratch is removed on close");
+    assert.equal(fs.existsSync(scratch), false, "private environment staging is removed on close");
+    const later = fs.mkdtempSync(path.join(callerTemp, "after-parent-"));
+    fs.rmdirSync(later);
   }
   const config = path.join(prepared.sharedHome, "config.toml");
   fs.writeFileSync(config, 'mcp_oauth_credentials_store="auto"\n');
@@ -85,6 +88,7 @@ test("relative --cd is projected once while native retains its original process 
     inspectManagedPolicy: () => ({ files: [] }),
     nativeInputs: async () => ({ cwd, reads: [], writes: [], database_roots: [], mcp_store: "keyring" }),
   });
+  assert.equal(Object.hasOwn(emptyStore.environment, "TMPDIR"), false, "unset caller TMPDIR keeps the native OS fallback");
   await emptyStore.close();
   assert.equal(fs.readFileSync(file, "utf8"), '{}');
   for (const bytes of ['{"unclassified":{}}', 'null', '[]', '{invalid', '']) {

@@ -20,6 +20,9 @@ const base = "/opt/aimgr-state-audit";
 assert.ok(fs.existsSync(path.join(base, "OFFSITE_AUDIT_HOST")) && process.getuid() !== 0);
 assert.ok(["linux", "darwin"].includes(process.platform));
 const mac = process.platform === "darwin";
+const workloadCalls = process.argv.includes("--workload-calls");
+const stockControl = process.argv.includes("--stock-control");
+assert.ok(!stockControl || workloadCalls, "stock control is a workload comparison option");
 if (!mac) {
   assert.deepEqual(Object.keys(os.networkInterfaces()), ["lo"]);
   assert.match(process.env.DBUS_SESSION_BUS_ADDRESS ?? "", /^unix:/);
@@ -47,9 +50,12 @@ daemon?.stdin.end("SYNTHETIC_KEYRING_PASSWORD\n");
 const monitorLogs = [];
 const monitor = mac ? null : spawn("/usr/bin/dbus-monitor", ["--session"], { env, stdio: ["ignore", "pipe", "pipe"] });
 monitor?.stdout.on("data", bytes => monitorLogs.push(bytes)); monitor?.stderr.on("data", bytes => monitorLogs.push(bytes));
-const standardKeychain = process.argv.includes("--standard-keychain");
+const existingSyntheticKeychain = process.argv.includes("--existing-synthetic-keychain");
+const standardKeychain = process.argv.includes("--standard-keychain") || existingSyntheticKeychain;
 assert.ok(!standardKeychain || mac);
-const keychainFile = standardKeychain
+assert.ok(!existingSyntheticKeychain || workloadCalls);
+const keychainPassword = existingSyntheticKeychain ? "SYNTHETIC_BASELINE_PASSWORD" : "SYNTHETIC_KEYRING_PASSWORD";
+const keychainFile = existingSyntheticKeychain ? "/Users/ec2-user/codex-m1-private/synthetic-baseline.keychain-db" : standardKeychain
   ? path.join(os.homedir(), "Library/Keychains", `aim-synthetic-${path.basename(root)}.keychain-db`)
   : path.join(root, "fixture.keychain-db");
 let previousKeychain, keychainCreated = false;
@@ -65,7 +71,7 @@ const authorizeSynthetic = () => {
     assert.equal(signature.status, 0);
     const hash = signature.stderr.match(/^CDHash=([a-f0-9]+)$/m)?.[1]; assert.ok(hash);
     security("set-generic-password-partition-list", "-s", "Codex MCP Credentials", "-a", codexMcpKey(server.name, server.url),
-      "-S", `cdhash:${hash},teamid:2DC432GLL2`, "-k", "SYNTHETIC_KEYRING_PASSWORD", keychainFile);
+      "-S", `cdhash:${hash},teamid:2DC432GLL2`, "-k", keychainPassword, keychainFile);
   }
 };
 const keyring = request => {
@@ -82,7 +88,10 @@ const keyring = request => {
   assert.ok(!value.error && Object.hasOwn(value, "value"), "Synthetic keyring operation failed");
   return value;
 };
-let generation = 0, rejectCurrentAccess = false, serverError, refreshGate, releaseOnContention, barrierTimer;
+let generation = 0, rejectCurrentAccess = false, rejectRefreshGrant = false, serverError, refreshGate, releaseOnContention, barrierTimer;
+let workloadTurn = 0;
+let runWorkloadCalls = workloadCalls;
+const workloadToolCalls = [];
 const backendDeath = process.argv.includes("--backend-death"), backendUnavailable = backendDeath || process.argv.includes("--backend-unavailable");
 const activeChildren = new Set();
 assert.ok(!mac || !backendDeath, "Use --backend-unavailable to lock only the disposable macOS keychain");
@@ -93,10 +102,14 @@ let healthyEntered, releaseHealthy, healthyTurns = 0;
 const healthyWaiting = new Promise(resolve => { healthyEntered = resolve; });
 const healthyGate = new Promise(resolve => { releaseHealthy = resolve; });
 const requests = [];
+const workloadSockets = [];
+let workloadSocketId = 0;
 const service = http.createServer(async (req, res) => {
   const json = (status, value) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); };
   try {
-    requests.push({ method: req.method, url: req.url });
+    const request = { method: req.method, url: req.url,
+      ...(workloadCalls ? { at: Date.now(), socket: req.socket.workloadId } : {}) };
+    requests.push(request);
     if (req.method === "GET" && req.url === "/.well-known/oauth-protected-resource/mcp") {
       json(200, { resource: server.url, authorization_servers: [server.url], scopes_supported: ["read", "write"] }); return;
     }
@@ -110,6 +123,7 @@ const service = http.createServer(async (req, res) => {
       const form = new URLSearchParams(text);
       assert.equal(form.get("grant_type"), "refresh_token");
       assert.equal(form.get("refresh_token"), generation ? `SYNTHETIC_MCP_REFRESH_${generation}` : "SYNTHETIC_MCP_REFRESH");
+      if (rejectRefreshGrant) { json(400, { error: "invalid_grant", error_description: "Synthetic expired grant" }); return; }
       if (refreshGate) {
         barrierTimer ??= setTimeout(() => { serverError = new Error("Native custom-home refresh never contended on the shared lock"); releaseOnContention(false); }, 20_000);
         await refreshGate;
@@ -126,15 +140,23 @@ const service = http.createServer(async (req, res) => {
         res.writeHead(401, { "www-authenticate": 'Bearer error="invalid_token"' }); res.end(); return;
       }
       const body = JSON.parse(text);
-      requests.at(-1).rpc = body.method;
+      request.rpc = body.method;
       if (body.id === undefined) { res.writeHead(202); res.end(); return; }
       const result = body.method === "initialize" ? { protocolVersion: body.params.protocolVersion,
         capabilities: { tools: {} }, serverInfo: { name: "synthetic-authenticated-mcp", version: "1" } }
-        : body.method === "tools/list" ? { tools: [] } : undefined;
+        : body.method === "tools/list" ? { tools: workloadCalls ? ["whoami", "denied"].map(name => ({ name,
+          description: "Synthetic workload " + name, inputSchema: { type: "object", properties: {} } })) : [] }
+        : body.method === "tools/call" && workloadCalls ? (() => {
+          workloadToolCalls.push(body.params.name);
+          assert.ok(["whoami", "denied"].includes(body.params.name));
+          return { isError: body.params.name === "denied", content: [{ type: "text", text: body.params.name === "whoami"
+            ? "SYNTHETIC_OAUTH_IDENTITY_CONFIRMED" : "SYNTHETIC_SERVICE_DENIAL" }] };
+        })() : undefined;
       assert.ok(result, "unexpected synthetic MCP request");
       json(200, { jsonrpc: "2.0", id: body.id, result }); return;
     }
     if (req.method === "POST" && req.url === "/responses") {
+      const body = JSON.parse(text);
       const healthy = JSON.stringify(JSON.parse(text).input).includes("SYNTHETIC_HEALTHY_SIBLING");
       if (healthy) {
         healthyTurns++;
@@ -142,10 +164,26 @@ const service = http.createServer(async (req, res) => {
         else assert.match(text, /SYNTHETIC_BACKEND_TOOL/);
       }
       const response = { id: "synthetic-response", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+      let workloadItem;
+      if (runWorkloadCalls && !healthy) {
+        fs.writeFileSync(path.join(root, "workload-model-tools.json"), JSON.stringify(body.tools, null, 2), { mode: 0o600 });
+        const turn = workloadTurn++;
+        assert.ok(turn < 3, "bounded MCP workload turn sequence");
+        if (turn < 2) {
+          const suffix = turn === 0 ? "whoami" : "denied";
+          const namespace = body.tools?.find(tool => tool.type === "namespace" && tool.name?.startsWith("mcp__") && tool.tools?.some(tool => tool.name === suffix));
+          const tool = namespace?.tools.find(tool => tool.name === suffix) ?? body.tools?.find(tool => tool.name?.endsWith("__" + suffix));
+          assert.ok(tool, "Native OAuth MCP tool discovered: " + JSON.stringify(body.tools?.map(tool => tool.name)));
+          workloadItem = { type: "function_call", name: tool.name, ...(namespace ? { namespace: namespace.name } : {}), call_id: "oauth-workload-" + turn, arguments: "{}" };
+        } else {
+          assert.ok(text.includes("SYNTHETIC_OAUTH_IDENTITY_CONFIRMED"), "native MCP identity tool result missing");
+          assert.ok(text.includes("SYNTHETIC_SERVICE_DENIAL"), "native MCP service denial missing");
+        }
+      }
       const events = [{ type: "response.created", response }, { type: "response.output_item.done",
-        item: healthy && healthyTurns === 1 ? { type: "function_call", name: "exec_command", call_id: "backend-tool",
+        item: workloadItem ?? (healthy && healthyTurns === 1 ? { type: "function_call", name: "exec_command", call_id: "backend-tool",
           arguments: JSON.stringify({ cmd: "printf SYNTHETIC_BACKEND_TOOL", login: false, max_output_tokens: 100 }) }
-          : { type: "message", role: "assistant", id: "synthetic-message", content: [{ type: "output_text", text: "Synthetic MCP check complete." }] } },
+          : { type: "message", role: "assistant", id: "synthetic-message", content: [{ type: "output_text", text: "Synthetic MCP check complete." }] }) },
       { type: "response.completed", response }];
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")); return;
@@ -156,6 +194,12 @@ const service = http.createServer(async (req, res) => {
     serverError = new Error(`Synthetic service failed at ${req.method} ${req.url}: ${error.message}`);
     json(500, { error: "synthetic fixture failure" });
   }
+});
+if (workloadCalls) service.on("connection", socket => {
+  const id = ++workloadSocketId; socket.workloadId = id;
+  workloadSockets.push({ event: "open", id, at: Date.now() });
+  socket.on("close", hadError => workloadSockets.push({ event: "close", id, at: Date.now(), hadError }));
+  socket.on("timeout", () => workloadSockets.push({ event: "timeout", id, at: Date.now() }));
 });
 service.listen(0, "127.0.0.1"); await once(service, "listening");
 const address = `http://127.0.0.1:${service.address().port}`;
@@ -171,22 +215,28 @@ fs.writeFileSync(source, `model="gpt-5.4"\nmodel_provider="fixture"\nmcp_oauth_c
 const environment = readCodexEnvironment();
 const outputs = [];
 async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json"], settingsHome = null, expectFailure = false) {
+  if (stockControl) protectedLaunch = false;
+  workloadTurn = 0;
   const claims = { exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": {
     chatgpt_account_id: accountId, chatgpt_plan_type: "plus", chatgpt_user_id: "synthetic-user",
   } };
   const token = `synthetic.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
   const selectedEnv = settingsHome ? { ...env, CODEX_HOME: settingsHome } : env;
-  const options = { homeDir, env: selectedEnv, environment, accountId, label: accountId };
-  saveLocalCodexLogin(options, { access: token, idToken: token, refresh: "SYNTHETIC_PRIMARY_REFRESH", accountId });
-  const prepared = prepareCodexAccountState(options);
-  const invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin/codex"), homeDir, cwd, env: selectedEnv, args });
+  let invocation;
+  if (!stockControl) {
+    const options = { homeDir, env: selectedEnv, environment, accountId, label: accountId };
+    saveLocalCodexLogin(options, { access: token, idToken: token, refresh: "SYNTHETIC_PRIMARY_REFRESH", accountId });
+    const prepared = prepareCodexAccountState(options);
+    invocation = await prepareCodexNativeInvocation({ prepared, command: path.join(base, "bin/codex"), homeDir, cwd, env: selectedEnv, args });
+  }
   let child, timer;
   try {
     child = spawn(protectedLaunch ? invocation.command : path.join(base, "bin/codex"), protectedLaunch ? invocation.args : args, {
-      cwd, env: protectedLaunch ? invocation.env : invocation.environment, detached: true,
+      cwd, env: stockControl ? { ...selectedEnv, CODEX_HOME: settingsHome ?? path.join(homeDir, ".codex") }
+        : protectedLaunch ? invocation.env : invocation.environment, detached: true,
       stdio: ["ignore", "pipe", "pipe", ...(protectedLaunch ? [invocation.environmentFd] : [])],
     });
-    invocation.closeEnvironment();
+    invocation?.closeEnvironment();
     activeChildren.add(child);
     const stdout = [], stderr = [];
     child.stdout.on("data", bytes => stdout.push(bytes)); child.stderr.on("data", bytes => {
@@ -200,12 +250,12 @@ async function native(accountId, protectedLaunch, args = ["mcp", "list", "--json
       assert.notEqual(code, 0, "Unavailable required MCP must fail visibly");
       assert.equal(signal, null, "Required failure must precede the fixture timeout");
       assert.match(Buffer.concat(stderr).toString(), /required.*MCP|MCP.*required/i);
-    } else assert.equal(code, 0, `Native MCP command failed; private evidence ${root}`);
+    } else assert.equal(code, 0, `Native MCP command failed${serverError ? ": " + serverError.message : ""}; private evidence ${root}`);
     return Buffer.concat(stdout).toString();
   } finally {
     clearTimeout(timer);
     if (child && child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
-    await invocation.close();
+    await invocation?.close();
     activeChildren.delete(child);
   }
 }
@@ -259,7 +309,10 @@ print(json.dumps(result))`;
 }
 
 try {
-  if (mac) {
+  if (existingSyntheticKeychain) {
+    assert.equal(security("default-keychain", "-d", "user"), keychainFile, "reuse only the setup-owned synthetic default keychain");
+    assert.ok(fs.existsSync(keychainFile));
+  } else if (mac) {
     const prior = spawnSync("/usr/bin/security", ["default-keychain", "-d", "user"], { encoding: "utf8" });
     previousKeychain = prior.status === 0 ? prior.stdout.trim().replace(/^"|"$/g, "") : null;
     security("create-keychain", "-p", "SYNTHETIC_KEYRING_PASSWORD", keychainFile);
@@ -339,6 +392,13 @@ try {
     }
     assert.ok(requests.slice(before).some(request => request.rpc === "tools/list"), "native starts the authenticated MCP integration");
   }
+  if (workloadCalls) assert.deepEqual(workloadToolCalls, ["whoami", "denied", "whoami", "denied"]);
+  runWorkloadCalls = false;
+  const contention = [];
+  // The stock workload baseline has one ordinary CODEX_HOME. Coordinating
+  // refreshes across AIM's account/settings homes is a separate protected
+  // implementation oracle, and is retained unchanged for the default mode.
+  if (!stockControl) {
   const customSettings = path.join(homeDir, "custom-settings");
   fs.mkdirSync(customSettings);
   fs.copyFileSync(path.join(homeDir, ".codex/config.toml"), path.join(customSettings, "config.toml"));
@@ -353,7 +413,6 @@ try {
   assert.equal((await keyring({ operation: "insert-if-absent", server_name: server.name, url: server.url, value: JSON.stringify(expired) })).inserted, true);
   // This is a newly seeded expired item, so it needs its own initial authorization.
   authorizeSynthetic();
-  const contention = [];
   for (const mode of ["expiry", "reactive401"]) {
     let contended = false;
     barrierTimer = undefined;
@@ -374,6 +433,15 @@ try {
       contention.push({ mode, exchanges: generation - beforeConcurrent });
     } finally { clearTimeout(barrierTimer); refreshGate = null; releaseOnContention = null; }
   }
+  }
+  if (workloadCalls) {
+    const beforeExpiredGrant = requests.length;
+    rejectCurrentAccess = true; rejectRefreshGrant = true;
+    try {
+      await native("synthetic-A", true, execArgs, null, true);
+      assert.ok(!requests.slice(beforeExpiredGrant).some(request => request.url === "/responses"), "required native OAuth invalid_grant fails before the model");
+    } finally { rejectRefreshGrant = false; rejectCurrentAccess = false; }
+  }
   // Native removal is the interoperability/revocation oracle, not the helper.
   await native("synthetic-B", true, ["mcp", "logout", server.name]);
   assert.equal((await keyring({ operation: "load", server_name: server.name, url: server.url })).value, null);
@@ -381,17 +449,26 @@ try {
     const entries = JSON.parse(await native(account, true));
     assert.ok(!["o_auth", "oauth"].includes(entries.find(entry => entry.name === server.name)?.auth_status), "native restart cannot resurrect removed tokens");
   }
-  process.stdout.write(JSON.stringify({ fixture: root, configuredNamePrefix: namePrefix, convertedNativeReads: 3, protectedAccountHomes: 2,
+  process.stdout.write(JSON.stringify({ fixture: root, configuredNamePrefix: namePrefix, convertedNativeReads: 3, protectedAccountHomes: stockControl ? 0 : 2,
+    ...(stockControl ? { stockOrdinaryHomes: 1, stockSettingsOrigins: 1 } : {}),
     nativeRotatingRefreshes: generation, customSettingsRefreshContention: contention,
-    nativeLogoutRemovedKey: true, restartsWithoutResurrection: 2 }) + "\n");
+    nativeLogoutRemovedKey: true, restartsWithoutResurrection: 2,
+    ...(workloadCalls ? { stockControl, workloadToolCalls, nativeExpiredGrantBeforeModel: true } : {}) }) + "\n");
   }
 } catch (error) {
   process.stderr.write(`${error.message}; private evidence ${root}\n`); process.exitCode = 1;
 } finally {
+  if (existingSyntheticKeychain) {
+    // The existing synthetic keychain is not ours to delete. Ask its official
+    // native owner to remove only this fixture's unique synthetic MCP item.
+    try { await native("synthetic-A", true, ["mcp", "logout", server.name]); }
+    catch { process.stderr.write("Owned synthetic MCP item cleanup failed\n"); process.exitCode = 1; }
+  }
   fs.writeFileSync(path.join(root, "native.json"), JSON.stringify(outputs, null, 2), { mode: 0o600 });
   fs.writeFileSync(path.join(root, "keyring.log"), Buffer.concat(daemonLogs), { mode: 0o600 });
   fs.writeFileSync(path.join(root, "dbus.log"), Buffer.concat(monitorLogs), { mode: 0o600 });
   fs.writeFileSync(path.join(root, "requests.json"), JSON.stringify(requests, null, 2), { mode: 0o600 });
+  if (workloadCalls) fs.writeFileSync(path.join(root, "workload-sockets.json"), JSON.stringify({ keepAliveTimeout: service.keepAliveTimeout, events: workloadSockets }, null, 2), { mode: 0o600 });
   service.closeAllConnections(); await new Promise(resolve => service.close(resolve));
   if (monitor && monitor.exitCode === null) { monitor.kill("SIGTERM"); await once(monitor, "close"); }
   if (daemon && daemon.exitCode === null && daemon.signalCode === null) { daemon.kill("SIGTERM"); await once(daemon, "close"); }

@@ -65,7 +65,8 @@ test("native failure diagnostics never expose config, output or child errors", a
 
 test("input inventory rejects malformed paths, incomplete initialization and policy changes", async () => {
   const mutations = [v => v.reads.push("relative"), v => v.database_files.push(null),
-    v => v.project_cwds = ["relative"], v => v.cwd = "relative", v => v.initialized = false,
+    v => v.project_cwds = ["relative"], v => v.skill_roots = ["relative"], v => v.system_skill_roots = ["relative"],
+    v => v.writable_skill_roots = [null], v => v.cwd = "relative", v => v.initialized = false,
     v => v.schema++, v => v.source_revision = "wrong", v => v.analytics_disabled = false,
     v => v.feedback_disabled = false, v => v.updates_disabled = false,
     v => v.exporters_disabled = false, v => delete v.exporters_disabled,

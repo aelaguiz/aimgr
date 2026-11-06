@@ -30,6 +30,7 @@ def invoke(fixture, provider, arguments, scratch=None):
                SYNTHETIC_ACCOUNT_PARENT=fixture['root'],
                SYNTHETIC_INPUT_PARENT=str(Path(fixture['root']) / 'inputs'),
                SYNTHETIC_DATABASE_PARENT=str(Path(fixture['root']) / 'databases'))
+    if provider == 'codex': env['TMPDIR'] = fixture['otherScratch']
     with tempfile.TemporaryFile(dir=case) as transfer:
         os.fchmod(transfer.fileno(), 0o600)
         transfer.write(b''.join((k + '=' + v).encode() + b'\0' for k, v in env.items()))

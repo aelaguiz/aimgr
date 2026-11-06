@@ -273,13 +273,29 @@ try {
     console.log(JSON.stringify({ fixture: root, nativeNamedProfileAndRelativeRead: true,
       namedOnlyMissingContentRefused: true, finiteNamedInputGrant: true, unsupportedLegacySelectorParity: true }));
   } else if (phase === "--edits") {
-    for (const name of ["one", "two"]) put(path.join(shared, "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: Synthetic skill\n---\nSYNTHETIC_${name}\n`);
+    const linkedSkills = process.argv.includes("--linked-skills"), linkedRoot = path.join(homeDir, "external skill sources");
+    fs.mkdirSync(path.join(shared, "skills"), { recursive: true });
+    for (const name of ["one", "two"]) {
+      const directory = linkedSkills ? path.join(linkedRoot, name) : path.join(shared, "skills", name);
+      put(path.join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: Synthetic skill\n---\nSYNTHETIC_${name}\n`);
+      if (linkedSkills) fs.symlinkSync(directory, path.join(shared, "skills", name));
+    }
+    const skillState = async (owner, enabled) => {
+      if (!linkedSkills) return;
+      await until(async () => {
+        const listed = await owner.rpc("skills/list", { cwds: [cwd], forceReload: true });
+        const skill = listed.result?.data.flatMap(entry => entry.skills).find(item => item.name === "two");
+        return skill?.enabled === enabled && skill.path === path.join(linkedRoot, "two/SKILL.md");
+      }, "same native owner reloads the linked skill enabled state");
+    };
     // New path values point inside the already granted project, so immediate
     // native reload does not depend on the accepted new-session path limit.
     put(path.join(cwd, "instructions.md"), "SYNTHETIC_SELECTED_INSTRUCTIONS");
     put(path.join(cwd, "roles", "review.toml"), 'model_reasoning_effort="high"\n');
     put(source, initial() + '[skills]\nconfig=[{path="./skills/one",enabled=true},{path="./skills/two",enabled=false}]\n');
     const a = await launch("A"), b = await launch("B");
+    if (linkedSkills) for (const owner of [a, b]) assert.ok(owner.invocation.inputs.writes.includes(path.join(linkedRoot, "two")), "disabled external target admitted at startup");
+    await skillState(a, false);
     const original = fs.readFileSync(source, "utf8");
     atomic(original.replace('model_reasoning_effort="high"', 'model_reasoning_effort="medium"'));
     await until(async () => (await config(a)).config.model_reasoning_effort === "medium", "atomic replacement reaches A without manual flush");
@@ -290,6 +306,7 @@ try {
       { keyPath: "model_instructions_file", mergeStrategy: "replace", value: "../../project/instructions.md" },
       { keyPath: "model_reasoning_effort", mergeStrategy: "replace", value: "high" },
     ] }));
+    await skillState(b, true);
     let native = (await config(a)).config, authored = read(source);
     assert.equal(native.agents["review.one"].config_file, path.join(cwd, "roles/review.toml"));
     assert.equal(native.skills.config[0].path, path.join(shared, "skills/two"));
@@ -310,6 +327,7 @@ try {
     await until(() => read(source).model_instructions_file === undefined, "native path deletion reaches authored source");
     const disabled = await a.rpc("skills/config/write", { path: path.join(shared, "skills/two"), enabled: false });
     assert.ok(disabled.result, JSON.stringify(disabled));
+    await skillState(a, false);
     await until(() => read(source).skills.config.find(item => item.path === "./skills/two")?.enabled === false, "native dedicated skill writer reaches source");
     assert.equal((await config(b)).config.skills.config.find(item => item.path === path.join(shared, "skills/two"))?.enabled, false);
     assert.ok(fs.readFileSync(source, "utf8").includes("# Authored comment survives native writes."));
@@ -319,7 +337,8 @@ try {
     assert.equal((await config(fresh)).config.model_reasoning_effort, "high");
     assert.equal((await config(fresh)).config.skills.config[0].path, path.join(shared, "skills/two"));
     console.log(JSON.stringify({ fixture: root, atomicExternalReplacement: true, ancestorAndArrayWrite: true,
-      addDeleteRelativePath: true, versionAndTypedRejection: true, nativeDedicatedSkillWrite: true, secondAccountAndRestart: true }));
+      addDeleteRelativePath: true, versionAndTypedRejection: true, nativeDedicatedSkillWrite: true, secondAccountAndRestart: true,
+      ...(linkedSkills ? { externalLinkedSkillDisabledAtStartup: true, liveEnableAndDisableWithoutOwnerRestart: true } : {}) }));
   } else if (["--runtime", "--runtime-baseline"].includes(phase)) {
     const instruction = path.join(shared, "instructions.md"), skill = path.join(shared, "skills", "one", "SKILL.md");
     put(instruction, "SYNTHETIC_INSTRUCTION_VERSION_ONE");

@@ -1,5 +1,5 @@
-/* Short, private temporary paths preserve ordinary tools' Unix sockets.
- * Validate this launch's staging directory independently of work-area grants. */
+/* Private staging for the unlinked environment descriptor, independent of
+ * native/tool TMPDIR and the approved work-area grants. */
 static void codex_private_scratch(const char *scratch) {
     canonical(scratch);
     char temporary[PATH_MAX],prefix[PATH_MAX];struct stat parent;

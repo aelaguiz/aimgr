@@ -54,6 +54,8 @@ for (const args of [
 const requests = [], models = [], children = [];
 const threadRoles = new Map();
 const reviewerOnly = process.argv.includes("--reviewer-only");
+const workloadReviewer = process.argv.includes("--workload-reviewer");
+assert.ok(!workloadReviewer || reviewerOnly, "--workload-reviewer is the finite --reviewer-only extension");
 const protectedClaude = process.argv.includes("--protected-claude");
 const parentCanary = path.join(homeDir, ".ssh/private-canary");
 fs.mkdirSync(path.dirname(parentCanary), { mode: 0o700 });
@@ -67,7 +69,22 @@ const roles = {
   "claude-same": ["claude", "a"], "claude-other": ["claude", "b"],
 };
 const roleOf = body => JSON.stringify(body.messages ?? body.input).match(/NESTED_CASE:([a-z-]+)/)?.[1];
-const commandFor = role => roles[role][2]
+const evidence = path.join(homeDir, "workspace/sibling evidence");
+const installedReviewSkill = path.join(homeDir, ".agents/skills/workload-review/SKILL.md");
+const commandFor = role => workloadReviewer ? "/usr/bin/python3 -c " + q(`from pathlib import Path
+import errno
+source=Path(${JSON.stringify(path.join(cwd, "planted-defect.py"))})
+try: Path(${JSON.stringify(path.join(cwd, "reviewer-must-not-write.txt"))}).write_text('forbidden')
+except OSError as error:
+ assert error.errno in (errno.EACCES,errno.EPERM,errno.EROFS), error
+ print('NATIVE_READ_ONLY_WRITE_DENIED')
+else: raise AssertionError('read-only reviewer wrote source')
+print(Path(${JSON.stringify(path.join(evidence, "brief.md"))}).read_text())
+print(Path(${JSON.stringify(installedReviewSkill)}).read_text())
+scope={}; exec(source.read_text(),scope); actual=scope['total']([2,3]); assert actual==2
+print('PLANTED_DEFECT: total([2,3]) returned 2; sibling brief requires 5')
+print('SYNTHETIC_NESTED_FILE')
+`) : roles[role][2]
   ? q(process.execPath) + " " + q(path.join(cwd, "children.mjs")) + " " + q(role)
   : "cat " + q(path.join(cwd, "brief.txt")) + " " + q(path.join(cwd, "example.js"));
 function record(req, body, provider) {
@@ -212,6 +229,12 @@ fs.writeFileSync(path.join(homeDir, ".claude/settings.json"), JSON.stringify({ s
 fs.writeFileSync(path.join(homeDir, ".claude.json"), JSON.stringify({ projects: { [cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } } }));
 fs.writeFileSync(path.join(cwd, "brief.txt"), "Read the code and report its return value. SYNTHETIC_NESTED_FILE\n");
 fs.writeFileSync(path.join(cwd, "example.js"), "export const value = () => 42;\n");
+if (workloadReviewer) {
+  fs.mkdirSync(evidence, { recursive: true }); fs.mkdirSync(path.dirname(installedReviewSkill), { recursive: true });
+  fs.writeFileSync(path.join(evidence, "brief.md"), "The total function must sum every item. total([2,3]) must equal 5.\n");
+  fs.writeFileSync(path.join(cwd, "planted-defect.py"), "def total(items): return items[0]\n");
+  fs.writeFileSync(installedReviewSkill, "---\nname: workload-review\ndescription: Synthetic reviewer recipe\n---\nRead sibling evidence, reproduce the result and keep source read-only.\n");
+}
 const environment = readCodexEnvironment();
 for (const account of accounts) {
   saveLocalCodexLogin({ homeDir, env, environment, accountId: account.accountId, label: account.label },
@@ -223,7 +246,8 @@ const argvFor = role => {
   const [provider, label, parent] = roles[role];
   return provider === "claude" ? ["claude", "run", label, "--", "-p", "NESTED_CASE:" + role, "--model", "sonnet", "--output-format", "json", "--dangerously-skip-permissions"]
     : ["codex", "run", label, "--", "exec", "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="high"', ...(parent
-      ? ["--dangerously-bypass-approvals-and-sandbox"] : ["-s", "read-only"]), "-C", cwd, "--skip-git-repo-check", "--json", "NESTED_CASE:" + role];
+      ? ["--dangerously-bypass-approvals-and-sandbox"] : ["-s", "read-only"]), "-C", cwd, "--skip-git-repo-check", "--json",
+      ...(workloadReviewer ? ["--output-last-message", path.join(root, "reviewer-final.txt"), "-"] : ["NESTED_CASE:" + role])];
 };
 fs.writeFileSync(path.join(cwd, "children.mjs"), `import fs from 'node:fs';import {spawnSync} from 'node:child_process';import assert from 'node:assert/strict';
 const parent=process.argv[2], commands=${JSON.stringify(Object.fromEntries(Object.keys(roles).filter(role => !roles[role][2]).map(role => [role, argvFor(role)])))};
@@ -270,11 +294,23 @@ try {
   }
   for (const role of protectedClaude ? [] : reviewerOnly ? ["codex-same"] : ["codex-parent", "claude-parent"]) {
     const log = fs.openSync(path.join(root, role + ".private.log"), "w", 0o600);
-    const child = spawn(aim, argvFor(role), { cwd, env, detached: true, stdio: ["ignore", log, log] }); fs.closeSync(log); children.push(child);
+    const errorLog = workloadReviewer ? fs.openSync(path.join(root, role + ".stderr.log"), "w", 0o600) : log;
+    const child = spawn(aim, argvFor(role), { cwd, env, detached: true, stdio: [workloadReviewer ? "pipe" : "ignore", log, errorLog] });
+    fs.closeSync(log); if (workloadReviewer) fs.closeSync(errorLog); children.push(child);
+    if (workloadReviewer) child.stdin.end("NESTED_CASE:" + role + "\nReview the planted defect using the sibling evidence and installed skill.\n");
     const timer = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 240000);
     const [code, signal] = await once(child, "close"); clearTimeout(timer);
     if (serverError) throw serverError;
     assert.equal(code, 0, role + " failed (" + signal + "); private evidence " + root);
+  }
+  if (workloadReviewer) {
+    const observed = JSON.stringify(models);
+    assert.match(observed, /NATIVE_READ_ONLY_WRITE_DENIED/); assert.match(observed, /PLANTED_DEFECT/);
+    assert.ok(!fs.existsSync(path.join(cwd, "reviewer-must-not-write.txt")));
+    assert.match(fs.readFileSync(path.join(root, "reviewer-final.txt"), "utf8"), /SYNTHETIC_NESTED_DONE/);
+    fs.writeFileSync(path.join(root, "reviewer-invocation.json"), JSON.stringify({ argv: argvFor("codex-same"), cwd,
+      stdinBrief: true, nativeMode: "read-only", account: accounts[0].accountId,
+      deterministicToolRecipe: true, realAgentFinding: "not run" }, null, 2));
   }
   for (const [role, [provider, label, parent]] of Object.entries(roles)) {
     if (protectedClaude && !["claude-parent", "claude-peer"].includes(role)) continue;
@@ -288,7 +324,9 @@ try {
     }
   }
   console.log(JSON.stringify({ fixture: root, ...(protectedClaude ? { protectedClaudeToNativeReadOnlyCodex: true,
-    enforcingClaudeParentObserved: protectedParentObserved, unchangedToolEnvironment: true, routingNotTested: true } : reviewerOnly ? { nativeReadOnlyReviewer: true } : {
+    enforcingClaudeParentObserved: protectedParentObserved, unchangedToolEnvironment: true, routingNotTested: true } : reviewerOnly ? { nativeReadOnlyReviewer: true,
+      ...(workloadReviewer ? { stdinBrief: true, separateFinalOutput: true, deliberateWriteDenied: true,
+        siblingEvidenceAndInstalledSkill: true, plantedDefectMechanicallyReproduced: true, realAgentFinding: "not run", stockPair: "not run" } : {}) } : {
     officialParents: 2, codexPrivacyEnforced: true, claudeMode: "ordinary", nestedChildren: 6,
     nativeReadOnlyReviewers: 3, unchangedToolEnvironment: true, parentIdentityPreserved: true }) }));
 } catch (error) { console.error(error.message + "; private evidence " + root); process.exitCode = 1; }

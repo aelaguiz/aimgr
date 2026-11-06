@@ -57,7 +57,7 @@ export function codexWorkingDirectories({ homeDir, env = {}, platform = process.
       if (read.status === 0 && read.stdout?.trim()) screenshot = homePath(read.stdout.trim(), homeDir);
     }
     // Screenshot thumbnails and most Mac tools use the OS user's temp folder.
-    // TMPDIR already names our invocation scratch, so ask the OS directly.
+    // Ask the OS directly; an arbitrary caller TMPDIR is not a native grant.
     const temp = spawnSyncImpl("/usr/bin/getconf", ["DARWIN_USER_TEMP_DIR"],
       { encoding: "utf8", timeout: 3000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
     if (temp.status === 0 && path.isAbsolute(temp.stdout?.trim() ?? "")) roots.push(temp.stdout.trim());

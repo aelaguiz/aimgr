@@ -116,7 +116,6 @@ int main(int argc,char **argv) {
     /* Approved Linux metadata exception: native read-only sandbox setup
      * masks privileged socket aliases using the process mount table. This
      * permits same-user mount tables, not their mounted file contents. */
-    fprintf(out,"/tmp/codex-daemon-%u/ rw,\n",caller);
     fputs("owner /proc/[0-9]*/mountinfo r,\n",out);
     /* os_info 3.14 first execs lsb_release -a. Letting that helper enter the
      * ordinary-tool profile disclosed the distribution/version in HTTP.
@@ -152,6 +151,6 @@ int main(int argc,char **argv) {
     if (flock(lock,LOCK_SH)) fail("policy installation lock");
     parse_policy(policy,0);free(policy);install_uname();enter_profile();close(lock);drop();
     environ=private_environment;unset_environment("LD_PRELOAD");unset_environment("LD_AUDIT");
-    set_environment("CODEX_HOME",home,1);set_environment("TMPDIR",scratch,1);
+    set_environment("CODEX_HOME",home,1);
     codex_close_except_admission(admission);argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");
 }
