@@ -1,6 +1,6 @@
 # Backtest Codex privacy against actual agent work
 
-**The plan is ready; the new workload replays have not run.** PR #14 already has isolated native-client, privacy-boundary and unit-test evidence. This appendix adds the missing question: can the protected client complete the tool sequences used in Amir's actual work, without changing their permissions, moving their files or replacing their tools?
+**[Backtest results](CODEX_ACTUAL_WORKLOAD_BACKTEST_RESULTS_2026-11-05.md) record the completed comparisons, regression fixes and missing workload evidence.** PR #14 already has isolated native-client, privacy-boundary and unit-test evidence. This appendix adds the missing question: can the protected client complete the tool sequences used in Amir's actual work, without changing their permissions, moving their files or replacing their tools?
 
 This is the validation appendix to the [canonical privacy plan](CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md#current-completion-plan--november-5-2026), tracked in [working-directory and workflow compatibility issue #16](https://github.com/aelaguiz/aimgr/issues/16). It adds tests, not new privacy requirements. Proxy development remains parked. Claude histories inform required workflows and mixed Claude/Codex operation; this does not turn Codex into Claude or add Claude-only features to Codex.
 
@@ -100,7 +100,7 @@ Pass when the proper integration receives its test authorization, returns the ex
 
 Reproduce the workbook runner's detached Python process, ordinary home-level application-support lock directory, PID/process-group record, generated files and final readback. Launch a second contender to verify the existing lock behavior. In one run, let the parent finish while an intentionally detached child completes and writes output; in another, stop an owned failed worker and retry through the ordinary tool path.
 
-Pass when one intended job performs the write, its files and logs survive the parent, the next session can inspect them, and no unrelated process is stopped. Preserve invocation `TMPDIR` use and test socket creation there. Use a disposable lock namespace and synthetic outputs; do not build a new lock manager or process registry. The helper's normal tool access, not a new native grant for all Application Support, should support this workflow.
+Pass when one intended job performs the write, its files and logs survive the parent, the next session can inspect them, and no unrelated process is stopped. Preserve the caller's `TMPDIR`, including its absence. Test both socket creation while the parent lives and a detached job's first temporary-file/socket creation after the native parent and invocation cleanup finish; an already-created socket can hide premature directory deletion. Private environment-descriptor staging is separate from tool temporary files. Use a disposable lock namespace and synthetic outputs; do not build a new lock manager or process registry. The helper's normal tool access, not a new native grant for all Application Support, should support this workflow.
 
 ### 9. Launch helpers and an actual read-only reviewer
 
@@ -122,7 +122,9 @@ Pass when completed work is consumed once, live children are recognized, no dupl
 
 ### 12. Change instructions, settings and task scope while working
 
-Start with shared relative settings, existing instruction/skill files and a task that writes a report in another approved work folder. Change file contents and non-path enable switches during the session, deliver a scope correction, and launch a helper that must use the revised skill. Use the existing native settings fixture for path-target changes and reconciliation. Include an ordinary shell write to the installed skill's real layout, without copying the real skill's private content.
+Start with shared relative settings, existing instruction/skill files and a task that writes a report in another approved work folder. Change file contents and non-path enable switches during the session, deliver a scope correction, and launch a helper that must use the revised skill. Use the existing native settings fixture for path-target changes and reconciliation. Exercise actual native `apply_patch` against a real `~/.agents/skills` directory outside the workspace, alongside ordinary shell access, without copying the real skill's private content. Assert an unrelated `.agents` sibling stays denied and native read-only mode still refuses skill writes. A shell edit alone is not proof of native-edit compatibility. Include installed directory links whose targets are outside the work areas: `.agents` and shared `.codex` roots, a nested collection, an initially disabled skill, malformed metadata and a new skill folder. Native discovery and edits must follow the selected user-skill targets without granting private neighbors. Repository child links must not expand native reads into private folders. Broken or overly broad optional aliases must not veto unrelated launches. Check live enable/disable on existing owners and distinguish authored relative batch paths from the dedicated writer’s canonical skill identity.
+
+The audit also found historical native report creation under `~/disk-cleanup-…`, outside the agreed work areas. Preserve this as a known location mismatch: the original unselected path is denied; an approved work folder or the existing explicit root selection is required. Do not count relocating the report or silently substituting a shell edit as an unchanged historical-route pass, and do not grant the whole home.
 
 Pass when the ongoing work honors the new instruction/content and live non-path setting, the next helper sees the revised skill, and settings write back without dropping unrelated entries or losing relative-path semantics. A newly selected outside path takes effect at the accepted new-session boundary. The test must not demand live kernel-grant expansion or silently freeze enable/disable switches with paths. Scope correction should alter the requested work, not require a launcher restart.
 
@@ -144,7 +146,7 @@ For each applicable case, a stock/protected pair must achieve the stated observa
 
 Readiness requires zero unresolved candidate-caused workflow regressions, no silently omitted required service/device step, and a cold review that agrees the fixes remain within the approved privacy scope. A shared service outage is a shared failure, not a pass. An unavailable real integration remains a visible missing result. The sample does not prove every possible workload: PDF authoring, Prime daemon behavior, native Codex goal loops and broad Cratejoy development are not established here. Do not add implementations for those gaps or claim them tested.
 
-At plan publication, no new replay result is claimed and no additional privacy restriction is proposed.
+At plan publication, no new replay result was claimed and no additional privacy restriction was proposed. Execution outcomes belong in the linked results document.
 
 ## Cold review of this plan
 
