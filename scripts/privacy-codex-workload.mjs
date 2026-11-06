@@ -266,7 +266,7 @@ print('DELIBERATE_FAILURE_AND_RESTORE_OK')
     fs.mkdirSync(path.dirname(repoSkillAlias), { recursive: true }); fs.symlinkSync(repoPrivateTarget, repoSkillAlias);
     steps.push(image("native-repo-skill-private-read", path.join(repoSkillAlias, "private.png")));
     put(privateNeighbor, "PRIVATE_NEIGHBOR_ORIGINAL\n");
-    extraConfig = `[skills]\nconfig=[{path=${JSON.stringify(linked[2].link)},enabled=false}]\n`;
+    extraConfig = `[skills]\nconfig=[{path=${JSON.stringify(linked[2].file)},enabled=false}]\n`;
     steps.push(patch("native-linked-private-neighbor-edit", privateNeighbor, "PRIVATE_NEIGHBOR_ORIGINAL", "PRIVATE_NEIGHBOR_CHANGED"));
     afterNative = async runNative => {
       step = steps.length;

@@ -292,7 +292,7 @@ try {
     // native reload does not depend on the accepted new-session path limit.
     put(path.join(cwd, "instructions.md"), "SYNTHETIC_SELECTED_INSTRUCTIONS");
     put(path.join(cwd, "roles", "review.toml"), 'model_reasoning_effort="high"\n');
-    put(source, initial() + '[skills]\nconfig=[{path="./skills/one",enabled=true},{path="./skills/two",enabled=false}]\n');
+    put(source, initial() + '[skills]\nconfig=[{path="./skills/one/SKILL.md",enabled=true},{path="./skills/two/SKILL.md",enabled=false}]\n');
     const a = await launch("A"), b = await launch("B");
     if (linkedSkills) for (const owner of [a, b]) assert.ok(owner.invocation.inputs.writes.includes(path.join(linkedRoot, "two")), "disabled external target admitted at startup");
     await skillState(a, false);
@@ -302,16 +302,16 @@ try {
     assert.equal((await config(b)).config.model_reasoning_effort, "medium");
     ok(await a.rpc("config/batchWrite", { reloadUserConfig: true, edits: [
       { keyPath: 'agents."review.one"', mergeStrategy: "upsert", value: { config_file: "../../project/roles/review.toml", description: "relative role" } },
-      { keyPath: "skills", mergeStrategy: "upsert", value: { config: [{ path: "./skills/two", enabled: true }, { path: "./skills/one", enabled: false }] } },
+      { keyPath: "skills", mergeStrategy: "upsert", value: { config: [{ path: "./skills/two/SKILL.md", enabled: true }, { path: "./skills/one/SKILL.md", enabled: false }] } },
       { keyPath: "model_instructions_file", mergeStrategy: "replace", value: "../../project/instructions.md" },
       { keyPath: "model_reasoning_effort", mergeStrategy: "replace", value: "high" },
     ] }));
     await skillState(b, true);
     let native = (await config(a)).config, authored = read(source);
     assert.equal(native.agents["review.one"].config_file, path.join(cwd, "roles/review.toml"));
-    assert.equal(native.skills.config[0].path, path.join(shared, "skills/two"));
+    assert.equal(native.skills.config[0].path, path.join(shared, "skills/two/SKILL.md"));
     assert.equal(native.skills.config[0].enabled, true);
-    assert.equal(authored.skills.config[0].path, "./skills/two");
+    assert.equal(authored.skills.config[0].path, "./skills/two/SKILL.md");
     assert.equal(authored.agents["review.one"].config_file, "../../project/roles/review.toml");
     assert.equal(authored.model_instructions_file, "../../project/instructions.md");
     const beforeRejected = fs.readFileSync(source, "utf8");
@@ -325,17 +325,17 @@ try {
     }
     ok(await a.rpc("config/value/write", { keyPath: "model_instructions_file", value: null, mergeStrategy: "replace" }));
     await until(() => read(source).model_instructions_file === undefined, "native path deletion reaches authored source");
-    const disabled = await a.rpc("skills/config/write", { path: path.join(shared, "skills/two"), enabled: false });
+    const disabled = await a.rpc("skills/config/write", { path: path.join(shared, "skills/two/SKILL.md"), enabled: false });
     assert.ok(disabled.result, JSON.stringify(disabled));
     await skillState(a, false);
-    await until(() => read(source).skills.config.find(item => item.path === "./skills/two")?.enabled === false, "native dedicated skill writer reaches source");
-    assert.equal((await config(b)).config.skills.config.find(item => item.path === path.join(shared, "skills/two"))?.enabled, false);
+    await until(() => read(source).skills.config.find(item => item.path === "./skills/two/SKILL.md")?.enabled === false, "native dedicated skill writer reaches source");
+    assert.equal((await config(b)).config.skills.config.find(item => item.path === path.join(shared, "skills/two/SKILL.md"))?.enabled, false);
     assert.ok(fs.readFileSync(source, "utf8").includes("# Authored comment survives native writes."));
     assert.equal(read(source).unknown_setting, "keep me");
     await a.close(); await b.close();
     const fresh = await launch("B-fresh");
     assert.equal((await config(fresh)).config.model_reasoning_effort, "high");
-    assert.equal((await config(fresh)).config.skills.config[0].path, path.join(shared, "skills/two"));
+    assert.equal((await config(fresh)).config.skills.config[0].path, path.join(shared, "skills/two/SKILL.md"));
     console.log(JSON.stringify({ fixture: root, atomicExternalReplacement: true, ancestorAndArrayWrite: true,
       addDeleteRelativePath: true, versionAndTypedRejection: true, nativeDedicatedSkillWrite: true, secondAccountAndRestart: true,
       ...(linkedSkills ? { externalLinkedSkillDisabledAtStartup: true, liveEnableAndDisableWithoutOwnerRestart: true } : {}) }));
