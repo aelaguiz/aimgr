@@ -325,17 +325,22 @@ try {
     }
     ok(await a.rpc("config/value/write", { keyPath: "model_instructions_file", value: null, mergeStrategy: "replace" }));
     await until(() => read(source).model_instructions_file === undefined, "native path deletion reaches authored source");
-    const disabled = await a.rpc("skills/config/write", { path: path.join(shared, "skills/two/SKILL.md"), enabled: false });
+    // The dedicated native writer uses the canonical SKILL.md identity exposed
+    // by skills/list. Relative authored-path preservation was asserted above.
+    const dedicatedSkillPath = fs.realpathSync(path.join(shared, "skills/two/SKILL.md"));
+    const authoredSkillPath = linkedSkills ? dedicatedSkillPath : "./skills/two/SKILL.md";
+    const disabled = await a.rpc("skills/config/write", { path: dedicatedSkillPath, enabled: false });
     assert.ok(disabled.result, JSON.stringify(disabled));
+    assert.equal(disabled.result.effectiveEnabled, false);
     await skillState(a, false);
-    await until(() => read(source).skills.config.find(item => item.path === "./skills/two/SKILL.md")?.enabled === false, "native dedicated skill writer reaches source");
-    assert.equal((await config(b)).config.skills.config.find(item => item.path === path.join(shared, "skills/two/SKILL.md"))?.enabled, false);
+    await until(() => read(source).skills.config.find(item => item.path === authoredSkillPath)?.enabled === false, "native dedicated skill writer reaches source");
+    assert.equal((await config(b)).config.skills.config.find(item => item.path === dedicatedSkillPath)?.enabled, false);
     assert.ok(fs.readFileSync(source, "utf8").includes("# Authored comment survives native writes."));
     assert.equal(read(source).unknown_setting, "keep me");
     await a.close(); await b.close();
     const fresh = await launch("B-fresh");
     assert.equal((await config(fresh)).config.model_reasoning_effort, "high");
-    assert.equal((await config(fresh)).config.skills.config[0].path, path.join(shared, "skills/two/SKILL.md"));
+    assert.equal((await config(fresh)).config.skills.config[0].path, dedicatedSkillPath);
     console.log(JSON.stringify({ fixture: root, atomicExternalReplacement: true, ancestorAndArrayWrite: true,
       addDeleteRelativePath: true, versionAndTypedRejection: true, nativeDedicatedSkillWrite: true, secondAccountAndRestart: true,
       ...(linkedSkills ? { externalLinkedSkillDisabledAtStartup: true, liveEnableAndDisableWithoutOwnerRestart: true } : {}) }));
