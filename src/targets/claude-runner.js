@@ -2,6 +2,7 @@ import { prepareClaudeNativeRoute, nativeProxyEnvironment } from "../network/cla
 import fs from "node:fs";
 import { ClaudeRouteError } from "../network/claude-egress-policy.js";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -153,6 +154,43 @@ export async function verifyInstalledClaudeExecutable({
     throw new Error("The PATH-selected Claude executable is not a file.");
   }
   return resolvedCommand;
+}
+
+/**
+ * Linux names a process after the file it runs, so the verified Claude, a
+ * versioned file such as `~/.local/share/claude/versions/2.1.319`, would run
+ * as "2.1.319", and tools that find Claude sessions by process name (herdr,
+ * and through it psbrain's pods) would not see it. On Linux the verified
+ * executable runs through a link named `claude` in a private, per-target folder
+ * of the label's launch home; the link is checked to resolve to exactly the
+ * verified file before it is used. macOS names the process from the executable
+ * itself and is left as it was. Issue #20.
+ */
+export function linkVerifiedClaudeAsClaude({ resolvedCommand, launchHome, fsImpl = fs } = {}) {
+  const target = normalizedAbsolute(resolvedCommand);
+  const home = normalizedAbsolute(launchHome);
+  if (!target || !home) {
+    throw new Error("Naming the Claude process requires the absolute verified executable and launch home.");
+  }
+  const key = crypto.createHash("sha1").update(target).digest("hex").slice(0, 16);
+  const dir = path.join(home, ".aimgr-exec", key);
+  fsImpl.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const link = path.join(dir, "claude");
+  let current = null;
+  try {
+    current = fsImpl.readlinkSync(link);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  if (current !== target) {
+    const staged = path.join(dir, `.claude.${process.pid}.${crypto.randomBytes(4).toString("hex")}`);
+    fsImpl.symlinkSync(target, staged);
+    fsImpl.renameSync(staged, link);
+  }
+  if (fsImpl.realpathSync(link) !== fsImpl.realpathSync(target)) {
+    throw new Error("The link naming the Claude process does not resolve to the verified executable.");
+  }
+  return link;
 }
 
 export function resolveInstalledClaudeSecurityAdapter({
@@ -490,8 +528,11 @@ async function prepareContainedClaudeCliLaunch({
   const adapter = platform === "darwin"
     ? resolveInstalledClaudeSecurityAdapterImpl({ userHomeDir: resolvedUserHome, fsImpl })
     : {};
+  const launchCommand = platform === "linux"
+    ? linkVerifiedClaudeAsClaude({ resolvedCommand, launchHome: resolvedLaunchHome, fsImpl })
+    : resolvedCommand;
   return Object.freeze({
-    command: resolvedCommand,
+    command: launchCommand,
     userHomeDir: resolvedUserHome,
     homeDir: resolvedLaunchHome,
     configDir: resolvedConfigDir,

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   buildManagedClaudeStatusLine,
+  linkVerifiedClaudeAsClaude,
   prepareClaudeCliLaunch,
   resolveInstalledClaudeSecurityAdapter,
   runClaudeCli,
@@ -614,3 +615,33 @@ test("noninteractive timeout kills the detached Claude process group including a
   assert.equal(alive(pids.parent), false);
   assert.equal(alive(pids.child), false);
 });
+
+test("on Linux the verified Claude runs through a private link named claude, so it is seen by its name (issue #20)", async () => {
+  const home = mkTempHome();
+  const { homeDir, configDir } = launchPaths(home);
+  fs.mkdirSync(configDir, { recursive: true });
+  const verified = fs.realpathSync(process.execPath);
+
+  const prepared = await prepareClaudeCliLaunch({
+    command: process.execPath,
+    userHomeDir: home,
+    homeDir,
+    configDir,
+    platform: "linux",
+  });
+  assert.equal(path.basename(prepared.command), "claude");
+  assert.equal(path.dirname(path.dirname(prepared.command)), path.join(path.resolve(homeDir), ".aimgr-exec"));
+  assert.equal(fs.realpathSync(prepared.command), verified);
+  assert.equal(fs.statSync(path.dirname(prepared.command)).mode & 0o777, 0o700);
+
+  // Preparing again reuses the same link; a link left pointing elsewhere is replaced.
+  const again = await prepareClaudeCliLaunch({ command: process.execPath, userHomeDir: home, homeDir, configDir, platform: "linux" });
+  assert.equal(again.command, prepared.command);
+  fs.unlinkSync(prepared.command);
+  fs.symlinkSync("/usr/bin/true", prepared.command);
+  assert.equal(linkVerifiedClaudeAsClaude({ resolvedCommand: verified, launchHome: path.resolve(homeDir) }), prepared.command);
+  assert.equal(fs.realpathSync(prepared.command), verified);
+
+  assert.throws(() => linkVerifiedClaudeAsClaude({ resolvedCommand: "relative/claude", launchHome: homeDir }), /absolute/);
+});
+
