@@ -163,6 +163,11 @@ export function renderIdentityLine({ title, color, account, branch, cwd }) {
   ].join("");
 }
 
+export function renderSessionIdLine(sessionId) {
+  const safeSessionId = singleLine(sessionId);
+  return safeSessionId ? `\u001b[2m session-id: ${safeSessionId}\u001b[0m` : undefined;
+}
+
 function installedAgentDir() {
   const extensionPath = fileURLToPath(import.meta.url);
   return dirname(dirname(extensionPath));
@@ -235,6 +240,16 @@ function currentSessionName(pi, ctx) {
   }
 }
 
+function currentSessionId(ctx) {
+  const getSessionId = ctx.sessionManager?.getSessionId;
+  if (typeof getSessionId !== "function") return undefined;
+  try {
+    return getSessionId.call(ctx.sessionManager);
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveAccount(ctx, configured) {
   const persisted = sessionBindings(ctx);
   const provider = ctx.model?.provider;
@@ -255,7 +270,7 @@ export default function sessionIdentityExtension(pi) {
   let identityPersisted = false;
   let branch = "no-branch";
   let manualTitle = false;
-  let lastLine;
+  let lastRenderedWidget;
   let lastTerminalTitle;
   let refreshTimer;
   let titleUpdate = Promise.resolve();
@@ -312,9 +327,12 @@ export default function sessionIdentityExtension(pi) {
       branch,
       cwd: compactHome(ctx.cwd),
     });
-    if (force || line !== lastLine) {
-      lastLine = line;
-      ctx.ui.setWidget(WIDGET_KEY, [line], { placement: "belowEditor" });
+    const sessionIdLine = renderSessionIdLine(currentSessionId(ctx));
+    const lines = sessionIdLine ? [line, sessionIdLine] : [line];
+    const renderedWidget = lines.join("\n");
+    if (force || renderedWidget !== lastRenderedWidget) {
+      lastRenderedWidget = renderedWidget;
+      ctx.ui.setWidget(WIDGET_KEY, lines, { placement: "belowEditor" });
     }
     const terminalTitle = `${title} — ${basename(ctx.cwd)}`;
     if (force || terminalTitle !== lastTerminalTitle) {
@@ -398,7 +416,7 @@ export default function sessionIdentityExtension(pi) {
     if (refreshTimer) clearInterval(refreshTimer);
     configured = configuredBindings();
     branch = gitBranch(ctx.cwd);
-    lastLine = undefined;
+    lastRenderedWidget = undefined;
     lastTerminalTitle = undefined;
     manualTitle = false;
 
@@ -462,7 +480,7 @@ export default function sessionIdentityExtension(pi) {
   pi.on("session_shutdown", async (_event, ctx) => {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = undefined;
-    lastLine = undefined;
+    lastRenderedWidget = undefined;
     lastTerminalTitle = undefined;
     ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "belowEditor" });
   });

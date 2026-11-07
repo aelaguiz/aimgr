@@ -125,6 +125,10 @@ aim prime status
 aim prime uninstall [--provider <openai-codex|anthropic>]
 ```
 
+`aim prime run codex|claude` selects the account and model, then starts a new
+Prime session directly. Use `aim prime resume <path-or-id>` when you want an
+existing session instead.
+
 
 ### Pi and Prime managed credentials
 
@@ -142,25 +146,30 @@ receive only an access token in memory. Target `auth.json`, AIM local state,
 status, backups, argv, and environment never receive an AIM-managed access or
 refresh token. The exact label and opaque AIM identity fingerprint are
 non-secret and may be persisted by a harness to keep a root session tree
-stable across resume and subagents. Account changes apply to a new root tree;
-loaded trees never hop labels.
+stable across resume and subagents. Ordinary target changes apply to a new root
+tree; a loaded Prime root changes labels only through an explicit successful
+`aim prime resume <session> --rotate` handoff.
 
 Plain `aim prime resume <path-or-id>` delegates to Prime's ordinary pinned resume
-path without changing AIM account state. Add `--rotate` after the active account
-is rate limited: AIM reads the saved session's last-used provider and exact
-model, installs the next-best eligible *different* label for that provider,
-forks the conversation into a new Prime root, and resets only that provider's
-binding. The original session file and its account binding remain unchanged. If
-no alternate account is eligible, AIM exits without relaunching the current
-account.
+path without changing AIM account state. Add `--rotate` after the active
+account is rate limited: AIM reads the session's provider, model, exact binding,
+and identity fingerprint; selects the next-best eligible *different* label for
+that provider; and asks Prime to compare-and-swap the binding inside that exact
+already-live root. AIM writes no target auth or selection history. After Prime
+confirms the handoff, AIM attaches the same root through ordinary resume. An
+inactive or busy root, stale expected binding, failed handoff, or lack of an
+eligible alternate exits without attaching or mutating the saved session.
 
 AIM-managed Pi and Prime homes also receive one global session-identity
 extension. Its below-editor banner always shows title, AIM account, git branch,
-and cwd. Unnamed sessions derive a compact title from the first request; Prime
-may improve that fallback once from its existing persisted agent recap. Each
-new session chooses a colored title pill and stores that color in the session
-JSONL, so reloads, exact resumes, and continuity forks retain the same visual
-identity. A manual `/name` or `/rename` remains authoritative.
+and cwd. Prime sessions show the full canonical session UUID on a dedicated
+second row, so the exact `aim prime resume <session-id>` selector remains visible
+even if daemon commands stop working. Unnamed sessions derive a compact title
+from the first request; Prime may improve that fallback once from its existing
+persisted agent recap. Each new session chooses a colored title pill and stores
+that color in the session JSONL, so reloads, exact resumes, and continuity forks
+retain the same visual identity. A manual `/name` or `/rename` remains
+authoritative.
 
 An explicit AIM provider selection replaces that provider entry immediately. If
 it displaces native auth, AIM keeps one private backup at a deterministic path
