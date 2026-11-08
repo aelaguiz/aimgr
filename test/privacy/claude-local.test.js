@@ -126,10 +126,11 @@ test('abandoned native staging is never adopted; retry closes and reconnects coo
  const {FakeRedisClient}=await import('../helpers/fake-redis.js');
  const {PassThrough}=await import('node:stream');
  const options=fixture(t);
- writeAimgrConfig({homeDir:options.homeDir,config:{redis:{url:'redis://localhost:6379',keyPrefix:'synthetic:'}}});
+ const {readClaudeOfflineBinding}=await import('../../src/network/claude-offline-binding.js');
+ writeAimgrConfig({homeDir:options.homeDir,config:{redis:{url:'redis://localhost:6379',keyPrefix:'synthetic:'},claudeProxyProfiles:{synthetic_route:{socksHost:'127.0.0.1',socksPort:1080,expectedExits:['203.0.113.8']}}}});
  const client=new FakeRedisClient();
  const store=await connectRedisStore({client,keyPrefix:'synthetic:'});
- await ensureClaudeAccountMetadata(store,{label:'synthetic',identity});
+ await ensureClaudeAccountMetadata(store,{label:'synthetic',identity,policy:{egress:{profileRef:'synthetic_route'}}});
  const paths=path.join(options.homeDir,'.aimgr','claude-homes','synthetic');
  const abandoned=path.join(paths,'.login-staging-12345678-1234-4123-8123-123456789abc','.claude');
  fs.mkdirSync(abandoned,{recursive:true,mode:0o700});
@@ -141,8 +142,8 @@ test('abandoned native staging is never adopted; retry closes and reconnects coo
  const output=new PassThrough();output.resume();
  await handleLocalClaudeAuth({homeDir:options.homeDir,opts:{},positional:['claude','login','synthetic'],stdout:output,stdin:new PassThrough(),env:{},
   connectRedisStoreImpl:connect,readClaudeEnvironmentImpl:()=>environment,resolveExecutableOnPathImpl:resolve,setExitCode:()=>assert.fail('login failed'),
-  assertClaudeNativeOwnersStoppedImpl:async()=>{},runClaudeCliImpl:async launch=>{
-   launched=true;assert.equal(connections,1);assert.equal(closes,1,'idle coordination closes before native starts');
+  assertClaudeNativeOwnersStoppedImpl:async()=>{},validateClaudeChromeImpl:async()=>{},runClaudeCliImpl:async launch=>{
+   launched=true;assert.equal(readClaudeOfflineBinding(options.homeDir,'synthetic').invalidated,true);assert.equal(connections,1);assert.equal(closes,1,'idle coordination closes before native starts');
    assert.notEqual(launch.configDir,abandoned);assert.match(path.basename(launch.homeDir),/^\.login-staging-/);
    fs.writeFileSync(path.join(launch.configDir,'.credentials.json'),JSON.stringify({claudeAiOauth:bundle('fresh').claudeAiOauth}),{mode:0o600});
    fs.writeFileSync(path.join(launch.configDir,'.claude.json'),JSON.stringify({oauthAccount:identity}),{mode:0o600});
@@ -152,4 +153,27 @@ test('abandoned native staging is never adopted; retry closes and reconnects coo
  assert.equal(readLocalClaudeCredential(options).nativeClaudeBundle.claudeAiOauth.accessToken,'access-fresh');
  assert.equal(JSON.parse(fs.readFileSync(path.join(abandoned,'.credentials.json'))).claudeAiOauth.accessToken,'access-orphan');
  assert.equal(JSON.parse(await client.get(store.keys.credential({provider:'anthropic',label:'synthetic'}))).credential.access,undefined);
+ assert.equal(readClaudeOfflineBinding(options.homeDir,'synthetic').invalidated,undefined);
+ assert.equal(readClaudeOfflineBinding(options.homeDir,'synthetic').egress.profileRef,'synthetic_route');
+ assert.equal(readClaudeOfflineBinding(options.homeDir,'synthetic').identity.accountUuid,identity.accountUuid);
+});
+
+test('local maintenance observes rejection from the real bounded noninteractive runner',async t=>{
+ const {maintainLocalClaudeCredential}=await import('../../src/credentials/claude-local-maintenance.js');
+ const {prepareClaudeCliLaunch,runClaudeCliNoninteractive}=await import('../../src/targets/claude-runner.js');
+ const {verifySyntheticExecutable,resolveSyntheticSecurityAdapter,prepareSyntheticNativeInvocation,spawnSyntheticSupervisor}=await import('../helpers/claude-native-invocation.js');
+ const options=fixture(t);await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('rejected')});
+ const command=path.join(options.homeDir,'synthetic-native-maintenance');
+ fs.writeFileSync(command,'#!/bin/sh\nif test "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC+x}" = x; then exit 3; fi\nprintf invalid_grant >&2\nexit 1\n',{mode:0o700});
+ const adapter=path.join(options.homeDir,'.aimgr/runtime/claude-file-store/security');fs.mkdirSync(path.dirname(adapter),{recursive:true});fs.writeFileSync(adapter,'#!/bin/sh\nexit 0\n',{mode:0o700});
+ const resolve=()=>command;
+ resolve.prepareClaudeCliLaunchImpl=launch=>prepareClaudeCliLaunch({...launch,verifyInstalledClaudeExecutableImpl:verifySyntheticExecutable,resolveInstalledClaudeSecurityAdapterImpl:resolveSyntheticSecurityAdapter});
+ const result=await maintainLocalClaudeCredential({homeDir:options.homeDir,env:{PATH:process.env.PATH,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'},resolveExecutableOnPathImpl:resolve,
+  runClaudeCliNoninteractiveImpl:launch=>runClaudeCliNoninteractive({...launch,verifyInstalledClaudeExecutableImpl:verifySyntheticExecutable,resolveInstalledClaudeSecurityAdapterImpl:resolveSyntheticSecurityAdapter,
+   prepareClaudeNativeInvocationImpl:prepareSyntheticNativeInvocation,spawnImpl:spawnSyntheticSupervisor})},
+  {metadata,environment,state:{accounts:{synthetic:{provider:'anthropic',expect:{email:identity.emailAddress}}}},force:true});
+ assert.equal(result.outcome,'reauth_required');assert.equal(result.reason,'local_grant_rejected');
+ assert.equal(readLocalClaudeCredential(options).status,'reauth_required');
+ const current=await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('new-login')});
+ assert.equal(current.status,'ready');
 });

@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
+import { saveLocalClaudeLogin } from "../../src/credentials/claude-local.js";
+import { readClaudeEnvironment } from "../../src/privacy/claude-environment.js";
 
 export function installFixtureSecurityAdapter(homeDir) {
   if (process.platform !== "darwin") return;
@@ -108,7 +110,7 @@ export async function createNativeRoutineFixture({ root, profile, destination, c
     // The outer offsite fixture owns loopback TLS at the DEFAULT service
     // names. No backend/API-key override or production admission bypass.
     assert.ok(fs.existsSync('/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST'));
-    credential.nativeClaudeBundle.claudeAiOauth.accessToken = 'sk-ant-oat01-synthetic-not-a-real-token';
+    credential.nativeClaudeBundle.claudeAiOauth.accessToken = 'sk-ant-oat01-synthetic-routine';
     credential.nativeClaudeBundle.claudeAiOauth.subscriptionTypeSource = 'sign_in';
   }
   if (!(await readSnapshot(store)).credentials.length) await importCredentialsSnapshot(store, { credentials: [{ provider: "anthropic", label, credential,
@@ -116,6 +118,14 @@ export async function createNativeRoutineFixture({ root, profile, destination, c
     policy: { expect: { email: "boss@example.com" }, ...(profile ? { egress: { profileRef: profile.profileRef } } : {}), pool: { enabled: true } },
     health: { status: "ready", reason: null },
   }] }, { updatedBy: "synthetic-native-routine" });
+  if (defaultServices) {
+    // This offsite fixture already owns its synthetic OAuth identity. Enroll
+    // that bundle against the real installed environment and normal ownership
+    // transaction; shared snapshot tokens are no longer launch authority.
+    const metadata = (await readSnapshot(store)).credentials.find(record => record.label === label);
+    await saveLocalClaudeLogin({ homeDir, label, metadata, environment: readClaudeEnvironment(),
+      command: claudeBin, nativeClaudeBundle: credential.nativeClaudeBundle });
+  }
   const receipts = [];
   const env = { ...process.env, ...(defaultServices ? { NODE_EXTRA_CA_CERTS: defaultServices.caFile } : {}),
     HOME: homeDir, HERDR_SESSION: "fixture", HERDR_WORKSPACE_ID: "w", HERDR_PANE_ID: "p" };

@@ -17,9 +17,12 @@ import { logoutLocalCodexCredential, maintainLocalCodexCredential } from "../../
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
-import { localClaudeFixture, readClaudeTestEnvironment } from "../helpers/claude-local.js";
+import { localClaudeFixture, readClaudeTestEnvironment, CLAUDE_TEST_ENVIRONMENT } from "../helpers/claude-local.js";
+import { loadClaudeRuntime } from "../../src/coordination/claude-runtime.js";
+import { closeRedisRuntime } from "../../src/coordination/runtime.js";
+import { logoutLocalClaudeCredential } from "../../src/credentials/claude-local.js";
+import { writeClaudeOfflineBinding, invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
 import { renderStatusText } from "../../src/status/render.js";
-import { invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
 import { writeCachedRedisStatusView } from "../../src/status/redis-cache.js";
 
 test("Codex cache projects the legacy 168h window as Week", () => {
@@ -273,6 +276,45 @@ test("offline status revalidates local login after logout and complete user-stat
   assert.equal(missingRuntime.view.accounts[0].credentials.status, "runtime_required");
 });
 
+test("offline status rechecks Claude local login after logout", async () => {
+  const homeDir = mkTempHome();
+  const keyPrefix = "aimgr:offline-claude-test";
+  const client = new FakeRedisClient();
+  writeAimgrConfig({ homeDir, config: { redis: { url: "redis://fake:6379", keyPrefix } } });
+  const store = await connectRedisStore({ client, keyPrefix });
+  const credential = buildAnthropicClaudeCredential({ expiresAtMs: Date.now() + 3_600_000 });
+  const record = { provider: ANTHROPIC_PROVIDER, label: "claude", credential,
+    identity: { accountUuid: "acct_boss", organizationUuid: "org_boss", emailAddress: "boss@example.com" },
+    policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } } };
+  await importCredentialsSnapshot(store, { credentials: [record] });
+  await localClaudeFixture(homeDir, record);
+  const connect = () => connectRedisStore({ client, keyPrefix });
+  const runtime = await loadClaudeRuntime({ homeDir, connectRedisStoreImpl: connect, readClaudeEnvironmentImpl: readClaudeTestEnvironment });
+  await closeRedisRuntime(runtime);
+  const deps = { homeDir, readCodexEnvironmentImpl: readCodexTestEnvironment, readClaudeEnvironmentImpl: readClaudeTestEnvironment,
+    readClaudeProxyHealthImpl: async () => ({}),
+    probeUsageSnapshotsByProviderImpl: async () => ({ [OPENAI_CODEX_PROVIDER]: {} }),
+    fetchJsonWithTimeoutImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      five_hour: { utilization: 12, resets_at: new Date(Date.now() + 3_600_000).toISOString() },
+      seven_day: { utilization: 34, resets_at: new Date(Date.now() + 86_400_000).toISOString() },
+    }) }),
+  };
+  const online = await buildRedisStatusView({ ...deps, connectRedisStoreImpl: connect });
+  assert.equal(online.view.accounts[0].operator.eligible, true);
+  const offline = () => buildRedisStatusView({ ...deps, connectRedisStoreImpl: async () => { throw new Error("offline"); } });
+  assert.equal((await offline()).view.accounts[0].operator.eligible, true);
+  const copied = await buildRedisStatusView({ ...deps, readClaudeEnvironmentImpl: () => ({ binding: "b".repeat(64) }),
+    connectRedisStoreImpl: async () => { throw new Error("offline"); } });
+  assert.equal(copied.view.accounts[0].operator.eligible, false);
+  await logoutLocalClaudeCredential({ homeDir, label: "claude", metadata: record, environment: CLAUDE_TEST_ENVIRONMENT,
+    command: process.execPath, assertStopped: async () => {} });
+  const after = await offline();
+  assert.equal(after.view.redis.status, "cache");
+  assert.equal(after.view.accounts[0].credentials.status, "login_required");
+  assert.deepEqual(after.view.accounts[0].operator, { status: "blocked", eligible: false });
+  assert.doesNotMatch(JSON.stringify(after), /ACCESS_BOSS|REFRESH_BOSS/);
+});
+
 test("ordinary Redis status routes Claude through the bounded canonical cache", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
@@ -291,6 +333,10 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   };
   await importCredentialsSnapshot(store, { credentials: [record] });
   await localClaudeFixture(home, record);
+  const localRuntime = await loadClaudeRuntime({ homeDir: home,
+    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-claude-test" }),
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment });
+  await closeRedisRuntime(localRuntime);
   await acquireRedisCredentialLease(store, {
     provider: ANTHROPIC_PROVIDER,
     label: "claude",
@@ -343,6 +389,14 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   assert.equal(second.claudeUsageStatus.accounts[0].source, "cache");
   assert.equal(buildRedisDiagnosticCacheView(first.view).accounts[0].plan, "max/max_20x");
   assert.deepEqual(second.view.accounts[0].egress, first.view.accounts[0].egress);
+  writeClaudeOfflineBinding(home, "claude", { identity: record.identity, egress: record.policy.egress, version: 1 });
+  const offlineDeps = { readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps,
+    connectRedisStoreImpl: async () => { throw new Error("offline"); } };
+  assert.equal((await buildRedisStatusView({ ...offlineDeps, nowMs: nowMs + 60_001 })).view.accounts[0].operator.eligible, true);
+  invalidateClaudeOfflineBinding(home, "claude");
+  const invalidated = await buildRedisStatusView({ ...offlineDeps, nowMs: nowMs + 60_002 });
+  assert.deepEqual(invalidated.view.accounts[0].operator, { status: "blocked", eligible: false });
+  writeClaudeOfflineBinding(home, "claude", { identity: record.identity, egress: record.policy.egress, version: 1 });
   // A fresh usage cache cannot hide a service that has stopped since that read.
   proxyHealth = "stopped";
   const stopped = await buildRedisStatusView({ readCodexEnvironmentImpl: readCodexTestEnvironment, ...deps, nowMs: nowMs + 61_000 });

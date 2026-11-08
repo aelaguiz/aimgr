@@ -54,8 +54,11 @@ p.add_argument("--poll-settings", action="store_true", help="Diagnostic fixture 
 p.add_argument("--rc-policy-only", action="store_true", help="Eligible unwrapped RC comparison with only disableRemoteControl added")
 p.add_argument("--disable-agent-view", action="store_true", help="Research the narrow native daemon switch, retaining ordinary background tools")
 p.add_argument("--custom-diagnostics", choices=["enhanced", "beta"], help="Synthetic stock-positive/candidate-zero OTLP comparison, including actual traces")
+p.add_argument("--skill-authoring-only", action="store_true", help="Offline skill mutation comparison in the user's existing native bypass mode")
 p.add_argument("--background-review", action="store_true", help="Run the isolated daemon lifetime/reuse/disable experiment")
 a = p.parse_args()
+if a.skill_authoring_only and a.case != ["pro-work-areas-edit"]:
+    raise SystemExit("Skill authoring comparison requires only the edit case")
 base = Path("/opt/aimgr-state-audit")
 root = a.root.resolve()
 if (not (base / "OFFSITE_AUDIT_HOST").is_file()
@@ -197,7 +200,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
         elif route == "/api/oauth/claude_cli/roles":
             self.reply({"organization_role":"admin","workspace_role":"admin","organization_name":"Synthetic Pro"})
         elif route == "/api/oauth/profile":
-            if "schedules" in (active or ""):
+            if "schedules" in (active or "") or "synthetic-routine" in self.headers.get("Authorization", ""):
                 # Match createNativeRoutineFixture's credential identity on
                 # every turn/restart; a server UUID change correctly refuses
                 # the next native launch and is not a scheduling failure.
@@ -874,6 +877,8 @@ try:
             ])
             work_area_files.append((home / "project/edit.txt", b"NATIVE_EDIT_BEFORE"))
             if name.endswith("edit"):
+                if a.skill_authoring_only:
+                    work_area_steps = []
                 skills = home / "project/.claude/skills"
                 skills.mkdir(parents=True)
                 external = home / "external-linked-skills"
@@ -1066,8 +1071,9 @@ print(json.dumps(result))
         arguments = [str(a.claude), "-p", "Reply SYNTHETIC_OK.", "--model", "sonnet"]
         if "work-areas" in name:
             arguments[2] = "Exercise the synthetic work-area sequence."
-            arguments += ["--permission-mode", "plan" if name.endswith("readonly") else "acceptEdits",
-                "--max-turns", "36", "--allowedTools", *["Read(/" + str(directory) + "/**)" for directory in
+            arguments += (["--dangerously-skip-permissions"] if a.skill_authoring_only else
+                ["--permission-mode", "plan" if name.endswith("readonly") else "acceptEdits"])
+            arguments += ["--max-turns", "36", "--allowedTools", *["Read(/" + str(directory) + "/**)" for directory in
                     [*directories, temporary, temporary.resolve(), user_temporary, selected.parent]], "Read(/" + str(selected) + ")"]
             if skill_mutations:
                 arguments += [tool + "(/" + str(directory) + "/**)"
@@ -1198,7 +1204,7 @@ print(json.dumps(result))
                             "logsRequests": sum(urlsplit(r["path"]).path == "/v1/logs" for r in captures),
                             "metricsRequests": sum(urlsplit(r["path"]).path == "/v1/metrics" for r in captures),
                             "tracesRequests": sum(urlsplit(r["path"]).path == "/v1/traces" for r in captures)},
-                        **({"nativeWorkAreas": {"permissionMode": "plan" if name.endswith("readonly") else "acceptEdits",
+                        **({"nativeWorkAreas": {"permissionMode": "bypassPermissions" if a.skill_authoring_only else "plan" if name.endswith("readonly") else "acceptEdits",
                             "defaultDirectoriesAbsentBeforeModel": work_area_absent,
                             "editChanged": (home / "project/edit.txt").read_text() == "NATIVE_EDIT_AFTER",
                             "disabledSkillMutations": [{"file": str(file.relative_to(home)),

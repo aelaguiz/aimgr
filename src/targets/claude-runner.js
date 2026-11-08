@@ -624,14 +624,18 @@ function signalNoninteractiveProcessGroup(child, signalName, {
   }
 }
 
-function drainBoundedChildOutput(stream, { maxBytes, onOverflow }) {
-  if (!stream || typeof stream.on !== "function") return;
+function drainBoundedChildOutput(stream, { maxBytes, onOverflow, capture = false }) {
+  const chunks = [];
+  const read = () => Buffer.concat(chunks).toString("utf8");
+  if (!stream || typeof stream.on !== "function") return read;
   let bytes = 0;
   stream.on("data", (chunk) => {
     bytes += Buffer.byteLength(chunk);
     if (bytes > maxBytes) onOverflow();
+    else if (capture) chunks.push(Buffer.from(chunk));
   });
   stream.resume?.();
+  return read;
 }
 
 function nativeSpawnError(error, profile) {
@@ -668,6 +672,7 @@ export async function runClaudeCliNoninteractive({
   signal = null,
   terminationGraceMs = 1_000,
   maxOutputBytes = 64 * 1024,
+  captureOutput = false,
   fsImpl = fs,
   platform = process.platform,
   verifyInstalledClaudeExecutableImpl = verifyInstalledClaudeExecutable,
@@ -806,8 +811,8 @@ export async function runClaudeCliNoninteractive({
       terminate();
     };
 
-    drainBoundedChildOutput(child.stdout, { maxBytes: maxOutputBytes, onOverflow });
-    drainBoundedChildOutput(child.stderr, { maxBytes: maxOutputBytes, onOverflow });
+    const readStdout = drainBoundedChildOutput(child.stdout, { maxBytes: maxOutputBytes, onOverflow, capture: captureOutput });
+    const readStderr = drainBoundedChildOutput(child.stderr, { maxBytes: maxOutputBytes, onOverflow, capture: captureOutput });
     child.once("error", (error) => finish(reject, nativeSpawnError(error, egressProfile)));
     child.once("close", (code, childSignal) => {
       const normalizedSignal = typeof childSignal === "string" ? childSignal : null;
@@ -815,6 +820,7 @@ export async function runClaudeCliNoninteractive({
         status: normalizedSignal ? null : Number.isInteger(code) ? code : 1,
         signal: normalizedSignal,
         timedOut,
+        ...(captureOutput ? { stdout: readStdout(), stderr: readStderr() } : {}),
         ...nativeExitContext(code, normalizedSignal, egressProfile),
       });
       // A direct child can exit on TERM while a descendant in its detached

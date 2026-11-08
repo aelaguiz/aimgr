@@ -44,6 +44,17 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   assert.doesNotMatch(out, /ssh:\/\/agents@amirs-mac-studio\/~\/\.aimgr\/secrets\.json/);
 });
 
+test("Claude login options work after leading global options", () => {
+  for (const prefix of [["--home", "/tmp/synthetic"], ["--json"], ["--json", "--home", "/tmp/synthetic"]]) {
+    const { positional, opts } = parseArgs([...prefix, "claude", "login", "coder", "--email", "coder@example.test", "--proxy", "office"]);
+    assert.deepEqual(positional, ["claude", "login", "coder"]);
+    assert.equal(opts.claudeLoginEmail, "coder@example.test");
+    assert.equal(opts.claudeLoginProxyRef, "office");
+  }
+  assert.throws(() => parseArgs(["--home", "/tmp/synthetic", "claude", "login", "coder", "--email"]), /--email requires a value/);
+  assert.throws(() => parseArgs(["--json", "claude", "status", "--proxy", "office"]), /Unknown option: --proxy/);
+});
+
 test("Claude run presets expand into the existing explicit passthrough boundary", () => {
   const automaticOpus = parseArgs(["claude", "run", "opus", "--resume"]);
   assert.deepEqual(automaticOpus.positional, ["claude", "run"]);

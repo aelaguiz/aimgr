@@ -120,9 +120,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  --session <name>                  Required for `--mode agent-browser`.",
     "  --auth-file <abs-path>            Required for `aim auth write hermes`; must point at Hermes auth.json.",
     "  -- <claude args...>               For `aim claude run`, arguments after -- pass unchanged to Claude.",
-    "  --source-home <dir>               Optional source HOME for native Claude capture/export on the same host.",
-    "  --source-config-dir <dir>         Exact isolated Claude config directory for Keychain-backed native capture.",
-    "  --manual-callback-stdio           Machine protocol for `aim login <label>`: emit auth_url JSONL, read callback URL from stdin.",
+    "  --manual-callback-stdio           For Claude/Codex local login: emit auth_url JSONL and read the native callback from stdin.",
     "",
   ];
   stdout.write(`${lines.join("\n")}\n`);

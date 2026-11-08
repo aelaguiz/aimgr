@@ -1,4 +1,7 @@
 import { readClaudeAccountMetadata } from "../coordination/claude-metadata.js";
+import { readCachedClaudeAccountMetadata } from "../coordination/claude-runtime.js";
+import { readLocalClaudeCredential } from "../credentials/claude-local.js";
+import { readClaudeEnvironment } from "../privacy/claude-environment.js";
 import { redactRedisEndpoint } from "../core/sanitize.js";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
@@ -524,13 +527,38 @@ export async function buildRedisStatusView({
       if (local.status !== "ready") account.operator = { status: local.status === "reauth_required" ? "reauth" : "blocked", eligible: false };
     }
 
+    // Shared status is only a historical observation. Check this machine's
+    // current owner against safe cached metadata before reporting availability.
+    let claudeEnvironment = null;
+    let claudeMetadata = [];
+    try {
+      claudeEnvironment = (readClaudeEnvironmentImpl ?? readClaudeEnvironment)();
+      claudeMetadata = readCachedClaudeAccountMetadata({ homeDir, environment: claudeEnvironment });
+    } catch { /* Missing local setup or metadata cannot establish readiness. */ }
+    for (const account of cached.accounts) {
+      if (account.provider !== ANTHROPIC_PROVIDER) continue;
+      let local = { status: claudeEnvironment ? "login_required" : "runtime_required" };
+      const metadata = claudeMetadata.find(record => record.label === account.label);
+      if (claudeEnvironment && metadata) {
+        try { local = readLocalClaudeCredential({ homeDir, label: account.label, metadata, environment: claudeEnvironment }); }
+        catch { local = { status: "local_auth_unavailable" }; }
+      }
+      const launchable = local.status === "ready" || local.status === "expired";
+      const expiry = getAnthropicCredentialView(local.credential)?.expiresAt;
+      account.credentials = { status: local.status === "ready" ? "credential_ready" : local.status === "expired" ? "credential_expired" : local.status,
+        source: "environment-local", ...(expiry ? { expiresAt: expiry, expiresIn: formatExpiresIn(expiry, nowMs) } : {}) };
+      if (!launchable) account.operator = { status: local.status === "reauth_required" ? "reauth" : "blocked", eligible: false };
+    }
+
     // The assignment is cached provider data; local route availability is a
     // current machine fact. Recheck it even while Redis is unreachable. A newly
     // installed route does not establish fresh account readiness while offline.
     for (const account of cached.accounts) {
       if (account.provider !== ANTHROPIC_PROVIDER) continue;
+      const binding = readClaudeOfflineBinding(homeDir, account.label);
+      if (binding?.invalidated) account.operator = { status: "blocked", eligible: false };
       if (account.egress?.mode !== "proxy") {
-        if (readClaudeOfflineBinding(homeDir, account.label) && ["direct", "unknown"].includes(account.egress?.mode)) {
+        if (binding && ["direct", "unknown"].includes(account.egress?.mode)) {
           account.egress = { mode: "missing_assignment" };
           account.operator = { status: "blocked", eligible: false };
         }

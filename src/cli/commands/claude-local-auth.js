@@ -6,7 +6,8 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { normalizeLabel } from '../../core/normalize.js';
 import { loadClaudeRuntime } from '../../coordination/claude-runtime.js';
-import { ensureClaudeAccountMetadata } from '../../coordination/claude-metadata.js';
+import { ensureClaudeAccountMetadata, readClaudeAccountMetadata } from '../../coordination/claude-metadata.js';
+import { acquireClaudeAssignmentLock, writeClaudeOfflineBinding } from '../../network/claude-offline-binding.js';
 import { closeRedisRuntime } from '../../coordination/runtime.js';
 import { buildCoordinationView } from '../../coordination/snapshot.js';
 import { resolveNativeAccountProfile } from '../../network/claude-native-route.js';
@@ -70,7 +71,7 @@ export function buildClaudeLoginEnvironment({ env, profile, manual, tabs }) {
 export async function handleLocalClaudeAuth(context) {
   const { homeDir, opts, positional, stdout, stdin, env } = context;
   const label = normalizeLabel(positional[2]);
-  if (positional.length !== 3) throw new Error('Usage: aim claude login <label> [--manual-callback-stdio] | aim claude logout <label>');
+  if (positional.length !== 3) throw new Error('Usage: aim claude login <label> [--email <email>] [--proxy <profileRef>] [--manual-callback-stdio] | aim claude logout <label>');
   const manual = opts.manualCallbackStdio === true;
   const emit = value => stdout.write(`${JSON.stringify(value)}\n`);
   let runtime, stagingHome, input, timeout, child;
@@ -171,7 +172,19 @@ export async function handleLocalClaudeAuth(context) {
     await saveLocalClaudeLogin({ homeDir, label, metadata, environment: runtime.environment, command,
       nativeClaudeBundle: staged.nativeClaudeBundle,
       ...(context.assertClaudeNativeOwnersStoppedImpl ? { assertStopped: context.assertClaudeNativeOwnersStoppedImpl } : {}) });
-    writeJsonFileIfChanged(path.join(homeDir,'.aimgr','claude-account-metadata.json'), {schema:1,environmentBinding:runtime.environment.binding,credentials:[...runtime.snapshot.credentials.filter(item=>item.label!==label),{...metadata,credential:{}}]}, {mode:0o600});
+    // A local proxy setter uses EX and invalidates offline admission. Publish
+    // the newly verified route under SH, after enrollment's possible EX bind.
+    const cacheGuard=await acquireClaudeAssignmentLock(homeDir,label,{waitForTransition:true});
+    try {
+      const records=await readClaudeAccountMetadata(runtime.store);
+      const confirmed=records.find(item=>item.label===label);
+      if(!confirmed || confirmed.identity?.accountUuid!==identity.accountUuid || confirmed.identity?.organizationUuid!==identity.organizationUuid) throw new Error('Claude account changed before login completed.');
+      const confirmedState=buildCoordinationView({credentials:[confirmed]},{localState:runtime.localState,provider:'anthropic'});
+      if(JSON.stringify(resolveNativeAccountProfile({homeDir,state:confirmedState,label}))!==JSON.stringify(profile)) throw new Error('Claude route changed before login completed.');
+      cacheGuard.assertOwned();
+      writeJsonFileIfChanged(path.join(homeDir,'.aimgr','claude-account-metadata.json'), {schema:1,environmentBinding:runtime.environment.binding,credentials:records}, {mode:0o600});
+      writeClaudeOfflineBinding(homeDir,label,{identity:confirmed.identity,...(confirmed.policy?.egress?{egress:confirmed.policy.egress}:{}),version:confirmed.version});
+    } finally {await cacheGuard.release();}
     if (manual || opts.json) emit({ type: 'result', ok: true, label, provider: 'anthropic', authority: 'environment-local' });
     else stdout.write(`Claude ${label} is signed in on this machine.\n`);
   } catch (error) {
