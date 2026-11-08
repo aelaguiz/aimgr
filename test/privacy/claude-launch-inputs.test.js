@@ -174,6 +174,25 @@ test("task grants retain trusted projects, selected roots, skills and worktree m
   assert.throws(() => resolveClaudeTaskReadRoots({ ...inputs, sharedMemoryDirectory: path.join(home, ".claude") }));
 });
 
+test("missing settings work directories and stale broad trust do not veto launch", t => {
+  const root = fixture(t), home = path.join(root, "home"), config = path.join(home, ".aimgr/account/.claude");
+  const project = path.join(home, "work/project"), missing = path.join(home, "work/not-checked-out-yet");
+  const trusted = path.join(home, "selected-trusted-project");
+  for (const directory of [config, project, trusted]) fs.mkdirSync(directory, { recursive: true });
+  const staleFile = path.join(home, "stale-nondirectory-project"); fs.writeFileSync(staleFile, "synthetic");
+  fs.writeFileSync(path.join(config, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [missing] } }));
+  const appState = { projects: Object.fromEntries([home, root, "/", path.join(home, ".aimgr"),
+    path.dirname(config), path.join(home, "stale-project"), staleFile, trusted].map(file => [file, { hasTrustDialogAccepted: true }])) };
+  const inputs = resolveClaudeConfiguredInputs({ args: [], cwd: project, userHomeDir: home, configDir: config,
+    composition: { settings: {} }, appState });
+  const roots = resolveClaudeTaskReadRoots({ ...inputs, userHomeDir: home, configDir: config, appState });
+  assert.ok(roots.includes(missing), "the selected future settings root remains usable");
+  assert.ok(roots.includes(trusted), "usable trusted projects retain access");
+  for (const file of [home, root, "/", path.join(home, ".aimgr"), path.dirname(config), staleFile]) assert.ok(!roots.includes(file));
+  assert.throws(() => resolveClaudeTaskReadRoots({ ...inputs, userHomeDir: home, configDir: config,
+    additionalDirectories: [home] }), error => error.message.includes(home));
+});
+
 test("linked-worktree package fallback and ancestor MCP preserve exact external instruction targets", t => {
   const root = fixture(t), home = path.join(root, "home"), config = path.join(home, ".aimgr/a/.claude");
   const main = path.join(home, "main"), project = path.join(home, "trees/feature");
@@ -229,10 +248,12 @@ test("the selected original-browser helper and manual callback environment remai
   fs.writeFileSync(helper, "synthetic helper never executed");
   const callback = path.join(config, "login-url.json");
   const env = { BROWSER: helper, AIMGR_CLAUDE_LOGIN_STDIO_URL: callback };
-  const inputs = resolveClaudeConfiguredInputs({ args: [], cwd: project, userHomeDir: home, configDir: config,
-    composition: { settings: {} }, env });
+  const options = { args: [], cwd: project, userHomeDir: home, configDir: config,
+    composition: { settings: {} }, env };
+  const inputs = resolveClaudeConfiguredInputs({ ...options, loginStaging: true });
   const roots = resolveClaudeTaskReadRoots({ ...inputs, userHomeDir: home, configDir: config });
   assert.ok(roots.includes(helper)); assert.ok(!roots.includes(path.dirname(helper)));
+  assert.ok(!resolveClaudeConfiguredInputs(options).taskFiles.includes(helper), "ordinary sessions do not grant an arbitrary BROWSER file");
   const launch = buildClaudePrivacyEnvironment({ env, protectedAccount: true, artifactSet: "a".repeat(64),
     emptyProfiles: path.join(config, "profiles"), scratch: path.join(config, "scratch") });
   assert.equal(launch.BROWSER, helper); assert.equal(launch.AIMGR_CLAUDE_LOGIN_STDIO_URL, callback);

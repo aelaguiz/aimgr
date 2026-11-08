@@ -65,7 +65,6 @@ const MAX_CLAUDE_REDIS_ACCOUNTS = 256;
 const MAX_CLAUDE_USAGE_WINDOWS = 16;
 const HEALTHY_USAGE_STATES = new Set(["usage_readable", "usage_limited"]);
 const HUMAN_ACTION_CREDENTIAL_STATES = new Set([
-  "credential_missing",
   "credential_candidate",
   "credential_incomplete",
   "identity_unverified",
@@ -333,7 +332,8 @@ function buildIdentityBinding(record, accountIdentityKey, credentialGeneration) 
 function buildCredentialFacts(record, nowMs, { homeDir, environment, legacyAuthority = false } = {}) {
   let local;
   if (!legacyAuthority) {
-    try { local = environment ? readLocalClaudeCredential({homeDir,label:record.label,metadata:record,environment}) : null; } catch {}
+    try { local = environment ? readLocalClaudeCredential({homeDir,label:record.label,metadata:record,environment}) : null; }
+    catch { local = { status: "local_auth_unavailable" }; }
   }
   const storedCredential = legacyAuthority ? (isObject(record?.credential) ? record.credential : {}) : (local?.credential ?? {});
   const credential = getAnthropicCredentialView(storedCredential);
@@ -368,6 +368,10 @@ function buildCredentialFacts(record, nowMs, { homeDir, environment, legacyAutho
   let state;
   if (reauthRequired) {
     state = "reauth_required";
+  } else if (local?.status === "identity_mismatch") {
+    state = "identity_mismatch";
+  } else if (local?.status === "local_auth_unavailable") {
+    state = "credential_incomplete";
   } else if (Object.keys(storedCredential).length === 0) {
     state = "credential_missing";
   } else if (candidateRecord) {
@@ -1388,6 +1392,9 @@ function describeClaudeOperatorState(account, nowMs) {
   ) {
     return { status: "NEEDS YOU", next: `aim claude login ${label}` };
   }
+  if (credentialState === "credential_missing") {
+    return { status: "NOT SIGNED IN", next: `aim claude login ${label}` };
+  }
   if (
     account?.locked === false
     && (
@@ -1519,7 +1526,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
     ]);
   }
   return `${[
-    `CLAUDE: ${countStatus("NO ROUTE") ? `${countStatus("NO ROUTE")} without a local route · ` : ""}${["PROXY DOWN", "PROXY STARTING", "PROXY UNKNOWN", "PROXY ERROR"].filter(status => countStatus(status)).map(status => `${countStatus(status)} ${status.toLowerCase()} · `).join("")}${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
+    `CLAUDE: ${countStatus("NO ROUTE") ? `${countStatus("NO ROUTE")} without a local route · ` : ""}${["PROXY DOWN", "PROXY STARTING", "PROXY UNKNOWN", "PROXY ERROR"].filter(status => countStatus(status)).map(status => `${countStatus(status)} ${status.toLowerCase()} · `).join("")}${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NOT SIGNED IN") ? `${countStatus("NOT SIGNED IN")} not signed in · ` : ""}${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
     ...formatStatusTable(rows),
     formatWeeklyCapacityFreeingNextDayLine(
       summarizeWeeklyCapacityFreeingNextDay(accounts.map((account) => findOverallWeeklyWindow(account.usage)), nowMs),

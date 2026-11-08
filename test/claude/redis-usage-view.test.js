@@ -393,6 +393,20 @@ test("Claude Redis views expose reauth_required without probing and preserve ord
   assert.match(verbose, /credential_expired/);
 });
 
+test("Claude status distinguishes missing login from a mismatched local identity", async () => {
+  const record = anthropicRecord("mismatch");
+  const { homeDir, connectRedisStoreImpl } = await setup([record]);
+  const local = readLocalClaudeCredential({ homeDir, label: record.label, metadata: record, environment: CLAUDE_TEST_ENVIRONMENT });
+  const statePath = path.join(local.configDir, ".claude.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.oauthAccount.accountUuid = "different-account";
+  fs.writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
+
+  const status = await collectClaudeRedisAccountUsageStatus({ homeDir, connectRedisStoreImpl, nowMs: NOW_MS });
+  assert.equal(status.accounts[0].credentialState, "identity_mismatch");
+  assert.match(renderClaudeRedisAccountUsageStatus(status), /mismatch\s+NEEDS YOU.*aim claude login mismatch/);
+});
+
 test("Claude status ignores legacy credential leases, avoids web fallback, and reuses the shared cache", async () => {
   const { homeDir, client, connectRedisStoreImpl } = await setup([
     anthropicRecord("ready"),
@@ -468,8 +482,8 @@ test("Claude status ignores legacy credential leases, avoids web fallback, and r
   const serializedCache = fs.readFileSync(cachePath, "utf8");
   assert.doesNotMatch(serializedCache, /ACCESS_SECRET|REFRESH_SECRET|private\.example|acct-private|org-private/i);
   const rendered = renderClaudeRedisAccountUsageStatus(first);
-  assert.match(rendered, /^CLAUDE: 1 ready · 0 limited · 0 in use · 1 needs you · 0 unknown/m);
-  assert.match(rendered, /candidate\s+NEEDS YOU.*aim claude login candidate/);
+  assert.match(rendered, /^CLAUDE: 1 ready · 0 limited · 0 in use · 1 not signed in · 0 needs you · 0 unknown/m);
+  assert.match(rendered, /candidate\s+NOT SIGNED IN.*aim claude login candidate/);
   assert.match(rendered, /ready\s+READY.*use now/);
   assert.match(rendered, /ready\s+READY\s+max\/max_20x/);
   assert.doesNotMatch(rendered, /usage_readable/);
@@ -549,15 +563,21 @@ test("Claude human status renders the four launch states with frozen precedence"
         credentialState: "reauth_required",
         credentialReady: false,
       }),
+      account("invalid", {
+        authState: "auth_invalid",
+        credentialState: "credential_missing",
+        credentialReady: false,
+      }),
       account("unknown", { locked: null }),
     ],
   });
 
-  assert.match(rendered, /^CLAUDE: 2 ready · 0 limited · 1 in use · 1 needs you · 1 unknown/m);
+  assert.match(rendered, /^CLAUDE: 2 ready · 0 limited · 1 in use · 2 needs you · 1 unknown/m);
   assert.match(rendered, /ready\s+READY.*2m\s+unknown\s+--\s+use now/);
   assert.match(rendered, /active\s+IN USE.*session active/);
   assert.match(rendered, /fixing\s+READY.*use now/);
   assert.match(rendered, /needs\s+NEEDS YOU.*aim claude login needs/);
+  assert.match(rendered, /invalid\s+NEEDS YOU.*aim claude login invalid/);
   assert.match(rendered, /unknown\s+UNKNOWN.*retry status/);
 });
 

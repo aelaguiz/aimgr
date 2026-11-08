@@ -16,6 +16,8 @@ export const CLAUDE_LOCAL_AUTHORITY = "environment-local";
 export const claudeCredentialGeneration = value => createHash("sha256").update(JSON.stringify(value ?? null)).digest("hex");
 const ownerName = ".aim-privacy-identity.json";
 const providerKeys = ["claudeAiOauth", "enterpriseGateway", "gatewayTrust", "gatewayAllowlistEntries", "designOauth", "cloudSessionsOauth", "organizationUuid", "trustedDeviceToken", "trustedDeviceEnrolledAfterRefusalAtMs", "coworkRemoteDevice"];
+const stoppedOwnerError = label => Object.assign(new Error(`Claude ${label}: stop this account's Claude sessions and background work on this machine, then run \`aim claude login ${label}\` again.`),
+  { code: 'AIMGR_CLAUDE_LOCAL_LOGIN_REQUIRES_STOPPED_OWNER' });
 
 function privateJson(file) {
   let fd;
@@ -65,6 +67,31 @@ export function readLocalClaudeCredential({ homeDir, label, metadata, environmen
     } };
 }
 
+// Refuse a stopped-owner conversion before asking the user to authorize a new
+// grant. The commit repeats this check because sessions can start during login.
+export async function assertLocalClaudeLoginTransitionAllowed({ homeDir, label, metadata, environment, command,
+  assertStopped = assertClaudeNativeOwnersStopped }) {
+  const options = { homeDir, label, metadata, environment };
+  const current = readLocalClaudeCredential(options);
+  if (current.owner) return;
+  const paths = localClaudePaths(options);
+  ensureSafeManagedClaudeStorage({ descriptor: paths.descriptor });
+  let guard;
+  try {
+    guard = await acquireClaudeAssignmentLock(homeDir, label, { exclusive: true });
+    // A peer may have finished the same enrollment before we acquired EX.
+    if (!readLocalClaudeCredential(options).owner) {
+      await assertStopped({ configDir: fs.realpathSync(paths.configDir), command });
+      guard.assertOwned();
+    }
+  } catch (error) {
+    if (error.code === 'AIMGR_CLAUDE_ASSIGNMENT_BUSY' || guard) {
+      throw stoppedOwnerError(label);
+    }
+    throw error;
+  } finally { await guard?.release(); }
+}
+
 // Only a successful official login in this environment may call this. Staging
 // is never a fallback for launch and never enters shared state.credentials.
 export async function saveLocalClaudeLogin({ homeDir, label, metadata, environment, command,
@@ -81,7 +108,9 @@ export async function saveLocalClaudeLogin({ homeDir, label, metadata, environme
     const sameOwner = current.owner?.environmentBinding === binding && current.owner?.organizationUuid === identity.organizationUuid;
     if (!sameOwner) {
       await guard.release();
-      guard = await acquireClaudeAssignmentLock(homeDir, label, { exclusive: true });
+      guard = null;
+      try { guard = await acquireClaudeAssignmentLock(homeDir, label, { exclusive: true }); }
+      catch (error) { if (error.code === 'AIMGR_CLAUDE_ASSIGNMENT_BUSY') throw stoppedOwnerError(label); throw error; }
       const migrationDir = path.join(paths.claudeHome, ".privacy-migration");
       fs.mkdirSync(migrationDir, { recursive: true, mode: 0o700 });
       await migrateClaudePrivateState({ userHomeDir: fs.realpathSync(homeDir), configDir: fs.realpathSync(paths.configDir), migrationDir: fs.realpathSync(migrationDir),
@@ -120,7 +149,7 @@ export async function saveLocalClaudeLogin({ homeDir, label, metadata, environme
       });
     }
     return readLocalClaudeCredential({ homeDir, label, metadata, environment });
-  } finally { await guard.release(); }
+  } finally { await guard?.release(); }
 }
 
 export async function logoutLocalClaudeCredential({ homeDir, label, metadata, environment, command,

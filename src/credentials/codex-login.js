@@ -101,8 +101,8 @@ export async function ensureInteractiveLoginBindingForProvider({
 }) {
   if (normalizeProviderId(provider) === ANTHROPIC_PROVIDER) {
     throw new Error(
-      `Claude labels now use native Claude bundle capture/import only. ` +
-        `Use \`aim claude capture-native ${normalizeLabel(label)}\`, \`aim claude import-native ${normalizeLabel(label)} --in <file>\`, or \`aim ${normalizeLabel(label)}\`.`,
+      `For managed Claude use \`aim claude login ${normalizeLabel(label)}\`; ` +
+        `for legacy Prime/Pi enrollment use \`aim login ${normalizeLabel(label)} --provider anthropic\`.`,
     );
   }
   const normalizedLabel = normalizeLabel(label);

@@ -94,8 +94,8 @@ export async function performLabelMaintenance({
     } else if (provider === ANTHROPIC_PROVIDER) {
       if (!allowAnthropicNativeMaintenance) {
         throw new Error(
-          `Redis-backed Claude maintenance for label=${normalizedLabel} is owned by ` +
-            "`aim claude capture-native`, `aim claude import-native`, and `aim claude run`.",
+          `For managed Claude use \`aim claude login ${normalizedLabel}\`; ` +
+            `for legacy Prime/Pi enrollment use \`aim login ${normalizedLabel} --provider anthropic\`.`,
         );
       }
       ensureAnthropicLabelConfigured(state, normalizedLabel);

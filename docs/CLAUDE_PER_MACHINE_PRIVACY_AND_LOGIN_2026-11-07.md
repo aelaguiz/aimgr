@@ -145,7 +145,10 @@ never manufacture ownership of a legacy token.
 
 First conversion, an account/organization rebind or an actual identity rotation
 uses the existing stopped-owner transition and journal, because native processes
-can retain and rewrite old identity/app state. Do not run new sessions under
+can retain and rewrite old identity/app state. Check that transition before
+opening browser authorization, then check again at commit in case a session
+started meanwhile. Report the account's running sessions as the reason to wait.
+Do not run new sessions under
 unproven old IDs as an automatic fallback. Logout uses the existing local guard
 to prevent active cached owners from continuing after a claimed local removal;
 it preserves independent MCP credentials and does not claim provider-wide revoke.
@@ -179,6 +182,10 @@ with an overlay containing local credentials. This PR isolates managed Claude
 primary login; it does not claim to migrate every Anthropic credential used by
 other harnesses.
 
+Prime/Pi refresh their legacy Anthropic grant on demand through that separate
+path. `aim auth maintain` handles local Claude and Codex grants and shared xAI
+credentials; it does not download or periodically refresh legacy Anthropic grants.
+
 Claude's native `.credentials.json` mixes primary OAuth with third-party MCP/XAA
 and package credentials. Never sync the entire file or overwrite it with only
 the primary field. Preserve and classify third-party entries under native write
@@ -202,6 +209,10 @@ existing whole-home and ancestor exclusions. Those are user-selected work areas,
 alongside current task roots and deliberately configured extras, including native
 `permissions.additionalDirectories` and `--add-dir`. Removing their access would
 be an additional restriction outside this migration.
+Missing additional directories remain usable when created later. Skip stale,
+inaccessible, non-directory or overly broad historical trust entries without
+blocking launch; an explicit whole-home or whole-disk grant still refuses with
+the offending path identified.
 The pinned CLI rejects files in `--add-dir`; `--file` downloads remote resources.
 Use its existing literal `Read(//absolute/file)` allow-rule surface for explicit
 outside-file selection, preserving the selected settings tier and origin. Grant

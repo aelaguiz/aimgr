@@ -177,3 +177,35 @@ test('local maintenance observes rejection from the real bounded noninteractive 
  const current=await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('new-login')});
  assert.equal(current.status,'ready');
 });
+
+test('first conversion refuses live owners before browser auth; same-owner relogin stays concurrent',async t=>{
+ const {assertLocalClaudeLoginTransitionAllowed}=await import('../../src/credentials/claude-local.js');
+ const {acquireClaudeAssignmentLock}=await import('../../src/network/claude-offline-binding.js');
+ const {handleLocalClaudeAuth}=await import('../../src/cli/commands/claude-local-auth.js');
+ const {connectRedisStore}=await import('../../src/coordination/redis-store.js');
+ const {ensureClaudeAccountMetadata}=await import('../../src/coordination/claude-metadata.js');
+ const {writeAimgrConfig}=await import('../../src/config/aimgr-config.js');
+ const {FakeRedisClient}=await import('../helpers/fake-redis.js');
+ const {PassThrough}=await import('node:stream');
+ const options=fixture(t),client=new FakeRedisClient();
+ writeAimgrConfig({homeDir:options.homeDir,config:{redis:{url:'redis://localhost:6379',keyPrefix:'synthetic:'}}});
+ const store=await connectRedisStore({client,keyPrefix:'synthetic:'});
+ await ensureClaudeAccountMetadata(store,{label:'synthetic',identity});
+ let guard=await acquireClaudeAssignmentLock(options.homeDir,'synthetic');
+ let output='';const stdout=new PassThrough();stdout.on('data',chunk=>{output+=chunk;});
+ try {
+  let failed=false;
+  await handleLocalClaudeAuth({homeDir:options.homeDir,opts:{manualCallbackStdio:true},positional:['claude','login','synthetic'],stdout,stdin:new PassThrough(),env:{},
+   connectRedisStoreImpl:async()=>store,readClaudeEnvironmentImpl:()=>environment,resolveExecutableOnPathImpl:()=>process.execPath,setExitCode:code=>{assert.equal(code,1);failed=true;},
+   assertClaudeNativeOwnersStoppedImpl:async()=>assert.fail('busy SH must refuse before owner inventory'),runClaudeCliImpl:async()=>assert.fail('native/browser auth must not start')});
+  assert.equal(failed,true);
+  const error=JSON.parse(output);assert.equal(error.code,'AIMGR_CLAUDE_LOCAL_LOGIN_REQUIRES_STOPPED_OWNER');assert.match(error.error,/Stop this account's Claude sessions/);
+ } finally {await guard.release();}
+ await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('enrolled')});
+ guard=await acquireClaudeAssignmentLock(options.homeDir,'synthetic');
+ try {await assertLocalClaudeLoginTransitionAllowed({...options,assertStopped:async()=>assert.fail('same-owner relogin must remain concurrent')});}
+ finally {await guard.release();}
+ let stoppedChecks=0;
+ await assertLocalClaudeLoginTransitionAllowed({...options,environment:{binding:'b'.repeat(64)},assertStopped:async()=>{stoppedChecks++;}});
+ assert.equal(stoppedChecks,1,'a real environment rebind must preflight stopped native owners');
+});

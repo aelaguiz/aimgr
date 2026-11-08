@@ -85,7 +85,7 @@ bash scripts/install-auth-maintainer.sh
 bash scripts/install-auth-maintainer.sh --uninstall
 ```
 
-Managed Claude and Codex maintenance uses logins authorized in this environment. Prime/Pi Anthropic credentials retain their separate legacy maintenance path.
+`aim auth maintain` handles local Claude and Codex logins and shared xAI credentials. Prime/Pi Anthropic credentials refresh on demand through their separate legacy path.
 
 
 Redis administration and repair:
@@ -269,6 +269,22 @@ profile with `aim claude login <label> --email <email> --proxy <profileRef>`.
 proxy assignment cannot be changed by login. `aim login <label> --provider anthropic`
 is the separate legacy Prime/Pi enrollment and does not enroll managed Claude.
 Existing label homes, history, settings and third-party credentials remain in place.
+
+For a remote machine whose browser is on the original host, run
+`aim claude login <label> --manual-callback-stdio` on the destination. A new
+label also needs `--email <email>` and, when assigned, `--proxy <profileRef>`.
+The command emits a JSON line with `type: "auth_url"` and a URL. Validate the
+original browser profile and assigned route on the browser host, then open that
+URL there. Return the complete native callback privately to the destination as
+one JSON line on stdin: `{"url":"<callback URL>"}` or
+`{"code":"<native code#state>"}`. The destination validates the callback and
+its native Claude process completes the exchange. Keep the URL and callback out
+of shell history and shared logs; do not copy browser state or primary tokens.
+The command emits a result or error as JSON and times out after five minutes.
+
+Prime/Pi's legacy Anthropic helper may refresh its separate Redis-backed grant
+on demand when the token is due or rejected. That maintenance uses a separate
+legacy home and does not refresh or export the managed Claude primary login.
 
 Claude proxy routing is optional and configured per account. Accounts without
 an assignment do not need proxy infrastructure, Chrome/CDP bindings or route
@@ -808,7 +824,8 @@ Claude access-token expiry is not the same thing as subscription inactivity. `cr
 means the stored access credential needs maintenance; `stale_auth` means Anthropic rejected it.
 Neither state by itself proves that billing was cancelled. Native Claude owns local
 refresh; managed primary tokens are not published to Redis. Genuine reauthentication
-is shown as `NEEDS YOU` with `aim claude login <label>`.
+is shown as `NEEDS YOU` with `aim claude login <label>`. A label without a
+local login is shown as `NOT SIGNED IN` with the same guidance.
 Each normal managed launch also inherits the machine's complete user-level
 Claude MCP definitions, personal skills, enabled user plugins, and user hooks
 at launch time. AIM passes field-only MCP/hook overlays through Claude's native

@@ -85,7 +85,7 @@ export async function prepareClaudeNativeInvocation({
     const managedPolicy = inspectManagedPolicy({ protectedAccount, providerEnvironment, cwd, userHomeDir: preparedLaunch.userHomeDir });
     if (readRoots === undefined) {
       const task = resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDir: preparedLaunch.userHomeDir,
-        composition, env, appState, stdoutIsTTY });
+        composition, env, appState, stdoutIsTTY, loginStaging: preparedLaunch.loginStaging });
       executableAliases = task.executableAliases ?? [];
       task.taskFiles.push(...(managedPolicy.tlsReadPaths ?? []));
       const sharedMemoryDirectory = path.join(preparedLaunch.userHomeDir, ".claude/projects");

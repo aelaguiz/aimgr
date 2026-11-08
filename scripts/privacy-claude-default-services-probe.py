@@ -267,7 +267,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
             self.reply({"input_tokens": 10})
         elif "/messages" in self.path:
             content = {"type": "text", "text": "SYNTHETIC_OK"}
-            if "work-areas" in active:
+            if "work-areas" in active or "missing-settings-trust" in active:
                 # The first model turn happens after AIM selected and admitted
                 # its roots. Create future work directories only at this point.
                 for file, data in work_area_files:
@@ -777,6 +777,7 @@ cases = [
     ("pro-custom-diagnostics", "pro", False, "sign_in"),
     ("pro-work-areas-edit", "pro", True, "sign_in"),
     ("pro-work-areas-readonly", "pro", True, "sign_in"),
+    ("pro-missing-settings-trust", "pro", True, "sign_in"),
     ("pro-sign-in", "pro", True, "sign_in"),
     ("max-sign-in", "max", True, "sign_in"),
     ("team-positive-control", "team", True, "sign_in"),
@@ -925,6 +926,19 @@ else:
 ''')
                 work_area_steps.append({"id": "work_area_temp_background", "name": "Bash", "input": {
                     "command": shlex.join(["/usr/bin/python3", str(background)]), "description": "Launch the retained late-temp child"}})
+        if "missing-settings-trust" in name:
+            future = home / "settings-work-not-checked-out/proof.txt"
+            settings_root_absent = not future.parent.exists()
+            trusted = home / "explicitly-trusted-project"
+            trusted.mkdir()
+            (trusted / "proof.txt").write_text("NATIVE_EXISTING_TRUSTED_ROOT")
+            private = home / "unselected-private"
+            private.mkdir()
+            (private / "proof.txt").write_text("NATIVE_UNSELECTED_PRIVATE_CONTENT")
+            (config / "settings.json").write_text(json.dumps({"permissions": {"additionalDirectories": [str(future.parent)]}}))
+            work_area_files = [(future, b"NATIVE_MISSING_SETTINGS_ROOT")]
+            work_area_steps = [{"id": "work_area_context_" + label, "name": "Read", "input": {"file_path": str(file)}}
+                for label, file in [("future", future), ("trusted", trusted / "proof.txt"), ("private", private / "proof.txt")]]
         if "dynamic-directory" in name or "startup-directory" in name:
             (home / "added-dir").mkdir()
             (home / "added-dir/proof.txt").write_text("NATIVE_DYNAMIC_DIRECTORY_CONTENT_CANARY\n")
@@ -936,6 +950,9 @@ else:
                  "theme": "dark", "numStartups": 10,
                  "projects": {str(home / "project"): {"hasTrustDialogAccepted": True,
                                                        "hasCompletedProjectOnboarding": True}}}
+        if "missing-settings-trust" in name:
+            for directory in [home, home.parent, Path("/"), home / ".aimgr", config.parent, home / "stale-trusted-project", trusted]:
+                state["projects"][str(directory)] = {"hasTrustDialogAccepted": True}
         if "detached-terminal" in name:
             state["defaultToAgentsView"] = True
             (config / "settings.json").write_text(json.dumps({"skipDangerousModePermissionPrompt": True, "disableAgentView": False,
@@ -1079,6 +1096,9 @@ print(json.dumps(result))
                 arguments += [tool + "(/" + str(directory) + "/**)"
                     for directory in [skills, external] for tool in ["Read", "Edit", "Write"]]
                 arguments += ["Bash", "--disable-slash-commands"]
+        if "missing-settings-trust" in name:
+            arguments += ["--permission-mode", "plan", "--allowedTools", *["Read(/" + str(directory) + "/**)"
+                for directory in [future.parent, trusted, private]]]
         if "startup-directory" in name:
             arguments[2] = "Read the extra folder proof. NATIVE_ADDED_DIRECTORY."
             arguments += ["--add-dir", str(home / "added-dir")]
@@ -1216,6 +1236,11 @@ print(json.dumps(result))
                                 "isError": work_area_results.get(step["id"], {}).get("is_error", False),
                                 "content": work_area_results.get(step["id"], {}).get("content", [])}
                                 for step in work_area_steps]}} if "work-areas" in name else {}),
+                        **({"nativeLaunchContext": {"settingsRootAbsentAtLaunch": settings_root_absent,
+                            "results": [{"id": step["id"], "returned": step["id"] in work_area_results,
+                                "isError": work_area_results.get(step["id"], {}).get("is_error", False),
+                                "content": work_area_results.get(step["id"], {}).get("content", [])} for step in work_area_steps]}}
+                            if "missing-settings-trust" in name else {}),
                         "requestPaths": sorted(set(urlsplit(r["path"]).path for r in captures)),
                         "modelRequests": sum("/messages" in r["path"] for r in captures),
                         "modelSources": sorted(set(r["source"] for r in captures if "/messages" in r["path"])),

@@ -2,7 +2,6 @@ import { maintainLocalClaudeCredential } from "../../credentials/claude-local-ma
 import { readClaudeAccountMetadata } from "../../coordination/claude-metadata.js";
 import { readClaudeEnvironment } from "../../privacy/claude-environment.js";
 import { buildCoordinationView } from "../../coordination/snapshot.js";
-import { rememberClaudeProtection } from "../../network/claude-offline-binding.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import {
   closeRedisRuntime,
@@ -12,8 +11,6 @@ import {
 import { REDIS_CONNECTION_POLICY_LEASED } from "../../coordination/redis-store.js";
 import { isObject, normalizeLabel } from "../../core/normalize.js";
 import { parseExpiresAtToMs } from "../../core/time.js";
-import { getAnthropicCredentialView } from "../../credentials/anthropic.js";
-import { maintainRedisClaudeCredential } from "../../credentials/claude-maintenance.js";
 import { maintainLocalCodexCredential, readLocalCodexCredential } from "../../credentials/codex-local.js";
 import { readCodexAccountMetadata } from "../../coordination/codex-metadata.js";
 import { readCodexEnvironment } from "../../privacy/codex-environment.js";
@@ -31,17 +28,12 @@ function hasLoadedCredential(record) {
 }
 
 function recordExpiryMs(record) {
-  const credential = record?.provider === ANTHROPIC_PROVIDER
-    ? getAnthropicCredentialView(record?.credential)
-    : record?.credential;
-  return parseExpiresAtToMs(credential?.expiresAt);
+  return parseExpiresAtToMs(record?.credential?.expiresAt);
 }
 
 function isDue(record, nowMs) {
   const expiresAtMs = recordExpiryMs(record);
-  const credential = record?.provider === ANTHROPIC_PROVIDER
-    ? getAnthropicCredentialView(record?.credential)
-    : record?.credential;
+  const credential = record?.credential;
   const access = typeof credential?.access === "string" ? credential.access.trim() : "";
   return !access || expiresAtMs === null || expiresAtMs <= nowMs + SHARED_DUE_WINDOW_MS;
 }
@@ -95,16 +87,11 @@ async function handleOAuthMaintain(context) {
   };
   try {
     for (const record of sortedMaintenanceRecords(runtime.snapshot)) {
-      // Fence old ordinary caches before skip decisions, not just before refresh.
-      // A remotely protected but blocked account must remain protected offline.
-      // Regression: test/cli/auth-maintain-command.test.js.
-      if (record.provider === ANTHROPIC_PROVIDER) rememberClaudeProtection(homeDir, record.label, record);
       let maintenanceResult = null;
       if (
         !hasLoadedCredential(record)
         || isTerminallyMarked(record)
-        // Claude applies its own refresh due gate after the per-label lease is held.
-        || (record.provider !== ANTHROPIC_PROVIDER && hasXaiRefreshMaterial(record.credential) && !isDue(record, nowMs))
+        || (hasXaiRefreshMaterial(record.credential) && !isDue(record, nowMs))
       ) {
         maintenanceResult = {
           outcome: "skipped",
@@ -118,16 +105,7 @@ async function handleOAuthMaintain(context) {
         try {
           let outcome;
           let reason = null;
-          let detail = null;
-          if (record.provider === ANTHROPIC_PROVIDER) {
-            const result = await maintainRedisClaudeCredential(context, {
-              runtime,
-              label: record.label,
-            });
-            outcome = result.outcome;
-            reason = result.reason;
-            detail = result.detail ?? null;
-          } else if (record.provider === XAI_PROVIDER) {
+          if (record.provider === XAI_PROVIDER) {
             const result = await maintainRedisXaiCredential({
               runtime,
               record,
@@ -146,7 +124,6 @@ async function handleOAuthMaintain(context) {
                   : outcome === "unchanged"
                     ? "tokens_unchanged"
                     : "not_actionable"),
-            ...(detail ? { detail } : {}),
           };
         } catch (error) {
           maintenanceResult = {
@@ -173,6 +150,7 @@ async function handleOAuthMaintain(context) {
       for (const item of metadata) {
         const result = await maintainLocalClaudeCredential(context, {metadata:item,environment:claudeEnvironment,state});
         counts[result.outcome] += 1;
+        if (result.outcome === 'skipped' && result.reason === 'login_required') continue;
         stdout.write(`provider=${ANTHROPIC_PROVIDER} authority=environment-local label=${item.label} outcome=${result.outcome} reason=${result.reason}\n`);
       }
     }

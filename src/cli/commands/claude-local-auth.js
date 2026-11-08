@@ -12,7 +12,7 @@ import { closeRedisRuntime } from '../../coordination/runtime.js';
 import { buildCoordinationView } from '../../coordination/snapshot.js';
 import { resolveNativeAccountProfile } from '../../network/claude-native-route.js';
 import { closeClaudeLoginTabs, validateClaudeChrome } from '../../browser/claude-cdp.js';
-import { localClaudePaths, saveLocalClaudeLogin, logoutLocalClaudeCredential } from '../../credentials/claude-local.js';
+import { localClaudePaths, saveLocalClaudeLogin, logoutLocalClaudeCredential, assertLocalClaudeLoginTransitionAllowed } from '../../credentials/claude-local.js';
 import { buildManagedClaudeNativeStorageDescriptor, ensureSafeManagedClaudeStorage, readManagedClaudeNativeBundleFromFiles } from '../../credentials/claude-native-storage.js';
 import { writeJsonFileIfChanged } from "../../io/json-store.js";
 import { prepareClaudeCliLaunch, runClaudeCli } from '../../targets/claude-runner.js';
@@ -99,6 +99,8 @@ export async function handleLocalClaudeAuth(context) {
     metadata ??= { provider: 'anthropic', label, policy: { expect: { email: expectedEmail }, ...(opts.claudeLoginProxyRef ? {egress:{profileRef:opts.claudeLoginProxyRef}} : {}) }, identity: {}, credential: {} };
     const state = buildCoordinationView({ credentials: [metadata] }, { localState: runtime.localState, provider: 'anthropic' });
     const profile = resolveNativeAccountProfile({ homeDir, state, label });
+    await assertLocalClaudeLoginTransitionAllowed({homeDir,label,metadata,environment:runtime.environment,command,
+      ...(context.assertClaudeNativeOwnersStoppedImpl ? {assertStopped:context.assertClaudeNativeOwnersStoppedImpl} : {})});
     if (profile && !manual) await (context.validateClaudeChromeImpl ?? validateClaudeChrome)(profile);
     const loginEnvironment=runtime.environment;
     await closeRedisRuntime(runtime); runtime=null;
@@ -189,7 +191,9 @@ export async function handleLocalClaudeAuth(context) {
     else stdout.write(`Claude ${label} is signed in on this machine.\n`);
   } catch (error) {
     if (!manual) throw error;
-    emit({ type: 'error', ok: false, label, provider: 'anthropic', error: 'Claude local login failed.' });
+    const stoppedOwner = error.code === 'AIMGR_CLAUDE_LOCAL_LOGIN_REQUIRES_STOPPED_OWNER';
+    emit({ type: 'error', ok: false, label, provider: 'anthropic',
+      ...(stoppedOwner ? {code:error.code,error:`Stop this account's Claude sessions and background work on this machine, then run aim claude login ${label} again.`} : {error:'Claude local login failed.'}) });
     context.setExitCode(1);
   } finally {
     if (timeout) clearTimeout(timeout);

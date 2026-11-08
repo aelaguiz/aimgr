@@ -97,8 +97,8 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
     if (!path.isAbsolute(file ?? "")) fail("a task read root is not absolute");
     let resolved;
     try { resolved = future ? canonicalWorkingPath(file) : fs.realpathSync(file); }
-    catch (error) { if (optional && error.code === "ENOENT") return; fail("a required task read root is unavailable"); }
-    if (inside(home, resolved) || (inside(config, resolved) && resolved !== config)) fail("a task grant would expose an entire home or account collection");
+    catch (error) { if (optional && error.code === "ENOENT") return; fail(`a required task read root is unavailable: ${file}`); }
+    if (inside(home, resolved) || (inside(config, resolved) && resolved !== config)) fail(`a task grant would expose an entire home or account collection: ${file}`);
     roots.add(resolved);
   };
   const addPackage = (directory, kind) => {
@@ -110,12 +110,19 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
   // Starting a shell in HOME does not mean granting all home data. Native
   // traversal/listing remains available through the private config ancestors.
   if (fs.realpathSync(cwd) !== home) add(cwd);
-  for (const file of [...additionalDirectories, ...userPluginDirs, ...taskFiles]) add(path.resolve(cwd, file));
+  // Native additional directories may name work not checked out yet. Retain
+  // the selected future root without making a missing sibling veto launch.
+  for (const directory of additionalDirectories) add(path.resolve(cwd, directory), false, true);
+  for (const file of [...userPluginDirs, ...taskFiles]) add(path.resolve(cwd, file));
   for (const directory of workingDirectories) add(directory, false, true);
   // Preserve the user's previously selected, explicitly trusted project roots
   // alongside the default work areas and current additional directories.
   for (const [file, state] of Object.entries(appState.projects ?? {})) {
-    if (state?.hasTrustDialogAccepted === true && path.isAbsolute(file) && file !== home) add(file, true);
+    if (state?.hasTrustDialogAccepted === true && path.isAbsolute(file) && file !== home) {
+      // Historical trust is optional launch context. Stale, inaccessible or
+      // whole-home history never becomes a new grant or a launch veto.
+      try { if (fs.statSync(file).isDirectory()) add(file, true); } catch { /* Keep usable trusted roots only. */ }
+    }
   }
   const managedRoot = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode" : "/etc/claude-code";
   const instructions = [path.join(config, "CLAUDE.md"), path.join(managedRoot, "CLAUDE.md")];
@@ -287,7 +294,7 @@ export function resolveClaudeUpdateRoots({ userHomeDir, env, cwd, vendorCommand 
  * These are explicit task inputs, not automatic whole-home visibility.
  */
 export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDir, composition,
-  env = {}, appState = {}, discoverReadRoots = true, stdoutIsTTY = Boolean(process.stdout.isTTY) }) {
+  env = {}, appState = {}, loginStaging = false, discoverReadRoots = true, stdoutIsTTY = Boolean(process.stdout.isTTY) }) {
   const parsed = inspectClaudeArguments(args), values = parsed.optionValues;
   const taskCwd = path.resolve(cwd, values["--cwd"]?.at(-1) ?? ".");
   const expand = (value, origin = taskCwd) => value.startsWith("~/")
@@ -298,7 +305,7 @@ export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDi
   // AIM's original-browser/manual callback bridge is an existing explicit
   // executable input. Its child keeps normal OS permissions; Claude only
   // needs this exact helper for command lookup, never its containing tree.
-  if (path.isAbsolute(env.BROWSER ?? "")) {
+  if (loginStaging && path.isAbsolute(env.BROWSER ?? "")) {
     try { if (fs.statSync(env.BROWSER).isFile()) taskFiles.push(env.BROWSER); }
     catch { /* A native BROWSER command string is not necessarily a file. */ }
   }

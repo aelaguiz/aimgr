@@ -52,13 +52,12 @@ export function assertAnthropicCredentialShape({ label, credential, requireFresh
     throw new Error(`credentials.${ANTHROPIC_PROVIDER}.${label}.expiresAt is missing/invalid.`);
   }
   if (requireFresh && expiresMs <= Date.now()) {
-    throw new Error(`Refusing expired anthropic credentials for label=${label}. Reauth that label with \`aim ${label}\` first.`);
+    throw new Error(`Refusing expired anthropic credentials for label=${label}. Reauthenticate the legacy Prime/Pi grant with \`aim login ${label} --provider anthropic\`.`);
   }
   if (requireClaudeNativeBundle && !hasCompleteClaudeNativeBundle(cred)) {
     throw new Error(
       `credentials.${ANTHROPIC_PROVIDER}.${label}.nativeClaudeBundle is missing or incomplete. ` +
-        `Capture/import a native Claude login with \`aim claude capture-native ${label}\` or ` +
-        `\`aim claude import-native ${label} --in <file>\`.`,
+        `Enroll the legacy Prime/Pi grant with \`aim login ${label} --provider anthropic\`.`,
     );
   }
   return cred;

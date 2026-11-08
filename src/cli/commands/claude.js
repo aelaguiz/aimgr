@@ -327,8 +327,6 @@ export async function handleClaude(context) {
       fs.rmSync(path.join(homeDir,".aimgr","claude-account-metadata.json"),{force:true});
       assignmentLock.assertOwned();
       await updateClaudeEgressMetadata(runtime.store,{label,expectedVersion:record.version,egress});
-      // The old safe cache must not preserve a superseded route offline.
-      fs.rmSync(path.join(homeDir,'.aimgr','claude-account-metadata.json'),{force:true});
       stdout.write(`Claude ${label} uses proxy ${egress.profileRef}.\n`);
     } finally { try { await assignmentLock?.release(); } finally { await closeRedisRuntime(runtime); } }
     return;
