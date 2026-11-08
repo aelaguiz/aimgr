@@ -98,6 +98,9 @@ test('native manual URL waits for the complete output token across every stream 
  }
  assert.equal(extractNativeClaudeManualUrl(url),null);
  assert.equal(extractNativeClaudeManualUrl('\u001b]8;;'+url+'\u001b\\Sign in\u001b]8;;\u001b\\'),url);
+ const currentNative=url.replace('https://claude.ai/oauth/authorize','https://claude.com/cai/oauth/authorize');
+ assert.equal(extractNativeClaudeManualUrl(currentNative+'\n'),currentNative);
+ assert.equal(extractNativeClaudeManualUrl(currentNative.replace('/cai/oauth/authorize','/unrelated')+'\n'),null);
 });
 
 test('direct interactive login keeps native browser behavior; routed and manual login use their bridge',async()=>{

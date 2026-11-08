@@ -42,8 +42,9 @@ export function extractNativeClaudeManualUrl(text) {
   for (const match of text.matchAll(/https:\/\/[^\s\x1b<>"']+(?=[\s\x1b<>"'])/g)) {
     let url, redirect;
     try { url = new URL(match[0]); redirect = new URL(url.searchParams.get('redirect_uri')); } catch { continue; }
-    if (!['claude.ai','console.anthropic.com','platform.claude.com'].includes(url.hostname)
-      || url.pathname !== '/oauth/authorize' || !url.searchParams.get('state')
+    const nativeAuthorize = url.origin === 'https://claude.com' && url.pathname === '/cai/oauth/authorize'
+      || ['https://claude.ai','https://console.anthropic.com','https://platform.claude.com'].includes(url.origin) && url.pathname === '/oauth/authorize';
+    if (!nativeAuthorize || !url.searchParams.get('state')
       || !url.searchParams.get('code_challenge') || !url.searchParams.get('client_id')
       || url.searchParams.get('code_challenge_method') !== 'S256'
       || redirect.protocol !== 'https:' || !['console.anthropic.com','platform.claude.com'].includes(redirect.hostname)

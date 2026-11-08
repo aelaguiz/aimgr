@@ -1,7 +1,6 @@
 import { ClaudeRouteError } from "../../src/network/claude-egress-policy.js";
 import { readClaudeOfflineBinding, invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
 import { resolveNativeAccountProfile } from "../../src/network/claude-native-route.js";
-import { getAnthropicCredentialView } from "../../src/credentials/anthropic.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -476,7 +475,7 @@ test("Claude status ignores legacy credential leases, avoids web fallback, and r
   assert.doesNotMatch(rendered, /usage_readable/);
   assert.match(
     renderClaudeRedisAccountUsageStatus(first, { verbose: true }),
-    /ready\s+max\/max_20x\s+usage_readable\s+no/,
+    /ready\s+max\/max_20x\s+usage_readable\s+--/,
   );
   assert.ok(client.values.size > 0);
 });
@@ -961,7 +960,7 @@ test("uncached Redis Claude status caps concurrency at three and performs one re
   assert.ok(result.accounts.every((account) => account.authState === "usage_readable"));
 });
 
-test("canonical credential lineage, identity, and generation gate provider work", async () => {
+test("local ownership and identity gate provider work independently of Redis record version", async () => {
   const mixedCredential = buildCredential("mixed");
   const mixed = anthropicRecord("mixed", { credential: mixedCredential });
   const partial = anthropicRecord("partial");
@@ -999,16 +998,16 @@ test("canonical credential lineage, identity, and generation gate provider work"
     },
   });
 
-  assert.equal(providerCalls, 2);
-  assert.equal(result.requestCount, 2);
+  assert.equal(providerCalls, 3);
+  assert.equal(result.requestCount, 3);
   assert.deepEqual(
     Object.fromEntries(result.accounts.map((account) => [account.label, account.authState])),
     {
-      "invalid-generation": "credential_generation_invalid",
+      "invalid-generation": "usage_readable",
       mixed: "usage_readable",
       "mixed-plan": "usage_readable",
       "no-expected-email": "identity_unverified",
-      partial: "identity_unverified",
+      partial: "credential_missing",
     },
   );
 });
@@ -1016,8 +1015,8 @@ test("canonical credential lineage, identity, and generation gate provider work"
 test("local relogin, not a legacy Redis token update, invalidates cached auth status", async () => {
   const { homeDir, client, connectRedisStoreImpl } = await setup([anthropicRecord("ready")]);
   const seenTokens = [];
-  const fetchClaudeUsageSnapshotImpl = async ({ record }) => {
-      const accessToken = getAnthropicCredentialView(record.credential).access;
+  const fetchClaudeUsageSnapshotImpl = async ({ credential }) => {
+    const accessToken = credential.access;
     seenTokens.push(accessToken);
     return successSnapshot();
   };
@@ -1129,8 +1128,8 @@ test("limited usage is readable and expired provider windows back off", async ()
     selectedLabels: ["limited", "expired-window"],
     nowMs: NOW_MS,
     connectRedisStoreImpl,
-    fetchClaudeUsageSnapshotImpl: async ({ record }) => {
-      const accessToken = getAnthropicCredentialView(record.credential).access;
+    fetchClaudeUsageSnapshotImpl: async ({ credential }) => {
+      const accessToken = credential.access;
       calls += 1;
       return accessToken.includes("limited")
         ? successSnapshot(100)

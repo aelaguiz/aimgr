@@ -346,6 +346,12 @@ function buildCredentialFacts(record, nowMs, { homeDir, environment, legacyAutho
     && derivedIdentityComplete
     && !identitiesAgree(record.identity, derivedIdentity);
   const accountIdentityKey = buildAccountIdentityKey(record, derivedIdentity);
+  // Duplicate primary labels are a metadata conflict even on a machine where
+  // only one label has signed in. Local bearer availability cannot hide it.
+  const metadataIdentity = compactIdentity(record?.identity);
+  const duplicateIdentityKey = !legacyAuthority && metadataIdentity.accountUuid && metadataIdentity.organizationUuid
+    ? crypto.createHash("sha256").update(JSON.stringify([metadataIdentity.accountUuid, metadataIdentity.organizationUuid])).digest("hex")
+    : accountIdentityKey;
   const credentialGeneration = legacyAuthority ? (Number.isSafeInteger(record?.version) && record.version > 0 ? record.version : null) : local?.owner?.grant?.id;
   const identityBinding = buildIdentityBinding(record, accountIdentityKey, credentialGeneration);
   const expectedEmail = typeof record?.policy?.expect?.email === "string"
@@ -391,7 +397,8 @@ function buildCredentialFacts(record, nowMs, { homeDir, environment, legacyAutho
     state,
     credentialReady: state === "credential_ready",
     identityPolicyMatched: Boolean(accountIdentityKey && expectedEmail && expectedEmail === actualEmail),
-    duplicateEligible: Boolean(accountIdentityKey && expectedEmail && expectedEmail === actualEmail),
+    duplicateEligible: legacyAuthority ? Boolean(accountIdentityKey && expectedEmail && expectedEmail === actualEmail) : Boolean(duplicateIdentityKey),
+    duplicateIdentityKey,
     accountIdentityKey,
     credentialGeneration,
     identityBinding,
@@ -504,11 +511,11 @@ function selectFacts(records, selectedLabels, nowMs, localOptions) {
   }
   const identityCounts = new Map();
   for (const facts of allFacts) {
-    if (!facts.duplicateEligible || !facts.accountIdentityKey) continue;
-    identityCounts.set(facts.accountIdentityKey, (identityCounts.get(facts.accountIdentityKey) ?? 0) + 1);
+    if (!facts.duplicateEligible || !facts.duplicateIdentityKey) continue;
+    identityCounts.set(facts.duplicateIdentityKey, (identityCounts.get(facts.duplicateIdentityKey) ?? 0) + 1);
   }
   const factsByLabel = new Map(allFacts.map((facts) => {
-    if ((identityCounts.get(facts.accountIdentityKey) ?? 0) <= 1) {
+    if ((identityCounts.get(facts.duplicateIdentityKey) ?? 0) <= 1) {
       return [facts.record.label, facts];
     }
     return [facts.record.label, {

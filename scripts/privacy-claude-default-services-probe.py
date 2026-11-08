@@ -839,6 +839,7 @@ try:
         (home / "project").mkdir()
         work_area_files, work_area_steps = [], []
         work_area_absent = []
+        skill_mutations = []
         if "work-areas" in name:
             os_temp = "/tmp"
             if platform.system() == "Darwin":
@@ -872,6 +873,29 @@ try:
                     "old_string": "NATIVE_EDIT_BEFORE", "new_string": "NATIVE_EDIT_AFTER"}},
             ])
             work_area_files.append((home / "project/edit.txt", b"NATIVE_EDIT_BEFORE"))
+            if name.endswith("edit"):
+                skills = home / "project/.claude/skills"
+                skills.mkdir(parents=True)
+                external = home / "external-linked-skills"
+                external.mkdir()
+                (skills / "external").symlink_to(external, target_is_directory=True)
+                (skills / "unused-broken").symlink_to(home / "absent-unused-skill", target_is_directory=True)
+                for index, directory in enumerate([skills / "real", external]):
+                    directory.mkdir(exist_ok=True)
+                    for kind, before in [("edit", "NATIVE_SKILL_BEFORE"), ("repair", "---\nname: [malformed\n---\n")]:
+                        file = directory / kind / "SKILL.md"
+                        file.parent.mkdir()
+                        file.write_text(before)
+                        after = "---\nname: fixture-" + str(index) + "-" + kind + "\ndescription: Synthetic native mutation proof.\n---\nNATIVE_SKILL_AFTER\n"
+                        skill_mutations.append((file, after))
+                        work_area_steps.extend([
+                            {"id": "work_area_skill_read_" + str(index) + "_" + kind, "name": "Read", "input": {"file_path": str(file)}},
+                            {"id": "work_area_skill_" + kind + "_" + str(index), "name": "Edit", "input": {"file_path": str(file), "old_string": before, "new_string": after}},
+                        ])
+                    file = directory / "new/SKILL.md"
+                    after = "---\nname: fixture-new-" + str(index) + "\ndescription: Synthetic newly authored skill.\n---\nNATIVE_NEW_SKILL\n"
+                    skill_mutations.append((file, after))
+                    work_area_steps.append({"id": "work_area_skill_create_" + str(index), "name": "Write", "input": {"file_path": str(file), "content": after}})
         if "dynamic-directory" in name or "startup-directory" in name:
             (home / "added-dir").mkdir()
             (home / "added-dir/proof.txt").write_text("NATIVE_DYNAMIC_DIRECTORY_CONTENT_CANARY\n")
@@ -1017,8 +1041,12 @@ print(json.dumps(result))
         if "work-areas" in name:
             arguments[2] = "Exercise the synthetic work-area sequence."
             arguments += ["--permission-mode", "plan" if name.endswith("readonly") else "acceptEdits",
-                "--max-turns", "20", "--allowedTools", *["Read(/" + str(directory) + "/**)" for directory in
+                "--max-turns", "36", "--allowedTools", *["Read(/" + str(directory) + "/**)" for directory in
                     [*directories, temporary, temporary.resolve(), user_temporary, selected.parent]], "Read(/" + str(selected) + ")"]
+            if skill_mutations:
+                arguments += [tool + "(/" + str(directory) + "/**)"
+                    for directory in [skills, external] for tool in ["Read", "Edit", "Write"]]
+                arguments += ["--disable-slash-commands"]
         if "startup-directory" in name:
             arguments[2] = "Read the extra folder proof. NATIVE_ADDED_DIRECTORY."
             arguments += ["--add-dir", str(home / "added-dir")]
@@ -1137,6 +1165,9 @@ print(json.dumps(result))
                         **({"nativeWorkAreas": {"permissionMode": "plan" if name.endswith("readonly") else "acceptEdits",
                             "defaultDirectoriesAbsentBeforeModel": work_area_absent,
                             "editChanged": (home / "project/edit.txt").read_text() == "NATIVE_EDIT_AFTER",
+                            "disabledSkillMutations": [{"file": str(file.relative_to(home)),
+                                "matchesExpected": file.exists() and file.read_text() == after} for file, after in skill_mutations],
+                            "unusedBrokenSkillIgnored": not skill_mutations or (skills / "unused-broken").is_symlink(),
                             "results": [{"id": step["id"], "tool": step["name"],
                                 "returned": step["id"] in work_area_results,
                                 "isError": work_area_results.get(step["id"], {}).get("is_error", False),
