@@ -1,4 +1,5 @@
 import { isObject } from "../core/normalize.js";
+import { renderAccountNotes } from "./account-notes.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { renderClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
 import { buildStatusAccountFlags, buildStatusAverageAccountTableRow, formatInteractiveLoginSummary, formatStatusAccountExpiryCell, formatStatusAccountResetCell, formatStatusAccountResetCreditsCell, formatStatusAccountUsedCell, formatStatusTable, formatWeeklyCapacityFreeingNextDayLine, renderCurrentCodexUsageText, summarizeWeeklyCapacityFreeingNextDay } from "./table.js";
@@ -73,6 +74,9 @@ export function renderStatusText(view, {
       pushStatusAccountTable(lines, { heading: "CLAUDE ACCOUNTS", accounts: claudeAccounts, now });
     }
   }
+
+  const notes = renderAccountNotes(view?.accountNotes);
+  if (notes) lines.push("", ...notes.trimEnd().split("\n"));
 
   const assignments = isObject(view.openclaw?.assignments) ? view.openclaw.assignments : {};
   const assignmentEntries = Object.entries(assignments);

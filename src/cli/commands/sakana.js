@@ -9,6 +9,7 @@ import {
 } from "../../core/constants.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
+import { accountNoteFor } from "../../status/account-notes.js";
 import { readTextFromStream } from "../../io/streams.js";
 import {
   buildSakanaCredential,
@@ -45,7 +46,7 @@ async function resolveApiKey({ opts, stdin, promptImpl }) {
   throw new Error("No Sakana API key provided. Pass --key <api-key>, pipe it on stdin, or run interactively.");
 }
 
-function summarizeRecord(record) {
+function summarizeRecord(record, accountNotes = []) {
   const credential = record?.credential ?? {};
   return {
     name: record.label,
@@ -54,6 +55,7 @@ function summarizeRecord(record) {
     tier: credential.tier ?? null,
     subscription: credential.subscription ?? null,
     notes: credential.notes ?? null,
+    accountNote: accountNoteFor(accountNotes, SAKANA_PROVIDER, record.label),
     poolEnabled: record?.policy?.pool?.enabled !== false,
     health: record?.health?.status ?? null,
     createdAt: credential.createdAt ?? null,
@@ -136,7 +138,7 @@ async function handleAdd(context) {
         sanitizeForStatus({
           ok: true,
           action: current ? "updated" : "added",
-          account: summarizeRecord(result.record),
+          account: summarizeRecord(result.record, runtime.accountNotes),
         }),
         null,
         2,
@@ -151,7 +153,7 @@ async function handleList(context) {
   const { homeDir, stdout, connectRedisStoreImpl } = context;
   const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
   try {
-    const accounts = listSakanaRecords(runtime.snapshot).map(summarizeRecord);
+    const accounts = listSakanaRecords(runtime.snapshot).map((record) => summarizeRecord(record, runtime.accountNotes));
     stdout.write(
       `${JSON.stringify(
         sanitizeForStatus({
@@ -178,7 +180,7 @@ async function handleShow(context) {
     if (!record) {
       throw new Error(`No sakana account named ${label}. Add it with \`aim sakana add ${label} --key <api-key>\`.`);
     }
-    stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, account: summarizeRecord(record) }), null, 2)}\n`);
+    stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, account: summarizeRecord(record, runtime.accountNotes) }), null, 2)}\n`);
   } finally {
     await closeRedisRuntime(runtime);
   }
@@ -206,7 +208,7 @@ async function handleUse(context) {
         sanitizeForStatus({
           ok: target.lastSelectionReceipt?.status === "activated",
           action: "used",
-          account: summarizeRecord(record),
+          account: summarizeRecord(record, runtime.accountNotes),
           target: summarizeSakanaCodexTarget(target),
         }),
         null,

@@ -5,6 +5,7 @@
 
 export const AIM_MCP_ALLOWED_COMMANDS = Object.freeze([
   "status",
+  "note",
   "redis",
   "label",
   "grok",

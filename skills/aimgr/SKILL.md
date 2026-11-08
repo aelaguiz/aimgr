@@ -13,7 +13,16 @@ wanted is busy or limited.
 `aim` picks the account for you. The label-free launch forms rank eligible
 accounts and select one, so an agent that never types an account name is
 usually more correct than one that picks. Name an account only when the user
-named it, or when you are continuing an exact session.
+named it, you are continuing an exact session, or an account note makes an
+explicit choice appropriate.
+
+Account notes describe what a person needs an account for, such as a machine
+or a standing job. Read the notes in `aim status --compact` and account status
+before choosing or starting a session; take them into account when deciding
+which account to use. If an automatic choice would use an account reserved for
+another purpose, choose an appropriate eligible account explicitly. Notes are
+shared across machines and advisory: AI Manager does not enforce them or
+change its automatic selection for them.
 
 ## Requirements
 

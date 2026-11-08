@@ -46,6 +46,7 @@ test("plain status shows coordination provenance and canonical account facts", (
   const view = {
     nowMs,
     redis: { status: "live" },
+    accountNotes: [],
     accounts: [{
       label: "boss",
       provider: "openai-codex",
@@ -162,7 +163,7 @@ test("compact status is limited to coordination, account count, and local target
     claudeCli: { lastRunLabel: "writer" },
   });
 
-  assert.equal(text, "redis=cache  accounts=2  codex=boss  claude_last=writer  cache_age=65s\n");
+  assert.equal(text, "redis=cache  accounts=2  codex=boss  claude_last=writer  cache_age=65s\naccount notes unavailable (Redis could not be read)\n");
 });
 
 test("status reports the Codex identity actually present in the native auth file", () => {

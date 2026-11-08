@@ -6,6 +6,7 @@ import {
 } from "../../coordination/runtime.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
+import { accountNoteFor, notesForAccounts, renderAccountNotes } from "../../status/account-notes.js";
 import {
   collectXaiRedisAccountInventory,
   collectXaiRedisAccountUsageStatus,
@@ -35,19 +36,23 @@ export async function handleGrok(context) {
   try {
     if (sub === "inventory") {
       const rows = collectXaiRedisAccountInventory(runtime.snapshot, { labels });
+      const notes = notesForAccounts(runtime.accountNotes, XAI_PROVIDER, rows);
+      for (const row of rows) row.note = accountNoteFor(notes, XAI_PROVIDER, row.label);
       if (opts.json) {
-        stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, provider: XAI_PROVIDER, rows }), null, 2)}\n`);
+        stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, provider: XAI_PROVIDER, rows, accountNotes: notes }), null, 2)}\n`);
         return;
       }
-      stdout.write(renderXaiRedisAccountInventory(rows));
+      stdout.write(renderXaiRedisAccountInventory(rows) + renderAccountNotes(notes));
       return;
     }
     const rows = await collectXaiRedisAccountUsageStatus(runtime.snapshot, { labels });
+    const notes = notesForAccounts(runtime.accountNotes, XAI_PROVIDER, rows);
+    for (const row of rows) row.note = accountNoteFor(notes, XAI_PROVIDER, row.label);
     if (opts.json) {
-      stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, provider: XAI_PROVIDER, rows }), null, 2)}\n`);
+      stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, provider: XAI_PROVIDER, rows, accountNotes: notes }), null, 2)}\n`);
       return;
     }
-    stdout.write(renderXaiRedisAccountUsageStatus(rows));
+    stdout.write(renderXaiRedisAccountUsageStatus(rows) + renderAccountNotes(notes));
   } finally {
     await closeRedisRuntime(runtime);
   }

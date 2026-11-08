@@ -906,6 +906,7 @@ test("Prime run selects an account and starts a new session directly", async () 
     fs.mkdirSync(path.dirname(launcher), { recursive: true });
     fs.writeFileSync(launcher, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     const redis = await attachRedisFixtureFromLegacyState({ homeDir: home, statePath });
+    await runCli(["note", "set", run.binding, "Reserved for Mac Mini 1", "--provider", run.provider, "--home", home], { connectRedisStoreImpl: redis.connectRedisStoreImpl });
     let launched = null;
     const connectionPolicies = [];
     const output = await runCli([
@@ -927,6 +928,7 @@ test("Prime run selects an account and starts a new session directly", async () 
     });
 
     assert.match(output, new RegExp(`AIM Prime: ${run.provider} · ${run.binding}`));
+    assert.match(output, /Reserved for Mac Mini 1/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json")))[run.provider].binding, run.binding);
     assert.equal(launched.command, fs.realpathSync(launcher));
     assert.deepEqual(launched.args, ["--provider", run.provider, "--model", run.model]);

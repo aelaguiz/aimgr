@@ -8,6 +8,8 @@ import { closeRedisRuntime, loadRedisRuntime, publishCodexReconciliation, writeR
 import { watchCodexPoolSelectionOnce } from "../../pool/watch.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { normalizeLabel } from "../../core/normalize.js";
+import { accountNoteFor, formatAccountNote } from "../../status/account-notes.js";
+import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { resolveAimgrStateDir, resolveManagedCodexHomeDir } from "../../io/paths.js";
 import { activateCodexLabelSelection, reconcileCodexCliAuth } from "../../targets/codex-cli.js";
 import { resolveBlobPolicy } from "../../targets/codex-thread-copy.js";
@@ -66,7 +68,9 @@ async function activateCodexForContext(context) {
       // The per-label Codex installation id is written inside applyCodexCliFromState, which is
       // the single place that writes auth.json (it covers `use`, `run`, `resume`, watch, and the
       // scheduled routines that call `aim codex use`).
-      return { reconciliation, activated };
+      const label = activated.receipt?.label;
+      const accountNote = label ? accountNoteFor(runtime.accountNotes, OPENAI_CODEX_PROVIDER, label) : null;
+      return { reconciliation, activated, accountNote, accountNotesAvailable: runtime.accountNotes !== null };
     } finally {
       await closeRedisRuntime(runtime);
     }
@@ -118,6 +122,9 @@ async function handleRedisCodexRun(context) {
     return;
   }
   const { label, previousLabel } = result.activated.receipt;
+  const noteOutput = args.includes("--json") ? context.stderr : stdout;
+  if (result.accountNote) noteOutput.write(`[aim] ${formatAccountNote({ provider: OPENAI_CODEX_PROVIDER, label, note: result.accountNote })}\n`);
+  else if (!result.accountNotesAvailable) noteOutput.write("[aim] Account notes unavailable.\n");
   if (stdout.isTTY) {
     stdout.write(`[aim] Codex account: ${label}${previousLabel ? ` (previous: ${previousLabel})` : ""}\n`);
   }
@@ -426,8 +433,11 @@ async function handleRedisCodexResumeFresh(context) {
 
   // 6. Launch the new thread on the rotated account.
   const args = ["-p", profileName, "resume", plan.newId, ...passthrough];
+  const { label, previousLabel } = activation.activated.receipt;
+  const noteOutput = args.includes("--json") ? context.stderr : stdout;
+  if (activation.accountNote) noteOutput.write(`[aim] ${formatAccountNote({ provider: OPENAI_CODEX_PROVIDER, label, note: activation.accountNote })}\n`);
+  else if (!activation.accountNotesAvailable) noteOutput.write("[aim] Account notes unavailable.\n");
   if (stdout.isTTY) {
-    const { label, previousLabel } = activation.activated.receipt;
     stdout.write(`[aim] Codex account: ${label}${previousLabel ? ` (previous: ${previousLabel})` : ""}\n`);
     stdout.write(`[aim] new thread ${plan.newId} from ${plan.sourceId} (${copy.lines} lines, ${formatBytes(copy.bytes)}${copy.dropped > 0 ? `, dropped ${copy.dropped}` : ""})\n`);
     stdout.write(`[aim] source thread untouched${goal.carried ? "; goal carried with a fresh goal id" : goal.reason === "no_goal" ? "" : `; goal not carried (${goal.reason})`}\n`);

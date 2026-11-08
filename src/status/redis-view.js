@@ -7,6 +7,7 @@ import {
   closeRedisStore,
   connectRedisStore,
   readSnapshot,
+  readAccountNotes,
   REDIS_CONNECTION_POLICY_OBSERVE,
 } from "../coordination/redis-store.js";
 import { buildClaudeCredentialSummaryFromBundle } from "../credentials/claude-bundle.js";
@@ -339,6 +340,7 @@ function buildLocalOnlyView({ configRead, homeDir, env, nowMs, cachePath, status
     nowMs,
     statePath: "local-state",
     accounts: [],
+    accountNotes: null,
     ...targets,
     redis: buildRedisSummary({ configRead, snapshot: null, cachePath, status, error }),
     redisCredentials: [],
@@ -374,6 +376,10 @@ export async function buildRedisStatusView({
       connectionPolicy: REDIS_CONNECTION_POLICY_OBSERVE,
     });
     const snapshot = await readSnapshot(store);
+    const notes = await readAccountNotes(store).catch(() => null);
+    const knownAccounts = new Set(snapshot.credentials.map((record) => `${record.provider}:${record.label}`));
+    const accountNotes = notes?.filter((record) => knownAccounts.has(`${record.provider}:${record.label}`))
+      .map(({ provider, label, note }) => ({ provider, label, note })) ?? null;
     const localState = loadLocalState({ homeDir });
     const state = buildCoordinationView(snapshot, { localState });
     const targets = readLocalTargetFacts({ state, homeDir, env });
@@ -446,6 +452,7 @@ export async function buildRedisStatusView({
       nowMs,
       statePath: `redis:${snapshot.keyPrefix}`,
       accounts,
+      accountNotes,
       ...targets,
       redis: buildRedisSummary({ configRead, snapshot, cachePath }),
       redisCredentials: buildRedisCredentials(snapshot),
@@ -479,6 +486,7 @@ export async function buildRedisStatusView({
     const cachedRaw = readCachedRedisStatusView({ homeDir, cachePath }).view;
     const cached = cachedRaw ? buildRedisDiagnosticCacheView(cachedRaw) : null;
     if (!cached) return { used: true, view: localFallback, claudeUsageStatus: null };
+    cached.accountNotes = null;
 
     const observedAtMs = Number(cached.nowMs);
     const cacheAgeMs = Number.isFinite(observedAtMs) ? Math.max(0, nowMs - observedAtMs) : null;
