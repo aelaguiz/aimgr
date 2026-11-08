@@ -40,6 +40,7 @@ import { registerCliRedisFixture, runCli, runCliWithExitCode } from "../helpers/
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, writeJson } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
+import { localClaudeFixture, readClaudeTestEnvironment } from "../helpers/claude-local.js";
 
 import { activeCodexAuthFile, localCodexFixture, readCodexTestEnvironment } from "../helpers/codex-local.js";
 import { readLocalCodexCredential } from "../../src/credentials/codex-local.js";
@@ -58,14 +59,17 @@ async function proxyAssignmentFixture(t) {
       b: { socksPort: 1086, expectedExits: ["127.0.0.3"] },
     },
   } });
-  await importSnapshot(store, { credentials: [{
+  const record = {
     provider: "anthropic", label: "claude", credential: buildAnthropicClaudeCredential(),
     identity: { accountUuid: "acct_boss", emailAddress: "boss@example.com", organizationUuid: "org_boss" },
     policy: { expect: { email: "boss@example.com" }, pool: { enabled: true }, egress: { profileRef: "a" } },
     health: { status: "ready", reason: null },
-  }] }, { updatedBy: "proxy-assignment-test" });
+  };
+  await importSnapshot(store, { credentials: [record] }, { updatedBy: "proxy-assignment-test" });
+  await localClaudeFixture(home, record);
   const deps = {
     env: { HOME: home },
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
     resolveExecutableOnPathImpl: buildTestClaudeResolver(),
   };
@@ -632,7 +636,7 @@ test("redis-configured claude import-native publishes the native bundle to Redis
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
-test("redis-configured claude run projects into a per-label home and publishes post-run rotation", async () => {
+test("redis-configured claude run keeps its per-label login and rotation local", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const credential = buildAnthropicClaudeCredential({
@@ -667,6 +671,8 @@ test("redis-configured claude run projects into a per-label home and publishes p
     },
     { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
+  const initial = await readSnapshot(store);
+  await localClaudeFixture(home, initial.credentials[0]);
 
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" });
   const configDir = path.join(claudeHome, ".claude");
@@ -674,10 +680,11 @@ test("redis-configured claude run projects into a per-label home and publishes p
   let keychainCalls = 0;
   const out = await runCli(["claude", "run", "claude", "opus", "--resume"], {
     env: { HOME: home },
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
     resolveExecutableOnPathImpl: buildTestClaudeResolver((options) => {
       preflightCount += 1;
-      assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), false);
+      assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
       return prepareTestClaudeLaunch(options);
     }),
     readClaudeNativeKeychainOauthImpl: () => {
@@ -731,7 +738,8 @@ test("redis-configured claude run projects into a per-label home and publishes p
   assert.equal(keychainCalls, 0);
   const snapshot = await readSnapshot(store);
   const credentialRecord = snapshot.credentials.find((entry) => entry.provider === "anthropic" && entry.label === "claude");
-  assertCanonicalAnthropicCredential(credentialRecord, "CLAUDE_REFRESH_ROTATED");
+  assert.deepEqual(credentialRecord, initial.credentials[0]);
+  assert.equal(JSON.parse(fs.readFileSync(resolveClaudeAuthFilePath(configDir), "utf8")).claudeAiOauth.refreshToken, "CLAUDE_REFRESH_ROTATED");
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
   assert.equal(fs.existsSync(path.join(configDir, ".claude.json")), true);
   assert.equal(fs.existsSync(path.join(home, ".claude", ".credentials.json")), false);
@@ -1672,10 +1680,12 @@ test(`claude resume ${picker ? "picker" : "row selector"} reuses the exact recor
   });
 
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" });
+  await localClaudeFixture(home, (await readSnapshot(store)).credentials[0]);
   const configDir = path.join(claudeHome, ".claude");
   let launches = 0;
   const out = await runCli(["claude", "resume", ...(picker ? [] : ["1"]), "--home", home], {
     env: { HOME: home },
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
     stdin: { isTTY: true },
     stdout: { isTTY: true },
     promptLineImpl: async () => {
@@ -1799,6 +1809,7 @@ test(`claude resume --switch-account ${preset} preserves ${effort} effort with a
   await importCredentialsSnapshot(store, {
     credentials: [record("boss"), record("fablelow"), record("opuslow"), record("specific")],
   });
+  for (const account of (await readSnapshot(store)).credentials) await localClaudeFixture(home, account);
   const usageByAccessToken = {
     ACCESS_BOSS: { fiveHour: 1, fable: 1 },
     ACCESS_FABLELOW: { fiveHour: 80, fable: 5 },
@@ -1810,6 +1821,7 @@ test(`claude resume --switch-account ${preset} preserves ${effort} effort with a
   let stagedPath = null;
   const cliDeps = {
     env: { HOME: home },
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
     nowImpl: () => nowMs,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
     fetchJsonWithTimeoutImpl: async (_url, options) => {
@@ -2200,9 +2212,11 @@ test("raw Claude resume stages a cross-account transcript and keeps same-account
   });
   const store = await connectRedisStore({ client, keyPrefix: PREFIX });
   await importCredentialsSnapshot(store, { credentials: [record("source"), record("dest")] });
+  for (const account of (await readSnapshot(store)).credentials) await localClaudeFixture(home, account);
   let stagedPath = null;
   let launches = 0;
   const deps = {
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
     env: {
       HOME: home,
       ANTHROPIC_CUSTOM_HEADERS: "x-account-link: stable-id",

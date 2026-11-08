@@ -10,7 +10,7 @@ import { discoverStatusConfiguredOpenclawCodexAgents } from "../../src/state/acc
 import { runCli } from "../helpers/cli-runner.js";
 import { mkTempHome, writeJson, writeOpenclawSessionsStore } from "../helpers/files.js";
 
-test("aim claude capture-native fails when the live Claude login is missing oauthAccount", async () => {
+test("aim claude capture-native is retired and leaves the live login untouched", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
 
@@ -48,11 +48,12 @@ test("aim claude capture-native fails when the live Claude login is missing oaut
 
   await assert.rejects(
     () => runCli(["claude", "capture-native", "boss", "--home", home]),
-    /missing\soauthAccount/i,
+    /Primary Claude credentials stay on this machine.*aim claude login/i,
   );
 
   const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(updatedState.credentials.anthropic.boss, undefined);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8")).claudeAiOauth.accessToken, "ACCESS_BOSS");
 });
 
 test("extractOpenclawConfigAgentModelPrimary handles string/object/null", () => {
