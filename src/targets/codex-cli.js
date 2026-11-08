@@ -27,7 +27,7 @@ export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
   if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
     throw new Error(
       "No Redis-backed Codex pool is available on this machine yet. " +
-        `Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then import a reviewed snapshot or enroll a Codex label.`,
+        `Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then import a reviewed snapshot or enroll a Codex label.`,
     );
   }
 

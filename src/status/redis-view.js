@@ -1,3 +1,4 @@
+import { redactRedisEndpoint } from "../core/sanitize.js";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { parseExpiresAtToMs, formatExpiresIn } from "../core/time.js";
@@ -18,6 +19,9 @@ import { loadLocalState } from "../state/local-state.js";
 import { readClaudeCliTargetStatus } from "../targets/claude-status.js";
 import { readCodexCliTargetStatus } from "../targets/codex-cli.js";
 import { collectClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
+import { describeClaudeEgress, projectClaudeEgress, hasNoLocalClaudeRoute } from "./claude-egress.js";
+import { readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
+import { CLAUDE_ROUTE_ERROR_CODES } from "../network/claude-egress-policy.js";
 import {
   AIMGR_REDIS_STATUS_CACHE_KIND,
   acquireRedisCacheLock,
@@ -45,16 +49,6 @@ function safeTimestamp(value) {
   const raw = typeof value === "string" ? value.trim() : "";
   const parsed = raw ? Date.parse(raw) : Number.NaN;
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
-}
-
-function redactRedisEndpoint(value) {
-  try {
-    const parsed = new URL(String(value ?? ""));
-    if (!new Set(["redis:", "rediss:"]).has(parsed.protocol) || !parsed.hostname) return "configured";
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`;
-  } catch {
-    return value ? "configured" : "unconfigured";
-  }
 }
 
 function projectUsage(value, provider) {
@@ -101,6 +95,7 @@ function projectStatusAccount(value) {
   return {
     label,
     provider,
+    ...(provider === ANTHROPIC_PROVIDER ? { egress: projectClaudeEgress(value?.egress) } : {}),
     operator: {
       status: safeToken(value?.operator?.status) ?? "unknown",
       eligible: value?.operator?.eligible === true,
@@ -300,14 +295,15 @@ function buildCodexAccounts({ snapshot, usageByLabel, lockedLabels, lockSource, 
 
 function buildClaudeAccounts(claudeStatus) {
   return (claudeStatus?.accounts ?? []).map((account) => {
-    const launchable = account.credentialReady === true
-      || account.credentialState === "credential_expired";
+    const launchable = !CLAUDE_ROUTE_ERROR_CODES.has(account.errorKind)
+      && (account.credentialReady === true || account.credentialState === "credential_expired");
     return {
       label: account.label,
       provider: ANTHROPIC_PROVIDER,
+      egress: projectClaudeEgress(account.egress),
       operator: {
-        status: launchable ? "ready" : account.credentialState === "reauth_required" ? "reauth" : "blocked",
-        eligible: launchable && account.locked === false,
+        status: hasNoLocalClaudeRoute(account) ? "no_route" : launchable ? "ready" : account.credentialState === "reauth_required" ? "reauth" : "blocked",
+        eligible: !hasNoLocalClaudeRoute(account) && launchable && account.locked === false,
       },
       credentials: {
         status: account.credentialState ?? "unknown",
@@ -487,6 +483,23 @@ export async function buildRedisStatusView({
     const cached = cachedRaw ? buildRedisDiagnosticCacheView(cachedRaw) : null;
     if (!cached) return { used: true, view: localFallback, claudeUsageStatus: null };
     cached.accountNotes = null;
+
+    // The assignment is cached provider data; local route availability is a
+    // current machine fact. Recheck it even while Redis is unreachable. A newly
+    // installed route does not establish fresh account readiness while offline.
+    for (const account of cached.accounts) {
+      if (account.provider !== ANTHROPIC_PROVIDER) continue;
+      if (account.egress?.mode !== "proxy") {
+        if (readClaudeOfflineBinding(homeDir, account.label) && ["direct", "unknown"].includes(account.egress?.mode)) {
+          account.egress = { mode: "missing_assignment" };
+          account.operator = { status: "blocked", eligible: false };
+        }
+        continue;
+      }
+      account.egress = describeClaudeEgress({ egress: account.egress }, configRead.config.claudeProxyProfiles ?? {});
+      if (hasNoLocalClaudeRoute(account)) account.operator = { status: "no_route", eligible: false };
+      else if (account.operator.status === "no_route") account.operator = { status: "unknown", eligible: false };
+    }
 
     const observedAtMs = Number(cached.nowMs);
     const cacheAgeMs = Number.isFinite(observedAtMs) ? Math.max(0, nowMs - observedAtMs) : null;

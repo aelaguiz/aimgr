@@ -1,3 +1,13 @@
+export function redactRedisEndpoint(value) {
+  try {
+    const parsed = new URL(String(value ?? ""));
+    if (!new Set(["redis:", "rediss:"]).has(parsed.protocol) || !parsed.hostname) return "configured";
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`;
+  } catch {
+    return value ? "configured" : "unconfigured";
+  }
+}
+
 export function sanitizeForStatus(value) {
   const exactSecretKeys = new Set(
     [
@@ -35,6 +45,7 @@ export function sanitizeForStatus(value) {
 
   const seen = new WeakSet();
   const walk = (v) => {
+    if (typeof v === "string" && /^rediss?:/i.test(v)) return redactRedisEndpoint(v);
     if (!v || typeof v !== "object") return v;
     if (seen.has(v)) return "[circular]";
     seen.add(v);

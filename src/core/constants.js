@@ -9,15 +9,11 @@ export const AIMGR_LOCAL_STATE_VERSION = 1;
 
 export const AIMGR_REDIS_DEFAULT_KEY_PREFIX = "aimgr:v1:";
 
-export const AIMGR_REDIS_PRIMARY_URL = "redis://amirs-mac-studio:6380";
+export const AIMGR_REDIS_PRIMARY_URL = "rediss://default:<password>@measure-permissible-test-42143.db.redis.io:12453";
 
-export const AIMGR_REDIS_PRIMARY_LOCAL_URL = "redis://127.0.0.1:6380";
+export const AIMGR_REDIS_PRIMARY_HOST = "measure-permissible-test-42143.db.redis.io";
 
-export const AIMGR_REDIS_FALLBACK_TAILNET_URL = "redis://100.96.80.106:6380";
-
-export const AIMGR_REDIS_PRIMARY_HOST = "agents@amirs-mac-studio";
-
-export const AIMGR_REDIS_TRANSPORT = "tailscale";
+export const AIMGR_REDIS_TRANSPORT = "tls";
 
 export const OPENAI_CODEX_PROVIDER = "openai-codex";
 

@@ -44,7 +44,7 @@ function assertGenericRedisImportHasNoClaudeCredential(snapshot) {
 async function withRedisStore({ homeDir, opts }, fn) {
   const { redis } = readAimgrConfig({ homeDir }).config;
   if (!redis.url) {
-    throw new Error(`AIM Redis is not configured. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+    throw new Error(`AIM Redis is not configured. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
   }
   const store = await connectRedisStore({
     url: opts.url ?? redis.url,

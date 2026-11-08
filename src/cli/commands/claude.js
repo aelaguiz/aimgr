@@ -85,6 +85,7 @@ import {
   stageManagedClaudeSessionFork,
 } from "../../targets/claude-sessions.js";
 import {
+  assertClaudeUsageRoutes,
   collectClaudeRedisAccountInventory,
   collectClaudeRedisAccountUsageStatus,
   renderClaudeRedisAccountInventory,
@@ -493,6 +494,9 @@ async function selectAutomaticClaudeAccount(context, {
     fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl,
   });
+  // Check before preference/exclusion filtering: a failed configured route
+  // cannot disappear from the live-only resume candidates and cause fallback.
+  assertClaudeUsageRoutes(usageStatus);
   const localSessions = readMachineClaudeSessionCounts({ homeDir });
   return selectClaudeAccountForSession({
     ...usageStatus,
@@ -1256,6 +1260,8 @@ async function freeClaudeAccountForScheduledJob(context, { preset, jobName, stde
     fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl: context.connectRedisStoreImpl,
   });
+  // Fail before stopping any unrelated session to free a scheduled slot.
+  assertClaudeUsageRoutes(usageStatus);
   const eligibleLabels = new Set(usageStatus.accounts
     .filter((account) => account?.locked === true
       && selectLeastUsedUnlockedClaudeAccount({ ...usageStatus, accounts: [{ ...account, locked: false }] }, { preset }))
@@ -1406,7 +1412,7 @@ export async function handleClaude(context) {
       ...(picked ? { account: picked.account } : {}),
     });
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+      throw new Error(`\`aim claude resume\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     const requestedSwitchPreset = opts.claudeResumeSwitchAccountPreset;
     const requestedAccountLabel = opts.claudeResumeAccountLabel
@@ -1516,7 +1522,7 @@ export async function handleClaude(context) {
       );
     }
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error(`\`aim claude run\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+      throw new Error(`\`aim claude run\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     if (opts.claudeAutoSelect === true) {
       const selected = await selectAutomaticClaudeAccount(context, {
@@ -1538,7 +1544,7 @@ export async function handleClaude(context) {
   }
   if (subcmd === "status" || subcmd === "usage") {
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error(`\`aim claude ${subcmd}\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+      throw new Error(`\`aim claude ${subcmd}\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     const selectedLabels = positional.slice(2);
     const result = await collectClaudeRedisAccountUsageStatus({
@@ -1581,7 +1587,7 @@ export async function handleClaude(context) {
       throw new Error("`aim claude inventory` is always offline and does not accept --fresh.");
     }
     if (!isRedisConfigured({ homeDir })) {
-      throw new Error(`\`aim claude inventory\` requires Redis. Run \`aim redis configure --url ${AIMGR_REDIS_PRIMARY_URL} --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
+      throw new Error(`\`aim claude inventory\` requires Redis. Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`.`);
     }
     const result = await collectClaudeRedisAccountInventory({
       homeDir,

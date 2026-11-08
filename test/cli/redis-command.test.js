@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { readAimgrConfig } from "../../src/config/aimgr-config.js";
 import { runCli } from "../helpers/cli-runner.js";
 import { mkTempHome, writeJson } from "../helpers/files.js";
 
@@ -116,4 +117,19 @@ test("redis import leaves policy-only Anthropic candidates outside the credentia
       return true;
     },
   );
+});
+
+
+test("Redis admin output hides URL credentials while retaining the full connection config", async () => {
+  const home = mkTempHome();
+  const url = "rediss://private-user:private-password@managed.example.test:12345/0";
+  const configured = await runCli([
+    "redis", "configure", "--home", home, "--url", url, "--transport", "tls",
+  ]);
+  const inspected = await runCli(["redis", "config", "--home", home]);
+  for (const output of [configured, inspected]) {
+    assert.doesNotMatch(output, /private-user|private-password/);
+    assert.equal(JSON.parse(output).redis.url, "rediss://managed.example.test:12345/0");
+  }
+  assert.equal(readAimgrConfig({ homeDir: home }).config.redis.url, url);
 });
