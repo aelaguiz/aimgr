@@ -896,6 +896,30 @@ try:
                     after = "---\nname: fixture-new-" + str(index) + "\ndescription: Synthetic newly authored skill.\n---\nNATIVE_NEW_SKILL\n"
                     skill_mutations.append((file, after))
                     work_area_steps.append({"id": "work_area_skill_create_" + str(index), "name": "Write", "input": {"file_path": str(file), "content": after}})
+                background = home / "project/late-temp.py"
+                background.write_text('''import json,os,socket,subprocess,sys,tempfile,time
+from pathlib import Path
+project=Path(__file__).parent
+if len(sys.argv)==1:
+ subprocess.Popen([sys.executable,__file__,"child"],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+ print("LATE_TEMP_CHILD_STARTED")
+else:
+ deadline=time.time()+60
+ while not (project/"native-launch-exited").exists():
+  if time.time()>deadline:sys.exit(2)
+  time.sleep(.05)
+ # The first temp object and Unix socket are intentionally created only after
+ # the actual native invocation and its AIM launch parent have returned.
+ file=tempfile.NamedTemporaryFile(prefix="late-native-",delete=False);file.write(b"LATE_TEMP_CONTENT");file.close()
+ endpoint=os.path.join(tempfile.gettempdir(),"late-native-"+str(os.getpid())+".sock")
+ server=socket.socket(socket.AF_UNIX);server.bind(endpoint);server.listen(1)
+ client=socket.socket(socket.AF_UNIX);client.connect(endpoint);peer,_=server.accept();client.sendall(b"LATE_SOCKET_CONTENT")
+ result={"tmpdir":os.environ.get("TMPDIR"),"fileContent":Path(file.name).read_text(),"socketContent":peer.recv(128).decode(),"createdAfterNativeExit":True}
+ client.close();peer.close();server.close();os.unlink(endpoint);os.unlink(file.name)
+ (project/"late-temp-result.json").write_text(json.dumps(result))
+''')
+                work_area_steps.append({"id": "work_area_temp_background", "name": "Bash", "input": {
+                    "command": shlex.join(["/usr/bin/python3", str(background)]), "description": "Launch the retained late-temp child"}})
         if "dynamic-directory" in name or "startup-directory" in name:
             (home / "added-dir").mkdir()
             (home / "added-dir/proof.txt").write_text("NATIVE_DYNAMIC_DIRECTORY_CONTENT_CANARY\n")
@@ -926,6 +950,8 @@ try:
         if "workflows" in name:
             env.update(OTEL_SDK_DISABLED="false", OTEL_LOGS_EXPORTER="otlp", OTEL_METRICS_EXPORTER="otlp",
                 OTEL_TRACES_EXPORTER="otlp", OTEL_EXPORTER_OTLP_ENDPOINT=proxy)
+        if skill_mutations:
+            env["TMPDIR"] = str(temporary)
         if a.routed_aim and "workflows" not in name:
             env["NODE_EXTRA_CA_CERTS"] = str(home / "project/fixture-ca.pem")
         if opt_out:
@@ -1046,7 +1072,7 @@ print(json.dumps(result))
             if skill_mutations:
                 arguments += [tool + "(/" + str(directory) + "/**)"
                     for directory in [skills, external] for tool in ["Read", "Edit", "Write"]]
-                arguments += ["--disable-slash-commands"]
+                arguments += ["Bash", "--disable-slash-commands"]
         if "startup-directory" in name:
             arguments[2] = "Read the extra folder proof. NATIVE_ADDED_DIRECTORY."
             arguments += ["--add-dir", str(home / "added-dir")]
@@ -1152,6 +1178,16 @@ print(json.dumps(result))
                 out, err = child.communicate()
                 code = "timeout"
         (home / "output.private.txt").write_text(out + err)
+        late_temp = None
+        if skill_mutations:
+            (home / "project/native-launch-exited").write_text("returned")
+            deadline = time.time() + 5
+            while time.time() < deadline and not (home / "project/late-temp-result.json").exists():
+                time.sleep(.05)
+            result_file = home / "project/late-temp-result.json"
+            if result_file.exists():
+                late_temp = json.loads(result_file.read_text())
+                late_temp["callerTmpdirPreserved"] = late_temp.get("tmpdir") == str(temporary)
         captures = requests[start:]
         work_area_results = {block["tool_use_id"]: block for r in captures if "/messages" in r["path"]
             for message in r["body"].get("messages", []) if isinstance(message.get("content"), list)
@@ -1168,6 +1204,7 @@ print(json.dumps(result))
                             "disabledSkillMutations": [{"file": str(file.relative_to(home)),
                                 "matchesExpected": file.exists() and file.read_text() == after} for file, after in skill_mutations],
                             "unusedBrokenSkillIgnored": not skill_mutations or (skills / "unused-broken").is_symlink(),
+                            "lateTempBackground": late_temp,
                             "results": [{"id": step["id"], "tool": step["name"],
                                 "returned": step["id"] in work_area_results,
                                 "isError": work_area_results.get(step["id"], {}).get("is_error", False),
