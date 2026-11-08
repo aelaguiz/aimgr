@@ -9,6 +9,7 @@ import {
   importCredentialsSnapshot as importSnapshot,
   publishCredential,
   readSnapshot,
+  writeAccountNote,
 } from "../../src/coordination/redis-store.js";
 import {
   acquireRedisCredentialLease,
@@ -658,6 +659,8 @@ test("redis-configured claude run projects into a per-label home and publishes p
     { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
 
+  await writeAccountNote(store, { provider: "anthropic", label: "claude", note: "Reserved for Mac Mini 1", expectedVersion: null });
+
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" });
   const configDir = path.join(claudeHome, ".claude");
   let preflightCount = 0;
@@ -716,7 +719,7 @@ test("redis-configured claude run projects into a per-label home and publishes p
     },
   });
 
-  assert.equal(out, "");
+  assert.match(out, /anthropic \/ claude: "Reserved for Mac Mini 1"/);
   assert.equal(preflightCount, 1);
   assert.equal(keychainCalls, 0);
   const snapshot = await readSnapshot(store);
