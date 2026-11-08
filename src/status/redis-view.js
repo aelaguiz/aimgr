@@ -328,7 +328,7 @@ function buildClaudeAccounts(claudeStatus) {
       },
       credentials: {
         status: account.credentialState ?? "unknown",
-        source: "redis",
+        source: "environment-local",
         ...(typeof account.credentialExpiresAt === "string" ? {
           expiresAt: account.credentialExpiresAt,
           expiresIn: formatExpiresIn(account.credentialExpiresAt, claudeStatus.checkedAtMs),
@@ -374,6 +374,7 @@ export async function buildRedisStatusView({
   readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
   readClaudeProxyHealthImpl = readClaudeProxyHealth,
   readCodexEnvironmentImpl = readCodexEnvironment,
+  readClaudeEnvironmentImpl,
 } = {}) {
   const configRead = readAimgrConfig({ homeDir });
   const redisConfig = configRead.config.redis;
@@ -414,6 +415,7 @@ export async function buildRedisStatusView({
         fetchJsonWithTimeoutImpl,
         readHeldRedisCredentialLeaseLabelsImpl,
         readClaudeProxyHealthImpl,
+        readClaudeEnvironmentImpl,
       });
     } catch {
       claudeUsageStatus = {

@@ -9,7 +9,7 @@ import { resolveClaudeTlsReadPaths } from "./claude-tls-inputs.js";
 import { resolveClaudeMcpExecutableReads, claudeMcpEnvironmentVariants } from "./claude-mcp-inputs.js";
 
 const fail = reason => { throw new ClaudePrivacySettingsError(reason); };
-const inside = (file, root) => file === root || file.startsWith(root + path.sep);
+const inside = (file, root) => file === root || file.startsWith(root === path.sep ? root : root + path.sep);
 
 /** Read private native state without following a substituted leaf or exposing
  * parse excerpts. Call only while the existing account-state guard is held.

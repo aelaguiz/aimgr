@@ -94,6 +94,7 @@ try {
     };
     const first = await turn("Perform the synthetic Bash test. NATIVE_HISTORY_CANARY.");
     assert.equal(fs.readFileSync(path.join(cwd, "tool-proof.txt"), "utf8"), "native-tool-ok");
+    assert.deepEqual(fs.readFileSync(path.join(cwd, "task-otel-env.txt"), "utf8").trim().split("\n"), ["false", "otlp", "otlp", "otlp"]);
     assert.match(fs.readFileSync(path.join(cwd, "hook-proof.txt"), "utf8"), /start.*tool/);
     for (const marker of ["NATIVE_INSTRUCTION_CANARY", "NATIVE_EXTERNAL_INSTRUCTION_CANARY"]) assert.ok(models().some(body => JSON.stringify(body).includes(marker)), marker);
     const resumed = await turn("Continue the previous saved conversation.", ["--resume", first.session_id]);
@@ -146,6 +147,7 @@ for await(const line of readline.createInterface({input:process.stdin})) {
     }
     fs.writeFileSync(path.join(launch.userHomeDir, "workflows.json"), JSON.stringify({ bash: true, hooks: true,
       instructions: true, externalInstructionImport: true, historyResumeFork: true, stdioMcp: true, personalSkill: true, subagent: true,
+      taskOtelEnvironmentPreserved: true,
       ...(backgroundRetained ? { backgroundRetained } : {}) }));
     console.log("SYNTHETIC_OK");
   } else {

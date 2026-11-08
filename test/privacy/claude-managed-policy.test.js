@@ -36,7 +36,7 @@ test("admitted managed TLS inputs include external files and static fallback pat
   const records = { [file]: policy(value) };
   const { result } = inspect(records, { cwd: "/work", userHomeDir: "/home/synthetic" });
   assert.deepEqual(new Set(result.tlsReadPaths), new Set(["/opt/company/ca.pem", "/work/certs/client.pem", "/home/synthetic/certs/key.pem", "/certs/a", "/certs/b"]));
-  assert.deepEqual(inspect(records, { protectedAccount: false }).result.tlsReadPaths, result.tlsReadPaths);
+  assert.deepEqual(inspect(records, { protectedAccount: false, cwd: "/work", userHomeDir: "/home/synthetic" }).result.tlsReadPaths, result.tlsReadPaths);
 });
 
 test("higher-precedence privacy, provider and dynamic-policy conflicts refuse without contents", () => {

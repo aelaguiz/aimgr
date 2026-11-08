@@ -23,8 +23,8 @@ import {
 import { fetchClaudeUsageSnapshot } from "../../src/pool/usage.js";
 import {
   CLAUDE_REDIS_USAGE_FRESH_MS,
-  collectClaudeRedisAccountInventory,
-  collectClaudeRedisAccountUsageStatus,
+  collectClaudeRedisAccountInventory as collectInventory,
+  collectClaudeRedisAccountUsageStatus as collectUsageStatus,
   renderClaudeRedisAccountInventory,
   renderClaudeRedisAccountUsageStatus,
   selectClaudeAccountForSession,
@@ -40,8 +40,13 @@ import {
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { mkTempHome, writeJson } from "../helpers/files.js";
+import { localClaudeFixture, readClaudeTestEnvironment, CLAUDE_TEST_ENVIRONMENT } from "../helpers/claude-local.js";
+import { readLocalClaudeCredential, markLocalClaudeGrantRejected } from "../../src/credentials/claude-local.js";
 
-const NOW_MS = Date.parse("2026-07-22T18:00:00.000Z");
+const collectClaudeRedisAccountInventory = options => collectInventory({ readClaudeEnvironmentImpl: readClaudeTestEnvironment, ...options });
+const collectClaudeRedisAccountUsageStatus = options => collectUsageStatus({ readClaudeEnvironmentImpl: readClaudeTestEnvironment, ...options });
+
+const NOW_MS = Date.now();
 const KEY_PREFIX = "aimgr:claude-redis-view";
 
 function buildCredential(label, index = 0) {
@@ -85,6 +90,9 @@ async function setup(records) {
     { credentials: records },
     { updatedBy: "test", observedAt: new Date(NOW_MS - 60_000).toISOString() },
   );
+  for (const record of records) {
+    if (record.provider === ANTHROPIC_PROVIDER) await localClaudeFixture(homeDir, record);
+  }
   const connectRedisStoreImpl = () => connectRedisStore({ client, keyPrefix: KEY_PREFIX });
   return { homeDir, client, connectRedisStoreImpl };
 }
@@ -322,10 +330,10 @@ test("Redis Claude inventory is provider-filtered, offline, candidate-safe, and 
   assert.equal(result.counts.credentialReady, 1);
   assert.equal(result.counts.credentialMissing, 1);
   assert.equal(result.accounts[0].state, "credential_missing");
-  assert.equal(result.accounts[0].evidenceGrade, "contradictory");
-  assert.equal(result.accounts[0].evidenceAsOf, "2026-07-20");
+  assert.equal(result.accounts[0].evidenceGrade, null);
+  assert.equal(result.accounts[0].evidenceAsOf, null);
   assert.equal(result.accounts[1].credentialReady, true);
-  assert.equal(result.accounts[1].evidenceGrade, "provider-current");
+  assert.equal(result.accounts[1].evidenceGrade, null);
   assert.deepEqual(Object.keys(result).sort(), [
     "accounts", "cacheState", "checkedAtMs", "complete", "counts", "ok", "requestCount", "source",
   ]);
@@ -347,6 +355,9 @@ test("Claude Redis views expose reauth_required without probing and preserve ord
   expiredCredential.nativeClaudeBundle.claudeAiOauth.expiresAt = NOW_MS - 1;
   const expired = anthropicRecord("expired", { credential: expiredCredential });
   const { homeDir, connectRedisStoreImpl } = await setup([marked, expired]);
+  const local = readLocalClaudeCredential({ homeDir, label: "marked", metadata: marked, environment: CLAUDE_TEST_ENVIRONMENT });
+  await markLocalClaudeGrantRejected({ homeDir, label: "marked", metadata: marked, environment: CLAUDE_TEST_ENVIRONMENT,
+    grantId: local.owner.grant.id, generation: local.generation });
 
   const inventory = await collectClaudeRedisAccountInventory({
     homeDir,
@@ -375,7 +386,7 @@ test("Claude Redis views expose reauth_required without probing and preserve ord
   assert.equal(status.requestCount, 0);
   assert.equal(providerRequests, 0);
   const rendered = renderClaudeRedisAccountUsageStatus(status);
-  assert.match(rendered, /marked\s+NEEDS YOU.*aim login marked/);
+  assert.match(rendered, /marked\s+NEEDS YOU.*aim claude login marked/);
   assert.match(rendered, /expired\s+READY.*use now/);
   assert.doesNotMatch(rendered, /reauth_required|credential_expired/);
   const verbose = renderClaudeRedisAccountUsageStatus(status, { verbose: true });
@@ -383,7 +394,7 @@ test("Claude Redis views expose reauth_required without probing and preserve ord
   assert.match(verbose, /credential_expired/);
 });
 
-test("Redis Claude status skips candidates, shows live locks, disables web fallback, and reuses the shared cache", async () => {
+test("Claude status ignores legacy credential leases, avoids web fallback, and reuses the shared cache", async () => {
   const { homeDir, client, connectRedisStoreImpl } = await setup([
     anthropicRecord("ready"),
     {
@@ -431,7 +442,7 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   assert.equal(first.accounts[0].authState, "credential_missing");
   assert.equal(first.accounts[0].locked, false);
   assert.equal(first.accounts[1].authState, "usage_readable");
-  assert.equal(first.accounts[1].locked, true);
+  assert.equal(first.accounts[1].locked, false);
   assert.deepEqual(first.missingAccounts, ["candidate"]);
   assert.deepEqual(Object.keys(first.accounts[1]).sort(), [
     "ageMs", "authState", "credentialExpiresAt", "credentialReady", "credentialState", "egress", "errorKind", "label",
@@ -458,19 +469,19 @@ test("Redis Claude status skips candidates, shows live locks, disables web fallb
   const serializedCache = fs.readFileSync(cachePath, "utf8");
   assert.doesNotMatch(serializedCache, /ACCESS_SECRET|REFRESH_SECRET|private\.example|acct-private|org-private/i);
   const rendered = renderClaudeRedisAccountUsageStatus(first);
-  assert.match(rendered, /^CLAUDE: 0 ready · 0 limited · 1 in use · 1 needs you · 0 unknown/m);
-  assert.match(rendered, /candidate\s+NEEDS YOU.*aim login candidate/);
-  assert.match(rendered, /ready\s+IN USE.*session active/);
-  assert.match(rendered, /ready\s+IN USE\s+max\/max_20x/);
+  assert.match(rendered, /^CLAUDE: 1 ready · 0 limited · 0 in use · 1 needs you · 0 unknown/m);
+  assert.match(rendered, /candidate\s+NEEDS YOU.*aim claude login candidate/);
+  assert.match(rendered, /ready\s+READY.*use now/);
+  assert.match(rendered, /ready\s+READY\s+max\/max_20x/);
   assert.doesNotMatch(rendered, /usage_readable/);
   assert.match(
     renderClaudeRedisAccountUsageStatus(first, { verbose: true }),
-    /ready\s+max\/max_20x\s+usage_readable\s+yes/,
+    /ready\s+max\/max_20x\s+usage_readable\s+no/,
   );
   assert.ok(client.values.size > 0);
 });
 
-test("Redis Claude status surfaces the maintenance streak without local recovery state", async () => {
+test("legacy maintenance failures cannot disable or appear as local Claude login failures", async () => {
   const stuck = anthropicRecord("stuck");
   stuck.policy.reauth = {
     mode: "native-claude",
@@ -496,22 +507,11 @@ test("Redis Claude status surfaces the maintenance streak without local recovery
   const byLabel = new Map(result.accounts.map((account) => [account.label, account]));
 
   const stuckAccount = byLabel.get("stuck");
-  assert.deepEqual(stuckAccount.maintenance, {
-    firstFailedAt: "2026-07-22T15:30:00.000Z",
-    reason: "local_state_conflict",
-    count: 13,
-    blockedReason: "oauth_reauth_required",
-  });
-
-  const plain = byLabel.get("plain");
-  assert.equal(Object.hasOwn(plain, "maintenance"), false);
-
+  assert.equal(Object.hasOwn(stuckAccount, "maintenance"), false);
+  assert.equal(stuckAccount.authState, "usage_readable");
+  assert.equal(byLabel.get("plain").authState, "usage_readable");
   const verbose = renderClaudeRedisAccountUsageStatus(result, { verbose: true });
-  assert.match(
-    verbose,
-    /^maintenance stuck reason=local_state_conflict count=13 failing_for=2\.5h blocked=oauth_reauth_required$/m,
-  );
-  assert.doesNotMatch(verbose, /maintenance plain/);
+  assert.doesNotMatch(verbose, /maintenance stuck/);
 
   // The default table is untouched by the new diagnostics.
   const rendered = renderClaudeRedisAccountUsageStatus(result);
@@ -558,7 +558,7 @@ test("Claude human status renders the four launch states with frozen precedence"
   assert.match(rendered, /ready\s+READY.*2m\s+unknown\s+--\s+use now/);
   assert.match(rendered, /active\s+IN USE.*session active/);
   assert.match(rendered, /fixing\s+READY.*use now/);
-  assert.match(rendered, /needs\s+NEEDS YOU.*aim login needs/);
+  assert.match(rendered, /needs\s+NEEDS YOU.*aim claude login needs/);
   assert.match(rendered, /unknown\s+UNKNOWN.*retry status/);
 });
 
@@ -1013,7 +1013,7 @@ test("canonical credential lineage, identity, and generation gate provider work"
   );
 });
 
-test("credential generation invalidates cached auth status after an authoritative Redis update", async () => {
+test("local relogin, not a legacy Redis token update, invalidates cached auth status", async () => {
   const { homeDir, client, connectRedisStoreImpl } = await setup([anthropicRecord("ready")]);
   const seenTokens = [];
   const fetchClaudeUsageSnapshotImpl = async ({ record }) => {
@@ -1044,6 +1044,12 @@ test("credential generation invalidates cached auth status after an authoritativ
     },
   );
   assert.equal(update[0].record.version, 2);
+  const afterLegacyUpdate = await collectClaudeRedisAccountUsageStatus({
+    homeDir, selectedLabels: ["ready"], nowMs: NOW_MS + 30_000, connectRedisStoreImpl, fetchClaudeUsageSnapshotImpl,
+  });
+  assert.equal(afterLegacyUpdate.requestCount, 0);
+  assert.deepEqual(seenTokens, ["ACCESS_SECRET_ready"]);
+  await localClaudeFixture(homeDir, anthropicRecord("ready", { credential: rotatedCredential }));
 
   const result = await collectClaudeRedisAccountUsageStatus({
     homeDir,

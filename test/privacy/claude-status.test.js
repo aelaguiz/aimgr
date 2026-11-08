@@ -120,7 +120,7 @@ test("managed privacy is always enabled while route cache and local login remain
   writeClaudeOfflineBinding(f.home, "account-a", {});
   assert.equal(read().account.mode, "protected");
   const environment = { binding: "c".repeat(64) };
-  const identity = { accountUuid: "synthetic-account", organizationUuid: "synthetic-org", emailAddress: "synthetic@example.invalid" };
+  const identity = { accountUuid: "synthetic-account", organizationUuid: "synthetic-org", emailAddress: "synthetic@example.invalid", organizationName: "Synthetic" };
   const metadata = { provider: "anthropic", label: "account-a", credential: {}, identity, policy: { expect: { email: identity.emailAddress } } };
   fs.writeFileSync(path.join(f.home, ".aimgr/claude-account-metadata.json"), JSON.stringify({ schema: 1,
     environmentBinding: environment.binding, credentials: [metadata] }), { mode: 0o600 });

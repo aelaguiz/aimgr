@@ -1,71 +1,48 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { connectRedisStore } from "../../src/coordination/redis-store.js";
-import { acquireRedisCredentialLease } from "../../src/coordination/redis-credential-lease.js";
-import {
-  joinMachineClaudeLease,
-  leaveMachineClaudeLease,
-  readMachineClaudeSessionCounts,
-} from "../../src/targets/claude-machine-lease.js";
-import { FakeRedisClient } from "../helpers/fake-redis.js";
+import fs from "node:fs";
+import path from "node:path";
+import { joinLocalClaudeSessions, readMachineClaudeSessionCounts } from "../../src/targets/claude-machine-lease.js";
 import { mkTempHome } from "../helpers/files.js";
 
-function leaseEntry(client) {
-  return [...client.values.entries()].find(([key]) => key.includes(":lease:credential:anthropic:pro7")) ?? null;
-}
-
-async function setup() {
-  const home = mkTempHome();
-  const client = new FakeRedisClient();
-  const store = await connectRedisStore({ client, keyPrefix: "aimgr:test" });
-  return { home, client, store, options: { homeDir: home, store, provider: "anthropic", label: "pro7" } };
-}
-
-test("sessions on one machine share an account lease and the last one out releases it", async () => {
-  const { home, client, options } = await setup();
-  const alive = new Set([101, 102]);
-  const isAliveImpl = (pid) => alive.has(pid);
-
-  const first = await joinMachineClaudeLease({ ...options, pid: 101, isAliveImpl });
-  const second = await joinMachineClaudeLease({ ...options, pid: 102, isAliveImpl });
-  assert.equal(first.siblings, 0);
-  assert.equal(second.siblings, 1);
-  assert.equal(readMachineClaudeSessionCounts({ homeDir: home, isAliveImpl }).get("pro7"), 2);
-
-  assert.deepEqual(
-    await leaveMachineClaudeLease({ homeDir: home, label: "pro7", lease: first.lease, pid: 101, isAliveImpl }),
-    { released: false, remaining: 1 },
-  );
+test("local sessions share informational counts, prune dead processes, and release independently", async t => {
+  const homeDir = mkTempHome();
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const alive = new Set([101, 102, 103]);
+  const options = { homeDir, label: "pro7", isAliveImpl: pid => alive.has(pid) };
+  const leaveOne = await joinLocalClaudeSessions({ ...options, pid: 101 });
+  const leaveTwo = await joinLocalClaudeSessions({ ...options, pid: 102 });
+  assert.deepEqual([...readMachineClaudeSessionCounts(options)], [["pro7", 2]]);
   alive.delete(101);
-  assert.notEqual(leaseEntry(client), null);
-  assert.equal(readMachineClaudeSessionCounts({ homeDir: home, isAliveImpl }).get("pro7"), 1);
-
-  assert.deepEqual(
-    await leaveMachineClaudeLease({ homeDir: home, label: "pro7", lease: second.lease, pid: 102, isAliveImpl }),
-    { released: true, remaining: 0 },
-  );
-  assert.equal(leaseEntry(client), null);
-  assert.equal(readMachineClaudeSessionCounts({ homeDir: home, isAliveImpl }).size, 0);
+  assert.deepEqual([...readMachineClaudeSessionCounts(options)], [["pro7", 1]]);
+  const leaveThree = await joinLocalClaudeSessions({ ...options, pid: 103 });
+  assert.deepEqual([...readMachineClaudeSessionCounts(options)], [["pro7", 2]]);
+  await leaveOne();
+  await leaveTwo();
+  assert.deepEqual([...readMachineClaudeSessionCounts(options)], [["pro7", 1]]);
+  await leaveThree();
+  assert.deepEqual([...readMachineClaudeSessionCounts(options)], []);
 });
 
-test("a crashed session is pruned and another owner's lease is never joined", async () => {
-  const { home, client, store, options } = await setup();
-  await joinMachineClaudeLease({ ...options, pid: 201, isAliveImpl: () => true });
-  // 201 died without leaving. 202 reuses the token and does not count 201.
-  const onlyAlive = (pid) => pid === 202;
-  const next = await joinMachineClaudeLease({ ...options, pid: 202, isAliveImpl: onlyAlive });
-  assert.equal(next.siblings, 0);
+test("local-prefixed labels remain distinct and separate homes can use the same account", async t => {
+  const first = mkTempHome(), second = mkTempHome();
+  t.after(() => { for (const home of [first, second]) fs.rmSync(home, { recursive: true, force: true }); });
+  const isAliveImpl = () => true;
+  const leaveFirst = await joinLocalClaudeSessions({ homeDir: first, label: "pro7", pid: 201, isAliveImpl });
+  const leavePrefixed = await joinLocalClaudeSessions({ homeDir: first, label: "local-pro7", pid: 202, isAliveImpl });
+  const leaveSecond = await joinLocalClaudeSessions({ homeDir: second, label: "pro7", pid: 203, isAliveImpl });
+  assert.deepEqual(Object.fromEntries(readMachineClaudeSessionCounts({ homeDir: first, isAliveImpl })), { "local-pro7": 1, pro7: 1 });
+  assert.deepEqual(Object.fromEntries(readMachineClaudeSessionCounts({ homeDir: second, isAliveImpl })), { pro7: 1 });
+  await leaveFirst(); await leavePrefixed(); await leaveSecond();
+});
 
-  // The lease expires while this machine sleeps, and another machine takes it.
-  client.values.delete(leaseEntry(client)[0]);
-  const otherMachine = await acquireRedisCredentialLease(store, { provider: "anthropic", label: "pro7" });
-  assert.equal(await joinMachineClaudeLease({ ...options, pid: 203, isAliveImpl: () => true }), null);
-
-  // The stale local session cannot release the other machine's lease.
-  assert.deepEqual(
-    await leaveMachineClaudeLease({ homeDir: home, label: "pro7", lease: next.lease, pid: 202, isAliveImpl: onlyAlive }),
-    { released: false, remaining: 0 },
-  );
-  assert.notEqual(leaseEntry(client), null);
-  assert.equal(await otherMachine.release(), true);
+test("retired remote lease receipts do not count as local sessions", async t => {
+  const homeDir = mkTempHome();
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const dir = path.join(homeDir, ".aimgr", "runtime", "claude-leases");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of ["pro7.json", "local-pro8.json"]) {
+    fs.writeFileSync(path.join(dir, name), JSON.stringify({ token: "old-redis-lease-token", members: [301] }));
+  }
+  assert.deepEqual([...readMachineClaudeSessionCounts({ homeDir, isAliveImpl: () => true })], []);
 });

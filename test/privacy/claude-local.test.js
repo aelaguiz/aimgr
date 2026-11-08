@@ -100,6 +100,21 @@ test('native manual URL waits for the complete output token across every stream 
  assert.equal(extractNativeClaudeManualUrl('\u001b]8;;'+url+'\u001b\\Sign in\u001b]8;;\u001b\\'),url);
 });
 
+test('direct interactive login keeps native browser behavior; routed and manual login use their bridge',async()=>{
+ const {buildClaudeLoginEnvironment}=await import('../../src/cli/commands/claude-local-auth.js');
+ const env={BROWSER:'/synthetic/user-browser',DISPLAY:':1',WAYLAND_DISPLAY:'wayland-1',AIMGR_CLAUDE_LOGIN_STDIO:'stale'};
+ const direct=buildClaudeLoginEnvironment({env,profile:null,manual:false,tabs:'/synthetic/tabs'});
+ assert.equal(direct.BROWSER,env.BROWSER);assert.equal(direct.DISPLAY,env.DISPLAY);assert.equal(direct.WAYLAND_DISPLAY,env.WAYLAND_DISPLAY);
+ assert.equal(direct.AIMGR_CLAUDE_LOGIN_STDIO,undefined);
+ const nativeDefault=buildClaudeLoginEnvironment({env:{},profile:null,manual:false,tabs:'/synthetic/tabs'});
+ assert.equal(Object.hasOwn(nativeDefault,'BROWSER'),false);
+ for(const [profile,manual] of [[{profileRef:'synthetic'},false],[null,true]]) {
+  const bridge=buildClaudeLoginEnvironment({env,profile,manual,tabs:'/synthetic/tabs'});
+  assert.match(bridge.BROWSER,/claude-login-browser\.mjs$/);assert.equal(bridge.DISPLAY,undefined);assert.equal(bridge.WAYLAND_DISPLAY,undefined);
+  assert.equal(bridge.AIMGR_CLAUDE_LOGIN_PROFILE,JSON.stringify(profile));assert.equal(bridge.AIMGR_CLAUDE_LOGIN_STDIO,manual?'1':undefined);
+ }
+});
+
 test('abandoned native staging is never adopted; retry closes and reconnects coordination',async t=>{
  const {handleLocalClaudeAuth}=await import('../../src/cli/commands/claude-local-auth.js');
  const {connectRedisStore}=await import('../../src/coordination/redis-store.js');

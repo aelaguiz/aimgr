@@ -597,8 +597,8 @@ async function runRedisLabelControlPanel(context, { label, writeImpl }) {
     const normalizedLabel = normalizeLabel(label);
     if (normalizeProviderId(runtime.state?.accounts?.[normalizedLabel]?.provider) === ANTHROPIC_PROVIDER) {
       throw new Error(
-        `Redis-backed Claude maintenance for label=${normalizedLabel} is owned by ` +
-          "`aim claude capture-native`, `aim claude import-native`, and `aim claude run`.",
+        `Claude ${normalizedLabel} signs in on this machine with \`aim claude login ${normalizedLabel}\`. ` +
+          `Prime/Pi's separate legacy grant uses \`aim login ${normalizedLabel} --provider anthropic\`.`,
       );
     }
     await runLabelControlPanelImpl({

@@ -367,20 +367,20 @@ test("unique and legacy login staging do not traverse or materialize optional cu
   fs.writeFileSync(path.join(home, ".claude", "settings.json"), "malformed");
   fs.writeFileSync(path.join(home, ".claude", ".generic-preference"), "");
   for (const directory of [".login-staging", ".login-staging-12345678-1234-4123-8123-123456789abc"]) {
-  const stagingHome = path.join(home, ".aimgr", "claude-homes", "alpha", directory);
-  const configDir = path.join(stagingHome, ".claude");
-  fs.mkdirSync(configDir, { recursive: true });
-  const prepared = await prepareClaudeCliLaunch({
-    command: process.execPath,
-    userHomeDir: home,
-    homeDir: stagingHome,
-    configDir,
-    platform: "linux",
-  });
-  assert.deepEqual(prepared.userPluginDirs, []);
-  assert.equal(prepared.userHooksPath, null);
-  assert.equal(prepared.userMcpConfigPath, null);
-  assert.deepEqual(fs.readdirSync(configDir), []);
+    const stagingHome = path.join(home, ".aimgr", "claude-homes", "alpha", directory);
+    const configDir = path.join(stagingHome, ".claude");
+    fs.mkdirSync(configDir, { recursive: true });
+    const prepared = await prepareClaudeCliLaunch({
+      command: process.execPath,
+      userHomeDir: home,
+      homeDir: stagingHome,
+      configDir,
+      platform: "linux",
+    });
+    assert.deepEqual(prepared.userPluginDirs, []);
+    assert.equal(prepared.userHooksPath, null);
+    assert.equal(prepared.userMcpConfigPath, null);
+    assert.deepEqual(fs.readdirSync(configDir), []);
   }
   for (const directory of [".login-staging-12345678-1234-1123-8123-123456789abc", ".login-staging-not-a-uuid"]) {
     const homeDir = path.join(home, ".aimgr/claude-homes/alpha", directory);

@@ -1035,7 +1035,7 @@ function claudeDefinition(home, overrides = {}) {
 
 function makeClaudeRuntime(home, options = {}) {
   let close;
-  let leaseHeld = false;
+  let sessionOpen = false;
   let active = false;
   let eventsPath;
   let sessionId;
@@ -1045,7 +1045,7 @@ function makeClaudeRuntime(home, options = {}) {
   const runtime = {
     calls, configDir, abort,
     get active() { return active; },
-    get leaseHeld() { return leaseHeld; },
+    get sessionOpen() { return sessionOpen; },
     get eventsPath() { return eventsPath; },
     get sessionId() { return sessionId; },
     closeTui(status = 0) { close({ status, signal: null }); },
@@ -1054,7 +1054,7 @@ function makeClaudeRuntime(home, options = {}) {
     },
     async routineClaudeSessionImpl(context, { cwd, runSession }) {
       if (options.accountError) throw new Error("No unlocked Claude account with usage left is available.");
-      leaseHeld = true;
+      sessionOpen = true;
       try {
         const result = await runSession({
           label: "fable-a", command: "/fake/claude", cwd, configDir, userHomeDir: home,
@@ -1063,10 +1063,10 @@ function makeClaudeRuntime(home, options = {}) {
             adapterDir: path.join(home, "adapter"), userPluginDirs: ["/fake/plugin"] },
         });
         if (result.status !== 0) context.setExitCode(result.status);
-      } finally { leaseHeld = false; }
+      } finally { sessionOpen = false; }
     },
     async runClaudeCliImpl(launch) {
-      assert.equal(leaseHeld, true);
+      assert.equal(sessionOpen, true);
       calls.push(launch);
       if (options.spawnError) throw new Error("spawn claude ENOENT");
       sessionId = launch.args[launch.args.indexOf("--session-id") + 1];
@@ -1123,12 +1123,12 @@ test("Claude opens one interactive session before the task runs, and keeps it th
   assert.equal(saved.initialTurn.stopReason, "Stop");
   assert.equal(saved.interactiveTui.status, "live");
   assert.equal(runtime.active, true);
-  assert.equal(runtime.leaseHeld, true);
+  assert.equal(runtime.sessionOpen, true);
   assert.equal(runtime.calls.length, 1);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
   runtime.closeTui();
   assert.equal((await worker).interactiveTui.exitCode, 0);
-  assert.equal(runtime.leaseHeld, false);
+  assert.equal(runtime.sessionOpen, false);
 });
 
 test("Claude API failure leaves the interactive UI and account available for the user", async () => {
@@ -1142,7 +1142,7 @@ test("Claude API failure leaves the interactive UI and account available for the
   runtime.emit("StopFailure", { error: "rate_limit" });
   await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).initialTurn?.status === "error", "failure not recorded");
   assert.equal(runtime.active, true);
-  assert.equal(runtime.leaseHeld, true);
+  assert.equal(runtime.sessionOpen, true);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
   runtime.closeTui();
   const result = await worker;
@@ -1161,7 +1161,7 @@ test("Claude observation timeout records attention without closing the UI or rel
   runtime.emit("UserPromptSubmit", { promptSha256: receipt.prompt.effectiveSha256 });
   await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).needsAttention, "timeout not recorded");
   assert.equal(runtime.active, true);
-  assert.equal(runtime.leaseHeld, true);
+  assert.equal(runtime.sessionOpen, true);
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), true);
   runtime.emit("Stop");
   await waitUntil(() => JSON.parse(fs.readFileSync(receipt.receiptPath)).outcome === "completed", "later completion not recorded");
@@ -1181,10 +1181,10 @@ test("Claude observer read errors do not close the interactive process or releas
   fs.unlinkSync(runtime.eventsPath);
   await waitUntil(() => warning.includes("Claude remains interactive"), "observation error not reported");
   assert.equal(runtime.active, true);
-  assert.equal(runtime.leaseHeld, true);
+  assert.equal(runtime.sessionOpen, true);
   runtime.closeTui();
   assert.equal((await worker).needsAttention, true);
-  assert.equal(runtime.leaseHeld, false);
+  assert.equal(runtime.sessionOpen, false);
 });
 
 for (const admitted of [false, true]) {
@@ -1200,12 +1200,12 @@ for (const admitted of [false, true]) {
     const result = await worker;
     assert.equal(result.outcome, admitted ? "needs_attention" : "failed_before_prompt");
     assert.equal(runtime.calls.length, 1);
-    assert.equal(runtime.leaseHeld, false);
+    assert.equal(runtime.sessionOpen, false);
     assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
   });
 }
 
-test("Claude account lease loss uses the managed interactive runner's cancellation", async () => {
+test("Claude managed runner cancellation stops the interactive session", async () => {
   const home = mkTempHome();
   const { receipt } = await prepareQueuedWorker(home, claudeDefinition(home));
   const runtime = makeClaudeRuntime(home);
@@ -1218,7 +1218,7 @@ test("Claude account lease loss uses the managed interactive runner's cancellati
   assert.equal(result.outcome, "needs_attention");
   assert.equal(result.interactiveTui.exitSignal, "SIGTERM");
   assert.equal(runtime.active, false);
-  assert.equal(runtime.leaseHeld, false);
+  assert.equal(runtime.sessionOpen, false);
 });
 
 async function startParkableClaude(home, parkTimeouts) {
@@ -1247,7 +1247,7 @@ test("Claude job that reports done is stopped after the grace period and its acc
   assert.equal(result.lastTurn.jobStatus.state, "done");
   assert.equal(result.interactiveTui.stoppedBy, "aim");
   assert.equal(runtime.active, false);
-  assert.equal(runtime.leaseHeld, false);
+  assert.equal(runtime.sessionOpen, false);
   assert.match(printed(), new RegExp(`demo finished\\. Claude was stopped and account fable-a was released`));
   assert.match(printed(), new RegExp(`aim claude resume ${runtime.sessionId}`));
   assert.deepEqual(context.herdr.closes(), [["--session", "growth", "workspace", "close", "w-test"]]);
@@ -1363,7 +1363,7 @@ test("Claude job that goes quiet without a status line is stopped and flagged", 
   assert.equal(result.parked.reason, "quiet");
   assert.equal(result.outcome, "needs_attention");
   assert.match(result.error, /without an AIM-JOB status line/);
-  assert.equal(runtime.leaseHeld, false);
+  assert.equal(runtime.sessionOpen, false);
   assert.deepEqual(context.herdr.calls, []);
 });
 
@@ -1390,7 +1390,7 @@ test("Claude launch errors are recorded without attempting another launch", asyn
   assert.equal(result.outcome, "failed_before_prompt");
   assert.match(result.error, /ENOENT/);
   assert.equal(runtime.calls.length, 1);
-  assert.equal(runtime.leaseHeld, false);
+  assert.equal(runtime.sessionOpen, false);
 });
 
 test("Claude missing accounts and prompt drift fail before interactive launch", async () => {

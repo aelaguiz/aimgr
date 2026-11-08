@@ -23,6 +23,7 @@ import pty
 import re
 import select
 import shlex
+import shutil
 import signal
 import socket
 import ssl
@@ -102,6 +103,9 @@ requests = []
 connections = []
 active = None
 active_plan = None
+work_area_files = []
+work_area_steps = []
+work_area_temporary = []
 
 
 class Mock(http.server.BaseHTTPRequestHandler):
@@ -260,6 +264,18 @@ class Mock(http.server.BaseHTTPRequestHandler):
             self.reply({"input_tokens": 10})
         elif "/messages" in self.path:
             content = {"type": "text", "text": "SYNTHETIC_OK"}
+            if "work-areas" in active:
+                # The first model turn happens after AIM selected and admitted
+                # its roots. Create future work directories only at this point.
+                for file, data in work_area_files:
+                    if not file.exists():
+                        file.parent.mkdir(parents=True, exist_ok=True)
+                        file.write_bytes(data)
+                blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
+                completed = {block.get("tool_use_id") for block in blocks if block.get("type") == "tool_result"}
+                step = next((step for step in work_area_steps if step["id"] not in completed), None)
+                if step:
+                    content = {"type": "tool_use", **step}
             if "errors" in active:
                 blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
                 if not any(block.get("id") == "expected_error_tool" for block in blocks):
@@ -372,6 +388,8 @@ class Mock(http.server.BaseHTTPRequestHandler):
                 ran = any(block.get("type") == "tool_use" and (block.get("name") == "Skill" if skill else block.get("name") == "Agent" if agent else "stdio" in block.get("name", "") and block.get("name", "").endswith("echo") if mcp else block.get("name") == "Bash") for block in blocks)
                 if not ran:
                     args = {"skill": "privacy-proof"} if skill else {"description": "Synthetic child task", "prompt": "Run the synthetic Bash task. NATIVE_CHILD_TASK.", "subagent_type": "general-purpose"} if agent else ({"text": "MCP_TOOL_RESULT_CANARY"} if mcp_tool else {"query": "+stdio echo", "max_results": 5}) if mcp else {"command": "printf subagent-ok > child-proof.txt" if child else "printf native-tool-ok > tool-proof.txt", "description": "Write synthetic proof"}
+                    if name == "Bash" and not child and "workflows" in active:
+                        args["command"] += '; printf "%s\\n" "$OTEL_SDK_DISABLED" "$OTEL_LOGS_EXPORTER" "$OTEL_METRICS_EXPORTER" "$OTEL_TRACES_EXPORTER" > task-otel-env.txt'
                     content = {"type": "tool_use", "id": "tool_fixture_" + str(len(requests)), "name": name, "input": args}
                 elif "schedules" in active or "ROUTINE_SUCCESS_CANARY" in messages:
                     content = {"type": "text", "text": "NATIVE_MOCK_DONE\nAIM-JOB: done"}
@@ -754,6 +772,8 @@ cases = [
     ("api-key-telemetry-on", None, False, None),
     ("api-key-telemetry-off", None, True, None),
     ("pro-custom-diagnostics", "pro", False, "sign_in"),
+    ("pro-work-areas-edit", "pro", True, "sign_in"),
+    ("pro-work-areas-readonly", "pro", True, "sign_in"),
     ("pro-sign-in", "pro", True, "sign_in"),
     ("max-sign-in", "max", True, "sign_in"),
     ("team-positive-control", "team", True, "sign_in"),
@@ -817,6 +837,41 @@ try:
         config.mkdir(parents=True)
         (home / "tmp").mkdir()
         (home / "project").mkdir()
+        work_area_files, work_area_steps = [], []
+        work_area_absent = []
+        if "work-areas" in name:
+            os_temp = "/tmp"
+            if platform.system() == "Darwin":
+                os_temp = subprocess.check_output(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], text=True).strip()
+            temporary = Path(tempfile.mkdtemp(prefix="aim-claude-work-areas-", dir="/tmp"))
+            user_temporary = Path(tempfile.mkdtemp(prefix="aim-claude-work-areas-", dir=os_temp))
+            work_area_temporary.extend([temporary, user_temporary])
+            screenshots = home / ("Desktop" if platform.system() == "Darwin" else "Pictures/Screenshots")
+            directories = [home / "workspace", home / "Downloads", screenshots, home / "selected-work"]
+            work_area_absent = [not directory.exists() for directory in directories]
+            (home / ".aimgr").mkdir(exist_ok=True)
+            (home / ".aimgr/config.yaml").write_text(json.dumps({"version": 1,
+                "claudeWorkingDirectories": [str(home / "selected-work")]}))
+            selected, sibling = home / "private-selection/exact.txt", home / "private-selection/sibling.txt"
+            selected.parent.mkdir()
+            selected.write_text("NATIVE_EXACT_SELECTED_FILE")
+            sibling.write_text("NATIVE_UNSELECTED_SIBLING")
+            for index, directory in enumerate([*directories, temporary, temporary.resolve(), user_temporary]):
+                file = directory / "late/nested/proof.txt"
+                marker = "NATIVE_WORK_AREA_" + str(index)
+                work_area_files.append((file, marker.encode()))
+                work_area_steps.append({"id": "work_area_read_" + str(index), "name": "Read", "input": {"file_path": str(file)}})
+            image = temporary / "late/screenshot.png"
+            work_area_files.append((image, base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aBxkAAAAASUVORK5CYII=")))
+            work_area_steps.extend([
+                {"id": "work_area_image", "name": "Read", "input": {"file_path": str(image)}},
+                {"id": "work_area_exact", "name": "Read", "input": {"file_path": str(selected)}},
+                {"id": "work_area_sibling", "name": "Read", "input": {"file_path": str(sibling)}},
+                {"id": "work_area_edit_read", "name": "Read", "input": {"file_path": str(home / "project/edit.txt")}},
+                {"id": "work_area_edit", "name": "Edit", "input": {"file_path": str(home / "project/edit.txt"),
+                    "old_string": "NATIVE_EDIT_BEFORE", "new_string": "NATIVE_EDIT_AFTER"}},
+            ])
+            work_area_files.append((home / "project/edit.txt", b"NATIVE_EDIT_BEFORE"))
         if "dynamic-directory" in name or "startup-directory" in name:
             (home / "added-dir").mkdir()
             (home / "added-dir/proof.txt").write_text("NATIVE_DYNAMIC_DIRECTORY_CONTENT_CANARY\n")
@@ -844,6 +899,9 @@ try:
                "NODE_EXTRA_CA_CERTS": str(root / "ca.pem")}
         if a.disable_agent_view:
             env["CLAUDE_CODE_DISABLE_AGENT_VIEW"] = "1"
+        if "workflows" in name:
+            env.update(OTEL_SDK_DISABLED="false", OTEL_LOGS_EXPORTER="otlp", OTEL_METRICS_EXPORTER="otlp",
+                OTEL_TRACES_EXPORTER="otlp", OTEL_EXPORTER_OTLP_ENDPOINT=proxy)
         if a.routed_aim and "workflows" not in name:
             env["NODE_EXTRA_CA_CERTS"] = str(home / "project/fixture-ca.pem")
         if opt_out:
@@ -956,6 +1014,11 @@ print(json.dumps(result))
             (config / "settings.json").write_text(json.dumps({"remoteControlAtStartup": name.endswith("saved")}))
         start = len(requests)
         arguments = [str(a.claude), "-p", "Reply SYNTHETIC_OK.", "--model", "sonnet"]
+        if "work-areas" in name:
+            arguments[2] = "Exercise the synthetic work-area sequence."
+            arguments += ["--permission-mode", "plan" if name.endswith("readonly") else "acceptEdits",
+                "--max-turns", "20", "--allowedTools", *["Read(/" + str(directory) + "/**)" for directory in
+                    [*directories, temporary, temporary.resolve(), user_temporary, selected.parent]], "Read(/" + str(selected) + ")"]
         if "startup-directory" in name:
             arguments[2] = "Read the extra folder proof. NATIVE_ADDED_DIRECTORY."
             arguments += ["--add-dir", str(home / "added-dir")]
@@ -1062,12 +1125,23 @@ print(json.dumps(result))
                 code = "timeout"
         (home / "output.private.txt").write_text(out + err)
         captures = requests[start:]
+        work_area_results = {block["tool_use_id"]: block for r in captures if "/messages" in r["path"]
+            for message in r["body"].get("messages", []) if isinstance(message.get("content"), list)
+            for block in message["content"] if block.get("type") == "tool_result" and block.get("tool_use_id", "").startswith("work_area_")}
         stored = json.loads((config / ".credentials.json").read_text()).get("claudeAiOauth", {}) if plan else {}
         results.append({"case": name, "exit": code, "syntheticModelCompleted": code == 0 and "SYNTHETIC_OK" in out,
                         "customDiagnostics": {"mode": a.custom_diagnostics,
                             "logsRequests": sum(urlsplit(r["path"]).path == "/v1/logs" for r in captures),
                             "metricsRequests": sum(urlsplit(r["path"]).path == "/v1/metrics" for r in captures),
                             "tracesRequests": sum(urlsplit(r["path"]).path == "/v1/traces" for r in captures)},
+                        **({"nativeWorkAreas": {"permissionMode": "plan" if name.endswith("readonly") else "acceptEdits",
+                            "defaultDirectoriesAbsentBeforeModel": work_area_absent,
+                            "editChanged": (home / "project/edit.txt").read_text() == "NATIVE_EDIT_AFTER",
+                            "results": [{"id": step["id"], "tool": step["name"],
+                                "returned": step["id"] in work_area_results,
+                                "isError": work_area_results.get(step["id"], {}).get("is_error", False),
+                                "content": work_area_results.get(step["id"], {}).get("content", [])}
+                                for step in work_area_steps]}} if "work-areas" in name else {}),
                         "requestPaths": sorted(set(urlsplit(r["path"]).path for r in captures)),
                         "modelRequests": sum("/messages" in r["path"] for r in captures),
                         "modelSources": sorted(set(r["source"] for r in captures if "/messages" in r["path"])),
@@ -1129,6 +1203,8 @@ print(json.dumps(result))
                         **({"httpMcp": json.loads((home / "http-mcp.json").read_text())} if (home / "http-mcp.json").exists() else {}),
                         "connectAuthorities": sorted(set(r["authority"] for r in connections if r["case"] == name))})
 finally:
+    for directory in work_area_temporary:
+        shutil.rmtree(directory, ignore_errors=True)
     cleanup_route()
     atexit.unregister(cleanup_route)
     server.shutdown()

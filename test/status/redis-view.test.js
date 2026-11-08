@@ -17,6 +17,7 @@ import { logoutLocalCodexCredential, maintainLocalCodexCredential } from "../../
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
+import { localClaudeFixture, readClaudeTestEnvironment } from "../helpers/claude-local.js";
 import { renderStatusText } from "../../src/status/render.js";
 import { invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
 import { writeCachedRedisStatusView } from "../../src/status/redis-cache.js";
@@ -282,20 +283,14 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   });
   const store = await connectRedisStore({ client, keyPrefix: "aimgr:status-claude-test" });
   const credential = buildAnthropicClaudeCredential({ expiresAtMs: nowMs + 3_600_000 });
-  await importCredentialsSnapshot(store, {
-    credentials: [{
-      provider: ANTHROPIC_PROVIDER,
-      label: "claude",
-      credential,
-      identity: {
-        accountUuid: "acct_boss",
-        emailAddress: "boss@example.com",
-        organizationUuid: "org_boss",
-      },
-      policy: { egress: { profileRef: "test" }, expect: { email: "boss@example.com" }, pool: { enabled: true } },
-      health: { status: "ready", reason: null },
-    }],
-  });
+  const record = {
+    provider: ANTHROPIC_PROVIDER, label: "claude", credential,
+    identity: { accountUuid: "acct_boss", emailAddress: "boss@example.com", organizationUuid: "org_boss" },
+    policy: { egress: { profileRef: "test" }, expect: { email: "boss@example.com" }, pool: { enabled: true } },
+    health: { status: "ready", reason: null },
+  };
+  await importCredentialsSnapshot(store, { credentials: [record] });
+  await localClaudeFixture(home, record);
   await acquireRedisCredentialLease(store, {
     provider: ANTHROPIC_PROVIDER,
     label: "claude",
@@ -306,6 +301,7 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   let proxyHealth = "running";
   const deps = {
     homeDir: home,
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
     readClaudeProxyHealthImpl: async () => ({ test: proxyHealth }),
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:status-claude-test" }),
     probeUsageSnapshotsByProviderImpl: async (state) => {
@@ -334,15 +330,15 @@ test("ordinary Redis status routes Claude through the bounded canonical cache", 
   assert.equal(first.view.accounts[0].usage.ok, true);
   assert.equal(first.view.accounts[0].plan, "max/max_20x");
   assert.equal(first.view.accounts[0].usage.status, "usage_readable");
-  assert.equal(first.view.accounts[0].lock.status, "held");
+  assert.notEqual(first.view.accounts[0].lock.status, "held");
   assert.equal(first.claudeUsageStatus.accounts[0].label, "claude");
-  assert.equal(first.claudeUsageStatus.accounts[0].locked, true);
+  assert.equal(first.claudeUsageStatus.accounts[0].locked, false);
   assert.equal(first.claudeUsageStatus.accounts[0].usage.ok, true);
   assert.deepEqual(first.view.accounts[0].egress, { mode: "proxy", profileRef: "test", localStatus: "configured", health: "running" });
   assert.deepEqual(first.claudeUsageStatus.accounts[0].egress, first.view.accounts[0].egress);
   const text = renderStatusText(first.view, { claudeUsageStatus: first.claudeUsageStatus });
   assert.match(text, /updated\s+proxy\s+health\s+next/);
-  assert.match(text, /claude\s+IN USE.*\s+test\s+running\s+session active/);
+  assert.match(text, /claude\s+READY.*\s+test\s+running\s+use now/);
   assert.equal(second.view.accounts[0].usage.ok, true);
   assert.equal(second.claudeUsageStatus.accounts[0].source, "cache");
   assert.equal(buildRedisDiagnosticCacheView(first.view).accounts[0].plan, "max/max_20x");

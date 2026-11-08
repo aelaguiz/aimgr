@@ -28,7 +28,7 @@ test("parseAnthropicAuthorizationPaste accepts callback URLs and code#state", ()
 test("help text prefers Redis primary-host setup over authority sync examples", async () => {
   const out = await runCli([]);
   assert.match(out, /aim redis configure --url <redis-url>/);
-  assert.match(out, /aim auth maintain\s+# refresh due Redis-backed Claude and Codex OAuth credentials once/);
+  assert.match(out, /aim auth maintain\s+# refresh due machine-local Claude and Codex OAuth credentials once/);
   assert.match(
     out,
     /aim claude resume \[<row-or-thread-id-or-name>\] \[--account <label>\] \[--switch-account fable\|opus\|sonnet\]/,
@@ -36,7 +36,7 @@ test("help text prefers Redis primary-host setup over authority sync examples", 
   assert.match(out, /aim claude run \(opus\|fable\|sonnet\) \[--resume\]/);
   assert.match(out, /aim claude run <label> \(opus\|fable\|sonnet\) \[--resume\]/);
   assert.match(out, /aim claude status \[account\.\.\.\] \[--fresh\] \[--verbose\] \[--json\]/);
-  assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# project the Redis-backed Claude label into a per-label home and launch Claude/);
+  assert.match(out, /aim claude run <label> \[-- <claude args\.\.\.>\]\s+# launch Claude using this machine’s independently authorized login/);
   assert.match(out, /aim pi use\s+# activate the next-best pooled openai-codex label for local Pi CLI/);
   assert.ok(out.includes(`Human-readable Redis primary host, e.g. ${AIMGR_REDIS_PRIMARY_HOST}.`));
   assert.match(out, /\[--transport tls\]/);
@@ -262,53 +262,14 @@ test("anthropic label maintenance captures the current native Claude login witho
   assert.equal(updatedState.accounts.boss.browser, null);
 });
 
-test("aim claude capture-native initializes first-time Claude account maintenance state", async () => {
+test("retired Claude capture commands cannot import a local primary grant", async () => {
   const home = mkTempHome();
-  const statePath = path.join(home, ".aimgr", "secrets.json");
-
-  writeClaudeNativeBundle(home, {
-    accessToken: "ACCESS_FIRST",
-    refreshToken: "REFRESH_FIRST",
-    oauthAccount: {
-      emailAddress: "first@example.com",
-      organizationName: "First Org",
-      organizationUuid: "org_first",
-    },
-  });
-
-  writeJson(statePath, {
-    schemaVersion: "0.2",
-    accounts: {},
-    credentials: {
-      "openai-codex": {},
-      anthropic: {},
-    },
-    targets: {
-      openclaw: { assignments: {}, exclusions: {} },
-      codexCli: {},
-      claudeCli: {},
-      piCli: {},
-    },
-    pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
-  });
-
-  const out = JSON.parse(await runCli(["claude", "capture-native", "first", "--home", home]));
-  assert.equal(out.ok, true);
-  assert.equal(out.captured.label, "first");
-  assert.equal(out.captured.emailAddress, "first@example.com");
-
-  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(updatedState.accounts.first.provider, "anthropic");
-  assert.equal(updatedState.accounts.first.reauth.mode, "native-claude");
-  assert.equal(typeof updatedState.accounts.first.reauth.lastAttemptAt, "string");
-  assert.equal(updatedState.accounts.first.reauth.lastVerifiedAt, updatedState.accounts.first.reauth.lastAttemptAt);
-  const credential = updatedState.credentials.anthropic.first;
-  assert.deepEqual(Object.keys(credential), ["nativeClaudeBundle"]);
-  assert.equal(credential.nativeClaudeBundle.claudeAiOauth.accessToken, "ACCESS_FIRST");
-  assert.equal(credential.nativeClaudeBundle.claudeAiOauth.refreshToken, "REFRESH_FIRST");
-  assert.equal(credential.nativeClaudeBundle.oauthAccount.emailAddress, "first@example.com");
-  assert.equal(credential.nativeClaudeBundle.oauthAccount.organizationName, "First Org");
-  assert.equal(credential.nativeClaudeBundle.oauthAccount.organizationUuid, "org_first");
+  writeClaudeNativeBundle(home, { accessToken: "ACCESS_FIRST", refreshToken: "REFRESH_FIRST" });
+  for (const command of ["capture-native", "import-native", "export-live"]) {
+    await assert.rejects(runCli(["claude", command, "first", "--home", home]),
+      /Primary Claude credentials stay on this machine.*aim claude login <label>/);
+  }
+  assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
 test("derivePoolAccountStatus ignores a stale duplicate native Claude blocker when the stored bundle is still usable", () => {

@@ -53,6 +53,19 @@ export function extractNativeClaudeManualUrl(text) {
   return null;
 }
 
+export function buildClaudeLoginEnvironment({ env, profile, manual, tabs }) {
+  const result = { ...env };
+  for (const key of ['AIMGR_CLAUDE_LOGIN_PROFILE','AIMGR_CLAUDE_LOGIN_TABS','AIMGR_CLAUDE_LOGIN_STDIO']) delete result[key];
+  if (profile || manual) {
+    result.BROWSER = fileURLToPath(new URL('../../../scripts/claude-login-browser.mjs', import.meta.url));
+    result.AIMGR_CLAUDE_LOGIN_PROFILE = JSON.stringify(profile);
+    result.AIMGR_CLAUDE_LOGIN_TABS = tabs;
+    if (manual) result.AIMGR_CLAUDE_LOGIN_STDIO = '1';
+    delete result.DISPLAY; delete result.WAYLAND_DISPLAY;
+  }
+  return result;
+}
+
 export async function handleLocalClaudeAuth(context) {
   const { homeDir, opts, positional, stdout, stdin, env } = context;
   const label = normalizeLabel(positional[2]);
@@ -99,10 +112,7 @@ export async function handleLocalClaudeAuth(context) {
     const prepare = context.resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl ?? prepareClaudeCliLaunch;
     const preparedLaunch = await prepare({ command, userHomeDir: homeDir, homeDir: stagingHome, configDir });
     const tabs = path.join(stagingHome, 'login-tabs.jsonl');
-    const loginEnv = { ...env, BROWSER: fileURLToPath(new URL('../../../scripts/claude-login-browser.mjs', import.meta.url)),
-      AIMGR_CLAUDE_LOGIN_PROFILE: JSON.stringify(profile), AIMGR_CLAUDE_LOGIN_TABS: tabs,
-      ...(manual ? { AIMGR_CLAUDE_LOGIN_STDIO: "1" } : {}) };
-    delete loginEnv.DISPLAY; delete loginEnv.WAYLAND_DISPLAY;
+    const loginEnv = buildClaudeLoginEnvironment({ env, profile, manual, tabs });
     const abort = new AbortController();
     let callbackFailure, advertised, received = false;
     let spawnImpl;
