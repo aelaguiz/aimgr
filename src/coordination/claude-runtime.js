@@ -9,6 +9,21 @@ import { readClaudeAccountMetadata } from './claude-metadata.js';
 import { connectRedisStore, closeRedisStore, REDIS_CONNECTION_POLICY_ONE_SHOT } from './redis-store.js';
 import { writeJsonFileIfChanged } from '../io/json-store.js';
 
+export function readCachedClaudeAccountMetadata({homeDir,environment}) {
+  const file=path.join(homeDir,'.aimgr','claude-account-metadata.json');
+  let fd;
+  try {
+    fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);
+    const stat=fs.fstatSync(fd);
+    if(!stat.isFile() || stat.nlink!==1 || stat.uid!==process.getuid() || stat.mode&0o077 || stat.size>1024*1024) throw new Error();
+    const cached=JSON.parse(fs.readFileSync(fd,'utf8'));
+    if(cached.schema!==1 || cached.environmentBinding!==environment.binding || !Array.isArray(cached.credentials)
+      || cached.credentials.some(record=>record.provider!==ANTHROPIC_PROVIDER || Object.keys(record.credential ?? {}).length)) throw new Error();
+    return cached.credentials;
+  } catch { throw new Error('Claude coordination is offline and no verified local account metadata is available.'); }
+  finally {if(fd!==undefined)fs.closeSync(fd);}
+}
+
 // Only the server-side allowlist reaches this cache. Never hydrate a legacy
 // credential into a primary runtime, including when coordination is offline.
 export async function loadClaudeRuntime({ homeDir, connectRedisStoreImpl = connectRedisStore,
@@ -25,15 +40,7 @@ export async function loadClaudeRuntime({ homeDir, connectRedisStoreImpl = conne
     if (store) await closeRedisStore(store).catch(() => {});
     store = null;
     if (!allowOffline) throw error;
-    let cached;
-    try {
-      const stat = fs.lstatSync(cache);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid() || stat.mode & 0o077 || stat.size > 1024 * 1024) throw new Error();
-      cached = JSON.parse(fs.readFileSync(cache, 'utf8'));
-      if (cached.schema !== 1 || cached.environmentBinding !== environment.binding || !Array.isArray(cached.credentials)
-        || cached.credentials.some(record => record.provider !== ANTHROPIC_PROVIDER || Object.keys(record.credential ?? {}).length)) throw new Error();
-    } catch { throw new Error('Claude coordination is offline and no verified local account metadata is available.'); }
-    credentials = cached.credentials;
+    credentials = readCachedClaudeAccountMetadata({homeDir,environment});
     offline = true;
   }
   const localState = loadLocalState({ homeDir });

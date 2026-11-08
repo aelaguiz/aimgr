@@ -111,9 +111,12 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
   // traversal/listing remains available through the private config ancestors.
   if (fs.realpathSync(cwd) !== home) add(cwd);
   for (const file of [...additionalDirectories, ...userPluginDirs, ...taskFiles]) add(path.resolve(cwd, file));
-  // A remembered trust dialog permits loading that project's settings when
-  // used; it is not a permanent grant to every previously visited directory.
   for (const directory of workingDirectories) add(directory, false, true);
+  // Preserve the user's previously selected, explicitly trusted project roots
+  // alongside the default work areas and current additional directories.
+  for (const [file, state] of Object.entries(appState.projects ?? {})) {
+    if (state?.hasTrustDialogAccepted === true && path.isAbsolute(file) && file !== home) add(file, true);
+  }
   const managedRoot = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode" : "/etc/claude-code";
   const instructions = [path.join(config, "CLAUDE.md"), path.join(managedRoot, "CLAUDE.md")];
   const rules = [path.join(config, "rules"), path.join(managedRoot, ".claude/rules")];

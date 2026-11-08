@@ -20,6 +20,7 @@ export function clonePortableAnthropicCredential(credential) {
 }
 
 export function buildPortableAnthropicCredential({ label, credential }) {
+  assertClaudeCredentialExportable(credential);
   const cred = assertAnthropicCredentialShape({
     label,
     credential,

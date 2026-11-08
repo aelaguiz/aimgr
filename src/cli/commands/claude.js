@@ -2,12 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { handleLocalClaudeAuth } from "./claude-local-auth.js";
 import { loadClaudeRuntime } from "../../coordination/claude-runtime.js";
-import { updateClaudeEgressMetadata } from "../../coordination/claude-metadata.js";
+import { updateClaudeEgressMetadata, readClaudeAccountMetadata } from "../../coordination/claude-metadata.js";
 import { closeRedisRuntime, isRedisConfigured, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { readLocalClaudeCredential } from "../../credentials/claude-local.js";
 import { claudeOwnerBinding } from "../../privacy/claude-environment.js";
 import { acquireClaudeStateGuard } from "../../privacy/claude-state-migration.js";
-import { acquireClaudeAssignmentLock, invalidateClaudeOfflineBinding } from "../../network/claude-offline-binding.js";
+import { acquireClaudeAssignmentLock, invalidateClaudeOfflineBinding, readClaudeOfflineBinding, writeClaudeOfflineBinding } from "../../network/claude-offline-binding.js";
 import { resolveNativeAccountProfile, assertLocalClaudeProfileStopped } from "../../network/claude-native-route.js";
 import { assertClaudeLocalInvocation } from "../../privacy/claude-settings.js";
 import { inspectClaudePrivacyStatus, formatClaudePrivacyStatus } from "../../privacy/claude-status.js";
@@ -204,19 +204,31 @@ async function handleRedisClaudeRun(context, { launchCwd = process.cwd(), sessio
     readClaudeEnvironmentImpl: context.readClaudeEnvironmentImpl, allowOffline });
   let assignmentLock, stagedSessionFork, leaveSessions;
   try {
-    const metadata = runtime.snapshot.credentials.find(item => item.label === label);
+    let metadata = runtime.snapshot.credentials.find(item => item.label === label);
     if (!metadata) throw new Error(`Unknown Claude account ${label}; use \`aim claude login ${label}\`.`);
     const localOptions = { homeDir, label, metadata, environment: runtime.environment };
     let local = readLocalClaudeCredential(localOptions);
     if (!local.credential || (runtime.offline && local.status !== "ready")) throw localLoginRequired(label);
+    if(runtime.offline && readClaudeOfflineBinding(homeDir,label)?.invalidated) throw new Error(`Claude ${label} needs current account routing metadata before an offline launch.`);
     const { claudeHome, configDir } = local;
-    const profile = resolveNativeAccountProfile({ homeDir, state: runtime.state, label });
+    let profile = resolveNativeAccountProfile({ homeDir, state: runtime.state, label });
     const discovered = resolveExecutableOnPathImpl?.("claude");
     const prepare = resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl ?? prepareClaudeCliLaunch;
     let prepared;
     assignmentLock = await acquireClaudeStateGuard({ homeDir, label, configDir, command: discovered,
       beforeState: async () => { prepared = await prepare({ command: discovered, userHomeDir: homeDir, homeDir: claudeHome, configDir }); },
       readBinding: async () => {
+        // A local policy setter takes EX. Reload metadata after joining SH so
+        // a snapshot read before that setter cannot restore its prior route.
+        if(!runtime.offline) {
+          metadata=(await readClaudeAccountMetadata(runtime.store)).find(item=>item.label===label);
+          if(!metadata) throw localLoginRequired(label);
+          localOptions.metadata=metadata;
+          const account=runtime.state.accounts[label];
+          account.egress=metadata.policy?.egress;
+          account.expect=metadata.policy?.expect ?? {};
+          profile=resolveNativeAccountProfile({homeDir,state:runtime.state,label});
+        }
         local = readLocalClaudeCredential(localOptions);
         if (!local.credential) throw localLoginRequired(label);
         return { protected: true, accountUuid: metadata.identity.accountUuid, organizationUuid: metadata.identity.organizationUuid,
@@ -231,6 +243,9 @@ async function handleRedisClaudeRun(context, { launchCwd = process.cwd(), sessio
     delete target.claudeDir; delete target.credentialsPath; delete target.appStatePath;
     target.lastAppliedAt = new Date().toISOString();
     writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
+    if(!runtime.offline) writeClaudeOfflineBinding(homeDir,label,{identity:metadata.identity,
+      ...(metadata.policy?.egress ? {egress:metadata.policy.egress} : {}),version:metadata.version});
+    await closeRedisRuntime(runtime); runtime.store=null;
     leaveSessions = await joinLocalClaudeSessions({homeDir,label});
     const launched = await (context.runClaudeCliImpl ?? runClaudeCli)({ assignmentLock, egressProfile: profile,
       expectedIdentity: local.nativeClaudeBundle.oauthAccount, command: prepared.command, preparedLaunch: prepared,
@@ -309,6 +324,7 @@ export async function handleClaude(context) {
       if (!record) throw new Error(`Unknown Claude account: ${label}`);
       await (context.assertLocalClaudeProfileStoppedImpl ?? assertLocalClaudeProfileStopped)(record.policy?.egress?.profileRef);
       invalidateClaudeOfflineBinding(homeDir,label);
+      fs.rmSync(path.join(homeDir,".aimgr","claude-account-metadata.json"),{force:true});
       assignmentLock.assertOwned();
       await updateClaudeEgressMetadata(runtime.store,{label,expectedVersion:record.version,egress});
       // The old safe cache must not preserve a superseded route offline.

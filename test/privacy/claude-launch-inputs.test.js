@@ -148,7 +148,7 @@ test("explicit TLS files and custom memory are granted only for protected accoun
   assert.ok(covered(roots, path.join(project, "memory"))); assert.ok(!roots.includes(certs)); assert.ok(!roots.includes(home));
 });
 
-test("task grants retain selected roots, skills and worktree metadata without treating trust history as a grant", t => {
+test("task grants retain trusted projects, selected roots, skills and worktree metadata", t => {
   const root = fixture(t), home = path.join(root, "home"), config = path.join(home, ".aimgr/account/.claude");
   const project = path.join(home, "work/project"), trusted = path.join(home, "work/trusted");
   const packageRoot = path.join(home, "packages/required-skill"), git = path.join(home, "git/common/worktrees/project");
@@ -163,7 +163,7 @@ test("task grants retain selected roots, skills and worktree metadata without tr
   const inputs = { cwd: project, userHomeDir: home, configDir: config, appState: {
     projects: { [trusted]: { hasTrustDialogAccepted: true }, [home]: { hasTrustDialogAccepted: true } } } };
   const roots = resolveClaudeTaskReadRoots(inputs);
-  assert.ok(!covered(roots, trusted), "historical trust is not a selected work root");
+  assert.ok(covered(roots, trusted), "previously trusted projects retain their selected work root");
   assert.ok(covered(resolveClaudeTaskReadRoots({ ...inputs, additionalDirectories: [trusted] }), trusted));
   for (const expected of [project, packageRoot, git, path.resolve(git, "../.."),
     path.join(home, "work/CLAUDE.md"), path.join(home, "work/.claude/rules")]) assert.ok(covered(roots, expected), expected);

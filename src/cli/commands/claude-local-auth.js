@@ -36,13 +36,30 @@ export function validateClaudeManualCallback(input, advertised) {
   return `${code}#${state}`;
 }
 
+// A stream chunk is not a complete URL token. Wait for native's delimiter;
+// otherwise state/redirect can precede a still-unwritten PKCE challenge.
+export function extractNativeClaudeManualUrl(text) {
+  for (const match of text.matchAll(/https:\/\/[^\s\x1b<>"']+(?=[\s\x1b<>"'])/g)) {
+    let url, redirect;
+    try { url = new URL(match[0]); redirect = new URL(url.searchParams.get('redirect_uri')); } catch { continue; }
+    if (!['claude.ai','console.anthropic.com','platform.claude.com'].includes(url.hostname)
+      || url.pathname !== '/oauth/authorize' || !url.searchParams.get('state')
+      || !url.searchParams.get('code_challenge') || !url.searchParams.get('client_id')
+      || url.searchParams.get('code_challenge_method') !== 'S256'
+      || redirect.protocol !== 'https:' || !['console.anthropic.com','platform.claude.com'].includes(redirect.hostname)
+      || redirect.pathname !== '/oauth/code/callback') continue;
+    return url.href;
+  }
+  return null;
+}
+
 export async function handleLocalClaudeAuth(context) {
   const { homeDir, opts, positional, stdout, stdin, env } = context;
   const label = normalizeLabel(positional[2]);
   if (positional.length !== 3) throw new Error('Usage: aim claude login <label> [--manual-callback-stdio] | aim claude logout <label>');
   const manual = opts.manualCallbackStdio === true;
   const emit = value => stdout.write(`${JSON.stringify(value)}\n`);
-  let runtime, stagingHome, input, interval, timeout, child;
+  let runtime, stagingHome, input, timeout, child;
   try {
     runtime = await loadClaudeRuntime({ homeDir, connectRedisStoreImpl: context.connectRedisStoreImpl,
       readClaudeEnvironmentImpl: context.readClaudeEnvironmentImpl, allowOffline: positional[1] === 'logout' });
@@ -56,16 +73,23 @@ export async function handleLocalClaudeAuth(context) {
       if (manual || opts.json) emit(result); else stdout.write(`Claude ${label} is signed out on this machine.\n`);
       return;
     }
-    const expectedEmail = metadata?.policy?.expect?.email ?? metadata?.identity?.emailAddress
-      ?? String(await context.promptLineImpl(`Expected Claude email for "${label}":`)).trim().toLowerCase();
-    if (!expectedEmail) throw new Error('Claude login requires an expected email.');
-    metadata ??= { provider: 'anthropic', label, policy: { expect: { email: expectedEmail } }, identity: {}, credential: {} };
+    const existingMetadata=metadata;
+    if (existingMetadata && opts.claudeLoginProxyRef && opts.claudeLoginProxyRef!==existingMetadata.policy?.egress?.profileRef) throw new Error('An existing Claude proxy assignment must be changed with `aim claude proxy set`.');
+    const requestedEmail=opts.claudeLoginEmail?.trim().toLowerCase();
+    const boundEmail=metadata?.policy?.expect?.email ?? metadata?.identity?.emailAddress;
+    if(requestedEmail && boundEmail && requestedEmail!==boundEmail.toLowerCase()) throw new Error('Claude login email differs from its account assignment.');
+    const expectedEmail = boundEmail ?? requestedEmail
+      ?? (manual ? null : String(await context.promptLineImpl(`Expected Claude email for "${label}":`)).trim().toLowerCase());
+    if (!expectedEmail) throw new Error('Claude login requires an expected email; use --email for a new label.');
+    metadata ??= { provider: 'anthropic', label, policy: { expect: { email: expectedEmail }, ...(opts.claudeLoginProxyRef ? {egress:{profileRef:opts.claudeLoginProxyRef}} : {}) }, identity: {}, credential: {} };
     const state = buildCoordinationView({ credentials: [metadata] }, { localState: runtime.localState, provider: 'anthropic' });
     const profile = resolveNativeAccountProfile({ homeDir, state, label });
     if (profile && !manual) await (context.validateClaudeChromeImpl ?? validateClaudeChrome)(profile);
+    const loginEnvironment=runtime.environment;
+    await closeRedisRuntime(runtime); runtime=null;
     const paths = localClaudePaths({ homeDir, label, metadata });
     fs.mkdirSync(paths.claudeHome, { recursive: true, mode: 0o700 });
-    const candidateStaging = path.join(paths.claudeHome, ".login-staging");
+    const candidateStaging = path.join(paths.claudeHome, `.login-staging-${randomUUID()}`);
     fs.mkdirSync(candidateStaging, { mode: 0o700 });
     stagingHome = candidateStaging;
     const configDir = path.join(stagingHome, '.claude');
@@ -74,11 +98,10 @@ export async function handleLocalClaudeAuth(context) {
     ensureSafeManagedClaudeStorage({ descriptor });
     const prepare = context.resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl ?? prepareClaudeCliLaunch;
     const preparedLaunch = await prepare({ command, userHomeDir: homeDir, homeDir: stagingHome, configDir });
-    const urlPath = path.join(stagingHome, 'native-login-url.json');
     const tabs = path.join(stagingHome, 'login-tabs.jsonl');
     const loginEnv = { ...env, BROWSER: fileURLToPath(new URL('../../../scripts/claude-login-browser.mjs', import.meta.url)),
       AIMGR_CLAUDE_LOGIN_PROFILE: JSON.stringify(profile), AIMGR_CLAUDE_LOGIN_TABS: tabs,
-      ...(manual ? { AIMGR_CLAUDE_LOGIN_STDIO_URL: urlPath } : {}) };
+      ...(manual ? { AIMGR_CLAUDE_LOGIN_STDIO: "1" } : {}) };
     delete loginEnv.DISPLAY; delete loginEnv.WAYLAND_DISPLAY;
     const abort = new AbortController();
     let callbackFailure, advertised, received = false;
@@ -98,23 +121,19 @@ export async function handleLocalClaudeAuth(context) {
         child = spawn(binary, args, { ...options, stdio: ['pipe', 'pipe', 'pipe', ...options.stdio.slice(3)] });
         // Native prompts may contain URL/code. Only the explicit JSONL bridge
         // crosses stdout; discard all vendor text from automation receipts.
-        child.stdout.resume(); child.stderr.resume();
+        let nativeText = '';
+        child.stdout.on('data', bytes => {
+          if (advertised) return;
+          nativeText = (nativeText + bytes.toString('utf8')).slice(-65536);
+          // Native prints its MANUAL URL before opening the loopback URL.
+          // A code issued for the browser's loopback redirect cannot be fed to
+          // its manual exchange. Capture exactly the native manual URL.
+          advertised = extractNativeClaudeManualUrl(nativeText);
+          if(advertised) emit({type:'auth_url',provider:'anthropic',label,url:advertised});
+        });
+        child.stderr.resume();
         return child;
       };
-      interval = setInterval(() => {
-        if (advertised) return;
-        try {
-          const stat = fs.lstatSync(urlPath);
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || stat.mode & 0o077 || stat.size > 16384) throw new Error();
-          const record = JSON.parse(fs.readFileSync(urlPath, 'utf8'));
-          const url = new URL(record.url);
-          if (url.protocol !== 'https:' || !['claude.ai', 'console.anthropic.com', 'platform.claude.com'].includes(url.hostname)
-            || !url.searchParams.get('state')) throw new Error();
-          advertised = url.href;
-          fs.unlinkSync(urlPath);
-          emit({ type: 'auth_url', provider: 'anthropic', label, url: advertised });
-        } catch (error) { if (error.code !== 'ENOENT') { callbackFailure = new Error('Claude native authorization URL was unavailable.'); abort.abort(callbackFailure); } }
-      }, 100);
       timeout = setTimeout(() => abort.abort(new Error('Claude login timed out.')), 5 * 60_000);
     }
     let launched;
@@ -128,6 +147,14 @@ export async function handleLocalClaudeAuth(context) {
     const staged = readManagedClaudeNativeBundleFromFiles({ descriptor });
     if (!staged.ok || !staged.nativeClaudeBundle.oauthAccount.organizationUuid) throw new Error('Claude native login did not produce a complete verified account and organization.');
     const identity = staged.nativeClaudeBundle.oauthAccount;
+    runtime=await loadClaudeRuntime({homeDir,connectRedisStoreImpl:context.connectRedisStoreImpl,readClaudeEnvironmentImpl:context.readClaudeEnvironmentImpl});
+    if(runtime.environment.binding!==loginEnvironment.binding) throw new Error('Claude environment changed during login; sign in again on this machine.');
+    const latest=runtime.snapshot.credentials.find(item=>item.label===label);
+    if(existingMetadata && (!latest || latest.identity?.accountUuid!==existingMetadata.identity?.accountUuid
+      || latest.identity?.organizationUuid!==existingMetadata.identity?.organizationUuid)) throw new Error('Claude account changed during login.');
+    const currentState=buildCoordinationView({credentials:[latest ?? metadata]},{localState:runtime.localState,provider:'anthropic'});
+    const currentProfile=resolveNativeAccountProfile({homeDir,state:currentState,label});
+    if(JSON.stringify(currentProfile)!==JSON.stringify(profile)) throw new Error('Claude route changed during login.');
     await ensureClaudeAccountMetadata(runtime.store, { label, identity, policy: metadata.policy });
     metadata = { ...metadata, identity };
     await saveLocalClaudeLogin({ homeDir, label, metadata, environment: runtime.environment, command,
@@ -141,7 +168,7 @@ export async function handleLocalClaudeAuth(context) {
     emit({ type: 'error', ok: false, label, provider: 'anthropic', error: 'Claude local login failed.' });
     context.setExitCode(1);
   } finally {
-    if (interval) clearInterval(interval); if (timeout) clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
     input?.removeAllListeners(); input?.close();
     if (stagingHome) fs.rmSync(stagingHome, { recursive: true, force: true });
     if (runtime) await closeRedisRuntime(runtime);

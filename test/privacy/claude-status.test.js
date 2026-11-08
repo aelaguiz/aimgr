@@ -8,6 +8,7 @@ import test from "node:test";
 import { inspectClaudePrivacyStatus, formatClaudePrivacyStatus } from "../../src/privacy/claude-status.js";
 import { admitClaudeArtifact, ClaudeAdmissionError, claudeInstalledVersionHint } from "../../src/privacy/claude-artifacts.js";
 import { writeClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
+import { saveLocalClaudeLogin } from "../../src/credentials/claude-local.js";
 
 function fixture(t) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aim-privacy-status-")));
@@ -104,18 +105,35 @@ test("version hints never echo arbitrary filenames or turn an installation label
   assert.equal(fs.existsSync(path.join(f.home, "VENDOR_EXECUTED")), false);
 });
 
-test("account status uses only the current local protection binding; absent binding stays unknown", t => {
+test("managed privacy is always enabled while route cache and local login remain independent", async t => {
   const f = fixture(t);
   fs.mkdirSync(path.join(f.home, ".aimgr"));
   fs.writeFileSync(path.join(f.home, ".aimgr/secrets.json"), "PRIVATE_RETIRED_SECRET");
-  const read = () => inspectClaudePrivacyStatus({ ...f.options, label: "account-a" });
-  assert.equal(read().account.mode, "unknown");
+  const read = options => inspectClaudePrivacyStatus({ ...f.options, label: "account-a", ...options });
+  assert.equal(read().account.mode, "protected");
+  assert.equal(read().privacy.mode, "protected");
+  assert.equal(read().account.localAuth, "unavailable");
   writeClaudeOfflineBinding(f.home, "account-a", { required: true, invalidated: true });
-  assert.equal(read().account.mode, "protected");
-  writeClaudeOfflineBinding(f.home, "account-a", { egress: { profileRef: "proxy5" } });
-  assert.equal(read().account.mode, "protected");
+  assert.equal(read().account.routing, "assigned");
+  writeClaudeOfflineBinding(f.home, "account-a", { egress: { profileRef: "proxy6" } });
+  assert.equal(read().account.routing, "assigned");
   writeClaudeOfflineBinding(f.home, "account-a", {});
-  assert.equal(read().account.mode, "unknown");
+  assert.equal(read().account.mode, "protected");
+  const environment = { binding: "c".repeat(64) };
+  const identity = { accountUuid: "synthetic-account", organizationUuid: "synthetic-org", emailAddress: "synthetic@example.invalid" };
+  const metadata = { provider: "anthropic", label: "account-a", credential: {}, identity, policy: { expect: { email: identity.emailAddress } } };
+  fs.writeFileSync(path.join(f.home, ".aimgr/claude-account-metadata.json"), JSON.stringify({ schema: 1,
+    environmentBinding: environment.binding, credentials: [metadata] }), { mode: 0o600 });
+  assert.equal(read({ environment }).account.localAuth, "login_required");
+  assert.equal(read({ environment }).account.routing, "direct");
+  await saveLocalClaudeLogin({ homeDir: f.home, label: metadata.label, metadata, environment, command: process.execPath,
+    assertStopped: async () => {}, nativeClaudeBundle: { oauthAccount: identity, claudeAiOauth: {
+      accessToken: "SYNTHETIC_ACCESS", refreshToken: "SYNTHETIC_REFRESH", expiresAt: Date.now() + 3600000,
+      scopes: ["user:profile", "user:inference"], subscriptionType: "pro", rateLimitTier: "default_claude_pro" } } });
+  const status = read({ environment });
+  assert.equal(status.account.localAuth, "ready");
+  assert.match(formatClaudePrivacyStatus(status), /managed privacy enabled; local login ready/);
+  assert.doesNotMatch(JSON.stringify(status), /SYNTHETIC_|PRIVATE_RETIRED_SECRET|synthetic@example/);
 });
 
 test("public status command works without Redis or credentials and never executes an unknown PATH binary", t => {

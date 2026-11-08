@@ -360,15 +360,16 @@ test("required skills, MCP and package preparation refuse instead of silently re
   }
 });
 
-test("login staging does not traverse or materialize optional customizations", async () => {
+test("unique and legacy login staging do not traverse or materialize optional customizations", async t => {
   const home = mkTempHome();
-  const stagingHome = path.join(home, ".aimgr", "claude-homes", "alpha", ".login-staging");
-  const configDir = path.join(stagingHome, ".claude");
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   fs.mkdirSync(path.join(home, ".claude", "skills"), { recursive: true });
-  fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(home, ".claude", "settings.json"), "malformed");
   fs.writeFileSync(path.join(home, ".claude", ".generic-preference"), "");
-
+  for (const directory of [".login-staging", ".login-staging-12345678-1234-4123-8123-123456789abc"]) {
+  const stagingHome = path.join(home, ".aimgr", "claude-homes", "alpha", directory);
+  const configDir = path.join(stagingHome, ".claude");
+  fs.mkdirSync(configDir, { recursive: true });
   const prepared = await prepareClaudeCliLaunch({
     command: process.execPath,
     userHomeDir: home,
@@ -380,6 +381,12 @@ test("login staging does not traverse or materialize optional customizations", a
   assert.equal(prepared.userHooksPath, null);
   assert.equal(prepared.userMcpConfigPath, null);
   assert.deepEqual(fs.readdirSync(configDir), []);
+  }
+  for (const directory of [".login-staging-12345678-1234-1123-8123-123456789abc", ".login-staging-not-a-uuid"]) {
+    const homeDir = path.join(home, ".aimgr/claude-homes/alpha", directory);
+    await assert.rejects(prepareClaudeCliLaunch({ command: process.execPath, userHomeDir: home,
+      homeDir, configDir: path.join(homeDir, ".claude"), platform: "linux" }), /exact label or login-staging home/);
+  }
 });
 
 test("interactive runner preserves cwd, stdio, PATH, and developer env while clearing only selectors", async () => {

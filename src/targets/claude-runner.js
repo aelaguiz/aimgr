@@ -419,7 +419,7 @@ function assertContainedLaunchTopology({ userHomeDir, launchHome, configDir }) {
   const freshLoginConfig = (
     segments.length === 3
     && /^[A-Za-z0-9_.-]+$/.test(segments[0])
-    && segments[1] === ".login-staging"
+    && (segments[1] === ".login-staging" || /^\.login-staging-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(segments[1]))
     && segments[2] === ".claude"
   );
   if (

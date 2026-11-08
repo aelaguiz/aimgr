@@ -464,7 +464,7 @@ export async function maintainRedisClaudeCredential(context, {
           resolveCommandImpl: context.resolveExecutableOnPathImpl,
           assertLeaseOwned: () => assertLeaseOwned(lease),
           beforeLocalState: async () => {
-            assignmentLock = await acquireClaudeStateGuard({ homeDir, label: normalizedLabel, configDir,
+            assignmentLock = await acquireClaudeStateGuard({ homeDir, label: `.legacy-${normalizedLabel}`, configDir,
               command: context.resolveExecutableOnPathImpl?.("claude"), readBinding: async () => {
                 await assertLeaseOwned(lease);
                 const credential = requireCredential(runtime, normalizedLabel);

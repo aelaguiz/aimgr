@@ -258,6 +258,13 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if ((arg === "--proxy" || arg === "--email") && argv[0] === "claude" && argv[1] === "login") {
+      const value=argv[i+1];
+      if(!value || value.startsWith("--")) throw new Error(`${arg} requires a value.`);
+      if(arg === "--proxy") opts.claudeLoginProxyRef=value;
+      else opts.claudeLoginEmail=value;
+      i+=1;continue;
+    }
     if (arg === "--manual-callback-stdio") {
       opts.manualCallbackStdio = true;
       continue;

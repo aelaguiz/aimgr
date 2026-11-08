@@ -103,6 +103,7 @@ export class FakeRedisClient {
       if(raw) {
         const item=JSON.parse(raw),old=item.identity ?? {};
         if(old.accountUuid && (old.accountUuid!==i.accountUuid || old.organizationUuid!==i.organizationUuid)) return "identity_conflict";
+        if(item.policy?.egress?.profileRef!==next.policy?.egress?.profileRef)return "policy_conflict";
         if(item.policy?.expect?.email && item.policy.expect.email.toLowerCase()!==i.emailAddress.toLowerCase()) return "identity_conflict";
         item.identity=i;item.version=(item.version ?? 0)+1;item.updatedAt=next.updatedAt;await this.set(key,JSON.stringify(item));return "unchanged";
       }

@@ -50,7 +50,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "  aim claude status [account...] [--fresh] [--verbose] [--json]  # human account availability; --verbose shows technical state",
     "  aim claude privacy status [account] [--json]                 # local build approval and process inventory; never runs Claude",
     "  aim claude usage [account...] [--fresh] [--verbose] [--json]   # exact alias for `aim claude status`",
-    "  aim claude login <label> [--manual-callback-stdio]  # authorize Claude on this machine",
+    "  aim claude login <label> [--email <email>] [--proxy <profileRef>] [--manual-callback-stdio]  # authorize Claude on this machine",
     "  aim claude logout <label>  # remove this machine’s Claude primary login",
     "  aim pi use            # activate the next-best pooled openai-codex label for local Pi CLI (external; new sessions)",
     "  aim pi use [--codex <auto|label|off>] [--claude <fable|opus|sonnet|label|off>]",

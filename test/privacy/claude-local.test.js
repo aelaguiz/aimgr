@@ -62,7 +62,7 @@ test('relogin waits outside storage locks for a native refresh already in flight
  const initial=await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('before')});
  const config=initial.configDir;
  const releaseNew=await lockfile.lock(config,{realpath:false,lockfilePath:path.join(config,'.oauth_refresh.lock'),stale:60000,update:5000});
- const releaseLegacy=await lockfile.lock(config,{realpath:false,lockfilePath:fs.realpathSync(config)+'.lock',stale:60000,update:5000});
+ const releaseLegacy=await lockfile.lock(fs.realpathSync(config)+".lock",{realpath:false,lockfilePath:fs.realpathSync(config)+'.lock',stale:60000,update:5000});
  let settled=false;
  const relogin=saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('relogin'),assertStopped:async()=>assert.fail('no stopped check')}).finally(()=>{settled=true;});
  await delay(150);assert.equal(settled,false);
@@ -87,4 +87,51 @@ test('rejected old generation cannot invalidate successful newer relogin',async 
  assert.equal(readLocalClaudeCredential(options).status,'ready');
  assert.equal(await markLocalClaudeGrantRejected({...options,grantId:newer.owner.grant.id,generation:newer.generation}),true);
  assert.equal(readLocalClaudeCredential(options).status,'reauth_required');
+});
+
+test('native manual URL waits for the complete output token across every stream split',async()=>{
+ const {extractNativeClaudeManualUrl}=await import('../../src/cli/commands/claude-local-auth.js');
+ const url='https://claude.ai/oauth/authorize?state=expected&redirect_uri='+encodeURIComponent('https://console.anthropic.com/oauth/code/callback')+'&client_id=native-client&code_challenge=native-pkce&code_challenge_method=S256';
+ for(let split=1;split<url.length;split++) {
+  assert.equal(extractNativeClaudeManualUrl('Native: '+url.slice(0,split)),null);
+  assert.equal(extractNativeClaudeManualUrl('Native: '+url.slice(0,split)+url.slice(split)+'\n'),url);
+ }
+ assert.equal(extractNativeClaudeManualUrl(url),null);
+ assert.equal(extractNativeClaudeManualUrl('\u001b]8;;'+url+'\u001b\\Sign in\u001b]8;;\u001b\\'),url);
+});
+
+test('abandoned native staging is never adopted; retry closes and reconnects coordination',async t=>{
+ const {handleLocalClaudeAuth}=await import('../../src/cli/commands/claude-local-auth.js');
+ const {connectRedisStore}=await import('../../src/coordination/redis-store.js');
+ const {ensureClaudeAccountMetadata}=await import('../../src/coordination/claude-metadata.js');
+ const {writeAimgrConfig}=await import('../../src/config/aimgr-config.js');
+ const {FakeRedisClient}=await import('../helpers/fake-redis.js');
+ const {PassThrough}=await import('node:stream');
+ const options=fixture(t);
+ writeAimgrConfig({homeDir:options.homeDir,config:{redis:{url:'redis://localhost:6379',keyPrefix:'synthetic:'}}});
+ const client=new FakeRedisClient();
+ const store=await connectRedisStore({client,keyPrefix:'synthetic:'});
+ await ensureClaudeAccountMetadata(store,{label:'synthetic',identity});
+ const paths=path.join(options.homeDir,'.aimgr','claude-homes','synthetic');
+ const abandoned=path.join(paths,'.login-staging-12345678-1234-4123-8123-123456789abc','.claude');
+ fs.mkdirSync(abandoned,{recursive:true,mode:0o700});
+ fs.writeFileSync(path.join(abandoned,'.credentials.json'),JSON.stringify({claudeAiOauth:bundle('orphan').claudeAiOauth}),{mode:0o600});
+ let connections=0,closes=0,launched=false;
+ const connect=async()=>{connections++;return {...store,ownsClient:true,client:{...client,eval:client.eval.bind(client),isOpen:true,quit:async()=>{closes++;},destroy:()=>{closes++;}}};};
+ const resolve=()=>process.execPath;
+ resolve.prepareClaudeCliLaunchImpl=async input=>({...input});
+ const output=new PassThrough();output.resume();
+ await handleLocalClaudeAuth({homeDir:options.homeDir,opts:{},positional:['claude','login','synthetic'],stdout:output,stdin:new PassThrough(),env:{},
+  connectRedisStoreImpl:connect,readClaudeEnvironmentImpl:()=>environment,resolveExecutableOnPathImpl:resolve,setExitCode:()=>assert.fail('login failed'),
+  assertClaudeNativeOwnersStoppedImpl:async()=>{},runClaudeCliImpl:async launch=>{
+   launched=true;assert.equal(connections,1);assert.equal(closes,1,'idle coordination closes before native starts');
+   assert.notEqual(launch.configDir,abandoned);assert.match(path.basename(launch.homeDir),/^\.login-staging-/);
+   fs.writeFileSync(path.join(launch.configDir,'.credentials.json'),JSON.stringify({claudeAiOauth:bundle('fresh').claudeAiOauth}),{mode:0o600});
+   fs.writeFileSync(path.join(launch.configDir,'.claude.json'),JSON.stringify({oauthAccount:identity}),{mode:0o600});
+   return {status:0};
+  }});
+ assert.equal(launched,true);assert.equal(connections,2);assert.equal(closes,2);
+ assert.equal(readLocalClaudeCredential(options).nativeClaudeBundle.claudeAiOauth.accessToken,'access-fresh');
+ assert.equal(JSON.parse(fs.readFileSync(path.join(abandoned,'.credentials.json'))).claudeAiOauth.accessToken,'access-orphan');
+ assert.equal(JSON.parse(await client.get(store.keys.credential({provider:'anthropic',label:'synthetic'}))).credential.access,undefined);
 });

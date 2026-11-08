@@ -50,6 +50,8 @@ if raw then
  local item=cjson.decode(raw); local i=item.identity or {}
  if i.accountUuid and (i.accountUuid~=identity.accountUuid or i.organizationUuid~=identity.organizationUuid) then return 'identity_conflict' end
  local p=item.policy or {}; local expect=p.expect or {}
+ local expectedPolicy=next.policy or {}; local actualEgress=p.egress or {}; local expectedEgress=expectedPolicy.egress or {}
+ if actualEgress.profileRef~=expectedEgress.profileRef then return 'policy_conflict' end
  if expect.email and string.lower(expect.email)~=string.lower(identity.emailAddress) then return 'identity_conflict' end
  item.identity=identity; item.version=(item.version or 0)+1; item.updatedAt=next.updatedAt
  redis.call('SET',KEYS[1],cjson.encode(item)); return 'unchanged'
@@ -59,6 +61,7 @@ redis.call('SET',KEYS[1],ARGV[1]); redis.call('SADD',KEYS[2],KEYS[1]); redis.cal
 export async function ensureClaudeAccountMetadata(store, { label, identity, policy = {}, now = new Date().toISOString() }) {
   label = normalizeLabel(label);
   if (!identity?.accountUuid || !identity?.organizationUuid || !identity?.emailAddress) throw new Error("Claude login returned incomplete account identity.");
+  identity = {accountUuid:identity.accountUuid,organizationUuid:identity.organizationUuid,emailAddress:identity.emailAddress};
   const record = { kind: "aimgr.credential.v1", provider: ANTHROPIC_PROVIDER, label, credential: {}, identity,
     policy: { ...policy, expect: { email: identity.emailAddress }, pool: policy.pool ?? { enabled: true } },
     health: { status: "candidate", reason: "local_login_required" }, provenance: {}, version: 1,
@@ -68,7 +71,7 @@ export async function ensureClaudeAccountMetadata(store, { label, identity, poli
     arguments: [JSON.stringify(record)],
   });
   if (!["created", "unchanged"].includes(outcome)) throw new Error(outcome === "duplicate_identity"
-    ? "This Claude account and organization already belong to another label." : "This Claude label belongs to another account or organization.");
+    ? "This Claude account and organization already belong to another label." : outcome === "policy_conflict" ? "Claude proxy assignment changed during login; retry the login on its current route." : "This Claude label belongs to another account or organization.");
   return { outcome };
 }
 

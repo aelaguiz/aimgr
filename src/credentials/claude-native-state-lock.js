@@ -26,8 +26,8 @@ export async function withClaudeNativeStateLocks({ configDir, appStatePath, refr
     fsImpl.mkdirSync(configDir, { recursive: true, mode: 0o700 });
     // Pinned 2.1.317 f0i: the new refresh lock precedes the realpath
     // legacy sibling. Wait for network refresh BEFORE taking storage locks.
-    if (refresh) for (const lockPath of [path.join(configDir, ".oauth_refresh.lock"), `${fsImpl.realpathSync(configDir)}.lock`]) {
-      releases.push(await lockfile.lock(configDir, { fs: fsImpl, realpath: false,
+    if (refresh) for (const [target,lockPath] of [[configDir,path.join(configDir, ".oauth_refresh.lock")], [`${fsImpl.realpathSync(configDir)}.lock`,`${fsImpl.realpathSync(configDir)}.lock`]]) {
+      releases.push(await lockfile.lock(target, { fs: fsImpl, realpath: false,
         lockfilePath: lockPath, stale: 60_000, update: 5_000,
         retries: {retries: 35,minTimeout:100,maxTimeout:1000},
         onCompromised: () => { compromised = true; } }));
