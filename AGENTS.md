@@ -2,7 +2,23 @@
 
 `aim` coordinates AI account credentials (managed Redis Cloud over TLS) and launches Prime Agent, Claude, Codex and Grok sessions. `README.md` covers the credential side.
 
+## Open issues and worklist
+
+[GitHub Issues](https://github.com/aelaguiz/aimgr/issues) is the source of truth
+for open work, and [WORKLIST.md](WORKLIST.md) is the repository's index for privacy
+work and future development. Keep scope, decisions, progress and completion in
+the corresponding issue, and keep its worklist entry current. Check existing
+issues before filing so each problem has one current discussion. Reference
+documents hold the evidence and design; their follow-up work belongs in issues.
+
 ## Privacy investigations and test identities
+
+The [Claude and Codex privacy inventory](docs/AI_APP_PRIVACY_INVENTORY.md) is the
+canonical record of unwanted identifiers, local collection and outbound data.
+Use it when explaining privacy exposure or changing authentication, isolation,
+routing or client versions, and update it with new evidence. A local read, a
+captured upload and an untested possibility imply different protections; keep
+those distinctions and the user's accepted workflow exceptions explicit.
 
 An experiment about what Claude or Codex might disclose must not expose Amir's
 normal identity to Anthropic or OpenAI in the process. Keep uncertain data flows

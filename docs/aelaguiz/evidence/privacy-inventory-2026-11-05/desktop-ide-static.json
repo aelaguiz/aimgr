@@ -1,0 +1,1874 @@
+{
+  "observed_at_utc": "2026-11-05T18:26:30.508726+00:00",
+  "method": "Read-only Info.plist/package.json, directory names and bounded static ASAR entry reads; no vendor app/CLI launched, no profile/cookie/token/transcript read, no network capture. Static strings and code establish producers and senders, not actual upload from these installations. Offsets are decoded Unicode string indices; hashes are extracted UTF-8 bytes.",
+  "desktop": {
+    "m5_claude": {
+      "application": "/Applications/Claude.app",
+      "plist": {
+        "CFBundleIdentifier": "com.anthropic.claudefordesktop",
+        "CFBundleShortVersionString": "4.16336.0",
+        "CFBundleVersion": "4.16336.0",
+        "ElectronAsarIntegrity": {
+          "Resources/app.asar": {
+            "algorithm": "SHA256",
+            "hash": "74c211da85a45761e6dd9c2f008231e4e8fcd7b595f56534a4d042a56102f826"
+          },
+          "Resources/ion-dist.asar": {
+            "algorithm": "SHA256",
+            "hash": "098c478f507d88f100f98b1e1c52bb769a09969cd3274dcc787dca4bfc78a9f0"
+          }
+        },
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSAllowsLocalNetworking": true
+        },
+        "NSAudioCaptureUsageDescription": "This app needs access to audio capture",
+        "NSBluetoothAlwaysUsageDescription": "Claude uses Bluetooth to connect to hardware accessories.",
+        "NSBluetoothPeripheralUsageDescription": "This app needs access to Bluetooth",
+        "NSCameraUsageDescription": "Claude needs your camera for content that you allow to use it.",
+        "NSMicrophoneUsageDescription": "Claude needs your microphone for dictation and for content that you allow to use it.",
+        "NSAppleEventsUsageDescription": "Claude needs this so commands you run in Claude can control other apps.",
+        "NSLocationUsageDescription": "Claude needs your location for content that you allow to use it.",
+        "NSSpeechRecognitionUsageDescription": "Claude needs access to speech recognition for voice dictation.",
+        "NSDocumentsFolderUsageDescription": "Claude stores your scheduled tasks, live artifacts and other Cowork files here.",
+        "NSDesktopFolderUsageDescription": "Claude needs access to work with files on your Desktop.",
+        "NSDownloadsFolderUsageDescription": "Claude needs access to work with files in your Downloads folder.",
+        "NSLocalNetworkUsageDescription": "Claude needs access to your local network to reach development servers and other local devices."
+      },
+      "asar_entry_count": 1005,
+      "package": {
+        "name": "@ant/desktop",
+        "productName": "Claude",
+        "version": "4.16336.0",
+        "main": ".vite/build/index.pre.js",
+        "dependencies": {
+          "@ant/claude-for-chrome-mcp": "*",
+          "@ant/claude-native": "*",
+          "@ant/claude-swift": "*",
+          "@ant/computer-use-mcp": "*",
+          "@ant/imagine-server": "*",
+          "@loc/electron-window": "1.1.0",
+          "https-proxy-agent": "^7.0.6",
+          "ws": "^8.18.0"
+        }
+      },
+      "static_entries": [
+        {
+          "entry": "/.vite/build/index.chunk-Du-Wqi0E.js",
+          "size": 7055087,
+          "sha256": "fcc1026c3634f62ae40581c680389b807c49e85626ff9989838fa0dc931d7f1a",
+          "matches": {
+            "sentry.io": {
+              "count": 5,
+              "snippets": [
+                {
+                  "offset": 572129,
+                  "excerpt": "e.claudeusercontent.com\",\"*.frame.staging.claudeusercontent.com\"],DTe=\"*.claudemcpcontent.com\",OTe=\"sandbox.claudemcpcontent.com\",kTe=\"assets.claude.ai\",ATe=\"*.sentry.io\",jTe=\"redirector.gvt1.com\",MTe=\"*.gvt1.com\",NTe=\"o1158394.ingest.us.sentry.io\",PTe=\"login.microsoftonline.com\",FTe=/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "a93b3d46d2bed45b634e5fa616c46dcd70d028e12384eadaf147da293183d732"
+                },
+                {
+                  "offset": 572207,
+                  "excerpt": "emcpcontent.com\",OTe=\"sandbox.claudemcpcontent.com\",kTe=\"assets.claude.ai\",ATe=\"*.sentry.io\",jTe=\"redirector.gvt1.com\",MTe=\"*.gvt1.com\",NTe=\"o1158394.ingest.us.sentry.io\",PTe=\"login.microsoftonline.com\",FTe=/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/,ITe=\"accounts.google.com\",LTe=`https://${ITe}`,RTe=\"oauth2.googleapis.com\",zT",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "57f30ff62ffbf80519da1e61ba9f618956c3d1ddbee6f007dc7554c0481835cf"
+                },
+                {
+                  "offset": 908067,
+                  "excerpt": "sentialTelemetry\",label:G({defaultMessage:\"Essential telemetry\",id:\"4tdiEppQ3S\"}),endpoints:[{host:ATe,origin:\"renderer\",purpose:QVe,firewallAlso:[\"*.ingest.us.sentry.io\"]},{host:\"sentry.io\",origin:\"renderer\",purpose:QVe}]},\"datadog-rum\":{toggleKey:\"disableEssentialTelemetry\",label:G({defaultMessage:\"Essential telemetr",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "3cc1efbdcd414fba8686112f62781e9b8919b75617f82a1418f19ba216311fcd"
+                }
+              ]
+            },
+            "setUser": {
+              "count": 13,
+              "snippets": [
+                {
+                  "offset": 8085,
+                  "excerpt": "=e.r({addBreadcrumb:()=>We,addEventProcessor:()=>Ge,captureException:()=>Ke,captureMessage:()=>qe,flush:()=>Je,getClient:()=>Ye,setContext:()=>Xe,setTag:()=>Ze,setUser:()=>Qe,withScope:()=>$e}),Ue=globalThis.__sentryElectronMain;if(!Ue)throw Error(\"sentryMainShim: globalThis.__sentryElectronMain is unset \\u2014 index.p",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "be530568a063430bdc60715e191ce0694704e1a8e191d1f67f93c1d0d44e0ab5"
+                },
+                {
+                  "offset": 8523,
+                  "excerpt": "stash in src/main/index.pre.ts.\");var{addBreadcrumb:We,addEventProcessor:Ge,captureException:Ke,captureMessage:qe,flush:Je,getClient:Ye,setContext:Xe,setTag:Ze,setUser:Qe,withScope:$e}=Ue;function et(e){let t=Object.values(e).filter((e=>typeof e==\"number\"));return Object.entries(e).filter((([e,n])=>t.indexOf(+e)===-1))",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "eba503bdb3668bd5d40f3a026fa1e338e595cd1ab19770ebd95fdbc3142c8d5a"
+                },
+                {
+                  "offset": 2814378,
+                  "excerpt": ",writePersistedDeploymentMode:()=>pO,writeProbedBootstrapPartial:()=>bPn}),lPn=[async()=>{let{getDeploymentMode:e}=await Promise.resolve().then((()=>nj));e().resetUserToolToggles();let{clearPersistedDisabledToolKeys:t,THIRD_PARTY_OWNER:n}=await Promise.resolve().then((()=>KQe));await t(n)},async()=>(await Promise.resol",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "b58f6de43b92c0d22598907c3b60962e156eda2fb4ee83baacb458db71858f82"
+                }
+              ]
+            },
+            "statsig": {
+              "count": 1,
+              "snippets": [
+                {
+                  "offset": 2762565,
+                  "excerpt": "count:kjn(e)?Tjn(e,s,u,l.accountMemberships):null,current_user_access:r?Ojn(r,e.sessionHostWithholds):null,featureFlagsOrgUuid:e.orgUuid,locale:c?.locale??null,statsig:{user:{userID:d},values:{},values_hash:\"custom3p\"},feature_flags:{user:{userID:d},values:{},values_hash:\"custom3p\"},growthbook:{features:l.growthbookFea",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "222ca4e59f8805b59c6aa94ce619da3e9dde76f47330f79a789827e52ee40eca"
+                }
+              ]
+            },
+            "crashReporter": {
+              "count": 10,
+              "snippets": [
+                {
+                  "offset": 4264769,
+                  "excerpt": "PU process gone (death %d while quitting; only deaths 1-5 and powers of ten are logged): %o\",Yq,e):P.info(\"GPU process gone: %o\",e);let a=bii(e.exitCode);try{u.crashReporter.addExtraParameter(\"gpu_last_exit_code\",String(a)),u.crashReporter.addExtraParameter(\"gpu_last_exit_code_hex\",`0x${(a>>>0).toString(16).toUpperCase",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "ba3d424eb758a47c17100ad4115050ff6ec1df0043125bd5d7ad9365a21bbd9d"
+                },
+                {
+                  "offset": 4264835,
+                  "excerpt": "rs of ten are logged): %o\",Yq,e):P.info(\"GPU process gone: %o\",e);let a=bii(e.exitCode);try{u.crashReporter.addExtraParameter(\"gpu_last_exit_code\",String(a)),u.crashReporter.addExtraParameter(\"gpu_last_exit_code_hex\",`0x${(a>>>0).toString(16).toUpperCase().padStart(8,\"0\")}`),u.crashReporter.addExtraParameter(\"gpu_last_",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "055049aa24c66b205443e6e34ae9b1a90a63daef3d30fb83e00a57254bff4f29"
+                },
+                {
+                  "offset": 4264953,
+                  "excerpt": "rameter(\"gpu_last_exit_code\",String(a)),u.crashReporter.addExtraParameter(\"gpu_last_exit_code_hex\",`0x${(a>>>0).toString(16).toUpperCase().padStart(8,\"0\")}`),u.crashReporter.addExtraParameter(\"gpu_last_exit_reason\",e.reason),u.crashReporter.addExtraParameter(\"gpu_last_exit_at\",(new Date).toISOString())}catch{}if(!i)ret",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "64c95d674c0378e55b5d709f35701f117ceedaf21c3c2c24363afc95354a74dc"
+                }
+              ]
+            },
+            "app.getPath(\"userData\")": {
+              "count": 87,
+              "snippets": [
+                {
+                  "offset": 554779,
+                  "excerpt": "ew WeakMap;function NCe(e,t=!0){MCe.set(e,t)}var PCe=[\"resize\",\"move\",\"maximize\",\"unmaximize\",\"enter-full-screen\",\"leave-full-screen\"];async function FCe(e,t=u.app.getPath(\"userData\")){let n=e=>co.with(t,\"appdata\",e,{allowUnc:!0}),r=()=>({...e,isMaximized:!1,isFullScreen:!1}),i=await ICe(n,e)??r(),a,o,s=Promise.resolve",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "696221da53f74980816e514e682a83492eb71feb0db7b4c9eb018036ffb6bddf"
+                },
+                {
+                  "offset": 563530,
+                  "excerpt": " _we(){try{bo.delete(lwe)}catch(e){P.warn(\"[globals] failed to clear windowSizeWasSignedIn\",{error:e})}await(hwe?.discard()??a.promises.unlink(n.default.join(u.app.getPath(\"userData\"),\"window-state.json\")).catch((()=>void 0)))}var ho=void 0,go=new Set,_o=new WeakSet;N_e(((e,t)=>{if(e&&t&&e.accountUuid!==t.accountUuid)f",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "2351a5901c9356fb2c7f4364ea202a4c3aca833a46f60521f46f91d6f5f6497d"
+                },
+                {
+                  "offset": 564676,
+                  "excerpt": "retried-at-launch\"],level:\"warning\"})}catch{}return n}}function wwe(){try{return Cwe()}catch(e){let t=e?.code;if(!t||!ywe.has(t))throw e;let r=n.default.join(u.app.getPath(\"userData\"),\"config.json\");try{a.renameSync(r,`${r}.corrupt-${Date.now()}`)}catch(t){throw P.error(\"Could not move the unreadable config file aside:",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "5ba59b03ecbe44011192210df8c16feb1d385592413752eb1aaeb3eda0633aed"
+                }
+              ]
+            },
+            "app.getPath(\"logs\")": {
+              "count": 21,
+              "snippets": [
+                {
+                  "offset": 302057,
+                  "excerpt": ", moved it aside: %o\",{logsPath:e,error:t}),!0}}var Ihe=!1;function Lhe(){if(Ihe)return;if(Ihe=!0,!u.app.isPackaged&&!process.env.CLAUDE_USER_DATA_DIR){let e=u.app.getPath(\"logs\");e.endsWith(\"-dev\")||u.app.setAppLogsPath(`${e}-dev`)}let e=u.app.getPath(\"logs\");if(Fhe(e)){let t=globalThis;t.__mainLogFileTransport??=Ii(n",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "b1caf3d0cdcd1c576c7927d4b1a1d15e5a1cf6aaf741ed8b548a2d337813335f"
+                },
+                {
+                  "offset": 302138,
+                  "excerpt": "return;if(Ihe=!0,!u.app.isPackaged&&!process.env.CLAUDE_USER_DATA_DIR){let e=u.app.getPath(\"logs\");e.endsWith(\"-dev\")||u.app.setAppLogsPath(`${e}-dev`)}let e=u.app.getPath(\"logs\");if(Fhe(e)){let t=globalThis;t.__mainLogFileTransport??=Ii(n.default.join(e,\"main.log\"));let r=t.__mainLogFileTransport;P.add(r);for(let e of",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "314a3354e1aa887bd5320356c04cded8053a02ba875203a6433f5df4121aa659"
+                },
+                {
+                  "offset": 303440,
+                  "excerpt": ":!1}),kr.format.timestamp({format:Qfe}),kr.format.printf((({level:e,message:t,timestamp:n,...r})=>`${n} [${e}] ${t}${Ni(r)}`))),transports:[Ii(n.default.join(u.app.getPath(\"logs\"),`${e}.log`),{maxsize:5242880})]}),t.on(\"error\",(()=>void 0)),Phe[e]=t),t}function Khe(){u.app.on(\"web-contents-created\",((e,t)=>{t.on(\"conso",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "133be638951d2f1a097847e522afad337459f6826ffd68426ee6b5006876ee77"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "entry": "/.vite/build/index.pre.js",
+          "size": 1037234,
+          "sha256": "782c56fb4f3bc4b18100a67149fe527599953836dc174028853b74c6075f2178",
+          "matches": {
+            "sentry.io": {
+              "count": 1,
+              "snippets": [
+                {
+                  "offset": 1033356,
+                  "excerpt": "rker appeared mid-run\"))};D.app.on(\"render-process-gone\",e),D.app.on(\"child-process-gone\",e)}let m=\"https://2f98127cbffe4740b1f767a2de77d23b@o1158394.ingest.us.sentry.io/4507368973008896\";if(D.app.isPackaged&&!t){let e=VN(m),t=[Qa(),Za(),Xa()],{uploadToServer:n,extra:r}=Ore({fs:g.default,crashDumpsDir:D.app.getPath(\"cr",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "62e94596c9a20dc5b5788159bf0a096ffbe00db48a0f72f957a1835d82a27dfe"
+                }
+              ]
+            },
+            "setUser": {
+              "count": 4,
+              "snippets": [
+                {
+                  "offset": 130692,
+                  "excerpt": "._client}lastEventId(){return this._lastEventId}addScopeListener(e){this._scopeListeners.push(e)}addEventProcessor(e){return this._eventProcessors.push(e),this}setUser(e){return this._user=e||{email:void 0,id:void 0,ip_address:void 0,username:void 0},this._session&&ba(this._session,{user:e}),this._notifyScopeListeners(",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "aec3d597cb47203fe5e63358d0ab658971457be8bf1543690798473210ca97d2"
+                },
+                {
+                  "offset": 169123,
+                  "excerpt": "aptureMessage(e,n,r)}function Gc(e,t){return Xa().captureEvent(e,t)}function Kc(e,t){Za().setContext(e,t)}function qc(e,t){Za().setTag(e,t)}function Jc(e){Za().setUser(e)}async function Yc(e){let t=M();return t?t.flush(e):(k&&j.warn(\"Cannot flush events. No client defined.\"),Promise.resolve(!1))}function Xc(){let e=M()",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "113d42add13256f7fa7db581069c391e6cf1f7fff85d4167130756c7401d1c0e"
+                },
+                {
+                  "offset": 326813,
+                  "excerpt": "t.keys(e).length>0}function zb(e,t){let n;try{n=JSON.parse(t)}catch{j.warn(\"sentry-electron received an invalid scope message\");return}let r=Xa();Rb(n.user)&&r.setUser(n.user),Rb(n.tags)&&r.setTags(n.tags),Rb(n.extra)&&r.setExtras(n.extra);for(let e of n.attachments||[])r.addAttachment(e);let i=n.breadcrumbs.pop();i&&r",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "d311d99a098622414f0e2c0a3f95aa1b4a6e040dbb3a8cd8c43ef41f27f121e4"
+                }
+              ]
+            },
+            "crashReporter": {
+              "count": 8,
+              "snippets": [
+                {
+                  "offset": 322022,
+                  "excerpt": ".error(e))),(await Tb(n)).filter((e=>e.endsWith(\".dmp\"))))))}var Db=sl(((e={})=>{let t=e.maxMinidumpsPerSession||10,n,r,i;function a(){j.log(\"Starting Electron crashReporter\"),D.crashReporter.start({companyName:\"\",ignoreSystemCrashHandler:!0,productName:D.app.name||D.app.getName(),submitURL:\"https://f.a.k/e\",uploadToSe",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "a06b7a65fed6cd8361a3f05b56dbae611bfccc02314e7a964c5695ceaa19331d"
+                },
+                {
+                  "offset": 322040,
+                  "excerpt": " Tb(n)).filter((e=>e.endsWith(\".dmp\"))))))}var Db=sl(((e={})=>{let t=e.maxMinidumpsPerSession||10,n,r,i;function a(){j.log(\"Starting Electron crashReporter\"),D.crashReporter.start({companyName:\"\",ignoreSystemCrashHandler:!0,productName:D.app.name||D.app.getName(),submitURL:\"https://f.a.k/e\",uploadToServer:!1,compress:!",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "e5b630bc5cf195cba79c8a1867bd690126f3057d57c6fb0c58991e6ace1d0b37"
+                },
+                {
+                  "offset": 558904,
+                  "excerpt": "ive crash upload: could not save ${xN} in the crash dumps folder (${DN(n)}); the next launch may start with uploads on`),!1}}function AN(e,t){try{return e.deps.crashReporter.setUploadToServer(t),e.switchOn=t,!0}catch(n){return ON(e,t?`Native crash upload: could not turn uploads on (${DN(n)})`:`Native crash upload: coul",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "cffe4d5fc660584046e9605756aa85787f836681ffb46047e20fae4fd4c77b37"
+                }
+              ]
+            },
+            "app.getPath(\"userData\")": {
+              "count": 17,
+              "snippets": [
+                {
+                  "offset": 297439,
+                  "excerpt": ",patch:qv.patch||0},Yv=Jv.major,Xv=[\"clean-exit\",\"abnormal-exit\",\"killed\",\"crashed\",\"oom\",\"launch-failed\",\"integrity-failure\"];function Zv(){return(0,S.join)(D.app.getPath(\"userData\"),\"sentry\")}function ute(){return Jv.major>=25}function dte(e,t,n){ute()?e.handle(t,(async e=>(n({windowId:e.headers.get(\"sentry-electron-",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "fe2a90e54444ad3085c69c7a4be0e327f3f8635060e6e96a162bec1cb5c94ae9"
+                },
+                {
+                  "offset": 960828,
+                  "excerpt": "e=sx()?.toLowerCase();return N8.filter((t=>t.toLowerCase()!==e))}var F8=\"claude_desktop_config.json\";function I8(){if(process.env.CLAUDE_USER_DATA_DIR)return D.app.getPath(\"userData\");if(process.platform===\"win32\"&&process.env.LOCALAPPDATA)return p.join(process.env.LOCALAPPDATA,P8);let e=D.app.getPath(\"userData\");retur",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "479b33e2a74525b11263367b812c96febc81645698366acf81d830a8a5989f9f"
+                },
+                {
+                  "offset": 960959,
+                  "excerpt": "LAUDE_USER_DATA_DIR)return D.app.getPath(\"userData\");if(process.platform===\"win32\"&&process.env.LOCALAPPDATA)return p.join(process.env.LOCALAPPDATA,P8);let e=D.app.getPath(\"userData\");return e.endsWith(A8)?e:`${e}${A8}`}function L8(e=j8){return I6(e,process.env)??null}function Zre(e=j8){let t=L8(e);if(t===null)return[]",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "1f71d590aec9c6cc5270135065c84cdf2876fdc40fa1937334303d6dc6e7744a"
+                }
+              ]
+            },
+            "app.getPath(\"logs\")": {
+              "count": 6,
+              "snippets": [
+                {
+                  "offset": 514824,
+                  "excerpt": "tory, moved it aside: %o\",{logsPath:e,error:t}),!0}}var Ok=!1;function kk(){if(Ok)return;if(Ok=!0,!D.app.isPackaged&&!process.env.CLAUDE_USER_DATA_DIR){let e=D.app.getPath(\"logs\");e.endsWith(\"-dev\")||D.app.setAppLogsPath(`${e}-dev`)}let e=D.app.getPath(\"logs\");if(Dk(e)){let t=globalThis;t.__mainLogFileTransport??=Ek(p.",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "d70a0f89a98d4aebc7f43ebdbb830e2d4f6a1d81448ad24f6fac6df001cf732b"
+                },
+                {
+                  "offset": 514905,
+                  "excerpt": ")return;if(Ok=!0,!D.app.isPackaged&&!process.env.CLAUDE_USER_DATA_DIR){let e=D.app.getPath(\"logs\");e.endsWith(\"-dev\")||D.app.setAppLogsPath(`${e}-dev`)}let e=D.app.getPath(\"logs\");if(Dk(e)){let t=globalThis;t.__mainLogFileTransport??=Ek(p.default.join(e,\"main.log\"));let n=t.__mainLogFileTransport;F.add(n);for(let e of ",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "874262b8bc963655ff6ccaa8f88a2ac03dbc1451842bd3d20bf4f23f814af64f"
+                },
+                {
+                  "offset": 962489,
+                  "excerpt": "H8(){return p.join(I8(),\"configLibrary\")}function nie(e){return p.join(H8(),`${e}.json`)}function rie(){return p.join(H8(),\"_meta.json\")}function iie(){let e=D.app.getPath(\"logs\");return e.endsWith(A8)?e:`${e}${A8}`}function aie(e,t){return p.join(e,p.basename(t),\"logs\")}`${j8}${F6}`;function oie(e){return!/^[\\s\\u0000-",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "0829eebbee8d2a0fae38aafd57e870965b0efcc28b97552d247db8e7d7f45d15"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "entry": "/resources/claude-browser-shim.js",
+          "size": 6568,
+          "sha256": "b8bb071fa1e4d2da27246f7d7a52e42871c331735f6d0d270a59af31cee1b635",
+          "matches": {}
+        }
+      ]
+    },
+    "m336_codex": {
+      "application": "/Applications/Codex.app",
+      "plist": {
+        "CFBundleIdentifier": "com.openai.codex",
+        "CFBundleShortVersionString": "26.623.141536",
+        "CFBundleVersion": "4753",
+        "ElectronAsarIntegrity": {
+          "Resources/app.asar": {
+            "algorithm": "SHA256",
+            "hash": "ed93b067280b266420c3301eecffca60aa88f7977c3f7dd356ce650525610fd5"
+          }
+        },
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        },
+        "NSAppleEventsUsageDescription": "Codex uses Apple Events to control Mac apps on your behalf",
+        "NSAppleScriptEnabled": true,
+        "NSAudioCaptureUsageDescription": "This app needs access to audio capture",
+        "NSCameraUsageDescription": "Codex needs access to your camera for video input",
+        "NSDesktopFolderUsageDescription": "Codex needs access to your Desktop for the task you selected",
+        "NSMicrophoneUsageDescription": "Codex needs access to your microphone for voice input"
+      },
+      "asar_entry_count": 2650,
+      "package": {
+        "name": "openai-codex-electron",
+        "productName": "Codex",
+        "version": "26.623.141536",
+        "main": ".vite/build/bootstrap.js",
+        "dependencies": {
+          "@sentry/electron": "^7.5.0",
+          "@sentry/node": "10.29.0",
+          "@oai/integrity-state": "file:../../../lib/applied/js/oai_js_integrity_state",
+          "@worklouder/device-kit-oai": "file:../vendor/oai-js-registry/worklouder/device-kit-oai/0.1.10/package",
+          "@worklouder/wl-device-kit": "file:../vendor/oai-js-registry/worklouder/wl-device-kit/0.1.18/package",
+          "app-server-types": "workspace:*",
+          "better-sqlite3": "^12.9.0",
+          "browser-api": "file:../../../lib/browser_use/browser-api",
+          "browser-backend-common": "link:../../../lib/browser_use/browser-backend-common",
+          "browser-common": "link:../../../lib/browser_use/browser-common",
+          "bufferutil": "^4.0.1",
+          "capnweb": "^0.7.0",
+          "commands": "workspace:*",
+          "electron-context-menu": "^4.1.1",
+          "external-agent-migration": "workspace:*",
+          "lodash": "^4.17.21",
+          "mdast-util-from-markdown": "^2.0.3",
+          "mdast-util-to-string": "^4.0.0",
+          "mime-types": "^2.1.35",
+          "node-pty": "^1.1.0",
+          "objc-js": "1.5.0",
+          "protocol": "workspace:*",
+          "shared-node": "workspace:*",
+          "shlex": "^3.0.0",
+          "smol-toml": "^1.5.2",
+          "ssh-config": "^5.0.3",
+          "tslib": "^2.8.1",
+          "utf-8-validate": "^6.0.0",
+          "which": "^4.0.0",
+          "ws": "^8.18.3",
+          "zod": "^4.1.13"
+        },
+        "codexBuildNumber": "4753",
+        "codexSparkleFeedUrl": "https://persistent.oaistatic.com/codex-app-prod/appcast.xml"
+      },
+      "static_entries": [
+        {
+          "entry": "/.vite/build/main-8XtuV7fZ.js",
+          "size": 1697035,
+          "sha256": "2f6af33a43452abb931464891862f71787dcd11e5451e015972c9831d08a5321",
+          "matches": {
+            "setUser": {
+              "count": 2,
+              "snippets": [
+                {
+                  "offset": 1093954,
+                  "excerpt": "pdateWorkerSentryUser(n.authMethod,n.userId,n.email,n.accountId);let e=n.authMethod==null?null:{id:n.userId??void 0,authMethod:n.authMethod};this.datadogLogger.setUserInfo(e),this.desktopSentry.setUser(e==null?null:{...e,account_id:n.accountId??void 0});break}case`ready`:this.windowManager.markWebContentsReady(e),this.",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "8adcd114e2a493cb18c47c16692172afc9ede03c1482c29e14be80ddf434ed46"
+                },
+                {
+                  "offset": 1093988,
+                  "excerpt": ",n.userId,n.email,n.accountId);let e=n.authMethod==null?null:{id:n.userId??void 0,authMethod:n.authMethod};this.datadogLogger.setUserInfo(e),this.desktopSentry.setUser(e==null?null:{...e,account_id:n.accountId??void 0});break}case`ready`:this.windowManager.markWebContentsReady(e),this.avatarOverlayManager.handleRendere",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "fda2746cdad4823a5f2fcb9284805811619ad7d51ede467efdd7688458f6380e"
+                }
+              ]
+            },
+            "statsig": {
+              "count": 5,
+              "snippets": [
+                {
+                  "offset": 576160,
+                  "excerpt": ":e})=>t.Rr({roots:e??[],preferWsl:vF,appServerClient:this.appServerClient}),\"install-recommended-skill\":async({hostId:e,skillId:n,repoPath:r,installRoot:i,skillStatsigOverride:a,forceReinstall:o,source:s})=>{try{let c=this.getRequestAppServerClient(e),{destination:l}=await t.o({skillId:n,repoPath:r,installRoot:i,skillS",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "3a6d40a7411c789e7bce74eaa280e2859181dfc745bd8192903081ed51a9c2e0"
+                },
+                {
+                  "offset": 576319,
+                  "excerpt": "lStatsigOverride:a,forceReinstall:o,source:s})=>{try{let c=this.getRequestAppServerClient(e),{destination:l}=await t.o({skillId:n,repoPath:r,installRoot:i,skillStatsigOverride:a,forceReinstall:o,source:s,preferWsl:vF,bundledRepoRoot:this.bundledSkillsRoot,appServerClient:c});return{success:!0,destination:l,error:null}}",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "da97ec8bd4cfd6cd2b00c981a5394ff81a9817195cc3e774f39d61f9e672d82f"
+                },
+                {
+                  "offset": 1164614,
+                  "excerpt": "ateAtMs=null;running=!1;constructor(e){this.options=e}shouldPoll(){return this.getStaticDisabledReason()==null}shouldTickForSharedObjectUpdate(e,t){return e===`statsig_default_enable_features`&&O$(t)||e===`codex_runtimes_config`}async getStatus(){let e=await this.getDisabledReason();return{disabledReason:e,enabled:e==n",
+                  "excerptTruncated": true,
+                  "fullExcerptSha256": "a0bb1da9dcfdc9d81a4213f48f6af9c7969a20c7289ae49c7fe7b10e9f477c65"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "entry": "/.vite/build/feedback-desktop-log-archive-ClZhaiVs.js",
+          "size": 2654,
+          "sha256": "3cc9564dd050ebf52fc1ed1f3ba6cd3d9a8b734460ceee1edb8e6ba385a8ea20",
+          "matches": {}
+        },
+        {
+          "entry": "/.vite/build/trace-recording-upload-DPG3eKCS.js",
+          "size": 1832,
+          "sha256": "c7148b3f7474e58572fb5fae2231205c64e123d210e9c871b70945020e79c0bb",
+          "matches": {}
+        },
+        {
+          "entry": "/.vite/build/bootstrap.js",
+          "size": 14521,
+          "sha256": "57c2fb4086619395e61b74eb5c431426dbd7dab6ab1e63829f56f59af25314ac",
+          "matches": {}
+        }
+      ]
+    }
+  },
+  "extensions": {
+    "m5": [
+      {
+        "host": ".vscode",
+        "root_exists": true,
+        "packages": [
+          {
+            "directory": "anthropic.claude-code-2.1.247-darwin-arm64",
+            "name": "claude-code",
+            "publisher": "Anthropic",
+            "version": "2.1.247",
+            "displayName": "Claude Code for VS Code",
+            "main": "./extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished",
+              "onWebviewPanel:claudeVSCodePanel"
+            ],
+            "configuration": [
+              {
+                "title": "Claude Code",
+                "properties": {
+                  "claudeCode.environmentVariables": {
+                    "type": "array",
+                    "scope": "machine",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "description": "Environment variable name"
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "Environment variable value"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "value"
+                      ]
+                    },
+                    "default": [],
+                    "description": "Environment variables to set when launching Claude.\n\nPrefer setting environment variables in Claude's settings.json.\nSee documentation: https://code.claude.com/docs/en/settings"
+                  },
+                  "claudeCode.useTerminal": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Launch Claude in the terminal instead of the native UI."
+                  },
+                  "claudeCode.allowDangerouslySkipPermissions": {
+                    "type": "boolean",
+                    "scope": "machine",
+                    "description": "Allow bypass permissions mode. Recommended only for sandboxes with no internet access."
+                  },
+                  "claudeCode.claudeProcessWrapper": {
+                    "type": "string",
+                    "scope": "machine",
+                    "description": "Executable path used to launch the Claude process."
+                  },
+                  "claudeCode.respectGitIgnore": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Respect .gitignore files when performing file searches. Tip: You can still filter by other exclusion patterns in .ignore when this is disabled."
+                  },
+                  "claudeCode.initialPermissionMode": {
+                    "type": "string",
+                    "scope": "machine",
+                    "enum": [
+                      "default",
+                      "manual",
+                      "acceptEdits",
+                      "plan",
+                      "bypassPermissions"
+                    ],
+                    "description": "Initial permission mode for new conversations. Unset defers to the Claude Code CLI's resolved default for the session. 'manual' is an alias for 'default', the mode labeled Manual in the UI; set either to always start in Manual."
+                  },
+                  "claudeCode.disableLoginPrompt": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, never prompt for login/authentication in the extension. Used when authentication is handled externally."
+                  },
+                  "claudeCode.autosave": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Automatically save files before Claude reads or writes them."
+                  },
+                  "claudeCode.focusView": {
+                    "type": "boolean",
+                    "default": false,
+                    "scope": "application",
+                    "description": "Focus view: hide tool calls and other in-progress activity in the chat, showing only your prompts and Claude's responses. Folded activity stays one click away, and a live indicator names the tool currently running. Usually toggled from the chat input's command menu, the Claude Code: Toggle Focus view command, or its ctrl+alt+f keybinding."
+                  },
+                  "claudeCode.useCtrlEnterToSend": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When enabled, use Ctrl/Cmd+Enter to send prompts instead of just Enter. This allows Enter to create new lines."
+                  },
+                  "claudeCode.preferredLocation": {
+                    "type": "string",
+                    "enum": [
+                      "sidebar",
+                      "panel"
+                    ],
+                    "enumDescriptions": [
+                      "Sidebar (Right)",
+                      "Panel (New Tab)"
+                    ],
+                    "default": "panel",
+                    "description": "Where Claude opens by default. This setting updates automatically when you open Claude in a new location."
+                  },
+                  "claudeCode.enableNewConversationShortcut": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use the Cmd/Ctrl+N keyboard shortcut to start a new conversation when Claude is focused."
+                  },
+                  "claudeCode.enableReopenClosedSessionShortcut": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use Cmd/Ctrl+Shift+T to reopen the most recently closed Claude session tab. Only intercepts the shortcut when a Claude tab was the last thing closed; otherwise falls through to VS Code's normal reopen-closed-editor behavior."
+                  },
+                  "claudeCode.hideOnboarding": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Hide the onboarding checklist in Claude Code."
+                  },
+                  "claudeCode.usePythonEnvironment": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Automatically activate the workspace's Python environment when running Claude. Requires the [Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python) extension."
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "directory": "anthropic.claude-code-2.1.269-darwin-arm64",
+            "name": "claude-code",
+            "publisher": "Anthropic",
+            "version": "2.1.269",
+            "displayName": "Claude Code for VS Code",
+            "main": "./extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished",
+              "onWebviewPanel:claudeVSCodePanel"
+            ],
+            "configuration": [
+              {
+                "title": "Claude Code",
+                "properties": {
+                  "claudeCode.environmentVariables": {
+                    "type": "array",
+                    "scope": "machine",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "description": "Environment variable name"
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "Environment variable value"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "value"
+                      ]
+                    },
+                    "default": [],
+                    "description": "Environment variables to set when launching Claude.\n\nPrefer setting environment variables in Claude's settings.json.\nSee documentation: https://code.claude.com/docs/en/settings"
+                  },
+                  "claudeCode.useTerminal": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Launch Claude in the terminal instead of the native UI."
+                  },
+                  "claudeCode.allowDangerouslySkipPermissions": {
+                    "type": "boolean",
+                    "scope": "machine",
+                    "description": "Allow bypass permissions mode. Recommended only for sandboxes with no internet access."
+                  },
+                  "claudeCode.claudeProcessWrapper": {
+                    "type": "string",
+                    "scope": "machine",
+                    "description": "Executable path used to launch the Claude process."
+                  },
+                  "claudeCode.respectGitIgnore": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Respect .gitignore files when performing file searches. Tip: You can still filter by other exclusion patterns in .ignore when this is disabled."
+                  },
+                  "claudeCode.initialPermissionMode": {
+                    "type": "string",
+                    "scope": "machine",
+                    "enum": [
+                      "default",
+                      "manual",
+                      "acceptEdits",
+                      "plan",
+                      "bypassPermissions"
+                    ],
+                    "description": "Initial permission mode for new conversations. Unset defers to the Claude Code CLI's resolved default for the session. 'manual' is an alias for 'default', the mode labeled Manual in the UI; set either to always start in Manual."
+                  },
+                  "claudeCode.disableLoginPrompt": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, never prompt for login/authentication in the extension. Used when authentication is handled externally."
+                  },
+                  "claudeCode.autosave": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Automatically save files before Claude reads or writes them."
+                  },
+                  "claudeCode.focusView": {
+                    "type": "boolean",
+                    "default": false,
+                    "scope": "application",
+                    "description": "Focus view: hide tool calls and other in-progress activity in the chat, showing only your prompts and Claude's responses. Folded activity stays one click away, and a live indicator names the tool currently running. Usually toggled from the chat input's command menu, the Claude Code: Toggle Focus view command, or its ctrl+alt+f keybinding."
+                  },
+                  "claudeCode.useCtrlEnterToSend": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When enabled, use Ctrl/Cmd+Enter to send prompts instead of just Enter. This allows Enter to create new lines."
+                  },
+                  "claudeCode.preferredLocation": {
+                    "type": "string",
+                    "enum": [
+                      "sidebar",
+                      "panel"
+                    ],
+                    "enumDescriptions": [
+                      "Sidebar (Right)",
+                      "Panel (New Tab)"
+                    ],
+                    "default": "panel",
+                    "description": "Where Claude opens by default. This setting updates automatically when you open Claude in a new location."
+                  },
+                  "claudeCode.enableNewConversationShortcut": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use the Cmd/Ctrl+N keyboard shortcut to start a new conversation when Claude is focused."
+                  },
+                  "claudeCode.enableReopenClosedSessionShortcut": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use Cmd/Ctrl+Shift+T to reopen the most recently closed Claude session tab. Only intercepts the shortcut when a Claude tab was the last thing closed; otherwise falls through to VS Code's normal reopen-closed-editor behavior."
+                  },
+                  "claudeCode.hideOnboarding": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Hide the onboarding checklist in Claude Code."
+                  },
+                  "claudeCode.archiveInactiveSessions": {
+                    "type": "number",
+                    "enum": [
+                      0,
+                      1,
+                      2,
+                      7,
+                      14
+                    ],
+                    "enumItemLabels": [
+                      "Never",
+                      "1 day",
+                      "2 days",
+                      "7 days",
+                      "14 days"
+                    ],
+                    "default": 14,
+                    "scope": "application",
+                    "description": "Archive a session after this long with no activity. Sessions that are open, running, waiting for input, or unread are never archived automatically."
+                  },
+                  "claudeCode.usePythonEnvironment": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Automatically activate the workspace's Python environment when running Claude. Requires the [Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python) extension."
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "directory": "openai.chatgpt-26.820.71523-darwin-arm64",
+            "name": "chatgpt",
+            "publisher": "openai",
+            "version": "26.820.71523",
+            "displayName": "Codex \u2013 OpenAI\u2019s coding agent",
+            "main": "./out/extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished",
+              "onUri"
+            ],
+            "configuration": [
+              {
+                "type": "object",
+                "title": "Codex Settings",
+                "properties": {
+                  "chatgpt.commentCodeLensEnabled": {
+                    "description": "Enable CodeLens above TODO comments to implement with Codex.",
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "chatgpt.cliExecutable": {
+                    "description": "DEVELOPMENT ONLY: Path to the Codex CLI executable. You do NOT need to set this unless you are actively developing the Codex CLI. If set this manually, parts of the extension may not work as expected.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application",
+                    "restricted": true
+                  },
+                  "chatgpt.openOnStartup": {
+                    "description": "Focus the Codex sidebar when the extension finishes starting up.",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "chatgpt.followUpQueueMode": {
+                    "description": "Control whether follow-up messages are queued or steer the current run. Press Cmd/Ctrl+Shift+Enter to do the opposite for a single in-progress follow-up.",
+                    "type": "string",
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ],
+                    "default": "queue"
+                  },
+                  "chatgpt.composerEnterBehavior": {
+                    "description": "Enter behavior for the Codex composer.",
+                    "type": "string",
+                    "enum": [
+                      "enter",
+                      "cmdIfMultiline",
+                      "cmdAlways"
+                    ],
+                    "default": "enter"
+                  },
+                  "chatgpt.reviewDelivery": {
+                    "description": "Start /review inline in the current chat when possible or launch a separate review chat",
+                    "type": "string",
+                    "enum": [
+                      "inline",
+                      "detached"
+                    ],
+                    "default": "inline"
+                  },
+                  "chatgpt.localeOverride": {
+                    "description": "Preferred language for the Codex UI. Leave empty to auto detect.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application"
+                  },
+                  "chatgpt.runCodexInWindowsSubsystemForLinux": {
+                    "description": "Windows only: when Windows Subsystem for Linux (WSL) is installed, automatically run Codex inside WSL. Recommended for improved sandbox security and better performance - Agent mode on Windows currently requires WSL. Changing this setting reloads VS Code to take effect.",
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "directory": "openai.chatgpt-26.908.40401-darwin-arm64",
+            "name": "chatgpt",
+            "publisher": "openai",
+            "version": "26.908.40401",
+            "displayName": "Codex \u2013 OpenAI\u2019s coding agent",
+            "main": "./out/extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished",
+              "onUri"
+            ],
+            "configuration": [
+              {
+                "type": "object",
+                "title": "Codex Settings",
+                "properties": {
+                  "chatgpt.commentCodeLensEnabled": {
+                    "description": "Enable CodeLens above TODO comments to implement with Codex.",
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "chatgpt.cliExecutable": {
+                    "description": "DEVELOPMENT ONLY: Path to the Codex CLI executable. You do NOT need to set this unless you are actively developing the Codex CLI. If set this manually, parts of the extension may not work as expected.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application",
+                    "restricted": true
+                  },
+                  "chatgpt.openOnStartup": {
+                    "description": "Focus the Codex sidebar when the extension finishes starting up.",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "chatgpt.followUpQueueMode": {
+                    "description": "Control whether follow-up messages are queued or steer the current run. Press Cmd/Ctrl+Shift+Enter to do the opposite for a single in-progress follow-up.",
+                    "type": "string",
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ],
+                    "default": "queue"
+                  },
+                  "chatgpt.composerEnterBehavior": {
+                    "description": "Enter behavior for the Codex composer.",
+                    "type": "string",
+                    "enum": [
+                      "enter",
+                      "cmdIfMultiline",
+                      "cmdAlways"
+                    ],
+                    "default": "enter"
+                  },
+                  "chatgpt.reviewDelivery": {
+                    "description": "Start /review inline in the current chat when possible or launch a separate review chat",
+                    "type": "string",
+                    "enum": [
+                      "inline",
+                      "detached"
+                    ],
+                    "default": "inline"
+                  },
+                  "chatgpt.localeOverride": {
+                    "description": "Preferred language for the Codex UI. Leave empty to auto detect.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application"
+                  },
+                  "chatgpt.runCodexInWindowsSubsystemForLinux": {
+                    "description": "Windows only: when Windows Subsystem for Linux (WSL) is installed, automatically run Codex inside WSL. Recommended for improved sandbox security and better performance - Agent mode on Windows currently requires WSL. Changing this setting reloads VS Code to take effect.",
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "host": ".cursor",
+        "root_exists": true,
+        "packages": []
+      }
+    ],
+    "home": [
+      {
+        "host": ".vscode",
+        "root_exists": false,
+        "packages": []
+      },
+      {
+        "host": ".cursor",
+        "root_exists": true,
+        "packages": []
+      }
+    ],
+    "m3max": [
+      {
+        "host": ".vscode",
+        "root_exists": true,
+        "packages": [
+          {
+            "directory": "openai.chatgpt-26.325.31654-darwin-arm64",
+            "name": "chatgpt",
+            "publisher": "openai",
+            "version": "26.325.31654",
+            "displayName": "Codex \u2013 OpenAI\u2019s coding agent",
+            "main": "./out/extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished",
+              "onUri"
+            ],
+            "configuration": [
+              {
+                "type": "object",
+                "title": "Codex Settings",
+                "properties": {
+                  "chatgpt.commentCodeLensEnabled": {
+                    "description": "Enable CodeLens above TODO comments to implement with Codex.",
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "chatgpt.cliExecutable": {
+                    "description": "DEVELOPMENT ONLY: Path to the Codex CLI executable. You do NOT need to set this unless you are actively developing the Codex CLI. If set this manually, parts of the extension may not work as expected.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application",
+                    "restricted": true
+                  },
+                  "chatgpt.openOnStartup": {
+                    "description": "Focus the Codex sidebar when the extension finishes starting up.",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "chatgpt.followUpQueueMode": {
+                    "description": "Control whether follow-up messages are queued or steer the current run. Press Cmd/Ctrl+Shift+Enter to do the opposite for a single in-progress follow-up.",
+                    "type": "string",
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ],
+                    "default": "queue"
+                  },
+                  "chatgpt.composerEnterBehavior": {
+                    "description": "Enter behavior for the Codex composer.",
+                    "type": "string",
+                    "enum": [
+                      "enter",
+                      "cmdIfMultiline"
+                    ],
+                    "default": "enter"
+                  },
+                  "chatgpt.localeOverride": {
+                    "description": "Preferred language for the Codex UI. Leave empty to auto detect.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application"
+                  },
+                  "chatgpt.runCodexInWindowsSubsystemForLinux": {
+                    "description": "Windows only: when Windows Subsystem for Linux (WSL) is installed, automatically run Codex inside WSL. Recommended for improved sandbox security and better performance - Agent mode on Windows currently requires WSL. Changing this setting reloads VS Code to take effect.",
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "directory": "openai.chatgpt-26.409.20454-darwin-arm64",
+            "name": "chatgpt",
+            "publisher": "openai",
+            "version": "26.409.20454",
+            "displayName": "Codex \u2013 OpenAI\u2019s coding agent",
+            "main": "./out/extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished",
+              "onUri"
+            ],
+            "configuration": [
+              {
+                "type": "object",
+                "title": "Codex Settings",
+                "properties": {
+                  "chatgpt.commentCodeLensEnabled": {
+                    "description": "Enable CodeLens above TODO comments to implement with Codex.",
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "chatgpt.cliExecutable": {
+                    "description": "DEVELOPMENT ONLY: Path to the Codex CLI executable. You do NOT need to set this unless you are actively developing the Codex CLI. If set this manually, parts of the extension may not work as expected.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application",
+                    "restricted": true
+                  },
+                  "chatgpt.openOnStartup": {
+                    "description": "Focus the Codex sidebar when the extension finishes starting up.",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "chatgpt.followUpQueueMode": {
+                    "description": "Control whether follow-up messages are queued or steer the current run. Press Cmd/Ctrl+Shift+Enter to do the opposite for a single in-progress follow-up.",
+                    "type": "string",
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ],
+                    "default": "queue"
+                  },
+                  "chatgpt.composerEnterBehavior": {
+                    "description": "Enter behavior for the Codex composer.",
+                    "type": "string",
+                    "enum": [
+                      "enter",
+                      "cmdIfMultiline"
+                    ],
+                    "default": "enter"
+                  },
+                  "chatgpt.reviewDelivery": {
+                    "description": "Start /review inline in the current thread when possible or launch a separate review thread",
+                    "type": "string",
+                    "enum": [
+                      "inline",
+                      "detached"
+                    ],
+                    "default": "inline"
+                  },
+                  "chatgpt.localeOverride": {
+                    "description": "Preferred language for the Codex UI. Leave empty to auto detect.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application"
+                  },
+                  "chatgpt.runCodexInWindowsSubsystemForLinux": {
+                    "description": "Windows only: when Windows Subsystem for Linux (WSL) is installed, automatically run Codex inside WSL. Recommended for improved sandbox security and better performance - Agent mode on Windows currently requires WSL. Changing this setting reloads VS Code to take effect.",
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "directory": "openai.chatgpt-26.415.20818-darwin-arm64",
+            "name": "chatgpt",
+            "publisher": "openai",
+            "version": "26.415.20818",
+            "displayName": "Codex \u2013 OpenAI\u2019s coding agent",
+            "main": "./out/extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished",
+              "onUri"
+            ],
+            "configuration": [
+              {
+                "type": "object",
+                "title": "Codex Settings",
+                "properties": {
+                  "chatgpt.commentCodeLensEnabled": {
+                    "description": "Enable CodeLens above TODO comments to implement with Codex.",
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "chatgpt.cliExecutable": {
+                    "description": "DEVELOPMENT ONLY: Path to the Codex CLI executable. You do NOT need to set this unless you are actively developing the Codex CLI. If set this manually, parts of the extension may not work as expected.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application",
+                    "restricted": true
+                  },
+                  "chatgpt.openOnStartup": {
+                    "description": "Focus the Codex sidebar when the extension finishes starting up.",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "chatgpt.followUpQueueMode": {
+                    "description": "Control whether follow-up messages are queued or steer the current run. Press Cmd/Ctrl+Shift+Enter to do the opposite for a single in-progress follow-up.",
+                    "type": "string",
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ],
+                    "default": "queue"
+                  },
+                  "chatgpt.composerEnterBehavior": {
+                    "description": "Enter behavior for the Codex composer.",
+                    "type": "string",
+                    "enum": [
+                      "enter",
+                      "cmdIfMultiline"
+                    ],
+                    "default": "enter"
+                  },
+                  "chatgpt.reviewDelivery": {
+                    "description": "Start /review inline in the current thread when possible or launch a separate review thread",
+                    "type": "string",
+                    "enum": [
+                      "inline",
+                      "detached"
+                    ],
+                    "default": "inline"
+                  },
+                  "chatgpt.localeOverride": {
+                    "description": "Preferred language for the Codex UI. Leave empty to auto detect.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application"
+                  },
+                  "chatgpt.runCodexInWindowsSubsystemForLinux": {
+                    "description": "Windows only: when Windows Subsystem for Linux (WSL) is installed, automatically run Codex inside WSL. Recommended for improved sandbox security and better performance - Agent mode on Windows currently requires WSL. Changing this setting reloads VS Code to take effect.",
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "host": ".cursor",
+        "root_exists": true,
+        "packages": [
+          {
+            "directory": "openai.chatgpt-0.4.79-darwin-arm64",
+            "name": "chatgpt",
+            "publisher": "openai",
+            "version": "0.4.79",
+            "displayName": "Codex \u2013 OpenAI\u2019s coding agent",
+            "main": "./out/extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished",
+              "onUri"
+            ],
+            "configuration": [
+              {
+                "type": "object",
+                "title": "Codex Settings",
+                "properties": {
+                  "chatgpt.commentCodeLensEnabled": {
+                    "description": "Enable CodeLens above TODO comments to implement with Codex.",
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "chatgpt.cliExecutable": {
+                    "description": "DEVELOPMENT ONLY: Path to the Codex CLI executable. You do NOT need to set this unless you are actively developing the Codex CLI. If set this manually, parts of the extension may not work as expected.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application",
+                    "restricted": true
+                  },
+                  "chatgpt.openOnStartup": {
+                    "description": "Focus the Codex sidebar when the extension finishes starting up.",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "chatgpt.followUpQueueMode": {
+                    "description": "Control whether follow-up messages are queued or steer the current run. Press Cmd/Ctrl+Shift+Enter to do the opposite for a single in-progress follow-up.",
+                    "type": "string",
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ],
+                    "default": "queue"
+                  },
+                  "chatgpt.composerEnterBehavior": {
+                    "description": "Enter behavior for the Codex composer.",
+                    "type": "string",
+                    "enum": [
+                      "enter",
+                      "cmdIfMultiline"
+                    ],
+                    "default": "enter"
+                  },
+                  "chatgpt.localeOverride": {
+                    "description": "Preferred language for the Codex UI. Leave empty to auto detect.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application"
+                  },
+                  "chatgpt.runCodexInWindowsSubsystemForLinux": {
+                    "description": "Windows only: when Windows Subsystem for Linux (WSL) is installed, automatically run Codex inside WSL. Recommended for improved sandbox security and better performance - Agent mode on Windows currently requires WSL. Changing this setting reloads VS Code to take effect.",
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "directory": "openai.chatgpt-26.304.20706-darwin-arm64",
+            "name": "chatgpt",
+            "publisher": "openai",
+            "version": "26.304.20706",
+            "displayName": "Codex \u2013 OpenAI\u2019s coding agent",
+            "main": "./out/extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished",
+              "onUri"
+            ],
+            "configuration": [
+              {
+                "type": "object",
+                "title": "Codex Settings",
+                "properties": {
+                  "chatgpt.commentCodeLensEnabled": {
+                    "description": "Enable CodeLens above TODO comments to implement with Codex.",
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "chatgpt.cliExecutable": {
+                    "description": "DEVELOPMENT ONLY: Path to the Codex CLI executable. You do NOT need to set this unless you are actively developing the Codex CLI. If set this manually, parts of the extension may not work as expected.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application",
+                    "restricted": true
+                  },
+                  "chatgpt.openOnStartup": {
+                    "description": "Focus the Codex sidebar when the extension finishes starting up.",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "chatgpt.followUpQueueMode": {
+                    "description": "Control whether follow-up messages are queued or steer the current run. Press Cmd/Ctrl+Shift+Enter to do the opposite for a single in-progress follow-up.",
+                    "type": "string",
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ],
+                    "default": "queue"
+                  },
+                  "chatgpt.composerEnterBehavior": {
+                    "description": "Enter behavior for the Codex composer.",
+                    "type": "string",
+                    "enum": [
+                      "enter",
+                      "cmdIfMultiline"
+                    ],
+                    "default": "enter"
+                  },
+                  "chatgpt.localeOverride": {
+                    "description": "Preferred language for the Codex UI. Leave empty to auto detect.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "scope": "application"
+                  },
+                  "chatgpt.runCodexInWindowsSubsystemForLinux": {
+                    "description": "Windows only: when Windows Subsystem for Linux (WSL) is installed, automatically run Codex inside WSL. Recommended for improved sandbox security and better performance - Agent mode on Windows currently requires WSL. Changing this setting reloads VS Code to take effect.",
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "directory": "openai.openai-chatgpt-adhoc-0.0.1731981761",
+            "name": "openai-chatgpt-adhoc",
+            "publisher": "openai",
+            "version": "0.0.1731981761",
+            "displayName": "ChatGPT \u2013 Work with VS Code on macOS",
+            "main": "./out/extension.js",
+            "extensionKind": null,
+            "activationEvents": [
+              "onStartupFinished"
+            ],
+            "configuration": [
+              {}
+            ]
+          }
+        ]
+      }
+    ],
+    "studio": [
+      {
+        "host": ".vscode",
+        "root_exists": false,
+        "packages": []
+      },
+      {
+        "host": ".cursor",
+        "root_exists": false,
+        "packages": []
+      }
+    ],
+    "m336": [
+      {
+        "host": ".vscode",
+        "root_exists": false,
+        "packages": []
+      },
+      {
+        "host": ".cursor",
+        "root_exists": false,
+        "packages": []
+      }
+    ]
+  },
+  "additional_static": {
+    "claude-extra": {
+      "entry": "/.vite/build/index.chunk-Du-Wqi0E.js",
+      "sha256": "fcc1026c3634f62ae40581c680389b807c49e85626ff9989838fa0dc931d7f1a",
+      "snippets": [
+        {
+          "pattern": "TelemetryEvent",
+          "offset": 3292789,
+          "excerpt": "on QF(){if(YF.length===0)return;let e=YF;YF=[],XF&&=(clearTimeout(XF),null),await I7n(e)}async function I7n(e){return ZF()?process.env.CI?(P.info(\"[EventLogging] CI run: withholding %d events from upload\",e.length),\"ci\"):z7n(e):\"off\"}af({name:\"flushEventQueue\",fn:QF});function L7n(e){let t=new Set,n=new Set;for(let r o",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "c9e5fa9d9bb7aa62fdc49fe9d9f92691862a38eb4fa4e9539d7a97136cbd5ab5"
+        },
+        {
+          "pattern": "TelemetryEvent",
+          "offset": 3300434,
+          "excerpt": ".q7n(n?.mainViewHeap===void 0?KZn():n.mainViewHeap),app_session_id:T7n,install_id:wb(),app_uptime_seconds:Math.floor(process.uptime()),window_count:u.BrowserWindow.getAllWindows().length,...r&&{organization_id:r},...p(f.originOrgId),...a,...t||{}},{hipaa:f.hipaa,sessionHost:lT(),withholdSessionText:K().withholdsSession",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "bf6fe581cd5631354f8cd9b86cbf4c0eb96c6b51f4ac18032504af63443e4747"
+        },
+        {
+          "pattern": "install_id",
+          "offset": 1173610,
+          "excerpt": "igest:Zet,session_digest:Zet,plugin_uuid:$p((e=>cm.test(e)?e:\"<non-uuid>\")),marketplace_uuid:$p((e=>cm.test(e)?e:\"<non-uuid>\")),fs_op:e=>e===void 0?void 0:typeof e==\"string\"&&net.test(e)?e:\"other\",cf_ray:e=>e===void 0?void 0:typeof e==\"string\"&&e3e(e)===e?e:\"<non-cf-ray>\",device_id:e=>e===void 0?void 0:typeof e==\"strin",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "8875db06144dcdcb0d791b8df3aa7e1df20dca7975d06d2f051b0aee4f105455"
+        },
+        {
+          "pattern": "install_id",
+          "offset": 1178137,
+          "excerpt": "error_user_message_uuid:c,message_uuid:c,target_message_uuid:c,request_id:c,tool_use_id:c,disconnected_device_id:c,selected_device_id:c,parent_session_id:c,parent_session_digest:c,session_digest:c,child_session_id:c,first_wake_message_uuid:c,replaces_message_uuid:c,continue_message_uuid:c,attempt:c,shared_artifact_uuid",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "7990d2bb85570c86c5610eedd656bdb14ec0f62819cd755c65409a44f516b8a2"
+        },
+        {
+          "pattern": "install_id",
+          "offset": 1190204,
+          "excerpt": "e_option.git_isolation_stage.cwd_folder_kind.rc_reconciled.rc_intent.stat_error_code.fs_error_code.plist_scope.read_error.outside_kind.path_pattern.upload_net_error.attach_net_error.upload_endpoint_class.hit.scheme.host_window.landing.sidebar_mode.link_host.input_ready_page.entry.update_relaunch_marker.windows_app_job.",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "af8566dea8151055ae12e05206d988a7b1be74e75a22f13300377444e6a86c0b"
+        },
+        {
+          "pattern": "install_id",
+          "offset": 1192513,
+          "excerpt": "ata_moved_real_path.user_data_moved_uptime.user_data_env_antivirus.user_data_move_holder.user_data_move_holder_under.user_data_stake.user_data_move_answer_reading.user_data_move_answer_write.user_data_move_flag.old_host.ignored_user_data_dir.oldest_main_log_created_bucket.system_uptime_bucket.user_data_after_reset.user",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "054da8e3209a9dfd68586a9968b11c9d776f967a2a11f899e3f3fedc7d9fc46d"
+        },
+        {
+          "pattern": "Qe({",
+          "offset": 6381684,
+          "excerpt": "}await Sro(n,{endHybridStint:!0})}async function Sro(e,t={}){await t2n(e,t),await pO(\"3p\")}function f7(){let e=Md();if(e.type===\"managed\")throw Error(\"Configuration is managed; cannot write.\");if(e.managedUnusable)throw Error(\"Managed configuration is present but unreadable; cannot write.\")}function Cro(){if(Md().type!",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "6f9f5ca76e14eb84309de7b241e715f22c72ea98d6577eb1bbb085451a7f9d23"
+        },
+        {
+          "pattern": "Qe({",
+          "offset": 6679109,
+          "excerpt": "((()=>Rir(\"cowork_watch_record\"))),N4t();let s=Ob();dvo(),FSr(),nIi(),boo(),Promise.resolve().then((()=>require(\"./index.chunk-B8SVCbDB.js\"))).then((e=>e.t)).then((e=>e.primePluginsSyncAtAppReady())).catch((e=>P.debug(\"plugins sync prewarm skipped: %o\",e)));let l=K();l.onBootstrapStateChange((()=>{let e=l.telemetryOrgU",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "6b00ffa09e8d83ffd35a464870d6c4b2725690e09d1fdd207ad6f9b336a4a7c5"
+        },
+        {
+          "pattern": "o1158394",
+          "offset": 572188,
+          "excerpt": "aude.com\",xTe=\"*.hcaptcha.com\",STe=[\"hcaptcha.com\",xTe],CTe=\"js.hcaptcha.com\",wTe=\"www.google.com\",TTe=\"*.gstatic.com\",ETe=[\"*.frame.claudeusercontent.com\",\"*.frame.staging.claudeusercontent.com\"],DTe=\"*.claudemcpcontent.com\",OTe=\"sandbox.claudemcpcontent.com\",kTe=\"assets.claude.ai\",ATe=\"*.sentry.io\",jTe=\"redirector.gv",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "55a063b544eb23a732d5fbb5110a348c479dde343a4a9be554d4c17097a1071a"
+        }
+      ]
+    },
+    "claude-crash-extra": {
+      "entry": "/.vite/build/index.pre.js",
+      "sha256": "782c56fb4f3bc4b18100a67149fe527599953836dc174028853b74c6075f2178",
+      "snippets": [
+        {
+          "pattern": "let m=\"https://",
+          "offset": 1033289,
+          "excerpt": "))&&(bP(),g.default.promises.rm(s,{recursive:!0,force:!0,maxRetries:2}).catch((e=>{F.warn(\"Sentry offline queue purge failed (restricted crash-dumps marker appeared)\",e)})),F.warn(\"Sentry egress blocked for this launch: a restricted session's crash-dumps marker appeared mid-run\"))};D.app.on(\"render-process-gone\",e),D.a",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "f75c7e7b56484067e6cce129295ec0a9b996dd1af3f7629daf85be863defcb17"
+        },
+        {
+          "pattern": "disableNonessentialTelemetry",
+          "offset": 849299,
+          "excerpt": "uQ,order:0,description:{short:W(\"\"),long:G(\"\",{docsUrl:`${Q}/telemetry#essential-telemetry`})},predicates:{warn:e=>e===!0?Z({defaultMessage:\"Crash and error reports are how we diagnose failures specific to your inference setup. Support turnaround will be slower without them.\",id:\"ek/rdG0G9V\"}):null}}),disableNonessenti",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "4c3a8f1ec41a818f0e7205b05dd10e88dffacf13fe4514a89bfa53067a16a070"
+        }
+      ]
+    },
+    "claude-id-extra": {
+      "entry": "/.vite/build/index.chunk-Du-Wqi0E.js",
+      "sha256": "fcc1026c3634f62ae40581c680389b807c49e85626ff9989838fa0dc931d7f1a",
+      "snippets": [
+        {
+          "pattern": "function wb(",
+          "offset": 2112456,
+          "excerpt": ",\"anthropic-client-version\":u.app.getVersion(),\"anthropic-client-device-class\":a4t,\"anthropic-client-total-memory-gb\":String(o4t)}}function l4t(){return{[q6e]:s4t}}function u4t(){return{\"anthropic-client-os-platform\":process.platform,\"anthropic-client-os-version\":process.getSystemVersion()}}var d4t=\"00000000-0000-0000-",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "fabc269f0b8a86444d13620761f737e5ad573575c56e5b5706b00f9574d160d6"
+        },
+        {
+          "pattern": "function wb(",
+          "offset": 2124907,
+          "excerpt": "ind===\"static\")return;let t=Xl(),n=!e;if(e=!0,n&&t===null)return;Lb++,K4t=!0,q4t=void 0,J4t=void 0;let r=t?.accountUuid;N3t!==void 0&&r!==N3t&&P3t.clear(),N3t=r,I3t.clear(),L3t.clear(),t!==null&&(j3t=O3t().finally(k3t))})),Q4t}var j3t=null;function Hb(){return Pb!==\"none\"&&Pb!==\"map-fallback\"}function Ub(){return Fb()?",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "3faa5f9718d6c451aa9cdc714cbe1d6461dc7d13dbaa4db5ca92cc610e0ff838"
+        },
+        {
+          "pattern": "function wb(",
+          "offset": 3477670,
+          "excerpt": "a&&e.hostname===t.hostname&&r(e,i)===r(t,a)}function SB(e){return yB(e)||/^127(\\.\\d{1,3}){1,3}$/.test(e)}function dfr(e){let t=/^\\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\\]$/i.exec(e);if(t===null)return!1;let n=parseInt(t[1],16),r=parseInt(t[2],16);return(n&65280)==32512||n===0&&r===0}function CB(e){return bB(e)&&(!e.st",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "b4d65b21f53721656ddd14e6930e11a2c49abde69cccdda1ffeb16baf704ed1e"
+        },
+        {
+          "pattern": "function wb(",
+          "offset": 3488275,
+          "excerpt": "if(spr(opr(),e,t)===\"block\")return\"category_org_blocked\";let n=zB(t);if(n===\"metadata\"||n===\"private-ip\")return rpr(n);let r=NB.get(t);return r&&RB(r)?r.category:null}function fpr(e,t){let n=HB(e);if(n===null)return null;let r=zB(n);if(r===\"metadata\"||r===\"private-ip\")return ipr(r);let i=NB.get(n),a=t?.retained?Rfr:Ifr",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "f683f0dcf7c4edbc2ccf7c13e70ede1d5e455c857dc548ac3ee1f9c131688950"
+        },
+        {
+          "pattern": "function ZF(",
+          "offset": 1067181,
+          "excerpt": "vious-profile\"],i6e=[...Object.values(B3e),...Xf.flatMap((e=>r6e.map((t=>`${e}-${t}`)))),...Xf.map((e=>a6e(e,\"code\",!0)))];function a6e(e,t,n=!1){return e===void 0?`local-1p-${t}`:`${e}-${t}${n?\"-elsewhere\":\"\"}`}function o6e(e){return e!==void 0&&[\"local-1p\",...Xf].some((t=>e.startsWith(`${t}-`)))}function s6e(e){retur",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "103d226ba24618db5a8e5e4f5bdd95c308f8044eb953e7cc6e5e7ea81efdbbff"
+        },
+        {
+          "pattern": "function ZF(",
+          "offset": 3292372,
+          "excerpt": "h.random){return Math.round(k7n*(.5+e()))}var YF=[],XF=null;function M7n(e){return JSON.stringify(e,((e,t)=>typeof t==\"string\"?t.toWellFormed():t))}var N7n=null;async function P7n(){if(!N7n){let e=zEt();N7n={version:u.app.getVersion(),commitHash:e.commitHash}}return N7n}function F7n(){if(LI())return QF();XF||=setTimeou",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "290049f1e0bdf71b72235b7f06644405c7008b415d3c08ba8319b5834b266d51"
+        },
+        {
+          "pattern": "install_id:wb()",
+          "offset": 3300155,
+          "excerpt": "ass:a4t,free_memory:c.freeKb*1024,available_memory:c.availableKb===null?null:c.availableKb*1024,...c.commitLimitKb!==void 0&&c.commitAvailableKb!==void 0&&{system_commit_limit_bytes:c.commitLimitKb*1024,system_commit_available_bytes:c.commitAvailableKb*1024},...G7n(),...K7n(),...q7n(n?.mainViewHeap===void 0?KZn():n.mai",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "e8e3a8e181f1af0aae02cb72c7767c583c696021fc8295dec659f2c675501bb0"
+        },
+        {
+          "pattern": "function wb()",
+          "offset": 2112456,
+          "excerpt": ",\"anthropic-client-version\":u.app.getVersion(),\"anthropic-client-device-class\":a4t,\"anthropic-client-total-memory-gb\":String(o4t)}}function l4t(){return{[q6e]:s4t}}function u4t(){return{\"anthropic-client-os-platform\":process.platform,\"anthropic-client-os-version\":process.getSystemVersion()}}var d4t=\"00000000-0000-0000-",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "3dec6baea75d9dab6e116f33dc9c9a360eb8b8dc8c7ba211b56f50b7da979cc6"
+        },
+        {
+          "pattern": "function wb()",
+          "offset": 2124907,
+          "excerpt": "ind===\"static\")return;let t=Xl(),n=!e;if(e=!0,n&&t===null)return;Lb++,K4t=!0,q4t=void 0,J4t=void 0;let r=t?.accountUuid;N3t!==void 0&&r!==N3t&&P3t.clear(),N3t=r,I3t.clear(),L3t.clear(),t!==null&&(j3t=O3t().finally(k3t))})),Q4t}var j3t=null;function Hb(){return Pb!==\"none\"&&Pb!==\"map-fallback\"}function Ub(){return Fb()?",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "237cbc9cd7ca3fdc965268affe941530f7e7bf9fbf48c173e054ef22be49aa92"
+        }
+      ]
+    },
+    "claude-headers-extra": {
+      "entry": "/.vite/build/index.chunk-Du-Wqi0E.js",
+      "sha256": "fcc1026c3634f62ae40581c680389b807c49e85626ff9989838fa0dc931d7f1a",
+      "snippets": [
+        {
+          "pattern": "pWe=",
+          "offset": 563277,
+          "excerpt": "ssiblyActivateInternalMcpServer:()=>Bwe,recordMainWindowBornHidden:()=>Ewe,registerInternalMcpServer:()=>Rwe,resetMainWindowBounds:()=>_we,runBeforeMainWindowFirstShown:()=>So,setErrorOverlay:()=>Oo,setFindInPageView:()=>jwe,setMainView:()=>Awe,setMainWindow:()=>kwe,setMainWindowState:()=>gwe,store:()=>bo,waitForMainVi",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "1faa17c8024db32df205ca1fc25cbb9ec50554ae511de85d048879e6f9e98e1d"
+        },
+        {
+          "pattern": "pWe=",
+          "offset": 929346,
+          "excerpt": "partial:\"lastRemoteBootstrapPartial\",host:\"lastRemoteBootstrapHost\"}},uWe=\"sessionHostLicense\",hu=Object.keys(mu),gu={value:\"lastRemoteDisableEssentialTelemetry\",host:\"lastRemoteDisableEssentialTelemetryHost\"},dWe={served:[\"probed\",\"legacy\"],probed:[]};function fWe(e){let{partial:t,host:n}=mu[e];return e===\"legacy\"?[t,",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "08b4a5842d2510ba0651fcd03fc0219f615ba6e227a45f253f0d77a18a00bfc3"
+        },
+        {
+          "pattern": "pWe=",
+          "offset": 933594,
+          "excerpt": "-app-data\",EWe=\"reset-app-data.given-up\",DWe=\"reset-app-data.lock\",OWe=Symbol.for(\"claude.resetAppData.stopMarkRetry\");async function kWe(){await(globalThis[OWe]?.())}var AWe=[\"restart\",\"quit\"],vu=\"--reset-app-data-finished=\";`${vu}`;var jWe=\"--reset-app-data-left-in=\",MWe=\"--reset-app-data-older-in=\",NWe=e=>[vu,jWe,MW",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "2490ba85fbc8bdd41ba15030e45da962810fbf90a6cef4d7d6e7c2020cd0ce99"
+        },
+        {
+          "pattern": "anthropic-client-",
+          "offset": 1069495,
+          "excerpt": "nizations\\/[^/]+\\/model_selector\\/([^/]+)$/.exec(e)?.[1],B6e=e=>z6e(e)!==void 0,V6e=\"/api/account_profile\";function H6e(e,t){return`/v1/code/devices/${encodeURIComponent(e)}_${encodeURIComponent(t)}/bridge`}var U6e=33554432,W6e=[\"accept\",\"content-type\",\"cache-control\",\"if-match\",\"if-none-match\",\"last-event-id\",\"anthrop",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "54a97505cac66590ecc527cc07848a4b902707b555ac2ae507b5cd79440aa9af"
+        },
+        {
+          "pattern": "anthropic-client-",
+          "offset": 1069605,
+          "excerpt": "ction H6e(e,t){return`/v1/code/devices/${encodeURIComponent(e)}_${encodeURIComponent(t)}/bridge`}var U6e=33554432,W6e=[\"accept\",\"content-type\",\"cache-control\",\"if-match\",\"if-none-match\",\"last-event-id\",\"anthropic-version\",\"anthropic-beta\",\"anthropic-client-feature\",\"x-organization-uuid\"],G6e=\"Claude-Login-Instance\",K6e",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "8fdb041762f45b51f84d6fb1d2c91b1318e10f437619c43c330dc9c6c99b7adc"
+        },
+        {
+          "pattern": "anthropic-client-",
+          "offset": 2112081,
+          "excerpt": "..e,...Sb});function r4t(e,t){return t4t(e),(Object.hasOwn(Sb,t)?Sb:Object.hasOwn(e,t)?e:Object.hasOwn(bb,t)?bb:Gyt)[t]}function i4t(e){return e<6e9?\"le4\":e<12e9?\"8\":e<2e10?\"16\":\"gt16\"}var a4t=i4t(d.default.totalmem()),o4t=Math.round(d.default.totalmem()/1024**3),s4t=\"desktop_app\",c4t=\"com.anthropic.claudefordesktop\";f",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "2c406e212313258ad83d6cdc46e175185f3ee5f99d5638cce1b2f18ca1171368"
+        },
+        {
+          "pattern": "anthropic-client-",
+          "offset": 2112108,
+          "excerpt": "t){return t4t(e),(Object.hasOwn(Sb,t)?Sb:Object.hasOwn(e,t)?e:Object.hasOwn(bb,t)?bb:Gyt)[t]}function i4t(e){return e<6e9?\"le4\":e<12e9?\"8\":e<2e10?\"16\":\"gt16\"}var a4t=i4t(d.default.totalmem()),o4t=Math.round(d.default.totalmem()/1024**3),s4t=\"desktop_app\",c4t=\"com.anthropic.claudefordesktop\";function Cb(){return{...l4t(",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "9eafe41ce496ce7fbd06c3622b29dfd5a4036d68a8498d6a45d2e4fb9dcbc9e8"
+        }
+      ]
+    },
+    "codex-main-extra": {
+      "entry": "/.vite/build/main-8XtuV7fZ.js",
+      "sha256": "2f6af33a43452abb931464891862f71787dcd11e5451e015972c9831d08a5321",
+      "snippets": [
+        {
+          "pattern": "device_identity:",
+          "offset": 351649,
+          "excerpt": "responseClientId:u.client_id});iv().info(`remote_control_client_enrollment_step_up_validated`,{safe:{...h.safe,stepUpTokenScopes:f.scopes},sensitive:{...h.sensitive,stepUpIssuedAt:f.issuedAt,stepUpPasswordAuthTime:f.passwordAuthTime,stepUpTokenAccountUserId:f.accountUserId}}),m=await Fv({appServerClient:e,body:{client_",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "4a0de5f1ab420a056514c67acf631ad711489f7c8f92ca08a8e7ce0969b704d8"
+        },
+        {
+          "pattern": "function Jv(",
+          "offset": 357483,
+          "excerpt": "ypeof n.pwd_auth_time==`number`,authClaimKeys:i==null?null:Object.keys(i).sort(),hasAuthAmr:Array.isArray(i?.amr),hasAuthAccountUserId:typeof i?.chatgpt_account_user_id==`string`,hasLegacyAuthAccountUserId:typeof i?.account_user_id==`string`,mfaClaimKeys:o==null?null:Object.keys(o).sort(),hasMfaRequired:typeof o?.requi",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "c41cf7450ba98feb887f1f239c2a917f2560f1876dfd1a6c1daed90ad50d40a4"
+        },
+        {
+          "pattern": "function Jv(",
+          "offset": 361215,
+          "excerpt": "keyId,protectionClass:r.protectionClass,publicKeySpkiDerBase64:r.publicKeySpkiDerBase64}}async function qv({deviceKeyClient:e,enrollment:t}){try{await e.deleteDeviceKey(t.keyId)}catch(e){iv().warning(`remote_control_client_enrollment_key_cleanup_failed`,{safe:{},sensitive:{accountUserId:t.accountUserId,clientId:t.clien",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "93d0adc2df5173c0494877a8891c9a7724eabc7dddf2b151b91cc8f503bb649b"
+        },
+        {
+          "pattern": "desktopSentry.setUser",
+          "offset": 1093974,
+          "excerpt": "osted-pip-visibility-changed`:break;case`open-mcp-app-sandbox-devtools`:this.windowManager.openMcpAppSandboxDevtools(e,n.sandboxId);break;case`set-telemetry-user`:{this.updateWorkerSentryUser(n.authMethod,n.userId,n.email,n.accountId);let e=n.authMethod==null?null:{id:n.userId??void 0,authMethod:n.authMethod};this.data",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "f767dde7cfdc570c3a5458babb9f2d4e9398677fd1990868c9a358803540ae5d"
+        },
+        {
+          "pattern": "desktop-log",
+          "offset": 190,
+          "excerpt": "const e=require(`./src-BZqs_tzA.js`),t=require(`./src-CoIhwwHr.js`),n=require(`./file-based-logger-DZ6052-3.js`),r=require(`./workspace-root-drop-handler-4fzIumU3.js`),i=require(`./feedback-desktop-log-archive-ClZhaiVs.js`);let a=require(`electron`);a=e.o(a);let o=require(`node:os`);o=e.o(o);let s=require(`node:path`);",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "d82cebc9770293b136893298e3acf2b7da431b057ce2021f7ce257b18587ef6e"
+        },
+        {
+          "pattern": "desktop-log",
+          "offset": 575505,
+          "excerpt": "();return this.hotkeyWindowLifecycleManager.syncCommandKeybinding(fP(`hotkeyWindow`,e).hotkey),this.globalDictationHotkeyController.syncCommandKeybindings({holdHotkey:fP(`globalDictationHold`,e).hotkey,toggleHotkey:fP(`globalDictationToggle`,e).hotkey}),this.refreshApplicationMenu(),this.refreshBrowserSidebarOwnerComma",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "6365c57b12574d81b918c68d593c8a4d81a0c828695e3037a496e0ceff980d7a"
+        },
+        {
+          "pattern": "desktop-log",
+          "offset": 575643,
+          "excerpt": "mmandKeybindings({holdHotkey:fP(`globalDictationHold`,e).hotkey,toggleHotkey:fP(`globalDictationToggle`,e).hotkey}),this.refreshApplicationMenu(),this.refreshBrowserSidebarOwnerCommandAccelerators(),e},\"feedback-desktop-log-archive\":async()=>await i.t(new Date,this.getFeedbackDesktopLogEntries())??{archiveId:null,archi",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "797e60d59c33092dd0654edb8261789ce4d655a22b2393804c6d1165047be28b"
+        },
+        {
+          "pattern": "trace-recording-upload",
+          "offset": 1068822,
+          "excerpt": "{tracePath:i}}),r!=null)try{let o=a.BrowserWindow.getFocusedWindow(),s=o!=null&&!o.isDestroyed()?o:null,l=s?.id??null,u=s==null||!n.hasRegisteredWebContents(s.webContents)?null:B,d=NZ(s);ZZ(n,e,`awaiting-upload-details`);let[f,p]=await Promise.all([oF(),d]);ZZ(n,e,`uploading`);let{uploadTraceRecording:m}=await Promise.",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "844260cdd2d262e568f5f258634f82f4b78d1ead186e56f541da5bb256213a92"
+        },
+        {
+          "pattern": "trace-recording-upload",
+          "offset": 1069285,
+          "excerpt": "Id:f.conversationId,hostId:u,windowId:l},runtimeHealth:p,traceRecordingNote:f.note.length>0?f.note:null}),FZ().info(`Uploaded content trace recording.`,{safe:{sourceWindowId:l,sourceHostId:u},sensitive:{tracePath:i,traceConversationId:f.conversationId}})}finally{await $Z(i)}KZ=null,ZZ(n,e,`idle`),t!=null&&n.sendMessage",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "6c7528c8c9a95697d7f550e9a6cde2572eb67c88574b48afc2de39bb984fac95"
+        },
+        {
+          "pattern": "datadogLogger",
+          "offset": 1087026,
+          "excerpt": "-submit-mcp-server-elicitation-response\":`thread-follower-submit-mcp-server-elicitation-response-request`,\"thread-follower-set-queued-follow-ups-state\":`thread-follower-set-queued-follow-ups-state-request`},NQ=class{sharedObjectSubscribers=new Map;sharedObjectSubscriberOrigins=new WeakSet;host;primaryWindowRestoreBound",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "389e607a24013dcf1af78d36e5b4864b5c0ae09d238f7c557d676a7f80ec5eec"
+        },
+        {
+          "pattern": "datadogLogger",
+          "offset": 1089114,
+          "excerpt": "=g,this.desktopSentry=_,this.updateWorkerSentryUser=v,this.getIpcClientForWebContents=y,this.inboxManager=b,this.getHostConfigForHostId=E,this.hasActiveComputerUseTurn=D,this.settingsStore=O,this.host=n,this.sharedObjectRepository.addSubscriber((e,t)=>{this.sharedObjectSubscribers.get(e)?.forEach((n,r)=>{this.sendShare",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "75d5de17187471cf4512dd82cdd327bbb772294c2aa70d9cd9afc7ba21ba7b37"
+        },
+        {
+          "pattern": "datadogLogger",
+          "offset": 1093940,
+          "excerpt": "tive-thread-changed`:case`remote-hosted-pip-visibility-changed`:break;case`open-mcp-app-sandbox-devtools`:this.windowManager.openMcpAppSandboxDevtools(e,n.sandboxId);break;case`set-telemetry-user`:{this.updateWorkerSentryUser(n.authMethod,n.userId,n.email,n.accountId);let e=n.authMethod==null?null:{id:n.userId??void 0,",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "c72c1d5dd180a6bcec4a3b466ed81b9547e57aaab459924e5f51bea9184bb096"
+        },
+        {
+          "pattern": "datadogLogger",
+          "offset": 1120216,
+          "excerpt": "Manager.getPrimaryMinimumSize();n.setMinimumSize(i.width,i.height);let a={...e,width:Math.max(e.width,i.width),height:Math.max(e.height,i.height)};n.setBounds(a),t&&n.maximize(),r&&n.setFullScreen(!0)}this.windowManager.syncPrimaryMinimumSize(),this.showPrimaryWindow(n)}showPrimaryWindow(e){e.isVisible()||(e.show(),e.f",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "3ac39c250881e3566b1694720851558db03225ef08b726ad42a6edc0d15d7f99"
+        }
+      ]
+    },
+    "codex-src-extra": {
+      "entry": "/.vite/build/src-CoIhwwHr.js",
+      "sha256": "7e4a3f1c735350694ead1f681ebf31d1ab1bf27cab19e9de9cf384c5b897d3fa",
+      "snippets": [
+        {
+          "pattern": "sentry.io",
+          "offset": 307683,
+          "excerpt": ").optional(),targetPlatform:R().trim().min(1).optional()}),vC={};function yC({archiveFormat:e,osRelease:t,platform:n}){if(n!==`win32`)return!0;let r=bC(t);return r==null||r>=uC||e===`tar.gz`||e===`zip`}function bC(e){let t=e?.match(/^10\\.0\\.(\\d+)/)?.[1];return t==null?null:Number(t)}var xC=`https://6719eaa18601933a26ac",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "38fad5b86bc982e494af9c96ee056fd8c3f866d425fff60b8b9bf48fddf9117c"
+        },
+        {
+          "pattern": "datadog",
+          "offset": 894382,
+          "excerpt": "let n=HJ(t),r=await this.fetchImpl(n,{method:`POST`,headers:{\"content-type\":`text/plain`,\"x-request-id\":t},body:Buffer.from(e)});if(!r.ok){let e=await r.text();if(r.status>=400&&r.status<500)return(r.status===401||r.status===403)&&this.disableWithFailure({type:`disabled`,reason:`invalid_client_token`,status:r.status,bo",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "e219c2f059a61020aad77bff5eeaeec05d8d6602fe138da52435db5c7143ba35"
+        },
+        {
+          "pattern": "installation",
+          "offset": 644494,
+          "excerpt": "nment_id`,null),this.refreshAuthenticatedConnectionState()),e.method===`account/login/completed`){let t=e.params;typeof t?.loginId==`string`&&this.stopRemoteChatgptLoginPortForward(t.loginId)}if(e.method===`remoteControl/status/changed`&&this.isLocalAppServerConnection()){let t=e.params;this.options.sharedObjectReposit",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "64d200bfa6e2b545c16d9763f58a7dc650a0792f73613d4fb0b95f99864c6f6d"
+        },
+        {
+          "pattern": "installation",
+          "offset": 644513,
+          "excerpt": "s.refreshAuthenticatedConnectionState()),e.method===`account/login/completed`){let t=e.params;typeof t?.loginId==`string`&&this.stopRemoteChatgptLoginPortForward(t.loginId)}if(e.method===`remoteControl/status/changed`&&this.isLocalAppServerConnection()){let t=e.params;this.options.sharedObjectRepository.set(`local_remo",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "897149edf049102002fadff1ce2c3c27e2fdc94c5f44d30ee9a44618eac06c17"
+        },
+        {
+          "pattern": "analytics",
+          "offset": 260756,
+          "excerpt": "t-id-remote-control-allowed`,ADDED_REMOTE_CONTROL_ENV_IDS:`added-remote-control-env-ids`,CODEX_MOBILE_SETUP_COMPLETED:`codex-mobile-has-connected-device`,REMOTE_PROJECT_CONNECTION_BACKFILL_COMPLETED:`remote-project-connection-backfill-completed`,REMOTE_CONNECTION_AUTO_CONNECT_BY_HOST_ID:`remote-connection-auto-connect-",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "36acec137c9ef6e49a2b7f84eb26450cc79cd1bb4e2902e2347192ae0a0af2a5"
+        },
+        {
+          "pattern": "analytics",
+          "offset": 260799,
+          "excerpt": "ONTROL_ENV_IDS:`added-remote-control-env-ids`,CODEX_MOBILE_SETUP_COMPLETED:`codex-mobile-has-connected-device`,REMOTE_PROJECT_CONNECTION_BACKFILL_COMPLETED:`remote-project-connection-backfill-completed`,REMOTE_CONNECTION_AUTO_CONNECT_BY_HOST_ID:`remote-connection-auto-connect-by-host-id`,REMOTE_CONNECTION_ANALYTICS_ID_",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "6b5f77d632bee775bd4228a04da0d408d1d00eb50b6e8b2e1afea19fbc4602f3"
+        },
+        {
+          "pattern": "analytics",
+          "offset": 286688,
+          "excerpt": "ended_skills_refresh.run_action_setup_popover.review_model.review_patch.review_search.review_command_registration.review_mode_content.sidebar_recent_filter.sidebar_task_pr_chip.sidebar_threads_section.sidebar_workspace_groups.sidebar_workspace_task_groups_task_dirs.sidebar_workspace_task_groups_workspace_dirs.startup_p",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "2a59b6c3a4054108af4ad0cec7c5598ee46d7aff56bffdaa06acaebac3ddd019"
+        },
+        {
+          "pattern": "analytics",
+          "offset": 578652,
+          "excerpt": "h((0,r.join)(e,`extension`,`bin`,a));for(let e of n){let t=hR(e);if(t)return{executablePath:t,binDirectory:(0,r.dirname)(t)}}return null}function zR(e){let t=e.hostConfig.codex_cli_command;if(t&&t.length>0){let[e,...n]=t;return!e||e.trim().length===0?null:{executablePath:e,args:n}}let n=ez();if(n!=null)return{executabl",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "fa2c537e223758f7c862e9b5fdd0177d7aafac871dc9429a5af7e7fde0da3a10"
+        },
+        {
+          "pattern": "telemetry",
+          "offset": 892324,
+          "excerpt": "{this.flush()},this.flushIntervalMs)}flush(){if(this.buffer.length===0){this.clearFlushTimeout();return}let e=this.buffer.splice(0,this.buffer.length);this.bufferBytes=0,this.clearFlushTimeout(),this.onFlush(e)}clearFlushTimeout(){this.flushTimeout!=null&&(clearTimeout(this.flushTimeout),this.flushTimeout=null)}},PJ=`h",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "2b79507a596572bb7556e6102c2aa9982c1208c5d5f25e039c662ecbe107ffff"
+        },
+        {
+          "pattern": "telemetry",
+          "offset": 897048,
+          "excerpt": "await FE({responseSchema:d,prompt:m,threadId:_,serviceTier:i,schema:a,timeoutMs:l,client:u,onTokenUsage:f,signal:p})}finally{u.unsubscribeThread(_).catch(()=>void 0)}}async function eY({prompt:e,cwd:t,model:n,serviceTier:r,client:i,timeoutMs:a,promptCharLimit:o,buildGenerationPrompt:s,outputSchema:c,responseSchema:l,ex",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "ff234b0eab9255cc6b49f0722d09ecd7edeb524f1e24a3c71f602d79ac98ef82"
+        },
+        {
+          "pattern": "telemetry",
+          "offset": 1028329,
+          "excerpt": "OriginUrl(),s=a?.getCommonDir()??null;return{dir:e,root:i,originUrl:o??null,commonDir:s}}var a4=3e4,o4=2e4,s4=72,c4=45e3,l4=3e4,u4=120,d4=45e3,f4=4e4,p4=`Make 0 tool calls.`,m4=H({message:R().min(8).max(s4)}),h4=H({title:R().min(8).max(u4),body:R().min(12)}),g4=H({message:R().min(8).max(s4),title:R().min(8).max(u4),bod",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "cf60bcedfa4b090a17e2e90db47d8783bfbb10c70393bdf5fcf9d50f06a78579"
+        },
+        {
+          "pattern": "telemetry",
+          "offset": 1028493,
+          "excerpt": "l calls.`,m4=H({message:R().min(8).max(s4)}),h4=H({title:R().min(8).max(u4),body:R().min(12)}),g4=H({message:R().min(8).max(s4),title:R().min(8).max(u4),body:R().min(12)}),_4={tokenUsageTelemetryFeature:`commit_message`,promptCharLimit:o4,buildGenerationPrompt:b4,outputSchema:BE(m4),responseSchema:m4,extractParsedResul",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "e441898a7d359ac1bb67eae6ae6d92ea9ff0a4d36115f7d50e36461fe058144f"
+        },
+        {
+          "pattern": "setUser",
+          "offset": 892713,
+          "excerpt": "browser`,LJ=2e3,RJ=3e4,zJ=5,BJ=!1,VJ=class{options;reportFailure;batcher;queue=[];inFlightSend=null;retryTimeout=null;retryAttempts=0;disabled=!1;reportedDisabledReason=!1;fetchImpl;userInfo=null;constructor(e){this.options=e,this.reportFailure=e.reportFailure,this.fetchImpl=e.fetchImpl??fetch,this.batcher=new NJ({onFl",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "32fdcecf797bd1c0e148b073431d2b0346b61b5f5bf3f88e79f14b4436c1726d"
+        }
+      ]
+    },
+    "codex-telemetry-extra": {
+      "entry": "/.vite/build/src-CoIhwwHr.js",
+      "sha256": "7e4a3f1c735350694ead1f681ebf31d1ab1bf27cab19e9de9cf384c5b897d3fa",
+      "snippets": [
+        {
+          "pattern": "function EJ(",
+          "offset": 442949,
+          "excerpt": "Set([...JA,`byweekday`,`byminute`]),XA=new Set([...YA,`byhour`,`bysecond`]),ZA=!1,QA=null;function $A(e){let t=e.model?.trim(),n=vh.safeParse(e.reasoningEffort);return{...e,kind:`cron`,rrule:Dh(e.rrule),cwds:JSON.parse(e.cwds).map(Lb),executionEnvironment:Oh(null),localEnvironmentConfigPath:null,model:t||null,reasoning",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "85a7cb15dbde30c7b99e8a7dfdee84267f238bab52a837b8161b499e286d6e0f"
+        },
+        {
+          "pattern": "function EJ(",
+          "offset": 449675,
+          "excerpt": "e)?e.cwds:[]);return(n==null||n.name!==e.name||n.prompt!==e.prompt||n.status!==e.status||n.cwds!==c||i!==r||n.model!==e.model||n.reasoningEffort!==e.reasoningEffort||n.createdAt!==e.createdAt||n.updatedAt!==e.updatedAt||n.nextRunAt!==o||n.lastRunAt!==s)&&tj({automation:{...e,rrule:r},nextRunAt:o,lastRunAt:s}),{...e,rru",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "b8e32184f539fb0395ec47642751bcb32216d32a401225062c144d69a2156825"
+        },
+        {
+          "pattern": "function EJ(",
+          "offset": 890823,
+          "excerpt": "===`VP8X`)return r<10?null:{height:e.readUIntLE(n+7,3)+1,width:e.readUIntLE(n+4,3)+1};if(t===`VP8L`){if(r<5||e[n]!==47)return null;let t=e.readUInt32LE(n+1),i=2**14;return{height:Math.floor(t/i)%i+1,width:t%i+1}}return t===`VP8`?r<10||e[n+3]!==157||e[n+4]!==1||e[n+5]!==42?null:{height:e.readUInt16LE(n+8)%2**14,width:e.",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "bc1702e5f0d2341815fdee72774e01b26e4c3378d93354e3ca88365f0c31e4af"
+        },
+        {
+          "pattern": "--analytics-default-enabled",
+          "offset": 578650,
+          "excerpt": "ush((0,r.join)(e,`extension`,`bin`,a));for(let e of n){let t=hR(e);if(t)return{executablePath:t,binDirectory:(0,r.dirname)(t)}}return null}function zR(e){let t=e.hostConfig.codex_cli_command;if(t&&t.length>0){let[e,...n]=t;return!e||e.trim().length===0?null:{executablePath:e,args:n}}let n=ez();if(n!=null)return{executa",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "99cc583a9da500933f0f5819837e9879472929543b57e8fea0c7cbf3fd5a9703"
+        },
+        {
+          "pattern": "--analytics-default-enabled",
+          "offset": 578796,
+          "excerpt": "n zR(e){let t=e.hostConfig.codex_cli_command;if(t&&t.length>0){let[e,...n]=t;return!e||e.trim().length===0?null:{executablePath:e,args:n}}let n=ez();if(n!=null)return{executablePath:n,args:[`app-server`,`--analytics-default-enabled`]};let r=RR(e.repoRoot,{resourcesPath:e.resourcesPath});return r?{executablePath:r.execu",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "dee934db74d4931b2f177d7e7640f1705378af81851cad4602adef92c8cb7c78"
+        },
+        {
+          "pattern": "--analytics-default-enabled",
+          "offset": 579169,
+          "excerpt": "bled`],binDirectory:r.binDirectory}:null}function BR(e){let t=e.hostConfig.codex_cli_command;if(t&&t.length>0){let[e,...n]=t;if(!e||e.trim().length===0)return null;let i;if(az(e)&&(0,s.existsSync)(e)){let t=QR(e);t&&(i=(0,r.dirname)(t))}return{executablePath:e,args:n,binDirectory:i}}let n=ez();if(n!=null)return{executa",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "0e8099c126431707ce8b7d65300c1f4f646c6ae49287442242e7ce932fe5c08e"
+        },
+        {
+          "pattern": "--analytics-default-enabled",
+          "offset": 579351,
+          "excerpt": ",s.existsSync)(e)){let t=QR(e);t&&(i=(0,r.dirname)(t))}return{executablePath:e,args:n,binDirectory:i}}let n=ez();if(n!=null)return{executablePath:n,args:[`app-server`,`--analytics-default-enabled`]};let i=ZR(e.repoRoot,{resourcesPath:e.resourcesPath,windowsCodexHome:e.windowsCodexHome});return i?{executablePath:i.execu",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "6f2b6ca4abb3de5a5f86dfc2f10ba960aca347b19d75d88ecb6076eb07a5cb42"
+        },
+        {
+          "pattern": "PJ=",
+          "offset": 887506,
+          "excerpt": "){return e=i(e),t=o?void 0:t,t===void 0?r(e)?a(e):n(e):e.match(t)||[]}t.exports=o})),cJ=e.n(((e,t)=>{var n=eJ(),r=rJ(),i=sJ(),a=RegExp(`['\u2019]`,`g`);function o(e){return function(t){return n(i(r(t).replace(a,``)),e,``)}}t.exports=o})),lJ=e.n(((e,t)=>{t.exports=cJ()(function(e,t,n){return e+(n?`-`:``)+t.toLowerCase()})}))",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "91e2e6e67ee72b568e164e68f19603d7d1639b655d2cce27e877d10b7c916fe7"
+        },
+        {
+          "pattern": "PJ=",
+          "offset": 892289,
+          "excerpt": "this.flushTimeout??=setTimeout(()=>{this.flush()},this.flushIntervalMs)}flush(){if(this.buffer.length===0){this.clearFlushTimeout();return}let e=this.buffer.splice(0,this.buffer.length);this.bufferBytes=0,this.clearFlushTimeout(),this.onFlush(e)}clearFlushTimeout(){this.flushTimeout!=null&&(clearTimeout(this.flushTimeo",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "71dc1c551a3d3f10494ecc4b959d0bb904f1358986db61f09c73afe6db4f09a7"
+        }
+      ]
+    },
+    "codex-runtime-extra": {
+      "entry": "/.vite/build/workspace-root-drop-handler-4fzIumU3.js",
+      "sha256": "ec1873768f285d855d9b67ce675a3cf83bf2df49566f27853decb213894ce3f7",
+      "snippets": [
+        {
+          "pattern": "sentry.io",
+          "offset": 3985300,
+          "excerpt": "tationWarnings&&!Uo(e)&&Lf()&&ku(n)&&(z(()=>{JE()?console.warn(`[Sentry] ${t} is not instrumented. This is likely because you required/imported ${t} before calling \\`Sentry.init()\\`.`):console.warn(`[Sentry] ${t} is not instrumented. Please make sure to initialize Sentry in a separate file that you \\`--import\\` when ru",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "5c478ae3b4e1a858438c5b70ab4601bd77a0aba451a7c053a6fa041206a316e5"
+        },
+        {
+          "pattern": "sendDefaultPii",
+          "offset": 376523,
+          "excerpt": "0-4]\\d|1\\d\\d|[1-9]\\d|\\d)){3}|(?::[a-fA-F\\d]{1,4}){1,7}|:)))(?:%[0-9a-zA-Z]{1,})?$)/.test(e)}var Eh={cookies:!0,data:!0,headers:!0,query_string:!0,url:!0},Dh=`RequestData`,Oh=J(((e={})=>{let t={...Eh,...e.include};return{name:Dh,processEvent(e,n,r){let{sdkProcessingMetadata:i={}}=e,{normalizedRequest:a,ipAddress:o}=i,s=",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "0d8e979563515a9e86ed87b1bd43ef0bc63b698bb34d767c30556da85a4c3685"
+        },
+        {
+          "pattern": "sendDefaultPii",
+          "offset": 391119,
+          "excerpt": "ware`}};function Jg(e){typeof e==`object`&&e&&`ok`in e&&!e.ok&&`error`in e&&q(e.error,qg)}function Yg(e={}){return async function(t){let{path:n,type:r,next:i,rawInput:a,getRawInput:o}=t,s=U()?.getOptions(),c={procedure_path:n,procedure_type:r};if(gc(c,`__sentry_override_normalization_depth__`,1+(s?.normalizeDepth??5)),",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "d2dde1259e6ea19822a66203ba9937e5e62157508e798b99f0f206ae9672ee61"
+        },
+        {
+          "pattern": "sendDefaultPii",
+          "offset": 395888,
+          "excerpt": "1?`${i}.message_content`:`${i}.content`;t[r]=e.text}}}}return t}var G_=new WeakMap;function K_(e){let t=G_.get(e);return t||(t=new Map,G_.set(e,t)),t}function q_(e,t,n,r){K_(e).set(t,{span:n,method:r,startTime:Date.now()})}function J_(e,t,n){let r=K_(e),i=r.get(t);if(i){let{span:e,method:a}=i;if(a===`tools/call`){let t",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "2a1415ae9eca279c3033dff270d6176c7ddedaec7ae4b378c1a5e589f3831439"
+        },
+        {
+          "pattern": "sendDefaultPii",
+          "offset": 395985,
+          "excerpt": "{let t=G_.get(e);return t||(t=new Map,G_.set(e,t)),t}function q_(e,t,n,r){K_(e).set(t,{span:n,method:r,startTime:Date.now()})}function J_(e,t,n){let r=K_(e),i=r.get(t);if(i){let{span:e,method:a}=i;if(a===`tools/call`){let t=I_(U_(n),!!U()?.getOptions().sendDefaultPii);e.setAttributes(t)}else if(a===`prompts/get`){let t",
+          "excerptTruncated": true,
+          "fullExcerptSha256": "153a54191abb7c67297859275957ae0b0c73406253fc860adfbc20041d156e7a"
+        }
+      ]
+    }
+  },
+  "receiptNote": "Bundled-code excerpt strings are bounded to 320 characters; original match offsets and entry hashes are retained. Truncated full-excerpt hashes identify the original local static read. No actual user identifiers or profile data were read."
+}
