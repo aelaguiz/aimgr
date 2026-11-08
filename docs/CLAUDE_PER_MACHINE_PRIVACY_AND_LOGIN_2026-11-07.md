@@ -316,5 +316,7 @@ records the independent review findings and corrections.
 
 The final cold review found two additional caller issues, concerning offline
 status and linked skills in settings-listed folders. Their fixes and focused
-checks passed; reviewer assessment of the final changes remains in progress.
-Do not treat this status as final approval.
+checks passed. An independent Opus 5.5 review of `d465b6a` closed its findings
+and found no code or evidence blocker to the stacked PR. The final paired review
+remains in progress; the original full-suite counts and focused follow-ups are
+recorded in the acceptance report.
