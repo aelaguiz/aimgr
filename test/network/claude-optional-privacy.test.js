@@ -89,7 +89,7 @@ test("ordinary interactive and Darwin noninteractive launch preserve environment
   await assert.rejects(prepareClaudeNativeRoute({ profile: { label: "protected", profileRef: "missing-optional-test-profile" }, platform: "darwin", command: process.execPath, args: [] }), { code: "native_proxy_unavailable" });
 });
 
-test("ordinary synthetic CLI launch and pre-change offline cache work without proxy configuration", async t => {
+test("ordinary synthetic CLI launch and environment-local offline cache work without proxy configuration", async t => {
   const { home, connectRedisStoreImpl } = await fixture(t);
   const proof = path.join(home, "child.json");
   const command = path.join(home, "synthetic-claude");
@@ -104,11 +104,13 @@ test("ordinary synthetic CLI launch and pre-change offline cache work without pr
   assert.deepEqual(first.args.slice(-2), ["--model", "preserved-model"]);
   assert.equal(first.proxy, "http://existing.example:3128");
   assert.equal(first.telemetry, undefined);
-  assert.equal(readClaudeOfflineBinding(home, "ordinary"), null);
+  const directBinding = readClaudeOfflineBinding(home, "ordinary");
+  assert.deepEqual(directBinding.identity, { accountUuid: "acct_boss", emailAddress: "boss@example.com", organizationUuid: "org_boss" });
+  assert.equal(directBinding.profileRef, undefined, "local account metadata never assigns a proxy");
   fs.unlinkSync(proof);
   await runCli(["claude", "run", "ordinary", "--", "--resume", "saved-session"], { ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); } });
   assert.deepEqual(JSON.parse(fs.readFileSync(proof)).args.slice(-2), ["--resume", "saved-session"]);
-  assert.equal(readClaudeOfflineBinding(home, "ordinary"), null, "ordinary cache acquires only local coordination, never a proxy assignment");
+  assert.deepEqual(readClaudeOfflineBinding(home, "ordinary"), directBinding, "offline use preserves the selected direct account metadata");
   invalidateClaudeOfflineBinding(home, "ordinary");
   fs.unlinkSync(proof);
   await assert.rejects(runCli(["claude", "run", "ordinary"], { ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); } }), /cached proxy assignment/);
