@@ -76,7 +76,7 @@ test("Claude inventory and status use Redis candidates without Keychain or provi
     deps,
   );
   assert.equal(humanStatus.exitCode, 1);
-  assert.match(humanStatus.stdout, /coder\s+NEEDS YOU.*aim claude login coder/);
+  assert.match(humanStatus.stdout, /coder\s+NOT SIGNED IN.*aim claude login coder/);
   assert.doesNotMatch(humanStatus.stdout, /credential_missing/);
 
   const verboseStatus = await runCliWithExitCode(
