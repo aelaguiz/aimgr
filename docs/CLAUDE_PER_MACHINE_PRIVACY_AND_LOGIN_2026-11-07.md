@@ -115,6 +115,13 @@ Claude auth. All managed readiness messages point to those commands.
 Prime/Pi enrollment; it never enrolls a managed local Claude login. An ambiguous
 Anthropic shorthand must direct the caller to the appropriate explicit command.
 
+For a new proxied label, `aim claude login <label> --proxy <profileRef>` selects an
+existing configured Claude route before authorization. Existing assigned labels
+must retain their assignment; login cannot silently change it. Close the bounded
+Redis connection before browser authorization and reconnect to revalidate the
+environment, identity and route before committing. Each attempt has its own
+private staging directory, so an interrupted attempt cannot block the next login.
+
 `aim claude login <label> --manual-callback-stdio` supports an original browser on
 another host. The destination runs official `auth login --claudeai` and owns its
 state, PKCE and exchange. Reuse the existing offsite login URL/callback bridge
@@ -189,10 +196,12 @@ need verified account identity and the same privacy preparation.
 Extend the existing root resolver with the agreed default and configured work
 areas. Reuse Codex's OS-location logic only where it removes duplication without
 changing Codex behavior. Canonicalize aliases and allow absent future work roots
-without making missing optional folders a launch failure. Do not reinterpret
-every historical trusted-project entry as permanent permission to unrelated
-outside trees; retain current task roots and deliberately configured extra
-work areas, including native `permissions.additionalDirectories` and `--add-dir`.
+without making missing optional folders a launch failure. Preserve the existing
+grants for project folders whose native trust dialog was accepted, with the
+existing whole-home and ancestor exclusions. Those are user-selected work areas,
+alongside current task roots and deliberately configured extras, including native
+`permissions.additionalDirectories` and `--add-dir`. Removing their access would
+be an additional restriction outside this migration.
 The pinned CLI rejects files in `--add-dir`; `--file` downloads remote resources.
 Use its existing literal `Read(//absolute/file)` allow-rule surface for explicit
 outside-file selection, preserving the selected settings tier and origin. Grant
@@ -221,7 +230,7 @@ relative paths; user/project contents and non-path switches remain live. New
 outside path targets can take effect on the next invocation. Do not add Codex's
 settings adapter or require all shared paths to become absolute.
 
-Require disabled automatic telemetry/error reporting and custom diagnostics through supported Claude-specific controls: `CLAUDE_CODE_ENABLE_TELEMETRY=0`, `DISABLE_TELEMETRY=1` and `DISABLE_ERROR_REPORTING=1`, subject to pinned-source and collector proof. Do not change generic `OTEL_*` exporter/SDK controls inherited by task tools. Managed
+Require disabled automatic telemetry/error reporting and custom diagnostics through supported Claude-specific controls: `CLAUDE_CODE_ENABLE_TELEMETRY=0`, `ENABLE_BETA_TRACING_DETAILED=0`, `DISABLE_TELEMETRY=1` and `DISABLE_ERROR_REPORTING=1`, subject to pinned-source and collector proof. The pinned 2.1.317 beta tracer checks its own enable flag before the ordinary telemetry gate, so it needs a separate positive-control collector case. Do not change generic `OTEL_*` exporter/SDK controls inherited by task tools. Managed
 policy validation must compare typed expected values, including false/`none`,
 rather than assuming all mandatory settings are truthy. Test native behavior
 after settings reload and refresh; an environment-variable assertion alone is
@@ -283,6 +292,6 @@ building a general backtesting framework.
 
 ## Status and evidence
 
-The independent Opus source review completed and identified corrections incorporated above: remove alias machinery, include organization identity, add remote/local command surfaces, separate legacy health/enrollment, preserve live same-account relogin and tool telemetry, and drop speculative temp restrictions. Product implementation starts from this corrected plan. The isolated Linux VM is available; the newly rented Mac passed its
+The independent Opus source review completed and identified corrections incorporated above: remove alias machinery, include organization identity, add remote/local command surfaces, separate legacy health/enrollment, preserve live same-account relogin and tool telemetry, and drop speculative temp restrictions. Implementation is committed for isolated testing, with focused tests and native acceptance in progress. The paired reviewer additionally caught connection-lifetime, interrupted-login and trusted-project compatibility corrections. The isolated Linux VM is available; the newly rented Mac passed its
 clean reboot before product installation, with bounded automatic cleanup.
 Implementation/test/review results replace this status as they arrive.
