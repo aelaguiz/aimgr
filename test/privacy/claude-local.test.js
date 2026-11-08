@@ -1,0 +1,90 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { readClaudeEnvironment, claudeOwnerBinding } from '../../src/privacy/claude-environment.js';
+import { readLocalClaudeCredential, saveLocalClaudeLogin, logoutLocalClaudeCredential, assertClaudeCredentialExportable } from '../../src/credentials/claude-local.js';
+import { validateClaudeManualCallback } from '../../src/cli/commands/claude-local-auth.js';
+import { clonePortableAnthropicCredential } from '../../src/credentials/anthropic-portable.js';
+
+const environment = {binding:'a'.repeat(64)};
+const identity = {accountUuid:'synthetic-account',organizationUuid:'synthetic-org',emailAddress:'synthetic@example.invalid',organizationName:'Synthetic'};
+const metadata = {provider:'anthropic',label:'synthetic',identity,policy:{expect:{email:identity.emailAddress}}};
+const bundle = token => ({oauthAccount:identity,claudeAiOauth:{accessToken:`access-${token}`,refreshToken:`refresh-${token}`,expiresAt:Date.now()+3600000,scopes:['user:profile','user:inference'],subscriptionType:'max',rateLimitTier:'default_claude_max_20x'}});
+function fixture(t) {
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'aim-claude-local-')); t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+ return {homeDir:home,label:'synthetic',metadata,environment,command:process.execPath,assertStopped:async()=>{}};
+}
+test('environment digest is account and organization specific; no raw marker in owner',()=>{
+ const anchor={schema:1,id:'12345678-1234-4123-8123-123456789abc'};
+ const env=readClaudeEnvironment({uid:1234,inspect:()=>({kind:'file',bytes:Buffer.from(JSON.stringify(anchor))})});
+ assert.equal(env.binding.length,64);assert.notEqual(claudeOwnerBinding(env,identity),claudeOwnerBinding(env,{...identity,organizationUuid:'other'}));
+ assert.notEqual(claudeOwnerBinding(env,identity),claudeOwnerBinding(env,{...identity,accountUuid:'other'}));
+ assert.throws(()=>readClaudeEnvironment({uid:1234,inspect:()=>({kind:'file',bytes:Buffer.from('{}')})}));
+});
+test('local native enrollment, concurrent same-owner relogin, mixed secrets preservation and logout',async t=>{
+ const options=fixture(t);assert.equal(readLocalClaudeCredential(options).status,'login_required');
+ let local=await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('first')});
+ assert.equal(local.status,'ready');const oldGrant=local.owner.grant.id;const fields=local.owner.fields;
+ const file=local.descriptor.credentialsPath;
+ fs.writeFileSync(file,JSON.stringify({...JSON.parse(fs.readFileSync(file)),mcpOAuth:{third:{accessToken:'mcp-secret'}},pluginSecrets:{third:'plugin-secret'}}),{mode:0o600});
+ // Same-owner replacement does not invoke stopped-owner inventory.
+ local=await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('second'),assertStopped:async()=>assert.fail('same owner must stay concurrent')});
+ assert.notEqual(local.owner.grant.id,oldGrant);assert.deepEqual(local.owner.fields,fields);
+ assert.equal(JSON.parse(fs.readFileSync(file)).mcpOAuth.third.accessToken,'mcp-secret');
+ assert.equal(readLocalClaudeCredential({...options,environment:{binding:'b'.repeat(64)}}).status,'login_required');
+ assert.throws(()=>assertClaudeCredentialExportable(local.credential));assert.throws(()=>clonePortableAnthropicCredential(local.credential));
+ await logoutLocalClaudeCredential(options);
+ assert.equal(readLocalClaudeCredential(options).status,'login_required');
+ const auth=JSON.parse(fs.readFileSync(file));assert.equal(auth.claudeAiOauth,undefined);assert.equal(auth.mcpOAuth.third.accessToken,'mcp-secret');
+ assert.equal(auth.pluginSecrets.third,'plugin-secret');
+});
+test('legacy token and forged metadata never establish local authorization',t=>{
+ const options=fixture(t),config=path.join(options.homeDir,'.aimgr','claude-homes','synthetic','.claude');
+ fs.mkdirSync(config,{recursive:true,mode:0o700});
+ fs.writeFileSync(path.join(config,'.credentials.json'),JSON.stringify({claudeAiOauth:bundle('legacy').claudeAiOauth}),{mode:0o600});
+ fs.writeFileSync(path.join(config,'.claude.json'),JSON.stringify({oauthAccount:identity}),{mode:0o600});
+ assert.equal(readLocalClaudeCredential(options).status,'login_required');
+});
+test('manual callback is bound to the native state and exact redirect',()=>{
+ const url='https://claude.ai/oauth/authorize?state=expected&redirect_uri='+encodeURIComponent('https://console.anthropic.com/oauth/code/callback');
+ assert.equal(validateClaudeManualCallback({code:'one-time#expected'},url),'one-time#expected');
+ assert.equal(validateClaudeManualCallback({url:'https://console.anthropic.com/oauth/code/callback?code=one-time&state=expected'},url),'one-time#expected');
+ for(const input of [{code:'one-time#wrong'},{url:'https://evil.invalid/oauth/code/callback?code=x&state=expected'},{url:'https://console.anthropic.com/wrong?code=x&state=expected'},{code:'x#expected',url:'https://x.invalid'}]) assert.throws(()=>validateClaudeManualCallback(input,url));
+});
+
+test('relogin waits outside storage locks for a native refresh already in flight',async t=>{
+ const {default:lockfile}=await import('proper-lockfile');
+ const {setTimeout:delay}=await import('node:timers/promises');
+ const {withClaudeNativeStateLocks}=await import('../../src/credentials/claude-native-state-lock.js');
+ const options=fixture(t);
+ const initial=await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('before')});
+ const config=initial.configDir;
+ const releaseNew=await lockfile.lock(config,{realpath:false,lockfilePath:path.join(config,'.oauth_refresh.lock'),stale:60000,update:5000});
+ const releaseLegacy=await lockfile.lock(config,{realpath:false,lockfilePath:fs.realpathSync(config)+'.lock',stale:60000,update:5000});
+ let settled=false;
+ const relogin=saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('relogin'),assertStopped:async()=>assert.fail('no stopped check')}).finally(()=>{settled=true;});
+ await delay(150);assert.equal(settled,false);
+ // Native can still finish its storage write while AIM waits on refresh.
+ await withClaudeNativeStateLocks({configDir:config,appStatePath:initial.descriptor.appStatePath},()=>{
+  const auth=JSON.parse(fs.readFileSync(initial.descriptor.credentialsPath));
+  auth.claudeAiOauth=bundle('native-refresh').claudeAiOauth;auth.mcpOAuth={third:{accessToken:'latest-third-party'}};
+  fs.writeFileSync(initial.descriptor.credentialsPath,JSON.stringify(auth),{mode:0o600});
+ });
+ await releaseLegacy();await releaseNew();
+ const result=await relogin;
+ assert.equal(result.nativeClaudeBundle.claudeAiOauth.accessToken,'access-relogin');
+ assert.equal(JSON.parse(fs.readFileSync(initial.descriptor.credentialsPath)).mcpOAuth.third.accessToken,'latest-third-party');
+});
+test('rejected old generation cannot invalidate successful newer relogin',async t=>{
+ const {markLocalClaudeGrantRejected}=await import('../../src/credentials/claude-local.js');
+ const options=fixture(t);
+ const old=await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('old')});
+ const newer=await saveLocalClaudeLogin({...options,nativeClaudeBundle:bundle('new')});
+ assert.equal(await markLocalClaudeGrantRejected({...options,grantId:old.owner.grant.id,generation:old.generation}),false);
+ assert.equal(readLocalClaudeCredential(options).owner.grant.id,newer.owner.grant.id);
+ assert.equal(readLocalClaudeCredential(options).status,'ready');
+ assert.equal(await markLocalClaudeGrantRejected({...options,grantId:newer.owner.grant.id,generation:newer.generation}),true);
+ assert.equal(readLocalClaudeCredential(options).status,'reauth_required');
+});

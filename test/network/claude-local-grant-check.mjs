@@ -63,7 +63,10 @@ function snapshot() {
   const owner = localJson(path.join(configDir, ".aim-privacy-identity.json"), true);
   const account = readClaudeActiveAppState({ configDir }).state.oauthAccount;
   const primary = credentials.claudeAiOauth;
-  const thirdParty = { ...credentials }; delete thirdParty.claudeAiOauth;
+  // Provider state (including organization/device fields) may be removed by
+  // logout. Compare only the reviewed independent MCP/XAA/package roots.
+  const thirdParty = Object.fromEntries(["mcpOAuth", "mcpOAuthClientConfig", "mcpXaaIdp", "mcpXaaIdpConfig",
+    "mcpDiscoveryCacheKey", "pluginSecrets"].filter(key => Object.hasOwn(credentials, key)).map(key => [key, credentials[key]]));
   const present = Boolean(primary?.accessToken && primary?.refreshToken);
   if (present) {
     assert.ok(account?.accountUuid && account?.organizationUuid);
@@ -79,7 +82,7 @@ function snapshot() {
     ownerGenerationHash: owner.grant?.id ? digest(owner.grant.id) : null,
     thirdPartyHash: digest(canonical(thirdParty)) } };
 }
-const locked = operation => withClaudeNativeStateLocks({ configDir, appStatePath }, operation);
+const locked = operation => withClaudeNativeStateLocks({ configDir, appStatePath, refresh: true }, operation);
 async function native(args, name) {
   const outputPath = path.join(directory, name + ".private.log");
   const fd = fs.openSync(outputPath, "wx", 0o600);
