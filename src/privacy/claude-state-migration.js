@@ -75,7 +75,11 @@ export function collectClaudeForeignIdentifiers({ userHomeDir, configDir }) {
 
 export async function assertClaudeNativeOwnersStopped({ configDir, command }) {
   try {
-    await execute("/usr/bin/python3", ["-I", ownerHelper, configDir, command], {
+    // CLI resolution commonly returns ~/.local/bin/claude, a symlink. The
+    // inventory compares actual executable images and requires canonical paths.
+    const canonicalConfig = fs.realpathSync(configDir);
+    const canonicalCommand = fs.realpathSync(command);
+    await execute("/usr/bin/python3", ["-I", ownerHelper, canonicalConfig, canonicalCommand], {
       env: { PATH: "/usr/bin:/bin", LC_ALL: "C" }, timeout: 10_000, maxBuffer: 16_384,
     });
   } catch {

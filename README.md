@@ -339,8 +339,9 @@ at startup. Header edits and newly selected outside paths take effect in a new s
 The default working areas include workspace, temp, Downloads and screenshots, along
 with previously trusted projects and configured or explicitly selected directories.
 Configure additional roots with `claudeWorkingDirectories` in `~/.aimgr/config.yaml`.
-Claude-specific telemetry, error reporting and detailed tracing are disabled; generic
-`OTEL_*` settings remain available to task tools. Collector acceptance is tracked in
+Claude-specific telemetry, error reporting and detailed tracing are disabled; AIM
+preserves generic `OTEL_*` settings in Claude's launch environment. Claude 2.1.317
+itself removes them from ordinary child processes. Collector acceptance is tracked in
 the plan.
 On macOS, Claude's privacy sandbox ends when it executes an ordinary tool.
 Shells, Chrome, MCP servers and their children retain normal host access;

@@ -180,7 +180,9 @@ test("missing settings work directories and stale broad trust do not veto launch
   const trusted = path.join(home, "selected-trusted-project");
   for (const directory of [config, project, trusted]) fs.mkdirSync(directory, { recursive: true });
   const staleFile = path.join(home, "stale-nondirectory-project"); fs.writeFileSync(staleFile, "synthetic");
-  fs.writeFileSync(path.join(config, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [missing] } }));
+  const dangling = path.join(home, "dangling-settings-root"); fs.symlinkSync(path.join(home, "absent-link-target"), dangling);
+  fs.writeFileSync(path.join(config, "settings.json"), JSON.stringify({ permissions: {
+    additionalDirectories: [missing, "~", "../..", path.join(home, ".aimgr"), dangling] } }));
   const appState = { projects: Object.fromEntries([home, root, "/", path.join(home, ".aimgr"),
     path.dirname(config), path.join(home, "stale-project"), staleFile, trusted].map(file => [file, { hasTrustDialogAccepted: true }])) };
   const inputs = resolveClaudeConfiguredInputs({ args: [], cwd: project, userHomeDir: home, configDir: config,
@@ -188,9 +190,12 @@ test("missing settings work directories and stale broad trust do not veto launch
   const roots = resolveClaudeTaskReadRoots({ ...inputs, userHomeDir: home, configDir: config, appState });
   assert.ok(roots.includes(missing), "the selected future settings root remains usable");
   assert.ok(roots.includes(trusted), "usable trusted projects retain access");
-  for (const file of [home, root, "/", path.join(home, ".aimgr"), path.dirname(config), staleFile]) assert.ok(!roots.includes(file));
+  for (const file of [home, root, "/", path.join(home, ".aimgr"), path.dirname(config), staleFile, dangling]) assert.ok(!roots.includes(file));
   assert.throws(() => resolveClaudeTaskReadRoots({ ...inputs, userHomeDir: home, configDir: config,
     additionalDirectories: [home] }), error => error.message.includes(home));
+  const explicit = resolveClaudeConfiguredInputs({ args: ["--add-dir", "~"], cwd: project, userHomeDir: home,
+    configDir: config, composition: { settings: {} } });
+  assert.throws(() => resolveClaudeTaskReadRoots({ ...explicit, userHomeDir: home, configDir: config }), error => error.message.includes(home));
 });
 
 test("linked-worktree package fallback and ancestor MCP preserve exact external instruction targets", t => {

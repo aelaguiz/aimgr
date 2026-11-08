@@ -1896,7 +1896,7 @@ test("redis-configured claude run preserves a terminating signal and can relaunc
   assert.equal(fs.existsSync(resolveClaudeAuthFilePath(configDir)), true);
 });
 
-test("redis-configured claude use is retired in favor of claude run", async () => {
+test("redis-configured claude use reports the supported commands", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   writeAimgrConfig({
@@ -1908,7 +1908,7 @@ test("redis-configured claude use is retired in favor of claude run", async () =
       env: {},
       connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
     }),
-    /Primary Claude credentials stay on this machine.*aim claude login/,
+    /Unsupported claude subcommand: use\. Use login, logout, list, resume, inventory, status, usage, run/,
   );
 });
 

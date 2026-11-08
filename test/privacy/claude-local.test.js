@@ -209,3 +209,13 @@ test('first conversion refuses live owners before browser auth; same-owner relog
  await assertLocalClaudeLoginTransitionAllowed({...options,environment:{binding:'b'.repeat(64)},assertStopped:async()=>{stoppedChecks++;}});
  assert.equal(stoppedChecks,1,'a real environment rebind must preflight stopped native owners');
 });
+
+test('owner inventory failure keeps its verification error instead of claiming assignment busy',async t=>{
+ const {assertLocalClaudeLoginTransitionAllowed}=await import('../../src/credentials/claude-local.js');
+ const options=fixture(t);
+ const verificationError=Object.assign(new Error('Synthetic owner inventory unavailable'),{code:'AIMGR_CLAUDE_PRIVATE_IDENTITY'});
+ await assert.rejects(assertLocalClaudeLoginTransitionAllowed({...options,assertStopped:async()=>{throw verificationError;}}),
+  error=>error===verificationError);
+ // The failed check must still release EX so a corrected check can proceed.
+ await assertLocalClaudeLoginTransitionAllowed(options);
+});

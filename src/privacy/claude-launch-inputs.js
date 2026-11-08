@@ -90,7 +90,7 @@ export function buildClaudePrivacyEnvironment({ env, protectedAccount, artifactS
  * retain their normal host view; these grants govern the vendor image.
  */
 export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appState = {},
-  additionalDirectories = [], workingDirectories = [], userPluginDirs = [], taskFiles = [], sharedMemoryDirectory, projectConfigRoot } = {}) {
+  additionalDirectories = [], settingsAdditionalDirectories = [], workingDirectories = [], userPluginDirs = [], taskFiles = [], sharedMemoryDirectory, projectConfigRoot } = {}) {
   const home = fs.realpathSync(userHomeDir), config = fs.realpathSync(configDir);
   const roots = new Set(), gitBoundaries = new Set(), packageDirectories = [];
   const add = (file, optional = false, future = false) => {
@@ -113,6 +113,11 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
   // Native additional directories may name work not checked out yet. Retain
   // the selected future root without making a missing sibling veto launch.
   for (const directory of additionalDirectories) add(path.resolve(cwd, directory), false, true);
+  // Lower settings can retain unavailable or overly broad historical roots.
+  // Keep usable/future selections without making them a launch prerequisite.
+  for (const directory of settingsAdditionalDirectories) {
+    try { add(path.resolve(cwd, directory), false, true); } catch {}
+  }
   for (const file of [...userPluginDirs, ...taskFiles]) add(path.resolve(cwd, file));
   for (const directory of workingDirectories) add(directory, false, true);
   // Preserve the user's previously selected, explicitly trusted project roots
@@ -297,9 +302,10 @@ export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDi
   env = {}, appState = {}, loginStaging = false, discoverReadRoots = true, stdoutIsTTY = Boolean(process.stdout.isTTY) }) {
   const parsed = inspectClaudeArguments(args), values = parsed.optionValues;
   const taskCwd = path.resolve(cwd, values["--cwd"]?.at(-1) ?? ".");
-  const expand = (value, origin = taskCwd) => value.startsWith("~/")
+  const expand = (value, origin = taskCwd) => value === "~" ? userHomeDir : value.startsWith("~/")
     ? path.join(userHomeDir, value.slice(2)) : path.resolve(origin, value);
   const additionalDirectories = (values["--add-dir"] ?? []).map(value => expand(value));
+  const settingsAdditionalDirectories = [];
   const userPluginDirs = [...(values["--plugin-dir"] ?? []), ...(values["--plugin-dir-no-mcp"] ?? [])].map(value => expand(value));
   const taskFiles = [];
   // AIM's original-browser/manual callback bridge is an existing explicit
@@ -360,7 +366,7 @@ export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDi
     if (!discoverReadRoots) continue;
     for (const rule of (Array.isArray(source.permissions?.allow) ? source.permissions.allow : [])) selectLiteralRead(rule);
     for (const value of (Array.isArray(source.permissions?.additionalDirectories) ? source.permissions.additionalDirectories : [])) {
-      if (typeof value === "string") additionalDirectories.push(expand(value));
+      if (typeof value === "string") settingsAdditionalDirectories.push(expand(value));
     }
     if (typeof source.autoMemoryDirectory === "string" && source.autoMemoryDirectory) {
       const memory = expand(source.autoMemoryDirectory);
@@ -379,6 +385,6 @@ export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDi
   // Lower settings may reload during a session: retain their initially known
   // paths as well as inherited/flag paths. Replacement at those paths works.
   taskFiles.push(...resolveClaudeTlsReadPaths({ environments: [env, ...settings.map(source => source.env ?? {})], cwd: taskCwd, userHomeDir }));
-  return { cwd: taskCwd, additionalDirectories, userPluginDirs, taskFiles, executableAliases: [...new Set(executableAliases)],
+  return { cwd: taskCwd, additionalDirectories, settingsAdditionalDirectories, userPluginDirs, taskFiles, executableAliases: [...new Set(executableAliases)],
     ...(projectRoot ? { projectConfigRoot: expand(projectRoot) } : {}) };
 }

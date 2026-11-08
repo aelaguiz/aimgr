@@ -85,7 +85,7 @@ export async function assertLocalClaudeLoginTransitionAllowed({ homeDir, label, 
       guard.assertOwned();
     }
   } catch (error) {
-    if (error.code === 'AIMGR_CLAUDE_ASSIGNMENT_BUSY' || guard) {
+    if (error.code === 'AIMGR_CLAUDE_ASSIGNMENT_BUSY') {
       throw stoppedOwnerError(label);
     }
     throw error;

@@ -211,8 +211,10 @@ alongside current task roots and deliberately configured extras, including nativ
 be an additional restriction outside this migration.
 Missing additional directories remain usable when created later. Skip stale,
 inaccessible, non-directory or overly broad historical trust entries without
-blocking launch; an explicit whole-home or whole-disk grant still refuses with
-the offending path identified.
+blocking launch. Settings-derived additional directories likewise retain usable
+and future paths while skipping unavailable, dangling or whole-home entries.
+Explicit launch `--add-dir` and AIM `claudeWorkingDirectories` remain strict:
+a whole-home or whole-disk selection refuses with the offending path identified.
 The pinned CLI rejects files in `--add-dir`; `--file` downloads remote resources.
 Use its existing literal `Read(//absolute/file)` allow-rule surface for explicit
 outside-file selection, preserving the selected settings tier and origin. Grant
@@ -241,7 +243,7 @@ relative paths; user/project contents and non-path switches remain live. New
 outside path targets can take effect on the next invocation. Do not add Codex's
 settings adapter or require all shared paths to become absolute.
 
-Require disabled automatic telemetry/error reporting and custom diagnostics through supported Claude-specific controls: `CLAUDE_CODE_ENABLE_TELEMETRY=0`, `ENABLE_BETA_TRACING_DETAILED=0`, `DISABLE_TELEMETRY=1` and `DISABLE_ERROR_REPORTING=1`, subject to pinned-source and collector proof. The pinned 2.1.317 beta tracer checks its own enable flag before the ordinary telemetry gate, so it needs a separate positive-control collector case. Do not change generic `OTEL_*` exporter/SDK controls inherited by task tools. Managed
+Require disabled automatic telemetry/error reporting and custom diagnostics through supported Claude-specific controls: `CLAUDE_CODE_ENABLE_TELEMETRY=0`, `ENABLE_BETA_TRACING_DETAILED=0`, `DISABLE_TELEMETRY=1` and `DISABLE_ERROR_REPORTING=1`, subject to pinned-source and collector proof. The pinned 2.1.317 beta tracer checks its own enable flag before the ordinary telemetry gate, so it needs a separate positive-control collector case. AIM must preserve generic `OTEL_*` exporter/SDK controls in the native launch environment. Pinned Claude itself removes these variables from ordinary child environments; preserve that stock behavior without adding reinjection machinery. Managed
 policy validation must compare typed expected values, including false/`none`,
 rather than assuming all mandatory settings are truthy. Test native behavior
 after settings reload and refresh; an environment-variable assertion alone is
@@ -304,6 +306,6 @@ building a general backtesting framework.
 
 ## Status and evidence
 
-The independent Opus source review completed and identified corrections incorporated above: remove alias machinery, include organization identity, add remote/local command surfaces, separate legacy health/enrollment, preserve live same-account relogin and tool telemetry, and drop speculative temp restrictions. Implementation is committed for isolated testing, with focused tests and native acceptance in progress. The paired reviewer additionally caught connection-lifetime, interrupted-login and trusted-project compatibility corrections. The isolated Linux VM is available; the newly rented Mac passed its
+The independent Opus source review completed and identified corrections incorporated above: remove alias machinery, include organization identity, add remote/local command surfaces, separate legacy health/enrollment, preserve live same-account relogin and generic telemetry inputs, and drop speculative temp restrictions. Implementation is committed for isolated testing, with focused tests and native acceptance in progress. The paired reviewer additionally caught connection-lifetime, interrupted-login and trusted-project compatibility corrections. The isolated Linux VM is available; the newly rented Mac passed its
 clean reboot before product installation, with bounded automatic cleanup.
 Implementation/test/review results replace this status as they arrive.

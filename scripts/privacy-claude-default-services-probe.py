@@ -936,7 +936,10 @@ else:
             private = home / "unselected-private"
             private.mkdir()
             (private / "proof.txt").write_text("NATIVE_UNSELECTED_PRIVATE_CONTENT")
-            (config / "settings.json").write_text(json.dumps({"permissions": {"additionalDirectories": [str(future.parent)]}}))
+            dangling = home / "dangling-settings-root"
+            dangling.symlink_to(home / "absent-link-target", target_is_directory=True)
+            (config / "settings.json").write_text(json.dumps({"permissions": {"additionalDirectories":
+                [str(future.parent), "~", "..", str(home / ".aimgr"), str(dangling)]}}))
             work_area_files = [(future, b"NATIVE_MISSING_SETTINGS_ROOT")]
             work_area_steps = [{"id": "work_area_context_" + label, "name": "Read", "input": {"file_path": str(file)}}
                 for label, file in [("future", future), ("trusted", trusted / "proof.txt"), ("private", private / "proof.txt")]]

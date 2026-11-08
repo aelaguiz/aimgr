@@ -419,7 +419,7 @@ These are accepted boundaries, not defects that authorize another round of restr
 
 The November 3 Claude correction intentionally removed inherited restrictions from ordinary macOS tools. Reintroducing that broad restriction would contradict the accepted workflow boundary. Code-review-graph and Orca hook registrations were removed across the five machines at Amir's request on November 5; their historical presence is not a compatibility requirement. Other hooks and required integrations remain separate configured recipients. [Tool-boundary decision](aelaguiz/CLAUDE_TOOL_RESTRICTIONS_ROLLBACK_2026-11-03.md).
 
-Earlier Claude acceptance preserved configured Claude OTel collectors. The per-machine implementation disables Claude-specific diagnostics, including detailed tracing, while preserving generic OTel settings for task tools; collector verification is pending. Codex milestone 1 disables its optional diagnostic exporters, including custom collectors. Neither changes the provider account's model-training or retention preferences.
+Earlier Claude acceptance preserved configured Claude OTel collectors. The per-machine implementation disables Claude-specific diagnostics, including detailed tracing, while preserving generic OTel settings in Claude's launch environment. The pinned Claude 2.1.317 client itself strips those variables from ordinary child processes; AIM does not add that restriction. Collector verification is pending. Codex milestone 1 disables its optional diagnostic exporters, including custom collectors. Neither changes the provider account's model-training or retention preferences.
 
 ### What this inventory does not yet establish
 
