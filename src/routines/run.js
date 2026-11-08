@@ -301,7 +301,7 @@ function selectAccount(routine, context) {
   const flavor = routine.provider === "anthropic" ? "claude" : "codex";
   const output = runJsonSync(command, [
     ...prefix,
-    ...(routine.agent === "codex" ? ["codex", "use"] : ["prime", "use", flavor]),
+    ...(routine.agent === "codex" ? ["codex", "__routine-use"] : ["prime", "use", flavor]),
     "--home",
     context.homeDir,
   ], {

@@ -768,7 +768,7 @@ function makeCodexRuntime(home, options = {}) {
     appendRollout(entry) { fs.appendFileSync(rolloutPath, `${JSON.stringify(entry)}\n`); },
     spawnSyncImpl(command, args) {
       assert.equal(command, "fake-aim");
-      assert.deepEqual(args, ["codex", "use", "--home", home]);
+      assert.deepEqual(args, ["codex", "__routine-use", "--home", home]);
       return { status: 0, stdout: JSON.stringify({ ok: true, activated: {
         receipt: { label: "test", accountId: "acct-test" },
         prepared: { ...prepared, accountId: options.wrongAccount ? "wrong" : prepared.accountId },
