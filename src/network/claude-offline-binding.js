@@ -135,8 +135,9 @@ export function rememberClaudeProtection(homeDir, label, account) {
   // The local-authority runtime also caches direct account identity/version.
   // Only that known metadata shape is route-neutral; old required, invalidated
   // or malformed assignment markers must continue to refuse direct fallback.
-  const directMetadata = binding && !Object.hasOwn(binding, "egress") && !Object.hasOwn(binding, "required")
-    && !Object.hasOwn(binding, "invalidated") && binding.identity?.accountUuid && binding.identity?.organizationUuid
+  const directMetadata = binding && Object.keys(binding).every(key => ["identity", "version"].includes(key))
+    && typeof binding.identity?.accountUuid === "string" && binding.identity.accountUuid.length > 0
+    && typeof binding.identity?.organizationUuid === "string" && binding.identity.organizationUuid.length > 0
     && Number.isInteger(binding.version) && binding.version > 0;
   if ((!binding || directMetadata) && claudeEgressPolicy(account) !== undefined) {
     invalidateClaudeOfflineBinding(homeDir, label);

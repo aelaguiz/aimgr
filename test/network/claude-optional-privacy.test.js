@@ -95,7 +95,8 @@ test("only complete direct account metadata is neutral to remembered route prote
   const direct = { identity: record.identity, version: 1 };
   writeClaudeOfflineBinding(home, "ordinary", direct);
   assert.equal(resolveNativeAccountProfile({ homeDir: home, state, label: "ordinary" }), null);
-  for (const marker of [{}, { ...direct, required: true }, { ...direct, invalidated: true }, { ...direct, egress: null }]) {
+  for (const marker of [{}, { ...direct, required: true }, { ...direct, invalidated: true }, { ...direct, egress: null },
+    { ...direct, profileRef: "legacy-assigned" }]) {
     writeClaudeOfflineBinding(home, "ordinary", marker);
     assert.throws(() => resolveNativeAccountProfile({ homeDir: home, state, label: "ordinary" }), { code: "missing_proxy_assignment" });
   }
