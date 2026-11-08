@@ -79,6 +79,37 @@ async function proxyAssignmentFixture(t) {
   };
 }
 
+test("Claude launches offline with its local grant and cached assigned proxy", async t => {
+  const lane = await proxyAssignmentFixture(t);
+  await lane.run(({ egressProfile }) => {
+    assert.equal(egressProfile.profileRef, "a");
+    return { status: 0, signal: null };
+  });
+  const binding = readClaudeOfflineBinding(lane.home, "claude");
+  assert.equal(binding.egress.profileRef, "a");
+  const metadata = (await readSnapshot(lane.store)).credentials[0];
+  assert.equal(readLocalClaudeCredential({ homeDir: lane.home, label: "claude", metadata,
+    environment: CLAUDE_TEST_ENVIRONMENT }).status, "ready");
+
+  let launches = 0;
+  const output = await runCli(["claude", "run", "claude", "--", "--model", "offline-model"], {
+    env: { HOME: lane.home },
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
+    connectRedisStoreImpl: async () => { throw new Error("Redis unavailable"); },
+    resolveExecutableOnPathImpl: buildTestClaudeResolver(),
+    runClaudeCliImpl: ({ egressProfile, args }) => {
+      launches += 1;
+      assert.equal(egressProfile.profileRef, "a");
+      assert.equal(egressProfile.socksPort, 1085);
+      assert.deepEqual(args, ["--model", "offline-model"]);
+      return { status: 0, signal: null };
+    },
+  });
+  assert.equal(output, "");
+  assert.equal(launches, 1);
+  assert.deepEqual(readClaudeOfflineBinding(lane.home, "claude"), binding);
+});
+
 test("proxy reassignment refuses surviving local children and invalidates its old offline binding", async t => {
   const lane = await proxyAssignmentFixture(t);
   await lane.run(() => ({ status: 0, signal: null }));
