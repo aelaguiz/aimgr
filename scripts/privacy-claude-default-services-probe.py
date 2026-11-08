@@ -863,7 +863,7 @@ try:
                 work_area_files.append((file, marker.encode()))
                 work_area_steps.append({"id": "work_area_read_" + str(index), "name": "Read", "input": {"file_path": str(file)}})
             image = temporary / "late/screenshot.png"
-            work_area_files.append((image, base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aBxkAAAAASUVORK5CYII=")))
+            work_area_files.append((image, base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=")))
             work_area_steps.extend([
                 {"id": "work_area_image", "name": "Read", "input": {"file_path": str(image)}},
                 {"id": "work_area_exact", "name": "Read", "input": {"file_path": str(selected)}},

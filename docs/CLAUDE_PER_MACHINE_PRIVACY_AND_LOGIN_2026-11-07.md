@@ -248,8 +248,9 @@ both without evidence.
    in coordinated scopes. Keep tests beside the changed behavior. Source and
    synthetic fixtures can be edited locally; native experiments and runtime
    acceptance run on the isolated Linux VM and rented Mac.
-3. Integrate and directly read every changed line. Run affected native tests on
-   both platforms, then the full suite once the candidate is ready. Have a fresh
+3. Review product changes and their evidence; delegate mechanical test and
+   documentation checks using model-routing. Run affected native tests on both
+   platforms, then the full suite once the candidate is ready. Have a fresh
    cold reviewer audit the complete diff against requirements, compatibility,
    excess protection and scope creep. Fix findings and repeat affected checks.
 4. Open the full tested PR against `codex/privacy-milestone-1`, with concrete
