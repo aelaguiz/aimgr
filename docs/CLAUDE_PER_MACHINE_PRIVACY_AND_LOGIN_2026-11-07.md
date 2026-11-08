@@ -163,17 +163,27 @@ changing Codex behavior. Canonicalize aliases and allow absent future work roots
 without making missing optional folders a launch failure. Do not reinterpret
 every historical trusted-project entry as permanent permission to unrelated
 outside trees; retain current task roots and deliberately configured extra
-work areas. Determine exact-file admission from the pinned native CLI rather
-than pretending a directory flag grants only one file.
+work areas, including native `permissions.additionalDirectories` and `--add-dir`.
+The pinned CLI rejects files in `--add-dir`; `--file` downloads remote resources.
+Use its existing literal `Read(//absolute/file)` allow-rule surface for explicit
+outside-file selection, preserving the selected settings tier and origin. Grant
+the file/canonical target only. Do not infer grants from prompt text or convert
+wildcard permission patterns into guessed directory roots. Native comparison
+must verify this mechanism before claiming exact-file support.
 
 Broad temp access must work for browser screenshots, images, generated files,
 background processes and files created after parent exit. Protect only known
 private AIM/Claude credential/settings/control artifacts, where needed; never
 deny `/tmp` wholesale or replace the caller's temp directory. Prefer the existing
 private account locations where moving an AIM-owned artifact preserves native
-path semantics. Native Claude's account-specific control socket and inline
-settings origin require explicit source/test evidence, not a speculative set
-of new OS restrictions.
+path semantics. Native Claude's already-disabled detached-service namespaces
+need no new per-account compatibility exceptions. Retain settings snapshot
+origins and grant this invocation's exact snapshot while excluding other known
+private snapshot names from broad native reads, including snapshots created
+later. Linux explicit deny overrides allow, so broad rules must exclude reserved
+paths before exact inputs are granted. Reuse existing policy expression support;
+do not add a generic path-policy engine. Native probes must establish the needed
+exclusions and preserve ordinary background Bash/local agents.
 
 Bind identity schema to account plus environment. A legacy identity with no
 environment provenance rotates once using the existing migration journal;
