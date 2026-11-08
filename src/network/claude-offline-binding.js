@@ -132,9 +132,17 @@ while True:
 // even when this machine's proxy configuration has not been installed yet.
 export function rememberClaudeProtection(homeDir, label, account) {
   let binding = readClaudeOfflineBinding(homeDir, label);
-  if (!binding && claudeEgressPolicy(account) !== undefined) {
+  // The local-authority runtime also caches direct account identity/version.
+  // Only that known metadata shape is route-neutral; old required, invalidated
+  // or malformed assignment markers must continue to refuse direct fallback.
+  const directMetadata = binding && !Object.hasOwn(binding, "egress") && !Object.hasOwn(binding, "required")
+    && !Object.hasOwn(binding, "invalidated") && binding.identity?.accountUuid && binding.identity?.organizationUuid
+    && Number.isInteger(binding.version) && binding.version > 0;
+  if ((!binding || directMetadata) && claudeEgressPolicy(account) !== undefined) {
     invalidateClaudeOfflineBinding(homeDir, label);
     binding = readClaudeOfflineBinding(homeDir, label);
+  } else if (directMetadata) {
+    return null;
   }
   return binding;
 }

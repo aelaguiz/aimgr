@@ -12,7 +12,7 @@ import { normalizeCredentialRecord } from "../../src/coordination/records.js";
 import { buildStableIdentityForCredential } from "../../src/coordination/login-publish.js";
 import { resolveOptionalClaudeEgressProfile } from "../../src/network/claude-egress-policy.js";
 import { prepareClaudeNativeRoute, resolveNativeAccountProfile } from "../../src/network/claude-native-route.js";
-import { invalidateClaudeOfflineBinding, readClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
+import { invalidateClaudeOfflineBinding, readClaudeOfflineBinding, writeClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
 import { runClaudeCli as realRunClaudeCli, runClaudeCliNoninteractive as realRunClaudeCliNoninteractive, prepareClaudeCliLaunch } from "../../src/targets/claude-runner.js";
 import { fetchClaudeUsageSnapshot, probeUsageSnapshotsByProvider } from "../../src/pool/usage.js";
 import { buildCoordinationView } from "../../src/coordination/snapshot.js";
@@ -89,6 +89,18 @@ test("ordinary interactive and Darwin noninteractive launch preserve environment
   await assert.rejects(prepareClaudeNativeRoute({ profile: { label: "protected", profileRef: "missing-optional-test-profile" }, platform: "darwin", command: process.execPath, args: [] }), { code: "native_proxy_unavailable" });
 });
 
+test("only complete direct account metadata is neutral to remembered route protection", async t => {
+  const { home, record } = await fixture(t);
+  const state = { accounts: { ordinary: { provider: "anthropic" } } };
+  const direct = { identity: record.identity, version: 1 };
+  writeClaudeOfflineBinding(home, "ordinary", direct);
+  assert.equal(resolveNativeAccountProfile({ homeDir: home, state, label: "ordinary" }), null);
+  for (const marker of [{}, { ...direct, required: true }, { ...direct, invalidated: true }, { ...direct, egress: null }]) {
+    writeClaudeOfflineBinding(home, "ordinary", marker);
+    assert.throws(() => resolveNativeAccountProfile({ homeDir: home, state, label: "ordinary" }), { code: "missing_proxy_assignment" });
+  }
+});
+
 test("ordinary synthetic CLI launch and environment-local offline cache work without proxy configuration", async t => {
   const { home, connectRedisStoreImpl } = await fixture(t);
   const proof = path.join(home, "child.json");
@@ -108,12 +120,15 @@ test("ordinary synthetic CLI launch and environment-local offline cache work wit
   assert.deepEqual(directBinding.identity, { accountUuid: "acct_boss", emailAddress: "boss@example.com", organizationUuid: "org_boss" });
   assert.equal(directBinding.profileRef, undefined, "local account metadata never assigns a proxy");
   fs.unlinkSync(proof);
+  await runCli(["claude", "run", "ordinary", "--", "--model", "repeat-direct-model"], deps);
+  assert.deepEqual(JSON.parse(fs.readFileSync(proof)).args.slice(-2), ["--model", "repeat-direct-model"]);
+  fs.unlinkSync(proof);
   await runCli(["claude", "run", "ordinary", "--", "--resume", "saved-session"], { ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); } });
   assert.deepEqual(JSON.parse(fs.readFileSync(proof)).args.slice(-2), ["--resume", "saved-session"]);
   assert.deepEqual(readClaudeOfflineBinding(home, "ordinary"), directBinding, "offline use preserves the selected direct account metadata");
   invalidateClaudeOfflineBinding(home, "ordinary");
   fs.unlinkSync(proof);
-  await assert.rejects(runCli(["claude", "run", "ordinary"], { ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); } }), /cached proxy assignment/);
+  await assert.rejects(runCli(["claude", "run", "ordinary"], { ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); } }), /current account routing metadata/);
   await assert.rejects(runCli(["claude", "run", "ordinary"], deps), { code: "missing_proxy_assignment" });
   assert.equal(fs.existsSync(proof), false, "invalidated protected cache never spawns an ordinary child");
 });
