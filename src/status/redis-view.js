@@ -29,7 +29,7 @@ import { readCodexCliTargetStatus } from "../targets/codex-cli.js";
 import { collectClaudeRedisAccountUsageStatus, formatClaudePlan } from "./claude-redis-view.js";
 import { describeClaudeEgress, projectClaudeEgress, claudeProxyHealthProblem, hasNoLocalClaudeRoute } from "./claude-egress.js";
 import { readClaudeProxyHealth } from "./claude-proxy-health.js";
-import { readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
+import { claudeBindingRequiresProxy, readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
 import { CLAUDE_ROUTE_ERROR_CODES } from "../network/claude-egress-policy.js";
 import {
   AIMGR_REDIS_STATUS_CACHE_KIND,
@@ -558,7 +558,7 @@ export async function buildRedisStatusView({
       const binding = readClaudeOfflineBinding(homeDir, account.label);
       if (binding?.invalidated) account.operator = { status: "blocked", eligible: false };
       if (account.egress?.mode !== "proxy") {
-        if (binding && ["direct", "unknown"].includes(account.egress?.mode)) {
+        if (claudeBindingRequiresProxy(binding) && ["direct", "unknown"].includes(account.egress?.mode)) {
           account.egress = { mode: "missing_assignment" };
           account.operator = { status: "blocked", eligible: false };
         }

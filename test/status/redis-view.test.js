@@ -303,6 +303,10 @@ test("offline status rechecks Claude local login after logout", async () => {
   assert.equal(online.view.accounts[0].operator.eligible, true);
   const offline = () => buildRedisStatusView({ ...deps, connectRedisStoreImpl: async () => { throw new Error("offline"); } });
   assert.equal((await offline()).view.accounts[0].operator.eligible, true);
+  writeClaudeOfflineBinding(homeDir, "claude", { identity: record.identity, version: 1 });
+  const direct = await offline();
+  assert.equal(direct.view.accounts[0].egress.mode, "direct");
+  assert.equal(direct.view.accounts[0].operator.eligible, true);
   const copied = await buildRedisStatusView({ ...deps, readClaudeEnvironmentImpl: () => ({ binding: "b".repeat(64) }),
     connectRedisStoreImpl: async () => { throw new Error("offline"); } });
   assert.equal(copied.view.accounts[0].operator.eligible, false);

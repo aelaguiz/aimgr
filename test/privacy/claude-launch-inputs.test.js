@@ -198,6 +198,24 @@ test("missing settings work directories and stale broad trust do not veto launch
   assert.throws(() => resolveClaudeTaskReadRoots({ ...explicit, userHomeDir: home, configDir: config }), error => error.message.includes(home));
 });
 
+test("admitted settings work roots retain their external instruction, rule and skill targets", t => {
+  const root = fixture(t), home = path.join(root, "home"), config = path.join(home, ".aimgr/a/.claude");
+  const cwd = path.join(home, "workspace/project"), selected = path.join(home, "settings-selected");
+  const external = path.join(home, "private-targets"), skills = path.join(external, "skills");
+  for (const directory of [config, cwd, path.join(selected, ".claude/rules"), skills]) fs.mkdirSync(directory, { recursive: true });
+  const imported = path.join(external, "imported.md"), rule = path.join(external, "rule.md");
+  fs.writeFileSync(imported, "selected instruction"); fs.writeFileSync(rule, "selected rule");
+  fs.writeFileSync(path.join(skills, "SKILL.md"), "selected skill");
+  fs.writeFileSync(path.join(selected, "CLAUDE.md"), "@" + imported + "\n");
+  fs.symlinkSync(rule, path.join(selected, ".claude/rules/selected.md"));
+  fs.symlinkSync(skills, path.join(selected, ".claude/skills"));
+  fs.writeFileSync(path.join(config, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [selected] } }));
+  const inputs = resolveClaudeConfiguredInputs({ args: [], cwd, userHomeDir: home, configDir: config, composition: { settings: {} } });
+  const roots = resolveClaudeTaskReadRoots({ ...inputs, userHomeDir: home, configDir: config });
+  for (const file of [selected, imported, rule, skills]) assert.ok(roots.includes(file), file);
+  assert.ok(!roots.includes(external)); assert.ok(!roots.includes(home));
+});
+
 test("linked-worktree package fallback and ancestor MCP preserve exact external instruction targets", t => {
   const root = fixture(t), home = path.join(root, "home"), config = path.join(home, ".aimgr/a/.claude");
   const main = path.join(home, "main"), project = path.join(home, "trees/feature");

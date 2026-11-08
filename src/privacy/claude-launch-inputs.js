@@ -115,9 +115,14 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
   for (const directory of additionalDirectories) add(path.resolve(cwd, directory), false, true);
   // Lower settings can retain unavailable or overly broad historical roots.
   // Keep usable/future selections without making them a launch prerequisite.
+  const admittedSettingsDirectories = [];
   for (const directory of settingsAdditionalDirectories) {
-    try { add(path.resolve(cwd, directory), false, true); } catch {}
+    try {
+      add(path.resolve(cwd, directory), false, true);
+      admittedSettingsDirectories.push(path.resolve(cwd, directory));
+    } catch {}
   }
+  const selectedDirectories = [...additionalDirectories, ...admittedSettingsDirectories];
   for (const file of [...userPluginDirs, ...taskFiles]) add(path.resolve(cwd, file));
   for (const directory of workingDirectories) add(directory, false, true);
   // Preserve the user's previously selected, explicitly trusted project roots
@@ -132,7 +137,7 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
   const managedRoot = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode" : "/etc/claude-code";
   const instructions = [path.join(config, "CLAUDE.md"), path.join(managedRoot, "CLAUDE.md")];
   const rules = [path.join(config, "rules"), path.join(managedRoot, ".claude/rules")];
-  for (const directory of additionalDirectories) {
+  for (const directory of selectedDirectories) {
     for (const file of ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"]) instructions.push(path.resolve(cwd, directory, file));
     rules.push(path.resolve(cwd, directory, ".claude/rules"));
   }
@@ -140,7 +145,7 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
   // skills are linked by AIM preflight; home instructions can still be normal
   // project ancestors, but are not an invented second personal settings tier.
   for (const name of ["skills", "commands", "agents"]) addPackage(path.join(config, name), name);
-  for (const directory of [managedRoot, ...additionalDirectories.map(file => path.resolve(cwd, file))]) {
+  for (const directory of [managedRoot, ...selectedDirectories.map(file => path.resolve(cwd, file))]) {
     for (const kind of ["skills", "commands", "agents"]) addPackage(path.join(directory, ".claude", kind), kind);
   }
   // Native walks instruction sources above cwd as well as within it. A

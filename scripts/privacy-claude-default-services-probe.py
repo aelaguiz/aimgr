@@ -885,7 +885,11 @@ try:
                 skills.mkdir(parents=True)
                 external = home / "external-linked-skills"
                 external.mkdir()
-                (skills / "external").symlink_to(external, target_is_directory=True)
+                settings_skills = home / "settings-listed-work/.claude"
+                settings_skills.mkdir(parents=True)
+                (settings_skills / "skills").symlink_to(external, target_is_directory=True)
+                (config / "settings.json").write_text(json.dumps({"permissions": {
+                    "additionalDirectories": [str(settings_skills.parent)]}}))
                 (skills / "unused-broken").symlink_to(home / "absent-unused-skill", target_is_directory=True)
                 for index, directory in enumerate([skills / "real", external]):
                     directory.mkdir(exist_ok=True)

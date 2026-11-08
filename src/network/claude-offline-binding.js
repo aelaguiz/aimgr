@@ -128,10 +128,7 @@ while True:
   };
 }
 
-// Remember opt-in before any credentials can enter the managed offline cache,
-// even when this machine's proxy configuration has not been installed yet.
-export function rememberClaudeProtection(homeDir, label, account) {
-  let binding = readClaudeOfflineBinding(homeDir, label);
+export function claudeBindingRequiresProxy(binding) {
   // The local-authority runtime also caches direct account identity/version.
   // Only that known metadata shape is route-neutral; old required, invalidated
   // or malformed assignment markers must continue to refuse direct fallback.
@@ -139,10 +136,18 @@ export function rememberClaudeProtection(homeDir, label, account) {
     && typeof binding.identity?.accountUuid === "string" && binding.identity.accountUuid.length > 0
     && typeof binding.identity?.organizationUuid === "string" && binding.identity.organizationUuid.length > 0
     && Number.isInteger(binding.version) && binding.version > 0;
-  if ((!binding || directMetadata) && claudeEgressPolicy(account) !== undefined) {
+  return Boolean(binding && !directMetadata);
+}
+
+// Remember opt-in before any credentials can enter the managed offline cache,
+// even when this machine's proxy configuration has not been installed yet.
+export function rememberClaudeProtection(homeDir, label, account) {
+  let binding = readClaudeOfflineBinding(homeDir, label);
+  const previouslyProtected = claudeBindingRequiresProxy(binding);
+  if (!previouslyProtected && claudeEgressPolicy(account) !== undefined) {
     invalidateClaudeOfflineBinding(homeDir, label);
     binding = readClaudeOfflineBinding(homeDir, label);
-  } else if (directMetadata) {
+  } else if (!previouslyProtected) {
     return null;
   }
   return binding;
