@@ -1,3 +1,6 @@
+import { readClaudeAccountMetadata } from "../coordination/claude-metadata.js";
+import { readClaudeEnvironment } from "../privacy/claude-environment.js";
+import { readLocalClaudeCredential } from "../credentials/claude-local.js";
 import { CLAUDE_ROUTE_ERROR_CODES, ClaudeRouteError } from "../network/claude-egress-policy.js";
 import crypto from "node:crypto";
 import { getRedisConfig, readAimgrConfig } from "../config/aimgr-config.js";
@@ -319,7 +322,7 @@ function buildAccountIdentityKey(record, derivedIdentity) {
 }
 
 function buildIdentityBinding(record, accountIdentityKey, credentialGeneration) {
-  if (!accountIdentityKey || !Number.isSafeInteger(credentialGeneration) || credentialGeneration <= 0) return null;
+  if (!accountIdentityKey || !credentialGeneration) return null;
   const digest = crypto
     .createHash("sha256")
     .update(`${ANTHROPIC_PROVIDER}\u0000${record.label}\u0000${credentialGeneration}\u0000${accountIdentityKey}`)
@@ -327,10 +330,14 @@ function buildIdentityBinding(record, accountIdentityKey, credentialGeneration) 
   return `sha256:${digest}`;
 }
 
-function buildCredentialFacts(record, nowMs) {
-  const storedCredential = isObject(record?.credential) ? record.credential : {};
+function buildCredentialFacts(record, nowMs, { homeDir, environment, legacyAuthority = false } = {}) {
+  let local;
+  if (!legacyAuthority) {
+    try { local = environment ? readLocalClaudeCredential({homeDir,label:record.label,metadata:record,environment}) : null; } catch {}
+  }
+  const storedCredential = legacyAuthority ? (isObject(record?.credential) ? record.credential : {}) : (local?.credential ?? {});
   const credential = getAnthropicCredentialView(storedCredential);
-  const candidateRecord = record?.health?.status === "candidate";
+  const candidateRecord = legacyAuthority && record?.health?.status === "candidate";
   const summary = buildClaudeCredentialSummaryFromBundle(credential);
   const derivedIdentity = buildStableIdentityForCredential(ANTHROPIC_PROVIDER, credential);
   const storedIdentityComplete = identityMaterialIsComplete(record?.identity);
@@ -339,7 +346,7 @@ function buildCredentialFacts(record, nowMs) {
     && derivedIdentityComplete
     && !identitiesAgree(record.identity, derivedIdentity);
   const accountIdentityKey = buildAccountIdentityKey(record, derivedIdentity);
-  const credentialGeneration = Number.isSafeInteger(record?.version) && record.version > 0 ? record.version : null;
+  const credentialGeneration = legacyAuthority ? (Number.isSafeInteger(record?.version) && record.version > 0 ? record.version : null) : local?.owner?.grant?.id;
   const identityBinding = buildIdentityBinding(record, accountIdentityKey, credentialGeneration);
   const expectedEmail = typeof record?.policy?.expect?.email === "string"
     ? record.policy.expect.email.trim().toLowerCase()
@@ -349,7 +356,7 @@ function buildCredentialFacts(record, nowMs) {
   const subscriptionType = normalizePlan(summary?.subscriptionType);
   const rateLimitTier = normalizePlan(summary?.rateLimitTier);
   const evidence = normalizeBillingEvidence(record, nowMs);
-  const reauthRequired = record?.policy?.reauth?.blockedReason === "oauth_reauth_required";
+  const reauthRequired = legacyAuthority ? record?.policy?.reauth?.blockedReason === "oauth_reauth_required" : local?.status === "reauth_required";
   const scopes = Array.isArray(summary?.scopes) ? summary.scopes : [];
 
   let state;
@@ -419,6 +426,7 @@ function normalizeSelectedLabels(values) {
 async function readAnthropicRedisData({
   homeDir,
   includeLeaseState = false,
+  legacyAuthority = false,
   connectRedisStoreImpl = connectRedisStore,
   readCredentialRecordsByProviderImpl = readCredentialRecordsByProvider,
   readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
@@ -431,10 +439,10 @@ async function readAnthropicRedisData({
       connectionPolicy: REDIS_CONNECTION_POLICY_OBSERVE,
       initialConnectTimeoutMs: CLAUDE_REDIS_READ_TIMEOUT_MS,
     });
-    const records = await readCredentialRecordsByProviderImpl(store, ANTHROPIC_PROVIDER);
+    const records = legacyAuthority ? await readCredentialRecordsByProviderImpl(store, ANTHROPIC_PROVIDER) : await readClaudeAccountMetadata(store);
     let lockedLabels = new Set();
     let lockSource = includeLeaseState ? "redis" : "not-requested";
-    if (includeLeaseState) {
+    if (includeLeaseState && legacyAuthority) {
       try {
         lockedLabels = await readHeldRedisCredentialLeaseLabelsImpl(store, {
           provider: ANTHROPIC_PROVIDER,
@@ -486,11 +494,11 @@ function buildMaintenanceDiagnostics(record) {
   };
 }
 
-function selectFacts(records, selectedLabels, nowMs) {
+function selectFacts(records, selectedLabels, nowMs, localOptions) {
   const normalizedLabels = normalizeSelectedLabels(selectedLabels);
   const allFacts = records
     .filter((record) => record.provider === ANTHROPIC_PROVIDER)
-    .map((record) => buildCredentialFacts(record, nowMs));
+    .map((record) => buildCredentialFacts(record, nowMs, localOptions));
   if (allFacts.length > MAX_CLAUDE_REDIS_ACCOUNTS) {
     throw new Error("Claude Redis account inventory exceeds the safe account limit.");
   }
@@ -768,6 +776,7 @@ function buildStatusResult({
 
 export async function collectClaudeRedisAccountInventory({
   homeDir,
+  environment, readClaudeEnvironmentImpl = readClaudeEnvironment,
   nowMs = Date.now(),
   cachePath = resolveAimgrRedisCachePath({ homeDir }),
   connectRedisStoreImpl = connectRedisStore,
@@ -779,7 +788,8 @@ export async function collectClaudeRedisAccountInventory({
     connectRedisStoreImpl,
     readCredentialRecordsByProviderImpl,
   });
-  const facts = selectFacts(records, [], nowMs);
+  try { environment ??= readClaudeEnvironmentImpl(); } catch {}
+  const facts = selectFacts(records, [], nowMs, {homeDir,environment});
   const cached = readCachedProviderUsage({ homeDir, cachePath, provider: ANTHROPIC_PROVIDER });
   const cacheEntries = normalizeCacheEntries(cached.entries, nowMs);
   foldSessionUsage(cacheEntries, facts, readClaudeSessionUsageImpl({
@@ -843,6 +853,7 @@ export async function collectClaudeRedisAccountInventory({
 
 export async function collectClaudeRedisAccountUsageStatus({
   homeDir,
+  environment, readClaudeEnvironmentImpl = readClaudeEnvironment, legacyAuthority = false,
   records = null,
   redisStore = null,
   selectedLabels = [],
@@ -867,7 +878,7 @@ export async function collectClaudeRedisAccountUsageStatus({
     authoritativeRecords = records.filter((record) => record?.provider === ANTHROPIC_PROVIDER);
     lockedLabels = new Set();
     lockSource = redisStore ? "redis" : "unavailable";
-    if (redisStore) {
+    if (redisStore && legacyAuthority) {
       try {
         lockedLabels = await readHeldRedisCredentialLeaseLabelsImpl(redisStore, {
           provider: ANTHROPIC_PROVIDER,
@@ -881,6 +892,7 @@ export async function collectClaudeRedisAccountUsageStatus({
     const redisData = await readAnthropicRedisData({
       homeDir,
       includeLeaseState: true,
+      legacyAuthority,
       connectRedisStoreImpl,
       readCredentialRecordsByProviderImpl,
       readHeldRedisCredentialLeaseLabelsImpl,
@@ -889,7 +901,8 @@ export async function collectClaudeRedisAccountUsageStatus({
     lockedLabels = redisData.lockedLabels;
     lockSource = redisData.lockSource;
   }
-  const facts = selectFacts(authoritativeRecords, normalizedLabels, nowMs);
+  try { environment ??= readClaudeEnvironmentImpl(); } catch {}
+  const facts = selectFacts(authoritativeRecords, normalizedLabels, nowMs, {homeDir,environment,legacyAuthority});
   const factsByLabel = new Map(facts.map((entry) => [entry.record.label, entry]));
   const localProfiles = readAimgrConfig({ homeDir }).config.claudeProxyProfiles ?? {};
   const routing = new Map(facts.map(({ record }) => {
@@ -925,7 +938,7 @@ export async function collectClaudeRedisAccountUsageStatus({
           status: locked === null ? "unknown" : locked ? "held" : "free",
           source: lockSource,
         },
-        ...buildMaintenanceDiagnostics(accountFacts?.record),
+        ...buildMaintenanceDiagnostics(legacyAuthority ? accountFacts?.record : {}),
       };
     }),
   });
@@ -1062,6 +1075,7 @@ export async function collectClaudeRedisAccountUsageStatus({
           snapshot = await settleWithin(
             fetchClaudeUsageSnapshotImpl({
               record: entry.record,
+              credential: entry.credential,
               homeDir,
               timeoutMs: 5000,
               env: {},
@@ -1365,7 +1379,7 @@ function describeClaudeOperatorState(account, nowMs) {
     || authState === "scope_blocked"
     || HUMAN_ACTION_CREDENTIAL_STATES.has(credentialState)
   ) {
-    return { status: "NEEDS YOU", next: `aim login ${label}` };
+    return { status: "NEEDS YOU", next: `aim claude login ${label}` };
   }
   if (
     account?.locked === false

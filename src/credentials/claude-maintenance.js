@@ -17,7 +17,7 @@ import { getAnthropicCredentialView } from "./anthropic.js";
 import { getClaudeNativeBundle, hasCompleteClaudeNativeBundle } from "./claude-bundle.js";
 import { syncLiveClaudeRotationBackToLabelFromStorage } from "./claude-native.js";
 import {
-  resolveAimgrClaudeLabelHomeDir,
+  resolveLegacyClaudeLabelHomeDir,
   resolveManagedClaudeDir,
 } from "../io/paths.js";
 import {
@@ -352,7 +352,7 @@ export async function maintainRedisClaudeCredential(context, {
   throwIfMaintenanceAborted(signal, deadlineMs);
   const homeDir = context.homeDir;
   const nowMs = Number.isFinite(context.nowMs) ? context.nowMs : Date.now();
-  const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label: normalizedLabel });
+  const claudeHome = resolveLegacyClaudeLabelHomeDir({ homeDir, label: normalizedLabel });
   const configDir = resolveManagedClaudeDir({ homeDir: claudeHome });
   const maintenanceEnv = { ...(context.env ?? {}) };
   delete maintenanceEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;

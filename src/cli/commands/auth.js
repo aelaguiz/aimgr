@@ -1,3 +1,7 @@
+import { maintainLocalClaudeCredential } from "../../credentials/claude-local-maintenance.js";
+import { readClaudeAccountMetadata } from "../../coordination/claude-metadata.js";
+import { readClaudeEnvironment } from "../../privacy/claude-environment.js";
+import { buildCoordinationView } from "../../coordination/snapshot.js";
 import { rememberClaudeProtection } from "../../network/claude-offline-binding.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../../core/constants.js";
 import {
@@ -20,7 +24,7 @@ import { writeHermesAuthFromState } from "../../targets/hermes-auth.js";
 
 const OAUTH_REAUTH_REQUIRED = "oauth_reauth_required";
 const SHARED_DUE_WINDOW_MS = 5 * 60_000;
-const MAINTAINED_PROVIDERS = new Set([ANTHROPIC_PROVIDER, XAI_PROVIDER]);
+const MAINTAINED_PROVIDERS = new Set([XAI_PROVIDER]);
 
 function hasLoadedCredential(record) {
   return isObject(record?.credential) && Object.keys(record.credential).length > 0;
@@ -81,7 +85,7 @@ async function handleOAuthMaintain(context) {
   // This does not relax ownership: each publication still checks the live lease,
   // and leased connections disable offline command queueing on a disconnect.
   const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl,
-    connectionPolicy: REDIS_CONNECTION_POLICY_LEASED, excludeCodexGrants: true });
+    connectionPolicy: REDIS_CONNECTION_POLICY_LEASED, excludeCodexGrants: true, excludeClaudeGrants: true });
   const counts = {
     refreshed: 0,
     unchanged: 0,
@@ -160,6 +164,17 @@ async function handleOAuthMaintain(context) {
           + (maintenanceResult.detail ? ` detail="${maintenanceResult.detail}"` : "")
           + `\n`,
       );
+    }
+    let claudeEnvironment;
+    try { claudeEnvironment = (context.readClaudeEnvironmentImpl ?? readClaudeEnvironment)(); } catch {}
+    if (claudeEnvironment) {
+      const metadata = await readClaudeAccountMetadata(runtime.store);
+      const state = buildCoordinationView({credentials:metadata}, {localState:runtime.localState,provider:ANTHROPIC_PROVIDER});
+      for (const item of metadata) {
+        const result = await maintainLocalClaudeCredential(context, {metadata:item,environment:claudeEnvironment,state});
+        counts[result.outcome] += 1;
+        stdout.write(`provider=${ANTHROPIC_PROVIDER} authority=environment-local label=${item.label} outcome=${result.outcome} reason=${result.reason}\n`);
+      }
     }
     // Codex maintenance uses only this environment's independently authorized
     // grant. Redis supplies account metadata, never legacy primary credentials.

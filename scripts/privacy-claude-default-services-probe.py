@@ -52,6 +52,7 @@ p.add_argument("--privacy-mode", choices=["ordinary", "protected"], default="pro
 p.add_argument("--poll-settings", action="store_true", help="Diagnostic fixture only: use the unchanged client's polling file watcher")
 p.add_argument("--rc-policy-only", action="store_true", help="Eligible unwrapped RC comparison with only disableRemoteControl added")
 p.add_argument("--disable-agent-view", action="store_true", help="Research the narrow native daemon switch, retaining ordinary background tools")
+p.add_argument("--custom-diagnostics", choices=["enhanced", "beta"], help="Synthetic stock-positive/candidate-zero OTLP comparison, including actual traces")
 p.add_argument("--background-review", action="store_true", help="Run the isolated daemon lifetime/reuse/disable experiment")
 a = p.parse_args()
 base = Path("/opt/aimgr-state-audit")
@@ -752,6 +753,7 @@ def interactive(arguments, home, env):
 cases = [
     ("api-key-telemetry-on", None, False, None),
     ("api-key-telemetry-off", None, True, None),
+    ("pro-custom-diagnostics", "pro", False, "sign_in"),
     ("pro-sign-in", "pro", True, "sign_in"),
     ("max-sign-in", "max", True, "sign_in"),
     ("team-positive-control", "team", True, "sign_in"),
@@ -856,6 +858,17 @@ try:
                 env.update(CLAUDE_CODE_ENABLE_TELEMETRY="1", OTEL_LOGS_EXPORTER="otlp", OTEL_METRICS_EXPORTER="otlp",
                     OTEL_TRACES_EXPORTER="none", OTEL_EXPORTER_OTLP_PROTOCOL="http/json",
                     OTEL_EXPORTER_OTLP_ENDPOINT=proxy, OTEL_LOGS_EXPORT_INTERVAL="100", OTEL_METRIC_EXPORT_INTERVAL="100")
+        if a.custom_diagnostics == "enhanced":
+            env.update(CLAUDE_CODE_ENABLE_TELEMETRY="1", CLAUDE_CODE_ENHANCED_TELEMETRY_BETA="1",
+                OTEL_LOGS_EXPORTER="otlp", OTEL_METRICS_EXPORTER="otlp", OTEL_TRACES_EXPORTER="otlp",
+                OTEL_EXPORTER_OTLP_PROTOCOL="http/json", OTEL_EXPORTER_OTLP_ENDPOINT=proxy,
+                OTEL_LOGS_EXPORT_INTERVAL="100", OTEL_METRIC_EXPORT_INTERVAL="100", OTEL_TRACES_EXPORT_INTERVAL="100")
+        elif a.custom_diagnostics == "beta":
+            # The reviewed beta pipeline runs before the normal telemetry
+            # enable gate. Prove this bypass independently with that gate off.
+            env.update(CLAUDE_CODE_ENABLE_TELEMETRY="0", ENABLE_BETA_TRACING_DETAILED="1",
+                BETA_TRACING_ENDPOINT=proxy, OTEL_LOGS_EXPORTER="none", OTEL_METRICS_EXPORTER="none",
+                OTEL_TRACES_EXPORTER="none")
         if a.poll_settings:
             # Isolate watcher transport from settings precedence. Some rental
             # Mac baseline runs report a working fs.watch probe but deliver no
@@ -1051,6 +1064,10 @@ print(json.dumps(result))
         captures = requests[start:]
         stored = json.loads((config / ".credentials.json").read_text()).get("claudeAiOauth", {}) if plan else {}
         results.append({"case": name, "exit": code, "syntheticModelCompleted": code == 0 and "SYNTHETIC_OK" in out,
+                        "customDiagnostics": {"mode": a.custom_diagnostics,
+                            "logsRequests": sum(urlsplit(r["path"]).path == "/v1/logs" for r in captures),
+                            "metricsRequests": sum(urlsplit(r["path"]).path == "/v1/metrics" for r in captures),
+                            "tracesRequests": sum(urlsplit(r["path"]).path == "/v1/traces" for r in captures)},
                         "requestPaths": sorted(set(urlsplit(r["path"]).path for r in captures)),
                         "modelRequests": sum("/messages" in r["path"] for r in captures),
                         "modelSources": sorted(set(r["source"] for r in captures if "/messages" in r["path"])),
@@ -1117,6 +1134,7 @@ finally:
     server.shutdown()
     server.server_close()
 report = {"integratedAim": a.integrated_aim, "mode": a.privacy_mode, "actualNativeRoute": a.routed_aim, "platform": platform.system(), "artifactSha256": digest, "results": results,
+          "customDiagnostics": a.custom_diagnostics,
           "disableAgentView": a.disable_agent_view, "backgroundReview": a.background_review,
           "settingsWatcherPollingDiagnostic": a.poll_settings,
           "remoteControlPolicyOnlyComparison": a.rc_policy_only,

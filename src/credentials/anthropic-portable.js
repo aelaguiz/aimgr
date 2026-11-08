@@ -1,3 +1,4 @@
+import { assertClaudeCredentialExportable } from "./claude-local.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { assertAnthropicCredentialShape, tryBuildAnthropicCredentialFingerprint } from "./anthropic.js";
 import { buildClaudeNativeBundle, deriveAnthropicCredentialFromClaudeBundle } from "./claude-bundle.js";
@@ -7,6 +8,7 @@ import { getAuthorityAnthropicImportLabelStatus, getImportedAnthropicLabels } fr
 import { getAuthorityCodexImportLabelStatus } from "../state/authority-codex.js";
 
 export function clonePortableAnthropicCredential(credential) {
+  assertClaudeCredentialExportable(credential);
   const cred = isObject(credential) ? structuredClone(credential) : null;
   if (!cred) {
     return null;

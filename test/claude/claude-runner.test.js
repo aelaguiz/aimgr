@@ -130,6 +130,25 @@ test("protected exit 125 retains job diagnostics without changing other process 
   }
 });
 
+test("direct and assigned-route runners request identical privacy without changing native permission flags", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const prepared = preparedLaunch(home);
+  const args = ["-p", "synthetic task", "--permission-mode", "default"];
+  for (const runner of [runClaudeCli, runClaudeCliNoninteractive]) {
+    for (const egressProfile of [undefined, { label: "assigned", profileRef: "office" }]) {
+      const stop = new Error("synthetic preparation reached");
+      await assert.rejects(runner({ ...prepared, preparedLaunch: prepared, cwd: home, platform: "linux", egressProfile, args,
+        prepareClaudeNativeInvocationImpl(input) {
+          assert.equal(input.protectedAccount, true);
+          assert.deepEqual(input.args, args);
+          assert.equal(input.args.includes("--dangerously-skip-permissions"), false);
+          throw stop;
+        } }), error => error === stop);
+    }
+  }
+});
+
 test("Mac privacy routing keeps the fixed exec chain below the IPC supervisor", async t => {
   const home = mkTempHome();
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));

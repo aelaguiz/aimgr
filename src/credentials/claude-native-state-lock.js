@@ -16,7 +16,7 @@ import lockfile from "proper-lockfile";
  * Critical callers perform only local synchronous reads/writes while held;
  * never hold these locks across HTTP, a model request or vendor startup.
  */
-export async function withClaudeNativeStateLocks({ configDir, appStatePath, fsImpl = fs }, operation) {
+export async function withClaudeNativeStateLocks({ configDir, appStatePath, refresh = false, fsImpl = fs }, operation) {
   const releases = [];
   let compromised = false;
   try {
@@ -24,6 +24,14 @@ export async function withClaudeNativeStateLocks({ configDir, appStatePath, fsIm
       throw new Error("invalid paths");
     }
     fsImpl.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    // Pinned 2.1.317 f0i: the new refresh lock precedes the realpath
+    // legacy sibling. Wait for network refresh BEFORE taking storage locks.
+    if (refresh) for (const lockPath of [path.join(configDir, ".oauth_refresh.lock"), `${fsImpl.realpathSync(configDir)}.lock`]) {
+      releases.push(await lockfile.lock(configDir, { fs: fsImpl, realpath: false,
+        lockfilePath: lockPath, stale: 60_000, update: 5_000,
+        retries: {retries: 35,minTimeout:100,maxTimeout:1000},
+        onCompromised: () => { compromised = true; } }));
+    }
     const files = [{ file: path.join(configDir.normalize("NFC"), ".storage-write"), stale: 15_000 },
       ...[...new Set([appStatePath, path.join(configDir.normalize("NFC"), ".config.json")])].sort()
         .map(file => ({ file, stale: 10_000 }))];

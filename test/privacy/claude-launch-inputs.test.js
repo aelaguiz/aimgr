@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { readClaudeLaunchState, stageClaudeLaunchEnvironment, buildClaudePrivacyEnvironment,
-  resolveClaudeTaskReadRoots, resolveClaudeConfiguredInputs, prepareClaudeDaemonDirectory,
+  resolveClaudeTaskReadRoots, resolveClaudeConfiguredInputs,
   resolveClaudeUpdateRoots } from "../../src/privacy/claude-launch-inputs.js";
 
 const covered = (roots, file) => roots.some(root => file === root || file.startsWith(root + path.sep));
@@ -76,25 +76,6 @@ test("update roots follow existing aliases and still refuse dangling links", t =
   assert.throws(() => resolveClaudeUpdateRoots(input), /dangling link/);
 });
 
-test("native daemon directories are stable per config and never share the writable parent", t => {
-  const root = fixture(t), inputs = { env: {}, temporaryBase: root };
-  const a = prepareClaudeDaemonDirectory({ ...inputs, configDir: path.join(root, "account-a") });
-  const b = prepareClaudeDaemonDirectory({ ...inputs, configDir: path.join(root, "account-b") });
-  assert.notEqual(a, b);
-  assert.equal(prepareClaudeDaemonDirectory({ ...inputs, configDir: path.join(root, "account-a") }), a);
-  assert.equal(path.dirname(a), path.join(root, `cc-daemon-${process.getuid()}`));
-  assert.match(path.basename(a), /^[a-f0-9]{8}$/);
-  assert.equal(fs.statSync(a).mode & 0o7777, 0o700);
-  // Refuse an unsafe child without silently changing somebody else's socket
-  // permissions. A symlink must not redirect the account's grant either.
-  fs.chmodSync(a, 0o755);
-  assert.throws(() => prepareClaudeDaemonDirectory({ ...inputs, configDir: path.join(root, "account-a") }), /mode 0700/);
-  assert.equal(fs.statSync(a).mode & 0o7777, 0o755);
-  fs.rmSync(a, { recursive: true }); fs.symlinkSync(b, a);
-  assert.throws(() => prepareClaudeDaemonDirectory({ ...inputs, configDir: path.join(root, "account-a") }), /non-symlink/);
-  fs.unlinkSync(a); fs.chmodSync(path.dirname(a), 0o755);
-  assert.throws(() => prepareClaudeDaemonDirectory({ ...inputs, configDir: path.join(root, "account-a") }), /mode 0700/);
-});
 
 test("private environment uses an unlinked owned descriptor and preserves exact tool values", t => {
   const root = fixture(t);
@@ -125,21 +106,26 @@ test("launch state preserves MCP credentials and refuses alias/substitution haza
   assert.equal(readClaudeLaunchState(alias, { optional: true }), null);
 });
 
-test("all-account controls do not opt ordinary accounts out of telemetry or remove tool credentials", () => {
+test("all-account controls disable Claude diagnostics while preserving task SDK and tool credentials", () => {
   const inputs = { env: { DISABLE_TELEMETRY: "0", DISABLE_ERROR_REPORTING: "0", DISABLE_GROWTHBOOK: "0",
+    CLAUDE_CODE_ENABLE_TELEMETRY: "1", ENABLE_BETA_TRACING_DETAILED: "1", BETA_TRACING_ENDPOINT: "http://task-collector", OTEL_TRACES_EXPORTER: "otlp", OTEL_SDK_DISABLED: "false",
     AWS_ACCESS_KEY_ID: "synthetic-build-key", NODE_OPTIONS: "--max-old-space-size=2048", TERM: "xterm-256color",
     HOSTNAME: "SYNTHETIC_HOST", TERMINATOR_UUID: "SYNTHETIC_TERMINAL", TILIX_ID: "SYNTHETIC_TILIX", GNOME_TERMINAL_SERVICE: "SYNTHETIC_GNOME",
     LD_PRELOAD: "/private/code", DYLD_INSERT_LIBRARIES: "/private/code" },
     artifactSet: "a".repeat(64), emptyProfiles: "/approved/empty", scratch: "/private/scratch" };
   const ordinary = buildClaudePrivacyEnvironment({ ...inputs, protectedAccount: false });
-  assert.equal(ordinary.DISABLE_TELEMETRY, "0"); assert.equal(ordinary.DISABLE_ERROR_REPORTING, "0");
+  assert.equal(ordinary.DISABLE_TELEMETRY, "1"); assert.equal(ordinary.DISABLE_ERROR_REPORTING, "1");
+  assert.equal(ordinary.CLAUDE_CODE_ENABLE_TELEMETRY, "0");
+  assert.equal(ordinary.ENABLE_BETA_TRACING_DETAILED, "0");
+  assert.equal(ordinary.BETA_TRACING_ENDPOINT, "http://task-collector");
+  assert.equal(ordinary.OTEL_TRACES_EXPORTER, "otlp"); assert.equal(ordinary.OTEL_SDK_DISABLED, "false");
   assert.equal(ordinary.DISABLE_GROWTHBOOK, "1"); assert.equal(ordinary.DISABLE_UPDATES, "1");
   assert.equal(ordinary.AWS_ACCESS_KEY_ID, inputs.env.AWS_ACCESS_KEY_ID); assert.equal(ordinary.NODE_OPTIONS, inputs.env.NODE_OPTIONS);
   assert.equal(ordinary.TERM, inputs.env.TERM); assert.equal(ordinary.LD_PRELOAD, undefined); assert.equal(ordinary.DYLD_INSERT_LIBRARIES, undefined);
   assert.equal(buildClaudePrivacyEnvironment({ ...inputs, protectedAccount: true }).DISABLE_TELEMETRY, "1");
   const protectedEnv = buildClaudePrivacyEnvironment({ ...inputs, protectedAccount: true });
   for (const key of ["HOSTNAME", "TERMINATOR_UUID", "TILIX_ID", "GNOME_TERMINAL_SERVICE"]) {
-    assert.equal(ordinary[key], inputs.env[key]); assert.equal(protectedEnv[key], "");
+    assert.equal(ordinary[key], ""); assert.equal(protectedEnv[key], "");
   }
   assert.equal(protectedEnv.TERM, inputs.env.TERM);
 });
@@ -162,7 +148,7 @@ test("explicit TLS files and custom memory are granted only for protected accoun
   assert.ok(covered(roots, path.join(project, "memory"))); assert.ok(!roots.includes(certs)); assert.ok(!roots.includes(home));
 });
 
-test("task grants resolve skills, trusted projects and worktree metadata without exposing home ancestors", t => {
+test("task grants retain selected roots, skills and worktree metadata without treating trust history as a grant", t => {
   const root = fixture(t), home = path.join(root, "home"), config = path.join(home, ".aimgr/account/.claude");
   const project = path.join(home, "work/project"), trusted = path.join(home, "work/trusted");
   const packageRoot = path.join(home, "packages/required-skill"), git = path.join(home, "git/common/worktrees/project");
@@ -177,7 +163,9 @@ test("task grants resolve skills, trusted projects and worktree metadata without
   const inputs = { cwd: project, userHomeDir: home, configDir: config, appState: {
     projects: { [trusted]: { hasTrustDialogAccepted: true }, [home]: { hasTrustDialogAccepted: true } } } };
   const roots = resolveClaudeTaskReadRoots(inputs);
-  for (const expected of [project, trusted, packageRoot, git, path.resolve(git, "../.."),
+  assert.ok(!covered(roots, trusted), "historical trust is not a selected work root");
+  assert.ok(covered(resolveClaudeTaskReadRoots({ ...inputs, additionalDirectories: [trusted] }), trusted));
+  for (const expected of [project, packageRoot, git, path.resolve(git, "../.."),
     path.join(home, "work/CLAUDE.md"), path.join(home, "work/.claude/rules")]) assert.ok(covered(roots, expected), expected);
   for (const excluded of [home, path.join(home, ".aimgr"), path.join(home, "packages"), root]) assert.ok(!roots.includes(excluded));
   assert.throws(() => resolveClaudeTaskReadRoots({ ...inputs, additionalDirectories: [home] }));
@@ -231,4 +219,21 @@ test("large skill and rule collections use subtree grants while retaining exact 
   for (const required of [project, skills, imported, linked]) assert.ok(roots.includes(required), required);
   for (const forbidden of [home, external, path.dirname(project)]) assert.ok(!roots.includes(forbidden));
   assert.ok(roots.length < 10, "ordinary children must not consume independent native policy slots");
+});
+
+
+test("the selected original-browser helper and manual callback environment remain exact inputs", t => {
+  const root = fixture(t), home = path.join(root, "home"), config = path.join(home, ".aimgr/account/.claude");
+  const project = path.join(root, "project"), helper = path.join(root, "installation/browser-helper.mjs");
+  for (const directory of [config, project, path.dirname(helper)]) fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(helper, "synthetic helper never executed");
+  const callback = path.join(config, "login-url.json");
+  const env = { BROWSER: helper, AIMGR_CLAUDE_LOGIN_STDIO_URL: callback };
+  const inputs = resolveClaudeConfiguredInputs({ args: [], cwd: project, userHomeDir: home, configDir: config,
+    composition: { settings: {} }, env });
+  const roots = resolveClaudeTaskReadRoots({ ...inputs, userHomeDir: home, configDir: config });
+  assert.ok(roots.includes(helper)); assert.ok(!roots.includes(path.dirname(helper)));
+  const launch = buildClaudePrivacyEnvironment({ env, protectedAccount: true, artifactSet: "a".repeat(64),
+    emptyProfiles: path.join(config, "profiles"), scratch: path.join(config, "scratch") });
+  assert.equal(launch.BROWSER, helper); assert.equal(launch.AIMGR_CLAUDE_LOGIN_STDIO_URL, callback);
 });

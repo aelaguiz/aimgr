@@ -727,7 +727,7 @@ export async function runClaudeCliNoninteractive({
   const containedEnv = buildContainedLaunchEnvironment({ preparedLaunch: prepared, env });
   const native = await prepareClaudeNativeInvocationImpl({ preparedLaunch: prepared, args,
     env: egressProfile ? nativeProxyEnvironment(containedEnv) : containedEnv, cwd: resolvedCwd,
-    protectedAccount: Boolean(egressProfile), expectedIdentity, requiredHooks, stdoutIsTTY: false });
+    protectedAccount: true, expectedIdentity, requiredHooks, stdoutIsTTY: false });
   let child;
   try {
     const invocation = await prepareSupervisedNativeInvocation({ native, egressProfile, platform, signal,
@@ -896,7 +896,7 @@ export async function runClaudeCli({
   const containedEnv = buildContainedLaunchEnvironment({ preparedLaunch: prepared, env });
   const native = await prepareClaudeNativeInvocationImpl({ preparedLaunch: prepared, args: buildClaudeArgs(prepared, args),
     env: egressProfile ? nativeProxyEnvironment(containedEnv) : containedEnv, cwd: resolvedCwd,
-    protectedAccount: Boolean(egressProfile), expectedIdentity, requiredHooks });
+    protectedAccount: true, expectedIdentity, requiredHooks });
   let child;
   try {
     const invocation = await prepareSupervisedNativeInvocation({ native, egressProfile, signal,

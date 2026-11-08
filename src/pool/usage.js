@@ -287,6 +287,7 @@ export async function fetchClaudeUsageSnapshot({
   label,
   state,
   record,
+  credential,
   homeDir = os.homedir(),
   profiles = readAimgrConfig({ homeDir }).config.claudeProxyProfiles,
   timeoutMs = 8000,
@@ -295,7 +296,7 @@ export async function fetchClaudeUsageSnapshot({
 }) {
   const operationState = record ? {
     accounts: { [record.label]: { provider: record.provider, egress: record.policy?.egress } },
-    credentials: { anthropic: { [record.label]: record.credential } },
+    credentials: { anthropic: { [record.label]: credential ?? record.credential } },
   } : state?.accountsByProvider?.[ANTHROPIC_PROVIDER]?.[label] ? {
     ...state, accounts: { ...state.accounts, [label]: state.accountsByProvider[ANTHROPIC_PROVIDER][label] },
   } : state;

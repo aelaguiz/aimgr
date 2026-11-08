@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { prepareClaudeNativeInvocation } from "../../src/privacy/claude-native-invocation.js";
-import { prepareClaudeDaemonDirectory } from "../../src/privacy/claude-launch-inputs.js";
 
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aim-native-preparation-")));
@@ -24,7 +23,6 @@ function fixture(t) {
     args: ["--settings", '{"env":{"DISABLE_GROWTHBOOK":"0","REQUIRED_BUILD_INPUT":"kept"}}', "--print", "task"],
     cwd: root, env: { HOME: root, PATH: "/usr/bin:/bin", CLAUDE_CODE_TMPDIR: root, MCP_TOOL_SECRET: "SYNTHETIC_TOOL_SECRET" },
     protectedAccount: true, readRoots: [root], updateRoots: [],
-    prepareDaemonDirectory: inputs => prepareClaudeDaemonDirectory({ ...inputs, temporaryBase: root }),
     expectedIdentity: { accountUuid: "account-a", organizationUuid: "org-a" },
     admitArtifact(inputs) { admitted++; assert.equal(inputs.selectedCommand, artifact.command); return artifact; },
     inspectManagedPolicy: () => ({ resolvedReadPaths: [], sourceCount: 0 }),
@@ -54,7 +52,7 @@ test("native preparation admits, validates exact composed bytes, then transfers 
   assert.equal(fs.existsSync(prepared.retainedPaths.scratch), false);
 });
 
-test("ordinary and protected launches do not require the recorded test OS release", async t => {
+test("direct and routed preparation always protects files without requiring the recorded test OS release", async t => {
   const f = fixture(t), policy = JSON.parse(fs.readFileSync(f.artifact.policy));
   for (const protectedAccount of [false, true]) {
     for (const testedKernelRelease of [os.release(), "different-from-" + os.release(), undefined]) {
@@ -62,7 +60,8 @@ test("ordinary and protected launches do not require the recorded test OS releas
       const prepared = await prepareClaudeNativeInvocation({ ...f.options, protectedAccount });
       try {
         assert.equal(prepared.command, f.artifact.launcher);
-        assert.equal(prepared.args[1], protectedAccount ? "protected" : "ordinary");
+        assert.equal(prepared.args[1], "protected");
+        assert.equal(prepared.environment.CLAUDE_CODE_ENABLE_TELEMETRY, "0");
         assert.equal(prepared.vendorCommand, f.artifact.command);
       } finally { prepared.disposeBeforeStart(); }
     }
@@ -109,14 +108,14 @@ test("validation failure cleans preparation state and never returns a launchable
   assert.deepEqual(fs.readdirSync(path.join(f.root, `claude-${process.getuid()}`)), []);
 });
 
-test("Mac MCP aliases require the admitted helper capability and never broaden ordinary launches", {
+test("Mac MCP aliases require the admitted helper capability for direct and routed launches", {
   skip: process.platform !== "darwin",
 }, async t => {
   const f = fixture(t), external = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aim-external-mcp-")));
   t.after(() => fs.rmSync(external, { recursive: true, force: true }));
   const executable = path.join(external, "binary"), alias = path.join(external, "alias");
   fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 }); fs.symlinkSync(executable, alias);
-  const options = { ...f.options, readRoots: undefined,
+  const options = { ...f.options, readRoots: undefined, workingDirectories: () => [],
     preparedLaunch: { ...f.options.preparedLaunch, userHomeDir: f.root },
     args: [...f.options.args, "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: { local: { command: alias } } })] };
   const policy = JSON.parse(fs.readFileSync(f.artifact.policy));
@@ -126,8 +125,8 @@ test("Mac MCP aliases require the admitted helper capability and never broaden o
       const prepared = await prepareClaudeNativeInvocation({ ...options, protectedAccount });
       try {
         const roots = prepared.args.slice(7, 7 + Number(prepared.args[6]));
-        assert.equal(roots.includes(alias), protectedAccount && capability);
-        assert.equal(roots.includes(executable), protectedAccount);
+        assert.equal(roots.includes(alias), capability);
+        assert.equal(roots.includes(executable), true);
         assert.ok(!roots.includes(external), "never grant the external bin directory");
       } finally { prepared.disposeBeforeStart(); }
     }

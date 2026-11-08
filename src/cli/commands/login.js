@@ -28,7 +28,7 @@ import { isObject, normalizeLabel, normalizeProviderId } from "../../core/normal
 import { writeJsonFileWithBackup } from "../../io/json-store.js";
 import {
   resolveAgentsRepoRoot,
-  resolveAimgrClaudeLabelHomeDir,
+  resolveLegacyClaudeLabelHomeDir,
   resolveAimgrStateDir,
   resolveManagedClaudeDir,
 } from "../../io/paths.js";
@@ -49,7 +49,7 @@ function currentAnthropicRecord(snapshot, label) {
 }
 
 function resolveClaudeLoginStaging({ homeDir, label, expectedEmail }) {
-  const labelHome = resolveAimgrClaudeLabelHomeDir({ homeDir, label });
+  const labelHome = resolveLegacyClaudeLabelHomeDir({ homeDir, label });
   const stagingHome = path.join(labelHome, CLAUDE_LOGIN_STAGING_DIRNAME);
   const configDir = resolveManagedClaudeDir({ homeDir: stagingHome });
   const descriptor = buildManagedClaudeNativeStorageDescriptor({
@@ -63,7 +63,7 @@ function resolveClaudeLoginStaging({ homeDir, label, expectedEmail }) {
 
 function removeClaudeLoginStaging({ homeDir, label, stagingHome }) {
   const expected = path.join(
-    resolveAimgrClaudeLabelHomeDir({ homeDir, label }),
+    resolveLegacyClaudeLabelHomeDir({ homeDir, label }),
     CLAUDE_LOGIN_STAGING_DIRNAME,
   );
   if (path.resolve(stagingHome) !== path.resolve(expected)) {
@@ -437,6 +437,7 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
       ? null
       : currentAnthropicRecord(snapshot, normalizedLabel);
     if (anthropicRecord) {
+      if (requestedProvider !== ANTHROPIC_PROVIDER) throw new Error(`Use \`aim claude login ${normalizedLabel}\` for this machine, or explicit \`aim login ${normalizedLabel} --provider anthropic\` for legacy Prime/Pi.`);
       if (manualCallbackAutomation) {
         throw new Error("Anthropic login does not use the Codex manual-callback JSONL protocol.");
       }
@@ -473,6 +474,7 @@ async function performRedisLabelMaintenance(context, { label, manualCallbackAuto
       });
     }
     if (provider === ANTHROPIC_PROVIDER) {
+      if (requestedProvider !== ANTHROPIC_PROVIDER) throw new Error(`Use \`aim claude login ${normalizedLabel}\` for this machine, or explicit \`aim login ${normalizedLabel} --provider anthropic\` for legacy Prime/Pi.`);
       if (manualCallbackAutomation) {
         throw new Error("Anthropic login does not use the Codex manual-callback JSONL protocol.");
       }

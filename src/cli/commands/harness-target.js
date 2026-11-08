@@ -116,6 +116,7 @@ async function selectClaudePreset({
   const records = (runtime.snapshot?.credentials ?? [])
     .filter((record) => record.provider === ANTHROPIC_PROVIDER);
   const usageStatus = await collectClaudeRedisAccountUsageStatusImpl({
+    legacyAuthority: true,
     homeDir,
     records,
     redisStore: runtime.store,

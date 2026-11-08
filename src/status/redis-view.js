@@ -1,3 +1,4 @@
+import { readClaudeAccountMetadata } from "../coordination/claude-metadata.js";
 import { redactRedisEndpoint } from "../core/sanitize.js";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
@@ -392,10 +393,11 @@ export async function buildRedisStatusView({
       keyPrefix: redisConfig.keyPrefix,
       connectionPolicy: REDIS_CONNECTION_POLICY_OBSERVE,
     });
-    const snapshot = await readSnapshot(store, { excludeCodexGrants: true });
+    const snapshot = await readSnapshot(store, { excludeCodexGrants: true, excludeClaudeGrants: true });
     let environment = null;
     try { environment = readCodexEnvironmentImpl(); } catch { /* Codex setup cannot hide other providers. */ }
     snapshot.credentials.push(...await localCodexRecords({ store, homeDir, env, environment }));
+    snapshot.credentials.push(...await readClaudeAccountMetadata(store));
     const localState = loadLocalState({ homeDir });
     const state = buildCoordinationView(snapshot, { localState });
     state.codexEnvironment = environment;

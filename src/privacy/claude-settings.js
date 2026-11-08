@@ -286,14 +286,16 @@ export function claudeCriticalSettings({ protectedAccount } = {}) {
       // native child can expire profile provenance before eligibility runs.
       // Never rewrite provenance or clear caches to manufacture ineligibility.
       DISABLE_GROWTHBOOK: "1",
-      ...(protectedAccount ? {
-        DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
-        // Reviewed 2.1.316 uses HOSTNAME only for an optional poller's worker
-        // label (it has a UUID fallback). These three terminal variables only
-        // select terminal-specific extras. Keep TERM and build/MCP credentials;
-        // do not let lower settings restore machine/session identifiers (T07).
-        HOSTNAME: "", TERMINATOR_UUID: "", TILIX_ID: "", GNOME_TERMINAL_SERVICE: "",
-      } : {}),
+      // Claude-specific opt-outs leave task programs' OTEL_* settings intact.
+      CLAUDE_CODE_ENABLE_TELEMETRY: "0",
+      // The pinned beta tracer has a separate opt-in before the OTel gate.
+      ENABLE_BETA_TRACING_DETAILED: "0",
+      DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
+      // Reviewed 2.1.316 uses HOSTNAME only for an optional poller's worker
+      // label (it has a UUID fallback). These three terminal variables only
+      // select terminal-specific extras. Keep TERM and build/MCP credentials;
+      // do not let lower settings restore machine/session identifiers (T07).
+      HOSTNAME: "", TERMINATOR_UUID: "", TILIX_ID: "", GNOME_TERMINAL_SERVICE: "",
     },
   };
 }

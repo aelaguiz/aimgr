@@ -1,3 +1,4 @@
+import { assertClaudeCredentialExportable } from "../credentials/claude-local.js";
 import { createClient } from "redis";
 import {
   normalizeCredentialRecord,
@@ -168,10 +169,10 @@ function isRedisWatchError(err) {
   return err?.name === "WatchError" || /watched keys/i.test(message);
 }
 
-export async function readSnapshot(store, { excludeCodexGrants = false } = {}) {
+export async function readSnapshot(store, { excludeCodexGrants = false, excludeClaudeGrants = false } = {}) {
   const [metaRaw, credentialsRaw] = await Promise.all([
     store.client.get(store.keys.meta()),
-    excludeCodexGrants ? readOtherProviderRecords(store) : readIndexedRecords(store, store.keys.credentials()),
+    (excludeCodexGrants || excludeClaudeGrants) ? readOtherProviderRecords(store, { excludeCodexGrants, excludeClaudeGrants }) : readIndexedRecords(store, store.keys.credentials()),
   ]);
   const meta = parseJsonRecord(metaRaw, store.keys.meta());
   const credentials = credentialsRaw
@@ -185,7 +186,7 @@ export async function readSnapshot(store, { excludeCodexGrants = false } = {}) {
   };
 }
 
-async function readOtherProviderRecords(store) {
+async function readOtherProviderRecords(store, { excludeCodexGrants, excludeClaudeGrants }) {
   // Status still needs other providers' existing credential summaries. Filter
   // Codex on the server before any legacy grant crosses this connection.
   const json = await store.client.eval(`
@@ -195,10 +196,10 @@ for _,key in ipairs(redis.call('SMEMBERS',KEYS[1])) do
   local raw=redis.call('GET',key)
   if raw then
     local record=cjson.decode(raw)
-    if record.provider~='openai-codex' then table.insert(out,record) end
+    if not ((ARGV[1]=='1' and record.provider=='openai-codex') or (ARGV[2]=='1' and record.provider=='anthropic')) then table.insert(out,record) end
   end
 end
-return cjson.encode(out)`, { keys: [store.keys.credentials()], arguments: [] });
+return cjson.encode(out)`, { keys: [store.keys.credentials()], arguments: [excludeCodexGrants ? '1' : '0', excludeClaudeGrants ? '1' : '0'] });
   const records = JSON.parse(json);
   return Array.isArray(records) ? records : [];
 }
@@ -298,6 +299,7 @@ export async function publishMeta(store, { expectedVersion, metaRecord, updatedB
 
 export async function publishCredential(store, { expectedVersion, credentialRecord, updatedBy, observedAt } = {}) {
   assertCodexCredentialExportable(credentialRecord?.credential);
+  assertClaudeCredentialExportable(credentialRecord?.credential);
   const record = normalizeCredentialRecord(credentialRecord, { now: observedAt });
   return casPutJsonRecord(store, {
     key: store.keys.credential(record),

@@ -97,9 +97,14 @@ int main(int argc,char **argv) {
     if (inside(home,config) || inside(home,scratch)) fail("overbroad private root");
     for (int i=0;i<readcount;i++) {
         const char *requested=requested_reads[i]; char resolved[PATH_MAX];
-        if (!requested || requested[0]!='/' || strlen(requested)>=PATH_MAX || !realpath(requested,resolved)) fail("read root path");
+        if (!requested || requested[0]!='/' || strlen(requested)>=PATH_MAX) fail("read root path");
+        if (!realpath(requested,resolved)) {
+            if (errno!=ENOENT) fail("read root path");
+            canonical_future(requested);
+            strlcpy(resolved,requested,sizeof(resolved));
+        }
         readroots[i]=strdup(resolved); if (!readroots[i]) fail("read root allocation");
-        canonical(readroots[i]);
+        canonical_future(readroots[i]);
         if (strcmp(requested,resolved)) {
             // MCP posix_spawn inspects symlink spellings before the canonical
             // command. A data-read grant to Homebrew's whole bin directory
@@ -242,7 +247,9 @@ int main(int argc,char **argv) {
      * disabled; this env pin alone does not override hostile disk settings. Ordinary background
      * Bash/subagents stay available; never use DISABLE_BACKGROUND_TASKS here. */
     set_environment("CLAUDE_CODE_DISABLE_AGENT_VIEW","1",1);
-    if (protected || validator) { set_environment("DISABLE_TELEMETRY","1",1); set_environment("DISABLE_ERROR_REPORTING","1",1); }
+    set_environment("CLAUDE_CODE_ENABLE_TELEMETRY","0",1);
+    set_environment("ENABLE_BETA_TRACING_DETAILED","0",1);
+    set_environment("DISABLE_TELEMETRY","1",1); set_environment("DISABLE_ERROR_REPORTING","1",1);
     // Keep stdio; the trusted supervisor retains its IPC/assignment handles.
     close_inherited_descriptors();
     if (validator) {

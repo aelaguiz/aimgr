@@ -91,7 +91,8 @@ function verifyStaged(staged) {
     fail("staged native identity does not match its account");
   }
   const identity = planClaudePrivateIdentity({ appState: staged.appState, identityRecord: staged.identity,
-    accountUuid: staged.identity.accountUuid, inventoryComplete: true, foreignIdentifiers: [] });
+    accountUuid: staged.identity.accountUuid, organizationUuid: staged.identity.organizationUuid,
+    environmentBinding: staged.identity.environmentBinding ?? null, inventoryComplete: true, foreignIdentifiers: [] });
   if (identity.changedFields.length || identity.recordChanged) fail("staged native identity is inconsistent");
   const auth = planClaudeCredentialProjection({ current: staged.auth,
     currentAccountUuid: staged.identity.accountUuid, targetAccountUuid: staged.identity.accountUuid,
@@ -108,7 +109,7 @@ function verifyStaged(staged) {
  * this function. The final launch must separately enforce file visibility.
  */
 export async function migrateClaudePrivateState({ userHomeDir, configDir, migrationDir,
-  command, credential, accountUuid, guard, assertStopped = assertClaudeNativeOwnersStopped } = {}) {
+  command, credential, accountUuid, organizationUuid = null, environmentBinding = null, grant = null, guard, assertStopped = assertClaudeNativeOwnersStopped } = {}) {
   if (guard?.exclusive !== true || typeof guard.assertOwned !== "function") fail("exclusive identity migration ownership is required");
   guard.assertOwned();
   for (const directory of [userHomeDir, configDir, migrationDir]) {
@@ -138,7 +139,7 @@ export async function migrateClaudePrivateState({ userHomeDir, configDir, migrat
     expectedEmail: selected.oauthAccount.emailAddress, allowExpiredCandidate: true });
   if (!candidate.ok) fail("the migration credential is incomplete");
   const currentBundle = { claudeAiOauth: currentAuth.claudeAiOauth, oauthAccount: active.state.oauthAccount };
-  if (currentBundle.oauthAccount?.accountUuid === accountUuid
+  if (!grant && currentBundle.oauthAccount?.accountUuid === accountUuid
     && [currentAuth.claudeAiOauth?.accessToken, currentAuth.claudeAiOauth?.refreshToken]
       .some(value => typeof value === "string" && value.length > 0)
     && !hasCompleteClaudeNativeBundle(currentBundle)) {
@@ -147,20 +148,21 @@ export async function migrateClaudePrivateState({ userHomeDir, configDir, migrat
     // Preserve the incomplete evidence for repair rather than reverting it.
     fail("native OAuth contains an incomplete same-account token lineage; repair it before identity migration");
   }
-  if (credential && currentBundle.oauthAccount?.accountUuid === accountUuid && hasCompleteClaudeNativeBundle(currentBundle)) {
+  if (!grant && credential && currentBundle.oauthAccount?.accountUuid === accountUuid && hasCompleteClaudeNativeBundle(currentBundle)) {
     const choice = planClaudeNativeBundleReplacement({ currentBundle, candidateBundle: selected,
       expectedEmail: selected.oauthAccount.emailAddress, allowExpiredCandidate: true });
     if (choice.action === "noop" || choice.reason === "stale_candidate") selected = currentBundle;
     else if (choice.ok !== true) fail("native credential lineage is ambiguous before identity migration");
   }
-  const identity = planClaudePrivateIdentity({ appState: active.state, identityRecord, accountUuid,
+  const identity = planClaudePrivateIdentity({ appState: active.state, identityRecord, accountUuid, organizationUuid, environmentBinding,
     foreignIdentifiers: collectClaudeForeignIdentifiers({ userHomeDir, configDir }), inventoryComplete: true });
   const auth = planClaudeCredentialProjection({ current: currentAuth,
     currentAccountUuid: active.state.oauthAccount?.accountUuid ?? null, targetAccountUuid: accountUuid,
     projectedOauth: selected.claudeAiOauth });
   retireClaudeLegacyBackups({ configDir, migrationDir, identityRecord: identity.record, guard });
-  if (!identity.recordChanged && !identity.changedFields.length && !active.legacy
+  if (!grant && !identity.recordChanged && !identity.changedFields.length && !active.legacy
     && JSON.stringify(auth) === JSON.stringify(currentAuth)) return { action: "unchanged" };
+  if (grant) identity.record.grant = structuredClone(grant);
   const desired = { appState: { ...identity.state, oauthAccount: structuredClone(selected.oauthAccount),
     hasCompletedOnboarding: true, hasAvailableSubscription: true }, auth, identity: identity.record, legacyAppState: null };
   const result = commitClaudeIdentityMigration({ configDir, migrationDir, desired, guard, verifyStaged });
@@ -168,13 +170,13 @@ export async function migrateClaudePrivateState({ userHomeDir, configDir, migrat
   return { action: result.action };
 }
 
-function needsIdentityMigration({ userHomeDir, configDir, migrationDir, accountUuid }) {
+function needsIdentityMigration({ userHomeDir, configDir, migrationDir, accountUuid, organizationUuid = null, environmentBinding = null }) {
   const journal = readState(path.join(migrationDir, "transaction.json"), { limit: 8 * LIMIT });
   if (journal && journal.phase !== "complete") return true;
   const active = readClaudeActiveAppState({ configDir });
   const identityRecord = readState(path.join(configDir, ".aim-privacy-identity.json"));
   if (!claudeBackupRetirementComplete({ migrationDir, identityRecord })) return true;
-  const plan = planClaudePrivateIdentity({ appState: active.state, identityRecord, accountUuid,
+  const plan = planClaudePrivateIdentity({ appState: active.state, identityRecord, accountUuid, organizationUuid, environmentBinding,
     foreignIdentifiers: collectClaudeForeignIdentifiers({ userHomeDir, configDir }), inventoryComplete: true });
   if (active.legacy || plan.recordChanged || plan.changedFields.length !== 0) return true;
   const auth = readState(path.join(configDir, ".credentials.json"));
@@ -204,7 +206,7 @@ export async function acquireClaudeStateGuard({ homeDir, label, configDir, comma
     guard = await acquireShared();
     const initial = await readBinding();
     const bindingKey = binding => JSON.stringify([binding.protected === true,
-      binding.accountUuid ?? null, binding.profileRef ?? null]);
+      binding.accountUuid ?? null, binding.organizationUuid ?? null, binding.environmentBinding ?? null, binding.profileRef ?? null]);
     const expected = bindingKey(initial);
     const recheck = async () => {
       guard.assertOwned();
@@ -227,7 +229,7 @@ export async function acquireClaudeStateGuard({ homeDir, label, configDir, comma
     const canonicalHome = fs.realpathSync(homeDir), canonicalConfig = fs.realpathSync(configDir);
     const migrationDir = path.join(path.dirname(canonicalConfig), ".privacy-migration");
     const paths = { userHomeDir: canonicalHome, configDir: canonicalConfig, migrationDir };
-    let migrate = initial.protected === true && needsIdentityMigration({ ...paths, accountUuid: initial.accountUuid });
+    let migrate = initial.protected === true && needsIdentityMigration({ ...paths, accountUuid: initial.accountUuid, organizationUuid: initial.organizationUuid, environmentBinding: initial.environmentBinding ?? null });
     const retire = hasRetainedClaudeLaunchFiles(canonicalConfig);
     if (!migrate && !retire) return guard;
     await guard.release(); guard = null;
@@ -248,7 +250,7 @@ export async function acquireClaudeStateGuard({ homeDir, label, configDir, comma
         // Readiness can change while SH was released, even if this call
         // originally wanted only optional cleanup (for example a peer died
         // during migration). A cached false must never skip recovery.
-        migrate = current.protected === true && needsIdentityMigration({ ...paths, accountUuid: current.accountUuid });
+        migrate = current.protected === true && needsIdentityMigration({ ...paths, accountUuid: current.accountUuid, organizationUuid: current.organizationUuid, environmentBinding: current.environmentBinding ?? null });
         if (!migrate) return guard;
         await guard.release(); guard = null;
         if (Date.now() >= transitionDeadline) throw error;
@@ -256,7 +258,7 @@ export async function acquireClaudeStateGuard({ homeDir, label, configDir, comma
       }
     }
     const binding = await recheck();
-    migrate = binding.protected === true && needsIdentityMigration({ ...paths, accountUuid: binding.accountUuid });
+    migrate = binding.protected === true && needsIdentityMigration({ ...paths, accountUuid: binding.accountUuid, organizationUuid: binding.organizationUuid, environmentBinding: binding.environmentBinding ?? null });
     if (migrate) {
       // Only EX may create or recover this private journal. Its parent was
       // validated by managed storage; no recursive mkdir follows unknown links.
@@ -266,7 +268,8 @@ export async function acquireClaudeStateGuard({ homeDir, label, configDir, comma
       if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid()
         || (stat.mode & 0o077)) fail("the private migration directory is unsafe");
       await migrateClaudePrivateState({ ...paths, command: fs.realpathSync(command),
-        accountUuid: binding.accountUuid, credential: binding.credential, guard, assertStopped });
+        accountUuid: binding.accountUuid, organizationUuid: binding.organizationUuid,
+        environmentBinding: binding.environmentBinding ?? null, credential: binding.credential, guard, assertStopped });
       if (retire) retireClaudeLaunchFiles({ configDir: canonicalConfig, guard });
     } else if (retire) {
       let stopped = false;
@@ -277,7 +280,7 @@ export async function acquireClaudeStateGuard({ homeDir, label, configDir, comma
     await guard.release(); guard = null;
     guard = await acquireShared();
     const final = await recheck();
-    if (final.protected === true && needsIdentityMigration({ ...paths, accountUuid: final.accountUuid })) {
+    if (final.protected === true && needsIdentityMigration({ ...paths, accountUuid: final.accountUuid, organizationUuid: final.organizationUuid, environmentBinding: final.environmentBinding ?? null })) {
       fail("account identity changed before launch; retry after affected work has stopped");
     }
     return guard;

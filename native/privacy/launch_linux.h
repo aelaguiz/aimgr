@@ -72,7 +72,7 @@ static void canonical(const char *file) {
     if (!file || file[0]!='/' || strlen(file)>=PATH_MAX || !realpath(file,resolved) || strcmp(file,resolved)) fail("noncanonical path");
     for (const unsigned char *p=(const unsigned char *)file;*p;p++) if (*p<32 || *p==127) fail("invalid path");
 }
-// Updater roots need enforcement even before the installer creates them.
+// Working-directory grants and updater roots apply before those paths exist.
 // Require a canonical existing prefix and literal missing components; never
 // create a user directory just to apply a deny rule or follow a dangling link.
 static void canonical_future(const char *file) {

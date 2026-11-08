@@ -39,7 +39,8 @@ export async function validateClaudeSettingsSnapshot({
       HOME: scratch, CLAUDE_CONFIG_DIR: scratch, CLAUDE_SECURESTORAGE_CONFIG_DIR: scratch,
       TMPDIR: scratch, CLAUDE_CODE_TMPDIR: scratch,
       DISABLE_AUTOUPDATER: "1", DISABLE_UPDATES: "1", DISABLE_GROWTHBOOK: "1",
-      DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" };
+      DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
+      CLAUDE_CODE_ENABLE_TELEMETRY: "0", ENABLE_BETA_TRACING_DETAILED: "0" };
     // Node copies NODE_V8_COVERAGE from its own environment unless this own
     // property is present. Undefined omits it from the actual child envPairs.
     env.NODE_V8_COVERAGE = undefined;

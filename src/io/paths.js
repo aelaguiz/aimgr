@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_AGENTS_REPO_ROOT } from "../core/constants.js";
-import { normalizeAbsolutePath } from "../core/normalize.js";
+import { normalizeAbsolutePath, normalizeLabel } from "../core/normalize.js";
 import { linkManagedCodexHome } from "./codex-home-links.js";
 
 export function resolveHomeDir(cliHome, { env = {} } = {}) {
@@ -195,4 +195,9 @@ export function resolvePrimeAuthFilePath(agentDir) {
 
 export function resolveCodexConfigPath(codexHome) {
   return path.join(codexHome, "config.toml");
+}
+
+// Separate legacy Prime/Pi native maintenance from primary Claude ownership.
+export function resolveLegacyClaudeLabelHomeDir({ homeDir, label }) {
+  return path.join(resolveAimgrStateDir({ homeDir }), "claude-homes", `.legacy-${normalizeLabel(label)}`);
 }

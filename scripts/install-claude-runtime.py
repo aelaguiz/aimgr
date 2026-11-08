@@ -23,6 +23,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import uuid
 
 RUNTIME = Path('/opt/aimgr-claude-runtime')
 REPO = Path(__file__).resolve().parent.parent
@@ -214,6 +215,24 @@ def stopped_accounts(user, vendor):
         for fd in guards: os.close(fd)
 
 
+def provision_claude_environment(runtime, new_environment=False):
+    """An administrator-owned local anchor, independent of transferred homes."""
+    anchor = runtime / 'environment.json'
+    if anchor.exists() or anchor.is_symlink():
+        info = anchor.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1
+                and info.st_mode & 0o022 == 0, 'unsafe machine-local Claude environment identity')
+        try:
+            value = json.loads(anchor.read_text())
+            identity = uuid.UUID(value['id'])
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise RuntimeError('invalid machine-local Claude environment identity') from None
+        require(type(value.get('schema')) is int and value['schema'] == 1 and identity.version == 4 and str(identity) == value['id'],
+                'invalid machine-local Claude environment identity')
+    if new_environment or not anchor.exists():
+        write_atomic(anchor, (json.dumps(dict(schema=1, id=str(uuid.uuid4()))) + '\n').encode())
+
+
 def activate_installed_bundle(user, target, runtime, published):
     """Publish only after install() has admitted the immutable destination.
 
@@ -235,10 +254,11 @@ def activate_installed_bundle(user, target, runtime, published):
         write_atomic(runtime / 'active.json', (json.dumps({'schema': 1, 'artifactSet': target.name}) + '\n').encode(), published)
 
 
-def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='claude', activate_bundle=None):
+def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='claude', activate_bundle=None, provision_clone=False):
     # Both providers use the same byte-copy/admission transaction. Their
     # activation prerequisites remain separate; Claude's default is unchanged.
     require(provider in ('claude', 'codex'), 'unsupported native provider')
+    require(not provision_clone or (provider == 'claude' and activate), '--provision-clone requires Claude --activate on the destination machine')
     require(provider == 'claude' or not activate or activate_bundle is not None, 'missing provider activation prerequisites')
     title = provider.title()
     require(os.geteuid() == 0, 'installation requires administrator privileges')
@@ -355,6 +375,7 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='cl
         if not lock.exists() and not lock.is_symlink(): write_atomic(lock, b'')
         if platform.system() == 'Linux': linux_immutable(lock)
         if activate:
+            if provider == 'claude': provision_claude_environment(runtime, provision_clone)
             (activate_bundle or activate_installed_bundle)(user, target, runtime, published)
         return {'artifactSet': artifact, 'activated': activate, 'oldBundlesRetained': True}
     except Exception as error:
@@ -377,10 +398,11 @@ if __name__ == '__main__':
     parser.add_argument('--node', required=True)
     parser.add_argument('--user', default=os.environ.get('SUDO_USER'))
     parser.add_argument('--activate', action='store_true')
+    parser.add_argument('--provision-clone', action='store_true', help='replace copied environment identity on a destination host; requires --activate')
     args = parser.parse_args()
     try:
         require(args.user is not None and Path(args.node).is_absolute(), 'an ordinary runtime user and absolute Node executable are required')
-        print(json.dumps(install(args.bundle, args.node, pwd.getpwnam(args.user), args.activate)))
+        print(json.dumps(install(args.bundle, args.node, pwd.getpwnam(args.user), args.activate, provision_clone=args.provision_clone)))
     except Exception as error:
         detail = str(error) if isinstance(error, RuntimeError) else 'bundle installation could not complete safely'
         prefix = 'Claude runtime activation needs inspection: ' if isinstance(error, SelectorPublishedError) else 'Claude runtime was not activated: '

@@ -162,7 +162,27 @@ export function readMachineClaudeSessionCounts({ homeDir, isAliveImpl = isProces
     if (!name.endsWith(".json")) continue;
     const holder = readHolder(path.join(dir, name));
     const live = holder ? holder.members.filter((pid) => isAliveImpl(pid)).length : 0;
-    if (live > 0) counts.set(name.slice(0, -".json".length), live);
+    if (live > 0) {
+      const label = name.slice(0, -".json".length).replace(/^local-/, "");
+      counts.set(label,(counts.get(label) ?? 0)+live);
+    }
   }
   return counts;
+}
+
+// Informational same-machine counts survive the end of copied-token leases.
+// No session waits for an account held on a different machine.
+export async function joinLocalClaudeSessions({homeDir,label,pid=process.pid,isAliveImpl=isProcessAlive}) {
+  const name = normalizeLabel(label);
+  return withHolderLock(homeDir, `local-${name}`, file => {
+    const holder = readHolder(file);
+    const members = (holder?.members ?? []).filter(member => member !== pid && isAliveImpl(member));
+    writeHolder(file,{token:'environment-local',members:[...members,pid]});
+    return async () => withHolderLock(homeDir,`local-${name}`, currentFile => {
+      const current = readHolder(currentFile);
+      const remaining = (current?.members ?? []).filter(member => member !== pid && isAliveImpl(member));
+      if(remaining.length) writeHolder(currentFile,{token:'environment-local',members:remaining});
+      else fs.rmSync(currentFile,{force:true});
+    });
+  });
 }

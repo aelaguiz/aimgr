@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { claudeWorkingDirectories } from "./claude-working-directories.js";
 import { admitClaudeArtifact } from "./claude-artifacts.js";
 import { readClaudeActiveAppState } from "./claude-state-source.js";
 import { assertClaudeIndividualOAuth, claudeStoredOAuthEnvironment } from "./claude-provider-admission.js";
@@ -10,7 +11,7 @@ import { inspectClaudeManagedPolicy } from "./claude-managed-policy.js";
 import { validateClaudeSettingsSnapshot } from "./claude-settings-validation-runner.js";
 import { retainClaudeLaunchFiles } from "./claude-launch-retention.js";
 import { nativeClaudeHeaderSourceAccepted, resolveClaudeSessionHeaders, pinClaudeSessionHeaders } from "./claude-session-headers.js";
-import { readClaudeLaunchState, stageClaudeLaunchEnvironment, buildClaudePrivacyEnvironment, resolveClaudeTaskReadRoots, resolveClaudeConfiguredInputs, resolveClaudeUpdateRoots, prepareClaudeDaemonDirectory } from "./claude-launch-inputs.js";
+import { readClaudeLaunchState, stageClaudeLaunchEnvironment, buildClaudePrivacyEnvironment, resolveClaudeTaskReadRoots, resolveClaudeConfiguredInputs, resolveClaudeUpdateRoots } from "./claude-launch-inputs.js";
 
 const fail = reason => { throw new ClaudePrivacySettingsError(reason); };
 
@@ -25,17 +26,20 @@ const fail = reason => { throw new ClaudePrivacySettingsError(reason); };
  * them and fixes its vendor target; the caller cannot choose a payload image.
  */
 export async function prepareClaudeNativeInvocation({
-  preparedLaunch, args, env, cwd, protectedAccount, readRoots, updateRoots,
+  preparedLaunch, args, env, cwd, readRoots, updateRoots,
+  workingDirectories = claudeWorkingDirectories,
   expectedIdentity, requiredHooks = {},
   stdoutIsTTY = Boolean(process.stdout.isTTY),
   admitArtifact = admitClaudeArtifact, inspectManagedPolicy = inspectClaudeManagedPolicy,
   validateSnapshot = validateClaudeSettingsSnapshot,
   validateHeaderSource = nativeClaudeHeaderSourceAccepted,
-  prepareDaemonDirectory = prepareClaudeDaemonDirectory,
 } = {}) {
+  // Privacy is independent of assigned routing, including callers retaining
+  // the old protectedAccount:false argument during an upgrade.
+  const protectedAccount = true;
   let scratch, snapshot, environmentFd, retention, started = false, executableAliases = [];
   try {
-    if (!preparedLaunch || !path.isAbsolute(cwd ?? "") || typeof protectedAccount !== "boolean"
+    if (!preparedLaunch || !path.isAbsolute(cwd ?? "")
       || (readRoots !== undefined && !Array.isArray(readRoots)) || (updateRoots !== undefined && !Array.isArray(updateRoots))
       || [...(readRoots ?? []), ...(updateRoots ?? [])].some(file => !path.isAbsolute(file)) || (readRoots?.length ?? 0) > 256 || (updateRoots?.length ?? 0) > 256) {
       fail("the native privacy launch inputs are incomplete");
@@ -81,16 +85,15 @@ export async function prepareClaudeNativeInvocation({
     const managedPolicy = inspectManagedPolicy({ protectedAccount, providerEnvironment, cwd, userHomeDir: preparedLaunch.userHomeDir });
     if (readRoots === undefined) {
       const task = resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDir: preparedLaunch.userHomeDir,
-        composition, env, appState, discoverReadRoots: protectedAccount });
+        composition, env, appState, stdoutIsTTY });
       executableAliases = task.executableAliases ?? [];
       task.taskFiles.push(...(managedPolicy.tlsReadPaths ?? []));
-      if (protectedAccount) {
-        const sharedMemoryDirectory = path.join(preparedLaunch.userHomeDir, ".claude/projects");
-        fs.mkdirSync(sharedMemoryDirectory, { recursive: true, mode: 0o700 });
-        readRoots = resolveClaudeTaskReadRoots({ ...task, userHomeDir: preparedLaunch.userHomeDir,
-          configDir, appState, sharedMemoryDirectory,
-          userPluginDirs: [...task.userPluginDirs, ...(preparedLaunch.userPluginDirs ?? [])] });
-      } else readRoots = [];
+      const sharedMemoryDirectory = path.join(preparedLaunch.userHomeDir, ".claude/projects");
+      fs.mkdirSync(sharedMemoryDirectory, { recursive: true, mode: 0o700 });
+      readRoots = resolveClaudeTaskReadRoots({ ...task, userHomeDir: preparedLaunch.userHomeDir,
+        configDir, appState, sharedMemoryDirectory,
+        workingDirectories: workingDirectories({ homeDir: preparedLaunch.userHomeDir, env, accountRoot: path.dirname(configDir) }),
+        userPluginDirs: [...task.userPluginDirs, ...(preparedLaunch.userPluginDirs ?? [])] });
     }
     updateRoots ??= resolveClaudeUpdateRoots({ userHomeDir: preparedLaunch.userHomeDir, env, cwd, vendorCommand: artifact.command });
     snapshot = stageClaudeSettingsSnapshot(composition);
@@ -104,9 +107,8 @@ export async function prepareClaudeNativeInvocation({
     // explicit different selection must still pass ordinary artifact checks.
     environment.PATH = path.dirname(artifact.command) + (environment.PATH ? path.delimiter + environment.PATH : "");
     environmentFd = stageClaudeLaunchEnvironment(environment, scratch);
-    const daemonRoots = protectedAccount ? [prepareDaemonDirectory({ configDir, env: environment })] : [];
-    const combinedReads = [...new Set([...readRoots, ...daemonRoots, ...(artifact.readPaths ?? []), ...managedPolicy.resolvedReadPaths])];
-    if (protectedAccount && process.platform === "darwin") {
+    const combinedReads = [...new Set([...readRoots, ...(artifact.readPaths ?? []), ...managedPolicy.resolvedReadPaths])];
+    if (process.platform === "darwin") {
       // Only the new immutable helper understands executable-alias entries.
       // Old approved bundles retain their original native MCP behavior; an
       // incomplete optional-server inventory must not refuse unrelated work.
@@ -120,7 +122,7 @@ export async function prepareClaudeNativeInvocation({
     if (combinedReads.length > 256) fail("the task and machine read roots exceed native policy capacity");
     snapshot.assertUnchanged();
     retention = retainClaudeLaunchFiles({ configDir, settings: snapshot.file, scratch });
-    const nativeArgs = ["v1", protectedAccount ? "protected" : "ordinary", configDir,
+    const nativeArgs = ["v1", "protected", configDir,
       fs.realpathSync(snapshot.file), scratch, "3", String(combinedReads.length), ...combinedReads,
       String(updateRoots.length), ...updateRoots, "--", ...claudeArgsWithSettingsSnapshot(args, snapshot)];
     return Object.freeze({ command: artifact.launcher, args: Object.freeze(nativeArgs),
