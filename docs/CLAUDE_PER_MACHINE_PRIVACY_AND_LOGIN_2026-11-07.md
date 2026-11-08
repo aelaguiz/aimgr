@@ -306,6 +306,15 @@ building a general backtesting framework.
 
 ## Status and evidence
 
-The independent Opus source review completed and identified corrections incorporated above: remove alias machinery, include organization identity, add remote/local command surfaces, separate legacy health/enrollment, preserve live same-account relogin and generic telemetry inputs, and drop speculative temp restrictions. Implementation is committed for isolated testing, with focused tests and native acceptance in progress. The paired reviewer additionally caught connection-lifetime, interrupted-login and trusted-project compatibility corrections. The isolated Linux VM is available; the newly rented Mac passed its
-clean reboot before product installation, with bounded automatic cleanup.
-Implementation/test/review results replace this status as they arrive.
+The implementation and native acceptance evidence are recorded in the
+[acceptance report](aelaguiz/CLAUDE_PER_MACHINE_ACCEPTANCE_2026-11-07.md),
+including each tested revision, real independent Linux/Mac grants, native
+`/usage` and refreshes, diagnostic collectors, retained workflows and preserved
+test failures. The real-provider sequence did not claim live model inference.
+The [implementation review disposition](aelaguiz/CLAUDE_PER_MACHINE_IMPLEMENTATION_REVIEW_2026-11-07.md)
+records the independent review findings and corrections.
+
+The final cold review found two additional caller issues, concerning offline
+status and linked skills in settings-listed folders. Their fixes and focused
+checks passed; reviewer assessment of the final changes remains in progress.
+Do not treat this status as final approval.
