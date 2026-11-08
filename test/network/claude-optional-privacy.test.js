@@ -17,7 +17,8 @@ import { runClaudeCli as realRunClaudeCli, runClaudeCliNoninteractive as realRun
 import { fetchClaudeUsageSnapshot, probeUsageSnapshotsByProvider } from "../../src/pool/usage.js";
 import { buildCoordinationView } from "../../src/coordination/snapshot.js";
 import { collectClaudeRedisAccountUsageStatus, selectLeastUsedUnlockedClaudeAccount } from "../../src/status/claude-redis-view.js";
-import { runCli } from "../helpers/cli-runner.js";
+import { runCli, registerCliRedisFixture } from "../helpers/cli-runner.js";
+import { localClaudeFixture, readClaudeTestEnvironment } from "../helpers/claude-local.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { mkTempHome } from "../helpers/files.js";
@@ -48,6 +49,8 @@ async function fixture(t) {
     identity: buildStableIdentityForCredential("anthropic", credential),
     policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } }, health: { status: "ready" } };
   await importCredentialsSnapshot(store, { credentials: [record] }, { updatedBy: "optional-test" });
+  await localClaudeFixture(home, record);
+  registerCliRedisFixture(home, { readClaudeEnvironmentImpl: readClaudeTestEnvironment });
   return { home, record, client, store, connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: prefix }) };
 }
 
@@ -124,7 +127,8 @@ test("ordinary fresh usage/status/selection use existing fetch; protected missin
   };
   const usage = await fetchClaudeUsageSnapshot({ record, homeDir: home, fetchJsonWithTimeoutImpl, createClaudeAccountTransportImpl: forbidden });
   assert.equal(usage.ok, true);
-  const status = await collectClaudeRedisAccountUsageStatus({ homeDir: home, fresh: true, connectRedisStoreImpl, fetchJsonWithTimeoutImpl });
+  const status = await collectClaudeRedisAccountUsageStatus({ homeDir: home, fresh: true, connectRedisStoreImpl, fetchJsonWithTimeoutImpl,
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment });
   assert.equal(status.accounts[0].usage.ok, true);
   assert.equal(status.accounts[0].source, "live");
   assert.equal(selectLeastUsedUnlockedClaudeAccount(status, { preset: "sonnet" }).label, "ordinary");

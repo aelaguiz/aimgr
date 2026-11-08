@@ -57,6 +57,10 @@ try {
     fs.writeFileSync(path.join(input.userHomeDir, "schedules.json"), JSON.stringify({ calendar, interactive }));
     console.log("SYNTHETIC_OK");
   } else if (input.check === "workflows") {
+    // AIM preserves caller diagnostics settings. Pinned native 2.1.317's Wo
+    // child-environment builder itself removes OTEL_* from ordinary tools.
+    assert.deepEqual(["OTEL_SDK_DISABLED", "OTEL_LOGS_EXPORTER", "OTEL_METRICS_EXPORTER", "OTEL_TRACES_EXPORTER"]
+      .map(key => process.env[key]), ["false", "otlp", "otlp", "otlp"]);
     const { check, captureFile, ...launch } = input;
     const cwd = launch.cwd;
     const models = () => fs.readFileSync(captureFile, "utf8").trim().split("\n").map(line => JSON.parse(line))
@@ -94,7 +98,7 @@ try {
     };
     const first = await turn("Perform the synthetic Bash test. NATIVE_HISTORY_CANARY.");
     assert.equal(fs.readFileSync(path.join(cwd, "tool-proof.txt"), "utf8"), "native-tool-ok");
-    assert.deepEqual(fs.readFileSync(path.join(cwd, "task-otel-env.txt"), "utf8").trim().split("\n"), ["false", "otlp", "otlp", "otlp"]);
+    assert.equal(fs.readFileSync(path.join(cwd, "task-otel-env.txt"), "utf8"), "\n\n\n\n");
     assert.match(fs.readFileSync(path.join(cwd, "hook-proof.txt"), "utf8"), /start.*tool/);
     for (const marker of ["NATIVE_INSTRUCTION_CANARY", "NATIVE_EXTERNAL_INSTRUCTION_CANARY"]) assert.ok(models().some(body => JSON.stringify(body).includes(marker)), marker);
     const resumed = await turn("Continue the previous saved conversation.", ["--resume", first.session_id]);
@@ -147,7 +151,7 @@ for await(const line of readline.createInterface({input:process.stdin})) {
     }
     fs.writeFileSync(path.join(launch.userHomeDir, "workflows.json"), JSON.stringify({ bash: true, hooks: true,
       instructions: true, externalInstructionImport: true, historyResumeFork: true, stdioMcp: true, personalSkill: true, subagent: true,
-      taskOtelEnvironmentPreserved: true,
+      callerOtelEnvironmentPreserved: true, nativeToolOtelEnvironmentRemoved: true,
       ...(backgroundRetained ? { backgroundRetained } : {}) }));
     console.log("SYNTHETIC_OK");
   } else {

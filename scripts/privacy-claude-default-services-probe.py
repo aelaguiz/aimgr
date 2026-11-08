@@ -362,7 +362,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
                         "command": "printf 'HEADER_FIRST_SETTING_%s' \"$AIM_HEADER_LIVE_PROBE\"", "description": "Read initial fixture setting"}}
                 elif "NATIVE_SECOND_HEADER_TURN" in json.dumps(body.get("messages", [])) and "header_live_env_probe" not in identifiers:
                     content = {"type": "tool_use", "id": "header_live_env_probe", "name": "Bash", "input": {
-                        "command": "printf 'HEADER_LIVE_SETTING_%s CRITICAL_LIVE_SETTINGS_%s_%s_%s_%s_%s' \"$AIM_HEADER_LIVE_PROBE\" \"$DISABLE_UPDATES\" \"$DISABLE_AUTOUPDATER\" \"$DISABLE_TELEMETRY\" \"$DISABLE_ERROR_REPORTING\" \"$DISABLE_GROWTHBOOK\"", "description": "Verify live edits preserve the pinned privacy controls"}}
+                        "command": "printf 'HEADER_LIVE_SETTING_%s CRITICAL_LIVE_SETTINGS_%s_%s_%s_%s_%s_%s_%s' \"$AIM_HEADER_LIVE_PROBE\" \"$DISABLE_UPDATES\" \"$DISABLE_AUTOUPDATER\" \"$DISABLE_TELEMETRY\" \"$DISABLE_ERROR_REPORTING\" \"$DISABLE_GROWTHBOOK\" \"$CLAUDE_CODE_ENABLE_TELEMETRY\" \"$ENABLE_BETA_TRACING_DETAILED\"", "description": "Verify live edits preserve the pinned privacy controls"}}
             if ("dynamic-directory" in active or "startup-directory" in active) and "NATIVE_ADDED_DIRECTORY" in json.dumps(body.get("messages", [])):
                 blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
                 if not any(block.get("type") == "tool_use" and block.get("name") == "Read" for block in blocks):
@@ -694,7 +694,8 @@ def interactive(arguments, home, env):
                         changed = {"env": {"ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer SYNTHETIC_HEADER_OVERRIDE\nX-Aim-Initial: changed",
                                            "AIM_HEADER_LIVE_PROBE": "after", "DISABLE_UPDATES": "",
                                            "DISABLE_AUTOUPDATER": "false", "DISABLE_TELEMETRY": "0",
-                                           "DISABLE_ERROR_REPORTING": "", "DISABLE_GROWTHBOOK": "false"}}
+                                           "DISABLE_ERROR_REPORTING": "", "DISABLE_GROWTHBOOK": "false",
+                                           "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "ENABLE_BETA_TRACING_DETAILED": "1"}}
                         # A real unrelated-setting change proves the watcher
                         # applied this edit. Startup-only checks cannot prove
                         # that the critical values survive a later reload.
@@ -1244,6 +1245,8 @@ print(json.dumps(result))
                         "requestPaths": sorted(set(urlsplit(r["path"]).path for r in captures)),
                         "modelRequests": sum("/messages" in r["path"] for r in captures),
                         "modelSources": sorted(set(r["source"] for r in captures if "/messages" in r["path"])),
+                        **({"nativeToolOtelEnvironment": (home / "project/task-otel-env.txt").read_text().splitlines()}
+                           if (home / "project/task-otel-env.txt").exists() else {}),
                         **({"errorLifecycle": {
                             "nativeErrorBatches": sum("browser-intake-us5-datadoghq.com" in r["host"] and r["path"].startswith("/api/v2/logs") for r in captures),
                             "nativeErrorCanaryUploaded": any("browser-intake-us5-datadoghq.com" in r["host"] and "AIM_ERROR_PROBE" in json.dumps(r["body"]) for r in captures),
@@ -1284,7 +1287,7 @@ print(json.dumps(result))
                             "initialValues": [next((value for key, value in r["headers"].items() if key.lower() == "x-aim-initial"), None) for r in captures if "/messages" in r["path"]],
                             "competingAuthSent": any(any(key.lower() == "authorization" and "SYNTHETIC_HEADER_OVERRIDE" in value for key, value in r["headers"].items()) for r in captures),
                             "unrelatedSettingReloaded": any("HEADER_LIVE_SETTING_after" in json.dumps(r["body"]) for r in captures if "/messages" in r["path"]),
-                            "criticalSettingsStayedPinned": any("CRITICAL_LIVE_SETTINGS_1_1_1_1_1" in json.dumps(r["body"]) for r in captures if "/messages" in r["path"]),
+                            "criticalSettingsStayedPinned": any("CRITICAL_LIVE_SETTINGS_1_1_1_1_1_0_0" in json.dumps(r["body"]) for r in captures if "/messages" in r["path"]),
                         }} if "headers-reload" in name else {}),
                         **terminal,
                         "terminalCanaryInModel": any(TERMINAL_CANARY in captured_text(r) for r in captures if "/messages" in r["path"]),
