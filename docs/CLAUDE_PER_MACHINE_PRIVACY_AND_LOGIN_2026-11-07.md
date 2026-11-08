@@ -4,7 +4,7 @@ date: 2026-11-07
 status: active
 fallback_policy: forbidden
 owners: [Codex]
-reviewers: []
+reviewers: ["Claude Opus 5.5 high, independent source review 311a8ccd-f9f2-4e68-88ff-022d38109175"]
 doc_type: migration
 related:
   - https://github.com/aelaguiz/aimgr/pull/14
@@ -85,53 +85,85 @@ the test results rather than silently upgrading during acceptance.
 
 ### Ownership and storage
 
-Use the existing native Claude credential storage and locks. Extend the existing private identity sidecar and its transaction with a local
-owner record that binds the verified underlying account UUID, an administrator-
-provisioned environment identifier, native home, and login generation. Provision
-Claude's environment marker with its runtime; it must not require installation
-of the Codex runtime. Reuse the established environment-binding pattern without
-adding Codex's separate refresh implementation to Claude.
+Use the existing native Claude credential storage and locks. Bind the local
+owner to verified account UUID, organization UUID, environment and login
+generation. Preserve the existing one-label/one-home model and duplicate-account
+refusal, moving duplicate checking to safe metadata. Two organizations of one
+account must never share a primary home. There is no alias registry, home
+locator, whole-home symlink or history relocation.
 
-Keep `~/.aimgr/claude-homes/<label>/.claude` and existing histories. An alias of
-one underlying account resolves to its already selected local owner/home; it
-must not create a second competing credential store. Label rebinds cannot adopt
-the previous account's login. Do not rename or bulk-relocate existing histories,
-memory, project state or skills. A copied owner record from another environment
-does not authorize its credential file.
+Keep `~/.aimgr/claude-homes/<label>/.claude` and its existing histories. Provision
+Claude's environment marker with its runtime independently of Codex installation.
+The vendor-visible sidecar contains only an account/organization/environment
+binding digest, never the raw cross-account environment identifier. A copied
+owner from another environment is invalid; ordinary native refresh remains valid
+without stamping a new owner on every token change.
 
-Native Claude owns refresh. Preserve `.storage-write.lock`, its native refresh
-locks and current app-state selection behavior. Use existing AIM assignment
-locks for authority replacement; do not hold native storage locks across network
-requests. Local invalid grants make this machine require login, not every other
-machine. Do not add exclusive cross-machine account use: independently logged-in
-machines can run concurrently.
+Native Claude owns refresh. Preserve its refresh/storage/app-state locks and
+app-state file selector. Normal work and same-account relogin remain concurrent.
+Local invalid grants affect only that local generation, never another machine
+or a newer successful login. Separate machines can run the account concurrently;
+remove the old remote token lease, Redis-outage pause/reconnect credential fence
+and routine behavior that stops idle sessions to obtain that lease. Preserve
+safe offline metadata plus valid local auth where offline runs already work.
 
-### Login and replacement
+### Commands, remote login and replacement
 
-The existing native staging login performs OAuth in the destination environment;
-the original authorized local browser profile performs browser authorization.
-No browser profile or primary credential file is copied to the destination.
-Validate the returned account identity before committing the local grant and
-owner record. Failed login, cancellation and wrong-account login preserve the
-prior good local grant and unrelated MCP credentials. Reuse the existing native auth/app-state/identity transaction for this commit; publish the nonsecret local home locator last and recover committed ownership if publication was interrupted. Do not build a second transaction engine. Verify interruption boundaries rather than assuming two file writes
-are atomic together.
+`aim claude login <label>` and `aim claude logout <label>` own managed local
+Claude auth. All managed readiness messages point to those commands.
+`aim login <label> --provider anthropic` remains the explicitly separate legacy
+Prime/Pi enrollment; it never enrolls a managed local Claude login. An ambiguous
+Anthropic shorthand must direct the caller to the appropriate explicit command.
 
-Existing legacy/Redis grants do not enroll automatically. The first managed
-Claude run without a valid local owner reports that this machine needs login.
-Never silently read a pooled primary grant, stamp an ownership receipt onto it,
-or use a legacy cache as an offline fallback. Logout invalidates only the local
-owner/native grant and cannot be undone by Redis hydration. Native processes
-already holding tokens must be handled through existing live-owner guards,
-without automatically killing user sessions or claiming immediate provider
-revocation that the client has not demonstrated.
+`aim claude login <label> --manual-callback-stdio` supports an original browser on
+another host. The destination runs official `auth login --claudeai` and owns its
+state, PKCE and exchange. Reuse the existing offsite login URL/callback bridge
+and native manual-code behavior, adapting it to the local-primary command and
+macOS. The original browser host validates the selected existing profile/route
+before opening the URL; only its one-use callback/code returns privately to the
+originating native process. Validate native callback origin/path/state where
+applicable. Never transfer browser state or primary tokens, spoof a browser
+validation boolean, or add an arbitrary remote executor. Prove the exact native
+manual/loopback handoff on Linux before dependent real-account acceptance.
+
+Keep staged login and validate account plus organization before commit. Wrong
+account, cancellation or failure preserves the prior grant and third-party
+state. For same-account/organization/environment relogin with established private
+identity, use native refresh/storage/app-state locks, reread and merge the full
+current documents, then publish the local owner generation. Do not acquire a
+stopped-owner EX guard or use the identity migration journal for routine relogin.
+Native concurrency tests must prove stale processes cannot overwrite the new
+grant; no copied-token publisher remains. A failed/interrupted enrollment must
+never manufacture ownership of a legacy token.
+
+First conversion, an account/organization rebind or an actual identity rotation
+uses the existing stopped-owner transition and journal, because native processes
+can retain and rewrite old identity/app state. Do not run new sessions under
+unproven old IDs as an automatic fallback. Logout uses the existing local guard
+to prevent active cached owners from continuing after a claimed local removal;
+it preserves independent MCP credentials and does not claim provider-wide revoke.
+No automatic session killing or new transaction engine is introduced.
+
+### Onboarding
+
+Each account used on a machine needs one native browser login there. Accounts
+unused on that machine need no enrollment. Existing running sessions continue;
+new managed launches require the local login. Install the reviewed runtime and
+its environment marker on that host before enrollment. The first conversion
+that rotates existing identity waits for that account's local sessions to finish;
+other accounts and machines can continue. Subsequent same-identity relogins do
+not impose that stop. This PR implements and tests the transition, not a fleet
+shutdown or mass logout.
+
+No legacy/Redis grant auto-enrolls. No pooled primary fetch, old token cache,
+import or repair path can turn missing local login into a valid owner. Keep
+existing transcript paths, memory, settings and external history readers intact.
 
 ### Shared metadata and separate credential authorities
 
 Add a server-side allowlisted Claude metadata view, following the Codex metadata
 reader. Managed Claude selection/status/maintenance must never download the
-legacy primary bundle and redact it afterward. Share account identity, labels,
-route assignment and useful availability/usage information, not bearer/refresh
-tokens, native credential documents or local installation identifiers.
+legacy primary bundle and redact it afterward. Share account identity (including organization), labels, route/browser/pool policy and useful usage information, not bearer/refresh tokens, native credential documents or local installation identifiers. Legacy-grant `reauth` and credential `health` are not account-wide metadata: exclude them so an expired Prime/Pi grant cannot disable a valid managed Claude login.
 
 Keep Prime/Pi's explicitly separate legacy credential authority working. Its native maintenance must use a separate legacy destination: it currently resolves the same label home and could overwrite a local-primary grant. Never project a legacy token into a bound primary home. Their
 `harness-access.js` and `credential-helper.js` callers must not obtain or export
@@ -143,12 +175,9 @@ other harnesses.
 Claude's native `.credentials.json` mixes primary OAuth with third-party MCP/XAA
 and package credentials. Never sync the entire file or overwrite it with only
 the primary field. Preserve and classify third-party entries under native write
-locks, including refreshes and unrelated fields. Current Claude shares MCP definitions, while mixed OAuth/XAA/package secrets remain per native home. Preserve that behavior and externally configured shared credential mechanisms; do not introduce cross-account secret replication. Same-account aliases use the chosen home and its native refresh state.
+locks, including refreshes and unrelated fields. Current Claude shares MCP definitions, while mixed OAuth/XAA/package secrets remain per native home. Preserve that behavior and externally configured shared credential mechanisms; do not introduce cross-account secret replication.
 
-Capture/import/export, browser seed, OpenClaw compatibility, Redis import/export,
-repair and generic maintenance must reject local-primary publication before
-provenance disappears. Keep legacy-authority operations explicit. Synthetic
-canaries test every reachable boundary without reading real pooled secrets.
+Retire managed Claude capture/import/export as enrollment mechanisms; preserve any needed transfer only under explicit legacy authority. Keep local-primary credentials out of shared `state.credentials` by construction, including browser seed/OpenClaw compatibility, Redis import/export and repair. Do not add provenance machinery to every generic clone operation. Synthetic canaries verify the reachable boundaries. Legacy Prime/Pi Anthropic grants still circulate through their old Redis authority; this PR does not claim to make that separate harness authentication machine-local.
 
 ## Privacy and working directories
 
@@ -171,19 +200,16 @@ the file/canonical target only. Do not infer grants from prompt text or convert
 wildcard permission patterns into guessed directory roots. Native comparison
 must verify this mechanism before claiming exact-file support.
 
-Broad temp access must work for browser screenshots, images, generated files,
-background processes and files created after parent exit. Protect only known
-private AIM/Claude credential/settings/control artifacts, where needed; never
-deny `/tmp` wholesale or replace the caller's temp directory. Prefer the existing
-private account locations where moving an AIM-owned artifact preserves native
-path semantics. Native Claude's already-disabled detached-service namespaces
-need no new per-account compatibility exceptions. Retain settings snapshot
-origins and grant this invocation's exact snapshot while excluding other known
-private snapshot names from broad native reads, including snapshots created
-later. Linux explicit deny overrides allow, so broad rules must exclude reserved
-paths before exact inputs are granted. Reuse existing policy expression support;
-do not add a generic path-policy engine. Native probes must establish the needed
-exclusions and preserve ordinary background Bash/local agents.
+Broad temp access must work for browser screenshots, clipboard images,
+drag-and-drop image paths, generated files, background processes and files
+created after parent exit. Grant `/tmp` aliases and user temp plainly; do not add
+new temp namespace denials or a path-complement engine. Files within these user-
+approved work areas are readable, including source-adjacent settings snapshots.
+Keep existing protection against mutating this invocation's immutable settings.
+Managed primary secrets/owner records remain in their private account locations;
+provider secret fields remain excluded from settings snapshots. Detached and
+remote services stay disabled by their existing controls. Do not replace the
+caller's temp directory or sandbox ordinary tools.
 
 Bind identity schema to account plus environment. A legacy identity with no
 environment provenance rotates once using the existing migration journal;
@@ -195,8 +221,7 @@ relative paths; user/project contents and non-path switches remain live. New
 outside path targets can take effect on the next invocation. Do not add Codex's
 settings adapter or require all shared paths to become absolute.
 
-Require disabled automatic telemetry/error reporting and disabled custom log,
-metric and trace exporters in the exact supported native controls. Managed
+Require disabled automatic telemetry/error reporting and custom diagnostics through supported Claude-specific controls: `CLAUDE_CODE_ENABLE_TELEMETRY=0`, `DISABLE_TELEMETRY=1` and `DISABLE_ERROR_REPORTING=1`, subject to pinned-source and collector proof. Do not change generic `OTEL_*` exporter/SDK controls inherited by task tools. Managed
 policy validation must compare typed expected values, including false/`none`,
 rather than assuming all mandatory settings are truthy. Test native behavior
 after settings reload and refresh; an environment-variable assertion alone is
@@ -236,16 +261,16 @@ result receipts; keep tokens and raw identity-bearing logs out of GitHub.
 | Area | Required evidence on the candidate |
 | --- | --- |
 | Redis boundary | Real local test Redis holds canary primary secrets; managed metadata/status/selection/maintenance receive only allowlisted fields. No publish, hydrate, cache or import/export path transfers the local primary. Separate Prime/Pi synthetic authority remains functional. |
-| Ownership | Fresh login records correct environment/account; copied receipt, wrong account, label rebind and unowned legacy credentials are refused. Aliases converge on one native owner and lock. Cancellation/interrupted commit preserves prior valid login and third-party entries. |
+| Ownership | Fresh login records account/organization/environment; copied receipt, wrong identity, label rebind, duplicate same-organization labels and unowned legacy credentials are refused. Same person in different organizations stays separate. Same-identity relogin succeeds while native sessions run; interruption/cancellation preserves valid prior state and third-party entries. |
 | Refresh/logout | Native refresh persists locally; concurrent same-account processes serialize through native locks. Invalid grant/logout stays local and cannot be resurrected from Redis. Demonstrate actual live-owner replacement behavior and tombstones. |
-| Real independent grants | Independently authorize the same sacrificial account on Linux and Mac, alternate native refresh and normal authenticated requests, then test one grant's logout/revocation without invalidating the other. Do not use copied tokens or source inspection as proof of issuer independence. |
+| Real independent grants | Independently authorize the same sacrificial account on Linux and Mac, alternate native refresh and normal authenticated requests, then verify local logout cannot resurrect Linux auth and leaves Mac usable. New authorization and alternating actual refreshes, not local logout, establish provider grant independence. Do not use copied tokens or source inspection as proof of issuer independence. |
 | Native work files | Stock positive control and protected native Read/image/edit results in workspace, sibling repos, Downloads, screenshots, temp aliases, configured extra roots and future files. Exact outside file does not grant its sibling. Private-canary reads denied. Check actual tool content, not only process exit. |
-| Temp/background | A late file/socket created after the launching parent has exited remains usable. Ordinary temp variables unchanged. Own control socket works; another account's known private control/settings artifacts remain outside native access. |
-| Skills/instructions | Existing histories and external readers find sessions; shared relative settings and live non-path edits work. Native discovery and actual skill edit/create/repair work for real directories and external directory links, malformed/new skill files and unused broken links. Preserve documented selected-root-link limit. |
+| Temp/background | A late file/socket created after the launching parent has exited remains usable. Ordinary temp variables unchanged. No new temp namespace exclusions. Private-canary fixtures live outside the agreed work areas; the current immutable settings input stays protected against writes. |
+| Skills/instructions | Existing label homes/histories and external readers find sessions; shared relative settings and live non-path edits work. Native discovery and actual skill edit/create/repair work for real directories and external directory links, malformed/new skill files and unused broken links. Preserve documented selected-root-link limit. |
 | Identity | Different accounts/environments get distinct stable AIM identity; same owner stays stable across launches. Legacy rotation once; interrupted journal recovery uses the same planned values. Host identifier canaries remain inaccessible to native collection while task tools retain allowed behavior. |
-| Diagnostics | Stock collectors demonstrably receive each supported provider/custom diagnostic stream, then protected candidate collectors receive none during startup, model/tools, error, settings reload, native refresh and shutdown. Functional requests continue. Distinguish explicit feedback evidence from automatic errors. |
+| Diagnostics | Stock collectors demonstrably receive each supported provider/custom diagnostic stream (including a real stock trace positive control), then protected candidate collectors receive none during startup, model/tools, error, settings reload, native refresh and shutdown. Functional requests and ordinary tool exporter settings continue. Distinguish explicit feedback evidence from automatic errors. |
 | Proxy independence | Direct and assigned-route launches have identical privacy controls; assigned missing/wrong route refuses without direct retry. Reuse existing route fixtures; restore only fixture-owned route changes. |
-| Real workflows | Existing retained-workflow/integrated-continuity/policy recipes cover shells/builds, process inspection/debugger, background service, nested reviewer, scheduled launch, browser artifact, MCP native login/refresh, SSH/SDK and Mac Keychain integration. No shell substitute for a claimed native file-tool pass. |
+| Real workflows | Run the existing retained-workflow/integrated-continuity/policy recipes once for direct-account protection, covering shells/builds, process inspection/debugger, background service, nested reviewer, scheduled launch, browser artifact, MCP native login/refresh, SSH/SDK and Mac Keychain integration. Route cases separately verify route behavior, not a duplicate full tools matrix. No shell substitute for a claimed native file-tool pass. |
 | Regression/review | Focused tests during development; lint and full suite once ready on supported isolated hosts. Record skips/failures honestly, fix candidate failures, final independent reviewer reports requirements coverage and any remaining blockers/overbuild. |
 
 Existing recipes to extend: `scripts/privacy-claude-policy-probe.py`,
@@ -258,7 +283,6 @@ building a general backtesting framework.
 
 ## Status and evidence
 
-Plan written; independent code review pending. Product implementation has not
-started. The isolated Linux VM is available; the newly rented Mac passed its
+The independent Opus source review completed and identified corrections incorporated above: remove alias machinery, include organization identity, add remote/local command surfaces, separate legacy health/enrollment, preserve live same-account relogin and tool telemetry, and drop speculative temp restrictions. Product implementation starts from this corrected plan. The isolated Linux VM is available; the newly rented Mac passed its
 clean reboot before product installation, with bounded automatic cleanup.
 Implementation/test/review results replace this status as they arrive.
