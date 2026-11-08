@@ -7,6 +7,7 @@ import { inspectClaudePrivacyStatus, formatClaudePrivacyStatus } from "../../pri
 import { readAimgrConfig } from "../../config/aimgr-config.js";
 import { normalizeEgressPolicy, resolveClaudeEgressProfile } from "../../network/claude-egress-policy.js";
 import fs from "node:fs";
+import { accountNoteFor, readNotesForCommand, notesForAccounts, renderAccountNotes, formatAccountNote } from "../../status/account-notes.js";
 import path from "node:path";
 import { pickClaudeSession } from "../claude-session-picker.js";
 import { chooseClaudeAccountToFree, listLocalAimClaudeSessions, stopClaudeAccountSessions } from "../../targets/claude-idle-stop.js";
@@ -936,6 +937,7 @@ async function runClaudeFromCleanOfflineCache(context, {
       stdout?.write?.(
         `AIM coordination=offline label=${label} cache=complete\n`,
       );
+      (context.stderr ?? stdout)?.write?.("[aim] Account notes unavailable.\n");
       const result = await runClaudeCliImpl({
         assignmentLock,
         signal: assignmentLock?.signal,
@@ -1165,6 +1167,10 @@ async function handleRedisClaudeRun(context, {
     let launched = null;
     let launchError = null;
     try {
+      const accountNote = accountNoteFor(runtime.accountNotes, ANTHROPIC_PROVIDER, label);
+      const noteOutput = context.opts.afterDoubleDash.some((arg) => arg === "--output-format" || arg.startsWith("--output-format=")) ? context.stderr : context.stdout;
+      if (accountNote) noteOutput.write(`[aim] ${formatAccountNote({ provider: ANTHROPIC_PROVIDER, label, note: accountNote })}\n`);
+      else if (runtime.accountNotes === null) noteOutput.write("[aim] Account notes unavailable.\n");
       launched = await runClaudeCliImpl({
         assignmentLock,
         egressProfile,
@@ -1603,10 +1609,13 @@ export async function handleClaude(context) {
       fetchJsonWithTimeoutImpl,
       connectRedisStoreImpl,
     });
+    const notes = notesForAccounts(await readNotesForCommand(context), ANTHROPIC_PROVIDER, result.accounts ?? []);
+    result.accountNotes = notes;
+    for (const account of result.accounts ?? []) account.note = accountNoteFor(notes, ANTHROPIC_PROVIDER, account.label);
     stdout.write(
       opts.json
         ? `${JSON.stringify(result, null, 2)}\n`
-        : renderClaudeRedisAccountUsageStatus(result, { verbose: opts.verbose === true }),
+        : renderClaudeRedisAccountUsageStatus(result, { verbose: opts.verbose === true }) + renderAccountNotes(notes),
     );
     if (result.ok !== true) {
       setExitCode(1);
@@ -1639,7 +1648,10 @@ export async function handleClaude(context) {
       nowMs,
       connectRedisStoreImpl,
     });
-    stdout.write(opts.json ? `${JSON.stringify(result, null, 2)}\n` : renderClaudeRedisAccountInventory(result));
+    const notes = notesForAccounts(await readNotesForCommand(context), ANTHROPIC_PROVIDER, result.accounts ?? []);
+    result.accountNotes = notes;
+    for (const account of result.accounts ?? []) account.note = accountNoteFor(notes, ANTHROPIC_PROVIDER, account.label);
+    stdout.write(opts.json ? `${JSON.stringify(result, null, 2)}\n` : renderClaudeRedisAccountInventory(result) + renderAccountNotes(notes));
     if (result.ok !== true) {
       setExitCode(1);
     }

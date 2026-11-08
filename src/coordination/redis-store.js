@@ -4,7 +4,7 @@ import {
   normalizeKeyPrefix,
   normalizeMetaRecord,
 } from "./records.js";
-import { normalizeProviderId } from "../core/normalize.js";
+import { normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 
 export function buildRedisKeys(keyPrefix) {
   const prefix = normalizeKeyPrefix(keyPrefix);
@@ -14,6 +14,8 @@ export function buildRedisKeys(keyPrefix) {
     credentials: () => `${prefix}credentials`,
     credentialsByProvider: (provider) => `${prefix}credentialsByProvider:${provider}`,
     credential: ({ provider, label }) => `${prefix}credential:${provider}:${label}`,
+    accountNotes: () => `${prefix}accountNotes`,
+    accountNote: ({ provider, label }) => `${prefix}accountNote:${provider}:${label}`,
   };
 }
 
@@ -183,6 +185,36 @@ export async function readSnapshot(store) {
     observedAt: new Date().toISOString(),
     keyPrefix: store.keyPrefix,
   };
+}
+
+// Notes have their own records so older credential writers cannot erase them.
+export async function readAccountNotes(store) {
+  const entries = await readIndexedRecordEntries(store, store.keys.accountNotes());
+  return entries.map(({ key, value }) => {
+    const provider = normalizeProviderId(value?.provider);
+    const label = normalizeLabel(value?.label);
+    if (!provider || !label || key !== store.keys.accountNote({ provider, label })
+      || !(value.note === null || typeof value.note === "string")) {
+      throw new Error("Redis account note index is inconsistent.");
+    }
+    return { provider, label, note: value.note, version: value.version };
+  }).filter((record) => record.note !== null)
+    .sort((a, b) => `${a.provider}:${a.label}`.localeCompare(`${b.provider}:${b.label}`));
+}
+
+export async function readAccountNote(store, { provider, label }) {
+  const key = store.keys.accountNote({ provider, label });
+  return parseJsonRecord(await store.client.get(key), key);
+}
+
+export async function writeAccountNote(store, { provider, label, note, expectedVersion }) {
+  return casPutJsonRecord(store, {
+    key: store.keys.accountNote({ provider, label }),
+    indexKeys: [store.keys.accountNotes()],
+    expectedVersion,
+    nextRecord: { kind: "aimgr.account-note.v1", provider, label, note },
+    updatedBy: "aimgr-cli",
+  });
 }
 
 export async function readCredentialRecordsByProvider(store, provider) {

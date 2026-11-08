@@ -105,6 +105,20 @@ aim status --compact
 The text tables hide blocked Codex and Claude accounts. Counts and averages use
 the displayed accounts. `aim status --json` retains all accounts.
 
+Account notes are shared through Redis and appear in status and account-use
+output, including when an account is hidden from the main status tables. Notes
+are advice; they do not change eligibility or automatic selection. Add, read,
+replace, or clear a note with:
+
+```bash
+aim note set iphone_se_1 "Reserved for Mac Mini 1" --provider anthropic
+aim note show iphone_se_1 --provider anthropic
+aim note clear iphone_se_1 --provider anthropic
+```
+
+The provider can be omitted for a label that belongs to only one provider.
+Notes require Redis and are not stored in machine-local status caches.
+
 Under the Codex and Claude tables, a `Next 24h` line says how much of that pool's weekly
 capacity comes back in the next 24 hours: the weekly usage on accounts whose weekly limit
 resets by then, as a share of every measured account's full week. It also shows how much of

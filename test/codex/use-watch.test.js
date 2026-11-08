@@ -105,8 +105,9 @@ test("explicit Redis-backed Codex use reconciles and activates without usage", a
 
 test("codex run rotates before launching the default yolo command", async () => {
   const { home, connectRedisStoreImpl } = await setup();
+  await runCli(["note", "set", "writer", "Reserved for Mac Mini 1", "--home", home], { connectRedisStoreImpl });
   let launch;
-  await runCli(["codex", "run", "--home", home], {
+  const output = await runCli(["codex", "run", "--home", home], {
     connectRedisStoreImpl,
     probeUsageSnapshotsByProviderImpl: async () => ({
       "openai-codex": { boss: usage("boss", 20), writer: usage("writer", 10) },
@@ -119,6 +120,7 @@ test("codex run rotates before launching the default yolo command", async () => 
   });
 
   assert.deepEqual(launch.args, ["-p", "yolo"]);
+  assert.match(output, /writer: "Reserved for Mac Mini 1"/);
   assert.equal(JSON.parse(fs.readFileSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home })), "utf8")).tokens.account_id, "acct_2");
 });
 

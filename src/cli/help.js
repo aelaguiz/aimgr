@@ -13,6 +13,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "",
     "Usage:",
     "  aim status [--json] [--compact] [--accounts] [--assignments]",
+    "  aim note set <label> <text> [--provider <provider>] | aim note show|clear <label> [--provider <provider>]",
     "  aim redis configure --url <redis-url> [--key-prefix <prefix>] [--primary-host <host>] [--transport tls]",
     "  aim redis config | ping | snapshot",
     "  aim redis export --out <file>",

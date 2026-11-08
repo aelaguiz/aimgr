@@ -15,6 +15,10 @@ Without a live Redis there is no shared account state and selection fails
 closed. `codex=` is the currently selected Codex label; `claude_last=` is the
 last Claude label used.
 
+Shared account notes follow that line when present. A note may explain that an
+account is reserved for a machine or job; consider it when choosing an account.
+The note is advice and does not change whether AIM selects an account.
+
 ## Claude availability
 
 ```bash

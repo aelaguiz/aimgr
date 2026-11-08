@@ -64,7 +64,8 @@ function defaultLog(line) {
 }
 
 function summarizeArgv(argv) {
-  return argv.map(String).join(" ").slice(0, 200);
+  return argv.map((value, index) => argv[0] === "note" && argv[1] === "set" && index === 3
+    ? "[note]" : String(value)).join(" ").slice(0, 200);
 }
 
 export function buildMcpServer({
