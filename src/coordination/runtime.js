@@ -16,6 +16,7 @@ import {
   connectRedisStore,
   publishCredential,
   readSnapshot,
+  readAccountNotes,
   REDIS_CONNECTION_POLICY_ONE_SHOT,
 } from "./redis-store.js";
 
@@ -40,6 +41,8 @@ export async function loadRedisRuntime({
     // Keep the server-side read scope across refreshes: filtering state after
     // retrieval would already have copied a foreign Codex grant to this host.
     const snapshot = await readSnapshot(store, { excludeCodexGrants, excludeClaudeGrants });
+    // Notes are advisory; a read failure must not change account selection.
+    const accountNotes = await readAccountNotes(store).catch(() => null);
     const localState = loadLocalState({ homeDir });
     const state = buildCoordinationView(snapshot, {
       localState,
@@ -50,6 +53,7 @@ export async function loadRedisRuntime({
       store,
       updatedBy: REDIS_UPDATED_BY,
       snapshot,
+      accountNotes,
       localState,
       state,
       providerScope: normalizeProviderId(provider),

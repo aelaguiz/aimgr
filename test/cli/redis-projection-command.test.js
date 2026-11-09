@@ -9,6 +9,7 @@ import {
   importCredentialsSnapshot as importSnapshot,
   publishCredential,
   readSnapshot,
+  writeAccountNote,
 } from "../../src/coordination/redis-store.js";
 import {
   closeRedisRuntime,
@@ -628,6 +629,8 @@ test("redis-configured claude run keeps its per-label login and rotation local",
   const initial = await readSnapshot(store);
   await localClaudeFixture(home, initial.credentials[0]);
 
+  await writeAccountNote(store, { provider: "anthropic", label: "claude", note: "Reserved for Mac Mini 1", expectedVersion: null });
+
   const claudeHome = resolveAimgrClaudeLabelHomeDir({ homeDir: home, label: "claude" });
   const configDir = path.join(claudeHome, ".claude");
   let preflightCount = 0;
@@ -687,7 +690,7 @@ test("redis-configured claude run keeps its per-label login and rotation local",
     },
   });
 
-  assert.equal(out, "");
+  assert.match(out, /anthropic \/ claude: "Reserved for Mac Mini 1"/);
   assert.equal(preflightCount, 1);
   assert.equal(keychainCalls, 0);
   const snapshot = await readSnapshot(store);

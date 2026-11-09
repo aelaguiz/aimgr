@@ -2,6 +2,7 @@ import { normalizeBrowserBindingMode, normalizeInteractiveOAuthMode } from "../b
 import { BROWSER_MODE_AGENT_BROWSER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHROME_PROFILE, OPENAI_CODEX_PROVIDER, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK, REAUTH_MODE_NATIVE_CLAUDE } from "../core/constants.js";
 import { normalizeLabel } from "../core/normalize.js";
 import { formatDurationRough, parseExpiresAtToMs } from "../core/time.js";
+import { formatAccountNote } from "./account-notes.js";
 
 export function formatInteractiveLoginSummary(login) {
   const mode = normalizeInteractiveOAuthMode(login?.mode);
@@ -248,9 +249,12 @@ export function renderStatusCompactText(view) {
       : "none";
   const accounts = Array.isArray(view?.accounts) ? view.accounts.length : 0;
   const cacheAgeMs = Number(view?.redis?.cacheAgeMs);
+  const noteLines = Array.isArray(view?.accountNotes)
+    ? view.accountNotes.map((entry) => `note ${formatAccountNote(entry)}\n`).join("")
+    : "account notes unavailable (Redis could not be read)\n";
   return `redis=${redis}  accounts=${accounts}  codex=${codex}  claude_last=${claude}`
     + (Number.isFinite(cacheAgeMs) ? `  cache_age=${Math.floor(cacheAgeMs / 1000)}s` : "")
-    + "\n";
+    + "\n" + noteLines;
 }
 
 export function resolveCurrentConfiguredCodexLabel(view) {

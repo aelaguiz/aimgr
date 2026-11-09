@@ -10,6 +10,7 @@ import { sanitizeForStatus } from "../../core/sanitize.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { resolveAimgrStateDir } from "../../io/paths.js";
 import { activateCodexLabelSelection } from "../../targets/codex-cli.js";
+import { accountNoteFor, formatAccountNote } from "../../status/account-notes.js";
 import { resolveBlobPolicy } from "../../targets/codex-thread-copy.js";
 import { loadCodexRuntime } from "../../coordination/codex-runtime.js";
 import { ensureCodexAccountMetadata } from "../../coordination/codex-metadata.js";
@@ -64,7 +65,9 @@ async function activateCodexForContext(context) {
             selectLeastUsed: true,
           });
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-      return { activated };
+      const label = activated.receipt?.label;
+      const accountNote = label ? accountNoteFor(runtime.accountNotes, OPENAI_CODEX_PROVIDER, label) : null;
+      return { activated, accountNote, accountNotesAvailable: runtime.accountNotes !== null };
     } finally {
       await closeRedisRuntime(runtime);
     }
@@ -116,6 +119,9 @@ async function handleRedisCodexRun(context) {
     return;
   }
   const { label, previousLabel } = result.activated.receipt;
+  const noteOutput = args.includes("--json") ? context.stderr : stdout;
+  if (result.accountNote) noteOutput.write(`[aim] ${formatAccountNote({ provider: OPENAI_CODEX_PROVIDER, label, note: result.accountNote })}\n`);
+  else if (!result.accountNotesAvailable) noteOutput.write("[aim] Account notes unavailable.\n");
   if (stdout.isTTY) {
     stdout.write(`[aim] Codex account: ${label}${previousLabel ? ` (previous: ${previousLabel})` : ""}\n`);
   }
@@ -416,8 +422,11 @@ async function handleRedisCodexResumeFresh(context) {
 
   // 6. Launch the new thread on the rotated account.
   const args = ["-p", profileName, "resume", plan.newId, ...passthrough];
+  const { label, previousLabel } = activation.activated.receipt;
+  const noteOutput = args.includes("--json") ? context.stderr : stdout;
+  if (activation.accountNote) noteOutput.write(`[aim] ${formatAccountNote({ provider: OPENAI_CODEX_PROVIDER, label, note: activation.accountNote })}\n`);
+  else if (!activation.accountNotesAvailable) noteOutput.write("[aim] Account notes unavailable.\n");
   if (stdout.isTTY) {
-    const { label, previousLabel } = activation.activated.receipt;
     stdout.write(`[aim] Codex account: ${label}${previousLabel ? ` (previous: ${previousLabel})` : ""}\n`);
     stdout.write(`[aim] new thread ${plan.newId} from ${plan.sourceId} (${copy.lines} lines, ${formatBytes(copy.bytes)}${copy.dropped > 0 ? `, dropped ${copy.dropped}` : ""})\n`);
     stdout.write(`[aim] source thread untouched${goal.carried ? "; goal carried with a fresh goal id" : goal.reason === "no_goal" ? "" : `; goal not carried (${goal.reason})`}\n`);
