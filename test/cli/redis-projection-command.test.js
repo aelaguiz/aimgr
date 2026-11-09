@@ -106,7 +106,7 @@ test("Claude launches offline with its local grant and cached assigned proxy", a
       return { status: 0, signal: null };
     },
   });
-  assert.equal(output, "");
+  assert.equal(output, "[aim] Account notes unavailable.\n");
   assert.equal(launches, 1);
   assert.deepEqual(readClaudeOfflineBinding(lane.home, "claude"), binding);
 });
@@ -1543,7 +1543,7 @@ test("raw Claude resume stages a cross-account transcript and keeps same-account
     ["claude", "run", "dest", "--home", home, "--", "-r", sourcePath],
     { ...deps, connectRedisStoreImpl: async () => { throw new Error("simulated Redis outage"); } },
   );
-  assert.equal(offline, "");
+  assert.equal(offline, "[aim] Account notes unavailable.\n");
   assert.equal(fs.existsSync(stagedPath), false);
   await assert.rejects(
     runCli(["claude", "run", "dest", "--home", home, "--", "--session-id", threadId], deps),
