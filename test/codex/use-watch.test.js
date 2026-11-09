@@ -495,3 +495,31 @@ test("Codex credential commands fail quickly when Redis is unconfigured", async 
     /AIM is not attached to Redis/,
   );
 });
+
+
+test("scheduled Codex selection reuses its sole eligible local account while manual use still rotates", async () => {
+  const { home, connectRedisStoreImpl } = await setup(["boss"]);
+  await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
+  const deps = { connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl: async () => ({ "openai-codex": { boss: usage("boss", 5) } }) };
+  const selected = JSON.parse(await runCli(["codex", "__routine-use", "--home", home], deps));
+  assert.equal(selected.ok, true);
+  assert.equal(selected.activated.receipt.label, "boss");
+  assert.equal(selected.activated.prepared.accountId, "acct_1");
+  const manual = await runCliWithExitCode(["codex", "use", "--home", home], deps);
+  assert.equal(manual.exitCode, 1);
+  assert.equal(JSON.parse(manual.stdout).activated.receipt.blockers[0].reason, "no_alternate_pool_account");
+});
+
+test("scheduled Codex selection does not admit an exhausted sole current account", async () => {
+  const { home, connectRedisStoreImpl } = await setup(["boss"]);
+  await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
+  const result = await runCliWithExitCode(["codex", "__routine-use", "--home", home], {
+    connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => ({ "openai-codex": { boss: usage("boss", 100, 100) } }),
+  });
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(result.exitCode, 1);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.activated.status, "blocked");
+  assert.equal(parsed.activated.prepared, undefined);
+});

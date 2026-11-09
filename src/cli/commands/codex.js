@@ -61,7 +61,9 @@ async function activateCodexForContext(context) {
             homeDir,
             env,
             probeUsageSnapshotsByProviderImpl,
-            avoidCurrentLabel: true,
+            // A new scheduled thread may reuse the eligible current account.
+            // Manual use/run retain their explicit account-rotation behavior.
+            avoidCurrentLabel: subcmd !== "__routine-use",
             selectLeastUsed: true,
           });
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
@@ -550,7 +552,10 @@ export async function handleCodex(context) {
     await handleRedisCodexResumeFresh(context);
     return;
   }
-  if (subcmd !== "use") {
+  if (subcmd === "__routine-use" && positional.length !== 2) {
+    throw new Error("Routine Codex selection does not accept an account label.");
+  }
+  if (subcmd !== "use" && subcmd !== "__routine-use") {
     throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: login, logout, use, run, resume, resume-fresh, watch).`);
   }
   await handleRedisCodexUse(context);
