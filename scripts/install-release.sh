@@ -7,9 +7,10 @@
 # changes nothing until the new release has installed. The steps:
 #
 #   1. Build ~/.local/share/aimgr/releases/<commit> from the commit, with its own `npm ci`.
-#   2. Activate the newest approved Claude runtime in ~/.local/share/aimgr/runtime-bundles when
+#   2. Activate the newest approved Claude and Codex runtimes in ~/.local/share/aimgr/runtime-bundles when
 #      the active one is older or this release can't use it. A Mac keeps its running sessions;
 #      Linux refuses while any Claude session runs, and nothing here stops one.
+#      Provision a missing Claude environment identity even when activation is unnecessary.
 #   3. Point `aim` and `aimgr` at the release (scripts/install-local-bin.sh).
 #   4. Install the release's skills into ~/.agents/skills, linked from ~/.claude/skills.
 #   5. Run AI Manager's launchd services through `aim` and restart the long-running ones, and
@@ -57,18 +58,23 @@ if [[ ! -f $release/.aimgr-release ]]; then
   say "Built release ${commit:0:12}"
 fi
 
-# 2. The reviewed Claude runtime.
-status="$("$node_bin" "$release/bin/aimgr.js" claude privacy status --json 2>/dev/null || true)"
-bundle="$(printf '%s' "$status" | /usr/bin/python3 -I "$release/scripts/choose-claude-runtime.py" "$data/runtime-bundles" "$runtime_root")"
-local_bin_args=()
-if [[ -n $bundle ]]; then
-  sudo -n true 2>/dev/null || fail "activating the reviewed Claude in $bundle needs passwordless sudo on this machine"
-  local_bin_args=(--claude-runtime-bundle "$bundle")
-  say "Activating the reviewed Claude runtime in $bundle"
-fi
+# 2. Both reviewed runtimes. Complete their prerequisites before replacing aim.
+for provider in claude codex; do
+  status="$("$node_bin" "$release/bin/aimgr.js" "$provider" privacy status --json 2>/dev/null || true)"
+  bundle="$(printf '%s' "$status" | /usr/bin/python3 -I "$release/scripts/choose-runtime.py" "$provider" "$data/runtime-bundles" "/opt/aimgr-$provider-runtime")"
+  if [[ -n $bundle ]]; then
+    sudo -n true 2>/dev/null || fail "activating the reviewed $provider in $bundle needs passwordless sudo on this machine"
+    say "Activating the reviewed $provider runtime in $bundle"
+    sudo -n /usr/bin/python3 -I "$release/scripts/install-$provider-runtime.py" \
+      "$bundle" --node "$node_bin" --user "$(id -un)" --activate
+  fi
+done
+# An older active Claude bundle may predate machine-local identities. Creating
+# its missing anchor must not reactivate Linux policy or rotate an existing ID.
+sudo -n /usr/bin/python3 -I "$release/scripts/install-claude-runtime.py" --ensure-environment
 
 # 3. aim and aimgr, and the Codex shortcuts.
-AIMGR_NODE_BIN="$node_bin" bash "$release/scripts/install-local-bin.sh" ${local_bin_args[@]+"${local_bin_args[@]}"} >/dev/null
+AIMGR_NODE_BIN="$node_bin" bash "$release/scripts/install-local-bin.sh" >/dev/null
 
 # 4. The skills.
 mkdir -p "$HOME/.agents/skills" "$HOME/.claude/skills"

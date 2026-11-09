@@ -233,6 +233,22 @@ def provision_claude_environment(runtime, new_environment=False):
         write_atomic(anchor, (json.dumps(dict(schema=1, id=str(uuid.uuid4()))) + '\n').encode())
 
 
+def ensure_claude_environment(runtime=RUNTIME):
+    """Provision a missing anchor without reactivating a bundle or stopping owners."""
+    require(os.geteuid() == 0, 'environment provisioning requires administrator privileges')
+    protected_directory(runtime.parent)
+    protected_directory(runtime)
+    lockfd = os.open(runtime / 'install.lock', os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        info = os.fstat(lockfd)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1
+                and info.st_mode & 0o022 == 0, 'unsafe installation lock')
+        fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        provision_claude_environment(runtime)
+    finally:
+        os.close(lockfd)
+
+
 def activate_installed_bundle(user, target, runtime, published):
     """Publish only after install() has admitted the immutable destination.
 
@@ -394,15 +410,23 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='cl
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('bundle', type=Path)
-    parser.add_argument('--node', required=True)
+    parser.add_argument('bundle', type=Path, nargs='?')
+    parser.add_argument('--node')
+    parser.add_argument('--ensure-environment', action='store_true', help='create a missing local identity without activating a runtime; preserve an existing identity')
     parser.add_argument('--user', default=os.environ.get('SUDO_USER'))
     parser.add_argument('--activate', action='store_true')
     parser.add_argument('--provision-clone', action='store_true', help='replace copied environment identity on a destination host; requires --activate')
     args = parser.parse_args()
     try:
-        require(args.user is not None and Path(args.node).is_absolute(), 'an ordinary runtime user and absolute Node executable are required')
-        print(json.dumps(install(args.bundle, args.node, pwd.getpwnam(args.user), args.activate, provision_clone=args.provision_clone)))
+        if args.ensure_environment:
+            require(args.bundle is None and args.node is None and not args.activate and not args.provision_clone,
+                    '--ensure-environment cannot be combined with bundle installation or clone provisioning')
+            ensure_claude_environment()
+            print(json.dumps({'environmentProvisioned': True}))
+        else:
+            require(args.bundle is not None and args.user is not None and args.node is not None and Path(args.node).is_absolute(),
+                    'a bundle, ordinary runtime user and absolute Node executable are required')
+            print(json.dumps(install(args.bundle, args.node, pwd.getpwnam(args.user), args.activate, provision_clone=args.provision_clone)))
     except Exception as error:
         detail = str(error) if isinstance(error, RuntimeError) else 'bundle installation could not complete safely'
         prefix = 'Claude runtime activation needs inspection: ' if isinstance(error, SelectorPublishedError) else 'Claude runtime was not activated: '

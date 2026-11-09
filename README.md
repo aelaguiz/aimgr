@@ -27,10 +27,12 @@ last commit that passed if either fails. The installer:
 1. Builds a fixed release from the checkout's commit in
    `~/.local/share/aimgr/releases/<commit>`, with its own `npm ci`. Uncommitted edits never go
    live, and pulling `main` changes nothing until the new release has installed.
-2. Activates the newest normal-use approved Claude runtime in
-   `~/.local/share/aimgr/runtime-bundles/` when the active one is older or this release can't use
-   it. A Mac keeps its running sessions. Linux refuses while any Claude session runs, and the
-   installer never stops one.
+2. Activates the newest normal-use approved bundle for each of Claude and Codex in
+   `~/.local/share/aimgr/runtime-bundles/` when its active runtime is older or unavailable.
+   Codex activation also installs its administrator privacy policy. Claude's machine-local
+   environment identity is created if missing and preserved on subsequent installs, including
+   when its bundle does not need activation. A Mac keeps its running sessions. Linux Claude
+   activation refuses while any Claude session runs; the installer never stops one.
 3. Points `aim` and `aimgr` at the release with `scripts/install-local-bin.sh`.
 4. Copies the release's skills into `~/.agents/skills`, linked from `~/.claude/skills`.
 5. Runs AI Manager's launchd services through `aim`, restarts the long-running ones, and links
