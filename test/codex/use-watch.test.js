@@ -4,10 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordination/redis-store.js";
-import { resolveCodexAuthFilePath, resolveManagedCodexHomeDir } from "../../src/io/paths.js";
+import { activeCodexAuthFile, localCodexFixture, readCodexTestEnvironment } from "../helpers/codex-local.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome, withEnv } from "../helpers/files.js";
-import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
+import { registerCliRedisFixture, runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 
 const KEY_PREFIX = "aimgr:codex-command-test";
 
@@ -52,6 +52,12 @@ async function setup(labels = ["boss", "writer"], { recordOptionsByLabel = {} } 
       recordOptionsByLabel[label],
     )),
   }, { updatedBy: "test", observedAt: new Date(nowMs).toISOString() });
+  for (const [index, label] of labels.entries()) {
+    const record = codexRecord(label, `acct_${index + 1}`, nowMs, recordOptionsByLabel[label]);
+    localCodexFixture(home, record.identity.accountId, record.credential);
+  }
+  registerCliRedisFixture(home, { readCodexEnvironmentImpl: readCodexTestEnvironment,
+    fetchJsonWithTimeoutImpl: async () => ({ ok: true, json: async () => ({ error: "invalid_grant" }) }) });
   return {
     home,
     nowMs,
@@ -79,11 +85,11 @@ test("CLI fixtures never inherit the developer's managed Codex auth directory", 
     await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
   });
   assert.equal(fs.readFileSync(outsideAuth, "utf8"), "developer credentials must remain untouched");
-  const fixtureAuth = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
+  const fixtureAuth = activeCodexAuthFile(home);
   assert.equal(JSON.parse(fs.readFileSync(fixtureAuth, "utf8")).tokens.account_id, "acct_1");
 });
 
-test("explicit Redis-backed Codex use reconciles and activates without usage", async () => {
+test("explicit Codex use selects its local authorization without usage or global-token reconciliation", async () => {
   const { home, connectRedisStoreImpl } = await setup();
   let probes = 0;
   const out = await runCli(["codex", "use", "boss", "--home", home], {
@@ -98,9 +104,8 @@ test("explicit Redis-backed Codex use reconciles and activates without usage", a
   assert.equal(result.ok, true);
   assert.equal(result.activated.receipt.label, "boss");
   assert.equal(probes, 0);
-  assert.equal(result.reconciliation.status, "skipped");
-  const authPath = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
-  assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).tokens.account_id, "acct_1");
+  assert.equal(Object.hasOwn(result, "reconciliation"), false);
+  assert.equal(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id, "acct_1");
 });
 
 test("codex run rotates before launching the default yolo command", async () => {
@@ -121,7 +126,7 @@ test("codex run rotates before launching the default yolo command", async () => 
 
   assert.deepEqual(launch.args, ["-p", "yolo"]);
   assert.match(output, /writer: "Reserved for Mac Mini 1"/);
-  assert.equal(JSON.parse(fs.readFileSync(resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home })), "utf8")).tokens.account_id, "acct_2");
+  assert.equal(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id, "acct_2");
 });
 
 test("codex run leaves the desktop app's ~/.codex login alone and launches from AIM's linked home", async () => {
@@ -144,11 +149,11 @@ test("codex run leaves the desktop app's ~/.codex login alone and launches from 
     },
   });
 
-  const managedHome = path.join(home, ".aimgr", "codex-cli");
+  const managedHome = launch.prepared.codexHome;
   assert.equal(launch.env.CODEX_HOME, managedHome);
   assert.equal(fs.readFileSync(path.join(nativeHome, "auth.json"), "utf8"), desktopAuth);
   assert.equal(JSON.parse(fs.readFileSync(path.join(managedHome, "auth.json"), "utf8")).tokens.account_id, "acct_2");
-  assert.equal(fs.readlinkSync(path.join(managedHome, "config.toml")), path.join(nativeHome, "config.toml"));
+  assert.equal(launch.prepared.sharedHome, nativeHome);
   assert.equal(fs.readlinkSync(path.join(managedHome, "sessions")), path.join(nativeHome, "sessions"));
 });
 
@@ -162,8 +167,7 @@ test("codex run with an explicit label preserves selection and exact Codex argum
     await t.test(scenario.name, async (t) => {
       const { home, connectRedisStoreImpl } = await setup();
       await runCli(["codex", "use", scenario.initialLabel, "--home", home], { connectRedisStoreImpl });
-      const authPath = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
-      t.after(() => assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).tokens.account_id, "acct_1"));
+          t.after(() => assert.equal(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id, "acct_1"));
       let launch;
       let probes = 0;
       await runCli(["codex", "run", "boss", "--home", home, "--", ...scenario.args], {
@@ -177,7 +181,7 @@ test("codex run with an explicit label preserves selection and exact Codex argum
         },
         runCodexInteractiveImpl: async (request) => {
           launch = request;
-          assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).tokens.account_id, "acct_1");
+          assert.equal(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id, "acct_1");
           return { code: 0, signal: null };
         },
       });
@@ -191,8 +195,7 @@ test("codex run with an explicit label preserves selection and exact Codex argum
 test("codex run rejects an unknown explicit label without rotating or launching", async () => {
   const { home, connectRedisStoreImpl } = await setup();
   await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
-  const authPath = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
-  const before = fs.readFileSync(authPath, "utf8");
+  const before = fs.readFileSync(activeCodexAuthFile(home), "utf8");
   let launches = 0;
   const result = await runCliWithExitCode(["codex", "run", "missing", "--home", home, "--", "exec", "hello"], {
     connectRedisStoreImpl,
@@ -209,7 +212,7 @@ test("codex run rejects an unknown explicit label without rotating or launching"
   assert.equal(parsed.activated.status, "blocked");
   assert.equal(parsed.activated.receipt.label, "missing");
   assert.equal(launches, 0);
-  assert.equal(fs.readFileSync(authPath, "utf8"), before);
+  assert.equal(fs.readFileSync(activeCodexAuthFile(home), "utf8"), before);
 });
 
 test("codex resume rotates before launching a yolo resume", async () => {
@@ -232,7 +235,6 @@ test("codex resume rotates before launching a yolo resume", async () => {
 
 test("back-to-back Codex resumes launch with different accounts and show the selection", async () => {
   const { home, connectRedisStoreImpl } = await setup();
-  const authPath = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
   const launchedAccounts = [];
   const outputs = [];
   for (let i = 0; i < 3; i += 1) {
@@ -246,7 +248,7 @@ test("back-to-back Codex resumes launch with different accounts and show the sel
       }),
       runCodexInteractiveImpl: async ({ args }) => {
         assert.deepEqual(args, ["-p", "yolo", "resume", "same-thread"]);
-        launchedAccounts.push(JSON.parse(fs.readFileSync(authPath, "utf8")).tokens.account_id);
+        launchedAccounts.push(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id);
         return { code: 0, signal: null };
       },
     }));
@@ -259,11 +261,30 @@ test("back-to-back Codex resumes launch with different accounts and show the sel
   assert.match(outputs[2], /Codex account: writer \(previous: boss\)/);
 });
 
+test("manual resume picker and passthrough warn without matching prompt text", async () => {
+  const { home, connectRedisStoreImpl } = await setup();
+  for (const [args, warning] of [
+    [["codex", "resume", "--home", home], true],
+    [["codex", "run", "--home", home, "--", "resume", "same-thread"], true],
+    [["codex", "run", "--home", home, "--", "exec", "resume", "same-thread"], true],
+    [["codex", "run", "--home", home, "--", "explain resume usage"], false],
+  ]) {
+    const output = await runCli(args, {
+      connectRedisStoreImpl, env: {},
+      probeUsageSnapshotsByProviderImpl: async () => ({
+        "openai-codex": { boss: usage("boss", 20), writer: usage("writer", 10) }, anthropic: {},
+      }),
+      runCodexInteractiveImpl: async () => ({ code: 0, signal: null }),
+    });
+    assert.equal(output.includes("WARNING:"), warning);
+    if (warning) assert.match(output, /resume-fresh/);
+  }
+});
+
 test("Codex resume does not launch when no different eligible account exists", async () => {
   const { home, connectRedisStoreImpl } = await setup(["boss"]);
   await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl, env: {} });
-  const authPath = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
-  const before = fs.readFileSync(authPath, "utf8");
+  const before = fs.readFileSync(activeCodexAuthFile(home), "utf8");
   const result = await runCliWithExitCode(["codex", "resume", "same-thread", "--home", home], {
     connectRedisStoreImpl,
     env: {},
@@ -275,7 +296,7 @@ test("Codex resume does not launch when no different eligible account exists", a
   });
   assert.equal(result.exitCode, 1);
   assert.equal(JSON.parse(result.stdout).activated.receipt.blockers[0].reason, "no_alternate_pool_account");
-  assert.equal(fs.readFileSync(authPath, "utf8"), before);
+  assert.equal(fs.readFileSync(activeCodexAuthFile(home), "utf8"), before);
 });
 
 test("automatic Codex use rotates on every call while reusing fresh credential-bound usage", async () => {
@@ -289,14 +310,13 @@ test("automatic Codex use rotates on every call while reusing fresh credential-b
       anthropic: {},
     };
   };
-  const authPath = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
 
   const first = JSON.parse(await runCli(["codex", "use", "--home", home], {
     connectRedisStoreImpl,
     probeUsageSnapshotsByProviderImpl,
   }));
   assert.equal(first.activated.receipt.label, "writer");
-  assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).tokens.account_id, "acct_2");
+  assert.equal(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id, "acct_2");
 
   const second = JSON.parse(await runCli(["codex", "use", "--home", home], {
     connectRedisStoreImpl,
@@ -306,8 +326,8 @@ test("automatic Codex use rotates on every call while reusing fresh credential-b
   assert.equal(second.activated.receipt.previousLabel, "writer");
   assert.equal(second.activated.receipt.label, "boss");
   assert.equal(second.activated.status, "activated");
-  assert.equal(second.activated.wrote, true);
-  assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).tokens.account_id, "acct_1");
+  assert.equal(second.activated.wrote, false);
+  assert.equal(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id, "acct_1");
 
   const third = JSON.parse(await runCli(["codex", "use", "--home", home], {
     connectRedisStoreImpl,
@@ -315,7 +335,7 @@ test("automatic Codex use rotates on every call while reusing fresh credential-b
   }));
   assert.equal(third.activated.receipt.previousLabel, "boss");
   assert.equal(third.activated.receipt.label, "writer");
-  assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).tokens.account_id, "acct_2");
+  assert.equal(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id, "acct_2");
   assert.equal(probes, 1);
 });
 
@@ -360,8 +380,7 @@ test("automatic Codex use fails without changing auth when no eligible alternate
     await t.test(labels.length === 1 ? "only one account" : "alternate is exhausted", async () => {
       const { home, connectRedisStoreImpl } = await setup(labels);
       await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
-      const authPath = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
-      const before = fs.readFileSync(authPath, "utf8");
+          const before = fs.readFileSync(activeCodexAuthFile(home), "utf8");
 
       const result = await runCliWithExitCode(["codex", "use", "--home", home], {
         connectRedisStoreImpl,
@@ -378,7 +397,7 @@ test("automatic Codex use fails without changing auth when no eligible alternate
       assert.equal(parsed.activated.receipt.previousLabel, "boss");
       assert.deepEqual(parsed.activated.receipt.blockers, [{ reason: "no_alternate_pool_account" }]);
       assert.equal(parsed.activated.wrote, false);
-      assert.equal(fs.readFileSync(authPath, "utf8"), before);
+      assert.equal(fs.readFileSync(activeCodexAuthFile(home), "utf8"), before);
     });
   }
 });
@@ -449,11 +468,10 @@ test("Codex watch rotates when the active account falls below the threshold", as
   assert.equal(result.watched.receipt.triggeredSelection, true);
 });
 
-test("Codex watch reuses reconciliation and keeps a valid target when telemetry is unavailable", async () => {
+test("Codex watch preserves its local authorization when telemetry is unavailable", async () => {
   const { home, connectRedisStoreImpl } = await setup(["boss"]);
   await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
-  const authPath = resolveCodexAuthFilePath(resolveManagedCodexHomeDir({ homeDir: home }));
-  const before = JSON.parse(fs.readFileSync(authPath, "utf8"));
+  const before = JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8"));
 
   const result = await runCliWithExitCode(["codex", "watch", "--once", "--home", home], {
     connectRedisStoreImpl,
@@ -464,9 +482,9 @@ test("Codex watch reuses reconciliation and keeps a valid target when telemetry 
   const parsed = JSON.parse(result.stdout);
 
   assert.equal(result.exitCode, 1);
-  assert.equal(parsed.reconciliation.status, "redis_newer");
+  assert.equal(Object.hasOwn(parsed, "reconciliation"), false);
   assert.equal(parsed.watched.status, "blocked");
-  const after = JSON.parse(fs.readFileSync(authPath, "utf8"));
+  const after = JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8"));
   assert.deepEqual(after.tokens, before.tokens);
 });
 
@@ -476,4 +494,32 @@ test("Codex credential commands fail quickly when Redis is unconfigured", async 
     runCli(["codex", "use", "boss", "--home", home]),
     /AIM is not attached to Redis/,
   );
+});
+
+
+test("scheduled Codex selection reuses its sole eligible local account while manual use still rotates", async () => {
+  const { home, connectRedisStoreImpl } = await setup(["boss"]);
+  await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
+  const deps = { connectRedisStoreImpl, probeUsageSnapshotsByProviderImpl: async () => ({ "openai-codex": { boss: usage("boss", 5) } }) };
+  const selected = JSON.parse(await runCli(["codex", "__routine-use", "--home", home], deps));
+  assert.equal(selected.ok, true);
+  assert.equal(selected.activated.receipt.label, "boss");
+  assert.equal(selected.activated.prepared.accountId, "acct_1");
+  const manual = await runCliWithExitCode(["codex", "use", "--home", home], deps);
+  assert.equal(manual.exitCode, 1);
+  assert.equal(JSON.parse(manual.stdout).activated.receipt.blockers[0].reason, "no_alternate_pool_account");
+});
+
+test("scheduled Codex selection does not admit an exhausted sole current account", async () => {
+  const { home, connectRedisStoreImpl } = await setup(["boss"]);
+  await runCli(["codex", "use", "boss", "--home", home], { connectRedisStoreImpl });
+  const result = await runCliWithExitCode(["codex", "__routine-use", "--home", home], {
+    connectRedisStoreImpl,
+    probeUsageSnapshotsByProviderImpl: async () => ({ "openai-codex": { boss: usage("boss", 100, 100) } }),
+  });
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(result.exitCode, 1);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.activated.status, "blocked");
+  assert.equal(parsed.activated.prepared, undefined);
 });

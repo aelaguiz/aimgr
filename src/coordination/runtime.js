@@ -1,5 +1,5 @@
 import { getRedisConfig, readAimgrConfig } from "../config/aimgr-config.js";
-import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { loadLocalState, writeLocalState } from "../state/local-state.js";
 import { buildLocalBrowserBindingsFromState, buildSharedBrowserPolicy } from "./browser-policy.js";
@@ -32,11 +32,14 @@ export async function loadRedisRuntime({
   provider = null,
   now = new Date(),
   connectionPolicy = REDIS_CONNECTION_POLICY_ONE_SHOT,
+  excludeCodexGrants = [ANTHROPIC_PROVIDER, XAI_PROVIDER].includes(normalizeProviderId(provider)),
 }) {
   const { redis } = getRedisConfig({ homeDir });
   const store = await connectRedisStoreImpl({ ...redis, connectionPolicy });
   try {
-    const snapshot = await readSnapshot(store);
+    // Keep the server-side read scope across refreshes: filtering state after
+    // retrieval would already have copied a foreign Codex grant to this host.
+    const snapshot = await readSnapshot(store, { excludeCodexGrants });
     // Notes are advisory; a read failure must not change account selection.
     const accountNotes = await readAccountNotes(store).catch(() => null);
     const localState = loadLocalState({ homeDir });
@@ -53,6 +56,7 @@ export async function loadRedisRuntime({
       localState,
       state,
       providerScope: normalizeProviderId(provider),
+      excludeCodexGrants,
     };
   } catch (error) {
     await closeRedisStore(store).catch(() => {});
@@ -90,7 +94,7 @@ function findConflictingCredential(snapshot, { provider, label }) {
 }
 
 export async function refreshRedisRuntimeSnapshot(runtime) {
-  runtime.snapshot = await readSnapshot(runtime.store);
+  runtime.snapshot = await readSnapshot(runtime.store, { excludeCodexGrants: runtime.excludeCodexGrants });
   return runtime.snapshot;
 }
 

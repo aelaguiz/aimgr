@@ -4,24 +4,32 @@ import { spawnSync } from "node:child_process";
 import lockfile from "proper-lockfile";
 import { resolveCodexWatchThresholdPct } from "../../core/watch-options.js";
 import { resolveCodexWatchIntervalSeconds } from "../../core/watch-options.js";
-import { closeRedisRuntime, loadRedisRuntime, publishCodexReconciliation, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
+import { closeRedisRuntime, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { watchCodexPoolSelectionOnce } from "../../pool/watch.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { normalizeLabel } from "../../core/normalize.js";
+import { resolveAimgrStateDir } from "../../io/paths.js";
+import { activateCodexLabelSelection } from "../../targets/codex-cli.js";
 import { accountNoteFor, formatAccountNote } from "../../status/account-notes.js";
-import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
-import { resolveAimgrStateDir, resolveManagedCodexHomeDir } from "../../io/paths.js";
-import { activateCodexLabelSelection, reconcileCodexCliAuth } from "../../targets/codex-cli.js";
 import { resolveBlobPolicy } from "../../targets/codex-thread-copy.js";
-import { resolveCodexCommand } from "../../targets/codex-runner.js";
+import { loadCodexRuntime } from "../../coordination/codex-runtime.js";
+import { ensureCodexAccountMetadata } from "../../coordination/codex-metadata.js";
+import { loginCodexManually } from "../../credentials/codex-manual-login.js";
+import { saveLocalCodexLogin, logoutLocalCodexCredential } from "../../credentials/codex-local.js";
+import { createManualCallbackStdioProtocol, readNonEmptyLineFromStdin, parseManualCallbackStdioInput, writeJsonLine } from "../manual-callback-stdio.js";
+import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
+import { readCodexEnvironment } from "../../privacy/codex-environment.js";
+import { codexArguments } from "../../privacy/codex-arguments.js";
+import { codexSharedHome } from "../../privacy/codex-account-state.js";
+import { maintainCodexMcp } from "../../credentials/codex-mcp-maintenance.js";
+import { assertCodexMaintenanceClear } from "../../privacy/codex-maintenance.js";
+import { inspectCodexPrivacyStatus, formatCodexPrivacyStatus } from "../../privacy/codex-status.js";
 import {
   MAX_COPY_MB_DEFAULT,
   CodexThreadCopyError,
-  analyticsDisabledInProfile,
   buildRewriteMap,
   carryThreadGoal,
   copyThreadRollout,
-  ensureCodexProfileAnalyticsDisabled,
   planThreadCopy,
   scanThreadRollout,
   verifyCopiedRollout,
@@ -38,16 +46,8 @@ async function activateCodexForContext(context) {
     stale: 30_000,
   });
   try {
-    const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
+    const runtime = await loadCodexRuntime({ ...context, maintain: true });
     try {
-      const reconciliation = reconcileCodexCliAuth({
-        state: runtime.state,
-        homeDir,
-        env,
-        observedAt: new Date().toISOString(),
-      });
-      await publishCodexReconciliation({ runtime, state: runtime.state, reconciliation });
-
       const subcmd = String(positional[1] ?? "").trim().toLowerCase();
       const requestedLabel = String(positional[2] ?? "").trim();
       const explicitLabel = requestedLabel
@@ -61,16 +61,15 @@ async function activateCodexForContext(context) {
             homeDir,
             env,
             probeUsageSnapshotsByProviderImpl,
-            avoidCurrentLabel: true,
+            // A new scheduled thread may reuse the eligible current account.
+            // Manual use/run retain their explicit account-rotation behavior.
+            avoidCurrentLabel: subcmd !== "__routine-use",
             selectLeastUsed: true,
           });
       writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-      // The per-label Codex installation id is written inside applyCodexCliFromState, which is
-      // the single place that writes auth.json (it covers `use`, `run`, `resume`, watch, and the
-      // scheduled routines that call `aim codex use`).
       const label = activated.receipt?.label;
       const accountNote = label ? accountNoteFor(runtime.accountNotes, OPENAI_CODEX_PROVIDER, label) : null;
-      return { reconciliation, activated, accountNote, accountNotesAvailable: runtime.accountNotes !== null };
+      return { activated, accountNote, accountNotesAvailable: runtime.accountNotes !== null };
     } finally {
       await closeRedisRuntime(runtime);
     }
@@ -100,12 +99,12 @@ function codexRunArgs({ positional, afterDoubleDash }) {
   return passthrough.length > 0 ? passthrough : ["-p", "yolo"];
 }
 
-// Every Codex process AIM launches runs from AIM's managed home, never from the
-// desktop app's ~/.codex.
-function codexLaunchEnv(context) {
+// Keep the selected account's prepared home through launch and handoff.
+function codexLaunchEnv(context, prepared) {
+  if (!prepared?.codexHome) throw new Error("Codex launch has no prepared account home.");
   return {
     ...(context.env ?? {}),
-    CODEX_HOME: resolveManagedCodexHomeDir({ homeDir: context.homeDir, env: context.env }),
+    CODEX_HOME: prepared.codexHome,
   };
 }
 
@@ -128,18 +127,21 @@ async function handleRedisCodexRun(context) {
   if (stdout.isTTY) {
     stdout.write(`[aim] Codex account: ${label}${previousLabel ? ` (previous: ${previousLabel})` : ""}\n`);
   }
-  const resumedThread = args[2] === "resume" ? args[3] : null;
-  if (resumedThread) {
+  const parsed = codexArguments(args);
+  const resuming = parsed.command === "resume" || (["exec", "e"].includes(parsed.command) && parsed.execSubcommand === "resume");
+  const resumedThread = parsed.positionals[parsed.command === "resume" ? 0 : 1];
+  if (resuming && !parsed.inspection) {
     // Deliberate manual path. Same thread id under a different account links the accounts on
     // the Codex servers; `resume-fresh` is the default that avoids it (CLAUDE.md, rotation rule).
-    stdout.write(`[aim] WARNING: thread ${resumedThread} will continue under account ${label}${previousLabel ? ` (was ${previousLabel})` : ""}. `
+    stdout.write(`[aim] WARNING: ${resumedThread ? `thread ${resumedThread}` : "the selected thread"} will continue under account ${label}${previousLabel ? ` (was ${previousLabel})` : ""}. `
       + "Codex will send this thread id and session id under the new account, which links the two accounts. "
-      + `Use \`aim codex resume-fresh ${resumedThread}\` to avoid that.\n`);
+      + `Use \`aim codex resume-fresh ${resumedThread ?? "<thread-id>"}\` to avoid that.\n`);
   }
   const launched = await runCodexInteractiveImpl({
     homeDir: context.homeDir,
     cwd: process.cwd(),
-    env: codexLaunchEnv(context),
+    env: codexLaunchEnv(context, result.activated.prepared),
+    prepared: result.activated.prepared,
     args,
   });
   if (launched?.code !== 0) setExitCode(Number.isInteger(launched?.code) ? launched.code : 1);
@@ -147,14 +149,8 @@ async function handleRedisCodexRun(context) {
 
 async function runRedisCodexWatchOnce(context, { thresholdPct }) {
   const { homeDir, env, probeUsageSnapshotsByProviderImpl, activateCodexPoolSelectionImpl, connectRedisStoreImpl } = context;
-  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl });
+  const runtime = await loadCodexRuntime({ ...context, maintain: true });
   try {
-    const reconciliation = reconcileCodexCliAuth({
-      state: runtime.state,
-      homeDir,
-      env,
-      observedAt: new Date().toISOString(),
-    });
     const watched = await watchCodexPoolSelectionOnce(
       {
         state: runtime.state,
@@ -167,9 +163,8 @@ async function runRedisCodexWatchOnce(context, { thresholdPct }) {
         activateCodexPoolSelectionImpl,
       },
     );
-    await publishCodexReconciliation({ runtime, state: runtime.state, reconciliation });
     writeRedisLocalStateFromView({ homeDir, state: runtime.state, localState: runtime.localState });
-    return { reconciliation, watched };
+    return { watched };
   } finally {
     await closeRedisRuntime(runtime);
   }
@@ -234,7 +229,7 @@ function assertCopyDiskSpace({ dir, requiredBytes, fsImpl }) {
   return { checked: true, freeBytes, requiredBytes };
 }
 
-function resumeFreshPlanSummary({ plan, scan, disk, policy, analyticsSummary, profileName }) {
+function resumeFreshPlanSummary({ plan, scan, disk, policy, profileName }) {
   return {
     ok: true,
     dryRun: true,
@@ -263,7 +258,6 @@ function resumeFreshPlanSummary({ plan, scan, disk, policy, analyticsSummary, pr
       maxCopyMb: plan.maxCopyMb,
     },
     disk,
-    analytics: { profile: profileName, disabled: analyticsSummary.disabled },
   };
 }
 
@@ -296,7 +290,7 @@ async function handleRedisCodexResumeFresh(context) {
     randomBytesImpl,
     nowMs = Date.now(),
   } = context;
-  const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
+  const codexHome = codexSharedHome({ homeDir, env, environment: (context.readCodexEnvironmentImpl ?? readCodexEnvironment)() });
   const lastRequested = Boolean(opts.codexResumeFreshLast);
   const dryRun = Boolean(opts.codexResumeFreshDryRun);
   const archiveSource = Boolean(opts.codexResumeFreshArchiveSource);
@@ -360,7 +354,6 @@ async function handleRedisCodexResumeFresh(context) {
       scan,
       disk,
       policy,
-      analyticsSummary: { disabled: analyticsDisabledInProfile({ codexHome, profile: profileName, fsImpl }) },
       profileName,
     });
     if (stdout.isTTY) {
@@ -369,7 +362,7 @@ async function handleRedisCodexResumeFresh(context) {
       stdout.write(`[aim] would create ${plan.newId} at ${plan.targetPath}\n`);
       stdout.write(`[aim] would retire ${scan.ids.length} identifier(s) (${scan.childThreadIds.length} child thread id(s)) and ${scan.createTimes} create_time value(s)\n`);
       stdout.write(`[aim] blobs: ${describeBlobPolicy({ scan, policy })}\n`);
-      stdout.write(`[aim] analytics ${summary.analytics.disabled ? "disabled" : "ENABLED"}; disk free ${formatBytes(disk.freeBytes ?? 0)}\n`);
+      stdout.write(`[aim] disk free ${formatBytes(disk.freeBytes ?? 0)}\n`);
     } else {
       stdout.write(`${JSON.stringify(sanitizeForStatus(summary), null, 2)}\n`);
     }
@@ -384,10 +377,8 @@ async function handleRedisCodexResumeFresh(context) {
     return;
   }
 
-  // 3. Make sure the profile Codex will read has analytics disabled.
-  const analytics = ensureCodexProfileAnalyticsDisabled({ codexHome, profile: profileName, fsImpl });
-
-  // 4. Copy, then prove the copy carries no retired identifier.
+  // Native launch admission enforces administrator-owned privacy settings.
+  // Copy, then prove the copy carries no retired identifier.
   const map = buildRewriteMap({ scan, newId: plan.newId, nowMs, randomBytesImpl });
   const copy = copyThreadRollout({
     plan,
@@ -455,28 +446,24 @@ async function handleRedisCodexResumeFresh(context) {
     if (verification.contentMentions.length > 0) {
       stdout.write(`[aim] note: the copied transcript still mentions a retired id ${verification.contentMentions.length} time(s) inside conversation content\n`);
     }
-    stdout.write(`[aim] analytics ${analytics.changed ? "disabled in the yolo profile" : "already disabled"}\n`);
   }
   // An AIM invocation started from another Codex inherits that thread's ID.
   // This is a new thread on a rotated account; do not carry the old identity
   // into Codex or into Herdr's session-start hook.
-  const freshLaunchEnv = { ...(env ?? {}), CODEX_HOME: codexHome };
+  const freshLaunchEnv = codexLaunchEnv(context, activation.activated.prepared);
   delete freshLaunchEnv.CODEX_THREAD_ID;
   const launched = await runCodexInteractiveImpl({
     homeDir,
     cwd: process.cwd(),
     env: freshLaunchEnv,
+    prepared: activation.activated.prepared,
     args,
   });
   if (archiveSource) {
     try {
-      const command = resolveCodexCommand({ homeDir, spawnImpl: spawnSyncImpl ?? spawnSync });
-      const run = spawnSyncImpl ?? spawnSync;
-      const archived = run(command, ["archive", plan.sourceId], {
-        encoding: "utf8",
-        env: { ...process.env, ...(env ?? {}), CODEX_HOME: codexHome },
-      });
-      if (archived?.status !== 0 && stdout.isTTY) {
+      const archived = await runCodexInteractiveImpl({ homeDir, cwd: process.cwd(),
+        env: freshLaunchEnv, prepared: activation.activated.prepared, args: ["archive", plan.sourceId] });
+      if (archived?.code !== 0 && stdout.isTTY) {
         stdout.write(`[aim] could not archive source thread ${plan.sourceId}\n`);
       }
     } catch {
@@ -486,12 +473,73 @@ async function handleRedisCodexResumeFresh(context) {
   if (launched?.code !== 0) setExitCode(Number.isInteger(launched?.code) ? launched.code : 1);
 }
 
+async function handleCodexLocalLogin(context) {
+  const label = normalizeLabel(context.positional[2]);
+  let runtime = await loadCodexRuntime(context);
+  try {
+    const existing = runtime.snapshot.credentials.find(record => record.label === label);
+    const environment = runtime.environment;
+    // Browser authorization can take minutes; the bounded Redis connection
+    // must not idle through it or its expired socket will discard a good login.
+    await closeRedisRuntime(runtime);
+    runtime = null;
+    const handoff = context.opts.manualCallbackStdio
+      ? createManualCallbackStdioProtocol({ stdin: context.stdin, stdout: context.stdout, label, provider: OPENAI_CODEX_PROVIDER })
+      : { emitAuthUrl: ({ url }) => context.stdout.write(`Open this URL in the account's existing browser, then paste the full callback URL here:\n${url}\n`),
+          readCallbackUrl: async options => parseManualCallbackStdioInput(await readNonEmptyLineFromStdin(context.stdin, options)) };
+    const credential = await loginCodexManually({ ...handoff,
+      expectedAccountId: existing?.identity?.accountId,
+      fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl, signal: context.signal });
+    runtime = await loadCodexRuntime(context);
+    if (runtime.environment.binding !== environment.binding) throw new Error("The local Codex environment changed during login. Sign in again on this machine.");
+    await ensureCodexAccountMetadata(runtime.store, { label, accountId: credential.accountId });
+    saveLocalCodexLogin({ homeDir: context.homeDir, env: context.env, environment: runtime.environment, label, accountId: credential.accountId }, credential);
+    const result = { type: "result", ok: true, label, provider: OPENAI_CODEX_PROVIDER, authority: "environment-local" };
+    if (context.opts.manualCallbackStdio || context.opts.json) writeJsonLine(context.stdout, result);
+    else context.stdout.write(`Codex ${label} is signed in on this machine.\n`);
+  } catch (error) {
+    if (!context.opts.manualCallbackStdio) throw error;
+    writeJsonLine(context.stdout, { type: "error", ok: false, label, error: error.message });
+    context.setExitCode(1);
+  } finally { await closeRedisRuntime(runtime); }
+}
+
+async function handleCodexLocalLogout(context) {
+  const label = normalizeLabel(context.positional[2]);
+  const runtime = await loadCodexRuntime(context);
+  try {
+    const record = runtime.snapshot.credentials.find(item => item.label === label);
+    if (!record?.identity?.accountId) throw new Error(`Unknown Codex label: ${label}.`);
+    const result = logoutLocalCodexCredential({ homeDir: context.homeDir, env: context.env, environment: runtime.environment, accountId: record.identity.accountId });
+    if (!result.committed) throw new Error("Codex login changed while signing out. Retry the command.");
+    context.stdout.write(`Codex ${label} is signed out on this machine.\n`);
+  } finally { await closeRedisRuntime(runtime); }
+}
+
 export async function handleCodex(context) {
   const { positional } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
+  if (subcmd === "privacy") {
+    if (positional[2] !== "status" || positional.length !== 3) throw new Error("Usage: aim codex privacy status [--json]");
+    const status = inspectCodexPrivacyStatus({ pinnedArtifactSet: context.env.AIMGR_CODEX_ARTIFACT_SET });
+    context.stdout.write(context.opts.json ? JSON.stringify(status, null, 2) + "\n" : formatCodexPrivacyStatus(status));
+    if (!status.ready) context.setExitCode(1);
+    return;
+  }
+  if (subcmd === "mcp-migrate" || subcmd === "mcp-recover") {
+    if (positional.length !== 2) throw new Error("Use aim codex mcp-migrate or aim codex mcp-recover in the selected CODEX_HOME environment.");
+    context.stdout.write("MCP maintenance requires existing Codex sessions to finish first and blocks new AIM Codex launches during conversion.\n");
+    if (process.platform === "darwin") context.stdout.write("macOS may ask to let Codex read imported MCP credentials. Choose Always Allow so future sessions and schedules can read them unattended. AIM does not receive your Keychain password.\n");
+    await maintainCodexMcp({ operation: subcmd === "mcp-migrate" ? "start" : "recover", homeDir: context.homeDir, env: context.env });
+    context.stdout.write("MCP credentials use the shared native keyring. AIM Codex launches are available again.\n");
+    return;
+  }
   if (!subcmd) {
     throw new Error("Missing codex subcommand. Usage: aim codex use | aim codex run | aim codex resume | aim codex resume-fresh | aim codex watch");
   }
+  if (subcmd === "login") return handleCodexLocalLogin(context);
+  if (subcmd === "logout") return handleCodexLocalLogout(context);
+  assertCodexMaintenanceClear();
   if (subcmd === "watch") {
     await handleRedisCodexWatch(context);
     return;
@@ -504,8 +552,11 @@ export async function handleCodex(context) {
     await handleRedisCodexResumeFresh(context);
     return;
   }
-  if (subcmd !== "use") {
-    throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: use, run, resume, resume-fresh, watch).`);
+  if (subcmd === "__routine-use" && positional.length !== 2) {
+    throw new Error("Routine Codex selection does not accept an account label.");
+  }
+  if (subcmd !== "use" && subcmd !== "__routine-use") {
+    throw new Error(`Unsupported codex subcommand: ${subcmd} (supported: login, logout, use, run, resume, resume-fresh, watch).`);
   }
   await handleRedisCodexUse(context);
 }

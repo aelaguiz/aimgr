@@ -22,7 +22,7 @@ info = json.loads(Path(sys.argv[1]).read_text())
 root = Path(info['root']).resolve()
 assert Path('/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST').is_file()
 assert os.getuid() != 0
-assert str(root).startswith(('/opt/aimgr-state-audit/claude-implementation/', '/Users/ec2-user/verification/', '/home/aimdev/verification/'))
+assert str(root).startswith(('/opt/aimgr-state-audit/claude-implementation/', '/opt/aimgr-state-audit/rt166-', '/Users/ec2-user/verification/', '/home/aimdev/verification/'))
 pid, terminal = pty.fork()
 if pid == 0:
     os.chdir(info['cwd'])

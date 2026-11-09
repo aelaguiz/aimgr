@@ -70,6 +70,43 @@ export class FakeRedisClient {
   async eval(script, { keys = [], arguments: args = [] } = {}) {
     const [key, targetKey] = keys;
     this.expireIfNeeded(key);
+    if (script.includes("AIMGR_OTHER_PROVIDER_RECORDS_V1")) {
+      const result = [];
+      for (const recordKey of this.sets.get(key) ?? []) {
+        const raw = this.values.get(recordKey);
+        if (raw) {
+          const record = JSON.parse(raw);
+          if (record.provider !== "openai-codex") result.push(record);
+        }
+      }
+      return JSON.stringify(result);
+    }
+    if (script.includes("AIMGR_CODEX_METADATA_READ_V1")) {
+      const result = [];
+      for (const recordKey of this.sets.get(key) ?? []) {
+        const raw = this.values.get(recordKey);
+        if (!raw) continue;
+        const item = JSON.parse(raw);
+        if (item.provider !== args[1] || typeof item.label !== "string" || recordKey !== args[0] + item.label) {
+          throw new Error("invalid Codex metadata index");
+        }
+        const policy = item.policy ?? {};
+        result.push({ label: item.label, accountId: item.identity?.accountId,
+          policy: { egress: policy.egress, expect: policy.expect, browser: policy.browser, pool: policy.pool } });
+      }
+      return JSON.stringify(result);
+    }
+    if (script.includes("AIMGR_CODEX_METADATA_CREATE_V1")) {
+      const raw = this.values.get(key);
+      if (raw) {
+        const current = JSON.parse(raw);
+        return current.provider === args[1] && current.label === args[2] && current.identity?.accountId === args[3]
+          ? "unchanged" : "identity_conflict";
+      }
+      await this.set(key, args[0]);
+      await this.sAdd(keys[1], key); await this.sAdd(keys[2], key);
+      return "created";
+    }
     if (script.includes("AIMGR_CREDENTIAL_LEASE_RENEW_OR_REACQUIRE_V1")) {
       const owner = this.values.get(key);
       if (owner !== undefined && owner !== args[0]) return 0;

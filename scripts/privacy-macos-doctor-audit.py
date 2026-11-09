@@ -18,7 +18,9 @@ import subprocess
 import threading
 from urllib.parse import parse_qs,urlsplit
 
-p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--codex',required=True);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--codex',required=True)
+p.add_argument('--aim-root');p.add_argument('--node');a=p.parse_args()
+if bool(a.aim_root)!=bool(a.node):raise SystemExit('--aim-root and --node must be supplied together')
 root=Path(a.root).resolve()
 if platform.system()!='Darwin' or not Path('/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST').is_file() or not str(root).startswith('/opt/aimgr-state-audit/'):
     raise SystemExit('Disposable offsite Mac and isolated root required')
@@ -80,8 +82,11 @@ threading.Thread(target=server.serve_forever,daemon=True).start()
 app=root/'codex-home';app.mkdir()
 (app/'config.toml').write_text('cli_auth_credentials_store="file"\n[analytics]\nenabled=false\n[feedback]\nenabled=false\n[otel]\nexporter="none"\ntrace_exporter="none"\nmetrics_exporter="none"\n')
 results=[]
-for label in ['a','b']:
-    home=root/('os-home-'+label);home.mkdir()
+cases=[('a',False,False),('b',False,False)]
+if a.aim_root:cases += [('a',True,False),('b',True,True)]
+for label,protected,alias in cases:
+    case=label+('-protected' if protected else '-control')+('-alias' if alias else '')
+    home=root/('os-home-'+case);home.mkdir()
     bundle=home/'Applications/Codex.app/Contents';bundle.mkdir(parents=True)
     (bundle/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.openai.codex','CFBundleShortVersionString':'1.0.0','CFBundleVersion':'1'}))
     support=home/'Library/Application Support/com.openai.codex';support.mkdir(parents=True)
@@ -90,18 +95,31 @@ for label in ['a','b']:
     proxy='http://127.0.0.1:'+str(server.server_address[1])
     env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','HOME':str(home),'CODEX_HOME':str(app),'TERM':'dumb',
          'HTTPS_PROXY':proxy,'HTTP_PROXY':proxy,'ALL_PROXY':proxy,'CODEX_CA_CERTIFICATE':str(root/'ca.pem')}
+    if alias:
+        home_alias=root/('home-alias-'+case);home_alias.symlink_to(home,target_is_directory=True)
+        env['HOME']=str(home_alias)
+    command=[a.codex,'doctor','--json']
+    if protected:
+        driver=Path(a.aim_root)/'test/privacy/codex-cli-fixture.mjs'
+        prepared=subprocess.run([a.node,str(driver),'--prepare',label],env=env,cwd=root,capture_output=True,text=True)
+        (root/('prepare-'+case+'.private.json')).write_text(json.dumps({'code':prepared.returncode,'stdout':prepared.stdout,'stderr':prepared.stderr}))
+        if prepared.returncode:raise RuntimeError('Synthetic AIM preparation failed; private evidence retained')
+        command=[a.node,str(driver),'--','doctor','--json']
     start=len(records)
-    with (root/('doctor-'+label+'.stdout')).open('w') as out,(root/('doctor-'+label+'.stderr')).open('w') as err:
-        try:run=subprocess.run([a.codex,'doctor','--json'],cwd=root,env=env,stdout=out,stderr=err,timeout=45);code=run.returncode
+    # cwd grants the whole fixture root, including this desktop-support folder.
+    # The exact private-ID deny must win over that overlapping ordinary grant.
+    with (root/('doctor-'+case+'.stdout')).open('w') as out,(root/('doctor-'+case+'.stderr')).open('w') as err:
+        try:run=subprocess.run(command,cwd=root,env=env,stdout=out,stderr=err,timeout=45);code=run.returncode
         except subprocess.TimeoutExpired:code='timeout'
     captures=records[start:]
     appcasts=[r['target'] for r in captures if '/wham/app/appcast?' in r['target']]
-    passed=any(parse_qs(urlsplit(url).query).get('installation_id')==[canary] for url in appcasts)
-    results.append({'case':label,'doctorExit':code,'requestsCaptured':len(captures),'appcastRequests':appcasts,'passed':passed})
+    sent=any(parse_qs(urlsplit(url).query).get('installation_id')==[canary] for url in appcasts)
+    passed=bool(appcasts) and (not any(canary in json.dumps(r) for r in captures) if protected else sent)
+    results.append({'case':case,'doctorExit':code,'requestsCaptured':len(captures),'appcastRequests':appcasts,'passed':passed})
 server.shutdown();server.server_close()
 (root/'requests.private.json').write_text(json.dumps(records,indent=2)+'\n')
 report={'allPassed':all(r['passed'] for r in results),'results':results,
-        'meaning':('The CLI sent each synthetic HOME desktop ID despite an unchanged CODEX_HOME and telemetry opt-out; HTTP requests terminated at the loopback test server.'
+        'meaning':('Controls sent their synthetic desktop IDs. Protected cases, when requested, still made the appcast request without the private desktop ID under overlapping cwd grants and a HOME alias. HTTP requests terminated at the loopback test server.'
                    if all(r['passed'] for r in results) else 'The fixture did not establish transmission; inspect doctor output and trace before drawing a conclusion.')}
 (root/'doctor-result.json').write_text(json.dumps(report,indent=2)+'\n')
 print(json.dumps(report),flush=True)

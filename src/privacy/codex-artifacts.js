@@ -1,0 +1,44 @@
+import { createArtifactAdmission } from "./artifact-admission.js";
+
+export const CODEX_RUNTIME_ROOT = "/opt/aimgr-codex-runtime";
+export const CODEX_PRIVACY_ABI = "codex-privacy-v1";
+const admission = createArtifactAdmission({
+  provider: "Codex", runtimeRootDefault: CODEX_RUNTIME_ROOT, privacyAbi: CODEX_PRIVACY_ABI,
+  // The privileged installer verifies every destination byte before publishing
+  // this immutable bundle. Launch rechecks ownership, ACLs, inventory and modes;
+  // root changing installed bytes is outside the privacy boundary. Explicit
+  // external executable selections still require their own content hash.
+  hashInstalledFiles: false,
+  maxTestAuthorizationMs: Infinity,
+  offsiteHostFile: "/opt/aimgr-state-audit/CODEX_TEST_HOST.json",
+  requiredEntries: platform => [{
+    field: "codeModeHost", file: "codex-code-mode-host", role: "vendor", executable: true,
+    error: "the approved Codex runtime lacks its code-mode helper",
+  }, {
+    field: "stateIO", file: "state_io.py", role: "launcher", executable: false,
+    error: "the approved Codex runtime lacks its state helper",
+  }, {
+    field: "configState", file: "config-state", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its native configuration and state helper",
+  }, {
+    field: "worktreeTool", file: "worktree-tool", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its native worktree helper",
+  }, ...(platform === "darwin" ? [{ field: "managedPreferences", file: "managed-preferences", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its forced-policy reader" }] : [])],
+  maintenanceEntries: () => [{
+    field: "processControl", file: "process-control", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its maintenance process inventory helper",
+  }, {
+    field: "mcpMaintenance", file: "mcp_maintenance.py", role: "launcher", executable: false,
+    error: "the approved Codex runtime lacks its MCP maintenance owner",
+  }, {
+    field: "mcpKeyring", file: "mcp-keyring", role: "launcher", executable: true,
+    error: "the approved Codex runtime lacks its MCP keyring helper",
+  }],
+});
+export const {
+  AdmissionError: CodexAdmissionError,
+  inspectAdministratorPath: inspectCodexAdministratorPath,
+  artifactSetDigest: codexArtifactSetDigest,
+  admitArtifact: admitCodexArtifact,
+} = admission;

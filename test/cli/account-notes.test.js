@@ -11,6 +11,22 @@ import { runCli } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { mkTempHome } from "../helpers/files.js";
 
+import { readNotesForCommand } from "../../src/status/account-notes.js";
+
+test("note reads and edits do not retrieve primary credential records", async () => {
+  const { homes: [home], client, store, deps } = await fixture();
+  const credentialKeys = new Set([
+    store.keys.credential({ provider: "openai-codex", label: "iphone_se_1" }),
+  ]);
+  const reads = [];
+  const original = client.mGet.bind(client);
+  client.mGet = async keys => { reads.push(...keys); return original(keys); };
+  await runCli(["note", "set", "iphone_se_1", "Local login stays local", "--provider", "anthropic", "--home", home], deps);
+  const notes = await readNotesForCommand({ homeDir: home, ...deps });
+  assert.equal(notes.find(note => note.provider === "anthropic").note, "Local login stays local");
+  assert.deepEqual(reads.filter(key => credentialKeys.has(key)), []);
+});
+
 const PREFIX = "aimgr:notes-test";
 
 async function fixture() {

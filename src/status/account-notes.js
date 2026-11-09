@@ -16,15 +16,17 @@ export function accountNoteFor(notes, provider, label) {
 }
 
 export async function readNotesForCommand(context) {
-  const { loadRedisRuntime, closeRedisRuntime } = await import("../coordination/runtime.js");
-  let runtime;
+  const { getRedisConfig } = await import("../config/aimgr-config.js");
+  const { connectRedisStore, closeRedisStore, readAccountNotes, REDIS_CONNECTION_POLICY_ONE_SHOT } = await import("../coordination/redis-store.js");
+  let store;
   try {
-    runtime = await loadRedisRuntime({ homeDir: context.homeDir, connectRedisStoreImpl: context.connectRedisStoreImpl });
-    return runtime.accountNotes;
+    const { redis } = getRedisConfig({ homeDir: context.homeDir });
+    store = await (context.connectRedisStoreImpl ?? connectRedisStore)({ ...redis, connectionPolicy: REDIS_CONNECTION_POLICY_ONE_SHOT });
+    return await readAccountNotes(store);
   } catch {
     return null;
   } finally {
-    if (runtime) await closeRedisRuntime(runtime).catch(() => {});
+    if (store) await closeRedisStore(store).catch(() => {});
   }
 }
 

@@ -5,12 +5,10 @@ import { isUsageSnapshotHardRateLimited } from "./account-status.js";
 import { buildHermesAssignmentsByHome, rebalanceHermesPool } from "./hermes-rebalance.js";
 import { buildHermesHomeBlockers, buildWarningsFromHermesHomeStatus, discoverHermesHomes, readHermesHomeStatus } from "./token-usage.js";
 import { collectCodexPoolStatus, getCodexPoolLabels } from "./ranking.js";
-import { ensureFileBackedCodexHome } from "../targets/codex-store.js";
 import { ensureStateShape } from "../state/schema.js";
 import { getCodexTargetState, getHermesFleetState } from "../state/accounts.js";
 import { isObject } from "../core/normalize.js";
 import { collectCodexUsageSnapshots, probeUsageSnapshotsByProvider } from "./usage.js";
-import { resolveManagedCodexHomeDir } from "../io/paths.js";
 import { sanitizeForStatus } from "../core/sanitize.js";
 
 function buildUsageUnavailableBlocker({ reason, label, homeId, usage }) {
@@ -57,7 +55,6 @@ export async function watchCodexPoolSelectionOnce(
   // Watch mode owns the threshold decision and receipt, but it must never invent
   // a second auth writer. Weighted selection and auth mutation still flow through
   // activateCodexPoolSelection() -> applyCodexCliFromState().
-  ensureFileBackedCodexHome({ codexHome: resolveManagedCodexHomeDir({ homeDir, env }) });
   const effectiveThresholdPct = resolveCodexWatchThresholdPct(thresholdPct);
   const observedAt = new Date().toISOString();
   const usageByProvider = await collectCodexUsageSnapshots({

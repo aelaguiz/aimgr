@@ -235,7 +235,12 @@ def activate_installed_bundle(user, target, runtime, published):
         write_atomic(runtime / 'active.json', (json.dumps({'schema': 1, 'artifactSet': target.name}) + '\n').encode(), published)
 
 
-def install(bundle, node, user, activate=False, runtime=RUNTIME):
+def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='claude', activate_bundle=None):
+    # Both providers use the same byte-copy/admission transaction. Their
+    # activation prerequisites remain separate; Claude's default is unchanged.
+    require(provider in ('claude', 'codex'), 'unsupported native provider')
+    require(provider == 'claude' or not activate or activate_bundle is not None, 'missing provider activation prerequisites')
+    title = provider.title()
     require(os.geteuid() == 0, 'installation requires administrator privileges')
     require(user.pw_uid != 0, 'choose the ordinary AIM runtime user')
     require(platform.system() in ('Darwin', 'Linux'), 'unsupported native platform')
@@ -246,7 +251,7 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME):
     approved_bytes = approval.read_bytes()
     manifest = json.loads(approved_bytes)
     require(manifest.get('approval', {}).get('kind') == 'normal-use', 'only an explicit normal-use approval may be installed here')
-    require(manifest.get('entrypoint') == 'claude' and manifest.get('launcher') == 'launcher'
+    require(manifest.get('entrypoint') == provider and manifest.get('launcher') == 'launcher'
             and manifest.get('policy') == 'policy.json', 'unsupported fixed native bundle layout')
     files = manifest.get('files', {})
     require(isinstance(files, dict) and 0 < len(files) <= 512, 'invalid approved inventory')
@@ -290,17 +295,18 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME):
                 if parent == staged: break
                 parent.chmod(0o755)
             # Copy bytes only: source ACLs, capabilities and privilege bits must
-            # never survive. The common gate validates every copied byte again.
+            # never survive. Verify each destination's bytes before publication;
+            # Codex launch admission relies on this immutable installation.
             with source.open('rb') as inp, target.open('xb') as out:
                 shutil.copyfileobj(inp, out); out.flush(); os.fsync(out.fileno())
             target.chmod(0o4755 if platform.system() == 'Linux' and name == 'launcher' else 0o755 if expected['executable'] else 0o644)
             require(target.stat().st_size == expected['size'] and digest(target) == expected['sha256'], 'approved bytes changed during copying')
         write_atomic(staged / 'approval.json', approved_bytes)
         write_atomic(stage / 'active.json', (json.dumps({'schema': 1, 'artifactSet': artifact}) + '\n').encode())
-        module = (REPO / 'src/privacy/claude-artifacts.js').as_uri()
+        module = (REPO / ('src/privacy/' + provider + '-artifacts.js')).as_uri()
         # Reuse production schema, ownership/ACL, ABI, platform, hash and human
         # approval checks. This is file inspection; it never executes Claude.
-        verify = 'const {admitClaudeArtifact}=await import(process.argv[1]);admitClaudeArtifact({runtimeRoot:process.argv[2]});'
+        verify = f'const {{admit{title}Artifact}}=await import(process.argv[1]);admit{title}Artifact({{runtimeRoot:process.argv[2]}});'
         # Root can read 0600 files and bypass access-denying ACLs. Admission
         # must succeed for the actual runtime user before changing selection.
         checked = as_user(verify, module, str(stage))
@@ -308,7 +314,9 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME):
         policy = json.loads((staged / 'policy.json').read_bytes())
         require(policy.get('schema') == 1 and policy.get('version') == manifest['version']
                 and policy.get('platform') == manifest['platform'] and policy.get('arch') == manifest['arch']
-                and re.fullmatch(r'[a-f0-9]{12}', policy.get('vendorCommit', '')), 'invalid native policy identity')
+                and (re.fullmatch(r'[a-f0-9]{12}', policy.get('vendorCommit', '')) if provider == 'claude'
+                     else re.fullmatch(r'[a-f0-9]{40}', policy.get('sourceCommit', '')) and policy.get('settingsManifest') == 1),
+                'invalid native policy identity')
         if platform.system() == 'Linux':
             linux_prerequisites()
         else:
@@ -338,7 +346,7 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME):
         # Inspect the REAL destination as the ordinary user, including its
         # ancestors. A valid staging sibling says nothing about a preexisting
         # artifacts/0700 directory, or a destination ACL denying execution.
-        metadata = 'const fs=await import("node:fs");const {inspectClaudeAdministratorPath}=await import(process.argv[1]);for(const [f,x] of JSON.parse(process.argv[2])){const r=inspectClaudeAdministratorPath(f,{readBytes:false});fs.accessSync(f,fs.constants.R_OK|(x||r.kind==="directory"?fs.constants.X_OK:0));}'
+        metadata = 'const fs=await import("node:fs");const {inspect' + title + 'AdministratorPath:inspect}=await import(process.argv[1]);for(const [f,x] of JSON.parse(process.argv[2])){const r=inspect(f,{readBytes:false});fs.accessSync(f,fs.constants.R_OK|(x||r.kind==="directory"?fs.constants.X_OK:0));}'
         entries = [[str(p), bool(files.get(p.relative_to(target).as_posix(), {}).get('executable'))]
                    for p in [target, *target.rglob('*')]]
         checked = as_user(metadata, module, json.dumps(entries))
@@ -347,7 +355,7 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME):
         if not lock.exists() and not lock.is_symlink(): write_atomic(lock, b'')
         if platform.system() == 'Linux': linux_immutable(lock)
         if activate:
-            activate_installed_bundle(user, target, runtime, published)
+            (activate_bundle or activate_installed_bundle)(user, target, runtime, published)
         return {'artifactSet': artifact, 'activated': activate, 'oldBundlesRetained': True}
     except Exception as error:
         if selector_published:

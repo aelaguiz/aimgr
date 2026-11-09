@@ -4,56 +4,26 @@ import {
   closeRedisRuntime,
   isRedisConfigured,
   loadRedisRuntime,
-  publishRedisCredentialPolicyFromState,
-  refreshRedisRuntimeState,
 } from "../../coordination/runtime.js";
-import { findCredentialRecord } from "../../coordination/snapshot.js";
 import { REDIS_CONNECTION_POLICY_LEASED } from "../../coordination/redis-store.js";
 import { isObject, normalizeLabel } from "../../core/normalize.js";
 import { parseExpiresAtToMs } from "../../core/time.js";
-import { hasCompleteClaudeNativeBundle } from "../../credentials/claude-bundle.js";
 import { getAnthropicCredentialView } from "../../credentials/anthropic.js";
 import { maintainRedisClaudeCredential } from "../../credentials/claude-maintenance.js";
-import { maintainRedisCodexCredential } from "../../credentials/harness-access.js";
+import { maintainLocalCodexCredential, readLocalCodexCredential } from "../../credentials/codex-local.js";
+import { readCodexAccountMetadata } from "../../coordination/codex-metadata.js";
+import { readCodexEnvironment } from "../../privacy/codex-environment.js";
 import { hasXaiRefreshMaterial, maintainRedisXaiCredential } from "../../credentials/xai-login.js";
 
 import { sanitizeForStatus } from "../../core/sanitize.js";
 import { writeHermesAuthFromState } from "../../targets/hermes-auth.js";
 
 const OAUTH_REAUTH_REQUIRED = "oauth_reauth_required";
-const CLAUDE_DUE_WINDOW_MS = 5 * 60_000;
-const CODEX_DUE_WINDOW_MS = 48 * 60 * 60_000;
-const MAINTAINED_PROVIDERS = new Set([ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER]);
+const SHARED_DUE_WINDOW_MS = 5 * 60_000;
+const MAINTAINED_PROVIDERS = new Set([ANTHROPIC_PROVIDER, XAI_PROVIDER]);
 
 function hasLoadedCredential(record) {
   return isObject(record?.credential) && Object.keys(record.credential).length > 0;
-}
-
-function hasCodexRefreshMaterial(credential) {
-  return Boolean(
-    typeof credential?.refresh === "string"
-    && credential.refresh.trim()
-    && typeof credential?.accountId === "string"
-    && credential.accountId.trim()
-  );
-}
-
-function hasRequiredRefreshMaterial(record) {
-  if (record.provider === ANTHROPIC_PROVIDER) {
-    return hasCompleteClaudeNativeBundle(record.credential);
-  }
-  if (record.provider === OPENAI_CODEX_PROVIDER) {
-    return hasCodexRefreshMaterial(record.credential);
-  }
-  if (record.provider === XAI_PROVIDER) {
-    return hasXaiRefreshMaterial(record.credential);
-  }
-  return false;
-}
-
-function dueWindowMs(provider) {
-  if (provider === ANTHROPIC_PROVIDER || provider === XAI_PROVIDER) return CLAUDE_DUE_WINDOW_MS;
-  return CODEX_DUE_WINDOW_MS;
 }
 
 function recordExpiryMs(record) {
@@ -69,7 +39,7 @@ function isDue(record, nowMs) {
     ? getAnthropicCredentialView(record?.credential)
     : record?.credential;
   const access = typeof credential?.access === "string" ? credential.access.trim() : "";
-  return !access || expiresAtMs === null || expiresAtMs <= nowMs + dueWindowMs(record.provider);
+  return !access || expiresAtMs === null || expiresAtMs <= nowMs + SHARED_DUE_WINDOW_MS;
 }
 
 function isTerminallyMarked(record) {
@@ -94,43 +64,6 @@ function sortedMaintenanceRecords(snapshot) {
     });
 }
 
-async function markReauthRequired(runtime, record, observedAt) {
-  const account = runtime.state?.accounts?.[record.label];
-  if (!isObject(account) || account.provider !== record.provider) {
-    throw new Error(`Cannot mark OAuth reauthentication for ${record.provider}:${record.label}.`);
-  }
-  account.reauth = {
-    ...(isObject(account.reauth) ? account.reauth : {}),
-    blockedReason: OAUTH_REAUTH_REQUIRED,
-  };
-  return publishRedisCredentialPolicyFromState({
-    runtime,
-    state: runtime.state,
-    label: record.label,
-    observedAt,
-  });
-}
-
-async function maintainCodexRecord({
-  runtime,
-  record,
-  nowMs,
-  fetchJsonWithTimeoutImpl,
-}) {
-  const result = await maintainRedisCodexCredential({
-    runtime,
-    nowMs,
-    fetchJsonWithTimeoutImpl,
-  }, {
-    runtime,
-    label: record.label,
-    force: true,
-    incompleteMeansReauth: true,
-  });
-  if (result.outcome === "refreshed" || result.outcome === "reauth_required") return result;
-  return { outcome: "skipped", reason: result.reason ?? "not_actionable" };
-}
-
 async function handleOAuthMaintain(context) {
   const {
     homeDir,
@@ -148,7 +81,7 @@ async function handleOAuthMaintain(context) {
   // This does not relax ownership: each publication still checks the live lease,
   // and leased connections disable offline command queueing on a disconnect.
   const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl,
-    connectionPolicy: REDIS_CONNECTION_POLICY_LEASED });
+    connectionPolicy: REDIS_CONNECTION_POLICY_LEASED, excludeCodexGrants: true });
   const counts = {
     refreshed: 0,
     unchanged: 0,
@@ -167,7 +100,7 @@ async function handleOAuthMaintain(context) {
         !hasLoadedCredential(record)
         || isTerminallyMarked(record)
         // Claude applies its own refresh due gate after the per-label lease is held.
-        || (record.provider !== ANTHROPIC_PROVIDER && hasRequiredRefreshMaterial(record) && !isDue(record, nowMs))
+        || (record.provider !== ANTHROPIC_PROVIDER && hasXaiRefreshMaterial(record.credential) && !isDue(record, nowMs))
       ) {
         maintenanceResult = {
           outcome: "skipped",
@@ -198,40 +131,6 @@ async function handleOAuthMaintain(context) {
             });
             outcome = result.outcome;
             reason = result.reason;
-          } else if (!hasRequiredRefreshMaterial(record)) {
-            await refreshRedisRuntimeState(runtime);
-            const current = findCredentialRecord(runtime.snapshot, {
-              provider: record.provider,
-              label: record.label,
-            });
-            if (!current || !hasLoadedCredential(current) || isTerminallyMarked(current)) {
-              outcome = "skipped";
-              reason = !current || !hasLoadedCredential(current)
-                ? "credential_missing"
-                : "reauth_already_required";
-            } else if (record.provider === OPENAI_CODEX_PROVIDER) {
-              const codexResult = await maintainCodexRecord({
-                runtime,
-                record: current,
-                nowMs,
-                fetchJsonWithTimeoutImpl,
-              });
-              outcome = codexResult.outcome;
-              reason = codexResult.reason;
-            } else {
-              await markReauthRequired(runtime, current, new Date(nowMs).toISOString());
-              outcome = "reauth_required";
-              reason = "refresh_material_missing";
-            }
-          } else {
-            const codexResult = await maintainCodexRecord({
-              runtime,
-              record,
-              nowMs,
-              fetchJsonWithTimeoutImpl,
-            });
-            outcome = codexResult.outcome;
-            reason = codexResult.reason;
           }
           maintenanceResult = {
             outcome: Object.hasOwn(counts, outcome) ? outcome : "retryable",
@@ -261,6 +160,24 @@ async function handleOAuthMaintain(context) {
           + (maintenanceResult.detail ? ` detail="${maintenanceResult.detail}"` : "")
           + `\n`,
       );
+    }
+    // Codex maintenance uses only this environment's independently authorized
+    // grant. Redis supplies account metadata, never legacy primary credentials.
+    let environment = null;
+    try { environment = (context.readCodexEnvironmentImpl ?? readCodexEnvironment)(); } catch { /* No local runtime/grants to maintain. */ }
+    if (environment) for (const item of await readCodexAccountMetadata(runtime.store)) {
+      if (!item.accountId) continue;
+      const options = { homeDir, env: context.env, environment, accountId: item.accountId };
+      let outcome, reason;
+      try {
+        const before = readLocalCodexCredential(options);
+        const after = await maintainLocalCodexCredential(options, { fetchJsonWithTimeoutImpl });
+        outcome = after.status === "reauth_required" ? "reauth_required" : !after.credential ? "skipped"
+          : before.generation !== after.generation ? "refreshed" : "unchanged";
+        reason = after.status;
+      } catch { outcome = "retryable"; reason = "maintenance_failed"; }
+      counts[outcome] += 1;
+      stdout.write(`provider=${OPENAI_CODEX_PROVIDER} authority=environment-local label=${item.label} outcome=${outcome} reason=${reason}\n`);
     }
   } finally {
     await closeRedisRuntime(runtime);

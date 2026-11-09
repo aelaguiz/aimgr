@@ -170,10 +170,10 @@ function isRedisWatchError(err) {
   return err?.name === "WatchError" || /watched keys/i.test(message);
 }
 
-export async function readSnapshot(store) {
+export async function readSnapshot(store, { excludeCodexGrants = false } = {}) {
   const [metaRaw, credentialsRaw] = await Promise.all([
     store.client.get(store.keys.meta()),
-    readIndexedRecords(store, store.keys.credentials()),
+    excludeCodexGrants ? readOtherProviderRecords(store) : readIndexedRecords(store, store.keys.credentials()),
   ]);
   const meta = parseJsonRecord(metaRaw, store.keys.meta());
   const credentials = credentialsRaw
@@ -185,6 +185,24 @@ export async function readSnapshot(store) {
     observedAt: new Date().toISOString(),
     keyPrefix: store.keyPrefix,
   };
+}
+
+async function readOtherProviderRecords(store) {
+  // Status still needs other providers' existing credential summaries. Filter
+  // Codex on the server before any legacy grant crosses this connection.
+  const json = await store.client.eval(`
+-- AIMGR_OTHER_PROVIDER_RECORDS_V1
+local out={}
+for _,key in ipairs(redis.call('SMEMBERS',KEYS[1])) do
+  local raw=redis.call('GET',key)
+  if raw then
+    local record=cjson.decode(raw)
+    if record.provider~='openai-codex' then table.insert(out,record) end
+  end
+end
+return cjson.encode(out)`, { keys: [store.keys.credentials()], arguments: [] });
+  const records = JSON.parse(json);
+  return Array.isArray(records) ? records : [];
 }
 
 // Notes have their own records so older credential writers cannot erase them.
@@ -311,6 +329,7 @@ export async function publishMeta(store, { expectedVersion, metaRecord, updatedB
 }
 
 export async function publishCredential(store, { expectedVersion, credentialRecord, updatedBy, observedAt } = {}) {
+  assertCodexCredentialExportable(credentialRecord?.credential);
   const record = normalizeCredentialRecord(credentialRecord, { now: observedAt });
   return casPutJsonRecord(store, {
     key: store.keys.credential(record),
@@ -354,3 +373,4 @@ export async function importCredentialsSnapshot(store, snapshot, {
   }
   return results;
 }
+import { assertCodexCredentialExportable } from "../credentials/codex-local.js";

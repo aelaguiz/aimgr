@@ -1,143 +1,66 @@
+import path from "node:path";
 import { getCodexCredential } from "../browser/seed.js";
-import {
-  AIMGR_REDIS_PRIMARY_HOST,
-  AIMGR_REDIS_PRIMARY_URL,
-  CODEX_AUTH_STORE_MODE_FILE,
-  OPENAI_CODEX_PROVIDER,
-} from "../core/constants.js";
+import { CODEX_AUTH_STORE_MODE_FILE, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { clampPercent } from "../core/numbers.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
-import { parseExpiresAtToMs, toIsoFromExpiresMs } from "../core/time.js";
-import { assertCodexCredentialShape, buildCodexCredentialFingerprint, findCodexLabelByAccountId } from "../credentials/codex.js";
-import { decodeJwtPayload } from "../credentials/jwt.js";
-import { writeJsonFileIfChanged } from "../io/json-store.js";
-import { resolveCodexAuthFilePath, resolveCodexConfigPath, resolveManagedCodexHomeDir } from "../io/paths.js";
+import { findCodexLabelByAccountId } from "../credentials/codex.js";
+import { CODEX_LOCAL_AUTHORITY, readLocalCodexCredential } from "../credentials/codex-local.js";
+import { prepareCodexAccountState } from "../privacy/codex-account-state.js";
+import { readCodexEnvironment } from "../privacy/codex-environment.js";
 import { appendOpenaiCodexHistory, collectCodexPoolStatusWithExhaustionHistory, recordOpenaiCodexBlockedSelectionHistory } from "../pool/history.js";
-import { getCodexPoolLabels, pickLeastUsedCodexPoolLabel, pickNextBestLocalCliPoolLabel, rankPoolCandidates } from "../pool/ranking.js";
+import { pickLeastUsedCodexPoolLabel, pickNextBestLocalCliPoolLabel, rankPoolCandidates } from "../pool/ranking.js";
 import { collectCodexUsageSnapshots, probeUsageSnapshotsByProvider } from "../pool/usage.js";
-import { discoverStatusConfiguredOpenclawCodexAgents, getCodexTargetState, getImportedCodexLabels, getOpenclawAssignments, getOpenclawTargetState, hasImportedCodexReplica } from "../state/accounts.js";
-import { markImportedCodexLabelDirtyState } from "../state/authority-codex.js";
-import { getAuthorityCodexImport } from "../state/authority-codex.js";
+import { discoverStatusConfiguredOpenclawCodexAgents, getCodexTargetState, getOpenclawAssignments, getOpenclawTargetState } from "../state/accounts.js";
 import { ensureStateShape } from "../state/schema.js";
-import { buildCodexAuthDotJson, clearManagedCodexCliActivation, ensureFileBackedCodexHome, readCodexAuthFile, readCodexCliStoreMode } from "./codex-store.js";
-import { writeCodexLabelInstallationId } from "./codex-installation-id.js";
 
 export function applyCodexCliFromState({ label, homeDir, env = {} }, state) {
   ensureStateShape(state);
-  if (!hasImportedCodexReplica(state) && getCodexPoolLabels(state).length === 0) {
-    throw new Error(
-      "No Redis-backed Codex pool is available on this machine yet. " +
-        `Run \`aim redis configure --url '${AIMGR_REDIS_PRIMARY_URL}' --primary-host ${AIMGR_REDIS_PRIMARY_HOST}\`, then import a reviewed snapshot or enroll a Codex label.`,
-    );
-  }
-
   const normalizedLabel = normalizeLabel(label);
   const account = state.accounts[normalizedLabel];
-  if (!isObject(account)) {
-    throw new Error(`Unknown imported label: ${normalizedLabel}. Run \`aim status\` to inspect the imported pool.`);
-  }
-  const provider = normalizeProviderId(account.provider);
-  if (provider !== OPENAI_CODEX_PROVIDER) {
-    throw new Error(`Refusing to activate non-Codex label=${normalizedLabel} provider=${provider || "unknown"}.`);
-  }
-
-  const credential = assertCodexCredentialShape({
-    label: normalizedLabel,
-    credential: getCodexCredential(state, normalizedLabel),
-    requireFresh: true,
-  });
-
-  const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
-  const store = ensureFileBackedCodexHome({ codexHome });
-  const appliedAt = new Date().toISOString();
-  const existingReadback = readCodexAuthFile({ codexHome });
-  const candidatePayload = buildCodexAuthDotJson({ credential, lastRefreshAt: appliedAt });
-  const existingTokens = isObject(existingReadback.json?.tokens) ? existingReadback.json.tokens : null;
-  const tokensUnchanged = existingReadback.ok === true
-    && existingTokens?.id_token === candidatePayload.tokens.id_token
-    && existingTokens?.access_token === candidatePayload.tokens.access_token
-    && existingTokens?.refresh_token === candidatePayload.tokens.refresh_token
-    && existingTokens?.account_id === candidatePayload.tokens.account_id;
-  const authPayload = tokensUnchanged && typeof existingReadback.json?.last_refresh === "string"
-    ? { ...candidatePayload, last_refresh: existingReadback.json.last_refresh }
-    : candidatePayload;
-  const writeResult = writeJsonFileIfChanged(resolveCodexAuthFilePath(codexHome), authPayload, { mode: 0o600 });
-  const readback = readCodexAuthFile({ codexHome });
-  if (readback.ok !== true) {
-    throw new Error(`Failed to read back managed Codex auth file: ${readback.error || "unknown error"}`);
-  }
-  if (readback.accountId !== credential.accountId) {
-    throw new Error(
-      `Codex readback mismatch after apply: expected accountId=${credential.accountId}, got ${readback.accountId || "none"}.`,
-    );
-  }
-
-  // Every Codex process that will read this auth also reads the installation id at start, so
-  // the label's id has to be in place wherever auth is written (CLI, watch loop, routines).
-  let installationId = null;
-  try {
-    installationId = writeCodexLabelInstallationId({ codexHome, label: normalizedLabel });
-  } catch (err) {
-    installationId = { changed: false, reason: "error", error: String(err?.message ?? err) };
-  }
-
+  if (!account) throw new Error(`Unknown Codex label: ${normalizedLabel}.`);
+  if (normalizeProviderId(account.provider) !== OPENAI_CODEX_PROVIDER) throw new Error(`Refusing to activate non-Codex label=${normalizedLabel}.`);
+  const selected = getCodexCredential(state, normalizedLabel);
+  if (selected?.authority !== CODEX_LOCAL_AUTHORITY) throw new Error(`Sign in on this machine with \`aim codex login ${normalizedLabel}\` before using this Codex account.`);
+  const environment = state.codexEnvironment ?? readCodexEnvironment();
+  const local = readLocalCodexCredential({ homeDir, env, environment, accountId: selected.accountId });
+  if (local.status !== "ready") throw new Error(`Codex login is ${local.status} on this machine. Run \`aim codex login ${normalizedLabel}\`.`);
+  const prepared = prepareCodexAccountState({ homeDir, env, environment, accountId: selected.accountId, label: normalizedLabel });
   const target = getCodexTargetState(state);
-  target.homeDir = codexHome;
+  target.homeDir = prepared.codexHome;
   target.activeLabel = normalizedLabel;
-  target.expectedAccountId = credential.accountId;
-  target.lastAppliedAt = appliedAt;
-
-  return {
-    label: normalizedLabel,
-    accountId: credential.accountId,
-    codexHome,
-    authPath: readback.authPath,
-    storeMode: store.storeMode,
-    wrote: writeResult.wrote,
-    installationId,
-  };
+  target.expectedAccountId = prepared.accountId;
+  target.environmentId = prepared.environmentId;
+  target.lastAppliedAt = new Date().toISOString();
+  // Selection does not project or replace auth. Native and AIM use the one
+  // environment-local canonical target, guarded by the native sidecar lock.
+  return { label: normalizedLabel, accountId: prepared.accountId, codexHome: prepared.codexHome,
+    authPath: path.join(prepared.accountRoot, "auth.json"), storeMode: "file", wrote: false, prepared };
 }
 
 export function readCodexCliTargetStatus({ state, homeDir, env = {} }) {
   ensureStateShape(state);
-  const importMeta = getAuthorityCodexImport(state);
   const target = getCodexTargetState(state);
-  const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
-  let store = null;
-  let storeError = null;
-
-  try {
-    store = readCodexCliStoreMode({ codexHome });
-  } catch (err) {
-    storeError = String(err?.message ?? err);
+  const environment = state.codexEnvironment ?? readCodexEnvironment();
+  const accountId = target.expectedAccountId;
+  let local = null;
+  if (accountId) {
+    try { local = readLocalCodexCredential({ homeDir, env, environment, accountId }); }
+    catch { local = { status: "local_auth_unavailable", credential: null }; }
   }
-
-  const readback = readCodexAuthFile({ codexHome });
-  const activeLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
-  const expectedAccountId = typeof target.expectedAccountId === "string" ? target.expectedAccountId.trim() : "";
-  const actualAccountId = readback.ok ? readback.accountId : null;
-  const inferredLabel = actualAccountId ? findCodexLabelByAccountId(state, actualAccountId) : null;
-
+  const codexHome = local?.paths?.codexHome ?? null;
+  const activeLabel = target.activeLabel || null;
+  const actualAccountId = local?.credential?.accountId ?? null;
   return {
-    source: typeof importMeta.source === "string" ? importMeta.source.trim() || null : null,
-    importedAt: typeof importMeta.importedAt === "string" ? importMeta.importedAt.trim() || null : null,
-    importedLabels: getImportedCodexLabels(state),
-    homeDir: codexHome,
-    authPath: resolveCodexAuthFilePath(codexHome),
-    storeMode: store?.storeMode ?? null,
-    storeSource: store?.source ?? null,
-    storeConfigPath: store?.configPath ?? resolveCodexConfigPath(codexHome),
-    storeError,
-    activeLabel: activeLabel || null,
-    activeAccountPresent: activeLabel ? isObject(state.accounts[activeLabel]) : false,
-    activeCredentialPresent: activeLabel ? isObject(getCodexCredential(state, activeLabel)) : false,
-    expectedAccountId: expectedAccountId || null,
-    actualAccountId: actualAccountId || null,
-    inferredLabel: inferredLabel || null,
-    readback,
-    lastSelectionReceipt: isObject(target.lastSelectionReceipt) ? target.lastSelectionReceipt : null,
-    lastWatchReceipt: isObject(target.lastWatchReceipt) ? target.lastWatchReceipt : null,
-    lastAppliedAt: typeof target.lastAppliedAt === "string" ? target.lastAppliedAt.trim() || null : null,
+    source: "environment-local", importedAt: null, importedLabels: Object.keys(state.accounts),
+    homeDir: codexHome, authPath: local?.paths ? path.join(local.paths.accountRoot, "auth.json") : null,
+    storeMode: "file", storeSource: "privacy policy", storeConfigPath: codexHome ? path.join(codexHome, "config.toml") : null,
+    storeError: null, activeLabel, activeAccountPresent: Boolean(state.accounts[activeLabel]),
+    activeCredentialPresent: Boolean(local?.credential), expectedAccountId: accountId ?? null, actualAccountId,
+    inferredLabel: actualAccountId ? findCodexLabelByAccountId(state, actualAccountId) : null,
+    readback: { exists: Boolean(local?.raw), ok: Boolean(local?.credential), accountId: actualAccountId,
+      ...(local && !local.credential ? { error: local.status } : {}) },
+    lastSelectionReceipt: target.lastSelectionReceipt ?? null, lastWatchReceipt: target.lastWatchReceipt ?? null,
+    lastAppliedAt: target.lastAppliedAt ?? null,
   };
 }
 
@@ -230,161 +153,6 @@ export function getWeeklyRemainingPctFromUsageSnapshot(snapshot) {
   const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
   if (windows.length === 0) return null;
   return clampPercent(100 - Number(windows[0]?.usedPercent ?? 0));
-}
-
-function jwtExpiresAt(token) {
-  const claims = decodeJwtPayload(token);
-  const exp = Number(claims?.exp);
-  if (!Number.isFinite(exp) || exp <= 0) return null;
-  return toIsoFromExpiresMs(exp * 1000);
-}
-
-function newestCodexTokenExpiry(...tokens) {
-  const expiries = tokens
-    .map((token) => jwtExpiresAt(token))
-    .map((expiresAt) => parseExpiresAtToMs(expiresAt))
-    .filter((expiresAtMs) => Number.isFinite(expiresAtMs));
-  return expiries.length > 0 ? toIsoFromExpiresMs(Math.max(...expiries)) : null;
-}
-
-/**
- * Reconcile the one managed Codex auth file with the credential currently
- * loaded from Redis. Identity must agree before freshness is considered.
- * The fresher side wins; equal-expiry token conflicts are left untouched.
- */
-export function reconcileCodexCliAuth({ state, homeDir, env = {}, observedAt = new Date().toISOString() }) {
-  ensureStateShape(state);
-  const codexHome = resolveManagedCodexHomeDir({ homeDir, env });
-  const readback = readCodexAuthFile({ codexHome });
-  if (readback.ok !== true) {
-    return {
-      status: "skipped",
-      reason: readback.exists ? "auth_unreadable" : "auth_missing",
-      authPath: readback.authPath,
-    };
-  }
-
-  const tokens = isObject(readback.json?.tokens) ? readback.json.tokens : null;
-  const accountId = typeof tokens?.account_id === "string" ? tokens.account_id.trim() : "";
-  const access = typeof tokens?.access_token === "string" ? tokens.access_token.trim() : "";
-  const refresh = typeof tokens?.refresh_token === "string" ? tokens.refresh_token.trim() : "";
-  const idToken = typeof tokens?.id_token === "string" ? tokens.id_token.trim() : "";
-  if (!accountId || !access || !refresh) {
-    return {
-      status: "skipped",
-      reason: "auth_tokens_incomplete",
-      authPath: readback.authPath,
-      accountId: accountId || null,
-    };
-  }
-
-  const target = getCodexTargetState(state);
-  const targetLabel = typeof target.activeLabel === "string" ? target.activeLabel.trim() : "";
-  const inferredLabel = findCodexLabelByAccountId(state, accountId);
-  if (targetLabel && inferredLabel && targetLabel !== inferredLabel) {
-    return {
-      status: "conflict",
-      reason: "target_identity_mismatch",
-      label: targetLabel,
-      actualLabel: inferredLabel,
-      accountId,
-    };
-  }
-  const label = targetLabel || inferredLabel;
-  if (!label) {
-    return {
-      status: "skipped",
-      reason: "label_not_found",
-      authPath: readback.authPath,
-      accountId,
-    };
-  }
-
-  const existing = getCodexCredential(state, label);
-  if (!isObject(existing)) {
-    return {
-      status: "skipped",
-      reason: "stored_credential_missing",
-      label,
-      accountId,
-    };
-  }
-  if (typeof existing.accountId === "string" && existing.accountId.trim() && existing.accountId.trim() !== accountId) {
-    return {
-      status: "skipped",
-      reason: "account_mismatch",
-      label,
-      accountId,
-      expectedAccountId: existing.accountId.trim(),
-    };
-  }
-
-  const expiresAt = newestCodexTokenExpiry(idToken, access) || existing.expiresAt;
-  const credential = {
-    access,
-    refresh,
-    idToken: idToken || existing.idToken || access,
-    expiresAt,
-    accountId,
-  };
-  try {
-    assertCodexCredentialShape({ label, credential, requireFresh: false });
-  } catch (err) {
-    return {
-      status: "skipped",
-      reason: "live_credential_invalid",
-      label,
-      accountId,
-      detail: String(err?.message ?? err),
-    };
-  }
-
-  const oldFingerprint = buildCodexCredentialFingerprint(existing);
-  const newFingerprint = buildCodexCredentialFingerprint(credential);
-  if (oldFingerprint === newFingerprint) {
-    return {
-      status: "identical",
-      label,
-      accountId,
-    };
-  }
-
-  const storedExpiresAtMs = parseExpiresAtToMs(existing.expiresAt);
-  const localExpiresAtMs = parseExpiresAtToMs(credential.expiresAt);
-  if (!Number.isFinite(storedExpiresAtMs) || !Number.isFinite(localExpiresAtMs)) {
-    return {
-      status: "conflict",
-      reason: "freshness_unavailable",
-      label,
-      accountId,
-    };
-  }
-  if (localExpiresAtMs < storedExpiresAtMs) {
-    const projected = applyCodexCliFromState({ label, homeDir, env }, state);
-    return {
-      status: "redis_newer",
-      label,
-      accountId,
-      wroteAuthJson: Boolean(projected.wrote),
-    };
-  }
-  if (localExpiresAtMs === storedExpiresAtMs) {
-    return {
-      status: "conflict",
-      reason: "token_conflict_at_equal_expiry",
-      label,
-      accountId,
-    };
-  }
-
-  state.credentials[OPENAI_CODEX_PROVIDER][label] = credential;
-  const authorityPromotion = markImportedCodexLabelDirtyState(state, label, { observedAt });
-  return {
-    status: "local_newer",
-    label,
-    accountId,
-    authorityPromotion,
-  };
 }
 
 export function buildCodexWatchNonfatalWarnings(status) {
@@ -497,7 +265,7 @@ export function activateCodexLabelSelection({ state, homeDir, env = {}, label })
         reason: "explicit_label",
       },
     ]);
-    return { status, receipt, wrote: Boolean(activated.wrote) };
+    return { status, receipt, wrote: Boolean(activated.wrote), prepared: activated.prepared };
   } catch (err) {
     const message = String(err?.message ?? err);
     const receipt = {
@@ -546,7 +314,6 @@ export async function activateCodexPoolSelection({
   ensureStateShape(state);
   // Structural target validation comes first: if this machine's Codex home is not
   // AIM-manageable, fail loud before doing pool selection or usage probing.
-  ensureFileBackedCodexHome({ codexHome: resolveManagedCodexHomeDir({ homeDir, env }) });
   const observedAt =
     typeof observedAtOverride === "string" && observedAtOverride.trim()
       ? observedAtOverride.trim()
@@ -630,7 +397,7 @@ export async function activateCodexPoolSelection({
         wroteAuthJson: false,
       };
       target.lastSelectionReceipt = receipt;
-      return { status: "noop", receipt, wrote: false };
+      return { status: "noop", receipt, wrote: false, prepared: applyCodexCliFromState({ label: currentLabel, homeDir, env }, state).prepared };
     }
     const telemetryOnlyFailure = poolStatus.credentialEligibleLabels.some(
       (label) => poolStatus.byLabel[label]?.usageReason === "usage_unavailable",
@@ -650,7 +417,10 @@ export async function activateCodexPoolSelection({
       recordOpenaiCodexBlockedSelectionHistory(state, { observedAt, reason: "usage_unavailable" });
       return { status: "blocked", receipt, wrote: false };
     }
-    clearManagedCodexCliActivation({ state, homeDir, env });
+    // Pool exhaustion never deletes a healthy account-private grant.
+    delete target.activeLabel;
+    delete target.expectedAccountId;
+    delete target.homeDir;
     const receipt = {
       action: "codex_use",
       status: "blocked",
@@ -739,5 +509,5 @@ export async function activateCodexPoolSelection({
     },
   ]);
 
-  return { status, receipt, wrote: Boolean(activated.wrote) };
+  return { status, receipt, wrote: Boolean(activated.wrote), prepared: activated.prepared };
 }

@@ -1,4 +1,6 @@
 import test from "node:test";
+import { CODEX_TEST_ENVIRONMENT, readCodexTestEnvironment } from "../helpers/codex-local.js";
+import { codexAccountPaths } from "../../src/privacy/codex-account-state.js";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -458,6 +460,8 @@ function workerContext(home, receipt, runtime) {
     routineAimCommand: ["fake-aim"],
     spawnSyncImpl: runtime.spawnSyncImpl,
     spawnImpl: runtime.spawnImpl,
+    prepareCodexNativeInvocationImpl: runtime.prepareCodexNativeInvocationImpl,
+    readCodexEnvironmentImpl: readCodexTestEnvironment,
     routineTimeouts: {
       promptAdmissionMs: 20,
       initialTurnMs: 100,
@@ -746,28 +750,36 @@ function makeCodexRuntime(home, options = {}) {
   let submitted = "";
   let tui;
   const kills = [];
-  const rolloutPath = path.join(home, ".aimgr", "codex-cli", "sessions", "2026", "08", "15",
+  const prepared = codexAccountPaths({ homeDir: home, accountId: "acct-test", environment: CODEX_TEST_ENVIRONMENT });
+  const rolloutPath = path.join(prepared.codexHome, "sessions", "2026", "08", "15",
     `rollout-2026-08-15T12-34-00-${sessionId}.jsonl`);
   const runtime = {
-    sessionId, calls, kills,
+    sessionId, calls, kills, prepared,
+    async prepareCodexNativeInvocationImpl(request) {
+      assert.equal(request.prepared.codexHome, request.env.CODEX_HOME);
+      assert.equal(request.command, undefined, "normal routine selects the admitted artifact independently of PATH");
+      let closed = false;
+      return { ...request, command: "codex", environmentFd: 3, closeEnvironment() {}, async close() { closed = true; },
+        get closed() { return closed; } };
+    },
     get submitted() { return submitted; },
     get rolloutPath() { return rolloutPath; },
     closeTui(code = 0) { tui.emit("close", code, null); },
     appendRollout(entry) { fs.appendFileSync(rolloutPath, `${JSON.stringify(entry)}\n`); },
     spawnSyncImpl(command, args) {
       assert.equal(command, "fake-aim");
-      assert.deepEqual(args, ["codex", "use", "--home", home]);
-      const authPath = path.join(home, ".aimgr", "codex-cli", "auth.json");
-      fs.mkdirSync(path.dirname(authPath), { recursive: true });
-      fs.writeFileSync(authPath, JSON.stringify({ tokens: { account_id: options.wrongAccount ? "wrong" : "acct-test" } }));
-      return { status: 0, stdout: JSON.stringify({ ok: true, activated: { receipt: { label: "test", accountId: "acct-test" } } }) };
+      assert.deepEqual(args, ["codex", "__routine-use", "--home", home]);
+      return { status: 0, stdout: JSON.stringify({ ok: true, activated: {
+        receipt: { label: "test", accountId: "acct-test" },
+        prepared: { ...prepared, accountId: options.wrongAccount ? "wrong" : prepared.accountId },
+      } }) };
     },
     spawnImpl(command, args, spawnOptions) {
       calls.push({ command, args, options: spawnOptions });
       assert.equal(command, "codex");
       const child = new EventEmitter();
       if (args.includes("resume")) {
-        assert.equal(spawnOptions.stdio, "inherit");
+        assert.deepEqual(spawnOptions.stdio, ["inherit", "inherit", "inherit", 3]);
         assert.equal(args.at(-1), sessionId);
         assert.equal(args.includes("--last"), false);
         tui = child;
@@ -817,7 +829,7 @@ test("Codex routine executes the prompt once, saves events, and resumes that ses
   const runtime = makeCodexRuntime(home);
   const context = workerContext(home, receipt, runtime);
   context.env.CODEX_API_KEY = "must-not-use-this-key";
-  context.env.OPENAI_API_KEY = "must-not-use-this-key";
+  context.env.OPENAI_API_KEY = "synthetic-independent-tool-key";
   const worker = executeRoutineWorker(context);
   await waitUntil(() => runtime.calls.length === 2, "Codex TUI did not open");
   const saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
@@ -833,9 +845,9 @@ test("Codex routine executes the prompt once, saves events, and resumes that ses
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-bootstrap.lock")), false);
   for (const call of runtime.calls) {
     assert.equal(call.options.cwd, receipt.configured.cwd);
-    assert.equal(call.options.env.CODEX_HOME, path.join(home, ".aimgr", "codex-cli"));
+    assert.equal(call.options.env.CODEX_HOME, runtime.prepared.codexHome);
     assert.equal(call.options.env.CODEX_API_KEY, undefined);
-    assert.equal(call.options.env.OPENAI_API_KEY, undefined);
+    assert.equal(call.options.env.OPENAI_API_KEY, "synthetic-independent-tool-key");
     assert.deepEqual(call.args.slice(0, 6), ["--profile", "yolo", "--model", "gpt-6-astra", "-c", 'model_reasoning_effort="xhigh"']);
   }
   assert.equal(runtime.calls[0].args.at(-1), "-");
@@ -925,7 +937,7 @@ test("DeepSeek Codex routine uses the API profile without selecting a ChatGPT ac
 });
 
 for (const [name, options, error, outcome] of [
-  ["wrong selected account", { wrongAccount: true }, /selected AIM account/, "failed_before_prompt"],
+  ["wrong selected account", { wrongAccount: true }, /selected Codex account/, "failed_before_prompt"],
   ["missing executable", { spawnError: true }, /ENOENT/, "failed_before_prompt"],
   ["missing completion", { events: [
     { type: "thread.started", thread_id: "12345678-1234-4234-8234-123456789abc" }, { type: "turn.started" },
@@ -1405,4 +1417,28 @@ test("scheduled Claude occurrences deduplicate and prevent overlap", async () =>
   assert.equal(JSON.parse(await runCli(argv, deps)).outcome, "duplicate");
   assert.equal(JSON.parse(await runCli([...argv, "--manual"], deps)).outcome, "overlap");
   assert.equal(calls.filter((call) => call.args.includes("create")).length, 1);
+});
+
+test("Codex maintenance refuses a queued routine before account selection and preserves its failed occurrence", {
+  skip: process.env.AIMGR_TEST_CODEX_MAINTENANCE !== "1",
+}, async () => {
+  assert.notEqual(process.getuid(), 0);
+  assert.ok(fs.existsSync("/opt/aimgr-state-audit/OFFSITE_AUDIT_HOST"));
+  const pending = `/opt/aimgr-codex-runtime/users/${process.getuid()}/maintenance/pending.json`;
+  assert.ok(!fs.existsSync(pending));
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, codexDefinition(home));
+  const runtime = makeCodexRuntime(home);
+  const context = workerContext(home, receipt, runtime);
+  context.spawnSyncImpl = () => assert.fail("pending routine reached account selection");
+  fs.writeFileSync(pending, '{"synthetic":true}\n', { flag: "wx", mode: 0o600 });
+  try {
+    await assert.rejects(executeRoutineWorker(context), /maintenance is pending/);
+    const saved = JSON.parse(fs.readFileSync(receipt.receiptPath));
+    assert.equal(saved.outcome, "failed_before_prompt");
+    assert.equal(runtime.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(home, ".aimgr", "routine-locks", "demo")), false);
+  } finally { fs.unlinkSync(pending); }
+  // The failed occurrence remains consumed; recovery cannot replay it.
+  assert.equal(JSON.parse(fs.readFileSync(receipt.receiptPath)).exitCode, 1);
 });
