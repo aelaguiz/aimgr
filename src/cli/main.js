@@ -6,6 +6,7 @@ import { resolveAimgrStatePath, resolveHomeDir } from "../io/paths.js";
 
 const COMMAND_LOADERS = new Map([
   ["status", async () => (await import("./commands/status.js")).handleStatus],
+  ["note", async () => (await import("./commands/note.js")).handleNote],
   ["login", async () => (await import("./commands/login.js")).handleLogin],
   ["redis", async () => (await import("./commands/redis.js")).handleRedis],
   ["label", async () => (await import("./commands/repair.js")).handleLabel],

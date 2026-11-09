@@ -13,6 +13,7 @@ import { resolveManagedPrimeAgentDir } from "../../io/paths.js";
 import { readPrimeSessionProfile } from "../../targets/prime-sessions.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
+import { accountNoteFor, formatAccountNote, readNotesForCommand } from "../../status/account-notes.js";
 import {
   closeRedisRuntime,
   isRedisConfigured,
@@ -416,7 +417,9 @@ async function handleUse(context, targetId, { emitReceipt = true } = {}) {
         displacedNative: change.displacedNative === true,
         backupPath: change.backupPath ?? null,
         credentialMaintenanceDue: change.credentialMaintenanceDue === true,
+        accountNote: accountNoteFor(runtime.accountNotes, change.provider, change.binding),
       })),
+      accountNotesAvailable: runtime.accountNotes !== null,
     };
     if (emitReceipt) stdout.write(`${JSON.stringify(sanitizeForStatus({ ok: true, receipt }), null, 2)}\n`);
     return { ok: true, receipt };
@@ -517,6 +520,8 @@ async function selectPrimeRotation(context, profile) {
     return {
       binding: selection.record.label,
       identityFingerprint: inspection.identityFingerprint,
+      accountNote: accountNoteFor(runtime.accountNotes, profile.provider, selection.record.label),
+      accountNotesAvailable: runtime.accountNotes !== null,
     };
   } finally {
     await closeRedisRuntime(runtime);
@@ -535,6 +540,15 @@ async function handleResume(context, targetId) {
   if (!selector) throw new Error("Usage: aim prime resume <path-or-id> [--rotate]");
 
   if (context.opts.primeResumeRotate !== true) {
+    // A session whose metadata cannot be read must remain resumable.
+    let profile = null;
+    try { profile = readPrimeSessionProfile({ selector, homeDir: context.homeDir, env: context.env, cwd: context.cwd }); } catch { /* Prime resolves the selector itself. */ }
+    if (profile) {
+      const notes = await readNotesForCommand(context);
+      const note = accountNoteFor(notes, profile.provider, profile.binding);
+      if (note) context.stdout.write(`[aim] ${formatAccountNote({ provider: profile.provider, label: profile.binding, note })}\n`);
+      else if (notes === null) context.stdout.write("[aim] Account notes unavailable.\n");
+    }
     runPrimeLauncher(context, ["--resume", selector]);
     return;
   }
@@ -565,6 +579,8 @@ async function handleResume(context, targetId) {
   if (!handedOff) return;
 
   context.stdout.write(`AIM Prime: ${profile.provider} · ${requested.binding} · live handoff complete\n`);
+  if (requested.accountNote) context.stdout.write(`[aim] ${formatAccountNote({ provider: profile.provider, label: requested.binding, note: requested.accountNote })}\n`);
+  else if (!requested.accountNotesAvailable) context.stdout.write("[aim] Account notes unavailable.\n");
   runPrimeLauncher(context, ["--resume", selector]);
 }
 
@@ -607,6 +623,8 @@ async function handleRun(context, targetId) {
   if (!providerReceipt) throw new Error(`AIM did not select a ${flavor} account.`);
 
   context.stdout.write(`AIM Prime: ${profile.provider} · ${providerReceipt.binding}\n`);
+  if (providerReceipt.accountNote) context.stdout.write(`[aim] ${formatAccountNote({ provider: profile.provider, label: providerReceipt.binding, note: providerReceipt.accountNote })}\n`);
+  else if (!selected.receipt.accountNotesAvailable) context.stdout.write("[aim] Account notes unavailable.\n");
   runPrimeLauncher(context, ["--provider", profile.provider, "--model", profile.model]);
 }
 

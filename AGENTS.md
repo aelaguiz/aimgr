@@ -2,6 +2,8 @@
 
 `aim` coordinates AI account credentials (managed Redis Cloud over TLS) and launches Prime Agent, Claude, Codex and Grok sessions. `README.md` covers the credential side.
 
+Choose a helper's model and thinking level with `$model-routing` when you start it. A session Amir starts through `aim` keeps the setting he gave it.
+
 ## Privacy investigations and test identities
 
 An experiment about what Claude or Codex might disclose must not expose Amir's

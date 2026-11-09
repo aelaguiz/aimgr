@@ -17,7 +17,29 @@ Redis VM or container to maintain.
 
 ## Setup
 
-Before installing or updating the Claude launcher, follow
+### Installing on a machine
+
+A machine runs the AI Manager its `~/workspace/aimgr` checkout is on. Whenever that checkout
+moves, `scripts/install-release.sh` installs it, and `scripts/check-install.sh` checks it. On
+Amir's machines devcluster runs both every time `main` moves, and puts the checkout back on the
+last commit that passed if either fails. The installer:
+
+1. Builds a fixed release from the checkout's commit in
+   `~/.local/share/aimgr/releases/<commit>`, with its own `npm ci`. Uncommitted edits never go
+   live, and pulling `main` changes nothing until the new release has installed.
+2. Activates the newest normal-use approved Claude runtime in
+   `~/.local/share/aimgr/runtime-bundles/` when the active one is older or this release can't use
+   it. A Mac keeps its running sessions. Linux refuses while any Claude session runs, and the
+   installer never stops one.
+3. Points `aim` and `aimgr` at the release with `scripts/install-local-bin.sh`.
+4. Copies the release's skills into `~/.agents/skills`, linked from `~/.claude/skills`.
+5. Runs AI Manager's launchd services through `aim`, restarts the long-running ones, and links
+   the plain `claude` command to the active reviewed Claude.
+
+A newly approved runtime reaches a machine when its bundle is copied into
+`~/.local/share/aimgr/runtime-bundles/`; the next install activates it.
+
+Before installing or updating the Claude launcher by hand, follow
 [Installing a reviewed Claude runtime](#installing-a-reviewed-claude-runtime-without-interrupting-coding).
 
 For a new Claude release, invoke **`$agent-upgrade-test`**: “Sandbox-test Claude
@@ -110,6 +132,20 @@ aim status --compact
 
 The text tables hide blocked Codex and Claude accounts. Counts and averages use
 the displayed accounts. `aim status --json` retains all accounts.
+
+Account notes are shared through Redis and appear in status and account-use
+output, including when an account is hidden from the main status tables. Notes
+are advice; they do not change eligibility or automatic selection. Add, read,
+replace, or clear a note with:
+
+```bash
+aim note set iphone_se_1 "Reserved for Mac Mini 1" --provider anthropic
+aim note show iphone_se_1 --provider anthropic
+aim note clear iphone_se_1 --provider anthropic
+```
+
+The provider can be omitted for a label that belongs to only one provider.
+Notes require Redis and are not stored in machine-local status caches.
 
 Under the Codex and Claude tables, a `Next 24h` line says how much of that pool's weekly
 capacity comes back in the next 24 hours: the weekly usage on accounts whose weekly limit
