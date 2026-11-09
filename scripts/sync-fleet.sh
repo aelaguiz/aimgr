@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Deploy what's on main to the fleet. M5 is the dev box; run this FROM M5 after pushing.
+# Deploy prime-agent's main to the fleet. M5 is the dev box; run this FROM M5 after pushing.
 # Fleet inventory: docs/FLEET.md. The retired old M1 is not a deployment target.
-# Per box: ff-only pull of ~/workspace/aimgr and ~/workspace/prime-agent, npm install,
-# refresh aim/aimgr wrappers and the prime-agent wrapper. NEVER touches daemons,
-# sessions, dist bundles, or snapshots. Diverged/dirty checkouts fail LOUD, no force.
+# Per box: ff-only pull of ~/workspace/prime-agent, npm install, and the prime-agent wrapper.
+# AI Manager itself isn't deployed from here: each machine installs it from its own
+# ~/workspace/aimgr with scripts/install-release.sh (README, "Installing on a machine").
+# NEVER touches daemons, sessions, dist bundles, or snapshots. Diverged/dirty checkouts fail LOUD.
 set -uo pipefail
 
 HOSTS=(${AIM_FLEET_HOSTS:-home amirs-mac-studio amirs-m3-max-new amir-m3-36gb})
@@ -35,14 +36,7 @@ sync_repo() {
 }
 
 rc=0
-sync_repo aimgr
-aimgr_ok=$?
-[ "$aimgr_ok" -ne 0 ] && rc=1
 sync_repo prime-agent || rc=1
-
-if [ "$aimgr_ok" -eq 0 ]; then
-  bash "$HOME/workspace/aimgr/scripts/install-local-bin.sh" >/dev/null 2>&1 && echo "wrappers: aim/aimgr refreshed" || echo "wrappers: aim install FAILED"
-fi
 launcher="$HOME/.local/bin/prime-agent"
 printf "#!/bin/sh\nexec \"%s\" \"\$@\"\n" "$HOME/workspace/prime-agent/prime-agent.sh" > "$launcher.tmp" \
   && chmod +x "$launcher.tmp" && mv "$launcher.tmp" "$launcher" && echo "wrappers: prime-agent -> live checkout"
