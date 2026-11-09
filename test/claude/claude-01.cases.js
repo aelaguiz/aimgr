@@ -65,7 +65,7 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
   assert.deepEqual(automaticFable.opts.afterDoubleDash, [
     "--dangerously-skip-permissions",
     "--model",
-    "claude-fable-5-1",
+    "fable",
     "--effort",
     "xhigh",
   ]);
@@ -81,7 +81,7 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
   assert.deepEqual(automaticFablePassthrough.opts.afterDoubleDash, [
     "--dangerously-skip-permissions",
     "--model",
-    "claude-fable-5-1",
+    "fable",
     "--effort",
     "xhigh",
     "--version",
@@ -94,7 +94,7 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
   assert.deepEqual(automaticSonnet.opts.afterDoubleDash, [
     "--dangerously-skip-permissions",
     "--model",
-    "claude-sonnet-5-5",
+    "sonnet",
     "--effort",
     "xhigh",
     "--resume",
@@ -107,7 +107,7 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
   assert.deepEqual(sonnet.opts.afterDoubleDash, [
     "--dangerously-skip-permissions",
     "--model",
-    "claude-sonnet-5-5",
+    "sonnet",
     "--effort",
     "xhigh",
   ]);
@@ -131,7 +131,7 @@ test("Claude run presets expand into the existing explicit passthrough boundary"
   assert.deepEqual(fable.opts.afterDoubleDash, [
     "--dangerously-skip-permissions",
     "--model",
-    "claude-fable-5-1",
+    "fable",
     "--effort",
     "xhigh",
   ]);

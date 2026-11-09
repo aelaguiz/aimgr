@@ -20,9 +20,15 @@ export const OPENAI_CODEX_PROVIDER = "openai-codex";
 
 export const ANTHROPIC_PROVIDER = "anthropic";
 
-export const DEFAULT_CLAUDE_FABLE_MODEL = "claude-fable-5-1";
+// Claude Code resolves its family names to the newest model it knows, so a
+// new Fable or Sonnet release is used without editing AI Manager.
+export const DEFAULT_CLAUDE_FABLE_MODEL = "fable";
 
-export const DEFAULT_CLAUDE_SONNET_MODEL = "claude-sonnet-5-5";
+export const DEFAULT_CLAUDE_SONNET_MODEL = "sonnet";
+
+// Prime calls the provider directly and needs an exact id its own model list
+// declares. Prime 0.9.5 declares Fable up to 5.1.
+export const PRIME_CLAUDE_FABLE_MODEL = "claude-fable-5-1";
 
 // Label-free `aim claude run <preset>` names. Sonnet shares the Fable-scoped
 // weekly window (Anthropic reports it as `seven_day_sonnet`).

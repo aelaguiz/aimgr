@@ -99,7 +99,7 @@ the install, load them with
 ```bash
 aim prime run codex gpt-6-sol             # select Sol explicitly
 aim prime run codex gpt-6-astra           # explicit model
-aim prime run claude                      # claude-fable-5-1
+aim prime run claude                      # claude-fable-5-1 (Prime needs an exact id)
 aim prime run grok                        # grok-4.6
 aim prime resume <path-or-id>             # resume an existing Prime session
 aim prime status
@@ -124,8 +124,8 @@ aim prime run grok
 
 | Name the user says | Value |
 |---|---|
-| Fable | `claude-fable-5-1` |
-| Opus | `claude-opus-5` |
+| Fable | `fable` (Claude Code picks the newest Fable; Prime uses `claude-fable-5-1`) |
+| Opus | `opus` |
 | Astra | `gpt-6-astra` (default Codex model, `xhigh` effort) |
 | Sol | `gpt-6-sol` (select explicitly for Prime) |
 | Grok | `grok-4.6` |

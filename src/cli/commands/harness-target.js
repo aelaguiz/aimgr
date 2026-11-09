@@ -4,7 +4,7 @@ import path from "node:path";
 import {
 
   ANTHROPIC_PROVIDER,
-  DEFAULT_CLAUDE_FABLE_MODEL,
+  PRIME_CLAUDE_FABLE_MODEL,
   OPENAI_CODEX_PROVIDER,
   XAI_PROVIDER,
   isClaudeModelPreset,
@@ -601,7 +601,7 @@ async function handleRun(context, targetId) {
   const profile = flavor === "codex"
     ? { provider: OPENAI_CODEX_PROVIDER, model: requestedModel || DEFAULT_CODEX_MODEL }
     : flavor === "claude"
-      ? { provider: ANTHROPIC_PROVIDER, model: DEFAULT_CLAUDE_FABLE_MODEL }
+      ? { provider: ANTHROPIC_PROVIDER, model: PRIME_CLAUDE_FABLE_MODEL }
       : flavor === "grok"
         ? { provider: XAI_PROVIDER, model: "grok-4.6" }
         : null;

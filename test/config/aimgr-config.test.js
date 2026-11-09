@@ -150,7 +150,7 @@ test("Claude routines preserve their agent, default to Fable xhigh, and reject i
   const { routine } = readRoutineDefinition({ homeDir: home, id: "report" });
   assert.equal(routine.agent, "claude");
   assert.equal(routine.provider, "anthropic");
-  assert.equal(routine.model, "claude-fable-5-1");
+  assert.equal(routine.model, "fable");
   assert.equal(routine.thinking, "xhigh");
   assert.equal(routine.profile, undefined);
   for (const [overrides, error] of [
