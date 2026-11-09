@@ -6,7 +6,7 @@
 - [x] Install both approved provider bundles through `install-release.sh`.
 - [x] Pass temporary-home installer tests on Mac.
 - [x] Pass affected Codex policy and scheduling regressions on the combined stack.
-- [ ] Push the stack and report its exact top commit for the Mini 2-only pin.
+- [x] Push all three stack branches; the Mini 2 pin is the final `auth/manual-callback-only` commit reported in the handoff.
 
 Scope: the four AIM changes explicitly requested by Amir through the devcluster session on November 9. The rollout and Mini 2 test plan live in devcluster-config `MINI-2-PLAN.md`; this is an implementation receipt, not a second rollout plan. No additional rollout gates, runtime approval, fleet installation or service behavior changes are included.
 
@@ -24,3 +24,5 @@ Scope: the four AIM changes explicitly requested by Amir through the devcluster 
 `bash -n scripts/install-release.sh` and `git diff --check` pass.
 
 On the combined stack, the home-server scratch checkout passed the four affected Node test files (`codex-policy-installer`, `codex-managed-policy`, `use-watch`, and `routine-run`): 86 passed, zero failed, one skipped. The skipped maintenance test requires the dedicated offsite audit host and writes its administrator maintenance state; it was not enabled on the shared home server. The same 10 temporary-home installer tests also passed on Linux. No provider requests or live service changes were made.
+
+The three branches were pushed together without rewriting published history. The top branch includes current main `9766071b8b9cd0c8929f64dc216feab24941d5e4`. These four changes affect AIM orchestration and installers, not bytes inside the approved Claude or Codex runtime bundles.
