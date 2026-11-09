@@ -96,7 +96,11 @@ class FakeRedisClient {
   }
 }
 
-test("Redis connection policies bound observations and initial leased acquisition", async () => {
+test("Redis connection policies bound observations and initial leased acquisition", async (t) => {
+  // A real connecting socket holds the event loop open; the stalled fake below
+  // has no socket, so retain a handle while exercising the unrefed deadline.
+  const socketLifetime = setInterval(() => {}, 1_000);
+  t.after(() => clearInterval(socketLifetime));
   const observe = buildRedisConnectionPolicy(REDIS_CONNECTION_POLICY_OBSERVE);
   const oneShot = buildRedisConnectionPolicy(REDIS_CONNECTION_POLICY_ONE_SHOT);
   const leased = buildRedisConnectionPolicy(REDIS_CONNECTION_POLICY_LEASED);
