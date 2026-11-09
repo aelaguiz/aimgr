@@ -71,26 +71,3 @@ test("repair commands require confirmation and provider", async () => {
     /requires --provider/,
   );
 });
-
-test("redis-configured browser set publishes shared credential policy without local secrets", async () => {
-  const home = mkTempHome();
-  const client = new FakeRedisClient();
-  configureRedis(home);
-  const store = await seed(client);
-
-  const out = await runCli(["browser", "set", "boss", "--home", home, "--mode", "manual-callback"], {
-    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:repair-test" }),
-  });
-  const result = JSON.parse(out);
-  assert.equal(result.ok, true);
-  assert.equal(result.browser.source, "redis");
-  const snapshot = await readSnapshot(store);
-  assert.equal(snapshot.credentials[0].policy.reauth.mode, "manual-callback");
-  assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
-
-  const shown = JSON.parse(await runCli(["browser", "show", "boss", "--home", home], {
-    connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: "aimgr:repair-test" }),
-  }));
-  assert.equal(shown.source, "redis");
-  assert.equal(shown.reauthMode, "manual-callback");
-});

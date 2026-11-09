@@ -29,7 +29,7 @@ export function setBrowserBinding({
   if (provider === ANTHROPIC_PROVIDER) {
     throw new Error(
       `Claude labels do not use these browser bindings. For managed Claude use \`aim claude login ${normalizedLabel}\`; ` +
-        `for legacy Prime/Pi enrollment use \`aim login ${normalizedLabel} --provider anthropic\`.`,
+        `new legacy Prime/Pi enrollment has been removed.`,
     );
   }
 

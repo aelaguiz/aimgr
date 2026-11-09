@@ -295,7 +295,7 @@ test("seedAimBrowserProfileFromOpenclaw copies the source profile once and recor
   assert.equal(second.status, "skipped");
 });
 
-test("real CLI login fails loud on a missing migration profile and leaves OpenClaw assignments untouched", async () => {
+test("retired CLI login leaves saved browser policy and OpenClaw assignments untouched", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
 
@@ -330,13 +330,13 @@ test("real CLI login fails loud on a missing migration profile and leaves OpenCl
 
   await assert.rejects(
     () => runCli(["boss", "--home", home]),
-    /AIM browser profile is missing and no OpenClaw migration source is available on this host/,
+    /login now use manual callbacks/,
   );
 
   const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.deepEqual(updatedState.targets.openclaw.assignments, { agent_boss: "boss" });
-  assert.equal(updatedState.accounts.boss.reauth.mode, "browser-managed");
-  assert.ok(typeof updatedState.accounts.boss.reauth.lastAttemptAt === "string");
+  assert.equal(updatedState.accounts.boss.reauth.mode, "aim-browser-profile");
+  assert.equal(updatedState.accounts.boss.reauth.lastAttemptAt, undefined);
 });
 
 test("derivePoolAccountStatus keeps fresh browser-managed credentials ready when the AIM browser is missing", () => {
@@ -359,9 +359,9 @@ test("derivePoolAccountStatus keeps fresh browser-managed credentials ready when
   });
 
   assert.equal(status.operatorStatus, "ready");
-  assert.equal(status.detailReason, "binding_missing_for_future_reauth");
+  assert.equal(status.detailReason, undefined);
   assert.equal(status.eligible, true);
-  assert.equal(status.actionRequired, "run_aim_browser_set");
+  assert.equal(status.actionRequired, null);
 });
 
 test("derivePoolAccountStatus exposes the exact terminal OAuth marker separately from ordinary expiry", () => {

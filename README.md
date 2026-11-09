@@ -63,17 +63,16 @@ aim redis snapshot
 Use `aim redis export --out <snapshot.json>` for a reviewable backup. A reviewed snapshot can seed a
 new Redis prefix with `aim redis import --in <snapshot.json>`. Generic import accepts Claude policy-only
 candidate records, but rejects Claude credential and identity material. Managed Claude primary
-credentials stay local. The separate legacy Prime/Pi Anthropic login remains Redis-backed and uses
-`aim login <label> --provider anthropic`.
+credentials stay local. Existing separate Prime/Pi Anthropic grants remain Redis-backed and refresh on demand.
+New shared-grant enrollment through `aim login` has been removed.
 
 ## Runtime Commands
 
 Normal account maintenance:
 
 ```bash
-aim <label>
-aim login <label>
-aim login <label> --manual-callback-stdio
+aim claude login <label> --manual-callback-stdio
+aim codex login <label> --manual-callback-stdio
 ```
 
 Scheduled OAuth maintenance on the M3:
@@ -265,9 +264,10 @@ Managed Claude primary login is local to each machine. Run `aim claude login <la
 on every machine where that account is used; `aim claude logout <label>` removes that
 machine’s primary login. For a new label with an assigned proxy, select its existing
 profile with `aim claude login <label> --email <email> --proxy <profileRef>`.
-`--manual-callback-stdio` supports the original browser on another host. An existing
-proxy assignment cannot be changed by login. `aim login <label> --provider anthropic`
-is the separate legacy Prime/Pi enrollment and does not enroll managed Claude.
+Both providers always use a manual callback; neither opens or selects a browser.
+`--manual-callback-stdio` selects JSONL input/output for automation; without it,
+Claude accepts a callback URL or native `code#state` and Codex accepts a callback URL
+as plain text. An existing proxy assignment cannot be changed by login.
 Existing label homes, history, settings and third-party credentials remain in place.
 
 For a remote machine whose browser is on the original host, run
@@ -864,15 +864,20 @@ interactively when prompted. The raw key is never echoed back and never written 
 `aim sakana use <account-name>` preserves unrelated `~/.codex/.env` lines, updates only
 `SAKANA_API_KEY`, writes the file as `0600`, and records only a redacted local receipt.
 
-Browser binding policy:
+Claude/Codex login workflow:
 
-```bash
-aim browser show <label>
-aim browser set <label> --mode aim-profile [--seed-from-openclaw <profileId>]
-aim browser set <label> --mode chrome-profile --user-data-dir <abs-path> [--profile-directory <name>]
-aim browser set <label> --mode agent-browser --profile <abs-path> --session <name>
-aim browser set <label> --mode manual-callback
-```
+Use `~/workspace/secrets/bin/aim-logins` on the destination machine: `claim`,
+`authorize`, then `finish --callback -`. The wrapper invokes the provider's local
+login command with `--manual-callback-stdio`. Open its authorization URL yourself
+in the account's verified existing BrowserOS profile and return the full callback
+through stdin. Browser profile selection, sign-in and tab cleanup belong to the
+operator or BrowserOS agent. AIM neither copies a profile nor opens a browser.
+
+The generic `aim login` and `aim <label>` Claude/Codex paths, the guided browser
+setup panel and `aim browser` commands have been removed. Saved browser bindings
+cannot select a different login flow. Existing legacy grants can still refresh,
+but cannot be newly enrolled through those retired paths. Grok's explicit
+`aim login <label> --provider xai` device-code flow is separate.
 
 ## Agent skill
 

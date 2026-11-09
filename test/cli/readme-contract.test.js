@@ -14,9 +14,8 @@ const PUBLIC_COMMAND_STEMS = [
   "aim redis export",
   "aim redis import",
   "aim label rebind",
-  "aim <label>",
   "aim login <label>",
-  "aim login <label> --manual-callback-stdio",
+  "aim codex login",
   "aim rebalance openclaw",
   "aim rebalance hermes",
   "aim auth write hermes",
@@ -45,8 +44,6 @@ const PUBLIC_COMMAND_STEMS = [
   "aim sakana list",
   "aim sakana show",
   "aim sakana remove",
-  "aim browser show",
-  "aim browser set",
 ];
 
 function readRepoText(relativePath) {

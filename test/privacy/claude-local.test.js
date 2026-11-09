@@ -103,18 +103,14 @@ test('native manual URL waits for the complete output token across every stream 
  assert.equal(extractNativeClaudeManualUrl(currentNative.replace('/cai/oauth/authorize','/unrelated')+'\n'),null);
 });
 
-test('direct interactive login keeps native browser behavior; routed and manual login use their bridge',async()=>{
+test('every Claude login suppresses native browser opening, including inherited browser overrides',async()=>{
  const {buildClaudeLoginEnvironment}=await import('../../src/cli/commands/claude-local-auth.js');
- const env={BROWSER:'/synthetic/user-browser',DISPLAY:':1',WAYLAND_DISPLAY:'wayland-1',AIMGR_CLAUDE_LOGIN_STDIO:'stale'};
- const direct=buildClaudeLoginEnvironment({env,profile:null,manual:false,tabs:'/synthetic/tabs'});
- assert.equal(direct.BROWSER,env.BROWSER);assert.equal(direct.DISPLAY,env.DISPLAY);assert.equal(direct.WAYLAND_DISPLAY,env.WAYLAND_DISPLAY);
- assert.equal(direct.AIMGR_CLAUDE_LOGIN_STDIO,undefined);
- const nativeDefault=buildClaudeLoginEnvironment({env:{},profile:null,manual:false,tabs:'/synthetic/tabs'});
- assert.equal(Object.hasOwn(nativeDefault,'BROWSER'),false);
- for(const [profile,manual] of [[{profileRef:'synthetic'},false],[null,true]]) {
-  const bridge=buildClaudeLoginEnvironment({env,profile,manual,tabs:'/synthetic/tabs'});
-  assert.match(bridge.BROWSER,/claude-login-browser\.mjs$/);assert.equal(bridge.DISPLAY,undefined);assert.equal(bridge.WAYLAND_DISPLAY,undefined);
-  assert.equal(bridge.AIMGR_CLAUDE_LOGIN_PROFILE,JSON.stringify(profile));assert.equal(bridge.AIMGR_CLAUDE_LOGIN_STDIO,manual?'1':undefined);
+ const {execFileSync}=await import('node:child_process');
+ for (const env of [{},{BROWSER:'/synthetic/user-browser',DISPLAY:':1',WAYLAND_DISPLAY:'wayland-1',AIMGR_CLAUDE_LOGIN_STDIO:'stale',AIMGR_CLAUDE_LOGIN_PROFILE:'stale',AIMGR_CLAUDE_LOGIN_TABS:'stale'}]) {
+  const bridge=buildClaudeLoginEnvironment({env});
+  assert.match(bridge.BROWSER,/claude-login-no-browser\.mjs$/);
+  for (const key of ['DISPLAY','WAYLAND_DISPLAY','AIMGR_CLAUDE_LOGIN_STDIO','AIMGR_CLAUDE_LOGIN_PROFILE','AIMGR_CLAUDE_LOGIN_TABS']) assert.equal(bridge[key],undefined);
+  assert.equal(execFileSync(process.execPath,[bridge.BROWSER,'https://example.invalid'],{env:bridge,encoding:'utf8'}),'');
  }
 });
 
