@@ -5,7 +5,7 @@
 - [x] Remove competing login transports and browser-selection panels.
 - [x] Preserve JSONL protocol and add plain-text Claude callback input.
 - [x] Complete focused tests, full-suite check and diff review.
-- [ ] Publish the stacked PR and update issue/worklist.
+- [x] Publish the stacked PR and update issue/worklist.
 
 ## Scope and evidence
 
@@ -32,3 +32,7 @@ Tests use synthetic credentials, isolated temporary homes and fake Redis; no mod
 - Visual guide: https://share.fun.country/20261109-aim-manual-callback-login-a6a8ba2f3941/index.html. Published with the cf-share skill; all image bytes and HTTP responses verified.
 
 The source inspection found no remaining `loginOpenAICodex`, automatic Claude login helper, or login panel imports in active source/scripts. Retained browser metadata readers serve old state; they cannot select or open a login browser.
+
+## Publication
+
+[PR #25](https://github.com/aelaguiz/aimgr/pull/25) is open against `claude/privacy-per-machine` (#22), with implementation commit `3f6abc1`. Sanitized local test receipts are retained under `~/.aimgr/audits/manual-login-2026-11-09/`. No account state, installed AIM launcher or active agent session was changed.
