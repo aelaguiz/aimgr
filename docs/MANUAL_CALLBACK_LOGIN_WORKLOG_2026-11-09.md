@@ -6,6 +6,9 @@
 - [x] Preserve JSONL protocol and add plain-text Claude callback input.
 - [x] Complete focused tests, full-suite check and diff review.
 - [x] Publish the stacked PR and update issue/worklist.
+- [x] Integrate current main through PRs #14, #22 and #25 and resolve conflicts.
+- [x] Validate account notes, local credentials, offline launches and the combined stack.
+- [ ] Push updated stack and confirm GitHub reports every PR mergeable.
 
 ## Scope and evidence
 
@@ -36,3 +39,17 @@ The source inspection found no remaining `loginOpenAICodex`, automatic Claude lo
 ## Publication
 
 [PR #25](https://github.com/aelaguiz/aimgr/pull/25) is open against `claude/privacy-per-machine` (#22), with implementation commit `3f6abc1`. Sanitized local test receipts are retained under `~/.aimgr/audits/manual-login-2026-11-09/`. No account state, installed AIM launcher or active agent session was changed.
+
+## Main integration — November 9
+
+Main at `9766071` is included in the Codex privacy branch, then merged through the Claude privacy branch and this manual-login branch. Merge commits preserve the published branch history. The resolution keeps main's shared account notes while preserving the privacy branches' per-machine credentials. Note lookup uses server-side metadata rather than downloading Claude/Codex grants; read-only note display fetches only note records. The account-note privacy regression test checks that no primary credential records are retrieved.
+
+Validation on isolated home-server copies (synthetic accounts, no real sign-ins or proxy tests):
+
+- Codex PR: all 44 focused account-note, launch/watch, runtime and status tests passed.
+- Combined stack: full Node suite exercised 995 tests, with 19 intentional skips. Its initial result was 945 passed, 26 failed and five cancelled. Of the failures, 24 were caused by group-writable permissions from the temporary archive extraction; these copies were corrected without changing executable trust checks. Two offline Claude assertions expected empty output instead of main's new account-notes-unavailable message; those expectations are updated in the Claude PR.
+- The five Redis cancellations came from a fake stalled connection with no live socket: Node exited before the unrefed connection deadline. The test now holds an event-loop handle for that simulated socket and releases it during teardown; production connection code is unchanged.
+- All 88 tests in the five affected files passed after those corrections, including all previously failed/cancelled cases. The other cases passed in the full run. The separate Codex manual-callback file was already passed on Mac; it is omitted on the home server because its existing BrowserOS listener owns port 1455.
+- Combined-stack `npm run lint` passed. Final diffs pass whitespace checks.
+
+Receipts: `~/.aimgr/audits/manual-login-2026-11-09/stack-*.log`. No installed launcher, account state or existing agent session was changed.

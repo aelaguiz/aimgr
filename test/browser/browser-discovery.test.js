@@ -57,4 +57,3 @@ test("discoverSuggestedBrowserBindings prefers exact OpenClaw binding and dedupe
     1,
   );
 });
-
