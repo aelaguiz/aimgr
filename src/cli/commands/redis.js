@@ -35,7 +35,7 @@ function assertGenericRedisImportHasNoClaudeCredential(snapshot) {
       || Object.keys(isObject(record.stableIdentity) ? record.stableIdentity : {}).length > 0
     ) {
       throw new Error(
-        "Generic Redis import cannot write Claude credential or identity material; use `aim claude import-native`.",
+        "Generic Redis import cannot write Claude credential or identity material. For managed Claude use `aim claude login <label>`; for legacy Prime/Pi use `aim login <label> --provider anthropic`.",
       );
     }
   }

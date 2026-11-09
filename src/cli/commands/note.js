@@ -2,8 +2,8 @@ import { closeRedisRuntime, loadRedisRuntime } from "../../coordination/runtime.
 import { readAccountNote, writeAccountNote } from "../../coordination/redis-store.js";
 import { normalizeLabel, normalizeProviderId } from "../../core/normalize.js";
 import { formatAccountNote } from "../../status/account-notes.js";
-
 import { readCodexAccountMetadata } from "../../coordination/codex-metadata.js";
+import { readClaudeAccountMetadata } from "../../coordination/claude-metadata.js";
 
 export async function handleNote(context) {
   const { positional, opts, homeDir, connectRedisStoreImpl, stdout } = context;
@@ -17,10 +17,11 @@ export async function handleNote(context) {
   if (!label || (opts.provider && !requestedProvider)) throw new Error("A valid account label and provider are required.");
   const note = action === "set" ? positional[3] : null;
   if (action === "set" && !note.trim()) throw new Error("The note cannot be empty; use `aim note clear` to remove it.");
-  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl, excludeCodexGrants: true });
+  const runtime = await loadRedisRuntime({ homeDir, connectRedisStoreImpl, excludeCodexGrants: true, excludeClaudeGrants: true });
   try {
     const records = [...runtime.snapshot.credentials,
-      ...(await readCodexAccountMetadata(runtime.store)).map(record => ({ ...record, provider: "openai-codex" }))];
+      ...(await readCodexAccountMetadata(runtime.store)).map(record => ({ ...record, provider: "openai-codex" })),
+      ...await readClaudeAccountMetadata(runtime.store)];
     const matches = records.filter((record) => record.label === label
       && (!requestedProvider || record.provider === requestedProvider));
     if (!matches.length) throw new Error(`No managed account found for ${requestedProvider ? `${requestedProvider}:` : ""}${label}.`);

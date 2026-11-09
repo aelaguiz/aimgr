@@ -419,7 +419,7 @@ function assertContainedLaunchTopology({ userHomeDir, launchHome, configDir }) {
   const freshLoginConfig = (
     segments.length === 3
     && /^[A-Za-z0-9_.-]+$/.test(segments[0])
-    && segments[1] === ".login-staging"
+    && (segments[1] === ".login-staging" || /^\.login-staging-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(segments[1]))
     && segments[2] === ".claude"
   );
   if (
@@ -624,14 +624,18 @@ function signalNoninteractiveProcessGroup(child, signalName, {
   }
 }
 
-function drainBoundedChildOutput(stream, { maxBytes, onOverflow }) {
-  if (!stream || typeof stream.on !== "function") return;
+function drainBoundedChildOutput(stream, { maxBytes, onOverflow, capture = false }) {
+  const chunks = [];
+  const read = () => Buffer.concat(chunks).toString("utf8");
+  if (!stream || typeof stream.on !== "function") return read;
   let bytes = 0;
   stream.on("data", (chunk) => {
     bytes += Buffer.byteLength(chunk);
     if (bytes > maxBytes) onOverflow();
+    else if (capture) chunks.push(Buffer.from(chunk));
   });
   stream.resume?.();
+  return read;
 }
 
 function nativeSpawnError(error, profile) {
@@ -668,6 +672,7 @@ export async function runClaudeCliNoninteractive({
   signal = null,
   terminationGraceMs = 1_000,
   maxOutputBytes = 64 * 1024,
+  captureOutput = false,
   fsImpl = fs,
   platform = process.platform,
   verifyInstalledClaudeExecutableImpl = verifyInstalledClaudeExecutable,
@@ -727,7 +732,7 @@ export async function runClaudeCliNoninteractive({
   const containedEnv = buildContainedLaunchEnvironment({ preparedLaunch: prepared, env });
   const native = await prepareClaudeNativeInvocationImpl({ preparedLaunch: prepared, args,
     env: egressProfile ? nativeProxyEnvironment(containedEnv) : containedEnv, cwd: resolvedCwd,
-    protectedAccount: Boolean(egressProfile), expectedIdentity, requiredHooks, stdoutIsTTY: false });
+    protectedAccount: true, expectedIdentity, requiredHooks, stdoutIsTTY: false });
   let child;
   try {
     const invocation = await prepareSupervisedNativeInvocation({ native, egressProfile, platform, signal,
@@ -806,8 +811,8 @@ export async function runClaudeCliNoninteractive({
       terminate();
     };
 
-    drainBoundedChildOutput(child.stdout, { maxBytes: maxOutputBytes, onOverflow });
-    drainBoundedChildOutput(child.stderr, { maxBytes: maxOutputBytes, onOverflow });
+    const readStdout = drainBoundedChildOutput(child.stdout, { maxBytes: maxOutputBytes, onOverflow, capture: captureOutput });
+    const readStderr = drainBoundedChildOutput(child.stderr, { maxBytes: maxOutputBytes, onOverflow, capture: captureOutput });
     child.once("error", (error) => finish(reject, nativeSpawnError(error, egressProfile)));
     child.once("close", (code, childSignal) => {
       const normalizedSignal = typeof childSignal === "string" ? childSignal : null;
@@ -815,6 +820,7 @@ export async function runClaudeCliNoninteractive({
         status: normalizedSignal ? null : Number.isInteger(code) ? code : 1,
         signal: normalizedSignal,
         timedOut,
+        ...(captureOutput ? { stdout: readStdout(), stderr: readStderr() } : {}),
         ...nativeExitContext(code, normalizedSignal, egressProfile),
       });
       // A direct child can exit on TERM while a descendant in its detached
@@ -896,7 +902,7 @@ export async function runClaudeCli({
   const containedEnv = buildContainedLaunchEnvironment({ preparedLaunch: prepared, env });
   const native = await prepareClaudeNativeInvocationImpl({ preparedLaunch: prepared, args: buildClaudeArgs(prepared, args),
     env: egressProfile ? nativeProxyEnvironment(containedEnv) : containedEnv, cwd: resolvedCwd,
-    protectedAccount: Boolean(egressProfile), expectedIdentity, requiredHooks });
+    protectedAccount: true, expectedIdentity, requiredHooks });
   let child;
   try {
     const invocation = await prepareSupervisedNativeInvocation({ native, egressProfile, signal,

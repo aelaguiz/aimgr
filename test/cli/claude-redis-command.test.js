@@ -5,6 +5,7 @@ import { connectRedisStore, importCredentialsSnapshot } from "../../src/coordina
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { mkTempHome } from "../helpers/files.js";
+import { readClaudeTestEnvironment } from "../helpers/claude-local.js";
 
 const PREFIX = "aimgr:claude-command-test";
 const NOW_MS = Date.parse("2026-07-22T18:00:00.000Z");
@@ -46,6 +47,7 @@ test("Claude inventory and status use Redis candidates without Keychain or provi
   };
   const deps = {
     nowImpl: () => NOW_MS,
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
     connectRedisStoreImpl: () => connectRedisStore({ client, keyPrefix: PREFIX }),
     readClaudeNativeKeychainOauthImpl: forbidden,
     fetchJsonWithTimeoutImpl: forbidden,
@@ -74,7 +76,7 @@ test("Claude inventory and status use Redis candidates without Keychain or provi
     deps,
   );
   assert.equal(humanStatus.exitCode, 1);
-  assert.match(humanStatus.stdout, /coder\s+NEEDS YOU.*aim login coder/);
+  assert.match(humanStatus.stdout, /coder\s+NOT SIGNED IN.*aim claude login coder/);
   assert.doesNotMatch(humanStatus.stdout, /credential_missing/);
 
   const verboseStatus = await runCliWithExitCode(

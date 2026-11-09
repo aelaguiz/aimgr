@@ -41,6 +41,8 @@ export function planClaudePrivateIdentity({
   appState,
   identityRecord = null,
   accountUuid,
+  organizationUuid = null,
+  environmentBinding = null,
   foreignIdentifiers,
   inventoryComplete,
   now = new Date().toISOString(),
@@ -62,7 +64,10 @@ export function planClaudePrivateIdentity({
     || !FIELDS.machineID.format.test(identityRecord.fields.machineID ?? ""))) {
     fail("the private installation-identity record is invalid");
   }
-  const sameAccount = identityRecord?.accountUuid === accountUuid;
+  if (environmentBinding !== null && !HEX.test(environmentBinding)) fail("the account environment binding is invalid");
+  const sameAccount = identityRecord?.accountUuid === accountUuid
+    && (environmentBinding === null || (identityRecord.environmentBinding === environmentBinding
+      && identityRecord.organizationUuid === organizationUuid));
   const nativeAccount = appState.oauthAccount?.accountUuid;
   if (sameAccount && nativeAccount !== undefined && nativeAccount !== accountUuid) {
     fail("Claude account state differs from its committed identity record");
@@ -95,7 +100,7 @@ export function planClaudePrivateIdentity({
     }
     if (!spec.required && current === undefined) continue;
     let next = current;
-    if (rebound || !valid || used.has(current)) {
+    if (rebound || (environmentBinding && !sameAccount) || !valid || used.has(current)) {
       next = undefined;
       for (let attempt = 0; attempt < 8; attempt += 1) {
         const candidate = key === "remoteControlMachineId" ? randomUuid() : randomHex();
@@ -114,6 +119,8 @@ export function planClaudePrivateIdentity({
     accountUuid,
     createdAt: sameAccount ? identityRecord.createdAt : now,
     fields,
+    ...(environmentBinding ? { environmentBinding, organizationUuid } : {}),
+    ...(sameAccount && identityRecord?.grant ? { grant: structuredClone(identityRecord.grant) } : {}),
   };
   return {
     state,

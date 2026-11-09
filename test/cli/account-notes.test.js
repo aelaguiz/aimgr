@@ -16,6 +16,7 @@ import { readNotesForCommand } from "../../src/status/account-notes.js";
 test("note reads and edits do not retrieve primary credential records", async () => {
   const { homes: [home], client, store, deps } = await fixture();
   const credentialKeys = new Set([
+    store.keys.credential({ provider: "anthropic", label: "iphone_se_1" }),
     store.keys.credential({ provider: "openai-codex", label: "iphone_se_1" }),
   ]);
   const reads = [];

@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "date": "2026-11-05",
+  "method": "Bounded filesystem read of exact admitted native artifact embedded JavaScript. No vendor execution, network call, login, personal state read, or modification. Excerpts contain public vendor source only, no private log/identifier/credential values.",
+  "platform": "darwin-arm64",
+  "vendorVersion": "2.1.317",
+  "vendorSha256": "09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9",
+  "artifactSet": "5f6659f45473d3a6bbfd14669d802898a4d38c5a2b439127c5f0ee1283dfdf4d",
+  "vendorFile": "/opt/aimgr-claude-runtime/artifacts/5f6659f45473d3a6bbfd14669d802898a4d38c5a2b439127c5f0ee1283dfdf4d/claude",
+  "offsetMeaning": "zero-based bytes from exact native vendor executable start",
+  "rows": [
+    {
+      "name": "identity-generators",
+      "offset": 256108273,
+      "excerpt": "var wr=/^[0-9a-f]{64}$/;function TL(e,n){let r=be(),s=ue();if(typeof s.userID===\"string\"&&wr.test(s.userID))return s.userID;if(r.generatedUserID)return r.generatedUserID;let h=n!==void 0&&wr.test(n)?n:pc(32).toString(\"hex\");return r.setGeneratedUserID(h),Pe((y)=>i.CLAUDE_CODE_ENABLE_CONFIG_MISSING_READ_GUARD&&typeof y.userID===\"string\"&&wr.test(y.userID)?y:{...y,userID:h},e),h}function $Mt(e){let n=be(),r=ue();if(typeof r.machineID===\"string\"&&wr.test(r.machineID))return r.machineID;if(n.generatedMachineID)return n.generatedMachineID;let s=pc(32).toString(\"hex\");return n.setGeneratedMachineID(s),Pe((h)=>i.CLAUDE_CODE_ENABLE_CONFIG_MISSING_READ_GUARD&&typeof h.machineID===\"string\"&&wr.test(h.machineID)?h:{...h,machineID:s},e),s}async function F8(e){TL(e),$Mt(e),await oje()}function zhs(e){let n=be(),r=ue();if(typeof r.summonSidKey===\"string\"&&wr.test(r.summonSidKey))return r.summonSidKey;if(n.generatedSummonSidKey)return n.generatedSummonSidKey;let s=pc(32).toString(\"hex\");return n.setGeneratedSummonSidKey(s),Pe((h)=>i.CLAUDE_CODE_ENABLE_CONFIG_MISSING_READ_GUARD&&typeof h.summonSidKey===\"string\"&&wr.test(h.summonSidKey)?h:{...h,summonSidKey:s},e),s}var vD=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;function Jh(e){return typeof e===\"string\"&&vD.test(e)}function PQi(e){return be().remoteControlMachineIdOnceFrom(()=>ED(e))}async function ED(e){let n=ue();if(Jh(n.remoteControlMachineId))return n.remoteControlMachineId;let r=zI(),s=r;return await _c((y)=>(s=Jh(y.remoteControlMachineId)?y.remoteControlMachineId:s,{...y,remoteControlMachineId:s}),e).catch(()=>!1)||s!==r?s:null}function Vhs(e){if(!ue",
+      "meaning": "userID/machineID/summonSidKey random32byte lowercasehex defaults; remoteControlMachineId UUID validation/state",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "functional-model-identity",
+      "offset": 260528889,
+      "excerpt": "function mqe({agentContext:e,servedSessionMode:n}={}){let r={},s=process.env.CLAUDE_CODE_EXTRA_METADATA;if(s){let A=st(s,!1);if(A&&typeof A===\"object\"&&!Array.isArray(A))r=Ue(A);else t(`CLAUDE_CODE_EXTRA_METADATA env var must be a JSON object, but was given ${s}`,{level:\"error\"})}let d={},m,h=RO(),b=Oe(i.CLAUDE_CODE_REMOTE)&&Dn()?qBe(e):void 0,y={...m&&{ti:m},device_id:TL(),account_uuid:Oe(i.CLAUDE_CODE_REMOTE)&&i.CLAUDE_CODE_ACCOUNT_UUID||oC()?.accountUuid||sn()?.accountUuid||\"\",session_id:z(),...h&&{parent_session_id:h},...b&&{tk:b}},v={...d,...r,...y};if((Object.keys(r).length>0||Object.keys(d).length>0)&&_(v).length>se){if(v={...d,...y},_(v).length>se)v=y}return{user_id:_(v)}}function We(e,n){let r=Number(e.get(n)??0);return Number.isFinite(r)?Math.max(0,Math.min(1,r)):0}function De(e,n,r){let s=Number(e.get(n)??NaN);return Number.isFinite(s)&&s*1000>r?Math.round(s):void 0}function At(e,n){if(e.get(\"anthropic-ratelimit-unified-status\")===null)return{limiterRan:!1};let r=We(e,\"anthropic-ratelimit-unified-grace-5h-utilization\"),s=We(e,\"anthropic-ratelimit-unified-grace-7d-utilization\");if(r===0&&s===0)return{limiterRan:!0,zone:null};let d=D",
+      "meaning": "JSON user_id includes device_id from userID plus account_uuid/session_id/optionalparent_session_id; optional caller metadata",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "reporter-machine-id-prefix",
+      "offset": 261854267,
+      "excerpt": "host_name_redacted:$Mt().slice(0,12),entrypoint:f,node_version:process.versions.node,bun_version:\"1.4.4\",...u&&{model:u},error_frames:s,feature_flags:x()}}var V=new Set([\"APIUserAbortError\",\"AuthenticationError",
+      "meaning": "Error envelope serializes first12hex configmachineID as host_name_redacted; not raw hostname",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "reporter-derived-user-bucket",
+      "offset": 261850745,
+      "excerpt": "var D=30;function O(){let e=hPn();if(e.cachedUserBucket!==void 0)return e.cachedUserBucket;let r=TL(),o=R(\"sha256\").update(r).digest(\"hex\");return e.cachedUserBucket=parseInt(o.slice(0,8),16)%D,e.cachedUserBucket}function v(e,r){let o=r.slice(0,3).map((n)=>gBi(n)?`${n.function??\"?\"}@$",
+      "meaning": "sha256(userID) first8hex modulo30 forms coarse user_bucket",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "reporter-envelope",
+      "offset": 261853394,
+      "excerpt": "return{ddtags:[`service:${I}`,\"team:claude-code\",`version:${l}`,\"env:external\",`origin:${r}`,`platform:${P()}`,`os_release:${h}`,`user_bucket:${E}`,`entrypoint:${f}`,`node_version:${process.versions.node}`,\"bun_version:1.4.4\",`is_native_runtime:${y}`,...u?[`model:${u}`]:[],...m?[`error_code:${m}`]:[],...p!==void 0?[`child_exit_status:${p}`]:[],...d?[`session_kind:${d}`]:[],...d?[`has_attacher:${Pu()?\"1\":\"0\"}`]:[],...g?[`renderer_mode:${g}`]:[],..._?[`remote_control_lane:${_}`]:[],...Xct()?[\"projects_session:1\"]:[]].join(\",\"),service:I,hostname:\"claude-code\",status:\"error\",message:`${o}: ${a}`.slice(0,4000),timestamp:new Date().toISOString(),error:{kind:o,message:a.slice(0,4000),stack:A.slice(0,16000),fingerprint:T,handling:r===\"logError\"?\"handled\":\"unhandled\"},version:l,sourcemap_group:C,env:\"external\",user_bucket:E,origin:r,host_platform:P(),host_os_release:h,host_name_redacted:$Mt().slice(0,12),entrypoint:f,node_version:process.versions.node,bun_version:\"1.4.4\",...u&&{model:u},error_frames:s,feature_flags:x()}}var V=new Set([\"APIUserAbortError\",\"AuthenticationError\",\"McpSessionExpiredError\"]),W=[{messagePrefix:\"File does not exist\",topFrameIncludes:\"FileReadTool.ts\"}],z=[{topFile:\"node:net\",topFunction:\"internalConnectMultipleTimeout\"},{topFile:\"node:_http_server\",topFunction:\"#onClose\"}];function H(e){let r=GNn(e,20),o=r[0];if(!o||r.some(yTr))return!1;return z.some((n)=>o.file===n.topFile&&o.function===n.topFunction)}function Y(){return i.CLAUDE_CODE_REMOTE===!0||Boolean(i",
+      "meaning": "Error content/runtime/platform/version/fingerprint/sessionkind metadata envelope",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "error-collector",
+      "offset": 261846564,
+      "excerpt": "var p=\"https://browser-intake-us5-datadoghq.com/api/v2/logs\",g=30000,u=25,l=1e4,n=100;function m(){return i.CLAUDE_CODE_DD_ERROR_TRACKING_FLUSH_INTERVAL_MS||g}async function f(e){if(!tcs()){t(`dd-error-tracking: compliance verdict now blocks reporting; dropping batch=${e.length}`,{level:\"warn\"});return}let r=_(e),a=new URLSearchParams({ddsource:\"browser\",\"dd-api-key\":Poo,\"dd-evp-origin\":\"browser\",\"dd-evp-origin-version\":{ISSUES_EXPLAINER:\"report ",
+      "meaning": "Provider-directed error collector destination",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "summon-session-hmac",
+      "offset": 270558850,
+      "excerpt": "function me(e,n,t){return ae(\"sha256\",zhs(t)).update(e+n,\"utf8\").digest(\"hex\").slice(0,16)}var fe=/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d",
+      "meaning": "summonSidKey produces HMAC(sessionid+slug) first16hex, not raw key upload",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "summon-status-call",
+      "offset": 270560480,
+      "excerpt": "let a=s.sidBySlug.get(t);if(a===void 0)a=me(z(),t,e.storageV5),s.sidBySlug.set(t,a);let h=n.reason,f=Math.max(s.seqBySid.get(a)??0,Math.floor(Date.now()/1000)*1000);if(f>le)return!1;s.seqBySid.set(a,f+1);let u=e.coversReplyId!==void 0&&!dr.test(e.coversReplyId),y={status:n.status,...h!==void 0&&{reason:h},...e.coversReplyId!==void 0&&!u&&{covers_reply_id:e.coversReplyId},...i!==void 0&&{gesture_at:i},sid:a,seq:f};return y8s(t,o,y).then((S)=>{switch(S.kind){case\"accepted\":if(u)c(\"artifact_summon_status_emit\",\"covers_id_rejected\");else g(\"artifact_summon_status_emit\");return;case\"route_absent\":s.routeAbsentSince=Date.now(),c(\"artifact_summon_status_emit\",\"route_absent\");ret",
+      "meaning": "Derivation uses z()sessionID plus slug, supplies sid/seq/status to y8s",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "summon-status-endpoint",
+      "offset": 270540495,
+      "excerpt": "async function y8s(e,t,n){let r;try{r=await Gc.postRelayBound(`/api/frame/comments/${encodeURIComponent(e)}/${encodeURIComponent(t)}/summon-status`,n,{isBackground:!0,headers:zc(),timeout:5000,maxContentLength:Se})}catch{return{kind:\"failed\",reason:\"request_error\"}}if(!r.ok){if(r.reason===\"relay-unavailable\"||r.reason===\"relay-not-served\")return{kind:\"unsent\",status:r.status};return{kind:\"skipped\",reason:r.reason}}if(!r.fromFrame)return{kind:\"failed\",reason:\"relay_error\",status:r.status};if(r.st",
+      "meaning": "Background relay-bound frame comment summon-status endpoint receives derived sid/status object",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "webfetch-domain-check",
+      "offset": 264769279,
+      "excerpt": "async function Bur(e,n,r){if(n.domainChecks.has(e))return{status:\"allowed\"};let s=Xo(r,{timeoutMs:$ur,refTimer:!0});try{let h=await Dt.get(`https://api.anthropic.com/api/web/domain_info?domain=${encodeURIComponent(e)}`,{headers:{\"User-Agent\":Qs()},signal:s.signal,timeout:Nur});if(h.status===200){if(h.data.can_fetch===!0)return n.domainChecks.set(e,!0),{status:\"allowed\"};return{status:\"blocked\"}}return{status:\"check_failed\",error:Error(`Domain check returned status ${h.status}`),httpStatus:h.status}}catch(h){if(r.aborted)throw h;return",
+      "meaning": "Hostname goes to fixed Anthropicdomain_info query via GET, explicit UserAgent; not full URLpath",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "webfetch-call-setting",
+      "offset": 264776074,
+      "excerpt": "if(!mr().skipWebFetchPreflight){let wt=await Bur(Xe,s,r.signal);switch(wt.status){case\"allowed\":break;case\"blocked\":throw new KQe(Xe);case\"check_failed\":throw new VQe(Xe,Dt.isCancel(wt.error)?\"EDEADLINE_PREFLIGHT\":wt.httpStatus===429?\"ERATELIMIT_PREFLIGHT\":void 0)}}}catch(Xe){if(Xe instanceof KQe||Xe instanceof VQe||Dt.isCancel(Xe))throw Xe;l(Xe)}let ke",
+      "meaning": "Setting gates preflight at WebFetchcaller",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    },
+    {
+      "name": "view-only-session-mirroring-schema",
+      "offset": 253687721,
+      "excerpt": "autoUploadSessions:()=>I().optional().describe(\"Mirror local sessions to claude.ai as view-only (no remote control)\"),inputNeededNotifEnabled:()=>I().optio",
+      "meaning": "Named setting describes view-only mirroring; outboundcall/gating remains unknown here",
+      "evidenceKind": "static shipped source; no execution or observed upload asserted"
+    }
+  ],
+  "limitations": [
+    "Static branch wiring is not a runtime capture. Existing isolated receipts support runtime mitigation claims separately.",
+    "Reporter admission and every mirror path were not independently retraced in this receipt.",
+    "This source identity is M5 selectedruntime only; fleet deployment is separate."
+  ]
+}

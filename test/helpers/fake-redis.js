@@ -76,10 +76,43 @@ export class FakeRedisClient {
         const raw = this.values.get(recordKey);
         if (raw) {
           const record = JSON.parse(raw);
-          if (record.provider !== "openai-codex") result.push(record);
+          if (!(args[0] === "1" && record.provider === "openai-codex") && !(args[1] === "1" && record.provider === "anthropic")) result.push(record);
         }
       }
       return JSON.stringify(result);
+    }
+    if (script.includes("AIMGR_CLAUDE_METADATA_READ_V1")) {
+      const result=[];
+      for(const recordKey of this.sets.get(key) ?? []) {
+        const raw=this.values.get(recordKey); if(!raw) continue;
+        const item=JSON.parse(raw);
+        if(item.provider!==args[1] || typeof item.label!=="string" || recordKey!==args[0]+item.label) throw new Error("invalid Claude metadata index");
+        const p=item.policy ?? {},i=item.identity ?? {};
+        result.push({provider:item.provider,label:item.label,version:item.version,identity:{accountUuid:i.accountUuid,emailAddress:i.emailAddress,organizationUuid:i.organizationUuid},policy:{egress:p.egress,expect:p.expect,browser:p.browser,pool:p.pool}});
+      }
+      return JSON.stringify(result);
+    }
+    if(script.includes("AIMGR_CLAUDE_METADATA_ENSURE_V1")) {
+      const next=JSON.parse(args[0]),i=next.identity;
+      for(const recordKey of this.sets.get(keys[2]) ?? []) {
+        const raw=this.values.get(recordKey); if(!raw) continue;
+        const item=JSON.parse(raw);
+        if(item.label!==next.label && item.identity?.accountUuid===i.accountUuid && item.identity?.organizationUuid===i.organizationUuid) return "duplicate_identity";
+      }
+      const raw=this.values.get(key);
+      if(raw) {
+        const item=JSON.parse(raw),old=item.identity ?? {};
+        if(old.accountUuid && (old.accountUuid!==i.accountUuid || old.organizationUuid!==i.organizationUuid)) return "identity_conflict";
+        if(item.policy?.egress?.profileRef!==next.policy?.egress?.profileRef)return "policy_conflict";
+        if(item.policy?.expect?.email && item.policy.expect.email.toLowerCase()!==i.emailAddress.toLowerCase()) return "identity_conflict";
+        item.identity=i;item.version=(item.version ?? 0)+1;item.updatedAt=next.updatedAt;await this.set(key,JSON.stringify(item));return "unchanged";
+      }
+      await this.set(key,args[0]);await this.sAdd(keys[1],key);await this.sAdd(keys[2],key);return "created";
+    }
+    if(script.includes("AIMGR_CLAUDE_EGRESS_V1")) {
+      const raw=this.values.get(key);if(!raw)return "missing";
+      const item=JSON.parse(raw);if(item.version!==Number(args[0]))return "stale";
+      item.policy={...item.policy,egress:JSON.parse(args[1])};item.version+=1;await this.set(key,JSON.stringify(item));return "ok";
     }
     if (script.includes("AIMGR_CODEX_METADATA_READ_V1")) {
       const result = [];

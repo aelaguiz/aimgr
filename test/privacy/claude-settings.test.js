@@ -56,16 +56,20 @@ test("protected critical values defeat empty, false-like and conflicting forward
   }
 });
 
-test("ordinary account keeps its telemetry choice and needs no proxy settings", () => {
+test("direct accounts receive diagnostics and identity controls without changing task exporters", () => {
   const result = composeClaudePrivacySettings({ cwd, protectedAccount: false,
-    defaultFlagSettings: { env: { DISABLE_TELEMETRY: "", CUSTOM_BUILD_FLAG: "keep" } } });
-  assert.equal(result.settings.env.DISABLE_TELEMETRY, "");
+    defaultFlagSettings: { env: { DISABLE_TELEMETRY: "", CLAUDE_CODE_ENABLE_TELEMETRY: "1", ENABLE_BETA_TRACING_DETAILED: "1", BETA_TRACING_ENDPOINT: "http://task-collector",
+      OTEL_LOGS_EXPORTER: "otlp", OTEL_TRACES_EXPORTER: "otlp", OTEL_SDK_DISABLED: "false", CUSTOM_BUILD_FLAG: "keep" } } });
+  assert.equal(result.settings.env.DISABLE_TELEMETRY, "1");
+  assert.equal(result.settings.env.DISABLE_ERROR_REPORTING, "1");
+  assert.equal(result.settings.env.CLAUDE_CODE_ENABLE_TELEMETRY, "0");
+  assert.equal(result.settings.env.ENABLE_BETA_TRACING_DETAILED, "0");
+  assert.equal(result.settings.env.BETA_TRACING_ENDPOINT, "http://task-collector");
   assert.equal(result.settings.env.CUSTOM_BUILD_FLAG, "keep");
-  assert.equal(Object.hasOwn(result.settings.env, "DISABLE_ERROR_REPORTING"), false);
-  assert.equal(result.settings.env.DISABLE_GROWTHBOOK, "1");
-  assert.deepEqual(claudeCriticalSettings({ protectedAccount: false }), {
-    disableRemoteControl: true, disableAgentView: true, env: { DISABLE_AUTOUPDATER: "1", DISABLE_UPDATES: "1", DISABLE_GROWTHBOOK: "1", CLAUDE_CODE_DISABLE_AGENT_VIEW: "1" },
-  });
+  assert.equal(result.settings.env.OTEL_LOGS_EXPORTER, "otlp");
+  assert.equal(result.settings.env.OTEL_TRACES_EXPORTER, "otlp");
+  assert.equal(result.settings.env.OTEL_SDK_DISABLED, "false");
+  assert.deepEqual(claudeCriticalSettings({ protectedAccount: false }), claudeCriticalSettings({ protectedAccount: true }));
 });
 
 test("last explicit settings value wins while required lifecycle hooks survive exactly once", () => {

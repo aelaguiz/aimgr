@@ -483,7 +483,7 @@ export function buildClaudeNativeStorageDescriptor({
       segments.length === 4
       && segments[0] === "claude-homes"
       && /^[A-Za-z0-9_.-]+$/.test(segments[1])
-      && segments[2] === ".login-staging"
+      && (segments[2] === ".login-staging" || /^\.login-staging-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(segments[2]))
       && segments[3] === ".claude"
     );
     if (
@@ -639,7 +639,7 @@ function isValidClaudeNativeStorageDescriptor(descriptor) {
         segments.length === 4
         && segments[0] === "claude-homes"
         && /^[A-Za-z0-9_.-]+$/.test(segments[1])
-        && segments[2] === ".login-staging"
+        && (segments[2] === ".login-staging" || /^\.login-staging-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(segments[2]))
         && segments[3] === ".claude"
       );
       return Boolean(

@@ -55,7 +55,7 @@ int main(int argc,char **argv) {
     int updatecount=number(argv[updateindex],MAX_ROOTS),separator=updateindex+1+updatecount;
     if (separator>=argc || strcmp(argv[separator],"--")) fail("update roots");
     const char **roots=(const char **)(argv+8),**updates=(const char **)(argv+updateindex+1);
-    for (int i=0;i<readcount;i++) { canonical(roots[i]); if (inside(home,roots[i]) || (inside(config,roots[i]) && strcmp(config,roots[i]))) fail("overbroad read root"); }
+    for (int i=0;i<readcount;i++) { canonical_future(roots[i]); if (inside(home,roots[i]) || (inside(config,roots[i]) && strcmp(config,roots[i]))) fail("overbroad read root"); }
     for (int i=0;i<updatecount;i++) { canonical_future(updates[i]); if (inside(self,updates[i]) || inside(vendor,updates[i])) fail("invalid update root"); }
     char **private_environment=read_environment(envfd);
     if (validator) {
@@ -128,7 +128,9 @@ int main(int argc,char **argv) {
      * disabled; this env pin alone does not override hostile disk settings. Ordinary background
      * Bash/subagents stay available; never use DISABLE_BACKGROUND_TASKS here. */
     set_environment("CLAUDE_CODE_DISABLE_AGENT_VIEW","1",1);
-    if (protected) { set_environment("DISABLE_TELEMETRY","1",1);set_environment("DISABLE_ERROR_REPORTING","1",1); }
+    set_environment("CLAUDE_CODE_ENABLE_TELEMETRY","0",1);
+    set_environment("ENABLE_BETA_TRACING_DETAILED","0",1);
+    set_environment("DISABLE_TELEMETRY","1",1);set_environment("DISABLE_ERROR_REPORTING","1",1);
     set_environment("AIMGR_CLAUDE_LINUX_POLICY",profile,1);
     close_handles();argv[separator]=vendor;execv(vendor,argv+separator);fail("approved vendor exec");
 }

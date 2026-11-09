@@ -2,41 +2,14 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 import { ClaudePrivacySettingsError, claudeCriticalSettings, inspectClaudeArguments } from "./claude-settings.js";
+import { claudeNativeSettingsFiles } from "./claude-session-headers.js";
+import { canonicalWorkingPath } from "./working-directories.js";
 import { resolveClaudeInstructionReads } from "./claude-instruction-inputs.js";
 import { resolveClaudeTlsReadPaths } from "./claude-tls-inputs.js";
 import { resolveClaudeMcpExecutableReads, claudeMcpEnvironmentVariants } from "./claude-mcp-inputs.js";
 
 const fail = reason => { throw new ClaudePrivacySettingsError(reason); };
-const inside = (file, root) => file === root || file.startsWith(root + path.sep);
-
-/** The pinned native build keeps background control/PTY sockets outside its
- * config directory. Its namespace is SHA256(resolve(NFC(config)))[0..8], not
- * an installation identifier. Precreate the exact owned 0700 child so native
- * mkdir/chmod needs no write grant to the shared cc-daemon-UID subtree.
- *
- * Do not broaden this to the parent: native's same-UID control protocol does
- * not authenticate every operation. Other account namespaces stay outside
- * this account's file grants. Never repair an unsafe pre-existing directory
- * silently; refuse before executing Claude instead. Keep this derivation in
- * the version-upgrade review (T05/T14/T18).
- */
-export function prepareClaudeDaemonDirectory({ configDir, env,
-  temporaryBase = env.TERMUX_VERSION && env.PREFIX ? path.join(env.PREFIX, "tmp") : "/tmp",
-} = {}) {
-  const uid = process.getuid();
-  const digest = crypto.createHash("sha256").update(path.resolve(configDir.normalize("NFC"))).digest("hex").slice(0, 8);
-  const parent = path.join(fs.realpathSync(temporaryBase), `cc-daemon-${uid}`);
-  const child = path.join(parent, digest);
-  for (const directory of [parent, child]) {
-    try { fs.mkdirSync(directory, { mode: 0o700 }); }
-    catch (error) { if (error.code !== "EEXIST") fail("Claude's private background socket directory could not be created"); }
-    const stat = fs.lstatSync(directory);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o7777) !== 0o700) {
-      fail("Claude's background socket directory must be an owned, non-symlink directory with mode 0700");
-    }
-  }
-  return fs.realpathSync(child);
-}
+const inside = (file, root) => file === root || file.startsWith(root === path.sep ? root : root + path.sep);
 
 /** Read private native state without following a substituted leaf or exposing
  * parse excerpts. Call only while the existing account-state guard is held.
@@ -91,7 +64,7 @@ export function stageClaudeLaunchEnvironment(env, directory) {
   }
 }
 
-/** Common opt-outs are scoped separately from protected-account opt-outs.
+/** Every managed account receives the same Claude-specific opt-outs.
  * Preserve tool/build/MCP variables and terminal capabilities. This is not a
  * blanket environment wipe, and never runs on native self-spawned children.
  * Root auth/provider selection is cleaned separately before this function.
@@ -117,15 +90,15 @@ export function buildClaudePrivacyEnvironment({ env, protectedAccount, artifactS
  * retain their normal host view; these grants govern the vendor image.
  */
 export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appState = {},
-  additionalDirectories = [], userPluginDirs = [], taskFiles = [], sharedMemoryDirectory, projectConfigRoot } = {}) {
+  additionalDirectories = [], settingsAdditionalDirectories = [], workingDirectories = [], userPluginDirs = [], taskFiles = [], sharedMemoryDirectory, projectConfigRoot } = {}) {
   const home = fs.realpathSync(userHomeDir), config = fs.realpathSync(configDir);
   const roots = new Set(), gitBoundaries = new Set(), packageDirectories = [];
-  const add = (file, optional = false) => {
+  const add = (file, optional = false, future = false) => {
     if (!path.isAbsolute(file ?? "")) fail("a task read root is not absolute");
     let resolved;
-    try { resolved = fs.realpathSync(file); }
-    catch (error) { if (optional && error.code === "ENOENT") return; fail("a required task read root is unavailable"); }
-    if (inside(home, resolved) || (inside(config, resolved) && resolved !== config)) fail("a task grant would expose an entire home or account collection");
+    try { resolved = future ? canonicalWorkingPath(file) : fs.realpathSync(file); }
+    catch (error) { if (optional && error.code === "ENOENT") return; fail(`a required task read root is unavailable: ${file}`); }
+    if (inside(home, resolved) || (inside(config, resolved) && resolved !== config)) fail(`a task grant would expose an entire home or account collection: ${file}`);
     roots.add(resolved);
   };
   const addPackage = (directory, kind) => {
@@ -137,14 +110,34 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
   // Starting a shell in HOME does not mean granting all home data. Native
   // traversal/listing remains available through the private config ancestors.
   if (fs.realpathSync(cwd) !== home) add(cwd);
-  for (const file of [...additionalDirectories, ...userPluginDirs, ...taskFiles]) add(path.resolve(cwd, file));
+  // Native additional directories may name work not checked out yet. Retain
+  // the selected future root without making a missing sibling veto launch.
+  for (const directory of additionalDirectories) add(path.resolve(cwd, directory), false, true);
+  // Lower settings can retain unavailable or overly broad historical roots.
+  // Keep usable/future selections without making them a launch prerequisite.
+  const admittedSettingsDirectories = [];
+  for (const directory of settingsAdditionalDirectories) {
+    try {
+      add(path.resolve(cwd, directory), false, true);
+      admittedSettingsDirectories.push(path.resolve(cwd, directory));
+    } catch {}
+  }
+  const selectedDirectories = [...additionalDirectories, ...admittedSettingsDirectories];
+  for (const file of [...userPluginDirs, ...taskFiles]) add(path.resolve(cwd, file));
+  for (const directory of workingDirectories) add(directory, false, true);
+  // Preserve the user's previously selected, explicitly trusted project roots
+  // alongside the default work areas and current additional directories.
   for (const [file, state] of Object.entries(appState.projects ?? {})) {
-    if (state?.hasTrustDialogAccepted === true && path.isAbsolute(file) && file !== home) add(file, true);
+    if (state?.hasTrustDialogAccepted === true && path.isAbsolute(file) && file !== home) {
+      // Historical trust is optional launch context. Stale, inaccessible or
+      // whole-home history never becomes a new grant or a launch veto.
+      try { if (fs.statSync(file).isDirectory()) add(file, true); } catch { /* Keep usable trusted roots only. */ }
+    }
   }
   const managedRoot = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode" : "/etc/claude-code";
   const instructions = [path.join(config, "CLAUDE.md"), path.join(managedRoot, "CLAUDE.md")];
   const rules = [path.join(config, "rules"), path.join(managedRoot, ".claude/rules")];
-  for (const directory of additionalDirectories) {
+  for (const directory of selectedDirectories) {
     for (const file of ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"]) instructions.push(path.resolve(cwd, directory, file));
     rules.push(path.resolve(cwd, directory, ".claude/rules"));
   }
@@ -152,7 +145,7 @@ export function resolveClaudeTaskReadRoots({ cwd, userHomeDir, configDir, appSta
   // skills are linked by AIM preflight; home instructions can still be normal
   // project ancestors, but are not an invented second personal settings tier.
   for (const name of ["skills", "commands", "agents"]) addPackage(path.join(config, name), name);
-  for (const directory of [managedRoot, ...additionalDirectories.map(file => path.resolve(cwd, file))]) {
+  for (const directory of [managedRoot, ...selectedDirectories.map(file => path.resolve(cwd, file))]) {
     for (const kind of ["skills", "commands", "agents"]) addPackage(path.join(directory, ".claude", kind), kind);
   }
   // Native walks instruction sources above cwd as well as within it. A
@@ -311,14 +304,36 @@ export function resolveClaudeUpdateRoots({ userHomeDir, env, cwd, vendorCommand 
  * These are explicit task inputs, not automatic whole-home visibility.
  */
 export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDir, composition,
-  env = {}, appState = {}, discoverReadRoots = true }) {
+  env = {}, appState = {}, loginStaging = false, discoverReadRoots = true, stdoutIsTTY = Boolean(process.stdout.isTTY) }) {
   const parsed = inspectClaudeArguments(args), values = parsed.optionValues;
   const taskCwd = path.resolve(cwd, values["--cwd"]?.at(-1) ?? ".");
-  const expand = (value, origin = taskCwd) => value.startsWith("~/")
+  const expand = (value, origin = taskCwd) => value === "~" ? userHomeDir : value.startsWith("~/")
     ? path.join(userHomeDir, value.slice(2)) : path.resolve(origin, value);
   const additionalDirectories = (values["--add-dir"] ?? []).map(value => expand(value));
+  const settingsAdditionalDirectories = [];
   const userPluginDirs = [...(values["--plugin-dir"] ?? []), ...(values["--plugin-dir-no-mcp"] ?? [])].map(value => expand(value));
   const taskFiles = [];
+  // AIM's original-browser/manual callback bridge is an existing explicit
+  // executable input. Its child keeps normal OS permissions; Claude only
+  // needs this exact helper for command lookup, never its containing tree.
+  if (loginStaging && path.isAbsolute(env.BROWSER ?? "")) {
+    try { if (fs.statSync(env.BROWSER).isFile()) taskFiles.push(env.BROWSER); }
+    catch { /* A native BROWSER command string is not necessarily a file. */ }
+  }
+  const selectLiteralRead = rule => {
+    if (typeof rule !== "string") return;
+    // Pinned native // is filesystem-absolute. A single / or relative rule
+    // retains its native source anchor; do not reinterpret it as cwd here.
+    // Wildcards/escapes remain native permissions, not guessed OS grants.
+    const match = /^Read\((\/\/[^*?\[\]{}\\()\x00-\x1f\x7f]+)\)$/.exec(rule);
+    if (!match) return;
+    const file = path.resolve("/", match[1].slice(2));
+    try { if (fs.statSync(file).isFile()) taskFiles.push(file); }
+    catch (error) { if (!["ENOENT", "ENOTDIR"].includes(error.code)) fail("a selected Read file could not be inspected"); }
+  };
+  for (const flag of ["--allowedTools", "--allowed-tools"]) {
+    for (const rule of values[flag] ?? []) selectLiteralRead(rule);
+  }
   for (const flag of ["--mcp-config", "--system-prompt-file", "--append-system-prompt-file",
     "--append-subagent-system-prompt-file", "--system-prompt-snapshot"]) {
     for (const value of values[flag] ?? []) {
@@ -330,15 +345,10 @@ export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDi
     const file = expand(value);
     if (fs.existsSync(file)) taskFiles.push(file);
   }
-  const enabled = new Set((values["--setting-sources"]?.at(-1) ?? "user,project,local").split(","));
-  const sources = [];
-  if (enabled.has("user")) sources.push(path.join(configDir, "settings.json"));
+  const enabled = new Set((parsed.eagerRestricted || ["1", "true", "yes", "on"].includes(String(env.CLAUDE_CODE_RESTRICTED).trim().toLowerCase()))
+    ? [] : (values["--setting-sources"]?.at(-1) ?? "user,project,local").split(",").map(value => value.trim()));
   const projectRoot = values["--project-config-root"]?.at(-1);
-  for (let directory = expand(projectRoot ?? "."); ; directory = path.dirname(directory)) {
-    if (enabled.has("project")) sources.push(path.join(directory, ".claude/settings.json"));
-    if (enabled.has("local")) sources.push(path.join(directory, ".claude/settings.local.json"));
-    if (projectRoot || path.dirname(directory) === directory) break;
-  }
+  const sources = claudeNativeSettingsFiles({ parsed, cwd, configDir, userHomeDir, env, stdoutIsTTY });
   const settings = [];
   for (const file of sources) {
     let text;
@@ -356,11 +366,12 @@ export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDi
   for (const source of settings) {
     // Authentication belongs to the initial-header resolver, which follows
     // native source selection/schema acceptance. This read-grant inventory is
-    // deliberately a superset; an unused ancestor must not refuse a launch.
-    // Ordinary accounts need no private file grants (T01).
+    // deliberately a superset; an invalid optional tier must not refuse a launch.
+    // Managed launches always discover reads; the opt-out is for isolated fixtures.
     if (!discoverReadRoots) continue;
+    for (const rule of (Array.isArray(source.permissions?.allow) ? source.permissions.allow : [])) selectLiteralRead(rule);
     for (const value of (Array.isArray(source.permissions?.additionalDirectories) ? source.permissions.additionalDirectories : [])) {
-      if (typeof value === "string") additionalDirectories.push(expand(value));
+      if (typeof value === "string") settingsAdditionalDirectories.push(expand(value));
     }
     if (typeof source.autoMemoryDirectory === "string" && source.autoMemoryDirectory) {
       const memory = expand(source.autoMemoryDirectory);
@@ -379,6 +390,6 @@ export function resolveClaudeConfiguredInputs({ args, cwd, configDir, userHomeDi
   // Lower settings may reload during a session: retain their initially known
   // paths as well as inherited/flag paths. Replacement at those paths works.
   taskFiles.push(...resolveClaudeTlsReadPaths({ environments: [env, ...settings.map(source => source.env ?? {})], cwd: taskCwd, userHomeDir }));
-  return { cwd: taskCwd, additionalDirectories, userPluginDirs, taskFiles, executableAliases: [...new Set(executableAliases)],
+  return { cwd: taskCwd, additionalDirectories, settingsAdditionalDirectories, userPluginDirs, taskFiles, executableAliases: [...new Set(executableAliases)],
     ...(projectRoot ? { projectConfigRoot: expand(projectRoot) } : {}) };
 }

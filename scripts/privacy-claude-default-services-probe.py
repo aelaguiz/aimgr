@@ -23,6 +23,7 @@ import pty
 import re
 import select
 import shlex
+import shutil
 import signal
 import socket
 import ssl
@@ -52,8 +53,12 @@ p.add_argument("--privacy-mode", choices=["ordinary", "protected"], default="pro
 p.add_argument("--poll-settings", action="store_true", help="Diagnostic fixture only: use the unchanged client's polling file watcher")
 p.add_argument("--rc-policy-only", action="store_true", help="Eligible unwrapped RC comparison with only disableRemoteControl added")
 p.add_argument("--disable-agent-view", action="store_true", help="Research the narrow native daemon switch, retaining ordinary background tools")
+p.add_argument("--custom-diagnostics", choices=["enhanced", "beta"], help="Synthetic stock-positive/candidate-zero OTLP comparison, including actual traces")
+p.add_argument("--skill-authoring-only", action="store_true", help="Offline skill mutation comparison in the user's existing native bypass mode")
 p.add_argument("--background-review", action="store_true", help="Run the isolated daemon lifetime/reuse/disable experiment")
 a = p.parse_args()
+if a.skill_authoring_only and a.case != ["pro-work-areas-edit"]:
+    raise SystemExit("Skill authoring comparison requires only the edit case")
 base = Path("/opt/aimgr-state-audit")
 root = a.root.resolve()
 if (not (base / "OFFSITE_AUDIT_HOST").is_file()
@@ -101,6 +106,9 @@ requests = []
 connections = []
 active = None
 active_plan = None
+work_area_files = []
+work_area_steps = []
+work_area_temporary = []
 
 
 class Mock(http.server.BaseHTTPRequestHandler):
@@ -192,7 +200,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
         elif route == "/api/oauth/claude_cli/roles":
             self.reply({"organization_role":"admin","workspace_role":"admin","organization_name":"Synthetic Pro"})
         elif route == "/api/oauth/profile":
-            if "schedules" in (active or ""):
+            if "schedules" in (active or "") or "synthetic-routine" in self.headers.get("Authorization", ""):
                 # Match createNativeRoutineFixture's credential identity on
                 # every turn/restart; a server UUID change correctly refuses
                 # the next native launch and is not a scheduling failure.
@@ -259,6 +267,18 @@ class Mock(http.server.BaseHTTPRequestHandler):
             self.reply({"input_tokens": 10})
         elif "/messages" in self.path:
             content = {"type": "text", "text": "SYNTHETIC_OK"}
+            if "work-areas" in active or "missing-settings-trust" in active:
+                # The first model turn happens after AIM selected and admitted
+                # its roots. Create future work directories only at this point.
+                for file, data in work_area_files:
+                    if not file.exists():
+                        file.parent.mkdir(parents=True, exist_ok=True)
+                        file.write_bytes(data)
+                blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
+                completed = {block.get("tool_use_id") for block in blocks if block.get("type") == "tool_result"}
+                step = next((step for step in work_area_steps if step["id"] not in completed), None)
+                if step:
+                    content = {"type": "tool_use", **step}
             if "errors" in active:
                 blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
                 if not any(block.get("id") == "expected_error_tool" for block in blocks):
@@ -342,7 +362,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
                         "command": "printf 'HEADER_FIRST_SETTING_%s' \"$AIM_HEADER_LIVE_PROBE\"", "description": "Read initial fixture setting"}}
                 elif "NATIVE_SECOND_HEADER_TURN" in json.dumps(body.get("messages", [])) and "header_live_env_probe" not in identifiers:
                     content = {"type": "tool_use", "id": "header_live_env_probe", "name": "Bash", "input": {
-                        "command": "printf 'HEADER_LIVE_SETTING_%s CRITICAL_LIVE_SETTINGS_%s_%s_%s_%s_%s' \"$AIM_HEADER_LIVE_PROBE\" \"$DISABLE_UPDATES\" \"$DISABLE_AUTOUPDATER\" \"$DISABLE_TELEMETRY\" \"$DISABLE_ERROR_REPORTING\" \"$DISABLE_GROWTHBOOK\"", "description": "Verify live edits preserve the pinned privacy controls"}}
+                        "command": "printf 'HEADER_LIVE_SETTING_%s CRITICAL_LIVE_SETTINGS_%s_%s_%s_%s_%s_%s_%s' \"$AIM_HEADER_LIVE_PROBE\" \"$DISABLE_UPDATES\" \"$DISABLE_AUTOUPDATER\" \"$DISABLE_TELEMETRY\" \"$DISABLE_ERROR_REPORTING\" \"$DISABLE_GROWTHBOOK\" \"$CLAUDE_CODE_ENABLE_TELEMETRY\" \"$ENABLE_BETA_TRACING_DETAILED\"", "description": "Verify live edits preserve the pinned privacy controls"}}
             if ("dynamic-directory" in active or "startup-directory" in active) and "NATIVE_ADDED_DIRECTORY" in json.dumps(body.get("messages", [])):
                 blocks = [block for message in body.get("messages", []) if isinstance(message.get("content"), list) for block in message["content"]]
                 if not any(block.get("type") == "tool_use" and block.get("name") == "Read" for block in blocks):
@@ -371,6 +391,8 @@ class Mock(http.server.BaseHTTPRequestHandler):
                 ran = any(block.get("type") == "tool_use" and (block.get("name") == "Skill" if skill else block.get("name") == "Agent" if agent else "stdio" in block.get("name", "") and block.get("name", "").endswith("echo") if mcp else block.get("name") == "Bash") for block in blocks)
                 if not ran:
                     args = {"skill": "privacy-proof"} if skill else {"description": "Synthetic child task", "prompt": "Run the synthetic Bash task. NATIVE_CHILD_TASK.", "subagent_type": "general-purpose"} if agent else ({"text": "MCP_TOOL_RESULT_CANARY"} if mcp_tool else {"query": "+stdio echo", "max_results": 5}) if mcp else {"command": "printf subagent-ok > child-proof.txt" if child else "printf native-tool-ok > tool-proof.txt", "description": "Write synthetic proof"}
+                    if name == "Bash" and not child and "workflows" in active:
+                        args["command"] += '; printf "%s\\n" "$OTEL_SDK_DISABLED" "$OTEL_LOGS_EXPORTER" "$OTEL_METRICS_EXPORTER" "$OTEL_TRACES_EXPORTER" > task-otel-env.txt'
                     content = {"type": "tool_use", "id": "tool_fixture_" + str(len(requests)), "name": name, "input": args}
                 elif "schedules" in active or "ROUTINE_SUCCESS_CANARY" in messages:
                     content = {"type": "text", "text": "NATIVE_MOCK_DONE\nAIM-JOB: done"}
@@ -672,7 +694,8 @@ def interactive(arguments, home, env):
                         changed = {"env": {"ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer SYNTHETIC_HEADER_OVERRIDE\nX-Aim-Initial: changed",
                                            "AIM_HEADER_LIVE_PROBE": "after", "DISABLE_UPDATES": "",
                                            "DISABLE_AUTOUPDATER": "false", "DISABLE_TELEMETRY": "0",
-                                           "DISABLE_ERROR_REPORTING": "", "DISABLE_GROWTHBOOK": "false"}}
+                                           "DISABLE_ERROR_REPORTING": "", "DISABLE_GROWTHBOOK": "false",
+                                           "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "ENABLE_BETA_TRACING_DETAILED": "1"}}
                         # A real unrelated-setting change proves the watcher
                         # applied this edit. Startup-only checks cannot prove
                         # that the critical values survive a later reload.
@@ -752,6 +775,10 @@ def interactive(arguments, home, env):
 cases = [
     ("api-key-telemetry-on", None, False, None),
     ("api-key-telemetry-off", None, True, None),
+    ("pro-custom-diagnostics", "pro", False, "sign_in"),
+    ("pro-work-areas-edit", "pro", True, "sign_in"),
+    ("pro-work-areas-readonly", "pro", True, "sign_in"),
+    ("pro-missing-settings-trust", "pro", True, "sign_in"),
     ("pro-sign-in", "pro", True, "sign_in"),
     ("max-sign-in", "max", True, "sign_in"),
     ("team-positive-control", "team", True, "sign_in"),
@@ -815,6 +842,111 @@ try:
         config.mkdir(parents=True)
         (home / "tmp").mkdir()
         (home / "project").mkdir()
+        work_area_files, work_area_steps = [], []
+        work_area_absent = []
+        skill_mutations = []
+        if "work-areas" in name:
+            os_temp = "/tmp"
+            if platform.system() == "Darwin":
+                os_temp = subprocess.check_output(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], text=True).strip()
+            temporary = Path(tempfile.mkdtemp(prefix="aim-claude-work-areas-", dir="/tmp"))
+            user_temporary = Path(tempfile.mkdtemp(prefix="aim-claude-work-areas-", dir=os_temp))
+            work_area_temporary.extend([temporary, user_temporary])
+            screenshots = home / ("Desktop" if platform.system() == "Darwin" else "Pictures/Screenshots")
+            directories = [home / "workspace", home / "Downloads", screenshots, home / "selected-work"]
+            work_area_absent = [not directory.exists() for directory in directories]
+            (home / ".aimgr").mkdir(exist_ok=True)
+            (home / ".aimgr/config.yaml").write_text(json.dumps({"version": 1,
+                "claudeWorkingDirectories": [str(home / "selected-work")]}))
+            selected, sibling = home / "private-selection/exact.txt", home / "private-selection/sibling.txt"
+            selected.parent.mkdir()
+            selected.write_text("NATIVE_EXACT_SELECTED_FILE")
+            sibling.write_text("NATIVE_UNSELECTED_SIBLING")
+            for index, directory in enumerate([*directories, temporary, temporary.resolve(), user_temporary]):
+                file = directory / "late/nested/proof.txt"
+                marker = "NATIVE_WORK_AREA_" + str(index)
+                work_area_files.append((file, marker.encode()))
+                work_area_steps.append({"id": "work_area_read_" + str(index), "name": "Read", "input": {"file_path": str(file)}})
+            image = temporary / "late/screenshot.png"
+            work_area_files.append((image, base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=")))
+            work_area_steps.extend([
+                {"id": "work_area_image", "name": "Read", "input": {"file_path": str(image)}},
+                {"id": "work_area_exact", "name": "Read", "input": {"file_path": str(selected)}},
+                {"id": "work_area_sibling", "name": "Read", "input": {"file_path": str(sibling)}},
+                {"id": "work_area_edit_read", "name": "Read", "input": {"file_path": str(home / "project/edit.txt")}},
+                {"id": "work_area_edit", "name": "Edit", "input": {"file_path": str(home / "project/edit.txt"),
+                    "old_string": "NATIVE_EDIT_BEFORE", "new_string": "NATIVE_EDIT_AFTER"}},
+            ])
+            work_area_files.append((home / "project/edit.txt", b"NATIVE_EDIT_BEFORE"))
+            if name.endswith("edit"):
+                if a.skill_authoring_only:
+                    work_area_steps = []
+                skills = home / "project/.claude/skills"
+                skills.mkdir(parents=True)
+                external = home / "external-linked-skills"
+                external.mkdir()
+                settings_skills = home / "settings-listed-work/.claude"
+                settings_skills.mkdir(parents=True)
+                (settings_skills / "skills").symlink_to(external, target_is_directory=True)
+                (config / "settings.json").write_text(json.dumps({"permissions": {
+                    "additionalDirectories": [str(settings_skills.parent)]}}))
+                (skills / "unused-broken").symlink_to(home / "absent-unused-skill", target_is_directory=True)
+                for index, directory in enumerate([skills / "real", external]):
+                    directory.mkdir(exist_ok=True)
+                    for kind, before in [("edit", "NATIVE_SKILL_BEFORE"), ("repair", "---\nname: [malformed\n---\n")]:
+                        file = directory / kind / "SKILL.md"
+                        file.parent.mkdir()
+                        file.write_text(before)
+                        after = "---\nname: fixture-" + str(index) + "-" + kind + "\ndescription: Synthetic native mutation proof.\n---\nNATIVE_SKILL_AFTER\n"
+                        skill_mutations.append((file, after))
+                        work_area_steps.extend([
+                            {"id": "work_area_skill_read_" + str(index) + "_" + kind, "name": "Read", "input": {"file_path": str(file)}},
+                            {"id": "work_area_skill_" + kind + "_" + str(index), "name": "Edit", "input": {"file_path": str(file), "old_string": before, "new_string": after}},
+                        ])
+                    file = directory / "new/SKILL.md"
+                    after = "---\nname: fixture-new-" + str(index) + "\ndescription: Synthetic newly authored skill.\n---\nNATIVE_NEW_SKILL\n"
+                    skill_mutations.append((file, after))
+                    work_area_steps.append({"id": "work_area_skill_create_" + str(index), "name": "Write", "input": {"file_path": str(file), "content": after}})
+                background = home / "project/late-temp.py"
+                background.write_text('''import json,os,socket,subprocess,sys,tempfile,time
+from pathlib import Path
+project=Path(__file__).parent
+if len(sys.argv)==1:
+ subprocess.Popen([sys.executable,__file__,"child"],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+ print("LATE_TEMP_CHILD_STARTED")
+else:
+ deadline=time.time()+60
+ while not (project/"native-launch-exited").exists():
+  if time.time()>deadline:sys.exit(2)
+  time.sleep(.05)
+ # The first temp object and Unix socket are intentionally created only after
+ # the actual native invocation and its AIM launch parent have returned.
+ file=tempfile.NamedTemporaryFile(prefix="late-native-",delete=False);file.write(b"LATE_TEMP_CONTENT");file.close()
+ endpoint=os.path.join(tempfile.gettempdir(),"late-native-"+str(os.getpid())+".sock")
+ server=socket.socket(socket.AF_UNIX);server.bind(endpoint);server.listen(1)
+ client=socket.socket(socket.AF_UNIX);client.connect(endpoint);peer,_=server.accept();client.sendall(b"LATE_SOCKET_CONTENT")
+ result={"tmpdir":os.environ.get("TMPDIR"),"fileContent":Path(file.name).read_text(),"socketContent":peer.recv(128).decode(),"createdAfterNativeExit":True}
+ client.close();peer.close();server.close();os.unlink(endpoint);os.unlink(file.name)
+ (project/"late-temp-result.json").write_text(json.dumps(result))
+''')
+                work_area_steps.append({"id": "work_area_temp_background", "name": "Bash", "input": {
+                    "command": shlex.join(["/usr/bin/python3", str(background)]), "description": "Launch the retained late-temp child"}})
+        if "missing-settings-trust" in name:
+            future = home / "settings-work-not-checked-out/proof.txt"
+            settings_root_absent = not future.parent.exists()
+            trusted = home / "explicitly-trusted-project"
+            trusted.mkdir()
+            (trusted / "proof.txt").write_text("NATIVE_EXISTING_TRUSTED_ROOT")
+            private = home / "unselected-private"
+            private.mkdir()
+            (private / "proof.txt").write_text("NATIVE_UNSELECTED_PRIVATE_CONTENT")
+            dangling = home / "dangling-settings-root"
+            dangling.symlink_to(home / "absent-link-target", target_is_directory=True)
+            (config / "settings.json").write_text(json.dumps({"permissions": {"additionalDirectories":
+                [str(future.parent), "~", "..", str(home / ".aimgr"), str(dangling)]}}))
+            work_area_files = [(future, b"NATIVE_MISSING_SETTINGS_ROOT")]
+            work_area_steps = [{"id": "work_area_context_" + label, "name": "Read", "input": {"file_path": str(file)}}
+                for label, file in [("future", future), ("trusted", trusted / "proof.txt"), ("private", private / "proof.txt")]]
         if "dynamic-directory" in name or "startup-directory" in name:
             (home / "added-dir").mkdir()
             (home / "added-dir/proof.txt").write_text("NATIVE_DYNAMIC_DIRECTORY_CONTENT_CANARY\n")
@@ -826,6 +958,9 @@ try:
                  "theme": "dark", "numStartups": 10,
                  "projects": {str(home / "project"): {"hasTrustDialogAccepted": True,
                                                        "hasCompletedProjectOnboarding": True}}}
+        if "missing-settings-trust" in name:
+            for directory in [home, home.parent, Path("/"), home / ".aimgr", config.parent, home / "stale-trusted-project", trusted]:
+                state["projects"][str(directory)] = {"hasTrustDialogAccepted": True}
         if "detached-terminal" in name:
             state["defaultToAgentsView"] = True
             (config / "settings.json").write_text(json.dumps({"skipDangerousModePermissionPrompt": True, "disableAgentView": False,
@@ -842,6 +977,11 @@ try:
                "NODE_EXTRA_CA_CERTS": str(root / "ca.pem")}
         if a.disable_agent_view:
             env["CLAUDE_CODE_DISABLE_AGENT_VIEW"] = "1"
+        if "workflows" in name:
+            env.update(OTEL_SDK_DISABLED="false", OTEL_LOGS_EXPORTER="otlp", OTEL_METRICS_EXPORTER="otlp",
+                OTEL_TRACES_EXPORTER="otlp", OTEL_EXPORTER_OTLP_ENDPOINT=proxy)
+        if skill_mutations:
+            env["TMPDIR"] = str(temporary)
         if a.routed_aim and "workflows" not in name:
             env["NODE_EXTRA_CA_CERTS"] = str(home / "project/fixture-ca.pem")
         if opt_out:
@@ -856,6 +996,17 @@ try:
                 env.update(CLAUDE_CODE_ENABLE_TELEMETRY="1", OTEL_LOGS_EXPORTER="otlp", OTEL_METRICS_EXPORTER="otlp",
                     OTEL_TRACES_EXPORTER="none", OTEL_EXPORTER_OTLP_PROTOCOL="http/json",
                     OTEL_EXPORTER_OTLP_ENDPOINT=proxy, OTEL_LOGS_EXPORT_INTERVAL="100", OTEL_METRIC_EXPORT_INTERVAL="100")
+        if a.custom_diagnostics == "enhanced":
+            env.update(CLAUDE_CODE_ENABLE_TELEMETRY="1", CLAUDE_CODE_ENHANCED_TELEMETRY_BETA="1",
+                OTEL_LOGS_EXPORTER="otlp", OTEL_METRICS_EXPORTER="otlp", OTEL_TRACES_EXPORTER="otlp",
+                OTEL_EXPORTER_OTLP_PROTOCOL="http/json", OTEL_EXPORTER_OTLP_ENDPOINT=proxy,
+                OTEL_LOGS_EXPORT_INTERVAL="100", OTEL_METRIC_EXPORT_INTERVAL="100", OTEL_TRACES_EXPORT_INTERVAL="100")
+        elif a.custom_diagnostics == "beta":
+            # The reviewed beta pipeline runs before the normal telemetry
+            # enable gate. Prove this bypass independently with that gate off.
+            env.update(CLAUDE_CODE_ENABLE_TELEMETRY="0", ENABLE_BETA_TRACING_DETAILED="1",
+                BETA_TRACING_ENDPOINT=proxy, OTEL_LOGS_EXPORTER="none", OTEL_METRICS_EXPORTER="none",
+                OTEL_TRACES_EXPORTER="none")
         if a.poll_settings:
             # Isolate watcher transport from settings precedence. Some rental
             # Mac baseline runs report a working fs.watch probe but deliver no
@@ -943,6 +1094,19 @@ print(json.dumps(result))
             (config / "settings.json").write_text(json.dumps({"remoteControlAtStartup": name.endswith("saved")}))
         start = len(requests)
         arguments = [str(a.claude), "-p", "Reply SYNTHETIC_OK.", "--model", "sonnet"]
+        if "work-areas" in name:
+            arguments[2] = "Exercise the synthetic work-area sequence."
+            arguments += (["--dangerously-skip-permissions"] if a.skill_authoring_only else
+                ["--permission-mode", "plan" if name.endswith("readonly") else "acceptEdits"])
+            arguments += ["--max-turns", "36", "--allowedTools", *["Read(/" + str(directory) + "/**)" for directory in
+                    [*directories, temporary, temporary.resolve(), user_temporary, selected.parent]], "Read(/" + str(selected) + ")"]
+            if skill_mutations:
+                arguments += [tool + "(/" + str(directory) + "/**)"
+                    for directory in [skills, external] for tool in ["Read", "Edit", "Write"]]
+                arguments += ["Bash", "--disable-slash-commands"]
+        if "missing-settings-trust" in name:
+            arguments += ["--permission-mode", "plan", "--allowedTools", *["Read(/" + str(directory) + "/**)"
+                for directory in [future.parent, trusted, private]]]
         if "startup-directory" in name:
             arguments[2] = "Read the extra folder proof. NATIVE_ADDED_DIRECTORY."
             arguments += ["--add-dir", str(home / "added-dir")]
@@ -1048,12 +1212,48 @@ print(json.dumps(result))
                 out, err = child.communicate()
                 code = "timeout"
         (home / "output.private.txt").write_text(out + err)
+        late_temp = None
+        if skill_mutations:
+            (home / "project/native-launch-exited").write_text("returned")
+            deadline = time.time() + 5
+            while time.time() < deadline and not (home / "project/late-temp-result.json").exists():
+                time.sleep(.05)
+            result_file = home / "project/late-temp-result.json"
+            if result_file.exists():
+                late_temp = json.loads(result_file.read_text())
+                late_temp["callerTmpdirPreserved"] = late_temp.get("tmpdir") == str(temporary)
         captures = requests[start:]
+        work_area_results = {block["tool_use_id"]: block for r in captures if "/messages" in r["path"]
+            for message in r["body"].get("messages", []) if isinstance(message.get("content"), list)
+            for block in message["content"] if block.get("type") == "tool_result" and block.get("tool_use_id", "").startswith("work_area_")}
         stored = json.loads((config / ".credentials.json").read_text()).get("claudeAiOauth", {}) if plan else {}
         results.append({"case": name, "exit": code, "syntheticModelCompleted": code == 0 and "SYNTHETIC_OK" in out,
+                        "customDiagnostics": {"mode": a.custom_diagnostics,
+                            "logsRequests": sum(urlsplit(r["path"]).path == "/v1/logs" for r in captures),
+                            "metricsRequests": sum(urlsplit(r["path"]).path == "/v1/metrics" for r in captures),
+                            "tracesRequests": sum(urlsplit(r["path"]).path == "/v1/traces" for r in captures)},
+                        **({"nativeWorkAreas": {"permissionMode": "bypassPermissions" if a.skill_authoring_only else "plan" if name.endswith("readonly") else "acceptEdits",
+                            "defaultDirectoriesAbsentBeforeModel": work_area_absent,
+                            "editChanged": (home / "project/edit.txt").read_text() == "NATIVE_EDIT_AFTER",
+                            "disabledSkillMutations": [{"file": str(file.relative_to(home)),
+                                "matchesExpected": file.exists() and file.read_text() == after} for file, after in skill_mutations],
+                            "unusedBrokenSkillIgnored": not skill_mutations or (skills / "unused-broken").is_symlink(),
+                            "lateTempBackground": late_temp,
+                            "results": [{"id": step["id"], "tool": step["name"],
+                                "returned": step["id"] in work_area_results,
+                                "isError": work_area_results.get(step["id"], {}).get("is_error", False),
+                                "content": work_area_results.get(step["id"], {}).get("content", [])}
+                                for step in work_area_steps]}} if "work-areas" in name else {}),
+                        **({"nativeLaunchContext": {"settingsRootAbsentAtLaunch": settings_root_absent,
+                            "results": [{"id": step["id"], "returned": step["id"] in work_area_results,
+                                "isError": work_area_results.get(step["id"], {}).get("is_error", False),
+                                "content": work_area_results.get(step["id"], {}).get("content", [])} for step in work_area_steps]}}
+                            if "missing-settings-trust" in name else {}),
                         "requestPaths": sorted(set(urlsplit(r["path"]).path for r in captures)),
                         "modelRequests": sum("/messages" in r["path"] for r in captures),
                         "modelSources": sorted(set(r["source"] for r in captures if "/messages" in r["path"])),
+                        **({"nativeToolOtelEnvironment": (home / "project/task-otel-env.txt").read_text().splitlines()}
+                           if (home / "project/task-otel-env.txt").exists() else {}),
                         **({"errorLifecycle": {
                             "nativeErrorBatches": sum("browser-intake-us5-datadoghq.com" in r["host"] and r["path"].startswith("/api/v2/logs") for r in captures),
                             "nativeErrorCanaryUploaded": any("browser-intake-us5-datadoghq.com" in r["host"] and "AIM_ERROR_PROBE" in json.dumps(r["body"]) for r in captures),
@@ -1094,7 +1294,7 @@ print(json.dumps(result))
                             "initialValues": [next((value for key, value in r["headers"].items() if key.lower() == "x-aim-initial"), None) for r in captures if "/messages" in r["path"]],
                             "competingAuthSent": any(any(key.lower() == "authorization" and "SYNTHETIC_HEADER_OVERRIDE" in value for key, value in r["headers"].items()) for r in captures),
                             "unrelatedSettingReloaded": any("HEADER_LIVE_SETTING_after" in json.dumps(r["body"]) for r in captures if "/messages" in r["path"]),
-                            "criticalSettingsStayedPinned": any("CRITICAL_LIVE_SETTINGS_1_1_1_1_1" in json.dumps(r["body"]) for r in captures if "/messages" in r["path"]),
+                            "criticalSettingsStayedPinned": any("CRITICAL_LIVE_SETTINGS_1_1_1_1_1_0_0" in json.dumps(r["body"]) for r in captures if "/messages" in r["path"]),
                         }} if "headers-reload" in name else {}),
                         **terminal,
                         "terminalCanaryInModel": any(TERMINAL_CANARY in captured_text(r) for r in captures if "/messages" in r["path"]),
@@ -1112,11 +1312,14 @@ print(json.dumps(result))
                         **({"httpMcp": json.loads((home / "http-mcp.json").read_text())} if (home / "http-mcp.json").exists() else {}),
                         "connectAuthorities": sorted(set(r["authority"] for r in connections if r["case"] == name))})
 finally:
+    for directory in work_area_temporary:
+        shutil.rmtree(directory, ignore_errors=True)
     cleanup_route()
     atexit.unregister(cleanup_route)
     server.shutdown()
     server.server_close()
 report = {"integratedAim": a.integrated_aim, "mode": a.privacy_mode, "actualNativeRoute": a.routed_aim, "platform": platform.system(), "artifactSha256": digest, "results": results,
+          "customDiagnostics": a.custom_diagnostics,
           "disableAgentView": a.disable_agent_view, "backgroundReview": a.background_review,
           "settingsWatcherPollingDiagnostic": a.poll_settings,
           "remoteControlPolicyOnlyComparison": a.rc_policy_only,

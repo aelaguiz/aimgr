@@ -1,0 +1,501 @@
+{
+  "schema": 1,
+  "observedAt": "2026-11-05T18:19:42Z",
+  "method": "Read-only Python stdlib filesystem metadata, selected wrapper text, whitelisted package.json/Info.plist/approval.json/policy.json fields, and git rev-parse/branch; no vendor binaries executed.",
+  "limits": [
+    "Candidates describe inspected launch wrappers and symlink targets, not every interactive PATH or already-running process.",
+    "Claude native symlink versions are filename evidence, not fresh code-signature or digest admission.",
+    "Home/sidecar counts count filesystem directories and filenames only; no credential validity, raw identity, account uniqueness, activity, or migration completeness inferred.",
+    "Absent desktop applications means absent only at the four exact Info.plist paths listed for that host; no broader app search or IDE inventory.",
+    "No credentials, auth files, identity values, browser profiles/cookies, transcript contents, user environment values or Redis records were read.",
+    "No route health, DNS leak, egress or authenticated vendor requests were performed.",
+    "Artifact hash in the M5 paths identifies public executable bundle content; it is not a private machine/account identifier."
+  ],
+  "testRecordVersions": {
+    "Claude": "2.1.317",
+    "Codex": "0.166.0",
+    "source": "Parent brief; test evidence reviewed by sibling workers, not runtime executions in this receipt."
+  },
+  "hosts": [
+    {
+      "approvedClaudeManifest": {
+        "selectorPath": "/opt/aimgr-claude-runtime/active.json",
+        "present": true,
+        "approvalPath": "/opt/aimgr-claude-runtime/artifacts/5f6659f45473d3a6bbfd14669d802898a4d38c5a2b439127c5f0ee1283dfdf4d/approval.json",
+        "policyPath": "/opt/aimgr-claude-runtime/artifacts/5f6659f45473d3a6bbfd14669d802898a4d38c5a2b439127c5f0ee1283dfdf4d/policy.json",
+        "version": "2.1.317",
+        "platform": "darwin",
+        "arch": "arm64",
+        "vendorCommit": "3d3e7cb16b55"
+      },
+      "proxyProfiles": {
+        "directory": "/opt/aimgr-claude-proxy",
+        "jsonFileCount": 5
+      },
+      "codexSystemPolicy": {
+        "/etc/codex/managed_config.toml": false,
+        "/etc/codex/requirements.toml": false
+      },
+      "desktopInspectionScope": [
+        "/Applications/Claude.app/Contents/Info.plist",
+        "~/Applications/Claude.app/Contents/Info.plist",
+        "/Applications/Codex.app/Contents/Info.plist",
+        "~/Applications/Codex.app/Contents/Info.plist"
+      ],
+      "aimSelectedSource": {
+        "launcherPath": "~/.local/bin/aim",
+        "entrypoint": "~/.local/share/aimgr/releases/93db27e-claude-pool-status/bin/aimgr.js",
+        "sourceRoot": "~/.local/share/aimgr/releases/93db27e-claude-pool-status",
+        "releaseName": "93db27e-claude-pool-status",
+        "correspondingMainCommit": "93db27ed990c505ec55f980ed61f2af42411c9b7",
+        "privacyIdentitySourcePresent": true,
+        "privacyArtifactSourcePresent": true
+      },
+      "claudeCli": {
+        "candidate": "~/.local/bin/claude",
+        "target": "/opt/aimgr-claude-runtime/artifacts/5f6659f45473d3a6bbfd14669d802898a4d38c5a2b439127c5f0ee1283dfdf4d/claude",
+        "version": "2.1.317",
+        "versionEvidence": "approved manifests"
+      },
+      "codexCli": {
+        "candidate": "/opt/homebrew/bin/codex",
+        "target": "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js",
+        "packagePath": "/opt/homebrew/lib/node_modules/@openai/codex/package.json",
+        "version": "0.163.0-alpha.5"
+      },
+      "claudeHomeShape": {
+        "root": "~/.aimgr/claude-homes",
+        "directories": 46,
+        "nativeAppStateFilenameCount": 44,
+        "nativeAuthFilenameCount": 44,
+        "privacyIdentitySidecarCount": 2,
+        "checkedRelativeFilenames": [
+          ".claude/.claude.json",
+          ".claude/.credentials.json",
+          ".claude/.aim-privacy-identity.json"
+        ]
+      },
+      "codexManagedHome": {
+        "path": "~/.aimgr/codex-cli",
+        "present": true,
+        "checkedSymlinkEntries": [
+          {
+            "name": "config.toml",
+            "target": "~/.codex/config.toml"
+          },
+          {
+            "name": "AGENTS.md",
+            "target": "~/.codex/AGENTS.md"
+          },
+          {
+            "name": "skills",
+            "target": "~/.codex/skills"
+          },
+          {
+            "name": "sessions",
+            "target": "~/.codex/sessions"
+          },
+          {
+            "name": "state_5.sqlite",
+            "target": "~/.codex/state_5.sqlite"
+          },
+          {
+            "name": "models_cache.json",
+            "target": "~/.codex/models_cache.json"
+          },
+          {
+            "name": "plugins",
+            "target": "~/.codex/plugins"
+          },
+          {
+            "name": ".credentials.json",
+            "target": "~/.codex/.credentials.json"
+          },
+          {
+            "name": "memories",
+            "target": "~/.codex/memories"
+          }
+        ],
+        "checkedRegularEntries": [
+          "auth.json",
+          "installation_id"
+        ]
+      },
+      "desktop": [
+        {
+          "app": "Claude",
+          "path": "/Applications/Claude.app/Contents/Info.plist",
+          "version": "4.16336.0",
+          "build": "4.16336.0"
+        }
+      ],
+      "hostNickname": "M5"
+    },
+    {
+      "approvedClaudeManifest": {
+        "selectorPath": "/opt/aimgr-claude-runtime/active.json",
+        "present": false
+      },
+      "proxyProfiles": {
+        "directory": "/opt/aimgr-claude-proxy",
+        "jsonFileCount": 0
+      },
+      "codexSystemPolicy": {
+        "/etc/codex/managed_config.toml": false,
+        "/etc/codex/requirements.toml": false
+      },
+      "desktopInspectionScope": [
+        "/Applications/Claude.app/Contents/Info.plist",
+        "~/Applications/Claude.app/Contents/Info.plist",
+        "/Applications/Codex.app/Contents/Info.plist",
+        "~/Applications/Codex.app/Contents/Info.plist"
+      ],
+      "aimSelectedSource": {
+        "launcherPath": "~/.local/bin/aim",
+        "entrypoint": "~/workspace/aimgr/bin/aimgr.js",
+        "sourceRoot": "~/workspace/aimgr",
+        "branch": "main",
+        "commit": "354be9e3ed8e3803869c3a732ec8cfd12a20b21d",
+        "privacyIdentitySourcePresent": false,
+        "privacyArtifactSourcePresent": false
+      },
+      "claudeCli": {
+        "candidate": "~/.local/bin/claude",
+        "target": "~/.local/share/claude/versions/2.1.318",
+        "version": "2.1.318",
+        "versionEvidence": "symlink version path"
+      },
+      "codexCli": {
+        "candidate": "~/.local/bin/codex",
+        "wrapper": true,
+        "target": "~/.nvm/versions/node/v22.22.3/lib/node_modules/@openai/codex/bin/codex.js",
+        "packagePath": "~/.nvm/versions/node/v22.22.3/lib/node_modules/@openai/codex/package.json",
+        "version": "0.161.0-alpha.4"
+      },
+      "claudeHomeShape": {
+        "root": "~/.aimgr/claude-homes",
+        "directories": 34,
+        "nativeAppStateFilenameCount": 34,
+        "nativeAuthFilenameCount": 34,
+        "privacyIdentitySidecarCount": 0,
+        "checkedRelativeFilenames": [
+          ".claude/.claude.json",
+          ".claude/.credentials.json",
+          ".claude/.aim-privacy-identity.json"
+        ]
+      },
+      "codexManagedHome": {
+        "path": "~/.aimgr/codex-cli",
+        "present": false
+      },
+      "desktop": [],
+      "hostNickname": "Home"
+    },
+    {
+      "approvedClaudeManifest": {
+        "selectorPath": "/opt/aimgr-claude-runtime/active.json",
+        "present": false
+      },
+      "proxyProfiles": {
+        "directory": "/opt/aimgr-claude-proxy",
+        "jsonFileCount": 0
+      },
+      "codexSystemPolicy": {
+        "/etc/codex/managed_config.toml": false,
+        "/etc/codex/requirements.toml": false
+      },
+      "desktopInspectionScope": [
+        "/Applications/Claude.app/Contents/Info.plist",
+        "~/Applications/Claude.app/Contents/Info.plist",
+        "/Applications/Codex.app/Contents/Info.plist",
+        "~/Applications/Codex.app/Contents/Info.plist"
+      ],
+      "aimSelectedSource": {
+        "launcherPath": "~/.local/bin/aim",
+        "entrypoint": "~/workspace/aimgr/bin/aimgr.js",
+        "sourceRoot": "~/workspace/aimgr",
+        "branch": "main",
+        "commit": "354be9e3ed8e3803869c3a732ec8cfd12a20b21d",
+        "privacyIdentitySourcePresent": false,
+        "privacyArtifactSourcePresent": false
+      },
+      "claudeCli": {
+        "candidate": "~/.local/bin/claude",
+        "target": "~/.local/share/claude/versions/2.1.306",
+        "version": "2.1.306",
+        "versionEvidence": "symlink version path"
+      },
+      "codexCli": {
+        "candidate": "~/.local/bin/codex",
+        "target": "~/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/bin/codex.js",
+        "packagePath": "~/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/package.json",
+        "version": "0.163.0-alpha.5"
+      },
+      "claudeHomeShape": {
+        "root": "~/.aimgr/claude-homes",
+        "directories": 26,
+        "nativeAppStateFilenameCount": 26,
+        "nativeAuthFilenameCount": 26,
+        "privacyIdentitySidecarCount": 0,
+        "checkedRelativeFilenames": [
+          ".claude/.claude.json",
+          ".claude/.credentials.json",
+          ".claude/.aim-privacy-identity.json"
+        ]
+      },
+      "codexManagedHome": {
+        "path": "~/.aimgr/codex-cli",
+        "present": true,
+        "checkedSymlinkEntries": [
+          {
+            "name": "config.toml",
+            "target": "~/.codex/config.toml"
+          },
+          {
+            "name": "AGENTS.md",
+            "target": "~/.codex/AGENTS.md"
+          },
+          {
+            "name": "skills",
+            "target": "~/.codex/skills"
+          },
+          {
+            "name": "sessions",
+            "target": "~/.codex/sessions"
+          },
+          {
+            "name": "state_5.sqlite",
+            "target": "~/.codex/state_5.sqlite"
+          },
+          {
+            "name": "models_cache.json",
+            "target": "~/.codex/models_cache.json"
+          },
+          {
+            "name": "plugins",
+            "target": "~/.codex/plugins"
+          },
+          {
+            "name": ".credentials.json",
+            "target": "~/.codex/.credentials.json"
+          },
+          {
+            "name": "memories",
+            "target": "~/.codex/memories"
+          }
+        ],
+        "checkedRegularEntries": [
+          "auth.json",
+          "installation_id"
+        ]
+      },
+      "desktop": [],
+      "hostNickname": "Studio"
+    },
+    {
+      "approvedClaudeManifest": {
+        "selectorPath": "/opt/aimgr-claude-runtime/active.json",
+        "present": false
+      },
+      "proxyProfiles": {
+        "directory": "/opt/aimgr-claude-proxy",
+        "jsonFileCount": 0
+      },
+      "codexSystemPolicy": {
+        "/etc/codex/managed_config.toml": false,
+        "/etc/codex/requirements.toml": false
+      },
+      "desktopInspectionScope": [
+        "/Applications/Claude.app/Contents/Info.plist",
+        "~/Applications/Claude.app/Contents/Info.plist",
+        "/Applications/Codex.app/Contents/Info.plist",
+        "~/Applications/Codex.app/Contents/Info.plist"
+      ],
+      "aimSelectedSource": {
+        "launcherPath": "~/.local/bin/aim",
+        "entrypoint": "~/workspace/aimgr/bin/aimgr.js",
+        "sourceRoot": "~/workspace/aimgr",
+        "branch": "main",
+        "commit": "354be9e3ed8e3803869c3a732ec8cfd12a20b21d",
+        "privacyIdentitySourcePresent": false,
+        "privacyArtifactSourcePresent": false
+      },
+      "claudeCli": {
+        "candidate": "~/.local/bin/claude",
+        "target": "~/.local/share/claude/versions/2.1.318",
+        "version": "2.1.318",
+        "versionEvidence": "symlink version path"
+      },
+      "codexCli": {
+        "candidate": "~/.local/bin/codex",
+        "target": "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js",
+        "packagePath": "/opt/homebrew/lib/node_modules/@openai/codex/package.json",
+        "version": "0.164.0"
+      },
+      "claudeHomeShape": {
+        "root": "~/.aimgr/claude-homes",
+        "directories": 42,
+        "nativeAppStateFilenameCount": 42,
+        "nativeAuthFilenameCount": 42,
+        "privacyIdentitySidecarCount": 0,
+        "checkedRelativeFilenames": [
+          ".claude/.claude.json",
+          ".claude/.credentials.json",
+          ".claude/.aim-privacy-identity.json"
+        ]
+      },
+      "codexManagedHome": {
+        "path": "~/.aimgr/codex-cli",
+        "present": true,
+        "checkedSymlinkEntries": [
+          {
+            "name": "config.toml",
+            "target": "~/.codex/config.toml"
+          },
+          {
+            "name": "AGENTS.md",
+            "target": "~/.codex/AGENTS.md"
+          },
+          {
+            "name": "skills",
+            "target": "~/.codex/skills"
+          },
+          {
+            "name": "sessions",
+            "target": "~/.codex/sessions"
+          },
+          {
+            "name": "state_5.sqlite",
+            "target": "~/.codex/state_5.sqlite"
+          },
+          {
+            "name": "models_cache.json",
+            "target": "~/.codex/models_cache.json"
+          },
+          {
+            "name": "plugins",
+            "target": "~/.codex/plugins"
+          },
+          {
+            "name": ".credentials.json",
+            "target": "~/.codex/.credentials.json"
+          },
+          {
+            "name": "memories",
+            "target": "~/.codex/memories"
+          }
+        ],
+        "checkedRegularEntries": [
+          "auth.json",
+          "installation_id"
+        ]
+      },
+      "desktop": [],
+      "hostNickname": "M3 Max"
+    },
+    {
+      "approvedClaudeManifest": {
+        "selectorPath": "/opt/aimgr-claude-runtime/active.json",
+        "present": false
+      },
+      "proxyProfiles": {
+        "directory": "/opt/aimgr-claude-proxy",
+        "jsonFileCount": 0
+      },
+      "codexSystemPolicy": {
+        "/etc/codex/managed_config.toml": false,
+        "/etc/codex/requirements.toml": false
+      },
+      "desktopInspectionScope": [
+        "/Applications/Claude.app/Contents/Info.plist",
+        "~/Applications/Claude.app/Contents/Info.plist",
+        "/Applications/Codex.app/Contents/Info.plist",
+        "~/Applications/Codex.app/Contents/Info.plist"
+      ],
+      "aimSelectedSource": {
+        "launcherPath": "~/.local/bin/aim",
+        "entrypoint": "~/workspace/aimgr/bin/aimgr.js",
+        "sourceRoot": "~/workspace/aimgr",
+        "branch": "main",
+        "commit": "354be9e3ed8e3803869c3a732ec8cfd12a20b21d",
+        "privacyIdentitySourcePresent": false,
+        "privacyArtifactSourcePresent": false
+      },
+      "claudeCli": {
+        "candidate": "~/.local/bin/claude",
+        "target": "~/.local/share/claude/versions/2.1.284",
+        "version": "2.1.284",
+        "versionEvidence": "symlink version path"
+      },
+      "codexCli": {
+        "candidate": "~/.local/bin/codex",
+        "target": "~/.local/share/node-v25.9.0-darwin-arm64/lib/node_modules/@openai/codex/bin/codex.js",
+        "packagePath": "~/.local/share/node-v25.9.0-darwin-arm64/lib/node_modules/@openai/codex/package.json",
+        "version": "0.164.0"
+      },
+      "claudeHomeShape": {
+        "root": "~/.aimgr/claude-homes",
+        "directories": 7,
+        "nativeAppStateFilenameCount": 7,
+        "nativeAuthFilenameCount": 7,
+        "privacyIdentitySidecarCount": 0,
+        "checkedRelativeFilenames": [
+          ".claude/.claude.json",
+          ".claude/.credentials.json",
+          ".claude/.aim-privacy-identity.json"
+        ]
+      },
+      "codexManagedHome": {
+        "path": "~/.aimgr/codex-cli",
+        "present": true,
+        "checkedSymlinkEntries": [
+          {
+            "name": "config.toml",
+            "target": "~/.codex/config.toml"
+          },
+          {
+            "name": "AGENTS.md",
+            "target": "~/.codex/AGENTS.md"
+          },
+          {
+            "name": "skills",
+            "target": "~/.codex/skills"
+          },
+          {
+            "name": "sessions",
+            "target": "~/.codex/sessions"
+          },
+          {
+            "name": "state_5.sqlite",
+            "target": "~/.codex/state_5.sqlite"
+          },
+          {
+            "name": "models_cache.json",
+            "target": "~/.codex/models_cache.json"
+          },
+          {
+            "name": "plugins",
+            "target": "~/.codex/plugins"
+          },
+          {
+            "name": ".credentials.json",
+            "target": "~/.codex/.credentials.json"
+          }
+        ],
+        "checkedRegularEntries": [
+          "auth.json",
+          "installation_id"
+        ]
+      },
+      "desktop": [
+        {
+          "app": "Codex",
+          "path": "/Applications/Codex.app/Contents/Info.plist",
+          "version": "26.623.141536",
+          "build": "4753"
+        }
+      ],
+      "hostNickname": "M3 36 GB"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { assertClaudeCredentialExportable } from "../credentials/claude-local.js";
 import { resolveOpenclawProfileIdForProviderLabel } from "../browser/seed.js";
 import { parseExpiresAtToMs } from "../core/time.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
@@ -50,6 +51,7 @@ export function applyOpenclawFromState(params, state, { pinsOverride, managedAge
       throw new Error(`OpenClaw assignment references unsupported provider: agent=${agentId} label=${label} provider=${provider}`);
     }
     const credsByLabel = state.credentials[provider];
+    if (provider === "anthropic") assertClaudeCredentialExportable(credsByLabel?.[label]);
     if (!isObject(credsByLabel?.[label])) {
       throw new Error(`OpenClaw assignment references label with missing credentials: agent=${agentId} label=${label} provider=${provider}`);
     }
@@ -64,6 +66,7 @@ export function applyOpenclawFromState(params, state, { pinsOverride, managedAge
     const labels = Array.from(assignedLabelsByProvider.get(provider)).toSorted((a, b) => a.localeCompare(b));
     const credsByLabel = state.credentials[provider];
     for (const label of labels) {
+      if (provider === "anthropic") assertClaudeCredentialExportable(credsByLabel?.[label]);
       const storedCredential = credsByLabel[label];
       const cred = provider === ANTHROPIC_PROVIDER
         ? getAnthropicCredentialView(storedCredential)

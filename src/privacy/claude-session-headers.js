@@ -127,21 +127,12 @@ export function claudeLocalSettingsRoot(cwd, home) {
   return root;
 }
 
-/** Pin the initially effective complete string below immutable machine policy.
- * Later tiers replace, never concatenate, header strings. Empty wins. Only the
- * exact uppercase key matters in ordinary POSIX settings. App-state env uses
- * a primitive-only filter; ordinary settings instead use String coercion.
- *
- * User accepted new-session changes for this key only. Normal settings remain
- * in their original live files. The pin also travels in native child settings
- * snapshots, preserving the account selected by the admitted root launch.
- */
-export async function resolveClaudeSessionHeaders({ args, cwd, configDir, userHomeDir,
-  composition, env, appState, sourceAccepted, stdoutIsTTY = Boolean(process.stdout.isTTY) }) {
-  if (has(composition.settings) && !String(composition.settings.env[KEY]).includes("\0")) {
-    return checked(composition.settings.env[KEY]);
-  }
-  const parsed = inspectClaudeArguments(args), values = parsed.optionValues;
+/** Reuse the pinned disk-tier selector for headers and explicit file grants.
+ * This returns native source files; it does not rewrite settings or decide
+ * their schema validity, permission mode or project trust. */
+export function claudeNativeSettingsFiles({ parsed, cwd, configDir, userHomeDir, env = {},
+  stdoutIsTTY = Boolean(process.stdout.isTTY) }) {
+  const values = parsed.optionValues;
   const directory = fs.realpathSync(path.resolve(cwd, values["--cwd"]?.at(-1) ?? "."));
   const projectOption = values["--project-config-root"]?.at(-1);
   const project = projectOption === undefined ? directory : path.resolve(directory, projectOption);
@@ -165,6 +156,25 @@ export async function resolveClaudeSessionHeaders({ args, cwd, configDir, userHo
     if (projectOption === undefined && local !== directory) sources.push(path.join(directory, ".claude/settings.local.json"));
     sources.push(path.join(local, ".claude/settings.local.json"));
   }
+  return sources;
+}
+
+/** Pin the initially effective complete string below immutable machine policy.
+ * Later tiers replace, never concatenate, header strings. Empty wins. Only the
+ * exact uppercase key matters in ordinary POSIX settings. App-state env uses
+ * a primitive-only filter; ordinary settings instead use String coercion.
+ *
+ * User accepted new-session changes for this key only. Normal settings remain
+ * in their original live files. The pin also travels in native child settings
+ * snapshots, preserving the account selected by the admitted root launch.
+ */
+export async function resolveClaudeSessionHeaders({ args, cwd, configDir, userHomeDir,
+  composition, env, appState, sourceAccepted, stdoutIsTTY = Boolean(process.stdout.isTTY) }) {
+  if (has(composition.settings) && !String(composition.settings.env[KEY]).includes("\0")) {
+    return checked(composition.settings.env[KEY]);
+  }
+  const sources = claudeNativeSettingsFiles({ parsed: inspectClaudeArguments(args), cwd, configDir,
+    userHomeDir, env, stdoutIsTTY });
   for (const file of sources.reverse()) {
     const stat = optional(file);
     if (!stat?.isFile() || stat.size > 2 * 1024 * 1024) continue;

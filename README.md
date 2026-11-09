@@ -11,9 +11,9 @@ The shared source of truth is Redis Cloud Essentials. Every configured host, inc
 - Legacy `~/.aimgr/secrets.json`: old artifact only; runtime commands ignore it
 
 Redis holds shared account metadata and credentials for the legacy harnesses.
-Codex CLI keeps its primary login and refresh tokens in the environment where
-that account signed in; those tokens are never Redis projections. There is no
-Redis VM or container to maintain.
+Managed Claude and Codex keep their primary login and refresh tokens in the
+environment where each account signed in; those tokens are not Redis projections.
+There is no Redis VM or container to maintain.
 
 ## Setup
 
@@ -27,10 +27,12 @@ last commit that passed if either fails. The installer:
 1. Builds a fixed release from the checkout's commit in
    `~/.local/share/aimgr/releases/<commit>`, with its own `npm ci`. Uncommitted edits never go
    live, and pulling `main` changes nothing until the new release has installed.
-2. Activates the newest normal-use approved Claude runtime in
-   `~/.local/share/aimgr/runtime-bundles/` when the active one is older or this release can't use
-   it. A Mac keeps its running sessions. Linux refuses while any Claude session runs, and the
-   installer never stops one.
+2. Activates the newest normal-use approved bundle for each of Claude and Codex in
+   `~/.local/share/aimgr/runtime-bundles/` when its active runtime is older or unavailable.
+   Codex activation also installs its administrator privacy policy. Claude's machine-local
+   environment identity is created if missing and preserved on subsequent installs, including
+   when its bundle does not need activation. A Mac keeps its running sessions. Linux Claude
+   activation refuses while any Claude session runs; the installer never stops one.
 3. Points `aim` and `aimgr` at the release with `scripts/install-local-bin.sh`.
 4. Copies the release's skills into `~/.agents/skills`, linked from `~/.claude/skills`.
 5. Runs AI Manager's launchd services through `aim`, restarts the long-running ones, and links
@@ -84,9 +86,9 @@ aim redis snapshot
 
 Use `aim redis export --out <snapshot.json>` for a reviewable backup. A reviewed snapshot can seed a
 new Redis prefix with `aim redis import --in <snapshot.json>`. Generic import accepts Claude policy-only
-candidate records, but rejects Claude credential and identity material. Complete Claude credentials
-enter Redis through contained `aim login <label>`, or through the per-label leased
-`aim claude capture-native` and `aim claude import-native` boundaries.
+candidate records, but rejects Claude credential and identity material. Managed Claude primary
+credentials stay local. The separate legacy Prime/Pi Anthropic login remains Redis-backed and uses
+`aim login <label> --provider anthropic`.
 
 ## Runtime Commands
 
@@ -107,7 +109,7 @@ bash scripts/install-auth-maintainer.sh
 bash scripts/install-auth-maintainer.sh --uninstall
 ```
 
-Codex maintenance uses only logins authorized in this environment; it never retrieves or refreshes legacy shared Codex tokens. Claude and Grok retain their existing maintenance behavior.
+`aim auth maintain` handles local Claude and Codex logins and shared xAI credentials. Prime/Pi Anthropic credentials refresh on demand through their separate legacy path.
 
 
 Redis administration and repair:
@@ -184,6 +186,8 @@ aim codex logout <label>
 aim codex mcp-migrate
 aim codex mcp-recover
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
+aim claude login <label> [--email <email>] [--proxy <profileRef>] [--manual-callback-stdio]
+aim claude logout <label>
 aim claude inventory [--json]
 aim claude status [account...] [--fresh] [--verbose] [--json]
 aim claude usage [account...] [--fresh] [--verbose] [--json]
@@ -192,9 +196,6 @@ aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-acc
 aim claude run (opus|fable|sonnet) [--resume]
 aim claude run <label> (opus|fable|sonnet) [--resume]
 aim claude run <label> [-- <claude args...>]
-aim claude capture-native <label> [--source-home <dir>] [--source-config-dir <dir>]
-aim claude export-live --out <file> [--source-home <dir>]
-aim claude import-native <label> --in <file>
 aim pi use
 # Explicit provider bindings; omitted providers remain unchanged
 aim pi use --codex <auto|label|off> --claude <fable|opus|sonnet|label|off>
@@ -298,7 +299,32 @@ MCP servers and developer tools keep their normal OS permissions; the vendor
 file policy does not impose a blanket sandbox on those tools. Files within an
 approved working directory are readable regardless of their contents.
 
-Claude proxy protection is optional and configured per account. Accounts without
+Managed Claude primary login is local to each machine. Run `aim claude login <label>`
+on every machine where that account is used; `aim claude logout <label>` removes that
+machine’s primary login. For a new label with an assigned proxy, select its existing
+profile with `aim claude login <label> --email <email> --proxy <profileRef>`.
+`--manual-callback-stdio` supports the original browser on another host. An existing
+proxy assignment cannot be changed by login. `aim login <label> --provider anthropic`
+is the separate legacy Prime/Pi enrollment and does not enroll managed Claude.
+Existing label homes, history, settings and third-party credentials remain in place.
+
+For a remote machine whose browser is on the original host, run
+`aim claude login <label> --manual-callback-stdio` on the destination. A new
+label also needs `--email <email>` and, when assigned, `--proxy <profileRef>`.
+The command emits a JSON line with `type: "auth_url"` and a URL. Validate the
+original browser profile and assigned route on the browser host, then open that
+URL there. Return the complete native callback privately to the destination as
+one JSON line on stdin: `{"url":"<callback URL>"}` or
+`{"code":"<native code#state>"}`. The destination validates the callback and
+its native Claude process completes the exchange. Keep the URL and callback out
+of shell history and shared logs; do not copy browser state or primary tokens.
+The command emits a result or error as JSON and times out after five minutes.
+
+Prime/Pi's legacy Anthropic helper may refresh its separate Redis-backed grant
+on demand when the token is due or rejected. That maintenance uses a separate
+legacy home and does not refresh or export the managed Claude primary login.
+
+Claude proxy routing is optional and configured per account. Accounts without
 an assignment do not need proxy infrastructure, Chrome/CDP bindings or route
 helpers. All AIM-managed Claude executions require an explicitly approved exact
 Claude runtime; `aim claude privacy status [account] [--json]` inspects the selected
@@ -319,7 +345,7 @@ code in place: active sessions, SSH tunnels and network adapters keep running.
 Changing proxy assignments still requires the affected work to stop.
 
 `aim status` and `aim claude status` show each Claude account's assigned proxy
-(`none` for ordinary accounts) and its current native service health: `running`,
+(`none` for accounts without an assigned proxy) and its current native service health: `running`,
 `stopped`, `starting`, `not installed`, or `unknown`. A stopped service displays
 `PROXY DOWN` and `restart assigned proxy` instead of `READY / use now`. The JSON
 field is `egress.health`; local health is checked again even when usage or Redis
@@ -341,14 +367,20 @@ After enrollment, use the normal commands and schedules without a daily proxy
 flag. The plan also records the telemetry opt-outs, acceptance tests and verified
 platform limits.
 
-The [Claude privacy implementation plan](docs/aelaguiz/CLAUDE_PRIVACY_IMPLEMENTATION_PLAN_2026-11-01.md)
-adds private installation IDs and scoped vendor file/device access for protected
-accounts. It preserves native tools, skills, MCP, concurrent sessions, history and
-scheduled work, normal background Bash and local subagents. Every AIM Claude
-session disables detached conversations/agent view, Remote Control and remote feature flags, prevents unapproved updates, and fixes custom HTTP headers
-at startup. Header edits take effect in a new session. Protected sessions also
-require a new session for folders outside their initial project/`--add-dir` grants.
-Ordinary accounts retain their normal filesystem access and telemetry environment.
+The [per-machine Claude plan](docs/CLAUDE_PER_MACHINE_PRIVACY_AND_LOGIN_2026-11-07.md)
+applies private installation IDs and scoped vendor file/device access to all managed
+Claude sessions, whether direct or proxied. It preserves native tools, skills, MCP,
+concurrent sessions, history, scheduled work, normal background Bash and local
+subagents. Managed sessions disable detached conversations/agent view, Remote Control
+and remote feature flags, prevent unapproved updates, and fix custom HTTP headers
+at startup. Header edits and newly selected outside paths take effect in a new session.
+The default working areas include workspace, temp, Downloads and screenshots, along
+with previously trusted projects and configured or explicitly selected directories.
+Configure additional roots with `claudeWorkingDirectories` in `~/.aimgr/config.yaml`.
+Claude-specific telemetry, error reporting and detailed tracing are disabled; AIM
+preserves generic `OTEL_*` settings in Claude's launch environment. Claude 2.1.317
+itself removes them from ordinary child processes. Collector acceptance is tracked in
+the plan.
 On macOS, Claude's privacy sandbox ends when it executes an ordinary tool.
 Shells, Chrome, MCP servers and their children retain normal host access;
 direct Claude self-spawns retain Claude's restrictions. Assigned proxy routing
@@ -668,10 +700,9 @@ calls, errors, and the input box are visible while the task runs. You can interr
 or give further instructions without waiting for completion. The same process
 stays open for follow-up; there is no print-mode run or resume handoff.
 
-Account isolation, credential leases, native identity preflight, user
-skills/hooks/plugins, and token rotation use the same managed launcher as
-`aim claude run`. The account lease stays held for the interactive session;
-later occurrences may share its account on the same machine. Redis must be reachable for
+Account isolation, local authentication, native identity preflight and user
+skills/hooks/plugins use the same managed launcher as `aim claude run`. Later
+occurrences may share an account on the same machine. Redis must be reachable for
 selection. No eligible account fails before prompt submission. The configured
 project's existing trust decision in your normal Claude config carries over to
 the selected account, so MCP header helpers retain that permission. AIM also
@@ -686,9 +717,8 @@ Later messages and background notifications do not invalidate the prompt.
 Completion or a native API failure releases the job's overlap lock while the
 interactive session stays available. Observation errors and the two-hour
 observation deadline flag attention without terminating Claude; an unsettled
-job keeps its overlap lock until it settles or its UI exits. Credential-lease
-loss still stops the process through the managed launcher's existing protection.
-Failed occurrences are never automatically replayed. Hook details follow the
+job keeps its overlap lock until it settles or its UI exits. Failed occurrences
+are never automatically replayed. Hook details follow the
 [official Claude hooks reference](https://code.claude.com/docs/en/hooks).
 
 Receipts live in `~/.aimgr/routine-runs/<fire-key>.json`; Codex event logs sit
@@ -773,12 +803,9 @@ This boundary prevents accidental persistent secret copies and competing
 refresh writers; it is not isolation from another process running as the same
 OS user, which can invoke the helper with the user's authority.
 
-Claude sessions on one machine share accounts. The first `aim claude run` on
-an account takes its Redis lease, later sessions on the same machine join that
-lease, and the last one to exit releases it. They share the account's folder
-and login file, and Claude Code serializes their token refreshes there. An
-account held by another machine is never shared, because only one machine may
-hold a refresh token.
+Claude sessions on one machine may share an account’s local folder and login;
+Claude Code serializes native token refreshes there. Another machine signs in
+independently and uses its own local credentials.
 
 The label-free Claude presets pick the account with the most usage left per
 session. All of `fable`, `opus`, and `sonnet` score each eligible account by the
@@ -796,17 +823,13 @@ Missing saved model/effort stops the resume instead of substituting preset defau
 Session names are exact, case-insensitive matches and must be quoted when they
 contain spaces; ambiguous names require a row number or thread ID.
 
-`aim claude inventory` is the instant account-coverage view for Redis-backed Claude labels. It reads
-the configured AIM Redis credential records once and makes zero Anthropic, BrowserOS, Keychain,
-native-file, or Claude CLI calls. Candidate-only policy records remain visible as non-ready rows;
-complete, expired, incomplete, blocked, and identity-conflicting records remain distinguishable.
-Local Claude directories and browser profiles are projections or enrollment surfaces, never account
-names or inventory authority.
+`aim claude inventory` lists shared Claude account metadata without fetching primary
+credentials from Redis. Local sign-in determines whether a managed account can run
+on this machine; labels and account policy remain shared metadata.
 
 `aim claude status` and its exact `aim claude usage` alias accept only canonical Anthropic labels in
-the shared Redis store. Invalid labels fail before external I/O. Unknown labels fail after the one
-Redis read and before any provider request. Candidate-only, incomplete, or expired credentials are
-reported locally and never sent to Anthropic.
+the shared account metadata. Invalid labels fail before external I/O. Local credential
+availability determines whether an account can be checked or launched on this machine.
 
 The usage commands are browserless and cookie-free: they do not inspect browser state, invoke a
 model, rotate credentials, or fall back to `claude.ai`. A normal run reuses the strictly allowlisted
@@ -838,13 +861,10 @@ resets, bounded timestamps, cache age, and fixed error classifications are expos
 
 Claude access-token expiry is not the same thing as subscription inactivity. `credential_expired`
 means the stored access credential needs maintenance; `stale_auth` means Anthropic rejected it.
-Neither state by itself proves that billing was cancelled. Initial login or genuine reauthentication
-may use the approved BrowserOS/native protocol, but a complete identity-checked native bundle must
-then be captured into Redis. After capture, Redis is the authority and each managed Claude home is a
-disposable per-label projection. Claude capture, import, login, and run share one per-label lease. A
-strictly newer, same-identity local rotation is published back with Redis compare-and-swap during
-managed runs and at exit. Stale or divergent local projections are overwritten from Redis and never
-quarantine an account. Genuine reauthentication is shown as `NEEDS YOU` with `aim login <label>`.
+Neither state by itself proves that billing was cancelled. Native Claude owns local
+refresh; managed primary tokens are not published to Redis. Genuine reauthentication
+is shown as `NEEDS YOU` with `aim claude login <label>`. A label without a
+local login is shown as `NOT SIGNED IN` with the same guidance.
 Each normal managed launch also inherits the machine's complete user-level
 Claude MCP definitions, personal skills, enabled user plugins, and user hooks
 at launch time. AIM passes field-only MCP/hook overlays through Claude's native
@@ -971,7 +991,7 @@ interface. An explicit `--bind`, including `--bind 0.0.0.0`, skips the wait and 
 
 ## State Model
 
-Redis records own shared credential truth:
+Redis records own shared account metadata and credentials for legacy harnesses:
 
 - credentials: provider, label, credential, identity, shared browser/reauth/pool policy, health, and audit provenance
 - meta: Redis coordination schema metadata
@@ -983,10 +1003,13 @@ Redis records own shared credential truth:
 - Codex/Pi/Claude/Hermes local history
 - local concrete browser bindings
 
-Local target files are derived outputs:
+Local primary credentials for managed Claude stay in the existing
+`~/.aimgr/claude-homes/<label>/.claude` native home. Legacy Prime/Pi Anthropic
+maintenance uses separate `.legacy-<label>` homes.
+
+Other local target files include:
 
 - Codex: `~/.codex/auth.json`
-- Claude: `~/.claude/.credentials.json` and `~/.claude.json`
 - Pi: `~/.pi/agent/auth.json` (non-secret external descriptors for managed providers)
 - Prime: `~/.prime/agent/auth.json` (non-secret external descriptors for managed providers)
 - AIM rollback: `~/.aimgr/backups/harness-auth/` (one private displaced native entry per target/provider)

@@ -1,3 +1,4 @@
+import { assertClaudeCredentialExportable } from "./claude-local.js";
 import { createHash } from "node:crypto";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, XAI_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
@@ -150,6 +151,7 @@ function credentialView(record) {
 }
 
 function validateRecord(record, { nowMs, requireFresh = false } = {}) {
+  if(record?.provider === ANTHROPIC_PROVIDER) { try { assertClaudeCredentialExportable(record.credential); } catch { fail("credential_incomplete"); } }
   if (record?.policy?.reauth?.blockedReason === "oauth_reauth_required") {
     fail("reauth_required");
   }

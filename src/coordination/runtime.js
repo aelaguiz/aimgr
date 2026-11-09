@@ -33,13 +33,14 @@ export async function loadRedisRuntime({
   now = new Date(),
   connectionPolicy = REDIS_CONNECTION_POLICY_ONE_SHOT,
   excludeCodexGrants = [ANTHROPIC_PROVIDER, XAI_PROVIDER].includes(normalizeProviderId(provider)),
+  excludeClaudeGrants = false,
 }) {
   const { redis } = getRedisConfig({ homeDir });
   const store = await connectRedisStoreImpl({ ...redis, connectionPolicy });
   try {
     // Keep the server-side read scope across refreshes: filtering state after
     // retrieval would already have copied a foreign Codex grant to this host.
-    const snapshot = await readSnapshot(store, { excludeCodexGrants });
+    const snapshot = await readSnapshot(store, { excludeCodexGrants, excludeClaudeGrants });
     // Notes are advisory; a read failure must not change account selection.
     const accountNotes = await readAccountNotes(store).catch(() => null);
     const localState = loadLocalState({ homeDir });
@@ -57,6 +58,7 @@ export async function loadRedisRuntime({
       state,
       providerScope: normalizeProviderId(provider),
       excludeCodexGrants,
+      excludeClaudeGrants,
     };
   } catch (error) {
     await closeRedisStore(store).catch(() => {});
@@ -94,7 +96,7 @@ function findConflictingCredential(snapshot, { provider, label }) {
 }
 
 export async function refreshRedisRuntimeSnapshot(runtime) {
-  runtime.snapshot = await readSnapshot(runtime.store, { excludeCodexGrants: runtime.excludeCodexGrants });
+  runtime.snapshot = await readSnapshot(runtime.store, { excludeCodexGrants: runtime.excludeCodexGrants, excludeClaudeGrants: runtime.excludeClaudeGrants });
   return runtime.snapshot;
 }
 

@@ -36,13 +36,13 @@ test("admitted managed TLS inputs include external files and static fallback pat
   const records = { [file]: policy(value) };
   const { result } = inspect(records, { cwd: "/work", userHomeDir: "/home/synthetic" });
   assert.deepEqual(new Set(result.tlsReadPaths), new Set(["/opt/company/ca.pem", "/work/certs/client.pem", "/home/synthetic/certs/key.pem", "/certs/a", "/certs/b"]));
-  assert.deepEqual(inspect(records, { protectedAccount: false }).result.tlsReadPaths, []);
+  assert.deepEqual(inspect(records, { protectedAccount: false, cwd: "/work", userHomeDir: "/home/synthetic" }).result.tlsReadPaths, result.tlsReadPaths);
 });
 
 test("higher-precedence privacy, provider and dynamic-policy conflicts refuse without contents", () => {
   const cases = [
     { disableRemoteControl: false }, { env: { DISABLE_GROWTHBOOK: "0" } }, { env: { DISABLE_UPDATES: "" } },
-    { env: { DISABLE_TELEMETRY: "0" } }, { policyHelper: "private-command" }, { policyHelpers: [] },
+    { env: { DISABLE_TELEMETRY: "0" } }, { env: { ENABLE_BETA_TRACING_DETAILED: "1" } }, { policyHelper: "private-command" }, { policyHelpers: [] },
     { apiKeyHelper: "private-command" }, { forceLoginMethod: "console" }, { forceLoginOrgUUID: "other" }, { forceLoginOrgUUID: "fixture-org" },
     { forceLoginGatewayUrl: "private-endpoint" }, { env: { CLAUDE_CODE_USE_VERTEX: "1" } },
     { env: { ANTHROPIC_CONFIG_DIR: "private-profile" } }, { env: { CLAUDE_CODE_OAUTH_TOKEN: "private-secret" } },
@@ -55,8 +55,18 @@ test("higher-precedence privacy, provider and dynamic-policy conflicts refuse wi
   });
 });
 
-test("ordinary telemetry policy is not converted into an all-account opt-out", () => {
-  assert.equal(inspect({ "/etc/claude-code/managed-settings.json": policy({ env: { DISABLE_TELEMETRY: "0", DISABLE_ERROR_REPORTING: "0" } }) }, { protectedAccount: false }).result.sourceCount, 1);
+test("all account modes refuse exporter opt-ins while accepting native false controls", () => {
+  const file = "/etc/claude-code/managed-settings.json";
+  for (const protectedAccount of [false, true]) {
+    for (const value of [false, 0, "false", "0", "off"]) {
+      assert.doesNotThrow(() => inspect({ [file]: policy({ env: { CLAUDE_CODE_ENABLE_TELEMETRY: value,
+        OTEL_TRACES_EXPORTER: "otlp", OTEL_SDK_DISABLED: "false" } }) }, { protectedAccount }));
+    }
+    for (const value of [true, 1, "true", "1", "unexpected"]) {
+      assert.throws(() => inspect({ [file]: policy({ env: { CLAUDE_CODE_ENABLE_TELEMETRY: value } }) }, { protectedAccount }));
+    }
+    assert.throws(() => inspect({ [file]: policy({ env: { DISABLE_TELEMETRY: "0", DISABLE_ERROR_REPORTING: "0" } }) }, { protectedAccount }));
+  }
 });
 
 test("immutable harmless managed headers retain precedence over the session pin", () => {
@@ -66,13 +76,13 @@ test("immutable harmless managed headers retain precedence over the session pin"
   assert.throws(() => inspect({ [file]: policy({ env: { ANTHROPIC_CUSTOM_HEADERS: "Authorization: synthetic" } }) }, options));
 });
 
-test("protected identifier pins require empty values, while ordinary accounts preserve theirs", () => {
+test("all account identifier pins require empty values", () => {
   const file = "/etc/claude-code/managed-settings.json";
   for (const key of ["HOSTNAME", "TERMINATOR_UUID", "TILIX_ID", "GNOME_TERMINAL_SERVICE"]) {
     assert.doesNotThrow(() => inspect({ [file]: policy({ env: { [key]: "" } }) }));
     for (const value of ["private-identifier", "0", "true"]) {
       assert.throws(() => inspect({ [file]: policy({ env: { [key]: value } }) }));
-      assert.doesNotThrow(() => inspect({ [file]: policy({ env: { [key]: value } }) }, { protectedAccount: false }));
+      assert.throws(() => inspect({ [file]: policy({ env: { [key]: value } }) }, { protectedAccount: false }));
     }
   }
 });

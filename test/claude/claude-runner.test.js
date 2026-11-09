@@ -130,6 +130,25 @@ test("protected exit 125 retains job diagnostics without changing other process 
   }
 });
 
+test("direct and assigned-route runners request identical privacy without changing native permission flags", async t => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const prepared = preparedLaunch(home);
+  const args = ["-p", "synthetic task", "--permission-mode", "default"];
+  for (const runner of [runClaudeCli, runClaudeCliNoninteractive]) {
+    for (const egressProfile of [undefined, { label: "assigned", profileRef: "office" }]) {
+      const stop = new Error("synthetic preparation reached");
+      await assert.rejects(runner({ ...prepared, preparedLaunch: prepared, cwd: home, platform: "linux", egressProfile, args,
+        prepareClaudeNativeInvocationImpl(input) {
+          assert.equal(input.protectedAccount, true);
+          assert.deepEqual(input.args, args);
+          assert.equal(input.args.includes("--dangerously-skip-permissions"), false);
+          throw stop;
+        } }), error => error === stop);
+    }
+  }
+});
+
 test("Mac privacy routing keeps the fixed exec chain below the IPC supervisor", async t => {
   const home = mkTempHome();
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
@@ -341,26 +360,33 @@ test("required skills, MCP and package preparation refuse instead of silently re
   }
 });
 
-test("login staging does not traverse or materialize optional customizations", async () => {
+test("unique and legacy login staging do not traverse or materialize optional customizations", async t => {
   const home = mkTempHome();
-  const stagingHome = path.join(home, ".aimgr", "claude-homes", "alpha", ".login-staging");
-  const configDir = path.join(stagingHome, ".claude");
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   fs.mkdirSync(path.join(home, ".claude", "skills"), { recursive: true });
-  fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(home, ".claude", "settings.json"), "malformed");
   fs.writeFileSync(path.join(home, ".claude", ".generic-preference"), "");
-
-  const prepared = await prepareClaudeCliLaunch({
-    command: process.execPath,
-    userHomeDir: home,
-    homeDir: stagingHome,
-    configDir,
-    platform: "linux",
-  });
-  assert.deepEqual(prepared.userPluginDirs, []);
-  assert.equal(prepared.userHooksPath, null);
-  assert.equal(prepared.userMcpConfigPath, null);
-  assert.deepEqual(fs.readdirSync(configDir), []);
+  for (const directory of [".login-staging", ".login-staging-12345678-1234-4123-8123-123456789abc"]) {
+    const stagingHome = path.join(home, ".aimgr", "claude-homes", "alpha", directory);
+    const configDir = path.join(stagingHome, ".claude");
+    fs.mkdirSync(configDir, { recursive: true });
+    const prepared = await prepareClaudeCliLaunch({
+      command: process.execPath,
+      userHomeDir: home,
+      homeDir: stagingHome,
+      configDir,
+      platform: "linux",
+    });
+    assert.deepEqual(prepared.userPluginDirs, []);
+    assert.equal(prepared.userHooksPath, null);
+    assert.equal(prepared.userMcpConfigPath, null);
+    assert.deepEqual(fs.readdirSync(configDir), []);
+  }
+  for (const directory of [".login-staging-12345678-1234-1123-8123-123456789abc", ".login-staging-not-a-uuid"]) {
+    const homeDir = path.join(home, ".aimgr/claude-homes/alpha", directory);
+    await assert.rejects(prepareClaudeCliLaunch({ command: process.execPath, userHomeDir: home,
+      homeDir, configDir: path.join(homeDir, ".claude"), platform: "linux" }), /exact label or login-staging home/);
+  }
 });
 
 test("interactive runner preserves cwd, stdio, PATH, and developer env while clearing only selectors", async () => {

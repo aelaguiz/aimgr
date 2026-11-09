@@ -12,6 +12,7 @@ const fail = () => { throw new ClaudePrivacySettingsError("machine-managed Claud
 // Native typed booleans are not generic truthiness. A token/path containing
 // "false" is still a token/path; it must never use this conversion (T08/T09).
 const enabled = value => ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+const disabled = value => ["0", "false", "no", "off", ""].includes(String(value).trim().toLowerCase());
 const nonempty = value => value !== undefined && value !== null && String(value).length > 0;
 function merge(later, earlier = {}) {
   const result = structuredClone(earlier);
@@ -67,7 +68,11 @@ function assertControls(settings, protectedAccount, providerEnvironment = {}) {
     || (settings.forceLoginMethod !== undefined && settings.forceLoginMethod !== "claudeai")) fail();
   const env = settings.env ?? {};
   for (const [key, required] of Object.entries(claudeCriticalSettings({ protectedAccount }).env)) {
-    if (env[key] !== undefined && (required === "" ? nonempty(env[key]) : !enabled(env[key]))) fail();
+    if (env[key] === undefined) continue;
+    if (required === "" ? nonempty(env[key])
+      : required === "1" ? !enabled(env[key])
+      : required === "0" ? !disabled(env[key])
+      : String(env[key]) !== required) fail();
   }
   for (const [key, required] of Object.entries(providerEnvironment)) {
     // Custom headers are fixed below managed policy. Immutable administrator
@@ -174,9 +179,9 @@ export function inspectClaudeManagedPolicy({
     }
     if (federation.size === 2) fail();
     return Object.freeze({ checkedPaths: Object.freeze([...checked]), resolvedReadPaths: Object.freeze([...grants]),
-      tlsReadPaths: Object.freeze(protectedAccount ? resolveClaudeTlsReadPaths({
+      tlsReadPaths: Object.freeze(resolveClaudeTlsReadPaths({
         environments: candidates.map(source => environment([source])), cwd, userHomeDir,
-      }) : []),
+      })),
       sourceCount: count, requiresNativePolicyValidation: count > 0 });
   } catch { fail(); }
 }

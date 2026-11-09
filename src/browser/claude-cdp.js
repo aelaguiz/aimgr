@@ -56,6 +56,14 @@ export async function connectCdp(url, { timeoutMs = 8000 } = {}) {
 // Chrome honoring its validated fixed proxy is the agreed trust boundary;
 // adding another browser firewall or changing its fingerprint is out of scope.
 // Regression: test/network/claude-chrome.test.js.
+export function readClaudeChromeDebuggingPort(args) {
+  const values = args.filter(value => value.startsWith("--remote-debugging-port="));
+  if (values.length !== 1) return null;
+  // ps joins a following positional startup URL into this flag's chunk.
+  // The numeric value ends at whitespace; path-valued flags retain spaces.
+  return values[0].match(/^--remote-debugging-port=(\d+)(?:\s|$)/)?.[1] ?? null;
+}
+
 export async function validateClaudeChrome(profile) {
   const chrome = profile.chrome;
   const reject = (field) => { throw new ClaudeRouteError("chrome_binding_mismatch", { ...profile, cause: new Error(field ?? "configuration") }); };
@@ -82,7 +90,7 @@ export async function validateClaudeChrome(profile) {
   }
   const argument = (name) => args.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
   if (argument("user-data-dir") !== chrome.userDataDir) reject("user-data-dir");
-  if (argument("remote-debugging-port") !== String(chrome.cdpPort)) reject("remote-debugging-port");
+  if (readClaudeChromeDebuggingPort(args) !== String(chrome.cdpPort)) reject("remote-debugging-port");
   if (argument("proxy-server") && argument("proxy-server") !== expectedProxy) reject("proxy-server");
   await checkClaudeRouteExit(profile);
   const response = await fetch(`http://127.0.0.1:${chrome.cdpPort}/json/version`, { signal: AbortSignal.timeout(8000), redirect: "error" });

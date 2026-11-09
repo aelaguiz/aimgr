@@ -71,8 +71,8 @@ def bundle(name, edit=None):
     return directory
 
 
-def install(directory, activate=False):
-    return installer.install(directory, node, user, activate, runtime)
+def install(directory, activate=False, provision_clone=False):
+    return installer.install(directory, node, user, activate, runtime, provision_clone=provision_clone)
 
 
 def refuses(name, action, reason):
@@ -95,16 +95,30 @@ try:
     first = bundle('first')
     staged = install(first)
     assert staged['activated'] is False and not (runtime / 'active.json').exists()
-    passed.append('staging does not activate')
+    assert not (runtime / 'environment.json').exists()
+    passed.append('staging does not activate or provision environment')
     active = install(first, True)
     assert json.loads((runtime / 'active.json').read_text())['artifactSet'] == active['artifactSet']
     assert install(first, True) == active
-    passed.append('explicit activation and idempotence')
+    anchor = runtime / 'environment.json'
+    environment = json.loads(anchor.read_text())
+    assert environment['schema'] == 1 and installer.uuid.UUID(environment['id']).version == 4
+    assert anchor.stat().st_uid == 0 and anchor.stat().st_mode & 0o022 == 0
+    assert install(first, True) == active and json.loads(anchor.read_text()) == environment
+    passed.append('explicit activation and environment idempotence')
     next_bundle = bundle('next')
     next_result = install(next_bundle, True)
     assert next_result['artifactSet'] != active['artifactSet']
     assert (runtime / 'artifacts' / active['artifactSet'] / 'claude').is_file()
-    passed.append('old immutable artifacts retained')
+    assert json.loads(anchor.read_text()) == environment
+    install(next_bundle, True, provision_clone=True)
+    assert json.loads(anchor.read_text())['id'] != environment['id']
+    valid_environment = anchor.read_bytes()
+    anchor.write_text('{"schema":1,"id":"not-an-environment"}')
+    try:
+        refuses('invalid environment does not activate', lambda: install(first, True), '')
+    finally: anchor.write_bytes(valid_environment)
+    passed.append('old immutable artifacts retained and clone environment renewed')
     invalid = bundle('nonexecutable-helper', lambda m: m['files']['security' if platform.system() == 'Darwin' else 'validate-settings'].update(executable=False))
     refuses('nonexecutable fixed helper', lambda: install(invalid, True), 'production artifact admission')
     invalid = bundle('bad-hash'); (invalid / 'claude').write_bytes(b'changed')

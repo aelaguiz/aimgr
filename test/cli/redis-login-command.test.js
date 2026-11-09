@@ -7,6 +7,7 @@ import { DEFAULT_REDIS_CREDENTIAL_LEASE_TTL_MS } from "../../src/coordination/re
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import {
   resolveAimgrClaudeLabelHomeDir,
+  resolveLegacyClaudeLabelHomeDir,
   resolveAimgrLocalStatePath,
 } from "../../src/io/paths.js";
 import { loadLocalState } from "../../src/state/local-state.js";
@@ -73,7 +74,7 @@ function buildTestClaudeResolver(onPrepare = null) {
 
 function resolveClaudeLoginStagingHome(home, label) {
   return path.join(
-    resolveAimgrClaudeLabelHomeDir({ homeDir: home, label }),
+    resolveLegacyClaudeLabelHomeDir({ homeDir: home, label }),
     ".login-staging",
   );
 }
@@ -286,7 +287,21 @@ test("redis-configured login refuses to overwrite a credential with a different 
   assert.equal(fs.existsSync(path.join(home, ".aimgr", "secrets.json")), false);
 });
 
-test("Redis generic Anthropic login uses contained file staging and publishes without Keychain calls", async () => {
+test("implicit Anthropic login directs managed enrollment to this machine without touching a legacy grant",async t=>{
+  const home=mkTempHome();t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const client=new FakeRedisClient(),keyPrefix="aimgr:claude-explicit-legacy-test";
+  const store=await seedLoginRedis({home,client,keyPrefix,credentialRecord:buildAnthropicPolicyCandidate()});
+  const before=await readSnapshot(store);
+  await assert.rejects(runCli(["login","pro7","--home",home],{
+    connectRedisStoreImpl:()=>connectRedisStore({client,keyPrefix}),
+    runClaudeCliImpl:()=>assert.fail("implicit managed login must not enter the legacy native flow"),
+  }),/aim claude login pro7/);
+  assert.deepEqual((await readSnapshot(store)).credentials,before.credentials);
+  assert.equal(fs.existsSync(resolveLegacyClaudeLabelHomeDir({homeDir:home,label:"pro7"})),false);
+  assert.equal(fs.existsSync(resolveAimgrClaudeLabelHomeDir({homeDir:home,label:"pro7"})),false);
+});
+
+test("Redis explicit legacy Anthropic login uses contained file staging and publishes without Keychain calls", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const credential = buildAnthropicClaudeCredential();
@@ -310,7 +325,7 @@ test("Redis generic Anthropic login uses contained file staging and publishes wi
   const stagingHome = resolveClaudeLoginStagingHome(home, "pro7");
   let keychainCalls = 0;
   let preflightCalls = 0;
-  const stdout = await runCli(["login", "pro7", "--home", home], {
+  const stdout = await runCli(["login", "pro7", "--provider", "anthropic", "--home", home], {
     env: {
       BROWSER: "/unexpected/browser",
       DISPLAY: ":99",
@@ -370,10 +385,11 @@ test("Redis generic Anthropic login uses contained file staging and publishes wi
   assert.equal(snapshot.credentials[0].version, 2);
   assertCanonicalAnthropicCredential(snapshot.credentials[0], "LOGIN_REFRESH_NEW");
   assert.equal(snapshot.credentials[0].provenance.lastSourceType, "login-maintenance");
+  assert.equal(fs.existsSync(path.join(resolveAimgrClaudeLabelHomeDir({homeDir:home,label:"pro7"}),".claude",".credentials.json")),false,"legacy enrollment must never initialize managed primary storage");
   assert.doesNotMatch(stdout, /LOGIN_(?:ACCESS|REFRESH)_NEW|boss@example\.com/);
 });
 
-test("Redis generic Anthropic login enrolls an exact-empty policy candidate", async () => {
+test("Redis explicit legacy Anthropic login enrolls an exact-empty policy candidate", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedLoginRedis({
@@ -385,7 +401,7 @@ test("Redis generic Anthropic login enrolls an exact-empty policy candidate", as
   const stagingHome = resolveClaudeLoginStagingHome(home, "pro7");
   let keychainCalls = 0;
 
-  const stdout = await runCli(["login", "pro7", "--home", home], {
+  const stdout = await runCli(["login", "pro7", "--provider", "anthropic", "--home", home], {
     connectRedisStoreImpl: () => connectRedisStore({
       client,
       keyPrefix: "aimgr:claude-candidate-login-test",
@@ -421,7 +437,7 @@ test("Redis generic Anthropic login enrolls an exact-empty policy candidate", as
   assert.equal(snapshot.credentials[0].health.status, "ready");
 });
 
-test("Redis generic login enrolls an ordinary Anthropic account without proxy configuration", async () => {
+test("Redis explicit legacy login enrolls an ordinary Anthropic account without proxy configuration", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedLoginRedis({
@@ -430,7 +446,7 @@ test("Redis generic login enrolls an ordinary Anthropic account without proxy co
     keyPrefix: "aimgr:claude-unknown-login-test",
     credentialRecord: null,
   });
-  const answers = ["2", " New@Example.com "];
+  const answers = [" New@Example.com "];
   const prompts = [];
 
   const deps = {
@@ -458,14 +474,13 @@ test("Redis generic login enrolls an ordinary Anthropic account without proxy co
       return { status: 0, signal: null };
     },
   };
-  const stdout = await runCli(["login", "fresh", "--home", home], deps);
+  const stdout = await runCli(["login", "fresh", "--provider", "anthropic", "--home", home], deps);
 
   const result = JSON.parse(stdout.slice(stdout.indexOf("{")));
   assert.equal(result.ok, true);
   assert.equal(result.label, "fresh");
   assert.equal(result.provider, "anthropic");
   assert.deepEqual(prompts.map((prompt) => String(prompt)), [
-    'Provider for "fresh" (1-3 or id) [1]:',
     'Expected Claude email for "fresh":',
   ]);
   const snapshot = await readSnapshot(store);
@@ -477,7 +492,7 @@ test("Redis generic login enrolls an ordinary Anthropic account without proxy co
   assert.doesNotMatch(stdout, /UNKNOWN_(?:ACCESS|REFRESH)|new@example\.com/i);
 });
 
-test("Redis generic Anthropic login repairs a partial candidate with a fresh login", async () => {
+test("Redis explicit legacy Anthropic login repairs a partial candidate with a fresh login", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedLoginRedis({
@@ -488,7 +503,7 @@ test("Redis generic Anthropic login repairs a partial candidate with a fresh log
       credential: { access: "PARTIAL_ACCESS" },
     }),
   });
-  const stdout = await runCli(["login", "pro7", "--home", home], {
+  const stdout = await runCli(["login", "pro7", "--provider", "anthropic", "--home", home], {
     connectRedisStoreImpl: () => connectRedisStore({
       client,
       keyPrefix: "aimgr:claude-partial-login-test",
@@ -510,7 +525,7 @@ test("Redis generic Anthropic login repairs a partial candidate with a fresh log
   assertCanonicalAnthropicCredential(snapshot.credentials[0], "REPAIRED_REFRESH");
 });
 
-test("Redis generic Anthropic enrollment rejects identity policy drift and cleans staging", async () => {
+test("Redis explicit legacy Anthropic enrollment rejects identity policy drift and cleans staging", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedLoginRedis({
@@ -522,7 +537,7 @@ test("Redis generic Anthropic enrollment rejects identity policy drift and clean
   const stagingHome = resolveClaudeLoginStagingHome(home, "pro7");
 
   await assert.rejects(
-    runCli(["login", "pro7", "--home", home], {
+    runCli(["login", "pro7", "--provider", "anthropic", "--home", home], {
       connectRedisStoreImpl: () => connectRedisStore({
         client,
         keyPrefix: "aimgr:claude-candidate-drift-test",
@@ -553,7 +568,7 @@ test("Redis generic Anthropic enrollment rejects identity policy drift and clean
   assert.deepEqual(snapshot.credentials[0].credential, {});
 });
 
-test("Redis generic Anthropic enrollment cleans staging after publish uncertainty", async () => {
+test("Redis explicit legacy Anthropic enrollment cleans staging after publish uncertainty", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const store = await seedLoginRedis({
@@ -594,7 +609,7 @@ test("Redis generic Anthropic enrollment cleans staging after publish uncertaint
   };
 
   await assert.rejects(
-    runCli(["login", "pro7", "--home", home], deps),
+    runCli(["login", "pro7", "--provider", "anthropic", "--home", home], deps),
     /Redis publish failed/,
   );
   assert.equal(launchCalls, 1);
@@ -603,7 +618,7 @@ test("Redis generic Anthropic enrollment cleans staging after publish uncertaint
   assert.deepEqual(snapshot.credentials[0].credential, {});
 });
 
-test("Redis generic Anthropic login rejects wrong identity and removes staging", async () => {
+test("Redis explicit legacy Anthropic login rejects wrong identity and removes staging", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const credential = buildAnthropicClaudeCredential();
@@ -627,7 +642,7 @@ test("Redis generic Anthropic login rejects wrong identity and removes staging",
   const stagingHome = resolveClaudeLoginStagingHome(home, "pro7");
 
   await assert.rejects(
-    runCli(["login", "pro7", "--home", home], {
+    runCli(["login", "pro7", "--provider", "anthropic", "--home", home], {
       connectRedisStoreImpl: () => connectRedisStore({
         client,
         keyPrefix: "aimgr:claude-login-identity-test",
@@ -657,7 +672,7 @@ test("Redis generic Anthropic login rejects wrong identity and removes staging",
   assert.equal(fs.existsSync(stagingHome), false);
 });
 
-test("Redis generic Anthropic login cancellation cleans staging", async () => {
+test("Redis explicit legacy Anthropic login cancellation cleans staging", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const credential = buildAnthropicClaudeCredential();
@@ -681,7 +696,7 @@ test("Redis generic Anthropic login cancellation cleans staging", async () => {
   const stagingHome = resolveClaudeLoginStagingHome(home, "pro7");
 
   await assert.rejects(
-    runCli(["login", "pro7", "--home", home], {
+    runCli(["login", "pro7", "--provider", "anthropic", "--home", home], {
       connectRedisStoreImpl: () => connectRedisStore({
         client,
         keyPrefix: "aimgr:claude-login-cancel-test",
@@ -702,7 +717,7 @@ test("Redis generic Anthropic login cancellation cleans staging", async () => {
   assert.equal(fs.existsSync(stagingHome), false);
 });
 
-test("Redis generic Anthropic login reacquires its lease after a long browser wait", async () => {
+test("Redis explicit legacy Anthropic login reacquires its lease after a long browser wait", async () => {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   const credential = buildAnthropicClaudeCredential();
@@ -725,7 +740,7 @@ test("Redis generic Anthropic login reacquires its lease after a long browser wa
   });
   const stagingHome = resolveClaudeLoginStagingHome(home, "pro7");
 
-  const stdout = await runCli(["login", "pro7", "--home", home], {
+  const stdout = await runCli(["login", "pro7", "--provider", "anthropic", "--home", home], {
     connectRedisStoreImpl: () => connectRedisStore({
       client,
       keyPrefix: "aimgr:claude-login-long-wait-test",
@@ -785,7 +800,7 @@ test("Redis shorthand panel remains closed for Anthropic labels", async () => {
         panelCalls += 1;
       },
     }),
-    /Redis-backed Claude maintenance.*aim claude run/,
+    /aim claude login pro7.*aim login pro7 --provider anthropic/,
   );
 
   assert.equal(panelCalls, 0);

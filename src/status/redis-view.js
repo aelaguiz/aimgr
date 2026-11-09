@@ -1,3 +1,7 @@
+import { readClaudeAccountMetadata } from "../coordination/claude-metadata.js";
+import { readCachedClaudeAccountMetadata } from "../coordination/claude-runtime.js";
+import { readLocalClaudeCredential } from "../credentials/claude-local.js";
+import { readClaudeEnvironment } from "../privacy/claude-environment.js";
 import { redactRedisEndpoint } from "../core/sanitize.js";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
@@ -26,7 +30,7 @@ import { readCodexCliTargetStatus } from "../targets/codex-cli.js";
 import { collectClaudeRedisAccountUsageStatus, formatClaudePlan } from "./claude-redis-view.js";
 import { describeClaudeEgress, projectClaudeEgress, claudeProxyHealthProblem, hasNoLocalClaudeRoute } from "./claude-egress.js";
 import { readClaudeProxyHealth } from "./claude-proxy-health.js";
-import { readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
+import { claudeBindingRequiresProxy, readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
 import { CLAUDE_ROUTE_ERROR_CODES } from "../network/claude-egress-policy.js";
 import {
   AIMGR_REDIS_STATUS_CACHE_KIND,
@@ -328,7 +332,7 @@ function buildClaudeAccounts(claudeStatus) {
       },
       credentials: {
         status: account.credentialState ?? "unknown",
-        source: "redis",
+        source: "environment-local",
         ...(typeof account.credentialExpiresAt === "string" ? {
           expiresAt: account.credentialExpiresAt,
           expiresIn: formatExpiresIn(account.credentialExpiresAt, claudeStatus.checkedAtMs),
@@ -375,6 +379,7 @@ export async function buildRedisStatusView({
   readHeldRedisCredentialLeaseLabelsImpl = readHeldRedisCredentialLeaseLabels,
   readClaudeProxyHealthImpl = readClaudeProxyHealth,
   readCodexEnvironmentImpl = readCodexEnvironment,
+  readClaudeEnvironmentImpl,
 } = {}) {
   const configRead = readAimgrConfig({ homeDir });
   const redisConfig = configRead.config.redis;
@@ -394,10 +399,11 @@ export async function buildRedisStatusView({
       keyPrefix: redisConfig.keyPrefix,
       connectionPolicy: REDIS_CONNECTION_POLICY_OBSERVE,
     });
-    const snapshot = await readSnapshot(store, { excludeCodexGrants: true });
+    const snapshot = await readSnapshot(store, { excludeCodexGrants: true, excludeClaudeGrants: true });
     let environment = null;
     try { environment = readCodexEnvironmentImpl(); } catch { /* Codex setup cannot hide other providers. */ }
     snapshot.credentials.push(...await localCodexRecords({ store, homeDir, env, environment }));
+    snapshot.credentials.push(...await readClaudeAccountMetadata(store));
     const notes = await readAccountNotes(store).catch(() => null);
     const knownAccounts = new Set(snapshot.credentials.map((record) => `${record.provider}:${record.label}`));
     const accountNotes = notes?.filter((record) => knownAccounts.has(`${record.provider}:${record.label}`))
@@ -418,6 +424,7 @@ export async function buildRedisStatusView({
         fetchJsonWithTimeoutImpl,
         readHeldRedisCredentialLeaseLabelsImpl,
         readClaudeProxyHealthImpl,
+        readClaudeEnvironmentImpl,
       });
     } catch {
       claudeUsageStatus = {
@@ -528,13 +535,38 @@ export async function buildRedisStatusView({
       if (local.status !== "ready") account.operator = { status: local.status === "reauth_required" ? "reauth" : "blocked", eligible: false };
     }
 
+    // Shared status is only a historical observation. Check this machine's
+    // current owner against safe cached metadata before reporting availability.
+    let claudeEnvironment = null;
+    let claudeMetadata = [];
+    try {
+      claudeEnvironment = (readClaudeEnvironmentImpl ?? readClaudeEnvironment)();
+      claudeMetadata = readCachedClaudeAccountMetadata({ homeDir, environment: claudeEnvironment });
+    } catch { /* Missing local setup or metadata cannot establish readiness. */ }
+    for (const account of cached.accounts) {
+      if (account.provider !== ANTHROPIC_PROVIDER) continue;
+      let local = { status: claudeEnvironment ? "login_required" : "runtime_required" };
+      const metadata = claudeMetadata.find(record => record.label === account.label);
+      if (claudeEnvironment && metadata) {
+        try { local = readLocalClaudeCredential({ homeDir, label: account.label, metadata, environment: claudeEnvironment }); }
+        catch { local = { status: "local_auth_unavailable" }; }
+      }
+      const launchable = local.status === "ready" || local.status === "expired";
+      const expiry = getAnthropicCredentialView(local.credential)?.expiresAt;
+      account.credentials = { status: local.status === "ready" ? "credential_ready" : local.status === "expired" ? "credential_expired" : local.status,
+        source: "environment-local", ...(expiry ? { expiresAt: expiry, expiresIn: formatExpiresIn(expiry, nowMs) } : {}) };
+      if (!launchable) account.operator = { status: local.status === "reauth_required" ? "reauth" : "blocked", eligible: false };
+    }
+
     // The assignment is cached provider data; local route availability is a
     // current machine fact. Recheck it even while Redis is unreachable. A newly
     // installed route does not establish fresh account readiness while offline.
     for (const account of cached.accounts) {
       if (account.provider !== ANTHROPIC_PROVIDER) continue;
+      const binding = readClaudeOfflineBinding(homeDir, account.label);
+      if (binding?.invalidated) account.operator = { status: "blocked", eligible: false };
       if (account.egress?.mode !== "proxy") {
-        if (readClaudeOfflineBinding(homeDir, account.label) && ["direct", "unknown"].includes(account.egress?.mode)) {
+        if (claudeBindingRequiresProxy(binding) && ["direct", "unknown"].includes(account.egress?.mode)) {
           account.egress = { mode: "missing_assignment" };
           account.operator = { status: "blocked", eligible: false };
         }

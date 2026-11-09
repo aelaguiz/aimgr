@@ -10,6 +10,7 @@ import { FakeRedisClient } from '../helpers/fake-redis.js';
 import { buildAnthropicClaudeCredential } from '../helpers/claude.js';
 import { mkTempHome } from '../helpers/files.js';
 import { runCli } from '../helpers/cli-runner.js';
+import { localClaudeFixture, readClaudeTestEnvironment } from '../helpers/claude-local.js';
 
 const keyPrefix = 'aimgr:route-selection-test';
 const badProfiles = { office: { socksPort: 0, expectedExits: ['127.0.0.2'] } };
@@ -21,7 +22,7 @@ function record(label, policy = {}) {
     policy: { expect: { email: `${label}@example.test` }, pool: { enabled: true }, ...policy },
   };
 }
-async function fixture(t, records, profiles = {}) {
+async function fixture(t, records, profiles = {}, skipLocal = []) {
   const homeDir = mkTempHome();
   t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
   const client = new FakeRedisClient();
@@ -31,6 +32,7 @@ async function fixture(t, records, profiles = {}) {
   });
   configure(profiles);
   await importCredentialsSnapshot(store, { credentials: records });
+  for (const entry of records) if (!skipLocal.includes(entry.label)) await localClaudeFixture(homeDir, entry);
   return { homeDir, store, configure, connect: () => connectRedisStore({ client, keyPrefix }) };
 }
 async function ordinaryUsage(_url, options) {
@@ -48,7 +50,7 @@ for (const scenario of ['fresh resume', 'excluded source']) {
       : { egress: { profileRef: 'office' } };
     const records = [record('source', sourcePolicy), record('ordinary')];
     if (scenario === 'fresh resume') records.push(record('protected', { egress: { profileRef: 'office' } }));
-    const lane = await fixture(t, records, badProfiles);
+    const lane = await fixture(t, records, badProfiles, scenario === 'fresh resume' ? ['source'] : []);
     const thread = '33333333-3333-4333-8333-333333333333';
     const cwd = path.join(lane.homeDir, 'project');
     const project = path.join(lane.homeDir, '.aimgr/claude-homes/source/.claude/projects/project');
@@ -60,7 +62,7 @@ for (const scenario of ['fresh resume', 'excluded source']) {
     let launches = 0;
     await assert.rejects(runCli(['claude', 'resume', thread, '--home', lane.homeDir,
       ...(scenario === 'excluded source' ? ['--switch-account', 'opus'] : [])], {
-      env: { HOME: lane.homeDir }, connectRedisStoreImpl: lane.connect,
+      env: { HOME: lane.homeDir }, connectRedisStoreImpl: lane.connect, readClaudeEnvironmentImpl: readClaudeTestEnvironment,
       fetchJsonWithTimeoutImpl: ordinaryUsage,
       runClaudeCliImpl: () => { launches += 1; return { status: 0, signal: null }; },
     }), { code: 'invalid_proxy_profile' });
@@ -68,18 +70,17 @@ for (const scenario of ['fresh resume', 'excluded source']) {
   });
 }
 
-test('scheduled account freeing checks new route failures before stopping an unrelated session', async t => {
-  const lane = await fixture(t, [record('ordinary'), record('protected', { egress: { profileRef: 'office' } })]);
+test('scheduled Claude uses the local grant despite a remote legacy credential lease', async t => {
+  const lane = await fixture(t, [record('ordinary')]);
   await acquireRedisCredentialLease(lane.store, { provider: 'anthropic', label: 'ordinary' });
-  let connections = 0, choices = 0, stops = 0, launches = 0;
-  await assert.rejects(runAutomaticClaudeSession({
-    homeDir: lane.homeDir, nowMs: Date.now(),
-    connectRedisStoreImpl: () => { if (++connections === 2) lane.configure(badProfiles); return lane.connect(); },
-    fetchJsonWithTimeoutImpl: ordinaryUsage,
-    listLocalAimClaudeSessionsImpl: () => [{ label: 'ordinary', sessionId: 'owned-fixture' }],
-    chooseClaudeAccountToFreeImpl: sessions => { choices += 1; return sessions[0]; },
-    stopClaudeAccountSessionsImpl: async session => { stops += 1; return [session]; },
-  }, { cwd: lane.homeDir, runSession: () => { launches += 1; } }), { code: 'invalid_proxy_profile' });
-  assert.equal(connections, 2);
-  assert.equal(choices, 0); assert.equal(stops, 0); assert.equal(launches, 0);
+  const resolve = () => process.execPath;
+  resolve.prepareClaudeCliLaunchImpl = async input => input;
+  const launches = [];
+  await runAutomaticClaudeSession({
+    homeDir: lane.homeDir, nowMs: Date.now(), env: { HOME: lane.homeDir }, opts: { afterDoubleDash: [] },
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
+    connectRedisStoreImpl: lane.connect, fetchJsonWithTimeoutImpl: ordinaryUsage,
+    resolveExecutableOnPathImpl: resolve, setExitCode: code => assert.fail(`unexpected exit ${code}`),
+  }, { cwd: lane.homeDir, runSession: launch => { launches.push(launch.label); return { status: 0 }; } });
+  assert.deepEqual(launches, ['ordinary']);
 });

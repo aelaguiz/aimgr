@@ -1,4 +1,4 @@
-import { readClaudeOfflineBinding, invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
+import { readClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -21,6 +21,8 @@ import { buildAnthropicClaudeCredential } from "../helpers/claude.js";
 import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { makeFakeJwt, mkTempHome } from "../helpers/files.js";
 
+import { localClaudeFixture, readClaudeTestEnvironment, CLAUDE_TEST_ENVIRONMENT } from "../helpers/claude-local.js";
+import { readLocalClaudeCredential } from "../../src/credentials/claude-local.js";
 import { readLocalCodexCredential } from "../../src/credentials/codex-local.js";
 import { localCodexFixture, CODEX_TEST_ENVIRONMENT, readCodexTestEnvironment } from "../helpers/codex-local.js";
 
@@ -115,7 +117,7 @@ async function setup(records) {
   const home = mkTempHome();
   const client = new FakeRedisClient();
   // Only an explicitly provisioned fixture may contribute local Codex grants.
-  registerCliRedisFixture(home, { readCodexEnvironmentImpl: () => null });
+  registerCliRedisFixture(home, { readCodexEnvironmentImpl: () => null, readClaudeEnvironmentImpl: readClaudeTestEnvironment });
   writeAimgrConfig({
     homeDir: home,
     config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX }, claudeProxyProfiles: { test: { socksPort: 1085, expectedExits: ["127.0.0.2"] } } },
@@ -171,12 +173,13 @@ test("auth maintain refreshes Claude and only local Codex grants without reading
     dueClaude,
   ]);
   t.after(() => fs.rmSync(runtime.home, { recursive: true, force: true }));
-  registerCliRedisFixture(runtime.home, { readCodexEnvironmentImpl: readCodexTestEnvironment });
+  registerCliRedisFixture(runtime.home, { readCodexEnvironmentImpl: readCodexTestEnvironment, readClaudeEnvironmentImpl: readClaudeTestEnvironment });
   localCodexFixture(runtime.home, "acct_codex-due", {
     ...dueCodex.credential,
     access: codexAccess("acct_codex-due", Date.now() - 60_000),
   });
-  const legacyBefore = await Promise.all([dueCodex, freshCodex, terminalCodex].map(record => runtime.client.get(runtime.store.keys.credential(record))));
+  await localClaudeFixture(runtime.home,dueClaude);
+  const legacyBefore = await Promise.all([dueClaude,incompleteClaude,policyOnly,dueCodex, freshCodex, terminalCodex].map(record => runtime.client.get(runtime.store.keys.credential(record))));
   const replies = [], reads = [], originalEval = runtime.client.eval.bind(runtime.client);
   runtime.client.eval = async (...args) => {
     const reply = await originalEval(...args); replies.push(reply); return reply;
@@ -246,13 +249,11 @@ test("auth maintain refreshes Claude and only local Codex grants without reading
 
   assert.deepEqual(result, {
     stdout:
-      "provider=anthropic label=claude-candidate outcome=skipped reason=credential_missing\n"
-      + "provider=anthropic label=claude-incomplete outcome=reauth_required reason=refresh_material_missing\n"
-      + "provider=anthropic label=claude-due outcome=refreshed reason=credential_rotated\n"
+      "provider=anthropic authority=environment-local label=claude-due outcome=refreshed reason=credential_rotated\n"
       + "provider=openai-codex authority=environment-local label=codex-due outcome=refreshed reason=ready\n"
       + "provider=openai-codex authority=environment-local label=codex-fresh outcome=skipped reason=login_required\n"
       + "provider=openai-codex authority=environment-local label=codex-terminal outcome=skipped reason=login_required\n"
-      + "refreshed=2 unchanged=0 reauth_required=1 retryable=0 skipped=3\n",
+      + "refreshed=2 unchanged=0 reauth_required=0 retryable=0 skipped=4\n",
     exitCode: 0,
   });
   assert.deepEqual(providerOrder, [
@@ -265,22 +266,24 @@ test("auth maintain refreshes Claude and only local Codex grants without reading
   assert.ok(replies.filter(reply => typeof reply === "string").length > 1,
     "the command must preserve its server-side projection across Claude snapshot refreshes");
   assert.equal(JSON.stringify(replies).includes("REFRESH_codex"), false);
+  assert.equal(JSON.stringify(replies).includes("REFRESH_claude"), false);
+  assert.equal(reads.some(key => String(key).includes("credential:anthropic:")), false,"managed maintenance must not download legacy Claude grants");
   assert.equal(reads.some(key => String(key).includes("credential:openai-codex:")), false,
     "no client GET or MGET may retrieve a legacy Codex grant");
-  const legacyAfter = await Promise.all([dueCodex, freshCodex, terminalCodex].map(record => runtime.client.get(runtime.store.keys.credential(record))));
+  const legacyAfter = await Promise.all([dueClaude,incompleteClaude,policyOnly,dueCodex, freshCodex, terminalCodex].map(record => runtime.client.get(runtime.store.keys.credential(record))));
   assert.deepEqual(legacyAfter, legacyBefore);
   assert.equal(readLocalCodexCredential({ homeDir: runtime.home, environment: CODEX_TEST_ENVIRONMENT,
     accountId: "acct_codex-due" }).credential.refresh, "REFRESH_CODEX_ROTATED");
   const snapshot = await readSnapshot(runtime.store);
   const byLabel = new Map(snapshot.credentials.map((record) => [record.label, record]));
   assert.equal(
-    byLabel.get("claude-due").credential.nativeClaudeBundle.claudeAiOauth.refreshToken,
+    readLocalClaudeCredential({homeDir:runtime.home,label:dueClaude.label,metadata:dueClaude,environment:CLAUDE_TEST_ENVIRONMENT}).credential.nativeClaudeBundle.claudeAiOauth.refreshToken,
     "REFRESH_CLAUDE_ROTATED",
   );
   assert.equal(byLabel.get("codex-due").credential.refresh, "REFRESH_codex-due");
   assert.equal(
     byLabel.get("claude-incomplete").policy.reauth.blockedReason,
-    "oauth_reauth_required",
+    undefined,
   );
   assert.equal(byLabel.get("codex-fresh").version, 1);
   assert.equal(byLabel.get("codex-terminal").version, 1);
@@ -296,7 +299,7 @@ test("auth maintain refreshes Claude and only local Codex grants without reading
   );
 });
 
-test("auth maintain marks incomplete Anthropic material under a same-label Codex collision", async () => {
+test("auth maintain leaves unenrolled legacy Anthropic material untouched under a same-label Codex collision", async () => {
   const incompleteClaude = claudeRecord("shared");
   incompleteClaude.credential = { access: "INCOMPLETE" };
   incompleteClaude.identity = {};
@@ -320,8 +323,7 @@ test("auth maintain marks incomplete Anthropic material under a same-label Codex
   );
   assert.deepEqual(result, {
     stdout:
-      "provider=anthropic label=shared outcome=reauth_required reason=refresh_material_missing\n"
-      + "refreshed=0 unchanged=0 reauth_required=1 retryable=0 skipped=0\n",
+      "refreshed=0 unchanged=0 reauth_required=0 retryable=0 skipped=1\n",
     exitCode: 0,
   });
 
@@ -332,10 +334,11 @@ test("auth maintain marks incomplete Anthropic material under a same-label Codex
   const afterCodex = after.credentials.find(
     (record) => record.provider === "openai-codex" && record.label === "shared",
   );
-  assert.equal(afterAnthropic.version, 2);
+  assert.deepEqual(afterAnthropic,before.credentials.find(record=>record.provider==="anthropic"));
+  assert.equal(afterAnthropic.version, 1);
   assert.deepEqual(afterAnthropic.policy.expect, incompleteClaude.policy.expect);
   assert.equal(afterAnthropic.policy.reauth.mode, "native-claude");
-  assert.equal(afterAnthropic.policy.reauth.blockedReason, "oauth_reauth_required");
+  assert.equal(afterAnthropic.policy.reauth.blockedReason, undefined);
   assert.deepEqual(afterCodex, beforeCodex);
 });
 
@@ -343,7 +346,7 @@ test("local Codex maintenance continues after a network failure and rejected gra
   const labels = ["invalid", "later", "network"];
   const runtime = await setup(labels.map(label => codexRecord(label)));
   t.after(() => fs.rmSync(runtime.home, { recursive: true, force: true }));
-  registerCliRedisFixture(runtime.home, { readCodexEnvironmentImpl: readCodexTestEnvironment });
+  registerCliRedisFixture(runtime.home, { readCodexEnvironmentImpl: readCodexTestEnvironment, readClaudeEnvironmentImpl: readClaudeTestEnvironment });
   for (const label of labels) localCodexFixture(runtime.home, `acct_${label}`, {
     ...codexRecord(label).credential, access: codexAccess(`acct_${label}`, Date.now() - 60_000),
   });
@@ -430,6 +433,7 @@ test("ordinary Claude maintenance refreshes with no proxy configuration and pres
   const record = claudeRecord("ordinary");
   delete record.policy.egress;
   const runtime = await setup([record]);
+  await localClaudeFixture(runtime.home,record);
   writeAimgrConfig({ homeDir: runtime.home, config: { redis: { url: "redis://fake:6379", keyPrefix: PREFIX } } });
   let runs = 0;
   try {
@@ -455,59 +459,48 @@ test("ordinary Claude maintenance refreshes with no proxy configuration and pres
 });
 
 
-for (const scenario of ["missing-profile", "blocked", "missing-credential"]) {
-  // Each case starts with a usable ordinary cache, then observes a remote opt-in.
-  // Even paths that skip maintenance must leave that cache unable to launch direct.
-  test(`maintenance remembers remote opt-in before ${scenario} can expose its old ordinary cache`, async () => {
-    const record = claudeRecord("ordinary"); delete record.policy.egress;
-    const runtime = await setup([record]);
-    const deps = { nowImpl: () => NOW_MS, connectRedisStoreImpl: runtime.connectRedisStoreImpl, resolveExecutableOnPathImpl: buildTestClaudeResolver() };
+for (const scenario of ["missing-profile", "legacy-blocked", "legacy-missing-credential"]) {
+  test(`maintenance cannot restore the invalidated offline route after reassignment: ${scenario}`, async () => {
+    const record=claudeRecord("ordinary");delete record.policy.egress;
+    const runtime=await setup([record]);
+    await localClaudeFixture(runtime.home,record);
+    const deps={nowImpl:()=>NOW_MS,connectRedisStoreImpl:runtime.connectRedisStoreImpl,resolveExecutableOnPathImpl:buildTestClaudeResolver(),assertLocalClaudeProfileStoppedImpl:async()=>{}};
     try {
-      await runCli(["claude", "run", "ordinary", "--home", runtime.home], { ...deps, runClaudeCliImpl: () => ({ status: 0, signal: null }) });
-      assert.equal(readClaudeOfflineBinding(runtime.home, "ordinary"), null);
-      const current = (await readSnapshot(runtime.store)).credentials[0];
-      const protectedRecord = { ...current,
-        credential: scenario === "missing-credential" ? {} : current.credential,
-        policy: { ...current.policy,
-          reauth: scenario === "blocked" ? { blockedReason: "oauth_reauth_required" } : {},
-          egress: { profileRef: "not-installed" } },
-      };
-      assert.equal((await publishCredential(runtime.store, { expectedVersion: current.version,
-        credentialRecord: protectedRecord, updatedBy: "explicit-opt-in" })).ok, true);
-      const result = await runCliWithExitCode(["auth", "maintain", "--home", runtime.home], {
-        ...deps, runClaudeCliNoninteractiveImpl: () => { throw new Error("invalid protected config reached child launch"); },
-      });
-      const expected = scenario === "missing-profile" ? "outcome=retryable reason=proxy_unavailable"
-        : scenario === "blocked" ? "outcome=skipped reason=reauth_already_required"
-        : "outcome=skipped reason=credential_missing";
-      assert.ok(result.stdout.includes(`label=ordinary ${expected}`), result.stdout);
-      assert.deepEqual(readClaudeOfflineBinding(runtime.home, "ordinary"), { required: true, invalidated: true });
-      await assert.rejects(runCli(["claude", "run", "ordinary", "--home", runtime.home], {
-        ...deps, connectRedisStoreImpl: async () => { throw new Error("Redis offline"); },
-        runClaudeCliImpl: () => { throw new Error("protected cache reached ordinary child launch"); },
-      }), /cached proxy assignment/);
-    } finally { fs.rmSync(runtime.home, { recursive: true, force: true }); }
+      await runCli(["claude","run","ordinary","--home",runtime.home],{...deps,runClaudeCliImpl:()=>({status:0,signal:null})});
+      assert.equal(readClaudeOfflineBinding(runtime.home,"ordinary").egress,undefined);
+      await runCli(["claude","proxy","set","ordinary","test","--home",runtime.home],deps);
+      const current=(await readSnapshot(runtime.store)).credentials[0];
+      if(scenario==="missing-profile") writeAimgrConfig({homeDir:runtime.home,config:{redis:{url:"redis://fake:6379",keyPrefix:PREFIX}}});
+      else {
+        const updated={...current,credential:scenario==="legacy-missing-credential"?{}:current.credential,
+          policy:{...current.policy,...(scenario==="legacy-blocked"?{reauth:{blockedReason:"oauth_reauth_required"}}:{})}};
+        assert.equal((await publishCredential(runtime.store,{expectedVersion:current.version,credentialRecord:updated,updatedBy:"legacy-test"})).ok,true);
+      }
+      const sharedBefore=await runtime.client.get(runtime.store.keys.credential(current));
+      let runs=0;
+      const result=await runCliWithExitCode(["auth","maintain","--home",runtime.home],{...deps,runClaudeCliNoninteractiveImpl:({configDir,egressProfile})=>{
+        runs++;assert.equal(egressProfile.profileRef,"test");
+        rotateProjectedClaudeCredential(configDir,{accessToken:"LOCAL_ROTATED",refreshToken:"LOCAL_ROTATED_REFRESH",expiresAt:Date.now()+7200000});
+        return {status:0,signal:null,timedOut:false};
+      }});
+      assert.match(result.stdout,scenario==="missing-profile"?/outcome=retryable reason=local_maintenance_unavailable/:/outcome=refreshed reason=credential_rotated/);
+      assert.equal(runs,scenario==="missing-profile"?0:1);
+      assert.equal(await runtime.client.get(runtime.store.keys.credential(current)),sharedBefore,"local maintenance must ignore legacy auth policy and never mutate the shared legacy grant");
+      assert.deepEqual(readClaudeOfflineBinding(runtime.home,"ordinary"),{required:true,invalidated:true});
+      await assert.rejects(runCli(["claude","run","ordinary","--home",runtime.home],{...deps,
+        connectRedisStoreImpl:async()=>{throw new Error("Redis offline");},runClaudeCliImpl:()=>assert.fail("invalidated offline assignment reached native")}),/offline.*metadata|metadata.*offline|no verified local account metadata/);
+    } finally {fs.rmSync(runtime.home,{recursive:true,force:true});}
   });
 }
 
-
-test("maintenance losing its lease during preflight cannot restore an invalidated protected cache", async () => {
-  const runtime = await setup([claudeRecord("protected")]);
-  let inspected = false;
-  try {
-    const result = await runCliWithExitCode(["auth", "maintain", "--home", runtime.home], {
-      nowImpl: () => NOW_MS,
-      connectRedisStoreImpl: runtime.connectRedisStoreImpl,
-      resolveExecutableOnPathImpl: () => {
-        inspected = true;
-        runtime.client.advanceTime(60_001);
-        invalidateClaudeOfflineBinding(runtime.home, "protected");
-        return process.execPath;
-      },
-      runClaudeCliNoninteractiveImpl: () => { throw new Error("lost lease reached native launch"); },
-    });
-    assert.equal(inspected, true);
-    assert.match(result.stdout, /outcome=retryable reason=lease_release_failed/);
-    assert.deepEqual(readClaudeOfflineBinding(runtime.home, "protected"), { required: true, invalidated: true });
-  } finally { fs.rmSync(runtime.home, { recursive: true, force: true }); }
+test("unenrolled Claude labels neither spawn maintenance helpers nor produce per-label noise",async()=>{
+ const record=claudeRecord("unenrolled"),runtime=await setup([record]);
+ try {
+  const before=await runtime.client.get(runtime.store.keys.credential(record));
+  const result=await runCliWithExitCode(["auth","maintain","--home",runtime.home],{env:{},connectRedisStoreImpl:runtime.connectRedisStoreImpl,
+   resolveExecutableOnPathImpl:()=>assert.fail("unenrolled account must not resolve or prepare a native launch"),runClaudeCliNoninteractiveImpl:()=>assert.fail("unenrolled account must not launch native")});
+  assert.deepEqual(result,{stdout:"refreshed=0 unchanged=0 reauth_required=0 retryable=0 skipped=1\n",exitCode:0});
+  assert.equal(fs.existsSync(resolveAimgrClaudeLabelHomeDir({homeDir:runtime.home,label:record.label})),false);
+  assert.equal(await runtime.client.get(runtime.store.keys.credential(record)),before);
+ } finally {fs.rmSync(runtime.home,{recursive:true,force:true});}
 });
