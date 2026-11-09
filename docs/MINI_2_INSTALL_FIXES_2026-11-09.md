@@ -5,7 +5,7 @@
 - [x] Provision a missing Claude environment identity without replacing an existing one.
 - [x] Install both approved provider bundles through `install-release.sh`.
 - [x] Pass temporary-home installer tests on Mac.
-- [ ] Pass affected Codex policy and scheduling regressions on the combined stack.
+- [x] Pass affected Codex policy and scheduling regressions on the combined stack.
 - [ ] Push the stack and report its exact top commit for the Mini 2-only pin.
 
 Scope: the four AIM changes explicitly requested by Amir through the devcluster session on November 9. The rollout and Mini 2 test plan live in devcluster-config `MINI-2-PLAN.md`; this is an implementation receipt, not a second rollout plan. No additional rollout gates, runtime approval, fleet installation or service behavior changes are included.
@@ -22,3 +22,5 @@ Scope: the four AIM changes explicitly requested by Amir through the devcluster 
 `python3 test/scripts/release-install.test.py`: 10 tests pass on Mac. These execute release orchestration in temporary homes with synthetic runtime installers and sudo/service stand-ins, plus the actual environment provisioning code with root ownership simulated. Coverage includes fresh dual-provider activation, a second release commit, preserved identity, repairing a missing anchor under already-active bundles, provider-specific selection, rejection of test-only approval, and Codex-install failure before wrapper publication. No installed runtime or service is changed by these tests.
 
 `bash -n scripts/install-release.sh` and `git diff --check` pass.
+
+On the combined stack, the home-server scratch checkout passed the four affected Node test files (`codex-policy-installer`, `codex-managed-policy`, `use-watch`, and `routine-run`): 86 passed, zero failed, one skipped. The skipped maintenance test requires the dedicated offsite audit host and writes its administrator maintenance state; it was not enabled on the shared home server. The same 10 temporary-home installer tests also passed on Linux. No provider requests or live service changes were made.
