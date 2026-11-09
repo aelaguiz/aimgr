@@ -18,6 +18,7 @@ import platform
 import plistlib
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -67,8 +68,17 @@ def follow_services(aim):
         if changed:
             if domain:
                 launchctl("bootout", f"{domain}/{label}")
+                # bootout returns before the job is gone, and a bootstrap before then fails.
+                for _ in range(50):
+                    if launchctl("print", f"{domain}/{label}").returncode != 0:
+                        break
+                    time.sleep(0.2)
             target = domain or next((d for d in domains() if launchctl("print", d).returncode == 0), domains()[-1])
-            started = launchctl("bootstrap", target, str(plist))
+            for _ in range(10):
+                started = launchctl("bootstrap", target, str(plist))
+                if started.returncode == 0:
+                    break
+                time.sleep(1)
             print(f"{label}: now runs {aim}" + ("" if started.returncode == 0 else f" (reload failed: {started.stderr.strip()})"))
         elif domain and data.get("KeepAlive"):
             launchctl("kickstart", "-k", f"{domain}/{label}")
