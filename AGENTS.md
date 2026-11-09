@@ -10,6 +10,7 @@ work and future development. Keep scope, decisions, progress and completion in
 the corresponding issue, and keep its worklist entry current. Check existing
 issues before filing so each problem has one current discussion. Reference
 documents hold the evidence and design; their follow-up work belongs in issues.
+Choose a helper's model and thinking level with `$model-routing` when you start it. A session Amir starts through `aim` keeps the setting he gave it.
 
 ## Privacy investigations and test identities
 

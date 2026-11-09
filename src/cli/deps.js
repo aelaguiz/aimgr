@@ -7,6 +7,7 @@ export function createDefaultDeps() {
   return {
     stdin: process.stdin,
     stdout: process.stdout,
+    stderr: process.stderr,
     env: process.env,
     setExitCode: (code) => {
       process.exitCode = code;

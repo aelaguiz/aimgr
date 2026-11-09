@@ -14,7 +14,8 @@ import { inspectClaudePrivacyStatus, formatClaudePrivacyStatus } from "../../pri
 import { readAimgrConfig } from "../../config/aimgr-config.js";
 import { normalizeEgressPolicy, resolveClaudeEgressProfile } from "../../network/claude-egress-policy.js";
 import { normalizeLabel } from "../../core/normalize.js";
-import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL } from "../../core/constants.js";
+import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, ANTHROPIC_PROVIDER } from "../../core/constants.js";
+import { accountNoteFor, readNotesForCommand, notesForAccounts, renderAccountNotes, formatAccountNote } from "../../status/account-notes.js";
 import { pickClaudeSession } from "../claude-session-picker.js";
 import { claudeRunPresetArgs } from "../args.js";
 import { readMachineClaudeSessionCounts, joinLocalClaudeSessions } from "../../targets/claude-machine-lease.js";
@@ -247,6 +248,11 @@ async function handleRedisClaudeRun(context, { launchCwd = process.cwd(), sessio
       ...(metadata.policy?.egress ? {egress:metadata.policy.egress} : {}),version:metadata.version});
     await closeRedisRuntime(runtime); runtime.store=null;
     leaveSessions = await joinLocalClaudeSessions({homeDir,label});
+    const accountNote = accountNoteFor(runtime.accountNotes, ANTHROPIC_PROVIDER, label);
+    const noteOutput = (opts.afterDoubleDash ?? []).some(arg => arg === "--output-format" || arg.startsWith("--output-format="))
+      ? context.stderr : context.stdout;
+    if (accountNote) noteOutput?.write?.(`[aim] ${formatAccountNote({ provider: ANTHROPIC_PROVIDER, label, note: accountNote })}\n`);
+    else if (runtime.accountNotes === null) noteOutput?.write?.("[aim] Account notes unavailable.\n");
     const launched = await (context.runClaudeCliImpl ?? runClaudeCli)({ assignmentLock, egressProfile: profile,
       expectedIdentity: local.nativeClaudeBundle.oauthAccount, command: prepared.command, preparedLaunch: prepared,
       userHomeDir: homeDir, homeDir: claudeHome, configDir, cwd: launchCwd,
@@ -528,10 +534,13 @@ export async function handleClaude(context) {
       connectRedisStoreImpl,
       readClaudeEnvironmentImpl:context.readClaudeEnvironmentImpl,
     });
+    const notes = notesForAccounts(await readNotesForCommand(context), ANTHROPIC_PROVIDER, result.accounts ?? []);
+    result.accountNotes = notes;
+    for (const account of result.accounts ?? []) account.note = accountNoteFor(notes, ANTHROPIC_PROVIDER, account.label);
     stdout.write(
       opts.json
         ? `${JSON.stringify(result, null, 2)}\n`
-        : renderClaudeRedisAccountUsageStatus(result, { verbose: opts.verbose === true }),
+        : renderClaudeRedisAccountUsageStatus(result, { verbose: opts.verbose === true }) + renderAccountNotes(notes),
     );
     if (result.ok !== true) {
       setExitCode(1);
@@ -565,7 +574,10 @@ export async function handleClaude(context) {
       connectRedisStoreImpl,
       readClaudeEnvironmentImpl:context.readClaudeEnvironmentImpl,
     });
-    stdout.write(opts.json ? `${JSON.stringify(result, null, 2)}\n` : renderClaudeRedisAccountInventory(result));
+    const notes = notesForAccounts(await readNotesForCommand(context), ANTHROPIC_PROVIDER, result.accounts ?? []);
+    result.accountNotes = notes;
+    for (const account of result.accounts ?? []) account.note = accountNoteFor(notes, ANTHROPIC_PROVIDER, account.label);
+    stdout.write(opts.json ? `${JSON.stringify(result, null, 2)}\n` : renderClaudeRedisAccountInventory(result) + renderAccountNotes(notes));
     if (result.ok !== true) {
       setExitCode(1);
     }

@@ -10,7 +10,10 @@ The fleet consists of these five machines:
 | M3 Max | `amirs-m3-max-new` |
 | M3 36 GB | `amir-m3-36gb` |
 
-`scripts/sync-fleet.sh` runs from the M5 and targets the other four machines.
+Each machine installs AI Manager itself from its own `~/workspace/aimgr` checkout with
+`scripts/install-release.sh`; devcluster runs it whenever that checkout moves (README,
+"Installing on a machine"). `scripts/sync-fleet.sh` runs from the M5 and deploys only
+prime-agent to the other four machines.
 
 Amir retired the old M1 from the fleet on October 25, 2026. Its aliases
 `amirs-old-m1`, `amir-old-m1` and `old-m1` are not deployment or health-check

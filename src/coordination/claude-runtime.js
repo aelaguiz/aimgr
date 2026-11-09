@@ -6,7 +6,7 @@ import { readClaudeEnvironment } from '../privacy/claude-environment.js';
 import { loadLocalState } from '../state/local-state.js';
 import { buildCoordinationView } from './snapshot.js';
 import { readClaudeAccountMetadata } from './claude-metadata.js';
-import { connectRedisStore, closeRedisStore, REDIS_CONNECTION_POLICY_ONE_SHOT } from './redis-store.js';
+import { connectRedisStore, closeRedisStore, readAccountNotes, REDIS_CONNECTION_POLICY_ONE_SHOT } from './redis-store.js';
 import { writeJsonFileIfChanged } from '../io/json-store.js';
 
 export function readCachedClaudeAccountMetadata({homeDir,environment}) {
@@ -46,5 +46,6 @@ export async function loadClaudeRuntime({ homeDir, connectRedisStoreImpl = conne
   const localState = loadLocalState({ homeDir });
   const snapshot = { credentials, observedAt: new Date().toISOString(), keyPrefix: store?.keyPrefix };
   const state = buildCoordinationView(snapshot, { localState, provider: ANTHROPIC_PROVIDER });
-  return { redis, store, snapshot, state, localState, environment, offline, providerScope: ANTHROPIC_PROVIDER, updatedBy: 'aimgr-cli' };
+  const accountNotes = store ? await readAccountNotes(store).catch(() => null) : null;
+  return { redis, store, snapshot, state, localState, environment, offline, accountNotes, providerScope: ANTHROPIC_PROVIDER, updatedBy: 'aimgr-cli' };
 }
