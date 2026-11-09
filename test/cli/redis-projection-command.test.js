@@ -1511,7 +1511,7 @@ test("automatic Fable run skips a locked account and launches the lowest five-ho
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
-        "claude-fable-5-1",
+        "fable",
         "--effort",
         "xhigh",
         "--resume",
@@ -1843,7 +1843,7 @@ test(`claude resume --switch-account ${preset} preserves ${effort} effort with a
       assert.deepEqual(args, [
         "--dangerously-skip-permissions",
         "--model",
-        { fable: "claude-fable-5-1", opus: "opus", sonnet: "claude-sonnet-5-5" }[preset],
+        { fable: "fable", opus: "opus", sonnet: "sonnet" }[preset],
         "--effort",
         effort,
         "--resume",

@@ -548,12 +548,12 @@ routines:
     promptFile: /Users/you/.aimgr/routines/prompts/morning-review.md
     herdrSession: work
     spaceTitleFormat: "Claude morning review · {scheduled_local}"
-    model: claude-fable-5-1
+    model: fable
     thinking: xhigh
 ```
 
-Claude defaults to `provider: anthropic`, `model: claude-fable-5-1`, and
-`thinking: xhigh`. Thinking maps to Claude's `--effort` and accepts `low`,
+Claude defaults to `provider: anthropic`, `model: fable` (Claude Code's name for
+its newest Fable), and `thinking: xhigh`. Thinking maps to Claude's `--effort` and accepts `low`,
 `medium`, `high`, `xhigh`, or `max`; the chosen model must support that effort.
 `profile` is Codex-only. Claude jobs run with `--dangerously-skip-permissions`
 for unattended execution, as the native AIM Claude presets do.
