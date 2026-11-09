@@ -1,8 +1,7 @@
 import path from "node:path";
-import { normalizeBrowserBindingMode, normalizeInteractiveOAuthMode } from "../browser/bindings.js";
-import { getMissingBrowserActionForBinding } from "../browser/seed.js";
+import { normalizeInteractiveOAuthMode } from "../browser/bindings.js";
 import { parseExpiresAtToMs } from "../core/time.js";
-import { ANTHROPIC_PROVIDER, BROWSER_MODE_AIM_PROFILE, OPENAI_CODEX_PROVIDER, REAUTH_MODE_BROWSER_MANAGED, REAUTH_MODE_MANUAL_CALLBACK } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER, REAUTH_MODE_MANUAL_CALLBACK } from "../core/constants.js";
 import { isObject, normalizeLabel, normalizeProviderId } from "../core/normalize.js";
 import { buildClaudeCredentialSummaryFromBundle, hasCompleteClaudeNativeBundle } from "../credentials/claude-bundle.js";
 import { getAnthropicCredentialView } from "../credentials/anthropic.js";
@@ -16,7 +15,6 @@ export function derivePoolAccountStatus({ account, label, credentials, browserFa
   const browser = isObject(normalizedAccount.browser) ? normalizedAccount.browser : {};
   const provider = normalizeProviderId(normalizedAccount.provider);
   const browserMode = normalizeInteractiveOAuthMode(reauth.mode);
-  const bindingMode = normalizeBrowserBindingMode(browser.mode);
   const blockedReason = typeof reauth.blockedReason === "string" ? reauth.blockedReason.trim() : "";
   const conflictReason = typeof browser.conflictReason === "string" ? browser.conflictReason.trim() : "";
   const expectedEmail =
@@ -138,85 +136,6 @@ export function derivePoolAccountStatus({ account, label, credentials, browserFa
       eligible: false,
       actionRequired: "fix_blocker",
       reason: blockedReason,
-    };
-  }
-
-  if (browserMode === REAUTH_MODE_BROWSER_MANAGED && browserFacts?.bindingPresent !== true) {
-    if (hasFreshCredentials) {
-      return {
-        operatorStatus: "ready",
-        detailReason: "binding_missing_for_future_reauth",
-        eligible: true,
-        actionRequired: "run_aim_browser_set",
-        reason:
-          "Credentials are still usable now; set an explicit browser binding before the next browser-managed reauth.",
-      };
-    }
-    return {
-      operatorStatus: "reauth",
-      detailReason: "binding_missing_for_future_reauth",
-      eligible: false,
-      actionRequired: "run_aim_browser_set",
-      reason: "No explicit browser binding is configured for this browser-managed label.",
-    };
-  }
-
-  if (
-    browserMode === REAUTH_MODE_BROWSER_MANAGED
-    && browserFacts?.bindingPresent === true
-    && browserFacts?.exists !== true
-  ) {
-    const missingAction = getMissingBrowserActionForBinding({
-      label: normalizeLabel(label),
-      bindingMode,
-    });
-    if (hasFreshCredentials) {
-      return {
-        operatorStatus: "ready",
-        detailReason: "missing_browser",
-        eligible: true,
-        actionRequired: missingAction.actionRequired,
-        reason:
-          bindingMode === BROWSER_MODE_AIM_PROFILE
-            ? "Credentials are still usable now; run `aim <label>` later to recreate the missing AIM-managed browser profile."
-            : "Credentials are still usable now; repair the missing mapped browser binding before the next browser-managed reauth.",
-      };
-    }
-    return {
-      operatorStatus: "reauth",
-      detailReason: "missing_browser",
-      eligible: false,
-      actionRequired: missingAction.actionRequired,
-      reason:
-        bindingMode === BROWSER_MODE_AIM_PROFILE
-          ? "AIM-managed browser profile is missing for this label."
-          : "Configured browser binding cannot be resolved on disk.",
-    };
-  }
-
-  if (
-    browserMode === REAUTH_MODE_BROWSER_MANAGED
-    && bindingMode === BROWSER_MODE_AIM_PROFILE
-    && typeof browser.seededAt === "string"
-    && browser.seededAt.trim()
-    && !(typeof browser.verifiedAt === "string" && browser.verifiedAt.trim())
-  ) {
-    if (hasFreshCredentials) {
-      return {
-        operatorStatus: "ready",
-        detailReason: "seeded_unverified",
-        eligible: true,
-        actionRequired: "run_aim_label",
-        reason:
-          "Credentials are still usable now; run `aim <label>` later to verify the seeded AIM-owned browser profile.",
-      };
-    }
-    return {
-      operatorStatus: "reauth",
-      detailReason: "seeded_unverified",
-      eligible: false,
-      actionRequired: "run_aim_label",
-      reason: "AIM browser profile was seeded but not yet verified by a successful AIM-managed login or refresh.",
     };
   }
 

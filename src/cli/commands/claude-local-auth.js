@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
+import { promptLine } from '../../io/prompts.js';
 import { fileURLToPath } from 'node:url';
 import { normalizeLabel } from '../../core/normalize.js';
 import { loadClaudeRuntime } from '../../coordination/claude-runtime.js';
@@ -11,7 +12,6 @@ import { acquireClaudeAssignmentLock, writeClaudeOfflineBinding } from '../../ne
 import { closeRedisRuntime } from '../../coordination/runtime.js';
 import { buildCoordinationView } from '../../coordination/snapshot.js';
 import { resolveNativeAccountProfile } from '../../network/claude-native-route.js';
-import { closeClaudeLoginTabs, validateClaudeChrome } from '../../browser/claude-cdp.js';
 import { localClaudePaths, saveLocalClaudeLogin, logoutLocalClaudeCredential, assertLocalClaudeLoginTransitionAllowed } from '../../credentials/claude-local.js';
 import { buildManagedClaudeNativeStorageDescriptor, ensureSafeManagedClaudeStorage, readManagedClaudeNativeBundleFromFiles } from '../../credentials/claude-native-storage.js';
 import { writeJsonFileIfChanged } from "../../io/json-store.js";
@@ -55,16 +55,10 @@ export function extractNativeClaudeManualUrl(text) {
   return null;
 }
 
-export function buildClaudeLoginEnvironment({ env, profile, manual, tabs }) {
+export function buildClaudeLoginEnvironment({ env }) {
   const result = { ...env };
-  for (const key of ['AIMGR_CLAUDE_LOGIN_PROFILE','AIMGR_CLAUDE_LOGIN_TABS','AIMGR_CLAUDE_LOGIN_STDIO']) delete result[key];
-  if (profile || manual) {
-    result.BROWSER = fileURLToPath(new URL('../../../scripts/claude-login-browser.mjs', import.meta.url));
-    result.AIMGR_CLAUDE_LOGIN_PROFILE = JSON.stringify(profile);
-    result.AIMGR_CLAUDE_LOGIN_TABS = tabs;
-    if (manual) result.AIMGR_CLAUDE_LOGIN_STDIO = '1';
-    delete result.DISPLAY; delete result.WAYLAND_DISPLAY;
-  }
+  for (const key of ['AIMGR_CLAUDE_LOGIN_PROFILE','AIMGR_CLAUDE_LOGIN_TABS','AIMGR_CLAUDE_LOGIN_STDIO','DISPLAY','WAYLAND_DISPLAY']) delete result[key];
+  result.BROWSER = fileURLToPath(new URL('../../../scripts/claude-login-no-browser.mjs', import.meta.url));
   return result;
 }
 
@@ -72,7 +66,7 @@ export async function handleLocalClaudeAuth(context) {
   const { homeDir, opts, positional, stdout, stdin, env } = context;
   const label = normalizeLabel(positional[2]);
   if (positional.length !== 3) throw new Error('Usage: aim claude login <label> [--email <email>] [--proxy <profileRef>] [--manual-callback-stdio] | aim claude logout <label>');
-  const manual = opts.manualCallbackStdio === true;
+  const jsonl = opts.manualCallbackStdio === true;
   const emit = value => stdout.write(`${JSON.stringify(value)}\n`);
   let runtime, stagingHome, input, timeout, child;
   try {
@@ -85,7 +79,7 @@ export async function handleLocalClaudeAuth(context) {
       if (metadata) await logoutLocalClaudeCredential({ homeDir, label, metadata, environment: runtime.environment, command,
         ...(context.assertClaudeNativeOwnersStoppedImpl ? { assertStopped: context.assertClaudeNativeOwnersStoppedImpl } : {}) });
       const result = { type: 'result', ok: true, label, provider: 'anthropic', authority: 'environment-local' };
-      if (manual || opts.json) emit(result); else stdout.write(`Claude ${label} is signed out on this machine.\n`);
+      if (jsonl || opts.json) emit(result); else stdout.write(`Claude ${label} is signed out on this machine.\n`);
       return;
     }
     const existingMetadata=metadata;
@@ -94,14 +88,13 @@ export async function handleLocalClaudeAuth(context) {
     const boundEmail=metadata?.policy?.expect?.email ?? metadata?.identity?.emailAddress;
     if(requestedEmail && boundEmail && requestedEmail!==boundEmail.toLowerCase()) throw new Error('Claude login email differs from its account assignment.');
     const expectedEmail = boundEmail ?? requestedEmail
-      ?? (manual ? null : String(await context.promptLineImpl(`Expected Claude email for "${label}":`)).trim().toLowerCase());
+      ?? (jsonl ? null : String(await (context.promptLineImpl ?? promptLine)(`Expected Claude email for "${label}":`)).trim().toLowerCase());
     if (!expectedEmail) throw new Error('Claude login requires an expected email; use --email for a new label.');
     metadata ??= { provider: 'anthropic', label, policy: { expect: { email: expectedEmail }, ...(opts.claudeLoginProxyRef ? {egress:{profileRef:opts.claudeLoginProxyRef}} : {}) }, identity: {}, credential: {} };
     const state = buildCoordinationView({ credentials: [metadata] }, { localState: runtime.localState, provider: 'anthropic' });
     const profile = resolveNativeAccountProfile({ homeDir, state, label });
     await assertLocalClaudeLoginTransitionAllowed({homeDir,label,metadata,environment:runtime.environment,command,
       ...(context.assertClaudeNativeOwnersStoppedImpl ? {assertStopped:context.assertClaudeNativeOwnersStoppedImpl} : {})});
-    if (profile && !manual) await (context.validateClaudeChromeImpl ?? validateClaudeChrome)(profile);
     const loginEnvironment=runtime.environment;
     await closeRedisRuntime(runtime); runtime=null;
     const paths = localClaudePaths({ homeDir, label, metadata });
@@ -115,47 +108,44 @@ export async function handleLocalClaudeAuth(context) {
     ensureSafeManagedClaudeStorage({ descriptor });
     const prepare = context.resolveExecutableOnPathImpl?.prepareClaudeCliLaunchImpl ?? prepareClaudeCliLaunch;
     const preparedLaunch = await prepare({ command, userHomeDir: homeDir, homeDir: stagingHome, configDir });
-    const tabs = path.join(stagingHome, 'login-tabs.jsonl');
-    const loginEnv = buildClaudeLoginEnvironment({ env, profile, manual, tabs });
+    const loginEnv = buildClaudeLoginEnvironment({ env });
     const abort = new AbortController();
     let callbackFailure, advertised, received = false;
-    let spawnImpl;
-    if (manual) {
-      input = readline.createInterface({ input: stdin, crlfDelay: Infinity, terminal: false });
-      input.on('line', line => {
-        try {
-          if (received || !advertised || Buffer.byteLength(line) > 16384) throw new Error();
-          received = true;
-          const value = validateClaudeManualCallback(JSON.parse(line), advertised);
-          child.stdin.write(value + '\n');
-        } catch { callbackFailure = new Error('Claude callback did not match the current native login.'); abort.abort(callbackFailure); }
+    input = readline.createInterface({ input: stdin, crlfDelay: Infinity, terminal: false });
+    input.on('line', line => {
+      if (!jsonl && !line.trim()) return;
+      try {
+        if (received || !advertised || Buffer.byteLength(line) > 16384) throw new Error();
+        received = true;
+        const value = validateClaudeManualCallback(jsonl ? JSON.parse(line) : (line.trim().startsWith('https://') ? {url:line.trim()} : {code:line.trim()}), advertised);
+        child.stdin.write(value + '\n');
+      } catch { callbackFailure = new Error('Claude callback did not match the current native login.'); abort.abort(callbackFailure); }
+    });
+    input.on('close', () => { if (!received) { callbackFailure = new Error('Claude callback input closed.'); abort.abort(callbackFailure); } });
+    const spawnImpl = (binary, args, options) => {
+      child = spawn(binary, args, { ...options, stdio: ['pipe', 'pipe', 'pipe', ...options.stdio.slice(3)] });
+      // Native prompts may contain URL/code. Only the explicit manual bridge
+      // crosses stdout; discard all vendor text from automation receipts.
+      let nativeText = '';
+      child.stdout.on('data', bytes => {
+        if (advertised) return;
+        nativeText = (nativeText + bytes.toString('utf8')).slice(-65536);
+        // Native prints its MANUAL URL before opening the loopback URL.
+        // A code issued for the browser's loopback redirect cannot be fed to
+        // its manual exchange. Capture exactly the native manual URL.
+        advertised = extractNativeClaudeManualUrl(nativeText);
+        if (advertised) {
+          if (jsonl) emit({type:'auth_url',provider:'anthropic',label,url:advertised});
+          else stdout.write(`Open this URL in the account's existing BrowserOS profile, then paste the full callback URL or code#state here:\n${advertised}\n`);
+        }
       });
-      input.on('close', () => { if (!received) { callbackFailure = new Error('Claude callback input closed.'); abort.abort(callbackFailure); } });
-      spawnImpl = (binary, args, options) => {
-        child = spawn(binary, args, { ...options, stdio: ['pipe', 'pipe', 'pipe', ...options.stdio.slice(3)] });
-        // Native prompts may contain URL/code. Only the explicit JSONL bridge
-        // crosses stdout; discard all vendor text from automation receipts.
-        let nativeText = '';
-        child.stdout.on('data', bytes => {
-          if (advertised) return;
-          nativeText = (nativeText + bytes.toString('utf8')).slice(-65536);
-          // Native prints its MANUAL URL before opening the loopback URL.
-          // A code issued for the browser's loopback redirect cannot be fed to
-          // its manual exchange. Capture exactly the native manual URL.
-          advertised = extractNativeClaudeManualUrl(nativeText);
-          if(advertised) emit({type:'auth_url',provider:'anthropic',label,url:advertised});
-        });
-        child.stderr.resume();
-        return child;
-      };
-      timeout = setTimeout(() => abort.abort(new Error('Claude login timed out.')), 5 * 60_000);
-    }
-    let launched;
-    try {
-      launched = await (context.runClaudeCliImpl ?? runClaudeCli)({ command: preparedLaunch.command, preparedLaunch,
+      child.stderr.resume();
+      return child;
+    };
+    timeout = setTimeout(() => abort.abort(new Error('Claude login timed out.')), 5 * 60_000);
+    const launched = await (context.runClaudeCliImpl ?? runClaudeCli)({ command: preparedLaunch.command, preparedLaunch,
         userHomeDir: homeDir, homeDir: stagingHome, configDir, cwd: process.cwd(), egressProfile: profile,
-        args: ['auth', 'login', '--claudeai'], env: loginEnv, signal: abort.signal, ...(spawnImpl ? { spawnImpl } : {}) });
-    } finally { if (profile) await closeClaudeLoginTabs(tabs); }
+        args: ['auth', 'login', '--claudeai'], env: loginEnv, signal: abort.signal, spawnImpl });
     if (callbackFailure) throw callbackFailure;
     if (launched?.status !== 0 || launched?.signal) throw new Error('Claude native login was cancelled or failed.');
     const staged = readManagedClaudeNativeBundleFromFiles({ descriptor });
@@ -187,10 +177,10 @@ export async function handleLocalClaudeAuth(context) {
       writeJsonFileIfChanged(path.join(homeDir,'.aimgr','claude-account-metadata.json'), {schema:1,environmentBinding:runtime.environment.binding,credentials:records}, {mode:0o600});
       writeClaudeOfflineBinding(homeDir,label,{identity:confirmed.identity,...(confirmed.policy?.egress?{egress:confirmed.policy.egress}:{}),version:confirmed.version});
     } finally {await cacheGuard.release();}
-    if (manual || opts.json) emit({ type: 'result', ok: true, label, provider: 'anthropic', authority: 'environment-local' });
+    if (jsonl || opts.json) emit({ type: 'result', ok: true, label, provider: 'anthropic', authority: 'environment-local' });
     else stdout.write(`Claude ${label} is signed in on this machine.\n`);
   } catch (error) {
-    if (!manual) throw error;
+    if (!jsonl) throw error;
     const stoppedOwner = error.code === 'AIMGR_CLAUDE_LOCAL_LOGIN_REQUIRES_STOPPED_OWNER';
     emit({ type: 'error', ok: false, label, provider: 'anthropic',
       ...(stoppedOwner ? {code:error.code,error:`Stop this account's Claude sessions and background work on this machine, then run aim claude login ${label} again.`} : {error:'Claude local login failed.'}) });

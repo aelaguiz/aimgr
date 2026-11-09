@@ -136,6 +136,7 @@ export function buildWarningsFromStatusAccounts(accounts, { now = Date.now() } =
 }
 
 export function buildInteractiveLoginStatus({ state, label }) {
+  if ([ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER].includes(normalizeProviderId(state.accounts?.[label]?.provider))) return { mode: "manual-callback", bindingPresent: false };
   const binding = getInteractiveOAuthBindingForLabel(state, label);
   const mode = normalizeInteractiveOAuthMode(binding?.mode);
   return mode

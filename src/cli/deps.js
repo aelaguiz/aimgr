@@ -91,31 +91,8 @@ export async function loadCommandDefaultDeps(command) {
   }
 
   if (command === "login") {
-    const [browser, prompts, openclaw, panels, codexAuth, runner, nativeStorage, processIo] = await Promise.all([
-      import("../browser/launch.js"),
-      import("../io/prompts.js"),
-      import("../openclaw/config.js"),
-      import("../panels/actions.js"),
-      import("@mariozechner/pi-ai"),
-      import("../targets/claude-runner.js"),
-      import("../credentials/claude-native-storage.js"),
-      import("../io/process.js"),
-    ]);
-    return {
-      promptLineImpl: prompts.promptLine,
-      promptImpl: prompts.promptRequiredLine,
-      openUrlImpl: browser.launchBrowserBindingForUrl,
-      readOpenclawBindingsFromConfigImpl: openclaw.readOpenclawBindingsFromConfig,
-      readOpenclawAgentsListFromConfigImpl: openclaw.readOpenclawAgentsListFromConfig,
-      runLabelControlPanelImpl: panels.runLabelControlPanel,
-      loginOpenAICodexImpl: codexAuth.loginOpenAICodex,
-      refreshOpenAICodexImpl: codexAuth.refreshOpenAICodexToken,
-      runClaudeCliImpl: runner.runClaudeCli,
-      readClaudeNativeKeychainOauthImpl: nativeStorage.readClaudeNativeKeychainOauth,
-      writeClaudeNativeKeychainOauthImpl: nativeStorage.writeClaudeNativeKeychainOauth,
-      deleteClaudeNativeKeychainOauthImpl: nativeStorage.deleteClaudeNativeKeychainOauth,
-      resolveExecutableOnPathImpl: processIo.resolveExecutableOnPath,
-    };
+    const { promptLine } = await import("../io/prompts.js");
+    return { promptLineImpl: promptLine };
   }
 
   if (command === "sakana") {

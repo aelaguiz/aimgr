@@ -296,7 +296,7 @@ export async function handleClaude(context) {
   } = context;
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   if (subcmd === "login" || subcmd === "logout") return await handleLocalClaudeAuth(context);
-  if (["capture-native", "import-native", "export-live"].includes(subcmd)) throw new Error("Primary Claude credentials stay on this machine. Use `aim claude login <label>`; explicit legacy Prime/Pi enrollment uses `aim login <label> --provider anthropic`.");
+  if (["capture-native", "import-native", "export-live"].includes(subcmd)) throw new Error("Primary Claude credentials stay on this machine. Use `aim claude login <label>`. New legacy Prime/Pi enrollment has been removed.");
   // Reject unsupported native intent before account selection, Redis or any
   // provider preflight. The shared settings handoff repeats this for internal
   // callers; this early check makes the public failure local and intelligible.

@@ -218,7 +218,7 @@ test("Claude run rejects an unknown preset before Redis or launch work", async (
   );
 });
 
-test("anthropic label maintenance captures the current native Claude login without OAuth flow", async () => {
+test("retired label maintenance cannot capture or publish a native Claude login", async () => {
   const home = mkTempHome();
   const statePath = path.join(home, ".aimgr", "secrets.json");
 
@@ -252,25 +252,10 @@ test("anthropic label maintenance captures the current native Claude login witho
     pool: { openaiCodex: { history: [] }, anthropic: { history: [] } },
   });
 
-  const out = JSON.parse(await runCli(["boss", "--home", home]));
+  const before = fs.readFileSync(statePath, 'utf8');
+  await assert.rejects(runCli(["boss", "--home", home]), /login now use manual callbacks/);
+  assert.equal(fs.readFileSync(statePath, 'utf8'), before);
 
-  assert.equal(out.ok, true);
-  assert.equal(out.maintenance.status, "ready");
-
-  const updatedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  const credential = updatedState.credentials.anthropic.boss;
-  assert.deepEqual(Object.keys(credential), ["nativeClaudeBundle"]);
-  assert.equal(credential.nativeClaudeBundle.claudeAiOauth.accessToken, "ACCESS_BOSS");
-  assert.equal(credential.nativeClaudeBundle.claudeAiOauth.refreshToken, "REFRESH_BOSS");
-  assert.equal(credential.nativeClaudeBundle.claudeAiOauth.subscriptionType, "claude_max");
-  assert.equal(credential.nativeClaudeBundle.claudeAiOauth.rateLimitTier, "oauth_claude_max");
-  assert.equal(credential.nativeClaudeBundle.oauthAccount.emailAddress, "boss@example.com");
-  assert.equal(credential.nativeClaudeBundle.oauthAccount.organizationName, "Boss Org");
-  assert.equal(credential.nativeClaudeBundle.oauthAccount.organizationUuid, "org_boss");
-  assert.equal(updatedState.accounts.boss.reauth.mode, "native-claude");
-  // Native Claude labels must stay out of the browser reauth path after successful maintenance;
-  // a stray browser object can make later status/control-panel surfaces suggest the wrong reauth substrate.
-  assert.equal(updatedState.accounts.boss.browser, null);
 });
 
 test("retired Claude capture commands cannot import a local primary grant", async () => {
