@@ -1,7 +1,7 @@
 ---
 title: "AIM cluster account status — plan"
 date: 2026-11-10
-status: active
+status: complete
 owners: [aimgr]
 doc_type: project_plan
 related: [https://github.com/aelaguiz/aimgr/issues/29]
@@ -31,4 +31,4 @@ No primary credentials in shared state or output. No probing the Air or retired 
 
 The existing status renderer now accepts blocked accounts, and the cluster command collects that view locally or over noninteractive SSH from the seven documented AIM machines. Errors leave other machine results visible and produce a failing exit code. Account credentials remain local. Existing plain status behavior is covered by its unchanged tests.
 
-Focused status tests and lint pass. The full suite on M5 ran 1,024 tests: 1,002 passed, 17 skipped and five proxy-fixture tests failed because this Mac has no 127.0.0.2 loopback address (`EADDRNOTAVAIL`). The affected proxy test files pass all 15 tests on the home server at the same base commit, where those loopback addresses work. Fleet deployment and installed verification remain in progress.
+Focused status tests and lint pass. The full suite on M5 ran 1,024 tests: 1,002 passed, 17 skipped and five proxy-fixture tests failed because this Mac has no 127.0.0.2 loopback address (`EADDRNOTAVAIL`). The affected proxy test files pass all 15 tests on the home server at the same base commit, where those loopback addresses work. AIM commit `67779f1` installed on all seven machines and passed the installer checks. Cluster status returned seven live tables from both M5 and home. All 42 directed SSH paths were checked; missing host keys were added only after matching the destination machines’ own public keys.
