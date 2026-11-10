@@ -31,3 +31,24 @@ test("managed accounts inherit disabled attribution without copying account-sens
   assert.equal(reset.attribution, undefined);
   assert.equal(reset.includeCoAuthoredBy, undefined);
 });
+
+test("managed accounts carry feature switches turned off, never plugins turned on", (t) => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const configDir = path.join(home, ".aimgr", "claude-homes", "new-account", ".claude");
+  fs.mkdirSync(configDir, { recursive: true });
+  writeJson(path.join(home, ".claude", "settings.json"), {
+    bashEditDiffEnabled: false,
+    enabledPlugins: { "cc-plugin-diff@builtin": false, "some-plugin@market": true, "other@market": false },
+  });
+  const overlay = syncManagedClaudeUserSettings({ userHomeDir: home, configDir });
+  const actual = JSON.parse(fs.readFileSync(overlay, "utf8"));
+  assert.equal(actual.bashEditDiffEnabled, false);
+  assert.deepEqual(actual.enabledPlugins, { "cc-plugin-diff@builtin": false });
+
+  writeJson(path.join(home, ".claude", "settings.json"), { bashEditDiffEnabled: true, enabledPlugins: { "x@y": true } });
+  syncManagedClaudeUserSettings({ userHomeDir: home, configDir });
+  const reset = JSON.parse(fs.readFileSync(overlay, "utf8"));
+  assert.equal(reset.bashEditDiffEnabled, undefined);
+  assert.equal(reset.enabledPlugins, undefined);
+});
