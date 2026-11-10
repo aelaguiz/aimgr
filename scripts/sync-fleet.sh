@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploy prime-agent's main to the fleet. M5 is the dev box; run this FROM M5 after pushing.
-# Fleet inventory: docs/FLEET.md. The retired old M1 is not a deployment target.
+# Fleet inventory: docs/FLEET.md.
 # Per box: ff-only pull of ~/workspace/prime-agent, npm install, and the prime-agent wrapper.
 # AI Manager itself isn't deployed from here: each machine installs it from its own
 # ~/workspace/aimgr with scripts/install-release.sh (README, "Installing on a machine").

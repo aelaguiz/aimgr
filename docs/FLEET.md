@@ -1,6 +1,6 @@
 # AI Manager fleet
 
-The fleet consists of these seven machines:
+The fleet consists of these eight machines:
 
 | Machine | SSH target |
 |---|---|
@@ -11,15 +11,16 @@ The fleet consists of these seven machines:
 | Mac Studio | `amirs-mac-studio` (user `agents`) |
 | M3 Max | `amirs-m3-max-new` |
 | M3 36 GB | `amir-m3-36gb` |
+| Old M1 | `amir-old-m1` |
 
 Each machine installs AI Manager itself from its own `~/workspace/aimgr` checkout with
 `scripts/install-release.sh`; devcluster runs it whenever that checkout moves (README,
 "Installing on a machine"). `scripts/sync-fleet.sh` deploys only prime-agent and is not the AIM deployment path.
 The M5 uses `~/.local/share/aimgr/checkout` for devcluster; other machines use
-`~/workspace/aimgr`. `aim cluster status` uses these machines and their devcluster
-SSH targets to show the account status on each.
+`~/workspace/aimgr`. `aim cluster status` reads every one of these machines over its devcluster
+SSH target and shows one combined table per provider: a row for each account, and a column for
+each machine saying whether that machine has its own login.
 
-Amir retired the old M1 from the fleet on October 25, 2026. Its aliases
-`amirs-old-m1`, `amir-old-m1` and `old-m1` are not deployment or health-check
-targets. Do not probe it, queue updates for it, or report it as a missing fleet
-machine. Historical references and saved SSH aliases do not make it active.
+The old M1 is an active fleet machine (Amir, November 10, 2026: "its literally in active use
+right now"). It was set aside on October 25, 2026 and is back; its aliases are `amirs-old-m1`,
+`amir-old-m1` and `old-m1`.

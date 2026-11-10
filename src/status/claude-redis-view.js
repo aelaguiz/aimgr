@@ -1155,7 +1155,7 @@ function findFiveHourWindow(usage) {
     : null;
 }
 
-function findOverallWeeklyWindow(usage) {
+export function findOverallWeeklyWindow(usage) {
   return Array.isArray(usage?.windows)
     ? usage.windows.find((window) => window?.kind === "weekly_all")
       ?? findWindow(usage, ["Week", "Weekly"])
@@ -1313,7 +1313,7 @@ function formatCacheState(value) {
     : "unknown";
 }
 
-function usageColumns(accounts, nowMs) {
+export function usageColumns(accounts, nowMs) {
   const fixed = new Set(["5h", "session", "week", "weekly", "fable", "sonnet", "opus"]);
   const extra = [...new Set(
     accounts.flatMap((entry) => entry.usage.windows
@@ -1373,7 +1373,7 @@ function limitedUntilMs(usage) {
   return resets.length > 0 && resets.every(Number.isFinite) ? Math.max(...resets) : null;
 }
 
-function describeClaudeOperatorState(account, nowMs) {
+export function describeClaudeOperatorState(account, nowMs) {
   const authState = typeof account?.authState === "string" ? account.authState : "";
   const credentialState = typeof account?.credentialState === "string" ? account.credentialState : "";
   const label = typeof account?.label === "string" ? account.label : "account";

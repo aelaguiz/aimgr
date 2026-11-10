@@ -2,16 +2,60 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { AIM_FLEET } from "../../src/cli/commands/cluster.js";
+import { AIM_FLEET, CLAUDE_STATUS_SEPARATOR, parseRemoteStatus } from "../../src/cli/commands/cluster.js";
 import { renderStatusText } from "../../src/status/render.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { mkTempHome } from "../helpers/files.js";
+
+const NOW = Date.parse("2026-11-10T18:00:00Z");
+const DAY = 86_400_000;
 
 function homeFor(machine) {
   const home = mkTempHome();
   fs.mkdirSync(path.join(home, ".devcluster"));
   fs.writeFileSync(path.join(home, ".devcluster", "machine"), `${machine}\n`);
   return home;
+}
+
+function signedIn(label, weekUsed, observedAtMs) {
+  return {
+    label, subscriptionType: "max", rateLimitTier: "max_20x", authState: "usage_readable", credentialState: "credential_ready",
+    credentialReady: true, locked: false, egress: { mode: "direct" }, usageObservedAtMs: observedAtMs,
+    usage: { ok: true, windows: [{ label: "Week", kind: "weekly_all", usedPercent: weekUsed, resetAt: NOW + 2 * DAY, active: true }] },
+  };
+}
+
+function notSignedIn(label) {
+  return {
+    label, authState: "credential_missing", credentialState: "credential_missing", credentialReady: false, locked: false,
+    egress: { mode: "direct" }, usage: { ok: false, windows: [] },
+  };
+}
+
+function codex(label, status) {
+  return {
+    label, provider: "openai-codex", operator: { status }, plan: status === "ready" ? "pro" : null,
+    usage: status === "ready" ? { ok: true, windows: [{ usedPercent: 30, resetAt: NOW + DAY }] } : { ok: false },
+  };
+}
+
+function machineStatus({ alpha = null, codexReady = false } = {}) {
+  return {
+    view: { accounts: [codex("cx", codexReady ? "ready" : "blocked")] },
+    claude: { ok: false, accounts: [alpha ?? notSignedIn("alpha"), notSignedIn("beta")] },
+  };
+}
+
+function remoteText(status) {
+  return `${JSON.stringify(status.view)}\n${CLAUDE_STATUS_SEPARATOR}\n${JSON.stringify(status.claude)}\n`;
+}
+
+function row(output, label) {
+  const lines = output.split("\n");
+  const index = lines.findIndex((line) => line.startsWith(`${label} `));
+  const header = lines.slice(0, index).findLast((line) => line.startsWith("account ")).split(/\s{2,}/);
+  const cells = lines[index].split(/\s{2,}/);
+  return Object.fromEntries(header.map((name, index) => [name, cells[index]]));
 }
 
 test("all-accounts keeps blocked Codex and Claude accounts visible in their usual tables", () => {
@@ -27,37 +71,80 @@ test("all-accounts keeps blocked Codex and Claude accounts visible in their usua
   assert.match(all, /claude-no-login/);
 });
 
-test("cluster status renders every machine and uses local status for the current machine", async () => {
+test("the fleet includes the old M1", () => {
+  assert.deepEqual(AIM_FLEET.find((machine) => machine.name === "old-m1"),
+    { name: "old-m1", target: "aelaguiz@amir-old-m1.fairy-salmon.ts.net" });
+});
+
+test("cluster status combines every machine into one row per account with a column per machine", async () => {
   const home = homeFor("mini-2");
   const targets = [];
   let localCalls = 0;
   const result = await runCliWithExitCode(["cluster", "status", "--home", home], {
-    clusterLocalStatusImpl: async () => { localCalls++; return "COORDINATION redis=live\nlocal account\n"; },
-    clusterRemoteStatusImpl: async (target) => { targets.push(target); return `COORDINATION redis=live\n${target}\n`; },
+    nowImpl: () => NOW,
+    clusterLocalStatusImpl: async () => { localCalls++; return machineStatus({ alpha: signedIn("alpha", 40, NOW - 60_000) }); },
+    clusterRemoteStatusImpl: async (target) => {
+      targets.push(target);
+      if (target.includes("amir-m5")) return remoteText(machineStatus({ alpha: signedIn("alpha", 55, NOW), codexReady: true }));
+      return remoteText(machineStatus());
+    },
   });
   assert.equal(result.exitCode, 0);
   assert.equal(localCalls, 1);
   assert.equal(targets.length, AIM_FLEET.length - 1);
   assert.ok(!targets.includes(AIM_FLEET.find((m) => m.name === "mini-2").target));
-  for (const machine of AIM_FLEET) assert.match(result.stdout, new RegExp(`=== ${machine.name} ===`));
-  assert.match(result.stdout, /=== mini-2 ===\nCOORDINATION redis=live\nlocal account/);
+  assert.match(result.stdout, new RegExp(`AIM CLUSTER: ${AIM_FLEET.length} of ${AIM_FLEET.length} machines answered`));
+  assert.doesNotMatch(result.stdout, /===/);
+  assert.equal(result.stdout.match(/^CLAUDE: /gm).length, 1);
+  assert.equal(result.stdout.match(/^CODEX: /gm).length, 1);
+
+  const alpha = row(result.stdout, "alpha");
+  assert.equal(alpha.status, "READY");
+  assert.equal(alpha.on, `2/${AIM_FLEET.length}`);
+  assert.equal(alpha.week, "55%", "usage comes from the freshest machine with a login");
+  for (const machine of AIM_FLEET) {
+    assert.equal(alpha[machine.name], ["m5", "mini-2"].includes(machine.name) ? "✓" : "-", machine.name);
+  }
+  const beta = row(result.stdout, "beta");
+  assert.equal(beta.status, "NOT SIGNED IN");
+  assert.equal(beta.on, `0/${AIM_FLEET.length}`);
+  assert.match(result.stdout, /CLAUDE: 2 accounts · 1 ready · 0 limited · 0 in use · 1 not signed in anywhere/);
+  assert.match(result.stdout, new RegExp(`Signed in on all ${AIM_FLEET.length} machines: 0 · on some: 1 · on none: 1`));
+
+  const cx = row(result.stdout, "cx");
+  assert.equal(cx.on, `1/${AIM_FLEET.length}`);
+  assert.equal(cx.m5, "✓");
+  assert.equal(cx["mini-2"], "-");
 });
 
-test("cluster status reports failures while keeping other machines and returns failure", async () => {
+test("cluster status names machines that did not answer, marks their column and returns failure", async () => {
   const home = homeFor("m5");
   const result = await runCliWithExitCode(["cluster", "status", "--home", home], {
-    clusterLocalStatusImpl: async () => "local works\n",
+    nowImpl: () => NOW,
+    clusterLocalStatusImpl: async () => machineStatus({ alpha: signedIn("alpha", 10, NOW) }),
     clusterRemoteStatusImpl: async (target) => {
       if (target.includes("mini-1")) throw Object.assign(new Error("secret stderr"), { killed: true });
       if (target.includes("mini-2")) throw new Error("secret stderr");
-      return "remote works\n";
+      if (target.includes("old-m1")) return "not json at all";
+      return remoteText(machineStatus());
     },
   });
   assert.equal(result.exitCode, 1);
-  assert.match(result.stdout, /=== mini-1 ===\nERROR: timed out/);
-  assert.match(result.stdout, /=== mini-2 ===\nERROR: status unavailable/);
-  assert.match(result.stdout, /=== studio ===\nremote works/);
+  assert.match(result.stdout, new RegExp(
+    `AIM CLUSTER: ${AIM_FLEET.length - 3} of ${AIM_FLEET.length} machines answered · mini-1: timed out · mini-2: status unavailable · old-m1: status unavailable`,
+  ));
+  const alpha = row(result.stdout, "alpha");
+  assert.equal(alpha.on, `1/${AIM_FLEET.length - 3}`);
+  assert.equal(alpha["mini-1"], "x");
+  assert.equal(alpha["old-m1"], "x");
+  assert.equal(alpha.studio, "-");
   assert.doesNotMatch(result.stdout, /secret stderr/);
+});
+
+test("remote status parsing needs both reports", () => {
+  const status = machineStatus();
+  assert.deepEqual(parseRemoteStatus(remoteText(status)), status);
+  assert.throws(() => parseRemoteStatus(JSON.stringify(status.view)));
 });
 
 test("cluster status rejects missing machine identity and unsupported arguments", async () => {
