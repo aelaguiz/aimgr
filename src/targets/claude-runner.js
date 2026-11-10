@@ -223,6 +223,12 @@ export function buildManagedClaudeStatusLine(userStatusLine) {
   return { ...userStatusLine, command: command ? `${tap} ${shellQuote(command)}` : tap };
 }
 
+function disabledPluginsOverlay(enabledPlugins) {
+  if (enabledPlugins === null || typeof enabledPlugins !== "object" || Array.isArray(enabledPlugins)) return {};
+  const off = Object.fromEntries(Object.entries(enabledPlugins).filter(([id, value]) => value === false && id.endsWith("@builtin")));
+  return Object.keys(off).length ? { enabledPlugins: off } : {};
+}
+
 export function syncManagedClaudeUserSettings({
   userHomeDir,
   configDir,
@@ -253,6 +259,13 @@ export function syncManagedClaudeUserSettings({
     ...(settings?.skipDangerousModePermissionPrompt === true
       ? { skipDangerousModePermissionPrompt: true }
       : {}),
+    // Switches that turn a Claude Code feature off in every session (aimgr#27):
+    // bash edit diff and the built-in diff panel each ran whole-checkout git
+    // in every session, so devcluster sets them once on the M5 and they must
+    // reach each account. Only Claude Code's own built-in plugins turned off are
+    // carried; installed plugins stay with resolveEnabledClaudeUserPlugins.
+    ...(settings?.bashEditDiffEnabled === false ? { bashEditDiffEnabled: false } : {}),
+    ...disabledPluginsOverlay(settings?.enabledPlugins),
   };
   return syncPrivateJsonOverlay(
     path.join(resolvedConfigDir, USER_HOOKS_OVERLAY_FILE),
