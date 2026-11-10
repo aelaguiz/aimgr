@@ -27,7 +27,7 @@ async function loadUsageDeps() {
 }
 
 export async function loadCommandDefaultDeps(command) {
-  if (command === "status" || command === "pi" || command === "prime") {
+  if (command === "status" || command === "cluster" || command === "pi" || command === "prime") {
     return loadUsageDeps();
   }
 

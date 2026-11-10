@@ -38,6 +38,7 @@ export async function handleStatus(context) {
       showAssignments: opts.assignments === true,
       ...(opts.accounts === true ? { showAccounts: true } : {}),
       claudeUsageStatus: redisStatus.claudeUsageStatus,
+      includeBlocked: opts.allAccounts === true,
     }),
   );
 }

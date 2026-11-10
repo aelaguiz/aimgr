@@ -92,6 +92,7 @@ export function parseArgs(argv) {
     json: false,
     compact: false,
     accounts: false,
+    allAccounts: false,
     help: false,
     once: false,
     fresh: false,
@@ -302,6 +303,11 @@ export function parseArgs(argv) {
     }
     if (arg === "--compact") {
       opts.compact = true;
+      continue;
+    }
+    if (arg === "--all-accounts") {
+      if (argv[0] !== "status") throw new Error("Unknown option: --all-accounts");
+      opts.allAccounts = true;
       continue;
     }
     if (arg === "--accounts") {

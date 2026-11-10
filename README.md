@@ -129,10 +129,15 @@ Status:
 aim status
 aim status --json
 aim status --compact
+aim status --all-accounts
+aim cluster status
 ```
 
 The text tables hide blocked Codex and Claude accounts. Counts and averages use
-the displayed accounts. `aim status --json` retains all accounts.
+the displayed accounts. `aim status --all-accounts` includes blocked and unsigned-in
+accounts. `aim cluster status` shows that full status separately for each active AIM
+machine; unreachable machines are reported and cause a nonzero exit. `aim status --json`
+retains all accounts.
 
 Account notes are shared through Redis and appear in status and account-use
 output, including when an account is hidden from the main status tables. Notes

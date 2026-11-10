@@ -5,7 +5,7 @@ import { renderClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
 import { formatClaudeEgress, formatClaudeProxyHealth, hasNoLocalClaudeRoute } from "./claude-egress.js";
 import { buildStatusAccountFlags, buildStatusAverageAccountTableRow, formatInteractiveLoginSummary, formatStatusAccountExpiryCell, formatStatusAccountResetCell, formatStatusAccountResetCreditsCell, formatStatusAccountUsedCell, formatStatusTable, formatWeeklyCapacityFreeingNextDayLine, renderCurrentCodexUsageText, summarizeWeeklyCapacityFreeingNextDay } from "./table.js";
 
-function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }) {
+function pushStatusAccountTable(lines, { heading, accounts, now, codex = false, includeBlocked = false }) {
   lines.push(`${heading} (${accounts.length})`);
   const averageAccountRow = accounts.length > 0 ? buildStatusAverageAccountTableRow(accounts, now, { codex }) : null;
   const windowHeaders = codex ? ["wk_used", "wk_in"] : ["5h_used", "5h_in", "wk_used", "wk_in"];
@@ -28,6 +28,8 @@ function pushStatusAccountTable(lines, { heading, accounts, now, codex = false }
       account.provider || "unknown",
       account.usage?.source || "unavailable",
       [buildStatusAccountFlags(account),
+        ...(includeBlocked && account.operator?.status === "blocked" && account.credentials?.status
+          ? [`auth=${account.credentials.status}`] : []),
         ...(account.provider === ANTHROPIC_PROVIDER ? [`proxy=${formatClaudeEgress(account.egress)}`] : []),
         ...(account.egress?.mode === "proxy" ? [`proxy_health=${formatClaudeProxyHealth(account.egress)}`] : []),
         ...(hasNoLocalClaudeRoute(account) ? ["don't have a route to this account"] : []),
@@ -49,11 +51,12 @@ export function renderStatusText(view, {
   showAssignments = false,
   showAccounts = true,
   claudeUsageStatus = null,
+  includeBlocked = false,
 } = {}) {
   const lines = [];
   const now = Number.isFinite(Number(view?.nowMs)) ? Number(view.nowMs) : Date.now();
   const accounts = Array.isArray(view?.accounts) ? view.accounts : [];
-  const visibleAccounts = accounts.filter((account) => account?.operator?.status !== "blocked");
+  const visibleAccounts = accounts.filter((account) => includeBlocked || account?.operator?.status !== "blocked");
   const codexAccounts = visibleAccounts.filter((account) => account?.provider === OPENAI_CODEX_PROVIDER);
   const claudeAccounts = visibleAccounts.filter((account) => account?.provider === ANTHROPIC_PROVIDER);
 
@@ -66,11 +69,11 @@ export function renderStatusText(view, {
   );
 
   if (showAccounts) {
-    pushStatusAccountTable(lines, { heading: "CODEX ACCOUNTS", accounts: codexAccounts, now, codex: true });
+    pushStatusAccountTable(lines, { heading: "CODEX ACCOUNTS", accounts: codexAccounts, now, codex: true, includeBlocked });
     lines.push("");
     if (claudeUsageStatus) {
       const blockedClaudeLabels = new Set(accounts
-        .filter((account) => account?.provider === ANTHROPIC_PROVIDER && account?.operator?.status === "blocked")
+        .filter((account) => !includeBlocked && account?.provider === ANTHROPIC_PROVIDER && account?.operator?.status === "blocked")
         .map((account) => account.label));
       lines.push(
         ...renderClaudeRedisAccountUsageStatus({
@@ -79,7 +82,7 @@ export function renderStatusText(view, {
         }).trimEnd().split("\n"),
       );
     } else {
-      pushStatusAccountTable(lines, { heading: "CLAUDE ACCOUNTS", accounts: claudeAccounts, now });
+      pushStatusAccountTable(lines, { heading: "CLAUDE ACCOUNTS", accounts: claudeAccounts, now, includeBlocked });
     }
   }
 
