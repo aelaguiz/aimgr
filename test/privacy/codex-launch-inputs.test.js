@@ -198,3 +198,74 @@ test("Linux native MCP gets only the selected existing D-Bus socket, not its dir
   options.env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${root}`;
   assert.equal(resolveCodexLaunchInputs(options).writes.includes(root), false);
 });
+
+// Issue #30: posix_spawnp starts a file the vendor may not read and still
+// reports failure, so the next PATH match starts as well.
+test("Mac Codex may read its PATH folders and their linked executables, never home or AIM state", t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codex-path-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, "home"), base = path.join(home, ".aimgr"), accountRoot = path.join(base, "accounts", "a");
+  const codexHome = path.join(accountRoot, "homes", "h"), sharedHome = path.join(home, ".codex"), cwd = path.join(root, "project");
+  const bin = path.join(home, ".local", "bin"), cellar = path.join(root, "cellar", "tool", "1.0", "bin"), plain = path.join(root, "plain");
+  const leaky = path.join(root, "leaky"), lexical = path.join(root, "lexical");
+  for (const dir of [codexHome, sharedHome, cwd, bin, cellar, plain, leaky]) fs.mkdirSync(dir, { recursive: true });
+  const executable = file => { fs.writeFileSync(file, "#!/bin/sh\n"); fs.chmodSync(file, 0o755); return file; };
+  executable(path.join(bin, "git"));
+  const linked = executable(path.join(cellar, "node"));
+  fs.symlinkSync(linked, path.join(bin, "node"));
+  fs.symlinkSync(path.join(bin, "git"), path.join(bin, "git-alias"));
+  fs.writeFileSync(path.join(cellar, "README"), ""); fs.symlinkSync(path.join(cellar, "README"), path.join(bin, "readme"));
+  fs.symlinkSync(path.join(root, "missing"), path.join(bin, "dangling"));
+  fs.symlinkSync(cellar, path.join(bin, "directory"));
+  executable(path.join(plain, "tool"));
+  fs.symlinkSync(plain, lexical);
+  // A folder whose executable link leads into AIM state stays unreadable as a whole.
+  fs.symlinkSync(executable(path.join(accountRoot, "helper")), path.join(leaky, "helper"));
+  executable(path.join(leaky, "other"));
+  fs.writeFileSync(path.join(root, "not-a-folder"), "");
+  const env = { HOME: home, PATH: ["", "relative/bin", "~/bin", bin, path.join(root, "absent"), path.join(root, "not-a-folder"),
+    lexical, plain, home, root, "/", base, path.join(accountRoot, "homes"), path.join(sharedHome), leaky].join(":") };
+  const options = { prepared: { base, accountRoot, codexHome, sharedHome }, homeDir: home, env, platform: "darwin",
+    parsedArgs: { directories: [], images: [] }, effectiveInputs: { cwd, reads: [], writes: [], database_roots: [] },
+    spawnSyncImpl: () => ({ status: 1 }) };
+  const inputs = resolveCodexLaunchInputs(options);
+  assert.deepEqual(inputs.reads.sort(), [bin, linked, plain].sort(), "only the folders and the executable a link leads to");
+  assert.equal(inputs.writes.some(file => [bin, plain, cellar].includes(file)), false, "PATH grants are read-only");
+  assert.equal(resolveCodexLaunchInputs({ ...options, platform: "linux" }).reads.length, 0);
+  assert.equal(resolveCodexLaunchInputs({ ...options, env: { HOME: home } }).reads.length, 0);
+});
+
+test("PATH grants that would overflow the Mac launch policy leave that folder as it was", t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codex-path-budget-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, "private"), sharedHome = path.join(root, "shared"), cwd = path.join(root, "project");
+  const crowded = path.join(root, "homebrew", "bin"), small = path.join(root, "small");
+  for (const dir of [codexHome, sharedHome, cwd, crowded, small]) fs.mkdirSync(dir, { recursive: true });
+  const deep = "package".repeat(8);
+  for (let i = 0; i < 400; i++) {
+    const target = path.join(root, "Cellar", `${deep}-${i}`, "1.0.0", "bin", `tool-${i}`);
+    fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, ""); fs.chmodSync(target, 0o755);
+    fs.symlinkSync(target, path.join(crowded, `tool-${i}`));
+  }
+  fs.writeFileSync(path.join(small, "git"), ""); fs.chmodSync(path.join(small, "git"), 0o755);
+  const inputs = resolveCodexLaunchInputs({ prepared: { codexHome, sharedHome }, homeDir: path.join(root, "home"),
+    env: { PATH: `${crowded}:${small}` }, platform: "darwin", parsedArgs: { directories: [], images: [] },
+    effectiveInputs: { cwd, reads: [], writes: [], database_roots: [] }, spawnSyncImpl: () => ({ status: 1 }) });
+  assert.deepEqual(inputs.reads, [small], "a folder never gets read access without its link targets");
+});
+
+test("a PATH folder inside another granted one still has its link targets granted", t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codex-path-nested-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, "private"), sharedHome = path.join(root, "shared"), cwd = path.join(root, "project");
+  const outer = path.join(root, "tools"), inner = path.join(outer, "bin"), elsewhere = path.join(root, "elsewhere");
+  for (const dir of [codexHome, sharedHome, cwd, inner, elsewhere]) fs.mkdirSync(dir, { recursive: true });
+  const target = path.join(elsewhere, "node");
+  fs.writeFileSync(target, ""); fs.chmodSync(target, 0o755); fs.symlinkSync(target, path.join(inner, "node"));
+  const options = { prepared: { codexHome, sharedHome }, homeDir: path.join(root, "home"), platform: "darwin",
+    parsedArgs: { directories: [], images: [] }, effectiveInputs: { cwd, reads: [], writes: [], database_roots: [] },
+    spawnSyncImpl: () => ({ status: 1 }) };
+  for (const PATH of [`${outer}:${inner}`, `${inner}:${outer}`]) {
+    assert.deepEqual(resolveCodexLaunchInputs({ ...options, env: { PATH } }).reads.sort(), [target, outer].sort(), PATH);
+  }
+});

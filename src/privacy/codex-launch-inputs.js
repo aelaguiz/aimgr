@@ -46,6 +46,69 @@ function compactGrants(reads, writes) {
   };
 }
 
+// The macOS launcher writes every read root, and each of its ancestors, twice
+// into a policy it refuses past 1 MiB. PATH grants get a share of that, so an
+// unusual PATH can never make the launch fail.
+const PATH_POLICY_BUDGET = 256 * 1024;
+const policyBytes = file => {
+  let bytes = 2 * (file.length + 12);
+  for (let parent = path.dirname(file); ; parent = path.dirname(parent)) {
+    bytes += 2 * (parent.length + 12);
+    if (parent === "/") return bytes;
+  }
+};
+
+// Issue #30. libc's posix_spawnp tries each PATH folder in turn. When the
+// first match is a file the sandboxed vendor process may not read, macOS
+// starts that file and still reports failure, so the search starts the next
+// match too: Codex ran ~/.local/bin/git and /usr/bin/git for one call and read
+// both outputs as one. Codex may therefore read the folders on the PATH it
+// runs with, and the file behind each executable link in them: a link whose
+// target stayed unreadable starts twice the same way. Programs it starts run
+// outside the sandbox already; only the lookup needs to succeed. A folder is
+// granted whole or not at all, together with the links of any PATH folder
+// inside it. One that would expose the home folder or AIM state, that links an
+// executable into AIM state, or that does not fit the budget stays unreadable,
+// which leaves its links failing cleanly as before.
+function codexPathReads({ pathValue, homes, privateRoots }) {
+  const contains = (root, target) => target === root || target.startsWith(root === "/" ? "/" : `${root}/`);
+  const folders = new Map();
+  for (const entry of (pathValue ?? "").split(path.delimiter)) {
+    if (!path.isAbsolute(entry)) continue;
+    let folder, children;
+    try {
+      folder = fs.realpathSync(entry);
+      children = fs.readdirSync(folder, { withFileTypes: true });
+    } catch { continue; }
+    if (folders.has(folder)) continue;
+    const targets = new Set();
+    for (const child of children) {
+      if (!child.isSymbolicLink()) continue;
+      try {
+        const target = fs.realpathSync(path.join(folder, child.name)), stat = fs.statSync(target);
+        if (stat.isFile() && stat.mode & 0o111) targets.add(target);
+      } catch {}
+    }
+    folders.set(folder, targets);
+  }
+  const grants = new Set(), covered = file => [...grants].some(root => contains(root, file));
+  let spent = 0;
+  for (const folder of folders.keys()) {
+    if (covered(folder) || homes.some(home => contains(folder, home))
+      || privateRoots.some(root => contains(folder, root) || contains(root, folder))) continue;
+    const targets = new Set();
+    for (const [member, linked] of folders) if (contains(folder, member)) for (const target of linked) {
+      if (!contains(folder, target) && !covered(target)) targets.add(target);
+    }
+    if ([...targets].some(target => privateRoots.some(root => contains(root, target)))) continue;
+    const cost = [...targets].reduce((sum, target) => sum + policyBytes(target), policyBytes(folder));
+    if (spent + cost > PATH_POLICY_BUDGET) continue;
+    spent += cost;
+    for (const file of [folder, ...targets]) grants.add(file);
+  }
+  return [...grants];
+}
+
 export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, managedFiles = [], spawnSyncImpl = spawnSync, platform = process.platform,
   effectiveInputs, workingDirectories = codexWorkingDirectories({ homeDir, env, platform, accountRoot: prepared.accountRoot ?? prepared.codexHome }) }) {
   if (!effectiveInputs) throw new Error("Codex requires an admitted native input inventory.");
@@ -190,6 +253,11 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
   const selectedCA = env.CODEX_CA_CERTIFICATE || env.SSL_CERT_FILE;
   for (const file of [selectedCA, env.SSL_CERT_DIR, env.NODE_EXTRA_CA_CERTS]) if (file) add(reads, path.resolve(cwd, file));
   for (const socket of keyringSockets(env)) add(writes, socket);
+  if (platform === "darwin") {
+    const canonicalOr = file => { try { return codexCanonicalPath(file); } catch { return path.resolve(file); } };
+    for (const file of codexPathReads({ pathValue: env.PATH, homes: [actualHome, canonicalOr(userHome)],
+      privateRoots: [prepared.base, prepared.accountRoot, prepared.codexHome, prepared.sharedHome].filter(Boolean).map(canonicalOr) })) reads.add(file);
+  }
   return { cwd, ...compactGrants(reads, writes), databases: [...databases], effectiveInputs };
 }
 
