@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AIM_FLEET, CLAUDE_STATUS_SEPARATOR, parseRemoteStatus } from "../../src/cli/commands/cluster.js";
 import { renderStatusText } from "../../src/status/render.js";
+import { renderClusterStatusText } from "../../src/status/cluster-view.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { mkTempHome } from "../helpers/files.js";
 
@@ -74,6 +75,43 @@ test("all-accounts keeps blocked Codex and Claude accounts visible in their usua
 test("the fleet includes the old M1", () => {
   assert.deepEqual(AIM_FLEET.find((machine) => machine.name === "old-m1"),
     { name: "old-m1", target: "aelaguiz@amir-old-m1.fairy-salmon.ts.net" });
+});
+
+test("cluster Codex averages displayed ready accounts once and hides accounts blocked everywhere", () => {
+  const ready = (label, used, days, observedAt) => ({
+    ...codex(label, "ready"), usageObservedAtMs: observedAt,
+    usage: { ok: true, windows: [{ usedPercent: used, resetAt: NOW + days * DAY }] },
+  });
+  const machines = [
+    { name: "m5", view: { accounts: [
+      ready("first", 90, 1, NOW - DAY), ready("second", 70, 3, NOW),
+      codex("blocked", "blocked"), codex("reauth", "reauth"), codex("unknown", "blocked"),
+      { ...codex("unmeasured", "ready"), usage: { ok: false } },
+    ] }, claude: { accounts: [] } },
+    { name: "home", view: { accounts: [
+      ready("first", 10, 1, NOW), codex("second", "blocked"), codex("blocked", "blocked"),
+      codex("unknown", "unknown"),
+    ] }, claude: { accounts: [] } },
+  ];
+  const text = renderClusterStatusText(machines, { nowMs: NOW });
+  assert.doesNotMatch(text, /^blocked\s/m);
+  assert.match(text, /CODEX: 5 accounts · 3 ready · 2 not signed in anywhere/);
+  assert.equal(row(text, "first").wk_used, "10%");
+  assert.equal(row(text, "second").wk_used, "70%");
+  assert.equal(row(text, "unknown").st, "unknown");
+  const codexText = text.slice(text.indexOf("CODEX:"));
+  assert.equal(row(codexText, "average").wk_used, "40%");
+  assert.equal(row(codexText, "average").wk_in, "2.0d");
+  assert.match(codexText, /Next 24h: 5% of pool weekly capacity frees up \(1 of 2 accounts reset, 3 without a reading not counted\)/);
+});
+
+test("cluster Codex shows no average when every account is blocked", () => {
+  const text = renderClusterStatusText([
+    { name: "m5", view: { accounts: [codex("blocked", "blocked")] }, claude: { accounts: [] } },
+  ], { nowMs: NOW });
+  const codexText = text.slice(text.indexOf("CODEX:"));
+  assert.match(codexText, /CODEX: 0 accounts/);
+  assert.doesNotMatch(codexText, /^blocked\s|^average\s/m);
 });
 
 test("cluster status combines every machine into one row per account with a column per machine", async () => {

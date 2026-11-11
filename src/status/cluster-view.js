@@ -2,6 +2,7 @@ import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { describeClaudeOperatorState, findOverallWeeklyWindow, formatClaudePlan, usageColumns } from "./claude-redis-view.js";
 import {
   buildStatusAccountFlags,
+  buildStatusAverageAccountTableRow,
   formatStatusAccountResetCell,
   formatStatusAccountUsedCell,
   formatStatusTable,
@@ -145,13 +146,13 @@ function renderCodex(machines, answered, nowMs) {
     const best = freshest(ready, (account) => account?.usage) ?? entries[0];
     const status = ready.length > 0 ? "ready"
       : entries.some((entry) => entry.status === "reauth") ? "reauth"
-        : best.status;
+        : entries.find((entry) => entry.status !== "blocked")?.status ?? "blocked";
     const cells = Object.fromEntries(machines.map((machine) => [
       machine.name,
       machine.error ? NO_ANSWER : byMachine.has(machine.name) ? codexCell(entries.find((entry) => entry.machine === machine.name).status) : "-",
     ]));
     return { label, status, on: ready.length, account: best.account, cells };
-  });
+  }).filter((row) => row.status !== "blocked");
 
   const table = [
     ["account", "st", "on", "plan", "wk_used", "wk_in", "flags", ...machines.map((machine) => machine.name)],
@@ -166,7 +167,13 @@ function renderCodex(machines, answered, nowMs) {
       ...machines.map((machine) => row.cells[machine.name]),
     ]),
   ];
-  if (rows.length > 0) table.push(perMachineRow("signed in", machines, rows, 6));
+  if (rows.length > 0) {
+    const average = buildStatusAverageAccountTableRow(
+      rows.filter((row) => row.status === "ready").map((row) => row.account), nowMs, { codex: true },
+    );
+    table.push(["average", "--", "--", "--", average[6], average[7], "--", ...machines.map(() => "")]);
+    table.push(perMachineRow("signed in", machines, rows, 6));
+  }
   const readyCount = rows.filter((row) => row.status === "ready").length;
   return [
     `CODEX: ${rows.length} accounts · ${readyCount} ready · ${rows.length - readyCount} not signed in anywhere`,
