@@ -190,8 +190,6 @@ aim codex watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remai
 aim codex privacy status [--json]
 aim codex login <label> --manual-callback-stdio
 aim codex logout <label>
-aim codex mcp-migrate
-aim codex mcp-recover
 aim hermes watch [--once] [--interval-seconds <sec>] [--rotate-below-weekly-remaining-pct <pct>]
 aim claude login <label> [--email <email>] [--proxy <profileRef>] [--manual-callback-stdio]
 aim claude logout <label>
@@ -245,12 +243,20 @@ outside the launch grants needs a new session. Ordinary shell tools keep their
 normal permissions. Codex's optional diagnostic exporters are disabled, including
 custom collectors. Organization-owned remote policy is an accepted gap.
 
-Independent MCP credentials retain their native OS-user scope across Codex
-account homes. On Mac, native MCP requires the approved read/write exception
-for the selected default Keychain database and its own lock and temporary files.
-This exposes unrelated account/service names and permits whole-database writes;
-native password encryption and item permissions remain. Linux allows same-user
-mount-table reads so unchanged native read-only reviewers keep working.
+Independent MCP credentials keep their OS-user scope across Codex account homes,
+without the OS keychain. AIM launches Codex with `mcp_oauth_credentials_store="file"`
+and refuses any other effective mode, because a keychain item created by another
+program makes macOS ask for the login password, and unattended machines cannot
+answer. Codex keeps MCP OAuth tokens in `$CODEX_HOME/.credentials.json` and rewrites
+that file in place, refusing a symlinked path, so each account home hard-links the
+shared `~/.codex/.credentials.json`. One sign-in per machine serves every account,
+and the shared `~/.codex/mcp-oauth-locks` directory serializes refreshes. AIM creates
+the shared file as an empty store (`{}`) before the first sign-in, so a sign-in in any
+home reaches every account. Removing the last MCP login deletes the file in that home
+only; the other homes keep the old entry until it is deleted from `~/.codex/.credentials.json`. The reviewed Mac runtime still carries its approved
+exception for the default Keychain database; AIM's MCP sign-ins no longer use it.
+Linux allows same-user mount-table reads so unchanged native read-only reviewers
+keep working.
 
 Install an explicitly approved complete Codex bundle with
 `scripts/install-local-bin.sh --codex-runtime-bundle /absolute/bundle`. This uses
@@ -264,23 +270,10 @@ logins. Keep the source machine's identity unchanged.
 
 `aim codex privacy status --json` checks the approved immutable installation, local policy,
 environment provisioning and pending maintenance without running Codex or
-contacting Redis/OpenAI. For an existing File-backed MCP OAuth store, let the
-current Codex sessions finish and run `aim codex mcp-migrate` once. It converts
-the shared MCP tokens into the native OS keyring and preserves conflicting
-credentials. AIM refuses new Codex launches while conversion is pending;
-conversion does not stop processes or change OS schedules. `aim codex mcp-recover`
-finishes an interrupted conversion in the same boot after reacquiring its locks.
-It verifies a matching destination without rewriting it, retries the exact saved
-credential if the destination is absent, and preserves a different credential.
-On Mac, use the native Keychain **Always Allow** choice for the approved Codex
-application when prompted. Import verifies that unchanged Codex can read the
-selected entries before retiring File storage; a denied read preserves the
-original store for explicit recovery. AIM does not request or handle the
-Keychain password.
-OAuth MCP servers require a usable native keyring, including an existing D-Bus/Secret Service session on Linux. Without one, AIM cannot use those OAuth logins; an existing nonempty File store keeps AIM launches refused until conversion can succeed. The original store stays unchanged. Sessions without MCP do not require a running keyring.
-Recovery of an already committed migration never imports old credentials again.
-Recovery never reboots the host or restarts its shared credential service. Ordinary launch
-does not start conversion. The full contract and test plan are in the
+contacting Redis/OpenAI. `aim codex mcp-migrate` and `aim codex mcp-recover` are
+retired: they moved MCP tokens into the OS keychain, which left password dialogs
+open on unattended machines ([findings](docs/CODEX_KEYCHAIN_PROMPTS_2026-11-12.md)).
+Both now print that there is nothing to do. The full contract and test plan are in the
 [Codex privacy and proxy plan](docs/aelaguiz/CODEX_PRIVACY_PROXY_PLAN_2026-11-01.md).
 
 Codex's built-in file and image tools can use the whole `~/workspace`, `/tmp`,

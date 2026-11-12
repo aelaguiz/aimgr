@@ -41,7 +41,7 @@ for(const [name,args] of cases){
  for(const protect of [false,true]){
   const homeDir=path.join(root,name+(protect?'-protected':'-stock')),shared=path.join(homeDir,'.codex'),cwd=path.join(homeDir,'project');
   fs.mkdirSync(shared,{recursive:true});fs.mkdirSync(cwd);
-  fs.writeFileSync(path.join(shared,'config.toml'),'mcp_oauth_credentials_store="keyring"\nsandbox_mode="workspace-write"\n[sandbox_workspace_write]\nnetwork_access=true\n');
+  fs.writeFileSync(path.join(shared,'config.toml'),'mcp_oauth_credentials_store="file"\nsandbox_mode="workspace-write"\n[sandbox_workspace_write]\nnetwork_access=true\n');
   const env={HOME:process.platform==='darwin'?os.homedir():homeDir,CODEX_HOME:shared,PATH:'/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8'};
   let invocation,result,socketServer;
   if(name==='marketplace-remove'){

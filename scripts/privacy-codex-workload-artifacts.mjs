@@ -76,7 +76,7 @@ else:
   }catch(e){error??=e;json(500,{error:'synthetic artifact failure'});}
  });service.listen(0,'127.0.0.1');await once(service,'listening');
  const env={HOME:home,CODEX_HOME:config,PATH:base+'/python-env/bin:/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8',TERM:'xterm-256color',OPENAI_BASE_URL:'http://127.0.0.1:'+service.address().port+'/v1'};
- put(path.join(config,'config.toml'),`model="gpt-5.4"\nmodel_provider="fixture"\nmcp_oauth_credentials_store="keyring"\n[features]\napps=false\ncode_mode=false\n[model_providers.fixture]\nname="Fixture"\nbase_url="http://127.0.0.1:${service.address().port}"\nwire_api="responses"\nrequest_max_retries=0\nstream_max_retries=0\n`);
+ put(path.join(config,'config.toml'),`model="gpt-5.4"\nmodel_provider="fixture"\nmcp_oauth_credentials_store="file"\n[features]\napps=false\ncode_mode=false\n[model_providers.fixture]\nname="Fixture"\nbase_url="http://127.0.0.1:${service.address().port}"\nwire_api="responses"\nrequest_max_retries=0\nstream_max_retries=0\n`);
  try{
   const args=['exec','--json','--dangerously-bypass-approvals-and-sandbox','--skip-git-repo-check','--add-dir',artifacts,'Create fictional deck and workbook outside the starting directory using the installed image CLI with a reference and cwd dotenv.'];
   if(protectedLaunch){const prepared={...prepareCodexAccountState({homeDir:home,env,environment:readCodexEnvironment(),accountId:'api-provider:deepseek',label:'fixture'}),keyBacked:true};invocation=await prepareCodexNativeInvocation({prepared,homeDir:home,cwd,env,args});}

@@ -31,24 +31,16 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     const local = prepared.keyBacked && prepared.accountId === "api-provider:deepseek" ? { status: "ready", credential: null }
       : readLocalCodexCredential({ homeDir, env: { CODEX_HOME: account.sharedHome }, accountId: account.accountId, environment });
     if (local.status !== "ready") throw new Error(`Codex account ${account.label ?? "selected"} needs a healthy local login (${local.status}).`);
-    // New AIM sessions use native keyring storage without changing the shared
-    // source or any already-running session. Later explicit CLI overrides
-    // retain native precedence and are checked against the effective mode.
-    let parsedArgs = codexArguments(["-c", 'mcp_oauth_credentials_store="keyring"', ...args], { cwd, ownedAppServer });
+    // AIM keeps Codex MCP OAuth tokens in Codex's file store, never the OS
+    // keychain: a keychain item another program created makes macOS ask for
+    // the login password on unattended machines. Every account home links the
+    // shared .credentials.json (prepareCodexAccountState). Later explicit CLI
+    // overrides retain native precedence and are checked against the effective mode.
+    let parsedArgs = codexArguments(["-c", 'mcp_oauth_credentials_store="file"', ...args], { cwd, ownedAppServer });
     // Native Clap exits before reading configuration for these exact forms.
     // Do not use parsedArgs.inspection: passthrough child argv can contain help.
     const inspectionOnly = (args.length === 1 && ["--help", "-h", "--version", "-V"].includes(args[0]))
       || (args.length === 2 && parsedArgs.command === args[0] && ["--help", "-h"].includes(args[1]));
-    if (!inspectionOnly) {
-      let legacy;
-      try { legacy = JSON.parse(fs.readFileSync(path.join(account.sharedHome, ".credentials.json"), "utf8")); }
-      catch (error) { if (error.code !== "ENOENT") legacy = null; }
-      // Native File storage is a JSON object. An empty store has no logins to
-      // convert; retain the refusal for unreadable or unclassified contents.
-      if (legacy !== undefined && (!legacy || typeof legacy !== "object" || Array.isArray(legacy) || Object.keys(legacy).length)) {
-        throw new Error("Codex's shared MCP credentials need the one-time native keyring conversion. Run `aim codex mcp-migrate` from a terminal before starting Codex.");
-      }
-    }
     const artifact = admitArtifact({ selectedCommand: command, pinnedArtifactSet: env.AIMGR_CODEX_ARTIFACT_SET });
     const policy = JSON.parse(fs.readFileSync(artifact.policy, "utf8"));
     if (policy.schema !== 1 || policy.version !== artifact.version || policy.platform !== process.platform || policy.arch !== process.arch
@@ -71,8 +63,8 @@ export async function prepareCodexNativeInvocation({ prepared, command, homeDir,
     if (worktree) parsedArgs = worktree.parsedArgs;
     const effectiveInputs = inspectionOnly ? null : await nativeInputs({ artifact, prepared: account, parsedArgs,
       env: environmentValues, managed, ownedAppServer });
-    if (!inspectionOnly && effectiveInputs.mcp_store !== "keyring") {
-      throw new Error('Codex privacy requires mcp_oauth_credentials_store="keyring". Remove the conflicting command-line or administrator setting before starting Codex.');
+    if (!inspectionOnly && effectiveInputs.mcp_store !== "file") {
+      throw new Error('AIM keeps Codex MCP credentials out of the OS keychain and requires mcp_oauth_credentials_store="file". Remove the conflicting command-line or administrator setting before starting Codex.');
     }
     const worktreeDatabases = worktree ? codexWorktreeDatabases(effectiveInputs) : null;
     const inputs = inspectionOnly ? { cwd: parsedArgs.cwd, writes: [], reads: [], databases: [] } : resolveInputs({ prepared: account, parsedArgs, homeDir, env: environmentValues,

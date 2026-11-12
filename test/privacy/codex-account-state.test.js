@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { readCodexEnvironment } from "../../src/privacy/codex-environment.js";
-import { prepareCodexAccountState, codexAccountPaths } from "../../src/privacy/codex-account-state.js";
+import { prepareCodexAccountState, codexAccountPaths, linkCodexMcpCredentials } from "../../src/privacy/codex-account-state.js";
 
 const environment = { binding: "a".repeat(64) };
 function fixture(t) {
@@ -162,4 +162,65 @@ test("machine provisioning identity is opaque, user scoped and requires protecte
   assert.notEqual(readCodexEnvironment({inspect,uid:1001}).binding,readCodexEnvironment({inspect,uid:1002}).binding);
   assert.throws(()=>readCodexEnvironment({inspect:()=>null,uid:1001}),/provisioned/);
   assert.throws(()=>readCodexEnvironment({inspect:()=>{throw new Error("unsafe ACL");},uid:1001}),/provisioned/);
+});
+
+// Codex rewrites $CODEX_HOME/.credentials.json in place (O_NOFOLLOW, truncate,
+// write) when mcp_oauth_credentials_store="file". Simulate that write exactly.
+function nativeMcpWrite(file, text) {
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  try { fs.ftruncateSync(fd, 0); fs.writeSync(fd, text); } finally { fs.closeSync(fd); }
+}
+
+test("every account home shares one MCP File store without the OS keychain", t => {
+  const options = fixture(t), shared = path.join(options.homeDir, ".codex", ".credentials.json");
+  nativeMcpWrite(shared, '{"figma":1}');
+  const first = prepareCodexAccountState(options);
+  const second = prepareCodexAccountState({ ...options, accountId: "another-account" });
+  const own = home => path.join(home.codexHome, ".credentials.json");
+  for (const home of [first, second]) {
+    assert.equal(fs.lstatSync(own(home)).isFile(), true, "a hard link, not a symlink native would refuse to write");
+    assert.equal(fs.statSync(own(home)).ino, fs.statSync(shared).ino);
+  }
+  nativeMcpWrite(own(first), '{"figma":2}');
+  assert.equal(fs.readFileSync(own(second), "utf8"), '{"figma":2}', "a refresh in one home reaches every account");
+  assert.equal(fs.readFileSync(shared, "utf8"), '{"figma":2}');
+  assert.equal(fs.statSync(shared).mode & 0o777, 0o600);
+});
+
+test("a first MCP sign-in inside any account home reaches every account", t => {
+  const options = fixture(t), shared = path.join(options.homeDir, ".codex", ".credentials.json");
+  const first = prepareCodexAccountState(options);
+  const second = prepareCodexAccountState({ ...options, accountId: "another-account" });
+  assert.equal(fs.readFileSync(shared, "utf8"), "{}", "native's empty store is created before any sign-in");
+  assert.equal(fs.statSync(shared).mode & 0o777, 0o600);
+  nativeMcpWrite(path.join(first.codexHome, ".credentials.json"), '{"fly":1}');
+  assert.equal(fs.readFileSync(path.join(second.codexHome, ".credentials.json"), "utf8"), '{"fly":1}');
+  // Native deletes the file in one home when its last MCP login is removed;
+  // that home's next launch publishes a sign-in made there in the meantime.
+  fs.unlinkSync(shared);
+  fs.unlinkSync(path.join(second.codexHome, ".credentials.json"));
+  nativeMcpWrite(path.join(first.codexHome, ".credentials.json"), '{"fly":2}');
+  prepareCodexAccountState(options);
+  prepareCodexAccountState({ ...options, accountId: "another-account" });
+  assert.equal(fs.readFileSync(path.join(second.codexHome, ".credentials.json"), "utf8"), '{"fly":2}');
+});
+
+test("MCP File store linking follows a linked shared file, replaces home symlinks and keeps diverged stores", t => {
+  const options = fixture(t), real = path.join(options.homeDir, "real-credentials.json");
+  nativeMcpWrite(real, '{"real":1}');
+  const legacy = path.join(options.homeDir, "legacy-home");
+  fs.mkdirSync(legacy);
+  fs.symlinkSync(real, path.join(legacy, ".credentials.json"));
+  const codexHome = path.join(options.homeDir, "private");
+  fs.mkdirSync(codexHome);
+  fs.symlinkSync(real, path.join(codexHome, ".credentials.json"));
+  linkCodexMcpCredentials({ sharedHome: legacy, codexHome });
+  assert.equal(fs.lstatSync(path.join(codexHome, ".credentials.json")).isFile(), true);
+  assert.equal(fs.statSync(path.join(codexHome, ".credentials.json")).ino, fs.statSync(real).ino);
+  const diverged = path.join(options.homeDir, "diverged");
+  fs.mkdirSync(diverged);
+  nativeMcpWrite(path.join(diverged, ".credentials.json"), '{"own":1}');
+  linkCodexMcpCredentials({ sharedHome: legacy, codexHome: diverged });
+  assert.equal(fs.readFileSync(path.join(diverged, ".credentials.json"), "utf8"), '{"own":1}');
+  assert.equal(fs.readFileSync(real, "utf8"), '{"real":1}');
 });

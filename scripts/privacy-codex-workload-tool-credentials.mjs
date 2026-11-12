@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Case 7: actual on-demand native stdio MCP and ordinary PATH/config CLI calls.
 // All credentials/services are synthetic and terminate on loopback. Native HTTP
-// OAuth/keyring coverage lives in privacy-codex-native-mcp --workload-calls.
+// OAuth uses the File store; AIM never puts MCP sign-ins in the OS keychain.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -92,7 +92,7 @@ else if(m.method==='tools/list')result={tools:['whoami','denied'].map(name=>({na
 else if(m.method==='tools/call')result={isError:m.params.name==='denied',content:[{type:'text',text:m.params.name==='whoami'?'SYNTHETIC_STDIO_IDENTITY':'SYNTHETIC_STDIO_DENIAL'}]};
 else result={};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');}
 `);
-  const config = `model="gpt-5.4"\nmodel_provider="fixture"\nmcp_oauth_credentials_store="keyring"\n[features]\napps=false\ncode_mode=false\n[mcp_servers.workload_stdio]\ncommand=${JSON.stringify(process.execPath)}\nargs=[${JSON.stringify(stdio)}]\nenv_vars=["SYNTHETIC_STDIO_ENV"]\nrequired=true\n[model_providers.fixture]\nname="Fixture"\nbase_url=${JSON.stringify(endpoint)}\nwire_api="responses"\nrequest_max_retries=0\nstream_max_retries=0\n`;
+  const config = `model="gpt-5.4"\nmodel_provider="fixture"\nmcp_oauth_credentials_store="file"\n[features]\napps=false\ncode_mode=false\n[mcp_servers.workload_stdio]\ncommand=${JSON.stringify(process.execPath)}\nargs=[${JSON.stringify(stdio)}]\nenv_vars=["SYNTHETIC_STDIO_ENV"]\nrequired=true\n[model_providers.fixture]\nname="Fixture"\nbase_url=${JSON.stringify(endpoint)}\nwire_api="responses"\nrequest_max_retries=0\nstream_max_retries=0\n`;
   put(path.join(shared, "config.toml"), config);
   const env = { HOME: homeDir, CODEX_HOME: shared, PATH: path.dirname(cli) + ":" + path.dirname(process.execPath) + ":/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", TERM: "xterm-256color", SYNTHETIC_STDIO_ENV: canary };
   async function run(args) {

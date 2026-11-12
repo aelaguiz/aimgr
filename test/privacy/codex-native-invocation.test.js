@@ -34,11 +34,11 @@ test("relative --cd is projected once while native retains its original process 
       env: { HOME: homeDir, PATH: "/usr/bin:/bin", TMPDIR: callerTemp }, admitArtifact: () => artifact,
       inspectManagedPolicy: () => ({ files: [] }),
       nativeInputs: async ({ parsedArgs }) => {
-        assert.equal(parsedArgs.config[0], 'mcp_oauth_credentials_store="keyring"');
+        assert.equal(parsedArgs.config[0], 'mcp_oauth_credentials_store="file"');
         assert.equal(parsedArgs.cwd, selected);
         assert.equal(parsedArgs.processCwd, cwd);
         if (parsedArgs.worktree) assert.deepEqual(parsedArgs.directories, [path.join(cwd, "extra")]);
-        return { cwd: selected, reads: [], writes: [], database_roots: [prepared.sharedHome], mcp_store: "keyring" };
+        return { cwd: selected, reads: [], writes: [], database_roots: [prepared.sharedHome], mcp_store: "file" };
       },
     });
     const scratch = invocation.args[3];
@@ -58,8 +58,8 @@ test("relative --cd is projected once while native retains its original process 
       assert.equal(invocation.prepared.sharedHome, path.join(homeDir, ".codex"), "unset CODEX_HOME retains native lexical default origin");
       assert.equal(invocation.cwd, cwd);
       assert.equal(invocation.inputs.cwd, selected);
-      assert.deepEqual(invocation.args.slice(invocation.args.indexOf("--") + 1), ["--no-daemon", "-c", 'mcp_oauth_credentials_store="keyring"', ...args]);
-      assert.equal(fs.existsSync(path.join(prepared.sharedHome, "config.toml")), false, "default keyring mode does not author shared settings");
+      assert.deepEqual(invocation.args.slice(invocation.args.indexOf("--") + 1), ["--no-daemon", "-c", 'mcp_oauth_credentials_store="file"', ...args]);
+      assert.equal(fs.existsSync(path.join(prepared.sharedHome, "config.toml")), false, "default file mode does not author shared settings");
       if (process.platform === "darwin") assert.ok(invocation.args.includes(path.join(homeDir,
         "Library/Application Support/com.openai.codex/production-appcast-bootstrap.json")));
     } finally { await invocation.close(); }
@@ -70,33 +70,32 @@ test("relative --cd is projected once while native retains its original process 
   const config = path.join(prepared.sharedHome, "config.toml");
   fs.writeFileSync(config, 'mcp_oauth_credentials_store="auto"\n');
   for (const command of [[], ["exec"], ["app-server"]]) {
-    for (const mode of ["file", "auto"]) {
+    for (const mode of ["keyring", "auto"]) {
       await assert.rejects(prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment,
         args: [...command, "-c", `mcp_oauth_credentials_store="${mode}"`], ownedAppServer: command[0] === "app-server",
         env: { HOME: homeDir, PATH: "/usr/bin:/bin" }, admitArtifact: () => artifact,
         inspectManagedPolicy: () => ({ files: [] }), nativeInputs: async ({ parsedArgs }) => {
-          assert.deepEqual(parsedArgs.config, ['mcp_oauth_credentials_store="keyring"', `mcp_oauth_credentials_store="${mode}"`]);
+          assert.deepEqual(parsedArgs.config, ['mcp_oauth_credentials_store="file"', `mcp_oauth_credentials_store="${mode}"`]);
           return { cwd, reads: [], writes: [], database_roots: [], mcp_store: mode };
         },
       }), /conflicting command-line or administrator setting/);
     }
   }
+  // Existing MCP sign-ins never block a launch or get converted: the shared
+  // File store stays byte-identical and the account home shares its inode.
   const file = path.join(prepared.sharedHome, ".credentials.json");
-  fs.writeFileSync(file, '{}');
-  const emptyStore = await prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment,
-    env: { HOME: homeDir, PATH: "/usr/bin:/bin" }, admitArtifact: () => artifact,
-    inspectManagedPolicy: () => ({ files: [] }),
-    nativeInputs: async () => ({ cwd, reads: [], writes: [], database_roots: [], mcp_store: "keyring" }),
-  });
-  assert.equal(Object.hasOwn(emptyStore.environment, "TMPDIR"), false, "unset caller TMPDIR keeps the native OS fallback");
-  await emptyStore.close();
-  assert.equal(fs.readFileSync(file, "utf8"), '{}');
-  for (const bytes of ['{"unclassified":{}}', 'null', '[]', '{invalid', '']) {
-    fs.writeFileSync(file, bytes);
-    await assert.rejects(prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment,
-      args: ["--worktree", "synthetic"], env: { HOME: homeDir, PATH: "/usr/bin:/bin" },
-      admitArtifact: () => { throw new Error("File refusal must precede artifact/worktree work"); },
-    }), /one-time native keyring conversion/);
+  for (const bytes of ['{}', '{"figma|0123456789abcdef":{"server_name":"figma"}}']) {
+    fs.writeFileSync(file, bytes, { mode: 0o600 });
+    const invocation = await prepareCodexNativeInvocation({ prepared, homeDir, cwd, environment,
+      env: { HOME: homeDir, PATH: "/usr/bin:/bin" }, admitArtifact: () => artifact,
+      inspectManagedPolicy: () => ({ files: [] }),
+      nativeInputs: async () => ({ cwd, reads: [], writes: [], database_roots: [], mcp_store: "file" }),
+    });
+    try {
+      assert.equal(Object.hasOwn(invocation.environment, "TMPDIR"), false, "unset caller TMPDIR keeps the native OS fallback");
+      assert.equal(fs.statSync(path.join(invocation.prepared.codexHome, ".credentials.json")).ino, fs.statSync(file).ino,
+        "the account home hard-links the shared MCP File store");
+    } finally { await invocation.close(); }
     assert.equal(fs.readFileSync(file, "utf8"), bytes);
   }
   assert.equal(fs.readFileSync(config, "utf8"), 'mcp_oauth_credentials_store="auto"\n');

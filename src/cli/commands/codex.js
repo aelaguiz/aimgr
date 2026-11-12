@@ -21,7 +21,6 @@ import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { readCodexEnvironment } from "../../privacy/codex-environment.js";
 import { codexArguments } from "../../privacy/codex-arguments.js";
 import { codexSharedHome } from "../../privacy/codex-account-state.js";
-import { maintainCodexMcp } from "../../credentials/codex-mcp-maintenance.js";
 import { assertCodexMaintenanceClear } from "../../privacy/codex-maintenance.js";
 import { inspectCodexPrivacyStatus, formatCodexPrivacyStatus } from "../../privacy/codex-status.js";
 import {
@@ -527,11 +526,7 @@ export async function handleCodex(context) {
     return;
   }
   if (subcmd === "mcp-migrate" || subcmd === "mcp-recover") {
-    if (positional.length !== 2) throw new Error("Use aim codex mcp-migrate or aim codex mcp-recover in the selected CODEX_HOME environment.");
-    context.stdout.write("MCP maintenance requires existing Codex sessions to finish first and blocks new AIM Codex launches during conversion.\n");
-    if (process.platform === "darwin") context.stdout.write("macOS may ask to let Codex read imported MCP credentials. Choose Always Allow so future sessions and schedules can read them unattended. AIM does not receive your Keychain password.\n");
-    await maintainCodexMcp({ operation: subcmd === "mcp-migrate" ? "start" : "recover", homeDir: context.homeDir, env: context.env });
-    context.stdout.write("MCP credentials use the shared native keyring. AIM Codex launches are available again.\n");
+    context.stdout.write("Nothing to do: AIM keeps Codex MCP sign-ins in ~/.codex/.credentials.json and never moves them into the OS keychain.\n");
     return;
   }
   if (!subcmd) {

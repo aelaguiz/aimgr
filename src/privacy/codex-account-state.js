@@ -11,10 +11,58 @@ const SHARED_DIRECTORIES = ["skills", "agents", "rules", "memories", "memory", "
 export const CODEX_SHARED_STATE_NAMES = Object.freeze([...SHARED_DIRECTORIES, ...CODEX_SHARED_INSTRUCTION_NAMES, "history.jsonl", "session_index.jsonl"]);
 const SHARED = new Set(CODEX_SHARED_STATE_NAMES);
 
-// Direct MCP keyring entries are OS-user scoped, independent of account or
-// settings origin. Reuse native's ordinary default-home lock inodes so those
-// sessions and every AIM home serialize the same rotating MCP credential.
+// MCP OAuth tokens are OS-user scoped, independent of account or settings
+// origin. Reuse native's ordinary default-home lock inodes so those sessions
+// and every AIM home serialize the same rotating MCP credential.
 export const codexMcpLockDirectory = homeDir => path.join(homeDir, ".codex", "mcp-oauth-locks");
+
+const MCP_CREDENTIALS = ".credentials.json";
+const lstatOrNull = file => {
+  try { return fs.lstatSync(file); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+};
+
+// The shared settings home may name its token file through a link (the legacy
+// ~/.aimgr/codex-cli home does); the hard link must reach the real file.
+function sharedMcpCredentialsTarget(sharedHome) {
+  let file = path.join(sharedHome, MCP_CREDENTIALS);
+  for (let hops = 0; hops < 8; hops += 1) {
+    const stat = lstatOrNull(file);
+    if (!stat || !stat.isSymbolicLink()) return file;
+    file = path.resolve(path.dirname(file), fs.readlinkSync(file));
+  }
+  return null;
+}
+
+// Codex keeps MCP OAuth tokens in $CODEX_HOME/.credentials.json when
+// mcp_oauth_credentials_store="file". It rewrites that file in place and
+// refuses a symlinked path, so each account home hard-links the shared file:
+// one sign-in per machine serves every account, and the shared
+// mcp-oauth-locks directory serializes refreshes. Best effort: a home that
+// cannot link keeps a private store, and diverged files are left untouched.
+export function linkCodexMcpCredentials({ sharedHome, codexHome }) {
+  try {
+    const shared = sharedMcpCredentialsTarget(sharedHome);
+    if (!shared) return;
+    const own = path.join(codexHome, MCP_CREDENTIALS);
+    let mine = lstatOrNull(own);
+    if (mine?.isSymbolicLink()) { fs.unlinkSync(own); mine = null; }
+    let theirs = lstatOrNull(shared);
+    if ((mine && !mine.isFile()) || (theirs && !theirs.isFile()) || (mine && theirs)) return;
+    if (mine) { fs.linkSync(own, shared); return; }
+    if (!theirs) {
+      // An empty JSON object is native's empty store. Creating it links every
+      // home before its first sign-in, so that sign-in reaches every account.
+      try { fs.writeFileSync(shared, "{}", { flag: "wx", mode: 0o600 }); }
+      catch (error) { if (error.code !== "EEXIST") throw error; }
+      theirs = lstatOrNull(shared);
+      if (!theirs?.isFile()) return;
+    }
+    fs.linkSync(shared, own);
+  } catch {
+    // Linking only shares sign-ins; Codex still runs with a private store.
+  }
+}
 
 function readOwner(home) {
   try { return JSON.parse(fs.readFileSync(path.join(home, ".aim-account.json"), "utf8")); }
@@ -96,6 +144,7 @@ export function prepareCodexAccountState({ homeDir, env = {}, accountId, label, 
   createOnce(path.join(prepared.accountRoot, "auth.lock"), "");
   for (const name of ["auth.json", "auth.lock", "installation_id"]) codexStateLink(path.join(prepared.codexHome, name), path.join(prepared.accountRoot, name));
   codexStateLink(path.join(prepared.codexHome, "mcp-oauth-locks"), codexMcpLockDirectory(homeDir));
+  linkCodexMcpCredentials(prepared);
   // Native and ordinary installers create these lazily. Link every classified
   // directory before first use so new skills/plugins and history cannot start
   // private parallel trees or conflict with later shared installations.
