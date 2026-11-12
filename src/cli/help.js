@@ -13,7 +13,7 @@ export function printHelp({ stdout = process.stdout } = {}) {
     "",
     "Usage:",
     "  aim status [--json] [--compact] [--accounts] [--all-accounts] [--assignments]",
-    "  aim cluster status  # one table of every account, with a column per AIM machine",
+    "  aim cluster status  # per-machine login counts, then one table of every account and where it is signed in",
     "  aim note set <label> <text> [--provider <provider>] | aim note show|clear <label> [--provider <provider>]",
     "  aim redis configure --url <redis-url> [--key-prefix <prefix>] [--primary-host <host>] [--transport tls]",
     "  aim redis config | ping | snapshot",

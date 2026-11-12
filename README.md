@@ -137,9 +137,12 @@ The text tables hide blocked Codex and Claude accounts. Counts and averages use
 the displayed accounts. `aim status --all-accounts` includes blocked and unsigned-in
 accounts. `aim cluster status` combines every AIM machine into one table per provider:
 Codex accounts blocked on every responding machine are hidden; its average uses the displayed
-ready accounts with usage readings. Each row shows its usage, how many machines have it signed in (`on`), and a
-column per machine (`✓` signed in, `-` not signed in, `!` needs signing in again, `?` unknown).
-Machines that do not answer are named, marked `x`, and cause a nonzero exit. `aim status --json`
+ready accounts with usage readings. Each row shows its usage, how many machines have it signed in (`on`), and
+one `machines` cell naming only the exceptions: `all`, `all but mini-4, mini-5`, or the few machines
+with a login. A `!` after a name means it needs signing in again, `?` unknown. Usage columns no
+account has a reading for are left out. A grid above the tables counts each machine's own Claude
+and Codex logins. Machines that do not answer are named, marked `x` in that grid, left out of
+`machines`, and cause a nonzero exit. `aim status --json`
 retains all accounts.
 
 Account notes are shared through Redis and appear in status and account-use

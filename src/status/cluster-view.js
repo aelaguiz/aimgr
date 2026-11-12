@@ -12,7 +12,9 @@ import {
 
 // One table per provider for the whole cluster: a row per account, its usage
 // (an account-wide fact, read from the freshest machine that has it signed in),
-// and a column per machine saying whether that machine has its own login.
+// and one "machines" cell naming only the exceptions, so the table stays one
+// screen wide however many machines join. A short grid above the tables gives
+// each machine's own login counts.
 
 const CLAUDE_SIGNED_IN = new Set(["READY", "LIMITED", "IN USE"]);
 // When no machine has the account signed in, the most actionable state wins.
@@ -21,7 +23,7 @@ const CLAUDE_UNSIGNED_ORDER = [
 ];
 const NO_ANSWER = "x";
 
-const LEGEND = "✓ signed in · - not signed in · ! needs sign-in again · ? unknown · x machine did not answer";
+const LEGEND = "machines: where each account is signed in, counting machines that answered · name! needs sign-in again · name? unknown";
 
 function claudeCell(status) {
   if (CLAUDE_SIGNED_IN.has(status)) return "✓";
@@ -75,14 +77,42 @@ function coverageLine(rows, answered) {
   return `Signed in on all ${answered} machines: ${all} · on some: ${rows.length - all - none} · on none: ${none}`;
 }
 
-function perMachineRow(label, machines, rows, leading) {
-  return [label, ...Array(leading).fill(""), ...machines.map((machine) => (
-    machine.error ? NO_ANSWER : String(rows.filter((row) => row.cells[machine.name] === "✓").length)
-  ))];
+// Name the minority: "all", "all but mini-4, mini-5", or the few machines with
+// a login. A machine whose login needs attention keeps its ! or ? mark.
+function machinesCell(row, machines) {
+  const answered = machines.filter((machine) => !machine.error).map((machine) => machine.name);
+  const on = answered.filter((name) => row.cells[name] === "✓");
+  const marked = (name) => (row.cells[name] === "-" ? name : `${name}${row.cells[name]}`);
+  const off = answered.filter((name) => row.cells[name] !== "✓");
+  const flagged = off.filter((name) => row.cells[name] !== "-").map(marked);
+  if (answered.length === 0) return "--";
+  if (off.length === 0) return "all";
+  if (on.length > answered.length / 2) return `all but ${off.map(marked).join(", ")}`;
+  if (on.length === 0 && flagged.length === 0) return "none";
+  return [...on, ...flagged].join(", ");
 }
 
-function renderClaude(machines, answered, nowMs) {
-  const rows = collectByLabel(machines, (machine) => machine.claude?.accounts ?? []).map(([label, byMachine]) => {
+const signedInCount = (rows, machine) => (
+  machine.error ? NO_ANSWER : String(rows.filter((row) => row.cells[machine.name] === "✓").length)
+);
+
+function machineGrid(machines, claudeRows, codexRows) {
+  return formatStatusTable([
+    ["signed in", ...machines.map((machine) => machine.name)],
+    ["claude", ...machines.map((machine) => signedInCount(claudeRows, machine))],
+    ["codex", ...machines.map((machine) => signedInCount(codexRows, machine))],
+  ]);
+}
+
+// Usage columns with no reading on any account (the Opus pair, today) only add width.
+function dropEmptyColumns(table, from) {
+  const keep = table[0].map((_, index) => index < from
+    || table.slice(1).some((row) => row[index] !== undefined && row[index] !== "" && row[index] !== "--"));
+  return table.map((row) => row.filter((_, index) => keep[index]));
+}
+
+function claudeRows(machines, nowMs) {
+  return collectByLabel(machines, (machine) => machine.claude?.accounts ?? []).map(([label, byMachine]) => {
     const entries = [...byMachine.entries()].map(([machine, account]) => ({
       machine,
       account: withWindows(account),
@@ -101,42 +131,41 @@ function renderClaude(machines, answered, nowMs) {
     ]));
     return { label, status, on: signedIn.length, account: best.account, cells };
   });
+}
 
+function renderClaude(machines, rows, answered, nowMs) {
   const columns = usageColumns(rows.map((row) => row.account), nowMs);
   const count = (status) => rows.filter((row) => row.status === status).length;
   const unsigned = count("NOT SIGNED IN");
   const table = [
-    ["account", "status", "on", "plan", ...columns.headers, ...machines.map((machine) => machine.name)],
+    ["account", "status", "on", "plan", ...columns.headers, "machines"],
     ...rows.map((row) => [
       row.label,
       row.status,
       `${row.on}/${answered}`,
       formatClaudePlan(row.account),
       ...columns.values(row.account),
-      ...machines.map((machine) => row.cells[machine.name]),
+      machinesCell(row, machines),
     ]),
   ];
-  if (rows.length > 0) {
-    table.push(["average", "--", "--", "--", ...columns.averageValues(), ...machines.map(() => "")]);
-    table.push(perMachineRow("signed in", machines, rows, 3 + columns.headers.length));
-  }
+  if (rows.length > 0) table.push(["average", "--", "--", "--", ...columns.averageValues(), ""]);
   const otherStates = ["NO ROUTE", "PROXY DOWN", "PROXY STARTING", "PROXY UNKNOWN", "PROXY ERROR"]
     .filter((status) => count(status)).map((status) => `${count(status)} ${status.toLowerCase()} · `).join("");
   return [
     `CLAUDE: ${rows.length} accounts · ${otherStates}${count("READY")} ready · ${count("LIMITED")} limited · ${count("IN USE")} in use · `
       + `${unsigned ? `${unsigned} not signed in anywhere · ` : ""}${count("NEEDS YOU")} needs you · ${count("UNKNOWN")} unknown`,
     coverageLine(rows, answered),
-    ...formatStatusTable(table),
+    ...formatStatusTable(dropEmptyColumns(table, 4)),
     formatWeeklyCapacityFreeingNextDayLine(
       summarizeWeeklyCapacityFreeingNextDay(rows.map((row) => findOverallWeeklyWindow(row.account.usage)), nowMs),
     ),
   ];
 }
 
-function renderCodex(machines, answered, nowMs) {
+function codexRows(machines) {
   const codexAccounts = (machine) => (Array.isArray(machine.view?.accounts) ? machine.view.accounts : [])
     .filter((account) => account?.provider === OPENAI_CODEX_PROVIDER);
-  const rows = collectByLabel(machines, codexAccounts).map(([label, byMachine]) => {
+  return collectByLabel(machines, codexAccounts).map(([label, byMachine]) => {
     const entries = [...byMachine.entries()].map(([machine, account]) => ({
       machine,
       account,
@@ -153,9 +182,11 @@ function renderCodex(machines, answered, nowMs) {
     ]));
     return { label, status, on: ready.length, account: best.account, cells };
   }).filter((row) => row.status !== "blocked");
+}
 
+function renderCodex(machines, rows, answered, nowMs) {
   const table = [
-    ["account", "st", "on", "plan", "wk_used", "wk_in", "flags", ...machines.map((machine) => machine.name)],
+    ["account", "st", "on", "plan", "wk_used", "wk_in", "flags", "machines"],
     ...rows.map((row) => [
       row.label,
       row.status,
@@ -164,15 +195,14 @@ function renderCodex(machines, answered, nowMs) {
       row.status === "ready" ? formatStatusAccountUsedCell(row.account?.usage, 0) : "--",
       row.status === "ready" ? formatStatusAccountResetCell(row.account?.usage, 0, nowMs) : "--",
       row.status === "ready" ? buildStatusAccountFlags(row.account) : "-",
-      ...machines.map((machine) => row.cells[machine.name]),
+      machinesCell(row, machines),
     ]),
   ];
   if (rows.length > 0) {
     const average = buildStatusAverageAccountTableRow(
       rows.filter((row) => row.status === "ready").map((row) => row.account), nowMs, { codex: true },
     );
-    table.push(["average", "--", "--", "--", average[6], average[7], "--", ...machines.map(() => "")]);
-    table.push(perMachineRow("signed in", machines, rows, 6));
+    table.push(["average", "--", "--", "--", average[6], average[7], "--", ""]);
   }
   const readyCount = rows.filter((row) => row.status === "ready").length;
   return [
@@ -189,14 +219,17 @@ function renderCodex(machines, answered, nowMs) {
 export function renderClusterStatusText(machines, { nowMs = Date.now() } = {}) {
   const answered = machines.filter((machine) => !machine.error);
   const failed = machines.filter((machine) => machine.error);
+  const claude = claudeRows(machines, nowMs);
+  const codex = codexRows(machines);
   const lines = [
     `AIM CLUSTER: ${answered.length} of ${machines.length} machines answered`
       + (failed.length ? ` · ${failed.map((machine) => `${machine.name}: ${machine.error}`).join(" · ")}` : ""),
+    ...machineGrid(machines, claude, codex),
     LEGEND,
     "",
-    ...renderClaude(machines, answered.length, nowMs),
+    ...renderClaude(machines, claude, answered.length, nowMs),
     "",
-    ...renderCodex(machines, answered.length, nowMs),
+    ...renderCodex(machines, codex, answered.length, nowMs),
   ];
   return `${lines.join("\n")}\n`;
 }

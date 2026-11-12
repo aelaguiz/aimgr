@@ -21,8 +21,9 @@ Each machine installs AI Manager itself from its own `~/workspace/aimgr` checkou
 "Installing on a machine"). `scripts/sync-fleet.sh` deploys only prime-agent and is not the AIM deployment path.
 The M5 uses `~/.local/share/aimgr/checkout` for devcluster; other machines use
 `~/workspace/aimgr`. `aim cluster status` reads every one of these machines over its devcluster
-SSH target and shows one combined table per provider: a row for each account, and a column for
-each machine saying whether that machine has its own login.
+SSH target and shows a grid of each machine's login counts, then one combined table per provider:
+a row for each account, whose `machines` cell names the machines where it is not signed in
+(`all but mini-5`) or, for an account on only a few, the machines where it is.
 
 The old M1 is an active fleet machine (Amir, November 10, 2026: "its literally in active use
 right now"). It was set aside on October 25, 2026 and is back; its aliases are `amirs-old-m1`,

@@ -59,6 +59,14 @@ function row(output, label) {
   return Object.fromEntries(header.map((name, index) => [name, cells[index]]));
 }
 
+// The per-machine grid above the account tables: "signed in" header, then claude and codex rows.
+function gridRow(output, provider) {
+  const lines = output.split("\n");
+  const header = lines.find((line) => line.startsWith("signed in ")).split(/\s{2,}/);
+  const cells = lines.find((line) => line.startsWith(`${provider} `)).split(/\s{2,}/);
+  return Object.fromEntries(header.map((name, index) => [name, cells[index]]));
+}
+
 test("all-accounts keeps blocked Codex and Claude accounts visible in their usual tables", () => {
   const view = { redis: { status: "live" }, accounts: [
     { label: "codex-no-login", provider: "openai-codex", operator: { status: "blocked" }, credentials: { status: "login_required" } },
@@ -121,7 +129,7 @@ test("cluster Codex shows no average when every account is blocked", () => {
   assert.doesNotMatch(codexText, /^blocked\s|^average\s/m);
 });
 
-test("cluster status combines every machine into one row per account with a column per machine", async () => {
+test("cluster status combines every machine into one row per account with one machines cell", async () => {
   const home = homeFor("mini-2");
   const targets = [];
   let localCalls = 0;
@@ -147,22 +155,28 @@ test("cluster status combines every machine into one row per account with a colu
   assert.equal(alpha.status, "READY");
   assert.equal(alpha.on, `2/${AIM_FLEET.length}`);
   assert.equal(alpha.week, "55%", "usage comes from the freshest machine with a login");
-  for (const machine of AIM_FLEET) {
-    assert.equal(alpha[machine.name], ["m5", "mini-2"].includes(machine.name) ? "✓" : "-", machine.name);
-  }
+  assert.equal(alpha.machines, "m5, mini-2", "a minority login lists where it is signed in");
+  for (const machine of AIM_FLEET) assert.equal(alpha[machine.name], undefined, "no column per machine");
   const beta = row(result.stdout, "beta");
   assert.equal(beta.status, "NOT SIGNED IN");
   assert.equal(beta.on, `0/${AIM_FLEET.length}`);
+  assert.equal(beta.machines, "none");
   assert.match(result.stdout, /CLAUDE: 2 accounts · 1 ready · 0 limited · 0 in use · 1 not signed in anywhere/);
   assert.match(result.stdout, new RegExp(`Signed in on all ${AIM_FLEET.length} machines: 0 · on some: 1 · on none: 1`));
 
   const cx = row(result.stdout, "cx");
   assert.equal(cx.on, `1/${AIM_FLEET.length}`);
-  assert.equal(cx.m5, "✓");
-  assert.equal(cx["mini-2"], "-");
+  assert.equal(cx.machines, "m5");
+
+  const grid = gridRow(result.stdout, "claude");
+  assert.equal(grid.m5, "1");
+  assert.equal(grid["mini-2"], "1");
+  assert.equal(grid.studio, "0");
+  assert.equal(gridRow(result.stdout, "codex").m5, "1");
+  assert.ok(result.stdout.split("\n").every((line) => line.length <= 140), "the report stays one screen wide");
 });
 
-test("cluster status names machines that did not answer, marks their column and returns failure", async () => {
+test("cluster status names machines that did not answer, marks them in the machine grid and returns failure", async () => {
   const home = homeFor("m5");
   const result = await runCliWithExitCode(["cluster", "status", "--home", home], {
     nowImpl: () => NOW,
@@ -180,10 +194,42 @@ test("cluster status names machines that did not answer, marks their column and 
   ));
   const alpha = row(result.stdout, "alpha");
   assert.equal(alpha.on, `1/${AIM_FLEET.length - 3}`);
-  assert.equal(alpha["mini-1"], "x");
-  assert.equal(alpha["old-m1"], "x");
-  assert.equal(alpha.studio, "-");
+  assert.equal(alpha.machines, "m5", "machines that did not answer are left out");
+  const grid = gridRow(result.stdout, "claude");
+  assert.equal(grid["mini-1"], "x");
+  assert.equal(grid["old-m1"], "x");
+  assert.equal(grid.studio, "0");
   assert.doesNotMatch(result.stdout, /secret stderr/);
+});
+
+test("the machines cell names the minority and keeps attention marks", () => {
+  const names = ["a", "b", "c", "d", "e"];
+  const statuses = {
+    everywhere: ["ready", "ready", "ready", "ready", "ready"],
+    wide: ["ready", "ready", "ready", "blocked", "reauth"],
+    narrow: ["ready", "reauth", "unknown", "blocked", "blocked"],
+  };
+  const machines = names.map((name, index) => ({
+    name, claude: { accounts: [] },
+    view: { accounts: Object.entries(statuses).map(([label, list]) => codex(label, list[index])) },
+  }));
+  machines.push({ name: "f", error: "timed out" });
+  const text = renderClusterStatusText(machines, { nowMs: NOW });
+  assert.equal(row(text, "everywhere").machines, "all", "a machine that did not answer does not count against all");
+  assert.equal(row(text, "wide").machines, "all but d, e!");
+  assert.equal(row(text, "narrow").machines, "a, b!, c?");
+  assert.equal(gridRow(text, "codex").f, "x");
+});
+
+test("cluster Claude drops usage columns no account has a reading for", () => {
+  const opus = { ...signedIn("opus-user", 20, NOW), usage: { ok: true, windows: [
+    { label: "Week", kind: "weekly_all", usedPercent: 20, resetAt: NOW + DAY, active: true },
+    { label: "Opus", kind: "weekly_scoped", usedPercent: 5, resetAt: NOW + DAY, active: true },
+  ] } };
+  const render = (accounts) => renderClusterStatusText([{ name: "m5", view: { accounts: [] }, claude: { accounts } }], { nowMs: NOW });
+  const header = (text) => text.split("\n").find((line) => line.startsWith("account ")).split(/\s{2,}/);
+  assert.deepEqual(header(render([signedIn("alpha", 40, NOW)])), ["account", "status", "on", "plan", "week", "wk_in", "machines"]);
+  assert.ok(header(render([signedIn("alpha", 40, NOW), opus])).includes("Opus"));
 });
 
 test("remote status parsing needs both reports", () => {
