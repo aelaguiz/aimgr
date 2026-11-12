@@ -77,8 +77,8 @@ test("the fleet includes the old M1", () => {
     { name: "old-m1", target: "aelaguiz@amir-old-m1.fairy-salmon.ts.net" });
 });
 
-test("the fleet includes Mini 3 and Mini 4", () => {
-  for (const n of [3, 4]) {
+test("the fleet includes Minis 3 to 5", () => {
+  for (const n of [3, 4, 5]) {
     assert.deepEqual(AIM_FLEET.find((machine) => machine.name === `mini-${n}`),
       { name: `mini-${n}`, target: `aelaguiz@amir-mini-${n}.fairy-salmon.ts.net` });
   }
