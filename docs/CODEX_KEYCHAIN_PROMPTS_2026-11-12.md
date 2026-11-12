@@ -67,6 +67,19 @@ Amir chose option A on 2026-11-12 ("I don't want it to use the Mac OS keychain")
   - No SecurityAgent process started at any point.
   - The full suite matched `origin/main`: the same 5 SOCKS/proxy tests fail on both.
 
+### Rollout, 2026-11-12
+
+- **Installed:** devcluster installed `ca7c9d4` and its post-install check passed on the M5, M3 Max, M3 36 GB, Mac Studio, home server and Mini 1–5. The old M1 was mid-sync and installs on its own timer; it has no Codex keychain items and never prompted.
+- **Sign-ins restored:** `~/.codex/.credentials.json` was restored from `.credentials.json.before-privacy` on the M5 (9 servers), M3 Max (4), M3 36 GB (3), Mini 1 (9) and Studio (1). The restore writes in place, so homes already linked keep the same file. On the M5, the `pro3` home linked to it, and Figma and CircleCI read as signed in.
+- **Dialogs dismissed:** the stuck SecurityAgent processes on the M3 36 GB, Mini 1 and Studio ignored SIGTERM, so they were ended with SIGKILL, which macOS treats as Cancel. None came back in six fleet-wide checks from 15:40 to 15:45 CST.
+
+Still true afterwards:
+
+- The AIM-created keychain items stay where they are, unused: 3 on the M3 36 GB, 9 on Mini 1. Deleting them needs the login password, and nothing reads them now. Don't run `codex mcp logout` for those servers on those machines, because logout touches the keychain even in file mode. `codex mcp login` and token refreshes write only the file.
+- Three `codex exec` workers on Mini 1 were started by the old release in keychain mode. They keep that mode until they exit; new launches use the file store.
+- Fly's saved token expired on 2026-11-06 and has no refresh token, so Fly needs a fresh `codex mcp login fly` on any machine that uses it.
+- The M3 36 GB's restored Figma, Linear and Sentry tokens had expired weeks to months before the migration (Figma around 2026-10-15), so `codex mcp list` shows them as not signed in. Its first session tries their refresh tokens; run `codex mcp login <server>` for any that fail. On Mini 1, a real `aim codex run pro6 -- mcp list` showed Figma and CircleCI signed in with no dialog.
+
 ## Options considered
 
 ### A. Stop forcing the keychain (chosen)
