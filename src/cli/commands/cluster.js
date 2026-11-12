@@ -15,6 +15,8 @@ export const AIM_FLEET = Object.freeze([
   { name: "m3-36gb", target: "aelaguiz@amir-m3-36gb.fairy-salmon.ts.net" },
   { name: "mini-1", target: "aelaguiz@amir-mini-1.fairy-salmon.ts.net" },
   { name: "mini-2", target: "aelaguiz@amir-mini-2.fairy-salmon.ts.net" },
+  { name: "mini-3", target: "aelaguiz@amir-mini-3.fairy-salmon.ts.net" },
+  { name: "mini-4", target: "aelaguiz@amir-mini-4.fairy-salmon.ts.net" },
   { name: "studio", target: "agents@amirs-mac-studio.fairy-salmon.ts.net" },
   { name: "old-m1", target: "aelaguiz@amir-old-m1.fairy-salmon.ts.net" },
 ]);

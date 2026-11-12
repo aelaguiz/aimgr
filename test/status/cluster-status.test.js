@@ -77,6 +77,13 @@ test("the fleet includes the old M1", () => {
     { name: "old-m1", target: "aelaguiz@amir-old-m1.fairy-salmon.ts.net" });
 });
 
+test("the fleet includes Mini 3 and Mini 4", () => {
+  for (const n of [3, 4]) {
+    assert.deepEqual(AIM_FLEET.find((machine) => machine.name === `mini-${n}`),
+      { name: `mini-${n}`, target: `aelaguiz@amir-mini-${n}.fairy-salmon.ts.net` });
+  }
+});
+
 test("cluster Codex averages displayed ready accounts once and hides accounts blocked everywhere", () => {
   const ready = (label, used, days, observedAt) => ({
     ...codex(label, "ready"), usageObservedAtMs: observedAt,
