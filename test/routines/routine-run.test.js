@@ -704,6 +704,27 @@ test("worker terminates an unadmitted startup client as ambiguous and never retr
 });
 
 
+test("worker in Herdr's default session, which sets no HERDR_SESSION, passes the Herdr check", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home, routineDefinition(home, { herdrSession: "default" }));
+  const runtime = makeInteractiveRuntime({ home, cwd: receipt.configured.cwd, pinModel: "wrong-model" });
+  const context = workerContext(home, receipt, runtime);
+  delete context.env.HERDR_SESSION;
+
+  await assert.rejects(() => executeRoutineWorker(context), /Prime pin mismatch/);
+});
+
+test("worker for a named Herdr session still rejects a pane with no HERDR_SESSION", async () => {
+  const home = mkTempHome();
+  const { receipt } = await prepareQueuedWorker(home);
+  const runtime = makeInteractiveRuntime({ home, cwd: receipt.configured.cwd });
+  const context = workerContext(home, receipt, runtime);
+  delete context.env.HERDR_SESSION;
+
+  await assert.rejects(() => executeRoutineWorker(context), /Herdr mismatch: expected=growth\/.* actual=default\//);
+  assert.equal(runtime.pinCalls(), 0);
+});
+
 test("worker rejects routine config drift before starting Prime", async () => {
   const home = mkTempHome();
   const { receipt } = await prepareQueuedWorker(home);

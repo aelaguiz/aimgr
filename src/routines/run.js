@@ -778,7 +778,8 @@ function verifyWorkerEnvironment(routine, receipt, env, cwd) {
     throw new Error(`Routine worker cwd mismatch: expected=${routine.cwd} actual=${cwd}.`);
   }
   const expected = receipt.herdr;
-  const observedSession = String(env.HERDR_SESSION ?? "");
+  // Herdr's unnamed session is "default" and sets no HERDR_SESSION in its panes.
+  const observedSession = String(env.HERDR_SESSION || "default");
   const observedWorkspace = String(env.HERDR_WORKSPACE_ID ?? "");
   const observedPane = String(env.HERDR_PANE_ID ?? "");
   if (
