@@ -4,8 +4,9 @@ import path from "node:path";
 
 // A bare Codex family name means that family's newest release, the way Claude
 // Code treats `fable` and `opus`, so a new Sol or Astra is used without editing
-// AI Manager. Codex's own catalog says what exists; the fallback covers a
-// machine whose catalog is missing or unreadable.
+// AI Manager. Codex's own catalog says what exists, but a catalog written by an
+// older Codex omits models that client could not run, so the newest version
+// named here is also the floor.
 const FALLBACK = Object.freeze({
   sol: "gpt-6.2-sol",
   astra: "gpt-6.2-astra",
@@ -34,13 +35,13 @@ export function resolveCodexModel(value, { homeDir = os.homedir() } = {}) {
   try {
     models = JSON.parse(fs.readFileSync(path.join(homeDir, ".codex", "models_cache.json"), "utf8")).models ?? [];
   } catch {}
-  let best = null;
+  let best = { slug: FALLBACK[family], version: versionOf(FALLBACK[family], family) };
   for (const model of Array.isArray(models) ? models : []) {
     if (model?.visibility !== "list" || typeof model.slug !== "string") continue;
     const version = versionOf(model.slug, family);
-    if (version && (!best || newer(version, best.version))) best = { slug: model.slug, version };
+    if (version && newer(version, best.version)) best = { slug: model.slug, version };
   }
-  return best?.slug ?? FALLBACK[family];
+  return best.slug;
 }
 
 // `aim codex run -- -m sol ...`: resolve a family name given to Codex's model flag.

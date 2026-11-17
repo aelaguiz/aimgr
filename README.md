@@ -644,7 +644,8 @@ For Codex, `provider` defaults to `openai-codex`, `model` to `astra`,
 `thinking` to `xhigh`, and `profile` to `yolo`. A bare family name (`sol`, `astra`,
 `terra`, `luna`), here or after `aim codex run -- -m`, means that family's newest
 model in Codex's catalog (`~/.codex/models_cache.json`), so a new release is used
-without editing the routine. The profile must exist in the
+without editing the routine. A catalog written by an older Codex never picks below
+the newest version AIM knows (`gpt-6.2-sol`, `gpt-6.2-astra`). The profile must exist in the
 Codex configuration and supplies permissions and other settings; use a custom
 profile for jobs that need different permissions. The routine explicitly sets
 the model/reasoning and uses AIM-selected ChatGPT account authentication.
