@@ -97,7 +97,7 @@ the install, load them with
 ## Prime
 
 ```bash
-aim prime run codex gpt-6-sol             # select Sol explicitly
+aim prime run codex gpt-5.6-sol           # select Sol explicitly (newest Sol Prime 0.9.5 knows)
 aim prime run codex gpt-6-astra           # explicit model
 aim prime run claude                      # claude-fable-5-1 (Prime needs an exact id)
 aim prime run grok                        # grok-4.6
