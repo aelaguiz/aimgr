@@ -195,7 +195,7 @@ export function resolveCodexLaunchInputs({ prepared, parsedArgs, homeDir, env, m
       const canonical = addSkill(set, root);
       if (!canonical || scannedSkillRoots.has(canonical)) continue;
       scannedSkillRoots.add(canonical);
-      // Pinned 0.166 discovery: ext/skills/src/loader/{mod,discovery}.rs
+      // Pinned discovery (unchanged from 0.166 through 0.169): ext/skills/src/loader/{mod,discovery}.rs
       // and exec-server/src/local_file_system.rs. Inventory only directory
       // links, with the same sorted breadth-first bounds; never parse SKILL.md.
       const queue = [[root, 0]], visited = new Set([canonical]);

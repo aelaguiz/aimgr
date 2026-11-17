@@ -126,7 +126,7 @@ test("Codex routine agent and profile survive unrelated config writes", () => {
   const { routine } = readRoutineDefinition({ homeDir: home, id: "report" });
   assert.equal(routine.agent, "codex");
   assert.equal(routine.profile, "automation");
-  assert.equal(routine.model, "gpt-6-astra");
+  assert.equal(routine.model, "gpt-6.2-astra");
   assert.equal(routine.thinking, "xhigh");
   assert.equal(routine.provider, "openai-codex");
   for (const [overrides, expected] of [

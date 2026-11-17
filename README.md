@@ -542,7 +542,7 @@ pool selection. Arguments after `--` pass through unchanged; omit them to launch
 ```zsh
 aim codex use writer
 aim status --compact
-aim codex run writer -- exec --model gpt-6-astra -c 'model_reasoning_effort="xhigh"' --json 'Your prompt'
+aim codex run writer -- exec --model astra -c 'model_reasoning_effort="xhigh"' --json 'Your prompt'
 ```
 
 For a resume on that label, pass the native resume arguments after `--`, for
@@ -629,7 +629,7 @@ routines:
     promptFile: /Users/you/.aimgr/routines/prompts/morning-review.md
     herdrSession: work
     spaceTitleFormat: "Codex morning review · {scheduled_local}"
-    model: gpt-6-astra
+    model: astra
     thinking: xhigh
     profile: yolo
 ```
@@ -640,8 +640,11 @@ The example runs every Monday at 08:00 in the machine's local timezone. Omit
 Herdr session must already be running with a focused workspace. The new job's
 workspace opens without taking focus.
 
-For Codex, `provider` defaults to `openai-codex`, `model` to `gpt-6-astra`,
-`thinking` to `xhigh`, and `profile` to `yolo`. The profile must exist in the
+For Codex, `provider` defaults to `openai-codex`, `model` to `astra`,
+`thinking` to `xhigh`, and `profile` to `yolo`. A bare family name (`sol`, `astra`,
+`terra`, `luna`), here or after `aim codex run -- -m`, means that family's newest
+model in Codex's catalog (`~/.codex/models_cache.json`), so a new release is used
+without editing the routine. The profile must exist in the
 Codex configuration and supplies permissions and other settings; use a custom
 profile for jobs that need different permissions. The routine explicitly sets
 the model/reasoning and uses AIM-selected ChatGPT account authentication.

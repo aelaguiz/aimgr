@@ -3,6 +3,9 @@ import { promisify } from "node:util";
 import path from "node:path";
 
 const execute = promisify(execFile);
+// Upstream release commits of the reviewed config-state helpers: 0.166.0 and
+// 0.169.0. Sessions on the earlier approved bundle keep working after upgrade.
+const REVIEWED_SOURCE_REVISIONS = new Set(["6ff1e1ca3b30fc8b914720681fcf5fe62e95f856", "d32063f96c2dff1dc96af839b3952abb6acfeda4"]);
 
 /** The immutable AIM helper calls the pinned upstream configuration and state
  * libraries with outbound traffic denied before their first call. Its private
@@ -52,7 +55,7 @@ export async function prepareCodexNativeInputs({ artifact, prepared, parsedArgs,
     // Upstream parse errors may embed the original settings or a secret value.
     throw new Error("Codex could not prepare its local settings and databases. Check the selected native settings and required privacy policy.");
   }
-  if (response.schema !== 1 || response.source_revision !== "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856"
+  if (response.schema !== 1 || !REVIEWED_SOURCE_REVISIONS.has(response.source_revision)
     || (operation === "initialize" && response.initialized !== true)
     || !path.isAbsolute(response.cwd ?? "")
     || [response.reads, response.writes, response.database_roots, response.database_files, response.project_cwds ?? [],

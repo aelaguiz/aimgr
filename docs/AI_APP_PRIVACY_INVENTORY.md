@@ -88,6 +88,7 @@ The inspection read publisher/name/version metadata under `~/.vscode/extensions`
 | [Claude implementation inventory](aelaguiz/evidence/claude-implementation-2026-11-01/claude-metadata-inventory.json) | Named `2.1.316` mechanisms, followed by the separate `2.1.317` upgrade checks. |
 | [Claude upgrade and tool correction](aelaguiz/CLAUDE_2_1_317_UPGRADE_VERIFICATION_2026-11-03.md) | Official `2.1.317`, reviewed Linux/Mac artifacts; [November 3 tool-boundary correction](aelaguiz/CLAUDE_TOOL_RESTRICTIONS_ROLLBACK_2026-11-03.md) preserves ordinary tool access. |
 | [Codex milestone-1 acceptance](https://github.com/aelaguiz/aimgr/blob/7c4eccb9a00ad62a3119f35ec9531091aed97f9e/docs/aelaguiz/CODEX_PRIVACY_M1_ACCEPTANCE_2026-11-04.md) | Official `0.166.0`, source `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`, Linux and macOS. |
+| [Codex 0.169 source review](aelaguiz/CODEX_0_169_UPGRADE_REVIEW_2026-11-17.md) | Official `0.169.0`, source `d32063f96c2dff1dc96af839b3952abb6acfeda4`, Mac package digests; source reading only, no runtime capture. |
 | Official documentation checked November 5 | Documents additional/current behavior; it does not prove that each installed older binary implements it. |
 
 Historical statements such as “not yet addressed” remain historical in their original reports. This inventory records subsequent corrections alongside them; it does not rewrite a failed or unperformed test as a pass.
@@ -202,7 +203,7 @@ Desktop OTLP can use streams `cowork`, `claude-code-desktop` and `claude-desktop
 
 **Codex sends persistent installation and conversation identifiers, plus project and client metadata, independently of optional analytics.** Its diagnostic exporters, feedback attachments, desktop updater identity and remote-control transport are additional paths.
 
-Unless an entry says otherwise, **Source** below means official [Codex 0.166.0](https://github.com/openai/codex/releases/tag/rust-v0.166.0), commit `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. The initial `0.163.0-alpha.5` captures establish the historical outgoing IDs and terminal/desktop fields; the 0.166 source and milestone-1 acceptance establish the newer reviewed behavior. Neither substitutes for an audit of every selected fleet version or the separate desktop app.
+Unless an entry says otherwise, **Source** below means official [Codex 0.166.0](https://github.com/openai/codex/releases/tag/rust-v0.166.0), commit `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. The initial `0.163.0-alpha.5` captures establish the historical outgoing IDs and terminal/desktop fields; the 0.166 source and milestone-1 acceptance establish the newer reviewed behavior. Neither substitutes for an audit of every selected fleet version or the separate desktop app. The [0.169 source review](aelaguiz/CODEX_0_169_UPGRADE_REVIEW_2026-11-17.md) found these entries unchanged in 0.169.0 except where it says otherwise: one new automatic notice request (`/wham/security-setup`), a local-only feedback ZIP, and the code-mode host's new launch arguments.
 
 ### Exact installation and machine identifiers
 

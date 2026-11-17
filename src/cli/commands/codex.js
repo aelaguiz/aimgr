@@ -20,6 +20,7 @@ import { createManualCallbackStdioProtocol, readNonEmptyLineFromStdin, parseManu
 import { OPENAI_CODEX_PROVIDER } from "../../core/constants.js";
 import { readCodexEnvironment } from "../../privacy/codex-environment.js";
 import { codexArguments } from "../../privacy/codex-arguments.js";
+import { resolveCodexModelArgs } from "../../core/codex-models.js";
 import { codexSharedHome } from "../../privacy/codex-account-state.js";
 import { assertCodexMaintenanceClear } from "../../privacy/codex-maintenance.js";
 import { inspectCodexPrivacyStatus, formatCodexPrivacyStatus } from "../../privacy/codex-status.js";
@@ -84,8 +85,8 @@ async function handleRedisCodexUse(context) {
   if (result.activated.status === "blocked") setExitCode(1);
 }
 
-function codexRunArgs({ positional, afterDoubleDash }) {
-  const passthrough = Array.isArray(afterDoubleDash) ? afterDoubleDash : [];
+function codexRunArgs({ positional, afterDoubleDash, homeDir }) {
+  const passthrough = resolveCodexModelArgs(Array.isArray(afterDoubleDash) ? afterDoubleDash : [], { homeDir });
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
   const requestedResume = subcmd === "resume" || String(positional[2] ?? "").trim().toLowerCase() === "resume";
   if (subcmd === "run" && positional.length > 3 && !requestedResume) {
@@ -112,6 +113,7 @@ async function handleRedisCodexRun(context) {
   const args = codexRunArgs({
     positional: context.positional,
     afterDoubleDash: context.opts.afterDoubleDash,
+    homeDir: context.homeDir,
   });
   const result = await activateCodexForContext(context);
   if (result.activated.status === "blocked") {

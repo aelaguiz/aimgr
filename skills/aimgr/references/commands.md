@@ -77,7 +77,7 @@ Example — select, verify, then launch with an explicit model:
 ```bash
 aim codex use writer
 aim status --compact
-aim codex run writer -- exec --model gpt-6-astra \
+aim codex run writer -- exec --model astra \
   -c 'model_reasoning_effort="xhigh"' --json 'Your prompt'
 ```
 
@@ -126,8 +126,11 @@ aim prime run grok
 |---|---|
 | Fable | `fable` (Claude Code picks the newest Fable; Prime uses `claude-fable-5-1`) |
 | Opus | `opus` |
-| Astra | `gpt-6-astra` (default Codex model, `xhigh` effort) |
-| Sol | `gpt-6-sol` (select explicitly for Prime) |
+| Astra | `astra`: AIM runs the newest Astra in Codex's catalog (`gpt-6.2-astra` on November 17, 2026); the default for Codex routines, `xhigh` effort |
+| Sol | `sol`: the newest Sol (`gpt-6.2-sol` on November 17, 2026) |
+
+Family names work after `aim codex run -- -m` and in a routine's `model`. Prime needs an
+exact id from its own list, which stops at `gpt-6-astra` and `gpt-5.6-sol` in Prime 0.9.5.
 | Grok | `grok-4.6` |
 
 For Claude launches, prefer the `fable` / `opus` / `sonnet` presets over passing a model

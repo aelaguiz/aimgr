@@ -8,7 +8,7 @@ Build only on the isolated development hosts. Download the exact official
 release source archive; `prepare-source.py` verifies its recorded digest:
 
 ```sh
-curl --fail --location https://github.com/openai/codex/archive/refs/tags/rust-v0.166.0.tar.gz -o codex-source.tar.gz
+curl --fail --location https://github.com/openai/codex/archive/refs/tags/rust-v0.169.0.tar.gz -o codex-source.tar.gz
 python3 prepare-source.py codex-source.tar.gz
 cargo build --locked --release -j 1
 ```
@@ -20,8 +20,8 @@ pkg-config, OpenSSL development headers and the upstream native dependencies.
 macOS builds use the platform SDK. The final installer hashes the built helper
 alongside the unchanged official vendor executables.
 
-The approved pair is official Codex 0.166.0 and its release commit
-`6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. A source checkout's embedded
+The approved pair is official Codex 0.169.0 and its release commit
+`d32063f96c2dff1dc96af839b3952abb6acfeda4`. A source checkout's embedded
 development version is not release provenance; pair by the release tag/commit
 and published binary digests. Native acceptance is rerun when this pair changes.
 

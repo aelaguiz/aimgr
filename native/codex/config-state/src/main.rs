@@ -32,7 +32,7 @@ unsafe extern "C" {
 }
 
 type Result<T> = std::result::Result<T, ()>;
-const REVISION: &str = "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856";
+const REVISION: &str = "d32063f96c2dff1dc96af839b3952abb6acfeda4";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]

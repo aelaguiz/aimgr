@@ -1,6 +1,7 @@
 import path from "node:path";
 import { readAimgrConfig } from "../config/aimgr-config.js";
 import { isObject } from "../core/normalize.js";
+import { resolveCodexModel } from "../core/codex-models.js";
 import {
   ANTHROPIC_PROVIDER,
   DEFAULT_CLAUDE_FABLE_MODEL,
@@ -52,7 +53,7 @@ function validateCalendar(value, id) {
   });
 }
 
-export function validateRoutineDefinition(id, value) {
+export function validateRoutineDefinition(id, value, { homeDir } = {}) {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(String(id ?? ""))) {
     throw new Error(`Invalid routine id: ${String(id ?? "") || "<empty>"}.`);
   }
@@ -104,7 +105,9 @@ export function validateRoutineDefinition(id, value) {
     cwd,
     promptFile,
     provider,
-    model: requiredString(value.model ?? (agent === "codex" ? "gpt-6-astra" : agent === "claude" ? DEFAULT_CLAUDE_FABLE_MODEL : undefined), "model", id),
+    model: agent === "codex"
+      ? resolveCodexModel(requiredString(value.model ?? "astra", "model", id), { homeDir })
+      : requiredString(value.model ?? (agent === "claude" ? DEFAULT_CLAUDE_FABLE_MODEL : undefined), "model", id),
     thinking,
     herdrSession: requiredString(value.herdrSession, "herdrSession", id),
     spaceTitleFormat,
@@ -118,7 +121,7 @@ export function readRoutineDefinition({ homeDir, id }) {
   }
   return {
     ...read,
-    routine: validateRoutineDefinition(id, read.config.routines[id]),
+    routine: validateRoutineDefinition(id, read.config.routines[id], { homeDir }),
   };
 }
 
@@ -127,6 +130,6 @@ export function readAllRoutineDefinitions({ homeDir }) {
   return {
     ...read,
     routines: Object.entries(read.config.routines)
-      .map(([id, value]) => validateRoutineDefinition(id, value)),
+      .map(([id, value]) => validateRoutineDefinition(id, value, { homeDir })),
   };
 }
