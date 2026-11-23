@@ -40,7 +40,7 @@ export function validateClaudeManualCallback(input, advertised) {
 // A stream chunk is not a complete URL token. Wait for native's delimiter;
 // otherwise state/redirect can precede a still-unwritten PKCE challenge.
 export function extractNativeClaudeManualUrl(text) {
-  for (const match of text.matchAll(/https:\/\/[^\s\x1b<>"']+(?=[\s\x1b<>"'])/g)) {
+  for (const match of text.matchAll(/https:\/\/[^\s\x07\x1b<>"']+(?=[\s\x07\x1b<>"'])/g)) {
     let url, redirect;
     try { url = new URL(match[0]); redirect = new URL(url.searchParams.get('redirect_uri')); } catch { continue; }
     const nativeAuthorize = url.origin === 'https://claude.com' && url.pathname === '/cai/oauth/authorize'

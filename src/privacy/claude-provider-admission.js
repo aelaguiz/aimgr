@@ -1,6 +1,11 @@
 import path from "node:path";
 import { ClaudePrivacySettingsError } from "./claude-settings.js";
 
+// Team is admitted because Amir decided on 2026-11-22 that no owner of his Team
+// organizations will push Claude Code managed settings, which would override
+// AIM's settings. Enterprise stays out. See docs/AI_APP_PRIVACY_INVENTORY.md.
+export const CLAUDE_ADMITTED_PLANS = Object.freeze(["pro", "max", "team"]);
+
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const nonempty = value => typeof value === "string" && value.trim().length > 0;
 const fail = reason => { throw new ClaudePrivacySettingsError(reason); };
@@ -73,7 +78,7 @@ export function cleanClaudeRootEnvironment(env) {
  * enough; native falls back to active_config/default in its config directory.
  */
 export function claudeStoredOAuthEnvironment({ emptyProfiles, subscriptionType } = {}) {
-  if (!path.isAbsolute(emptyProfiles ?? "") || (subscriptionType !== undefined && !["pro", "max"].includes(subscriptionType))) {
+  if (!path.isAbsolute(emptyProfiles ?? "") || (subscriptionType !== undefined && !CLAUDE_ADMITTED_PLANS.includes(subscriptionType))) {
     fail("the stored OAuth policy inputs are invalid");
   }
   return {
@@ -100,9 +105,9 @@ export function assertClaudeIndividualOAuth({ credentialDocument, appState, acco
     || !nonempty(organizationUuid) || owner.organizationUuid !== organizationUuid) {
     fail("the selected stored Claude OAuth identity is not bound to this account");
   }
-  if (!nonempty(oauth.accessToken) || !["pro", "max"].includes(oauth.subscriptionType)
+  if (!nonempty(oauth.accessToken) || !CLAUDE_ADMITTED_PLANS.includes(oauth.subscriptionType)
     || !Array.isArray(oauth.scopes) || !oauth.scopes.includes("user:inference")) {
-    fail("this privacy runtime requires a verified individual Claude Pro or Max OAuth account");
+    fail("this privacy runtime requires a verified Claude Pro, Max or Team OAuth account");
   }
   if (nonempty(appState.primaryApiKey) || credentialDocument.enterpriseGateway != null) {
     fail("the selected Claude state contains competing provider authentication");

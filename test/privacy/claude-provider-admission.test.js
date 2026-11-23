@@ -20,7 +20,7 @@ test("identity, provider and subscription ambiguity refuses without printing pri
     value => { value.appState.oauthAccount.accountUuid = "wrong"; },
     value => { value.appState.oauthAccount.organizationUuid = "wrong"; },
     value => { delete value.credentialDocument.claudeAiOauth.subscriptionType; },
-    value => { value.credentialDocument.claudeAiOauth.subscriptionType = "team"; },
+    value => { value.credentialDocument.claudeAiOauth.subscriptionType = "enterprise"; },
     value => { value.credentialDocument.claudeAiOauth.scopes = ["user:profile"]; },
     value => { value.appState.primaryApiKey = "PRIVATE-CANARY"; },
     value => { value.credentialDocument.enterpriseGateway = { token: "PRIVATE-CANARY" }; },
@@ -30,6 +30,12 @@ test("identity, provider and subscription ambiguity refuses without printing pri
   for (const change of cases) {
     const input = individual(); change(input);
     assert.throws(() => assertClaudeIndividualOAuth(input), error => error.code === "AIMGR_CLAUDE_PRIVACY_SETTINGS" && !error.message.includes("PRIVATE-CANARY"));
+  }
+});
+test("Team accounts are admitted like Pro and Max", () => {
+  for (const plan of ["pro", "max", "team"]) {
+    const input = individual(); input.credentialDocument.claudeAiOauth.subscriptionType = plan;
+    assert.equal(assertClaudeIndividualOAuth(input).subscriptionType, plan);
   }
 });
 test("legacy app-state harmless headers remain admitted and unchanged", () => {

@@ -216,27 +216,27 @@ test("automatic sessions and scheduled jobs skip unsupported subscriptions befor
     authState: "usage_readable", credentialReady: true, locked: false,
     usage: successSnapshot(usedPercent),
   });
-  const unsupported = ["team", "enterprise", "free", "MAX", "", null, undefined].map(plan => account(plan));
+  const unsupported = ["enterprise", "free", "MAX", "", null, undefined].map(plan => account(plan));
   for (const preset of ["opus", "sonnet", "fable"]) {
     for (const select of [selectClaudeAccountForSession, selectLeastUsedUnlockedClaudeAccount]) {
       assert.equal(select({ accounts: unsupported }, { preset, requireIndividualOAuth: true }), null);
-      for (const plan of ["pro", "max"]) {
+      for (const plan of ["pro", "max", "team"]) {
         assert.deepEqual(select({ accounts: [...unsupported, account(plan, 70)] }, { preset, requireIndividualOAuth: true }),
           { label: plan, usedPercent: 70 }, "supported account wins even with less usage left");
       }
     }
     assert.deepEqual(selectClaudeAccountForSession({ accounts: [
-      { ...account("team"), locked: true, localSessions: 3 },
+      { ...account("enterprise"), locked: true, localSessions: 3 },
       { ...account("max", 60), locked: true, localSessions: 1 },
-    ] }, { preset }), { label: "max", usedPercent: 60 }, "existing local Team sessions do not make it eligible");
+    ] }, { preset }), { label: "max", usedPercent: 60 }, "existing local Enterprise sessions do not make it eligible");
   }
 });
 
 test("native-only eligibility keeps other harnesses unchanged and never hides proxy failures", () => {
-  const team = { label: "team", subscriptionType: "team", authState: "usage_readable",
+  const team = { label: "enterprise", subscriptionType: "enterprise", authState: "usage_readable",
     locked: false, usage: successSnapshot(0) };
   assert.deepEqual(selectLeastUsedUnlockedClaudeAccount({ accounts: [team] }, { preset: "opus" }),
-    { label: "team", usedPercent: 0 }, "other harnesses retain their existing supported accounts");
+    { label: "enterprise", usedPercent: 0 }, "other harnesses retain their existing supported accounts");
   for (const select of [selectClaudeAccountForSession, selectLeastUsedUnlockedClaudeAccount]) {
     assert.throws(() => select({ accounts: [
       { ...team, errorKind: "proxy_unavailable" },
@@ -245,10 +245,10 @@ test("native-only eligibility keeps other harnesses unchanged and never hides pr
   }
 });
 
-test("real status collection preserves Team visibility but automatic selection chooses an individual account on live and cached reads", async t => {
-  const team = buildCredential("team"); team.nativeClaudeBundle.claudeAiOauth.subscriptionType = "team";
+test("real status collection preserves Enterprise visibility but automatic selection chooses an admitted account on live and cached reads", async t => {
+  const team = buildCredential("enterprise"); team.nativeClaudeBundle.claudeAiOauth.subscriptionType = "enterprise";
   const { homeDir, connectRedisStoreImpl } = await setup([
-    anthropicRecord("team", { credential: team }), anthropicRecord("individual"),
+    anthropicRecord("enterprise", { credential: team }), anthropicRecord("individual"),
   ]);
   t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
   let requests = 0;
@@ -256,11 +256,11 @@ test("real status collection preserves Team visibility but automatic selection c
     const result = await collectClaudeRedisAccountUsageStatus({
       homeDir, connectRedisStoreImpl, nowMs: NOW_MS + offset,
       fetchClaudeUsageSnapshotImpl: async ({ record }) => {
-        requests += 1; return successSnapshot(record.label === "team" ? 0 : 70);
+        requests += 1; return successSnapshot(record.label === "enterprise" ? 0 : 70);
       },
     });
-    assert.equal(result.accounts.find(a => a.label === "team").subscriptionType, "team");
-    assert.equal(result.accounts.find(a => a.label === "team").authState, "usage_readable");
+    assert.equal(result.accounts.find(a => a.label === "enterprise").subscriptionType, "enterprise");
+    assert.equal(result.accounts.find(a => a.label === "enterprise").authState, "usage_readable");
     for (const select of [selectClaudeAccountForSession, selectLeastUsedUnlockedClaudeAccount]) {
       assert.deepEqual(select(result, { preset: "opus", requireIndividualOAuth: true }), { label: "individual", usedPercent: 70 });
     }

@@ -26,6 +26,7 @@ import { readClaudeSessionUsage } from "./claude-session-usage.js";
 import { describeClaudeEgress, formatClaudeEgress, formatClaudeProxyHealth, claudeProxyHealthProblem, hasNoLocalClaudeRoute } from "./claude-egress.js";
 import { readClaudeProxyHealth } from "./claude-proxy-health.js";
 import { rememberClaudeProtection } from "../network/claude-offline-binding.js";
+import { CLAUDE_ADMITTED_PLANS } from "../privacy/claude-provider-admission.js";
 import {
   averageStatusNumbers,
   formatStatusDeltaMsCell,
@@ -1181,12 +1182,12 @@ export function selectLeastUsedUnlockedClaudeAccount(result, { preset, requireIn
     .filter((account) => (
       // Automatic sessions and scheduled jobs must choose an account the privacy
       // runtime supports. Readable usage (or a session already on this machine)
-      // does not make a Team/Enterprise account an individual Pro/Max account.
+      // does not make an Enterprise or unknown plan an admitted one.
       // Admission still checks the reconciled credential at launch; keep the
       // route-error check above this filter so outages cannot trigger failover.
       account?.poolEnabled !== false
       && !hasNoLocalClaudeRoute(account)
-      && (!requireIndividualOAuth || ["pro", "max"].includes(account?.subscriptionType))
+      && (!requireIndividualOAuth || CLAUDE_ADMITTED_PLANS.includes(account?.subscriptionType))
       && account?.locked === false
       && (
         account?.authState === "usage_readable"

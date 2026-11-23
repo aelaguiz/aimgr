@@ -92,9 +92,9 @@ test("unknown account eligibility and wrong identity refuse before validation or
   const f = fixture(t);
   await assert.rejects(prepareClaudeNativeInvocation({ ...f.options, expectedIdentity: { accountUuid: "other", organizationUuid: "org-a" } }), /not bound/);
   fs.writeFileSync(path.join(f.options.preparedLaunch.configDir, ".credentials.json"), JSON.stringify({ claudeAiOauth: {
-    accessToken: "synthetic", subscriptionType: "team", scopes: ["user:inference"],
+    accessToken: "synthetic", subscriptionType: "enterprise", scopes: ["user:inference"],
   } }));
-  await assert.rejects(prepareClaudeNativeInvocation(f.options), /individual Claude Pro or Max/);
+  await assert.rejects(prepareClaudeNativeInvocation(f.options), /Claude Pro, Max or Team/);
   assert.deepEqual(f.counters(), { admitted: 2, validated: 0 });
   assert.ok(!fs.readdirSync(f.options.preparedLaunch.configDir).some(name => name.startsWith(".aim-private-runtime-")));
 });

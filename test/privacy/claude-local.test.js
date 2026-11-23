@@ -98,6 +98,8 @@ test('native manual URL waits for the complete output token across every stream 
  }
  assert.equal(extractNativeClaudeManualUrl(url),null);
  assert.equal(extractNativeClaudeManualUrl('\u001b]8;;'+url+'\u001b\\Sign in\u001b]8;;\u001b\\'),url);
+ // Claude 2.1.321 ends its hyperlink with BEL and shows the address itself as the link text (#37).
+ assert.equal(extractNativeClaudeManualUrl('\u001b]8;;'+url+'\u0007'+url+'\u001b]8;;\u0007\n'),url);
  const currentNative=url.replace('https://claude.ai/oauth/authorize','https://claude.com/cai/oauth/authorize');
  assert.equal(extractNativeClaudeManualUrl(currentNative+'\n'),currentNative);
  assert.equal(extractNativeClaudeManualUrl(currentNative.replace('/cai/oauth/authorize','/unrelated')+'\n'),null);
