@@ -21,6 +21,7 @@ import { claudeRunPresetArgs } from "../args.js";
 import { readMachineClaudeSessionCounts, joinLocalClaudeSessions } from "../../targets/claude-machine-lease.js";
 import { prepareClaudeCliLaunch, runClaudeCli } from "../../targets/claude-runner.js";
 import { inheritClaudeProjectConsent } from "../../targets/claude-project-consent.js";
+import { keepHerdrPaneName } from "../../targets/herdr-pane-name.js";
 import { foldManagedClaudeMemories, renderClaudeSharedMemoryReport, summarizeClaudeSharedMemory } from "../../targets/claude-shared-memory.js";
 import { buildManagedClaudeSessionForkName, findManagedClaudeSessionFiles, listRecentManagedClaudeSessions, readManagedClaudeSessions,
  renderRecentManagedClaudeSessions, resolveManagedClaudeSession, stageManagedClaudeSessionFork } from "../../targets/claude-sessions.js";
@@ -198,12 +199,14 @@ async function selectAutomaticClaudeAccount(context, {
   }, { preset });
 }
 
-async function handleRedisClaudeRun(context, { launchCwd = process.cwd(), sessionFork = null, allowOffline = true } = {}) {
+// herdrName: "keep" notes the Herdr name of this pane's agent while Claude runs; "give back"
+// also puts the name the pane last carried on a resumed session (targets/herdr-pane-name.js).
+async function handleRedisClaudeRun(context, { launchCwd = process.cwd(), sessionFork = null, allowOffline = true, herdrName = null } = {}) {
   const { homeDir, opts, env, positional, setExitCode, resolveExecutableOnPathImpl } = context;
   const label = normalizeLabel(positional[2]);
   const runtime = await loadClaudeRuntime({ homeDir, connectRedisStoreImpl: context.connectRedisStoreImpl,
     readClaudeEnvironmentImpl: context.readClaudeEnvironmentImpl, allowOffline });
-  let assignmentLock, stagedSessionFork, leaveSessions;
+  let assignmentLock, stagedSessionFork, leaveSessions, paneName;
   try {
     let metadata = runtime.snapshot.credentials.find(item => item.label === label);
     if (!metadata) throw new Error(`Unknown Claude account ${label}; use \`aim claude login ${label}\`.`);
@@ -253,6 +256,11 @@ async function handleRedisClaudeRun(context, { launchCwd = process.cwd(), sessio
       ? context.stderr : context.stdout;
     if (accountNote) noteOutput?.write?.(`[aim] ${formatAccountNote({ provider: ANTHROPIC_PROVIDER, label, note: accountNote })}\n`);
     else if (runtime.accountNotes === null) noteOutput?.write?.("[aim] Account notes unavailable.\n");
+    if (herdrName) {
+      paneName = (context.keepHerdrPaneNameImpl ?? keepHerdrPaneName)({ env: env ?? {}, homeDir, cwd: launchCwd,
+        kind: "claude", giveBack: herdrName === "give back" });
+      if (paneName.note) noteOutput?.write?.(`${paneName.note}\n`);
+    }
     const launched = await (context.runClaudeCliImpl ?? runClaudeCli)({ assignmentLock, egressProfile: profile,
       expectedIdentity: local.nativeClaudeBundle.oauthAccount, command: prepared.command, preparedLaunch: prepared,
       userHomeDir: homeDir, homeDir: claudeHome, configDir, cwd: launchCwd,
@@ -260,7 +268,7 @@ async function handleRedisClaudeRun(context, { launchCwd = process.cwd(), sessio
     if (launched?.signal) process.kill(process.pid, launched.signal);
     else if (launched?.status !== 0) setExitCode(Number.isInteger(launched?.status) ? launched.status : 1);
   } finally {
-    try { await leaveSessions?.(); stagedSessionFork?.cleanup(); } finally {
+    try { paneName?.stop(); await leaveSessions?.(); stagedSessionFork?.cleanup(); } finally {
       try { await assignmentLock?.release(); } finally { await closeRedisRuntime(runtime); }
     }
   }
@@ -432,6 +440,7 @@ export async function handleClaude(context) {
       try {
         await handleRedisClaudeRun(directContext, {
           launchCwd: session.cwd,
+          herdrName: "give back",
         });
         return;
       } catch (error) {
@@ -490,6 +499,7 @@ export async function handleClaude(context) {
       launchCwd: session.cwd,
       sessionFork: session,
       allowOffline: Boolean(requestedAccountLabel),
+      herdrName: "give back",
     });
     return;
   }
@@ -514,10 +524,10 @@ export async function handleClaude(context) {
       await handleRedisClaudeRun({
         ...context,
         positional: ["claude", "run", selected.label],
-      }, { allowOffline: false });
+      }, { allowOffline: false, herdrName: "keep" });
       return;
     }
-    await handleRedisClaudeRun(context);
+    await handleRedisClaudeRun(context, { herdrName: "keep" });
     return;
   }
   if (subcmd === "status" || subcmd === "usage") {

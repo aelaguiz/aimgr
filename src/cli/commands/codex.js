@@ -10,6 +10,7 @@ import { sanitizeForStatus } from "../../core/sanitize.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { resolveAimgrStateDir } from "../../io/paths.js";
 import { activateCodexLabelSelection } from "../../targets/codex-cli.js";
+import { keepHerdrPaneName } from "../../targets/herdr-pane-name.js";
 import { accountNoteFor, formatAccountNote } from "../../status/account-notes.js";
 import { resolveBlobPolicy } from "../../targets/codex-thread-copy.js";
 import { loadCodexRuntime } from "../../coordination/codex-runtime.js";
@@ -138,14 +139,27 @@ async function handleRedisCodexRun(context) {
       + "Codex will send this thread id and session id under the new account, which links the two accounts. "
       + `Use \`aim codex resume-fresh ${resumedThread ?? "<thread-id>"}\` to avoid that.\n`);
   }
-  const launched = await runCodexInteractiveImpl({
+  const launched = await launchKeepingHerdrPaneName(context, { giveBack: resuming && !parsed.inspection }, () => runCodexInteractiveImpl({
     homeDir: context.homeDir,
     cwd: process.cwd(),
     env: codexLaunchEnv(context, result.activated.prepared),
     prepared: result.activated.prepared,
     args,
-  });
+  }));
   if (launched?.code !== 0) setExitCode(Number.isInteger(launched?.code) ? launched.code : 1);
+}
+
+// While Codex runs in a Herdr pane, note the name its agent carries; a resume gives back the
+// name the pane last carried (targets/herdr-pane-name.js).
+async function launchKeepingHerdrPaneName(context, { giveBack }, launch) {
+  const paneName = (context.keepHerdrPaneNameImpl ?? keepHerdrPaneName)({ env: context.env ?? {}, homeDir: context.homeDir,
+    cwd: process.cwd(), kind: "codex", giveBack });
+  if (paneName.note) context.stdout?.write?.(`${paneName.note}\n`);
+  try {
+    return await launch();
+  } finally {
+    paneName.stop();
+  }
 }
 
 async function runRedisCodexWatchOnce(context, { thresholdPct }) {
@@ -453,13 +467,13 @@ async function handleRedisCodexResumeFresh(context) {
   // into Codex or into Herdr's session-start hook.
   const freshLaunchEnv = codexLaunchEnv(context, activation.activated.prepared);
   delete freshLaunchEnv.CODEX_THREAD_ID;
-  const launched = await runCodexInteractiveImpl({
+  const launched = await launchKeepingHerdrPaneName(context, { giveBack: true }, () => runCodexInteractiveImpl({
     homeDir,
     cwd: process.cwd(),
     env: freshLaunchEnv,
     prepared: activation.activated.prepared,
     args,
-  });
+  }));
   if (archiveSource) {
     try {
       const archived = await runCodexInteractiveImpl({ homeDir, cwd: process.cwd(),

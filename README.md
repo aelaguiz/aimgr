@@ -831,6 +831,15 @@ Missing saved model/effort stops the resume instead of substituting preset defau
 Session names are exact, case-insensitive matches and must be quoted when they
 contain spaces; ambiguous names require a row number or thread ID.
 
+In a Herdr pane, a resume gives the session the Herdr name that pane last carried
+(`lessons-writer`, say), whoever restarted it. Herdr clears an agent's name the moment
+its process exits, so while a session that `aim claude run`, `aim claude resume` or the
+Codex equivalents started runs in a pane, AIM notes the name its agent carries, once a
+minute, in `~/.aimgr/herdr-pane-names/`. A resume typed into that same pane, for a session
+in the same folder, puts the name back once Herdr sees the new session. Anything else (a
+resume in another pane or folder, a session someone already named, a pane with no note) is
+left alone, and a name Herdr refuses never stops the session.
+
 `aim claude inventory` lists shared Claude account metadata without fetching primary
 credentials from Redis. Local sign-in determines whether a managed account can run
 on this machine; labels and account policy remain shared metadata.

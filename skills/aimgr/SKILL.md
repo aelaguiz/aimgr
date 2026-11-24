@@ -113,7 +113,9 @@ These hold on every invocation.
   the user decide. Do not launch repeatedly hoping to land somewhere.
 
 - **Do not resume a session you did not start** unless the user asked. When
-  asked: one at a time, by exact id, in that pane's own working directory.
+  asked: one at a time, by exact id, in that pane's own working directory. In
+  the pane the session ran in, `aim … resume` gives it back the Herdr name the
+  pane last carried; you do not rename it.
 
 - **One launch per request.** Do not fan out across several accounts to go
   faster.
