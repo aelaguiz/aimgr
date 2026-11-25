@@ -111,6 +111,21 @@ bash scripts/install-auth-maintainer.sh --uninstall
 `aim auth maintain` handles local Claude and Codex logins and shared xAI credentials. Prime/Pi Anthropic credentials refresh on demand through their separate legacy path.
 
 
+Managed Claude sessions can use Figma's official remote MCP after one work
+account authorization per machine. Run these commands from the installed AIM:
+
+```bash
+aim claude figma login --email <work-email>
+aim claude figma status --fresh
+```
+
+Open the printed authorization URL in BrowserOS Work. For a remote machine,
+choose a port with `--port` and forward that localhost port over SSH for the
+OAuth callback. AIM verifies the account with Figma and installs a local
+renewal timer. Eligible Claude launches pick up `figma-work` automatically.
+Assigned proxy routes and strict MCP configurations keep their existing MCP
+servers. See the [Figma MCP plan](docs/KEEP_FIGMA_MCP_SIGNED_IN_2026-11-25.md).
+
 Redis administration and repair:
 
 ```bash
