@@ -19,6 +19,16 @@ Shared account notes follow that line when present. A note may explain that an
 account is reserved for a machine or job; consider it when choosing an account.
 The note is advice and does not change whether AIM selects an account.
 
+## Weekly pool capacity and pace
+
+`aim status --json` reports `pools.claude` and `pools.codex` with the same
+capacity, returns, counts, and account rows as `aim status`. Status stores 25
+hours of weekly readings per account in shared Redis, at least 10 minutes apart.
+After at least two hours of readings, `Pace:` in text and `pace` in JSON show
+usage over the last 24 hours, the daily rate, and when the pool would run out
+within the next seven days. With unavailable history, JSON reports `pace: null`
+and text omits the line.
+
 ## Claude availability
 
 ```bash

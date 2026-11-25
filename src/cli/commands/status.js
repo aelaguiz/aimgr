@@ -13,6 +13,7 @@ export async function handleStatus(context) {
     fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl,
     readCodexEnvironmentImpl,
+    readClaudeEnvironmentImpl,
     nowMs,
   } = context;
   const redisStatus = await buildRedisStatusView({
@@ -22,7 +23,9 @@ export async function handleStatus(context) {
     fetchJsonWithTimeoutImpl,
     connectRedisStoreImpl,
     readCodexEnvironmentImpl,
+    readClaudeEnvironmentImpl,
     nowMs,
+    includeBlocked: opts.allAccounts === true,
   });
   const view = redisStatus.view;
   if (opts.json) {
@@ -39,6 +42,7 @@ export async function handleStatus(context) {
       ...(opts.accounts === true ? { showAccounts: true } : {}),
       claudeUsageStatus: redisStatus.claudeUsageStatus,
       includeBlocked: opts.allAccounts === true,
+      tables: redisStatus.tables,
     }),
   );
 }

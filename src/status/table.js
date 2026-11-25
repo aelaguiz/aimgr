@@ -62,9 +62,9 @@ export function formatStatusAccountUsedCell(usage, index) {
   return `${Math.round(usedPercent)}%`;
 }
 
-export function formatStatusAccountResetCreditsCell(usage) {
+export function readStatusAccountResetCredits(usage) {
   const count = usage?.resetCreditsAvailable;
-  return Number.isInteger(count) && count >= 0 ? String(count) : "--";
+  return Number.isInteger(count) && count >= 0 ? count : null;
 }
 
 export function formatStatusDeltaMsCell(deltaMs) {
@@ -213,7 +213,38 @@ export function summarizePoolCapacity(entries, now) {
   };
 }
 
-export function formatPoolCapacityLines(summary, { unit, weightNote, excluded }) {
+export function buildPoolAccountRow({ weight, week, session, fable, observedAtMs }, {
+  label, status, plan, freeAtMs = null, resetCredits = null,
+}) {
+  const numberOrNull = (value) => Number.isFinite(value) ? value : null;
+  return {
+    label,
+    status,
+    plan,
+    weight,
+    weekUsedPercent: numberOrNull(week?.usedPercent),
+    weekResetAt: numberOrNull(week?.resetAt),
+    sessionUsedPercent: numberOrNull(session?.usedPercent),
+    sessionResetAt: numberOrNull(session?.resetAt),
+    fableUsedPercent: numberOrNull(fable?.usedPercent),
+    fableResetAt: numberOrNull(fable?.resetAt),
+    freeAtMs,
+    observedAtMs: numberOrNull(observedAtMs),
+    resetCredits,
+  };
+}
+
+export function buildStatusPool(entries, accountRows, now, { unit, weightNote, counts, fable = null, resetCredits = null }) {
+  const { unknownPlans, ...summary } = summarizePoolCapacity(entries, now);
+  return {
+    pool: { unit, ...summary, counts, fable, resetCredits, pace: null, accountRows },
+    poolOptions: { weightNote, unknownPlans, now },
+  };
+}
+
+export function formatPoolCapacityLines(summary, {
+  unit = summary.unit, weightNote, excluded, unknownPlans = summary.unknownPlans, now,
+}) {
   if (summary.measured === 0) return ["Pool: no weekly usage readings"];
   const units = (count) => count.toFixed(1);
   const percent = (count) => Math.round(100 * count / summary.capacity);
@@ -231,6 +262,12 @@ export function formatPoolCapacityLines(summary, { unit, weightNote, excluded })
     `Left: ${left.join(" · ") || "nothing"}`,
     `Comes back: ${returns.join(" · ")}`,
   ];
+  if (summary.pace) {
+    const { used, hours, perDay, lastsUntilMs } = summary.pace;
+    const forecast = lastsUntilMs === null ? "lasts the week"
+      : `runs out in ${formatStatusDeltaMsCell(lastsUntilMs - now)}`;
+    lines.push(`Pace: ${units(used)} used in the last ${Number(hours.toFixed(1))}h (${units(perDay)} a day); at this pace it ${forecast}`);
+  }
   if (summary.stale > 0) {
     lines.push(`Readings: ${summary.stale} of ${summary.measured} are over an hour old (oldest ${formatStatusDeltaMsCell(summary.oldestAgeMs)}), so the pool is at least this used; aim cluster status reads every machine.`);
   }
@@ -240,8 +277,8 @@ export function formatPoolCapacityLines(summary, { unit, weightNote, excluded })
     excluded,
   ].filter(Boolean);
   if (notCounted.length > 0) lines.push(`Not counted: ${notCounted.join(", ")}`);
-  if (summary.unknownPlans.length > 0) {
-    lines.push(`Plans with no measured size, counted as 1: ${summary.unknownPlans.join(", ")}`);
+  if (unknownPlans.length > 0) {
+    lines.push(`Plans with no measured size, counted as 1: ${unknownPlans.join(", ")}`);
   }
   return lines;
 }

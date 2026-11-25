@@ -159,7 +159,11 @@ account has a reading for are left out. A grid above the tables counts each mach
 and Codex logins and shows the weekly capacity left on those accounts. The Codex summary also
 totals unused reset credits when reported. Machines that do not answer are named, marked `x` in that grid, left out of
 `machines`, and cause a nonzero exit. `aim status --json`
-retains all accounts.
+retains all accounts in `accounts`. Its `pools.claude` and `pools.codex` entries
+use the text tables' account rows, counts, weekly capacity, and reset schedule.
+Status keeps 25 hours of weekly readings per account in Redis, spaced at least
+10 minutes apart. With at least two hours of readings, the text `Pace:` line and
+JSON `pace` report daily use and whether the pool will last the next seven days.
 
 Account notes are shared through Redis and appear in status and account-use
 output, including when an account is hidden from the main status tables. Notes
