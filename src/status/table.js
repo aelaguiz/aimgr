@@ -263,10 +263,10 @@ export function formatPoolCapacityLines(summary, {
     `Comes back: ${returns.join(" · ")}`,
   ];
   if (summary.pace) {
-    const { used, hours, perDay, lastsUntilMs } = summary.pace;
+    const { hours, perDay, lastsUntilMs } = summary.pace;
     const forecast = lastsUntilMs === null ? "lasts the week"
       : `runs out in ${formatStatusDeltaMsCell(lastsUntilMs - now)}`;
-    lines.push(`Pace: ${units(used)} used in the last ${Number(hours.toFixed(1))}h (${units(perDay)} a day); at this pace it ${forecast}`);
+    lines.push(`Pace: ${units(perDay)} a day over the last ${Number(hours.toFixed(1))}h; at this pace it ${forecast}`);
   }
   if (summary.stale > 0) {
     lines.push(`Readings: ${summary.stale} of ${summary.measured} are over an hour old (oldest ${formatStatusDeltaMsCell(summary.oldestAgeMs)}), so the pool is at least this used; aim cluster status reads every machine.`);

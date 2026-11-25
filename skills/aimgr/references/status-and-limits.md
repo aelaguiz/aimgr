@@ -25,9 +25,10 @@ The note is advice and does not change whether AIM selects an account.
 capacity, returns, counts, and account rows as `aim status`. Status stores 25
 hours of weekly readings per account in shared Redis, at least 10 minutes apart.
 After at least two hours of readings, `Pace:` in text and `pace` in JSON show
-usage over the last 24 hours, the daily rate, and when the pool would run out
-within the next seven days. With unavailable history, JSON reports `pace: null`
-and text omits the line.
+each account's use over the time AI Manager has watched it, up to 24 hours, as
+a daily rate summed across the pool, and when the pool would run out within the
+next seven days. With unavailable history, JSON reports `pace: null` and text
+omits the line.
 
 ## Claude availability
 

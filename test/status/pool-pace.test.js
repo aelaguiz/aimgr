@@ -28,8 +28,23 @@ test("pool pace sums weighted account usage and takes the earliest counted start
   const pace = computePoolPace(pool, perAccount, NOW);
   assert.equal(pace.used.toFixed(2), "0.43");
   assert.equal(pace.hours, 24);
-  assert.equal(pace.perDay.toFixed(2), "0.43");
+  assert.equal(pace.perDay.toFixed(2), "0.47");
   assert.equal(pace.lastsUntilMs, null);
+});
+
+test("pool pace sums each account's daily rate over its own observed span", () => {
+  const pool = { left: 10, accountRows: [
+    { label: "long", weight: 1 },
+    { label: "short", weight: 1 },
+  ] };
+  const perAccount = new Map([
+    ["long", [10, NOW - 20 * HOUR]],
+    ["short", [30, NOW - 3 * HOUR]],
+  ]);
+  const pace = computePoolPace(pool, perAccount, NOW);
+  assert.equal(pace.used, 0.4);
+  assert.equal(pace.hours, 20);
+  assert.equal(pace.perDay, 0.1 / 20 * 24 + 0.3 / 3 * 24);
 });
 
 test("pool pace needs readings at least two hours back and measures the observed span", () => {
@@ -43,6 +58,8 @@ test("pool pace needs readings at least two hours back and measures the observed
   assert.deepEqual(computePoolPace(pool, perAccount, NOW), {
     used: 0.2, hours: 6, perDay: 0.8, lastsUntilMs: NOW + 5 * DAY,
   });
+  perAccount.set("stale", [10, NOW - HOUR / 3]);
+  assert.equal(computePoolPace(pool, perAccount, NOW).perDay, 2);
 });
 
 test("forecast adds remaining weekly resets before it can run out", () => {
