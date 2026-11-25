@@ -230,15 +230,17 @@ function renderCodex(machines, { rows, entries }, answered, nowMs) {
 
 // The pools `aim status --json` reports for one machine, built here from every
 // machine's freshest reading of each account. A machine whose own logins have
-// lapsed cannot read usage and reports days-old figures as its pool.
+// lapsed cannot read usage and reports days-old figures as its pool, so this is
+// the one to show or act on (see buildStatusPool). `readings` marks it.
 export function buildClusterPools(machines, { nowMs = Date.now() } = {}) {
   const claudeAccounts = claudeRows(machines, nowMs).map((row) => row.account);
   const codexAccounts = codexRows(machines).map((row) => (
     row.status === "ready" ? row.account : { ...row.account, plan: null, usage: null }
   ));
+  const everyMachine = (pool) => ({ ...pool, readings: "every machine" });
   return {
-    claude: buildClaudeStatusAccountTable({ accounts: claudeAccounts, checkedAtMs: nowMs }).pool,
-    codex: buildStatusAccountTable(codexAccounts, nowMs, { codex: true }).pool,
+    claude: everyMachine(buildClaudeStatusAccountTable({ accounts: claudeAccounts, checkedAtMs: nowMs }).pool),
+    codex: everyMachine(buildStatusAccountTable(codexAccounts, nowMs, { codex: true }).pool),
   };
 }
 

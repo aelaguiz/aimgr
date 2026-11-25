@@ -164,6 +164,8 @@ test("status JSON and text share pool capacity, counts, account details, and pac
     assert.equal(lastsUntilMs, nowMs + 3.75 * hour);
     assert.ok(text.includes(`\nPace: ${perDay.toFixed(1)} a day over the last 3h; at this pace it runs out in 3.8h\n`));
   }
+  assert.equal(claude.readings, "this machine", "one machine's status never passes for the whole pool");
+  assert.equal(codex.readings, "this machine");
   assert.deepEqual(claude.counts, { ready: 0, limited: 1, needsLogin: 0 });
   assert.match(claudeText, /^ 0 ready · 1 limited · 0 in use · 0 needs you/);
   assert.deepEqual(claude.fable, { usedPercent: 100, atLimit: 1 });

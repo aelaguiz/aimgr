@@ -293,6 +293,8 @@ test("cluster status --json gives one pool from every machine's freshest reading
   assert.deepEqual(report.machines.find((machine) => machine.name === "mini-1"), { name: "mini-1" });
   const { claude, codex } = report.pools;
   assert.equal(claude.unit, "Max 20x weeks");
+  assert.equal(claude.readings, "every machine");
+  assert.equal(codex.readings, "every machine");
   assert.equal(claude.capacity, 1);
   assert.equal(claude.left, 0, "the fresh reading from another machine wins over this machine's stale one");
   assert.deepEqual(claude.counts, { ready: 0, limited: 1, needsLogin: 0 });

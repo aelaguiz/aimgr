@@ -152,8 +152,16 @@ aim cluster status --json
 The text tables hide blocked Codex and Claude accounts. Counts use the displayed
 accounts. `aim status --all-accounts` includes blocked and unsigned-in
 accounts. `aim cluster status` combines every AIM machine into one table per provider.
-`aim cluster status --json` gives the same `pools` as `aim status --json`, built from every machine's freshest
-reading of each account; one machine's own pool is wrong when its logins have lapsed and it cannot read usage.
+
+**Which pool to read.** `aim status` and `aim claude status` describe one machine: its logins, and the usage
+readings it took itself. A machine can read usage only for accounts whose login is current there, so its pool
+is not the fleet's. On November 25, 2026 the M5, where 41 logins had lapsed, reported half the Claude pool
+left while every machine together reported a fifth, and a dashboard built on `aim status --json` showed the
+wrong half. For how much of the pool is left, read `aim cluster status`, or `aim cluster status --json` from
+code: the same `pools`, built from every machine's freshest reading of each account. Each pool says which it
+is in `readings` (`"this machine"` or `"every machine"`), and `stale` and `oldestAgeMs` count readings over
+an hour old. One machine's status stays the right read for what can launch on that machine now.
+
 Codex accounts blocked on every responding machine are hidden, and the Codex pool uses the displayed
 ready accounts with usage readings. Each row shows its usage, how many machines have it signed in (`on`), and
 one `machines` cell naming only the exceptions: `all`, `all but mini-4, mini-5`, or the few machines

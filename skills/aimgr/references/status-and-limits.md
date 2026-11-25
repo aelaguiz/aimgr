@@ -21,6 +21,15 @@ The note is advice and does not change whether AIM selects an account.
 
 ## Weekly pool capacity and pace
 
+`aim status` and `aim claude status` are one machine's view: its logins and
+the usage readings it took itself. A machine can read usage only for accounts
+whose login is current there, so its pool can be far off the fleet's (the M5
+once showed half the Claude pool left when a fifth was). To say or show how
+much of the pool is left, use `aim cluster status`, or
+`aim cluster status --json` from code. Each pool's `readings` field says which
+it is: `"this machine"` or `"every machine"`. One machine's status is still
+the right read for which account can launch there now.
+
 `aim status --json` reports `pools.claude` and `pools.codex` with the same
 capacity, returns, counts, and account rows as `aim status`. Status stores 25
 hours of weekly readings per account in shared Redis, at least 10 minutes apart.
@@ -118,12 +127,6 @@ remaining capacity is open now, and `Comes back` shows how much weekly capacity
 resets return over the next six hours to five days. Readings older than an hour
 are flagged. `aim cluster status` uses the freshest readings across machines
 and shows how much weekly capacity each machine can reach.
-
-Those pools are one machine's own: it can only read usage for accounts whose
-login is current there, so a machine that has not used an account for days
-reports old figures for it. For the pool as a whole, read
-`aim cluster status --json`: the same `pools`, built from every machine's
-freshest reading of each account.
 
 ## Grok availability
 
