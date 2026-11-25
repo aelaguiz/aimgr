@@ -6,8 +6,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { admitClaudeArtifact } from "../privacy/claude-artifacts.js";
 import { prepareClaudeNativeInvocation } from "../privacy/claude-native-invocation.js";
-import { assertClaudeLocalInvocation } from "../privacy/claude-settings.js";
+import { assertClaudeLocalInvocation, inspectClaudeArguments } from "../privacy/claude-settings.js";
+import { readClaudeLaunchState } from "../privacy/claude-launch-inputs.js";
+import { claudeNativeProjectRoot } from "../privacy/claude-session-headers.js";
+import { readClaudeActiveAppState } from "../privacy/claude-state-source.js";
 import { cleanClaudeRootEnvironment } from "../privacy/claude-provider-admission.js";
+import { ensureClaudeFigmaGrantRoot, figmaGrantRoot, FIGMA_MCP_NAME, FIGMA_MCP_URL, readClaudeFigmaGrant } from "../credentials/claude-figma-store.js";
 import {
   CLAUDE_PROCESS_CONTROL_ACK_TYPE,
   CLAUDE_PROCESS_CONTROL_MESSAGE_TYPE,
@@ -23,6 +27,8 @@ const SUPERVISOR_PATH = fileURLToPath(new URL("./claude-supervisor.js", import.m
 const STATUSLINE_TAP_PATH = fileURLToPath(new URL("./claude-statusline-tap.sh", import.meta.url));
 const USER_HOOKS_OVERLAY_FILE = ".aimgr-user-hooks.json";
 const USER_MCP_OVERLAY_FILE = ".aimgr-user-mcp.json";
+const FIGMA_MCP_OVERLAY_FILE = ".aimgr-figma-mcp.json";
+const FIGMA_HEADERS_PATH = fileURLToPath(new URL("../../scripts/claude-figma-headers.mjs", import.meta.url));
 
 async function prepareSupervisedNativeInvocation({ native, egressProfile, platform = process.platform,
   signal, deadlineMs, prepareRoute }) {
@@ -419,7 +425,9 @@ export function syncManagedClaudeConfigMarkers({
   return Object.freeze({ linked: Object.freeze(markerNames) });
 }
 
-function assertContainedLaunchTopology({ userHomeDir, launchHome, configDir }) {
+const UNIQUE_LOGIN_STAGING = /^\.login-staging-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+
+function assertContainedLaunchTopology({ userHomeDir, launchHome, configDir, fsImpl }) {
   const aimgrRoot = path.join(userHomeDir, ".aimgr");
   const claudeHomesRoot = path.join(aimgrRoot, "claude-homes");
   const relative = path.relative(claudeHomesRoot, configDir);
@@ -432,22 +440,34 @@ function assertContainedLaunchTopology({ userHomeDir, launchHome, configDir }) {
   const freshLoginConfig = (
     segments.length === 3
     && /^[A-Za-z0-9_.-]+$/.test(segments[0])
-    && (segments[1] === ".login-staging" || /^\.login-staging-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(segments[1]))
+    && (segments[1] === ".login-staging" || UNIQUE_LOGIN_STAGING.test(segments[1]))
     && segments[2] === ".claude"
   );
+  const figmaLoginConfig = path.dirname(launchHome) === figmaGrantRoot(userHomeDir)
+    && UNIQUE_LOGIN_STAGING.test(path.basename(launchHome)) && path.basename(configDir) === ".claude";
   if (
-    relative.startsWith("..")
-    || path.isAbsolute(relative)
-    || (!directLabelConfig && !freshLoginConfig)
-    || launchHome !== path.dirname(configDir)
+    launchHome !== path.dirname(configDir)
+    || (!figmaLoginConfig && (relative.startsWith("..") || path.isAbsolute(relative)
+      || (!directLabelConfig && !freshLoginConfig)))
   ) {
     throw new Error("Managed Claude launch paths do not identify one exact label or login-staging home.");
+  }
+  if (figmaLoginConfig) {
+    ensureClaudeFigmaGrantRoot({ homeDir: userHomeDir, fsImpl });
+    for (const directory of [launchHome, configDir]) {
+      let stat;
+      try { stat = fsImpl.lstatSync(directory); }
+      catch (error) { if (directory === configDir && error.code === "ENOENT") continue; throw error; }
+      if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o077)) {
+        throw new Error("Managed Claude requires a private Figma login-staging home.");
+      }
+    }
   }
   return {
     aimgrRoot,
     claudeHomesRoot,
     selectedLabelHome: launchHome,
-    loginStaging: freshLoginConfig,
+    loginStaging: freshLoginConfig || figmaLoginConfig,
   };
 }
 
@@ -481,6 +501,7 @@ async function prepareContainedClaudeCliLaunch({
     userHomeDir: resolvedUserHome,
     launchHome: resolvedLaunchHome,
     configDir: resolvedConfigDir,
+    fsImpl,
   });
   const resolvedCommand = await verifyInstalledClaudeExecutableImpl({ command, fsImpl });
   ensureDirectory(resolvedConfigDir, { fsImpl });
@@ -593,7 +614,63 @@ export function buildContainedLaunchEnvironment({ preparedLaunch, env }) {
   return launchEnv;
 }
 
-function buildClaudeArgs(preparedLaunch, args) {
+function mcpConfigNamesFigma(file) {
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size > 2 * 1024 * 1024) return false;
+    return hasNamedFigmaServer(JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")));
+  } catch { return false; } // Native handles optional and invalid MCP inputs.
+}
+
+function hasNamedFigmaServer(source) {
+  return Object.hasOwn(source?.mcpServers ?? {}, FIGMA_MCP_NAME);
+}
+
+function hasExplicitFigmaServer({ preparedLaunch, cwd, parsed }) {
+  const values = parsed.optionValues;
+  const taskCwd = path.resolve(cwd, values["--cwd"]?.at(-1) ?? ".");
+  const expand = value => value.startsWith("~/")
+    ? path.join(preparedLaunch.userHomeDir, value.slice(2)) : path.resolve(taskCwd, value);
+  for (const config of values["--mcp-config"] ?? []) {
+    if (config.trim().startsWith("{")) {
+      try { if (hasNamedFigmaServer(JSON.parse(config))) return true; }
+      catch { /* Native reports invalid JSON. */ }
+    } else if (mcpConfigNamesFigma(expand(config))) return true;
+  }
+  const { state } = readClaudeActiveAppState({ configDir: preparedLaunch.configDir });
+  const project = (claudeNativeProjectRoot(taskCwd) ?? taskCwd).normalize("NFC");
+  if (hasNamedFigmaServer(state) || hasNamedFigmaServer(state.projects?.[project])
+    || (preparedLaunch.userMcpConfigPath && mcpConfigNamesFigma(preparedLaunch.userMcpConfigPath))) return true;
+  const projectOverride = values["--project-config-root"]?.at(-1);
+  for (let directory = projectOverride ? expand(projectOverride) : taskCwd;
+    path.dirname(directory) !== directory; directory = path.dirname(directory)) {
+    if (mcpConfigNamesFigma(path.join(directory, ".mcp.json"))) return true;
+  }
+  return false;
+}
+
+function prepareManagedClaudeFigmaMcp({ preparedLaunch, args, cwd, egressProfile }) {
+  if (egressProfile || preparedLaunch.loginStaging) return null;
+  const parsed = inspectClaudeArguments(args);
+  if (parsed.selectedCommand || parsed.options.includes("--strict-mcp-config")) return null;
+  return optionalCustomization("Figma MCP", () => {
+    const grant = readClaudeFigmaGrant({ homeDir: preparedLaunch.userHomeDir });
+    if (!grant || grant.expiresAt <= Date.now() || hasExplicitFigmaServer({ preparedLaunch, cwd, parsed })) return null;
+    const server = { type: "http", url: FIGMA_MCP_URL,
+      headersHelper: [process.execPath, FIGMA_HEADERS_PATH, preparedLaunch.userHomeDir].map(shellQuote).join(" ") };
+    const file = syncPrivateJsonOverlay(path.join(preparedLaunch.configDir, FIGMA_MCP_OVERLAY_FILE),
+      { mcpServers: { [FIGMA_MCP_NAME]: server } }, { description: "managed Figma MCP overlay" });
+    const cachePath = path.join(preparedLaunch.configDir, "mcp-needs-auth-cache.json");
+    const cache = readClaudeLaunchState(cachePath, { optional: true });
+    if (cache && Object.hasOwn(cache, FIGMA_MCP_NAME)) {
+      delete cache[FIGMA_MCP_NAME];
+      syncPrivateJsonOverlay(cachePath, cache, { description: "managed Claude MCP needs-auth cache" });
+    }
+    return file;
+  }, null, console.warn);
+}
+
+function buildClaudeArgs(preparedLaunch, args, figmaMcpConfigPath = null) {
   return [
     ...(preparedLaunch.userHooksPath
       ? ["--settings", preparedLaunch.userHooksPath]
@@ -601,6 +678,7 @@ function buildClaudeArgs(preparedLaunch, args) {
     ...(preparedLaunch.userMcpConfigPath
       ? ["--mcp-config", preparedLaunch.userMcpConfigPath]
       : []),
+    ...(figmaMcpConfigPath ? [`--mcp-config=${figmaMcpConfigPath}`] : []),
     ...(preparedLaunch.userPluginDirs ?? [])
       .flatMap((pluginDir) => ["--plugin-dir", pluginDir]),
     ...(Array.isArray(args) ? args : []),
@@ -913,7 +991,8 @@ export async function runClaudeCli({
   // Preserve IPC/TTY descriptors: routing must not remove pause/resume or tools.
   // Regressions: claude-native-background.test.js and native-pty-fixture.js.
   const containedEnv = buildContainedLaunchEnvironment({ preparedLaunch: prepared, env });
-  const native = await prepareClaudeNativeInvocationImpl({ preparedLaunch: prepared, args: buildClaudeArgs(prepared, args),
+  const figmaMcpConfigPath = prepareManagedClaudeFigmaMcp({ preparedLaunch: prepared, args, cwd: resolvedCwd, egressProfile });
+  const native = await prepareClaudeNativeInvocationImpl({ preparedLaunch: prepared, args: buildClaudeArgs(prepared, args, figmaMcpConfigPath),
     env: egressProfile ? nativeProxyEnvironment(containedEnv) : containedEnv, cwd: resolvedCwd,
     protectedAccount: true, expectedIdentity, requiredHooks });
   let child;

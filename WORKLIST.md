@@ -4,6 +4,8 @@ Open development work is tracked in [GitHub Issues](https://github.com/aelaguiz/
 
 ## Current work
 
+- **[Keep Figma MCP signed in across managed Claude sessions — #43](https://github.com/aelaguiz/aimgr/issues/43).** One verified Figma grant per machine, with periodic native refresh and a managed MCP connection. See the [Figma MCP plan](docs/KEEP_FIGMA_MCP_SIGNED_IN_2026-11-25.md).
+
 - **[Choose a Claude account with usable capacity when resuming after a rate limit — #41](https://github.com/aelaguiz/aimgr/issues/41).** Implemented. See the [account switch recovery plan](docs/CLAUDE_ACCOUNT_SWITCH_RECOVERY_PLAN_2026-11-25.md).
 
 - **[Show weekly pool capacity by plan size — #39](https://github.com/aelaguiz/aimgr/issues/39).** Implemented on `pool-capacity-view`.

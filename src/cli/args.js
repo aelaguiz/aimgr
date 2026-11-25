@@ -259,7 +259,9 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if ((arg === "--proxy" || arg === "--email") && positional[0] === "claude" && positional[1] === "login") {
+    const claudeLogin = positional[0] === "claude" && positional[1] === "login";
+    const figmaLogin = positional[0] === "claude" && positional[1] === "figma" && positional[2] === "login";
+    if ((arg === "--proxy" && claudeLogin) || (arg === "--email" && (claudeLogin || figmaLogin))) {
       const value=argv[i+1];
       if(!value || value.startsWith("--")) throw new Error(`${arg} requires a value.`);
       if(arg === "--proxy") opts.claudeLoginProxyRef=value;
@@ -278,7 +280,7 @@ export function parseArgs(argv) {
       continue;
     }
     if (arg === "--port" || arg === "--bind") {
-      if (argv[0] !== "mcp") {
+      if (argv[0] !== "mcp" && !(arg === "--port" && figmaLogin)) {
         throw new Error(`Unknown option: ${arg}`);
       }
       const value = argv[i + 1];
