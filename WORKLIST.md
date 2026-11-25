@@ -4,6 +4,8 @@ Open development work is tracked in [GitHub Issues](https://github.com/aelaguiz/
 
 ## Current work
 
+- **[Choose a Claude account with usable capacity when resuming after a rate limit — #41](https://github.com/aelaguiz/aimgr/issues/41).** Implemented. See the [account switch recovery plan](docs/CLAUDE_ACCOUNT_SWITCH_RECOVERY_PLAN_2026-11-25.md).
+
 - **[Show weekly pool capacity by plan size — #39](https://github.com/aelaguiz/aimgr/issues/39).** Implemented on `pool-capacity-view`.
 
 - **[Codex under AI Manager runs git twice when a git on its PATH sits in a folder its sandbox can't read — #30](https://github.com/aelaguiz/aimgr/issues/30).** Codex on macOS may now read the folders on its PATH and the executables they link to; the new exposure is the third vendor exception in the [privacy inventory](docs/AI_APP_PRIVACY_INVENTORY.md#mcp-browser-remote-control-and-ordinary-tools). Implemented on branch `fix/codex-path-exec`, release code only.

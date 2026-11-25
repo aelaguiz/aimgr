@@ -235,8 +235,10 @@ conversation text and tool output still cross to the destination account and
 can correlate the accounts by content. Raw `aim claude run <label> -- --resume`
 also stages a source transcript when it belongs to a different account.
 Login failures require a successful live usage check
-on the replacement account before launch. `--account` and `--switch-account` also work with
-the picker. For scripts, use `aim claude list --json` and an explicit selector.
+on the replacement account before launch. `--switch-account <preset>` checks
+available usage for the requested model before it forks the session and
+reports the earliest known reset if it finds no usable account.
+`--account` and `--switch-account` also work with the picker. For scripts, use `aim claude list --json` and an explicit selector.
 
 Codex uses an approved immutable runtime and a separate account directory for
 each local login. `aim codex login <label>` authorizes that account on this
@@ -825,8 +827,9 @@ weekly usage, then account name. Provider-blocked or exhausted accounts remain
 ineligible.
 
 Claude resume uses the session's recorded account by default. Add
-`--account <label>` to fork onto an exact account; combine it with
-`--switch-account fable|opus|sonnet` to override the resumed model preset. Every
+`--account <label>` to fork onto an exact account. Use
+`--switch-account fable|opus|sonnet` to choose another account with room for the
+requested model. Combine both flags to choose the account and model explicitly. Every
 `aim claude resume` preserves the session's last recorded thinking effort,
 including account switches and automatic forks: a `max` session stays `max`.
 Missing saved model/effort stops the resume instead of substituting preset defaults.
