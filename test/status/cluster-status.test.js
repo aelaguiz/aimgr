@@ -271,5 +271,33 @@ test("remote status parsing needs both reports", () => {
 test("cluster status rejects missing machine identity and unsupported arguments", async () => {
   const home = mkTempHome();
   await assert.rejects(runCli(["cluster", "status", "--home", home]), /Cannot identify this machine/);
-  await assert.rejects(runCli(["cluster", "status", "--json", "--home", home]), /Usage: aim cluster status/);
+  await assert.rejects(runCli(["cluster", "status", "--compact", "--home", home]), /Usage: aim cluster status/);
+});
+
+test("cluster status --json gives one pool from every machine's freshest reading", async () => {
+  const home = homeFor("m5");
+  const stale = signedIn("alpha", 0, NOW - 5 * DAY);
+  const result = await runCliWithExitCode(["cluster", "status", "--json", "--home", home], {
+    nowImpl: () => NOW,
+    // This machine's own reading is days old and says the account is unused.
+    clusterLocalStatusImpl: async () => machineStatus({ alpha: stale }),
+    clusterRemoteStatusImpl: async (target) => {
+      if (target.includes("mini-1")) return remoteText(machineStatus({ alpha: signedIn("alpha", 100, NOW), codexReady: true }));
+      if (target.includes("mini-2")) throw new Error("secret stderr");
+      return remoteText(machineStatus());
+    },
+  });
+  assert.equal(result.exitCode, 1, "a machine that did not answer still fails the command");
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.machines.find((machine) => machine.name === "mini-2"), { name: "mini-2", error: "status unavailable" });
+  assert.deepEqual(report.machines.find((machine) => machine.name === "mini-1"), { name: "mini-1" });
+  const { claude, codex } = report.pools;
+  assert.equal(claude.unit, "Max 20x weeks");
+  assert.equal(claude.capacity, 1);
+  assert.equal(claude.left, 0, "the fresh reading from another machine wins over this machine's stale one");
+  assert.deepEqual(claude.counts, { ready: 0, limited: 1, needsLogin: 0 });
+  assert.equal(claude.accountRows.find((row) => row.label === "alpha").weekUsedPercent, 100);
+  assert.equal(codex.unit, "Pro Max weeks");
+  assert.equal(codex.counts.ready, 1);
+  assert.doesNotMatch(result.stdout, /secret stderr/);
 });

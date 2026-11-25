@@ -2,8 +2,11 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { readAimgrConfig } from "../../config/aimgr-config.js";
+import { closeRedisStore, connectRedisStore, REDIS_CONNECTION_POLICY_OBSERVE } from "../../coordination/redis-store.js";
 import { sanitizeForStatus } from "../../core/sanitize.js";
-import { renderClusterStatusText } from "../../status/cluster-view.js";
+import { buildClusterPools, renderClusterStatusText } from "../../status/cluster-view.js";
+import { recordStatusPoolPace } from "../../status/pool-pace.js";
 import { buildRedisStatusView } from "../../status/redis-view.js";
 
 // Match the AIM machines in docs/FLEET.md and the addresses in devcluster's
@@ -44,11 +47,31 @@ export function parseRemoteStatus(output) {
   return { view: JSON.parse(viewText), claude: JSON.parse(claudeText) };
 }
 
+// Pace comes from the shared reading history, as it does for `aim status`.
+// Without the store the pools still go out, with no pace.
+async function recordClusterPoolPace(context, pools, nowMs) {
+  let store = null;
+  try {
+    const redis = readAimgrConfig({ homeDir: context.homeDir }).config.redis;
+    if (!redis.url) return;
+    store = await (context.connectRedisStoreImpl ?? connectRedisStore)({
+      url: redis.url,
+      keyPrefix: redis.keyPrefix,
+      connectionPolicy: REDIS_CONNECTION_POLICY_OBSERVE,
+    });
+    await recordStatusPoolPace(store, pools, nowMs);
+  } catch {
+    // The current readings do not depend on the history.
+  } finally {
+    try { await closeRedisStore(store); } catch { /* nothing to report */ }
+  }
+}
+
 export async function handleCluster(context) {
   const { positional, opts, homeDir, stdout, setExitCode } = context;
-  if (positional.length !== 2 || positional[1] !== "status" || opts.json || opts.compact
+  if (positional.length !== 2 || positional[1] !== "status" || opts.compact
       || opts.accounts || opts.allAccounts || opts.assignments || opts.afterDoubleDash.length) {
-    throw new Error("Usage: aim cluster status");
+    throw new Error("Usage: aim cluster status [--json]");
   }
   let localMachine;
   try {
@@ -87,6 +110,16 @@ export async function handleCluster(context) {
       return { ...machine, error: reason };
     }
   }));
-  stdout.write(renderClusterStatusText(results, { nowMs }));
+  if (opts.json) {
+    const pools = buildClusterPools(results, { nowMs });
+    await recordClusterPoolPace(context, pools, nowMs);
+    stdout.write(`${JSON.stringify({
+      checkedAtMs: nowMs,
+      machines: results.map(({ name, error }) => (error ? { name, error } : { name })),
+      pools,
+    })}\n`);
+  } else {
+    stdout.write(renderClusterStatusText(results, { nowMs }));
+  }
   if (results.some((result) => result.error)) setExitCode(1);
 }

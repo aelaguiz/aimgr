@@ -19,7 +19,7 @@ import {
   renderCurrentCodexUsageText,
 } from "./table.js";
 
-function buildStatusAccountTable(accounts, now, { codex = false } = {}) {
+export function buildStatusAccountTable(accounts, now, { codex = false } = {}) {
   const weights = codex ? PLAN_WEEK_WEIGHTS.codex : PLAN_WEEK_WEIGHTS.claude;
   const entries = accounts.map((account) => {
     const planKey = codex ? account.plan?.split(" ")[0] : account.plan?.split("/").at(-1);
