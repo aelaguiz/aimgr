@@ -56,16 +56,20 @@ return {string.format('%.17g', used), start}
 
 export function computePoolPace(pool, perAccount, nowMs) {
   let used = 0;
+  let perDay = 0;
   let earliestStart = nowMs;
   for (const account of pool.accountRows) {
     const [usedPercent, startMs] = perAccount.get(account.label) ?? [0];
-    used += account.weight * usedPercent / 100;
-    if (startMs !== undefined) earliestStart = Math.min(earliestStart, startMs);
+    const accountUsed = account.weight * usedPercent / 100;
+    used += accountUsed;
+    if (startMs !== undefined) {
+      earliestStart = Math.min(earliestStart, startMs);
+      perDay += accountUsed / Math.max(2, (nowMs - startMs) / HOUR_MS) * 24;
+    }
   }
 
   const hours = Math.min(24, (nowMs - earliestStart) / HOUR_MS);
   if (hours < 2) return null;
-  const perDay = used / hours * 24;
   let lastsUntilMs = null;
   if (perDay > 0) {
     const horizon = nowMs + 7 * DAY_MS;

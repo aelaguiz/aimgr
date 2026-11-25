@@ -163,7 +163,9 @@ retains all accounts in `accounts`. Its `pools.claude` and `pools.codex` entries
 use the text tables' account rows, counts, weekly capacity, and reset schedule.
 Status keeps 25 hours of weekly readings per account in Redis, spaced at least
 10 minutes apart. With at least two hours of readings, the text `Pace:` line and
-JSON `pace` report daily use and whether the pool will last the next seven days.
+JSON `pace` report each account's use over the time AI Manager has watched it,
+up to 24 hours, as a daily rate summed across the pool, and whether the pool
+will last the next seven days.
 
 Account notes are shared through Redis and appear in status and account-use
 output, including when an account is hidden from the main status tables. Notes

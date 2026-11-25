@@ -159,10 +159,10 @@ test("status JSON and text share pool capacity, counts, account details, and pac
     assert.ok(text.includes(`· ${pool.used.toFixed(1)} used (50%) · ${pool.left.toFixed(1)} left (50%)`));
     const returns = Object.entries(pool.returns).map(([window, amount]) => `${amount.toFixed(1)} in ${window}`);
     assert.ok(text.includes(`Comes back: ${returns.join(" · ")}`));
-    const { used, hours, perDay, lastsUntilMs } = pool.pace;
+    const { hours, perDay, lastsUntilMs } = pool.pace;
     assert.equal(hours, 3);
     assert.equal(lastsUntilMs, nowMs + 3.75 * hour);
-    assert.ok(text.includes(`\nPace: ${used.toFixed(1)} used in the last 3h (${perDay.toFixed(1)} a day); at this pace it runs out in 3.8h\n`));
+    assert.ok(text.includes(`\nPace: ${perDay.toFixed(1)} a day over the last 3h; at this pace it runs out in 3.8h\n`));
   }
   assert.deepEqual(claude.counts, { ready: 0, limited: 1, needsLogin: 0 });
   assert.match(claudeText, /^ 0 ready · 1 limited · 0 in use · 0 needs you/);
