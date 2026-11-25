@@ -5,6 +5,7 @@ import { loadClaudeRuntime } from "../../coordination/claude-runtime.js";
 import { updateClaudeEgressMetadata, readClaudeAccountMetadata } from "../../coordination/claude-metadata.js";
 import { closeRedisRuntime, isRedisConfigured, writeRedisLocalStateFromView } from "../../coordination/runtime.js";
 import { readLocalClaudeCredential } from "../../credentials/claude-local.js";
+import { maintainLocalClaudeCredential } from "../../credentials/claude-local-maintenance.js";
 import { claudeOwnerBinding } from "../../privacy/claude-environment.js";
 import { acquireClaudeStateGuard } from "../../privacy/claude-state-migration.js";
 import { acquireClaudeAssignmentLock, invalidateClaudeOfflineBinding, readClaudeOfflineBinding, writeClaudeOfflineBinding } from "../../network/claude-offline-binding.js";
@@ -15,6 +16,7 @@ import { readAimgrConfig } from "../../config/aimgr-config.js";
 import { normalizeEgressPolicy, resolveClaudeEgressProfile } from "../../network/claude-egress-policy.js";
 import { normalizeLabel } from "../../core/normalize.js";
 import { AIMGR_REDIS_PRIMARY_HOST, AIMGR_REDIS_PRIMARY_URL, ANTHROPIC_PROVIDER } from "../../core/constants.js";
+import { rankClaudeSwitchAccounts } from "../../pool/claude-switch.js";
 import { accountNoteFor, readNotesForCommand, notesForAccounts, renderAccountNotes, formatAccountNote } from "../../status/account-notes.js";
 import { pickClaudeSession } from "../claude-session-picker.js";
 import { claudeRunPresetArgs } from "../args.js";
@@ -26,7 +28,12 @@ import { foldManagedClaudeMemories, renderClaudeSharedMemoryReport, summarizeCla
 import { buildManagedClaudeSessionForkName, findManagedClaudeSessionFiles, listRecentManagedClaudeSessions, readManagedClaudeSessions,
  renderRecentManagedClaudeSessions, resolveManagedClaudeSession, stageManagedClaudeSessionFork } from "../../targets/claude-sessions.js";
 import { assertClaudeUsageRoutes, collectClaudeRedisAccountInventory, collectClaudeRedisAccountUsageStatus,
- renderClaudeRedisAccountInventory, renderClaudeRedisAccountUsageStatus, selectClaudeAccountForSession } from "../../status/claude-redis-view.js";
+ CLAUDE_REDIS_USAGE_FRESH_MS, renderClaudeRedisAccountInventory, renderClaudeRedisAccountUsageStatus,
+ selectClaudeAccountForSession } from "../../status/claude-redis-view.js";
+
+const CLAUDE_SWITCH_CHECK_LIMIT = 3;
+const CLAUDE_SWITCH_MAINTENANCE_TIMEOUT_MS = 5_000;
+const CLAUDE_SWITCH_NEAR_LIMIT_PERCENT = 5;
 
 function localLoginRequired(label) {
   return Object.assign(new Error(`Claude ${label} needs local sign-in: aim claude login ${label}`), {code:"AIMGR_CLAUDE_AUTH_UNAVAILABLE"});
@@ -197,6 +204,101 @@ async function selectAutomaticClaudeAccount(context, {
       )
       .map((account) => ({ ...account, localSessions: localSessions.get(account.label) ?? 0 })),
   }, { preset });
+}
+
+async function renewClaudeSwitchGrants(context, accounts) {
+  const idleExpired = accounts.filter((account) => account.credentialState === "credential_expired");
+  if (!idleExpired.length) return;
+
+  const { homeDir, connectRedisStoreImpl, readClaudeEnvironmentImpl } = context;
+  const runtime = await loadClaudeRuntime({ homeDir, connectRedisStoreImpl, readClaudeEnvironmentImpl });
+  try {
+    for (const account of idleExpired) {
+      const metadata = runtime.snapshot.credentials.find((entry) => entry.label === account.label);
+      if (!metadata) continue;
+      await maintainLocalClaudeCredential(context, {
+        metadata,
+        environment: runtime.environment,
+        state: runtime.state,
+        timeoutMs: CLAUDE_SWITCH_MAINTENANCE_TIMEOUT_MS,
+        deadlineMs: Date.now() + CLAUDE_SWITCH_MAINTENANCE_TIMEOUT_MS,
+        propagateRouteErrors: true,
+      });
+    }
+  } finally {
+    await closeRedisRuntime(runtime);
+  }
+}
+
+async function selectClaudeSwitchAccount(context, { preset, sourceLabel }) {
+  const {
+    homeDir, nowMs, nowImpl = () => nowMs,
+    fetchJsonWithTimeoutImpl, connectRedisStoreImpl, readClaudeEnvironmentImpl,
+  } = context;
+  const usageOptions = { homeDir, fetchJsonWithTimeoutImpl, connectRedisStoreImpl,
+    readClaudeEnvironmentImpl, forAccountSwitch: true };
+  const initial = await collectClaudeRedisAccountUsageStatus({ ...usageOptions, nowMs });
+  assertClaudeUsageRoutes(initial);
+  const localSessions = readMachineClaudeSessionCounts({ homeDir });
+  const withSessionCount = (account) => ({ ...account, localSessions: localSessions.get(account.label) ?? 0 });
+  const accounts = initial.accounts.filter((account) => account.label !== sourceLabel).map(withSessionCount);
+  const rankedAtMs = nowImpl();
+  const ranked = rankClaudeSwitchAccounts(accounts, { preset, nowMs: rankedAtMs });
+  const ready = ranked.candidates.find(({ confirmed, remainingPercent }) => (
+    confirmed && remainingPercent > CLAUDE_SWITCH_NEAR_LIMIT_PERCENT
+  ));
+  if (ready) return ready.account;
+
+  const shortlist = ranked.candidates
+    .filter(({ confirmed, account }) => (
+      (!confirmed || account.source !== "live")
+      && (account.credentialReady || account.localSessions === 0)
+      && !(account.errorKind === "provider_throttled"
+        && Number.isFinite(account.lastAttemptAtMs)
+        && rankedAtMs - account.lastAttemptAtMs <= CLAUDE_REDIS_USAGE_FRESH_MS)
+    ))
+    .slice(0, CLAUDE_SWITCH_CHECK_LIMIT)
+    .map(({ account }) => account);
+  let final = ranked;
+  if (shortlist.length) {
+    await renewClaudeSwitchGrants(context, shortlist);
+    const selectedLabels = shortlist.map(({ label }) => label);
+    const checked = await collectClaudeRedisAccountUsageStatus({
+      ...usageOptions, fresh: true, nowMs: nowImpl(), selectedLabels,
+    });
+    assertClaudeUsageRoutes(checked);
+    final = rankClaudeSwitchAccounts([
+      ...accounts.filter((account) => !selectedLabels.includes(account.label)),
+      ...checked.accounts.map(withSessionCount),
+    ], { preset, nowMs: nowImpl() });
+  }
+
+  const confirmed = final.candidates.find(({ confirmed, remainingPercent, account }) => (
+    confirmed && (remainingPercent > CLAUDE_SWITCH_NEAR_LIMIT_PERCENT || account.source === "live")
+  ));
+  if (confirmed) {
+    const { account, remainingPercent } = confirmed;
+    const windowRemaining = remainingPercent * (account.localSessions + 1);
+    if (windowRemaining <= CLAUDE_SWITCH_NEAR_LIMIT_PERCENT) {
+      const percent = windowRemaining < 1 ? "less than 1%" : `${Number(windowRemaining.toFixed(1))}%`;
+      context.stdout.write(`Claude ${account.label} has ${percent} left in its tightest usage window for ${preset}.\n`);
+    }
+    return account;
+  }
+
+  const firstReset = final.blocked.filter(({ resetAt }) => Number.isFinite(resetAt))
+    .sort((left, right) => left.resetAt - right.resetAt)[0];
+  const resetMessage = firstReset
+    ? ` Earliest known reset is ${new Date(firstReset.resetAt).toISOString()} on Claude ${firstReset.account.label}.`
+    : "";
+  const blockedLabels = new Set(final.blocked.map(({ account }) => account.label));
+  if (ranked.candidates.some(({ account }) => !blockedLabels.has(account.label))) {
+    throw new Error(`Could not verify another Claude account with usage left for ${preset}.${resetMessage}`);
+  }
+  if (final.blocked.length) {
+    throw new Error(`All other eligible Claude accounts are at their usage limits for ${preset}.${resetMessage}`);
+  }
+  throw new Error(`No other Claude account is eligible for ${preset}.`);
 }
 
 // herdrName: "keep" notes the Herdr name of this pane's agent while Claude runs; "give back"
@@ -458,17 +560,14 @@ export async function handleClaude(context) {
     }
     const selected = requestedAccountLabel
       ? { label: requestedAccountLabel }
-      : await selectAutomaticClaudeAccount(context, {
-          preset: forkPreset,
-          excludeLabels: [session.account],
-          requireLive: unavailableReason === "requires login",
-        });
+      : requestedSwitchPreset
+        ? await selectClaudeSwitchAccount(context, { preset: forkPreset, sourceLabel: session.account })
+        : await selectAutomaticClaudeAccount(context, {
+            preset: forkPreset,
+            excludeLabels: [session.account],
+            requireLive: unavailableReason === "requires login",
+          });
     if (!selected) {
-      if (requestedSwitchPreset) {
-        throw new Error(
-          `No other unlocked Claude account with usage left is available for --switch-account ${forkPreset}.`,
-        );
-      }
       throw new Error(
         `Claude label=${session.account} ${unavailableReason === "busy" ? "is busy" : "requires login"} and no other unlocked Claude account with usage left is available.`,
       );

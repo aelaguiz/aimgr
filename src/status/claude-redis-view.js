@@ -248,6 +248,7 @@ function normalizeCachedEntry(label, value, nowMs) {
     usageObservedAtMs: usage.ok ? usageObservedAtMs : null,
     lastAttemptAtMs,
     usage,
+    ...(value.origin === "session" ? { origin: "session" } : {}),
   };
 }
 
@@ -276,6 +277,7 @@ function serializeCacheEntries(entries) {
         usageObservedAtMs: normalizeTimestamp(entry.usageObservedAtMs, Number.MAX_SAFE_INTEGER),
         lastAttemptAtMs: normalizeTimestamp(entry.lastAttemptAtMs, Number.MAX_SAFE_INTEGER),
         usage: normalizeUsage(entry.usage),
+        ...(entry.origin === "session" ? { origin: "session" } : {}),
       }]),
   );
 }
@@ -407,6 +409,7 @@ function buildCredentialFacts(record, nowMs, { homeDir, environment, legacyAutho
     duplicateIdentityKey,
     accountIdentityKey,
     credentialGeneration,
+    grantStartedAtMs: Date.parse(local?.owner?.grant?.grantedAt),
     identityBinding,
     subscriptionType,
     rateLimitTier,
@@ -559,9 +562,11 @@ function foldSessionUsage(cacheEntries, facts, sessionUsage) {
   for (const entry of facts) {
     const reading = sessionUsage.get(entry.record.label);
     if (!reading || !entry.identityBinding) continue;
+    if (reading.observedAtMs < entry.grantStartedAtMs) continue;
     if (!entry.credentialReady && entry.state !== "credential_expired") continue;
     const cached = cacheEntryForFacts(cacheEntries, entry);
     if (cached?.usage?.ok && Number(cached.usageObservedAtMs) > reading.observedAtMs) continue;
+    if (cached?.errorKind && cached.lastAttemptAtMs >= reading.observedAtMs) continue;
     const reported = new Set(reading.windows.map(windowSlot));
     const usage = normalizeUsage({
       windows: [
@@ -656,12 +661,17 @@ function classifyUsageFailure(snapshot) {
   return "network_error";
 }
 
-function buildLiveAccount(facts, snapshot, cachedEntry, nowMs) {
+function buildLiveAccount(facts, snapshot, cachedEntry, nowMs, { forAccountSwitch = false } = {}) {
   if (snapshot?.ok === true) {
     const normalizedSnapshot = normalizeUsage(snapshot);
-    const usage = hasExpiredActiveWindow({ usage: normalizedSnapshot }, nowMs)
-      ? emptyUsage()
-      : filterUnexpiredUsage(normalizedSnapshot, nowMs);
+    // The recovery picker checks each window against the requested model and
+    // the clock. Keep the reset timestamp so it can distinguish an elapsed
+    // applicable window from one that never applied to this switch.
+    const usage = forAccountSwitch
+      ? normalizedSnapshot
+      : hasExpiredActiveWindow({ usage: normalizedSnapshot }, nowMs)
+        ? emptyUsage()
+        : filterUnexpiredUsage(normalizedSnapshot, nowMs);
     if (usage.ok) {
       return {
         label: facts.record.label,
@@ -871,6 +881,7 @@ export async function collectClaudeRedisAccountUsageStatus({
   redisStore = null,
   selectedLabels = [],
   fresh = false,
+  forAccountSwitch = false,
   nowMs = Date.now(),
   cachePath = resolveAimgrRedisCachePath({ homeDir }),
   connectRedisStoreImpl = connectRedisStore,
@@ -915,7 +926,10 @@ export async function collectClaudeRedisAccountUsageStatus({
     lockSource = redisData.lockSource;
   }
   try { environment ??= readClaudeEnvironmentImpl(); } catch {}
-  const facts = selectFacts(authoritativeRecords, normalizedLabels, nowMs, {homeDir,environment,legacyAuthority});
+  const selectedFacts = selectFacts(authoritativeRecords, normalizedLabels, nowMs, {homeDir,environment,legacyAuthority});
+  const facts = forAccountSwitch
+    ? selectedFacts.filter(({ record }) => record.policy?.pool?.enabled !== false)
+    : selectedFacts;
   const factsByLabel = new Map(facts.map((entry) => [entry.record.label, entry]));
   const localProfiles = readAimgrConfig({ homeDir }).config.claudeProxyProfiles ?? {};
   const routing = new Map(facts.map(({ record }) => {
@@ -999,7 +1013,7 @@ export async function collectClaudeRedisAccountUsageStatus({
       const cachedUsage = cachedEntry ? usableStaleUsage(cachedEntry, nowMs) : null;
       accountsByLabel.set(
         entry.record.label,
-        cachedUsage?.usage?.ok === true
+        (forAccountSwitch && cachedEntry) || cachedUsage?.usage?.ok === true
           ? buildCachedAccount(entry, cachedEntry, nowMs)
           : buildStaticAccount(entry),
       );
@@ -1008,6 +1022,14 @@ export async function collectClaudeRedisAccountUsageStatus({
     const cachedEntry = cacheEntryForFacts(cacheEntries, entry);
     if (shouldUseCachedEntry(cachedEntry, { fresh, nowMs })) {
       accountsByLabel.set(entry.record.label, buildCachedAccount(entry, cachedEntry, nowMs));
+      continue;
+    }
+    // Recovery verifies a shortlist of ordinary accounts after ranking. Keep
+    // the normal route checks for configured accounts, including the source.
+    if (forAccountSwitch && !fresh && routing.get(entry.record.label).mode === "direct") {
+      accountsByLabel.set(entry.record.label, cachedEntry
+        ? buildCachedAccount(entry, cachedEntry, nowMs)
+        : buildStaticAccount(entry));
       continue;
     }
     pending.push({ facts: entry, cachedEntry });
@@ -1108,7 +1130,7 @@ export async function collectClaudeRedisAccountUsageStatus({
             ...(error instanceof ClaudeRouteError ? { routeError: error.code } : {}),
           };
         }
-        return { facts: entry, account: buildLiveAccount(entry, snapshot, cachedEntry, nowMs) };
+        return { facts: entry, account: buildLiveAccount(entry, snapshot, cachedEntry, nowMs, { forAccountSwitch }) };
       },
     );
     for (const { facts: entry, account } of refreshed) {

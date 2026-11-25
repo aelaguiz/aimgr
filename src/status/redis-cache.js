@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { isObject, normalizeLabel } from "../core/normalize.js";
 import { ensureDirectoryMode, writeJsonFileIfChanged } from "../io/json-store.js";
 import { resolveAimgrRedisCachePath } from "../io/paths.js";
@@ -111,6 +111,7 @@ function normalizeProviderEntries(provider, value) {
       usageObservedAtMs: normalizeCacheTimestamp(rawEntry.usageObservedAtMs),
       lastAttemptAtMs,
       usage: normalizeCachedUsage(provider, rawEntry.usage),
+      ...(provider === ANTHROPIC_PROVIDER && rawEntry.origin === "session" ? { origin: "session" } : {}),
     };
   }
   return entries;

@@ -31,12 +31,14 @@ aim claude resume <row-number>            # pick by the row the picker showed
 aim claude resume <thread-id>             # pick by exact session id
 aim claude resume "<session name>"        # exact, case-insensitive; quote if it has spaces
 aim claude resume <selector> --account <label>            # fork onto another account
-aim claude resume <selector> --switch-account fable|opus|sonnet  # override the model preset
+aim claude resume <selector> --switch-account fable|opus|sonnet  # switch to an available account for that model
 ```
 
 The picker lists saved title, age, account, and working directory. `n` pages
 to older sessions, `p` to newer, `q` or empty Enter cancels. The session
-resumes in its own working directory on its recorded model and effort.
+resumes in its own working directory and keeps its recorded effort. An automatic
+switch verifies room for the requested model before it forks. If it finds no
+usable account, it reports the earliest known reset when available.
 
 For scripts, list first and pass an explicit selector:
 

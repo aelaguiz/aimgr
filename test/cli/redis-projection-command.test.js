@@ -1654,7 +1654,7 @@ test("claude resume fails safely when the recorded account is signed out and no 
       "--home",
       home,
     ], cliDeps),
-    /No other unlocked Claude account with usage left is available/,
+    /No other Claude account is eligible for fable/,
   );
 });
 

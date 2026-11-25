@@ -800,6 +800,115 @@ test("fresh and an expired active window each force one bounded refresh", async 
   assert.equal(calls, 3);
 });
 
+test("account switch reads ordinary cached usage before requesting only selected checks", async t => {
+  const { homeDir, connectRedisStoreImpl } = await setup([
+    anthropicRecord("other"), anthropicRecord("target"),
+  ]);
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const checkAt = NOW_MS + CLAUDE_REDIS_USAGE_FRESH_MS + 60_000;
+  await collectClaudeRedisAccountUsageStatus({
+    homeDir, connectRedisStoreImpl, nowMs: NOW_MS,
+    fetchClaudeUsageSnapshotImpl: async () => successSnapshot(20),
+  });
+
+  const calls = [];
+  const opts = {
+    homeDir, connectRedisStoreImpl, nowMs: checkAt, forAccountSwitch: true,
+    fetchClaudeUsageSnapshotImpl: async ({ record }) => {
+      calls.push(record.label);
+      const general = successSnapshot(60);
+      return {
+        ...general,
+        windows: [...general.windows, {
+          label: "Fable", kind: "weekly_scoped", active: true,
+          usedPercent: 100, resetAt: checkAt - 1,
+        }],
+      };
+    },
+  };
+  const preview = await collectClaudeRedisAccountUsageStatus(opts);
+  assert.equal(preview.requestCount, 0);
+  assert.deepEqual(preview.accounts.map(account => account.source), ["stale-cache", "stale-cache"]);
+
+  const checked = await collectClaudeRedisAccountUsageStatus({
+    ...opts, fresh: true, selectedLabels: ["target"],
+  });
+  assert.deepEqual(calls, ["target"]);
+  assert.equal(checked.accounts[0].source, "live");
+  assert.deepEqual(checked.accounts[0].usage.windows.map(window => window.label), ["5h", "Week", "Fable"]);
+  assert.equal(checked.accounts[0].usage.windows[2].resetAt, checkAt - 1);
+});
+
+test("an account switch ignores the previous local grant's statusline data", async t => {
+  const { homeDir, connectRedisStoreImpl } = await setup([anthropicRecord("target")]);
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const usagePath = resolveAimgrClaudeSessionUsagePath({ homeDir, label: "target" });
+  fs.writeFileSync(usagePath, JSON.stringify({
+    rate_limits: { five_hour: { used_percentage: 10, resets_at: (NOW_MS + 3_600_000) / 1000 } },
+  }));
+  const beforeGrant = new Date(NOW_MS - 30_000);
+  fs.utimesSync(usagePath, beforeGrant, beforeGrant);
+
+  const checked = await collectClaudeRedisAccountUsageStatus({
+    homeDir, connectRedisStoreImpl, nowMs: NOW_MS, forAccountSwitch: true,
+  });
+  assert.equal(checked.requestCount, 0);
+  assert.equal(checked.accounts[0].usage.ok, false);
+});
+
+test("a newer failed usage check keeps its backoff when a session reading is older", async t => {
+  const { homeDir, connectRedisStoreImpl } = await setup([anthropicRecord("target")]);
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const usagePath = resolveAimgrClaudeSessionUsagePath({ homeDir, label: "target" });
+  fs.writeFileSync(usagePath, JSON.stringify({
+    rate_limits: { five_hour: { used_percentage: 10, resets_at: (NOW_MS + 3_600_000) / 1000 } },
+  }));
+  const observedAt = new Date();
+  const checkedAtMs = observedAt.getTime() + 1_000;
+  fs.utimesSync(usagePath, observedAt, observedAt);
+  const base = { homeDir, connectRedisStoreImpl, forAccountSwitch: true };
+  const failure = await collectClaudeRedisAccountUsageStatus({
+    ...base, fresh: true, nowMs: checkedAtMs,
+    fetchClaudeUsageSnapshotImpl: async () => ({ ok: false, status: 429 }),
+  });
+  assert.equal(failure.accounts[0].errorKind, "provider_throttled");
+
+  const preview = await collectClaudeRedisAccountUsageStatus({ ...base, nowMs: checkedAtMs + 1_000 });
+  assert.equal(preview.requestCount, 0);
+  assert.equal(preview.accounts[0].errorKind, "provider_throttled");
+  assert.equal(preview.accounts[0].lastAttemptAtMs, checkedAtMs);
+});
+
+test("cached statusline readings keep their source after the session ends", async t => {
+  const { homeDir, connectRedisStoreImpl } = await setup([
+    anthropicRecord("other"), anthropicRecord("target"),
+  ]);
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const usagePath = resolveAimgrClaudeSessionUsagePath({ homeDir, label: "target" });
+  const observedAt = new Date(Date.now() + 1_000);
+  fs.writeFileSync(usagePath, JSON.stringify({
+    rate_limits: { five_hour: { used_percentage: 10, resets_at: (NOW_MS + 3_600_000) / 1000 } },
+  }));
+  fs.utimesSync(usagePath, observedAt, observedAt);
+  const base = { homeDir, connectRedisStoreImpl };
+  const populated = await collectClaudeRedisAccountUsageStatus({
+    ...base, nowMs: observedAt.getTime() + 1_000,
+    fetchClaudeUsageSnapshotImpl: async ({ record }) => {
+      assert.equal(record.label, "other");
+      return successSnapshot(25);
+    },
+  });
+  assert.equal(populated.requestCount, 1);
+  assert.equal(populated.accounts.find(({ label }) => label === "target").source, "session");
+
+  fs.unlinkSync(usagePath);
+  const preview = await collectClaudeRedisAccountUsageStatus({
+    ...base, nowMs: observedAt.getTime() + 2_000, forAccountSwitch: true,
+  });
+  assert.equal(preview.requestCount, 0);
+  assert.equal(preview.accounts.find(({ label }) => label === "target").source, "session");
+});
+
 test("unknown selected labels fail before provider work and simultaneous refreshes single-flight", async () => {
   const { homeDir, connectRedisStoreImpl } = await setup([anthropicRecord("ready")]);
   let providerCalls = 0;

@@ -2,11 +2,14 @@ import { acquireClaudeStateGuard } from '../privacy/claude-state-migration.js';
 import { claudeOwnerBinding } from '../privacy/claude-environment.js';
 import { readLocalClaudeCredential, markLocalClaudeGrantRejected } from './claude-local.js';
 import { resolveNativeAccountProfile } from '../network/claude-native-route.js';
+import { ClaudeRouteError } from '../network/claude-egress-policy.js';
 import { runClaudeCliNoninteractive, prepareClaudeCliLaunch } from '../targets/claude-runner.js';
 
 // Native refreshes its own local grant under its own refresh lock. AIM never
 // projects a token before this request or publishes the resulting rotation.
-export async function maintainLocalClaudeCredential(context, { metadata, environment, state, force = false }) {
+export async function maintainLocalClaudeCredential(context, {
+  metadata, environment, state, force = false, timeoutMs = 30_000, deadlineMs = null, propagateRouteErrors = false,
+}) {
   const { homeDir, label = metadata.label } = context;
   const options = { homeDir, label, metadata, environment };
   let guard;
@@ -33,7 +36,10 @@ export async function maintainLocalClaudeCredential(context, { metadata, environ
       command: context.resolveExecutableOnPathImpl?.('claude'), userHomeDir: homeDir,
       homeDir: before.claudeHome, configDir: before.configDir, cwd: process.cwd(), env: maintenanceEnv,
       args: ['--safe-mode','--strict-mcp-config','--no-session-persistence','--print','--output-format','json','/usage'],
-      timeoutMs: 30_000, captureOutput:true, assignmentLock: guard, egressProfile: profile, expectedIdentity: before.nativeClaudeBundle.oauthAccount });
+      timeoutMs, deadlineMs, captureOutput:true, assignmentLock: guard, egressProfile: profile, expectedIdentity: before.nativeClaudeBundle.oauthAccount });
+    if (propagateRouteErrors && profile && result?.status === 125) {
+      throw new ClaudeRouteError('native_proxy_unavailable', { label, profileRef: profile.profileRef, cause: result.error });
+    }
     guard.assertOwned();
     const after = readLocalClaudeCredential(options);
     if (after.owner?.grant?.id !== before.owner.grant.id) return {outcome:'retryable',reason:'local_login_changed'};
@@ -45,6 +51,8 @@ export async function maintainLocalClaudeCredential(context, { metadata, environ
     if (!after.credential) return { outcome: after.status === 'reauth_required' ? 'reauth_required' : 'retryable', reason: after.status };
     if (result?.status !== 0 || result?.signal || result?.timedOut) return {outcome:'retryable',reason:'native_maintenance_failed'};
     return {outcome:before.generation !== after.generation ? 'refreshed' : 'unchanged',reason:before.generation !== after.generation ? 'credential_rotated' : 'tokens_unchanged'};
-  } catch { return {outcome:'retryable',reason:'local_maintenance_unavailable'}; }
-  finally { await guard?.release(); }
+  } catch (error) {
+    if (propagateRouteErrors && error instanceof ClaudeRouteError) throw error;
+    return {outcome:'retryable',reason:'local_maintenance_unavailable'};
+  } finally { await guard?.release(); }
 }
