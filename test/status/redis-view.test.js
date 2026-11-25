@@ -24,6 +24,7 @@ import { logoutLocalClaudeCredential } from "../../src/credentials/claude-local.
 import { writeClaudeOfflineBinding, invalidateClaudeOfflineBinding } from "../../src/network/claude-offline-binding.js";
 import { renderStatusText } from "../../src/status/render.js";
 import { writeCachedRedisStatusView } from "../../src/status/redis-cache.js";
+import { runCli } from "../helpers/cli-runner.js";
 
 test("Codex cache projects the legacy 168h window as Week", () => {
   const view = buildRedisDiagnosticCacheView({
@@ -96,6 +97,100 @@ async function seedRedis(client, home, { plan = "pro" } = {}) {
     { updatedBy: "test", observedAt: "2026-05-30T14:00:00.000Z" },
   );
 }
+
+test("status JSON and text share pool capacity, counts, account details, and pace", async (t) => {
+  const homeDir = mkTempHome();
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const keyPrefix = "aimgr:status-test";
+  const nowMs = Date.now();
+  const hour = 3_600_000;
+  const weekResetAt = nowMs + 24 * hour;
+  const fableResetAt = nowMs + 12 * hour;
+  const client = new FakeRedisClient({ nowMs: nowMs - 3 * hour });
+  writeAimgrConfig({ homeDir, config: { redis: { url: "redis://fake:6379", keyPrefix } } });
+  await seedRedis(client, homeDir);
+  const connect = () => connectRedisStore({ client, keyPrefix });
+  const store = await connect();
+  const record = {
+    provider: ANTHROPIC_PROVIDER,
+    label: "claude",
+    credential: buildAnthropicClaudeCredential({ expiresAtMs: nowMs + hour }),
+    identity: { accountUuid: "acct_boss", organizationUuid: "org_boss", emailAddress: "boss@example.com" },
+    policy: { expect: { email: "boss@example.com" }, pool: { enabled: true } },
+  };
+  await importCredentialsSnapshot(store, { credentials: [record] });
+  await localClaudeFixture(homeDir, record);
+  const runtime = await loadClaudeRuntime({ homeDir, connectRedisStoreImpl: connect, readClaudeEnvironmentImpl: readClaudeTestEnvironment });
+  await closeRedisRuntime(runtime);
+
+  let usedPercent = 10;
+  let claudeRequests = 0;
+  let codexRequests = 0;
+  const deps = {
+    nowImpl: () => client.nowMs,
+    readCodexEnvironmentImpl: readCodexTestEnvironment,
+    readClaudeEnvironmentImpl: readClaudeTestEnvironment,
+    connectRedisStoreImpl: connect,
+    probeUsageSnapshotsByProviderImpl: async () => {
+      codexRequests += 1;
+      return { [OPENAI_CODEX_PROVIDER]: { boss: {
+        ok: true, plan: "pro", resetCreditsAvailable: 4,
+        windows: [{ label: "Week", usedPercent, resetAt: weekResetAt }],
+      } } };
+    },
+    fetchJsonWithTimeoutImpl: async () => {
+      claudeRequests += 1;
+      return { ok: true, status: 200, json: async () => ({
+        seven_day: { utilization: usedPercent, resets_at: new Date(weekResetAt).toISOString() },
+        seven_day_sonnet: { utilization: 100, resets_at: new Date(fableResetAt).toISOString() },
+      }) };
+    },
+  };
+  const args = ["status", "--home", homeDir];
+  assert.doesNotMatch(await runCli(args, deps), /Pace:/);
+  client.advanceTime(3 * hour);
+  usedPercent = 50;
+  const { pools: { claude, codex } } = JSON.parse(await runCli([...args, "--json"], deps));
+  const output = await runCli(args, deps);
+
+  const [codexText, claudeText] = output.split("\nCLAUDE:");
+  for (const [pool, text] of [[claude, claudeText], [codex, codexText]]) {
+    assert.ok(text.includes(`Pool: ${pool.capacity.toFixed(1)} ${pool.unit}`));
+    assert.ok(text.includes(`· ${pool.used.toFixed(1)} used (50%) · ${pool.left.toFixed(1)} left (50%)`));
+    const returns = Object.entries(pool.returns).map(([window, amount]) => `${amount.toFixed(1)} in ${window}`);
+    assert.ok(text.includes(`Comes back: ${returns.join(" · ")}`));
+    const { used, hours, perDay, lastsUntilMs } = pool.pace;
+    assert.equal(hours, 3);
+    assert.equal(lastsUntilMs, nowMs + 3.75 * hour);
+    assert.ok(text.includes(`\nPace: ${used.toFixed(1)} used in the last 3h (${perDay.toFixed(1)} a day); at this pace it runs out in 3.8h\n`));
+  }
+  assert.deepEqual(claude.counts, { ready: 0, limited: 1, needsLogin: 0 });
+  assert.match(claudeText, /^ 0 ready · 1 limited · 0 in use · 0 needs you/);
+  assert.deepEqual(claude.fable, { usedPercent: 100, atLimit: 1 });
+  assert.equal(claude.resetCredits, null);
+  assert.deepEqual(claude.accountRows, [{
+    label: "claude", status: "limited", plan: "max/max_20x", weight: 1,
+    weekUsedPercent: 50, weekResetAt, sessionUsedPercent: null, sessionResetAt: null,
+    fableUsedPercent: 100, fableResetAt, freeAtMs: fableResetAt, observedAtMs: nowMs, resetCredits: null,
+  }]);
+  assert.match(claudeText, /claude\s+LIMITED.*free in 12\.0h/);
+  assert.deepEqual(codex.counts, { ready: 1, limited: 0, needsLogin: 0 });
+  assert.match(codexText, /CODEX ACCOUNTS \(1\)[\s\S]*\nboss\s+ready.*\s4\s+openai-codex/);
+  assert.equal(codex.fable, null);
+  assert.equal(codex.resetCredits, 4);
+  assert.equal(codex.accountRows[0].resetCredits, 4);
+  assert.equal(claudeRequests, 2);
+  assert.equal(codexRequests, 2);
+
+  const redisEval = client.eval.bind(client);
+  client.eval = (script, options) => {
+    if (script.includes("AIMGR_WEEKLY_USAGE_V1")) throw new Error("history unavailable");
+    return redisEval(script, options);
+  };
+  const unavailable = JSON.parse(await runCli([...args, "--json"], deps));
+  assert.equal(unavailable.redis.status, "live");
+  assert.deepEqual(unavailable.pools, { claude: { ...claude, pace: null }, codex: { ...codex, pace: null } });
+});
 
 test("Redis status view uses local Codex credentials, writes redacted cache, and has no session matrix", async () => {
   const home = mkTempHome();

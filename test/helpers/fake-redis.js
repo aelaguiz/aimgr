@@ -70,6 +70,44 @@ export class FakeRedisClient {
   async eval(script, { keys = [], arguments: args = [] } = {}) {
     const [key, targetKey] = keys;
     this.expireIfNeeded(key);
+    if (script.includes("AIMGR_WEEKLY_USAGE_V1")) {
+      const sample = JSON.parse(args[0]);
+      const cutoff = Number(args[1]);
+      const spacing = Number(args[2]);
+      const windowStart = Number(args[3]);
+      const now = windowStart + 24 * 3_600_000;
+      const history = JSON.parse(this.values.get(key) ?? "[]");
+      const recent = history.filter((entry) => entry.observedAtMs >= cutoff);
+      const newest = recent.at(-1);
+      let changed = recent.length !== history.length;
+      if (sample && sample.observedAtMs >= cutoff && (!newest || sample.observedAtMs - newest.observedAtMs >= spacing)) {
+        recent.push(sample);
+        changed = true;
+      }
+      if (changed && recent.length === 0) {
+        this.values.delete(key);
+        this.expirations.delete(key);
+      } else if (changed) {
+        this.values.set(key, JSON.stringify(recent));
+        this.expirations.set(key, this.nowMs + Math.max(1, recent.at(-1).observedAtMs - cutoff));
+      }
+      let used = 0;
+      let start;
+      let previous;
+      for (const entry of recent) {
+        if (entry.observedAtMs > now) break;
+        if (entry.observedAtMs >= windowStart && previous
+          && Number.isFinite(previous.weekResetAt) && Number.isFinite(entry.weekResetAt)) {
+          const shift = entry.weekResetAt - previous.weekResetAt;
+          if (shift >= -3_600_000) {
+            used += shift > 3_600_000 ? entry.weekUsedPercent : Math.max(0, entry.weekUsedPercent - previous.weekUsedPercent);
+            start = Math.min(start ?? previous.observedAtMs, previous.observedAtMs);
+          }
+        }
+        previous = entry;
+      }
+      return start === undefined ? [String(used)] : [String(used), start];
+    }
     if (script.includes("AIMGR_OTHER_PROVIDER_RECORDS_V1")) {
       const result = [];
       for (const recordKey of this.sets.get(key) ?? []) {

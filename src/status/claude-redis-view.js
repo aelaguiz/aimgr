@@ -30,6 +30,8 @@ import { CLAUDE_ADMITTED_PLANS } from "../privacy/claude-provider-admission.js";
 import {
   PLAN_WEEK_WEIGHTS,
   averageStatusNumbers,
+  buildPoolAccountRow,
+  buildStatusPool,
   formatPoolCapacityLines,
   formatStatusDeltaMsCell,
   formatStatusTable,
@@ -1365,6 +1367,7 @@ export function usageColumns(accounts, nowMs) {
       knownPlan,
       week: findOverallWeeklyWindow(account.usage),
       session: findWindow(account.usage, windows[0].labels),
+      fable: findWindow(account.usage, windows[2].labels),
       observedAtMs: account.usageObservedAtMs,
     };
   });
@@ -1378,23 +1381,30 @@ export function usageColumns(accounts, nowMs) {
       return [formatPercent(window), formatReset(window, nowMs)];
     });
   };
-  const poolValues = (summary) => {
-    const accountWeights = entries.map((entry) => entry.weight);
-    return windows.flatMap(({ labels }, index) => {
+  const accountWeights = entries.map((entry) => entry.weight);
+  const averagePercent = (values) => {
+    const usedPercent = averageStatusNumbers(values, accountWeights);
+    return usedPercent === null ? null : Math.round(usedPercent);
+  };
+  const fable = {
+    usedPercent: averagePercent(entries.map((entry) => entry.fable?.usedPercent)),
+    atLimit: entries.filter((entry) => entry.fable?.usedPercent === 100).length,
+  };
+  const poolValues = (summary) => (
+    windows.flatMap(({ labels }, index) => {
       if (index === 1) {
         return [
           summary.measured > 0 ? `${Math.round(100 * summary.used / summary.capacity)}%` : "--",
           formatStatusDeltaMsCell(summary.halfBackMs),
         ];
       }
-      const usedPercent = averageStatusNumbers(
+      const usedPercent = index === 2 ? fable.usedPercent : averagePercent(
         accounts.map((account) => findWindow(account.usage, labels)?.usedPercent),
-        accountWeights,
       );
-      return [Number.isFinite(usedPercent) ? `${Math.round(usedPercent)}%` : "--", "--"];
-    });
-  };
-  return { headers, values, entries, poolOptions, poolValues };
+      return [usedPercent === null ? "--" : `${usedPercent}%`, "--"];
+    })
+  );
+  return { headers, values, entries, poolOptions, poolValues, fable };
 }
 
 // When an account with a full window frees up: the latest reset among its
@@ -1442,6 +1452,7 @@ export function describeClaudeOperatorState(account, nowMs) {
       return {
         status: "LIMITED",
         next: untilMs === null ? "wait for reset" : `free in ${formatReset({ resetAt: untilMs }, nowMs)}`,
+        freeAtMs: untilMs,
       };
     }
     return { status: "READY", next: "use now" };
@@ -1528,22 +1539,47 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
 
 export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } = {}) {
   if (verbose) return renderVerboseClaudeRedisAccountUsageStatus(result);
+  return renderClaudeStatusAccountTable(buildClaudeStatusAccountTable(result));
+}
 
+export function buildClaudeStatusAccountTable(result) {
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
-  const pool = summarizePoolCapacity(columns.entries, nowMs);
   const describedAccounts = accounts.map((account) => ({
     account,
     operator: describeClaudeOperatorState(account, nowMs),
   }));
-  const countStatus = (status) => describedAccounts.filter((entry) => entry.operator.status === status).length;
+  const countsByStatus = new Map();
+  const accountRows = describedAccounts.map(({ account, operator }, index) => {
+    countsByStatus.set(operator.status, (countsByStatus.get(operator.status) ?? 0) + 1);
+    return buildPoolAccountRow(columns.entries[index], {
+      label: account.label,
+      status: operator.status.toLowerCase(),
+      plan: formatClaudePlan(account),
+      freeAtMs: operator.freeAtMs,
+    });
+  });
+  const pool = buildStatusPool(columns.entries, accountRows, nowMs, {
+    ...columns.poolOptions,
+    fable: columns.fable,
+    counts: {
+      ready: countsByStatus.get("READY") ?? 0,
+      limited: countsByStatus.get("LIMITED") ?? 0,
+      needsLogin: countsByStatus.get("NEEDS YOU") ?? 0,
+    },
+  });
+  return { ...pool, columns, describedAccounts, countsByStatus };
+}
+
+export function renderClaudeStatusAccountTable({ pool, poolOptions, columns, describedAccounts, countsByStatus }) {
+  const countStatus = (status) => countsByStatus.get(status) ?? 0;
   const rows = [["account", "status", "plan", ...columns.headers, "updated", "proxy", "health", "next"]];
-  for (const { account, operator } of describedAccounts) {
+  for (const [index, { account, operator }] of describedAccounts.entries()) {
     rows.push([
       account.label,
       operator.status,
-      formatClaudePlan(account),
+      pool.accountRows[index].plan,
       ...columns.values(account),
       formatClaudeUsageAge(account),
       formatClaudeEgress(account.egress),
@@ -1551,7 +1587,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
       operator.next,
     ]);
   }
-  if (accounts.length > 0) {
+  if (describedAccounts.length > 0) {
     rows.push([
       "pool",
       "--",
@@ -1563,10 +1599,11 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
       "--",
     ]);
   }
+  const { ready, limited, needsLogin } = pool.counts;
   return `${[
-    `CLAUDE: ${countStatus("NO ROUTE") ? `${countStatus("NO ROUTE")} without a local route · ` : ""}${["PROXY DOWN", "PROXY STARTING", "PROXY UNKNOWN", "PROXY ERROR"].filter(status => countStatus(status)).map(status => `${countStatus(status)} ${status.toLowerCase()} · `).join("")}${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NOT SIGNED IN") ? `${countStatus("NOT SIGNED IN")} not signed in · ` : ""}${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
+    `CLAUDE: ${countStatus("NO ROUTE") ? `${countStatus("NO ROUTE")} without a local route · ` : ""}${["PROXY DOWN", "PROXY STARTING", "PROXY UNKNOWN", "PROXY ERROR"].filter(status => countStatus(status)).map(status => `${countStatus(status)} ${status.toLowerCase()} · `).join("")}${ready} ready · ${limited} limited · ${countStatus("IN USE")} in use · ${countStatus("NOT SIGNED IN") ? `${countStatus("NOT SIGNED IN")} not signed in · ` : ""}${needsLogin} needs you · ${countStatus("UNKNOWN")} unknown`,
     ...formatStatusTable(rows),
-    ...formatPoolCapacityLines(pool, columns.poolOptions),
+    ...formatPoolCapacityLines(pool, poolOptions),
   ].join("\n")}\n`;
 }
 

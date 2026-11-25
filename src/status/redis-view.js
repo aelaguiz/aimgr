@@ -32,6 +32,8 @@ import { describeClaudeEgress, projectClaudeEgress, claudeProxyHealthProblem, ha
 import { readClaudeProxyHealth } from "./claude-proxy-health.js";
 import { claudeBindingRequiresProxy, readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
 import { CLAUDE_ROUTE_ERROR_CODES } from "../network/claude-egress-policy.js";
+import { recordStatusPoolPace } from "./pool-pace.js";
+import { buildStatusAccountTables } from "./render.js";
 import {
   AIMGR_REDIS_STATUS_CACHE_KIND,
   acquireRedisCacheLock,
@@ -380,16 +382,21 @@ export async function buildRedisStatusView({
   readClaudeProxyHealthImpl = readClaudeProxyHealth,
   readCodexEnvironmentImpl = readCodexEnvironment,
   readClaudeEnvironmentImpl,
+  includeBlocked = false,
 } = {}) {
   const configRead = readAimgrConfig({ homeDir });
   const redisConfig = configRead.config.redis;
   const cachePath = resolveAimgrRedisCachePath({ homeDir });
+  const withPools = (view, claudeUsageStatus) => {
+    const tables = buildStatusAccountTables(view, { claudeUsageStatus, includeBlocked });
+    const pools = { claude: tables.claude.pool, codex: tables.codex.pool };
+    return { used: true, view: { ...view, pools }, claudeUsageStatus, tables };
+  };
   if (!redisConfig.url) {
-    return {
-      used: true,
-      view: buildLocalOnlyView({ configRead, homeDir, env, nowMs, cachePath, status: "unconfigured" }),
-      claudeUsageStatus: null,
-    };
+    return withPools(
+      buildLocalOnlyView({ configRead, homeDir, env, nowMs, cachePath, status: "unconfigured" }),
+      null,
+    );
   }
 
   let store = null;
@@ -503,7 +510,11 @@ export async function buildRedisStatusView({
         releaseRedisCacheLock(cacheLock);
       }
     }
-    return { used: true, view, claudeUsageStatus };
+    const status = withPools(view, claudeUsageStatus);
+    await recordStatusPoolPace(store, status.view.pools, nowMs).catch(() => {
+      // A failed history read or write leaves the current readings available.
+    });
+    return status;
   } catch {
     const localFallback = buildLocalOnlyView({
       configRead,
@@ -516,7 +527,7 @@ export async function buildRedisStatusView({
     });
     const cachedRaw = readCachedRedisStatusView({ homeDir, cachePath }).view;
     const cached = cachedRaw ? buildRedisDiagnosticCacheView(cachedRaw) : null;
-    if (!cached) return { used: true, view: localFallback, claudeUsageStatus: null };
+    if (!cached) return withPools(localFallback, null);
     cached.accountNotes = null;
 
     // Cached pool metadata is not evidence of a current local authorization.
@@ -608,12 +619,12 @@ export async function buildRedisStatusView({
       ...(Array.isArray(cached.warnings) ? cached.warnings : []),
       { kind: "redis_status_cache_used" },
     ];
-    return { used: true, view: cached, claudeUsageStatus: null };
+    return withPools(cached, null);
   } finally {
     try {
       await closeRedisStore(store);
     } catch {
-      // Read-only status close failures do not replace the independently sourced view.
+      // Close failures do not replace the independently sourced view.
     }
   }
 }

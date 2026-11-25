@@ -17,6 +17,7 @@ export function buildRedisKeys(keyPrefix) {
     credential: ({ provider, label }) => `${prefix}credential:${provider}:${label}`,
     accountNotes: () => `${prefix}accountNotes`,
     accountNote: ({ provider, label }) => `${prefix}accountNote:${provider}:${label}`,
+    poolUsage: ({ pool, label }) => `${prefix}poolUsage:${pool}:${label}`,
   };
 }
 
