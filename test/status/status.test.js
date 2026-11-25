@@ -50,9 +50,9 @@ test("plain status shows coordination provenance and canonical account facts", (
     accounts: [{
       label: "boss",
       provider: "openai-codex",
-      plan: "pro",
+      plan: "pro ($1.50)",
       operator: { status: "ready" },
-      credentials: { expiresIn: "8d" },
+      credentials: { expiresAt: new Date(nowMs + 8 * 86_400_000).toISOString(), expiresIn: "8d" },
       lock: { status: "free", source: "redis" },
       usage: {
         ok: true,
@@ -94,9 +94,9 @@ test("plain status shows coordination provenance and canonical account facts", (
 
   assert.match(text, /^COORDINATION redis=live\n\nCODEX ACCOUNTS \(1\)/);
   assert.match(text, /resets\s+provider/);
-  assert.match(text, /boss\s+ready\s+pro\s+free\s+--\s+8d\s+12%\s+2\.0h\s+3\s+openai-codex\s+cache/);
-  assert.match(text, /\naverage .*\nNext 24h: 12% of pool weekly capacity frees up \(1 of 1 accounts reset\); 88% free now, 100% after\n\nCLAUDE:/);
-  assert.match(text, /\naverage .*\nNext 24h: 0% of pool weekly capacity frees up \(0 of 1 accounts reset\); 55% free now, 55% after\n\nCODEX ACTIVE/);
+  assert.match(text, /boss\s+ready\s+pro \(\$1\.50\)\s+free\s+--\s+8d\s+12%\s+2\.0h\s+3\s+openai-codex\s+cache/);
+  assert.match(text, /\npool\s+--\s+--\s+--\s+--\s+8d\s+12%\s+2\.0h.*\nPool: 0\.5 Pro Max weeks \(a pro account counts 0\.46\) · 0\.1 used \(12%\) · 0\.4 left \(88%\)/);
+  assert.match(text, /\npool\s+--\s+--\s+23%\s+--\s+45%\s+6\.0d\s+67%\s+--.*\nPool: 1\.0 Max 20x weeks · 0\.5 used \(45%\) · 0\.6 left \(55%\)/);
   assert.match(text, /CLAUDE: 0 ready · 0 limited · 1 in use · 0 needs you · 0 unknown/);
   assert.match(text, /pro7\s+IN USE\s+max\/max_20x\s+23%\s+3\.0h\s+45%\s+6\.0d\s+67%\s+6\.0d\s+--\s+--\s+2m\s+unknown\s+--\s+session active/);
   assert.doesNotMatch(text, /usage_readable|unpublished/);
@@ -104,12 +104,13 @@ test("plain status shows coordination provenance and canonical account facts", (
   assert.doesNotMatch(text, /POOL NOW|PRESSURE|PROJECTION|NEXT BEST|WARNINGS|requests=|cache_state=/);
 });
 
-test("capacity freeing in the next 24h counts only pool accounts whose weekly limit resets by then", () => {
+test("pool capacity reports weighted weekly resets for visible accounts with readings", () => {
   const nowMs = Date.parse("2026-07-23T20:00:00.000Z");
   const hour = 3_600_000;
   const codex = (label, status, usedPercent, resetInMs) => ({
     label,
     provider: "openai-codex",
+    plan: label === "half" ? "pro" : "promax",
     operator: { status },
     credentials: {},
     lock: { status: "free" },
@@ -117,6 +118,7 @@ test("capacity freeing in the next 24h counts only pool accounts whose weekly li
   });
   const claude = (label, windows) => ({
     label,
+    subscriptionType: "max",
     authState: "usage_readable",
     credentialState: "credential_ready",
     credentialReady: true,
@@ -132,7 +134,6 @@ test("capacity freeing in the next 24h counts only pool accounts whose weekly li
       codex("full", "ready", 100, 3 * hour),
       codex("half", "reauth", 50, 23 * hour),
       codex("later", "ready", 60, 30 * hour),
-      // Blocked accounts are out of the pool, so their resets free nothing.
       codex("blocked", "blocked", 90, 1 * hour),
     ],
   };
@@ -150,10 +151,10 @@ test("capacity freeing in the next 24h counts only pool accounts whose weekly li
 
   const text = renderStatusText(view, { claudeUsageStatus });
 
-  // Codex: (100 + 50) of 3 pool accounts' weeks = 50%; 70% used now = 30% free.
-  assert.match(text, /\nNext 24h: 50% of pool weekly capacity frees up \(2 of 3 accounts reset\); 30% free now, 80% after\n/);
-  // Claude: the 5h window is ignored; 100 of 2 measured weeks = 50%.
-  assert.match(text, /\nNext 24h: 50% of pool weekly capacity frees up \(1 of 2 accounts reset, 1 without a reading not counted\); 30% free now, 80% after\n/);
+  assert.match(text, /\nPool: 2\.5 Pro Max weeks \(a pro account counts 0\.46\) · 1\.8 used \(74%\) · 0\.6 left \(26%\)/);
+  assert.match(text, /\nComes back: 1\.0 in 6h · 1\.0 in 12h · 1\.2 in 24h · 1\.8 in 2d · 1\.8 in 3d · 1\.8 in 5d · half of what's used within 3\.0h\n/);
+  assert.match(text, /\nPool: 2\.0 Max 20x weeks · 1\.4 used \(70%\) · 0\.6 left \(30%\)/);
+  assert.match(text, /\nComes back: 0\.0 in 6h · 1\.0 in 12h · 1\.0 in 24h · 1\.0 in 2d · 1\.4 in 3d · 1\.4 in 5d · half of what's used within 10\.0h\nNot counted: 1 account without a reading\nPlans with no measured size, counted as 1: max\n/);
 });
 
 test("compact status is limited to coordination, account count, and local targets", () => {

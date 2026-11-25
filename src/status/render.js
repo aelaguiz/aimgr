@@ -3,11 +3,39 @@ import { renderAccountNotes } from "./account-notes.js";
 import { ANTHROPIC_PROVIDER, OPENAI_CODEX_PROVIDER } from "../core/constants.js";
 import { renderClaudeRedisAccountUsageStatus } from "./claude-redis-view.js";
 import { formatClaudeEgress, formatClaudeProxyHealth, hasNoLocalClaudeRoute } from "./claude-egress.js";
-import { buildStatusAccountFlags, buildStatusAverageAccountTableRow, formatInteractiveLoginSummary, formatStatusAccountExpiryCell, formatStatusAccountResetCell, formatStatusAccountResetCreditsCell, formatStatusAccountUsedCell, formatStatusTable, formatWeeklyCapacityFreeingNextDayLine, renderCurrentCodexUsageText, summarizeWeeklyCapacityFreeingNextDay } from "./table.js";
+import {
+  PLAN_WEEK_WEIGHTS,
+  buildStatusAccountFlags,
+  buildStatusPoolAccountTableRow,
+  formatInteractiveLoginSummary,
+  formatPoolCapacityLines,
+  formatStatusAccountExpiryCell,
+  formatStatusAccountResetCell,
+  formatStatusAccountResetCreditsCell,
+  formatStatusAccountUsedCell,
+  formatStatusTable,
+  renderCurrentCodexUsageText,
+  summarizePoolCapacity,
+} from "./table.js";
 
 function pushStatusAccountTable(lines, { heading, accounts, now, codex = false, includeBlocked = false }) {
   lines.push(`${heading} (${accounts.length})`);
-  const averageAccountRow = accounts.length > 0 ? buildStatusAverageAccountTableRow(accounts, now, { codex }) : null;
+  const weights = codex ? PLAN_WEEK_WEIGHTS.codex : PLAN_WEEK_WEIGHTS.claude;
+  const entries = accounts.map((account) => {
+    const planKey = codex ? account.plan?.split(" ")[0] : account.plan?.split("/").at(-1);
+    const knownPlan = Object.hasOwn(weights, planKey);
+    const usage = account.usage;
+    const windows = usage?.ok === true ? usage.windows : null;
+    return {
+      weight: knownPlan ? weights[planKey] : 1,
+      planKey: planKey === "--" ? null : planKey,
+      knownPlan,
+      week: windows?.[codex ? 0 : 1] ?? null,
+      session: codex ? null : windows?.[0] ?? null,
+      observedAtMs: usage?.observedAtMs,
+    };
+  });
+  const pool = summarizePoolCapacity(entries, now);
   const windowHeaders = codex ? ["wk_used", "wk_in"] : ["5h_used", "5h_in", "wk_used", "wk_in"];
   const accountRows = [
     ["label", "st", "plan", "lock", "login", "exp", ...windowHeaders, "resets", "provider", "usage_src", "flags"],
@@ -35,16 +63,15 @@ function pushStatusAccountTable(lines, { heading, accounts, now, codex = false, 
         ...(hasNoLocalClaudeRoute(account) ? ["don't have a route to this account"] : []),
       ].filter(Boolean).join(" "),
     ]),
-    ...(averageAccountRow ? [averageAccountRow] : []),
   ];
+  if (accounts.length > 0) accountRows.push(buildStatusPoolAccountTableRow(accounts, entries, pool, now, { codex }));
   lines.push(...formatStatusTable(accountRows));
-  const weeklyIndex = codex ? 0 : 1;
-  lines.push(formatWeeklyCapacityFreeingNextDayLine(
-    summarizeWeeklyCapacityFreeingNextDay(
-      accounts.map((account) => (account?.usage?.ok === true ? account.usage.windows?.[weeklyIndex] ?? null : null)),
-      now,
-    ),
-  ));
+  const smallerPlan = codex ? "pro" : "team";
+  lines.push(...formatPoolCapacityLines(pool, {
+    unit: codex ? "Pro Max weeks" : "Max 20x weeks",
+    weightNote: entries.some((entry) => entry.planKey === smallerPlan)
+      ? `a ${smallerPlan} account counts ${weights[smallerPlan]}` : "",
+  }));
 }
 
 export function renderStatusText(view, {

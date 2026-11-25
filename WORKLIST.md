@@ -4,6 +4,8 @@ Open development work is tracked in [GitHub Issues](https://github.com/aelaguiz/
 
 ## Current work
 
+- **[Show weekly pool capacity by plan size — #39](https://github.com/aelaguiz/aimgr/issues/39).** Implemented on `pool-capacity-view`.
+
 - **[Codex under AI Manager runs git twice when a git on its PATH sits in a folder its sandbox can't read — #30](https://github.com/aelaguiz/aimgr/issues/30).** Codex on macOS may now read the folders on its PATH and the executables they link to; the new exposure is the third vendor exception in the [privacy inventory](docs/AI_APP_PRIVACY_INVENTORY.md#mcp-browser-remote-control-and-ordinary-tools). Implemented on branch `fix/codex-path-exec`, release code only.
 
 - **[Use only manual callbacks for Claude and Codex login — #24](https://github.com/aelaguiz/aimgr/issues/24).** Remove competing enrollment and browser automation paths; preserve the BrowserOS/secrets wrapper protocol. Implemented in [PR #25](https://github.com/aelaguiz/aimgr/pull/25), stacked on PR #22.
