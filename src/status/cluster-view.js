@@ -1,5 +1,6 @@
 import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
-import { describeClaudeOperatorState, formatClaudePlan, usageColumns } from "./claude-redis-view.js";
+import { buildClaudeStatusAccountTable, describeClaudeOperatorState, formatClaudePlan, usageColumns } from "./claude-redis-view.js";
+import { buildStatusAccountTable } from "./render.js";
 import {
   PLAN_WEEK_WEIGHTS,
   buildStatusAccountFlags,
@@ -225,6 +226,20 @@ function renderCodex(machines, { rows, entries }, answered, nowMs) {
       `Reset credits unused: ${credits.reduce((sum, count) => sum + count, 0)} on ${withCredits} ${withCredits === 1 ? "account" : "accounts"}`,
     ] : []),
   ];
+}
+
+// The pools `aim status --json` reports for one machine, built here from every
+// machine's freshest reading of each account. A machine whose own logins have
+// lapsed cannot read usage and reports days-old figures as its pool.
+export function buildClusterPools(machines, { nowMs = Date.now() } = {}) {
+  const claudeAccounts = claudeRows(machines, nowMs).map((row) => row.account);
+  const codexAccounts = codexRows(machines).map((row) => (
+    row.status === "ready" ? row.account : { ...row.account, plan: null, usage: null }
+  ));
+  return {
+    claude: buildClaudeStatusAccountTable({ accounts: claudeAccounts, checkedAtMs: nowMs }).pool,
+    codex: buildStatusAccountTable(codexAccounts, nowMs, { codex: true }).pool,
+  };
 }
 
 export function renderClusterStatusText(machines, { nowMs = Date.now() } = {}) {
