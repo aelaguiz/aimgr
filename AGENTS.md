@@ -58,6 +58,25 @@ Rules that are not obvious from the code:
 4. `ps` hides Prime argv; roles come from `~/.prime/supervisor-owners` and `~/.prime/agent/daemon-workers`.
 5. Do not resume Amir's sessions unless asked; when asked, one at a time, by exact id, in the pane's own cwd.
 
+## One machine's status is not the pool
+
+`aim status` and `aim claude status` report the machine they run on: its logins
+and the usage readings it took itself. A machine can read an account's usage only
+while its login for that account is current, and logins lapse on a machine that
+does not use them, so its pool can be far from the truth with nothing looking
+broken. On November 25, 2026 `machines top` in psbrain was built on
+`aim status --json` from the M5, where 41 Claude logins had lapsed: it showed
+51.0 Max 20x weeks with half left while every machine together had 60.0 with a
+fifth left, and Amir read "plenty of space" off it.
+
+So anything that shows, reports or decides on how much of the pool is left reads
+`aim cluster status` (`--json` from code), which keeps each account's freshest
+reading from any machine. Each pool in the JSON carries `readings`:
+`"this machine"` or `"every machine"`. When you add a status surface or a field
+to one, say in its help line and its comment which of the two it is. One
+machine's status remains the right source for what can launch on that machine
+now.
+
 ## Codex account rotation rule
 
 Rule (Amir, 2026-09-18): never send an existing Codex thread id or session id to

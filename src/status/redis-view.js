@@ -387,6 +387,8 @@ export async function buildRedisStatusView({
   const configRead = readAimgrConfig({ homeDir });
   const redisConfig = configRead.config.redis;
   const cachePath = resolveAimgrRedisCachePath({ homeDir });
+  // These pools hold this machine's own readings only (see buildStatusPool).
+  // The whole pool is `aim cluster status --json`.
   const withPools = (view, claudeUsageStatus) => {
     const tables = buildStatusAccountTables(view, { claudeUsageStatus, includeBlocked });
     const pools = { claude: tables.claude.pool, codex: tables.codex.pool };

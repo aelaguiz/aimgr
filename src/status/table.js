@@ -234,10 +234,19 @@ export function buildPoolAccountRow({ weight, week, session, fable, observedAtMs
   };
 }
 
+// A pool is only as true as the readings under it, and a machine can read usage
+// only for accounts whose login is current there. So a pool built from one
+// machine's status is that machine's view, never the fleet's: on November 25,
+// 2026 the M5, where 41 logins had lapsed, reported half the Claude pool left
+// while every machine together reported a fifth. `readings` says which it is, so
+// a consumer of the JSON can tell: "this machine" here, "every machine" from
+// `aim cluster status --json` (buildClusterPools). Anything that shows or acts on
+// how much of the pool is left reads the cluster one; `stale` and `oldestAgeMs`
+// count the readings older than an hour.
 export function buildStatusPool(entries, accountRows, now, { unit, weightNote, counts, fable = null, resetCredits = null }) {
   const { unknownPlans, ...summary } = summarizePoolCapacity(entries, now);
   return {
-    pool: { unit, ...summary, counts, fable, resetCredits, pace: null, accountRows },
+    pool: { unit, readings: "this machine", ...summary, counts, fable, resetCredits, pace: null, accountRows },
     poolOptions: { weightNote, unknownPlans, now },
   };
 }
