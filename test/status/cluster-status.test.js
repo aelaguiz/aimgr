@@ -59,7 +59,7 @@ function row(output, label) {
   return Object.fromEntries(header.map((name, index) => [name, cells[index]]));
 }
 
-// The per-machine grid above the account tables: "signed in" header, then claude and codex rows.
+// The per-machine grid above the account tables.
 function gridRow(output, provider) {
   const lines = output.split("\n");
   const header = lines.find((line) => line.startsWith("signed in ")).split(/\s{2,}/);
@@ -92,19 +92,23 @@ test("the fleet includes Minis 3 to 5", () => {
   }
 });
 
-test("cluster Codex averages displayed ready accounts once and hides accounts blocked everywhere", () => {
-  const ready = (label, used, days, observedAt) => ({
-    ...codex(label, "ready"), usageObservedAtMs: observedAt,
-    usage: { ok: true, windows: [{ usedPercent: used, resetAt: NOW + days * DAY }] },
+test("cluster Codex weighs each displayed ready account once and hides accounts blocked everywhere", () => {
+  const ready = (label, used, days, observedAt, resetCreditsAvailable) => ({
+    ...codex(label, "ready"),
+    plan: label === "first" ? "pro ($2.00)" : "promax",
+    usageObservedAtMs: observedAt,
+    usage: { ok: true, windows: [{ usedPercent: used, resetAt: NOW + days * DAY }], resetCreditsAvailable },
   });
   const machines = [
     { name: "m5", view: { accounts: [
-      ready("first", 90, 1, NOW - DAY), ready("second", 70, 3, NOW),
-      codex("blocked", "blocked"), codex("reauth", "reauth"), codex("unknown", "blocked"),
+      ready("first", 90, 1, NOW - DAY, 9), ready("second", 70, 3, NOW, 3),
+      codex("blocked", "blocked"),
+      { ...codex("reauth", "reauth"), usage: { ok: false, resetCreditsAvailable: 10 } },
+      codex("unknown", "blocked"),
       { ...codex("unmeasured", "ready"), usage: { ok: false } },
     ] }, claude: { accounts: [] } },
     { name: "home", view: { accounts: [
-      ready("first", 10, 1, NOW), codex("second", "blocked"), codex("blocked", "blocked"),
+      ready("first", 10, 1, NOW, 0), codex("second", "blocked"), codex("blocked", "blocked"),
       codex("unknown", "unknown"),
     ] }, claude: { accounts: [] } },
   ];
@@ -115,18 +119,39 @@ test("cluster Codex averages displayed ready accounts once and hides accounts bl
   assert.equal(row(text, "second").wk_used, "70%");
   assert.equal(row(text, "unknown").st, "unknown");
   const codexText = text.slice(text.indexOf("CODEX:"));
-  assert.equal(row(codexText, "average").wk_used, "40%");
-  assert.equal(row(codexText, "average").wk_in, "2.0d");
-  assert.match(codexText, /Next 24h: 5% of pool weekly capacity frees up \(1 of 2 accounts reset, 3 without a reading not counted\)/);
+  assert.equal(row(codexText, "pool").wk_used, "51%");
+  assert.equal(row(codexText, "pool").wk_in, "3.0d");
+  assert.match(codexText, /Pool: 1\.5 Pro Max weeks \(a pro account counts 0\.46\) · 0\.7 used \(51%\) · 0\.7 left \(49%\)/);
+  assert.match(codexText, /Not counted: 3 accounts without a reading\nReset credits unused: 3 on 1 account\n$/);
+  assert.equal(gridRow(text, "codex left").m5, "0.7");
+  assert.equal(gridRow(text, "codex left").home, "0.4");
 });
 
-test("cluster Codex shows no average when every account is blocked", () => {
+test("cluster Codex uses the freshest usage timestamp in the reading", () => {
+  const hour = 3_600_000;
+  const machine = (name, usedPercent, observedAtMs) => ({
+    name,
+    view: { accounts: [{
+      ...codex("shared", "ready"),
+      usage: { ok: true, observedAtMs, windows: [{ usedPercent, resetAt: NOW + DAY }] },
+    }] },
+  });
+  const text = renderClusterStatusText([
+    machine("m5", 20, NOW - DAY),
+    machine("home", 80, NOW - 2 * hour),
+  ], { nowMs: NOW });
+  assert.equal(row(text, "shared").wk_used, "80%");
+  assert.match(text, /Readings: 1 of 1 are over an hour old \(oldest 2\.0h\)/);
+});
+
+test("cluster Codex shows no pool row when every account is blocked", () => {
   const text = renderClusterStatusText([
     { name: "m5", view: { accounts: [codex("blocked", "blocked")] }, claude: { accounts: [] } },
   ], { nowMs: NOW });
   const codexText = text.slice(text.indexOf("CODEX:"));
   assert.match(codexText, /CODEX: 0 accounts/);
-  assert.doesNotMatch(codexText, /^blocked\s|^average\s/m);
+  assert.doesNotMatch(codexText, /^blocked\s|^pool\s/m);
+  assert.match(codexText, /Pool: no weekly usage readings\n$/);
 });
 
 test("cluster status combines every machine into one row per account with one machines cell", async () => {
@@ -173,6 +198,9 @@ test("cluster status combines every machine into one row per account with one ma
   assert.equal(grid["mini-2"], "1");
   assert.equal(grid.studio, "0");
   assert.equal(gridRow(result.stdout, "codex").m5, "1");
+  assert.equal(gridRow(result.stdout, "claude left").m5, "0.4");
+  assert.equal(gridRow(result.stdout, "claude left")["mini-2"], "0.4");
+  assert.equal(gridRow(result.stdout, "claude left").studio, "0.0");
   assert.ok(result.stdout.split("\n").every((line) => line.length <= 140), "the report stays one screen wide");
 });
 
@@ -199,6 +227,8 @@ test("cluster status names machines that did not answer, marks them in the machi
   assert.equal(grid["mini-1"], "x");
   assert.equal(grid["old-m1"], "x");
   assert.equal(grid.studio, "0");
+  assert.equal(gridRow(result.stdout, "claude left")["mini-1"], "x");
+  assert.equal(gridRow(result.stdout, "codex left")["old-m1"], "x");
   assert.doesNotMatch(result.stdout, /secret stderr/);
 });
 

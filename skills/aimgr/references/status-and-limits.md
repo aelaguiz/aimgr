@@ -43,7 +43,7 @@ qa                 NEEDS YOU  --   --     --    --     --     --     --       ai
 
 | Column | Meaning |
 |---|---|
-| `status` | `READY` — unlocked and usable. `LIMITED` — unlocked, but a window is full; `next` says when it frees up. `IN USE` — a session holds it. `NEEDS YOU` — a human must reauthenticate. `UNKNOWN` — state could not be read; retry. |
+| `status` | `READY` — unlocked and usable. `LIMITED` — unlocked, but a window is full. `next` says when the limit resets. `IN USE` — a session holds it. `NEEDS YOU` — a human must reauthenticate. `UNKNOWN` — state could not be read. Retry status. |
 | `next` | The literal next action for that account. Trust this column. |
 | `5h` / `week` / `Fable` | Percentage of that window **used**, not remaining. Lower is better. |
 | `5h_in` / `wk_in` / `Fb_in` | When that window resets. |
@@ -97,6 +97,16 @@ sample, `boss` is the pick; `coder` is ready but spent, and `pro12` / `pro15`
 are blocked regardless of usage.
 
 Again, `aim codex run` with no label applies this ranking itself.
+
+## Pool capacity
+
+The `pool` row in both providers' tables weights usage by plan size. On this row,
+`wk_in` is when weekly resets return half of what the pool has used. Below it,
+`Pool` gives capacity in Max 20x or Pro Max weeks, `Left` shows how much of the
+remaining capacity is open now, and `Comes back` shows how much weekly capacity
+resets return over the next six hours to five days. Readings older than an hour
+are flagged. `aim cluster status` uses the freshest readings across machines
+and shows how much weekly capacity each machine can reach.
 
 ## Grok availability
 

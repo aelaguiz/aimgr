@@ -28,11 +28,12 @@ import { readClaudeProxyHealth } from "./claude-proxy-health.js";
 import { rememberClaudeProtection } from "../network/claude-offline-binding.js";
 import { CLAUDE_ADMITTED_PLANS } from "../privacy/claude-provider-admission.js";
 import {
+  PLAN_WEEK_WEIGHTS,
   averageStatusNumbers,
+  formatPoolCapacityLines,
   formatStatusDeltaMsCell,
   formatStatusTable,
-  formatWeeklyCapacityFreeingNextDayLine,
-  summarizeWeeklyCapacityFreeingNextDay,
+  summarizePoolCapacity,
 } from "./table.js";
 import {
   acquireRedisCacheLock,
@@ -1332,35 +1333,46 @@ export function usageColumns(accounts, nowMs) {
     })),
   ];
   const headers = windows.flatMap((window) => window.headers);
+  const weights = PLAN_WEEK_WEIGHTS.claude;
+  const entries = accounts.map((account) => {
+    const planKey = normalizePlan(account.rateLimitTier ?? account.subscriptionType);
+    const knownPlan = Object.hasOwn(weights, planKey);
+    return {
+      weight: knownPlan ? weights[planKey] : 1,
+      planKey,
+      knownPlan,
+      week: findOverallWeeklyWindow(account.usage),
+      session: findWindow(account.usage, windows[0].labels),
+      observedAtMs: account.usageObservedAtMs,
+    };
+  });
+  const poolOptions = {
+    unit: "Max 20x weeks",
+    weightNote: entries.some((entry) => entry.planKey === "team") ? "a team account counts 0.46" : "",
+  };
   const values = (entry) => {
-    return windows.flatMap(({ labels }) => {
-      const window = findWindow(entry.usage, labels);
+    return windows.flatMap(({ labels }, index) => {
+      const window = index === 1 ? findOverallWeeklyWindow(entry.usage) : findWindow(entry.usage, labels);
       return [formatPercent(window), formatReset(window, nowMs)];
     });
   };
-  const averageValues = () => windows.flatMap(({ labels }) => {
-    const matched = accounts.map((entry) => findWindow(entry.usage, labels));
-    const usedPercent = averageStatusNumbers(matched.map((window) => {
-      const value = Number(window?.usedPercent);
-      return Number.isFinite(value) ? value : null;
-    }));
-    const resetDeltaMs = averageStatusNumbers(matched.map((window) => {
-      const resetAt = Number(window?.resetAt);
-      if (Number.isFinite(resetAt)) return resetAt - nowMs;
-      // A readable window with headroom and no pending reset is a zero wait, not a
-      // missing measurement. Dropping it let idle accounts inflate the fleet's
-      // reported wait: the average described only the accounts mid-window, so the
-      // more free capacity the fleet had, the longer the wait it advertised.
-      // A window at 100% with no reset stays excluded - that one is genuinely unknown.
-      const usedPercent = Number(window?.usedPercent);
-      return Number.isFinite(usedPercent) && usedPercent < 100 ? 0 : null;
-    }));
-    return [
-      Number.isFinite(usedPercent) ? `${Math.round(usedPercent)}%` : "--",
-      formatStatusDeltaMsCell(resetDeltaMs),
-    ];
-  });
-  return { headers, values, averageValues };
+  const poolValues = (summary) => {
+    const accountWeights = entries.map((entry) => entry.weight);
+    return windows.flatMap(({ labels }, index) => {
+      if (index === 1) {
+        return [
+          summary.measured > 0 ? `${Math.round(100 * summary.used / summary.capacity)}%` : "--",
+          formatStatusDeltaMsCell(summary.halfBackMs),
+        ];
+      }
+      const usedPercent = averageStatusNumbers(
+        accounts.map((account) => findWindow(account.usage, labels)?.usedPercent),
+        accountWeights,
+      );
+      return [Number.isFinite(usedPercent) ? `${Math.round(usedPercent)}%` : "--", "--"];
+    });
+  };
+  return { headers, values, entries, poolOptions, poolValues };
 }
 
 // When an account with a full window frees up: the latest reset among its
@@ -1447,6 +1459,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
+  const pool = summarizePoolCapacity(columns.entries, nowMs);
   const rows = [["account", "plan", "state", "lock", ...columns.headers, "proxy", "health", "source"]];
   for (const account of accounts) {
     rows.push([
@@ -1462,11 +1475,11 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
   }
   if (accounts.length > 0) {
     rows.push([
-      "average",
+      "pool",
       "--",
       "--",
       "--",
-      ...columns.averageValues(),
+      ...columns.poolValues(pool),
       "--",
       "--",
       "all",
@@ -1475,6 +1488,7 @@ function renderVerboseClaudeRedisAccountUsageStatus(result) {
   const lines = [
     `CLAUDE ACCOUNT USAGE (${accounts.length})`,
     ...formatStatusTable(rows),
+    ...formatPoolCapacityLines(pool, columns.poolOptions),
   ];
   lines.push(
     `requests=${Number(result?.requestCount ?? 0)}  cache_ttl=${Number(result?.cacheTtlSeconds ?? 0)}s  stale_max=${Number(result?.staleMaxSeconds ?? 0)}s`,
@@ -1496,6 +1510,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
   const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
   const nowMs = Number(result?.checkedAtMs) || Date.now();
   const columns = usageColumns(accounts, nowMs);
+  const pool = summarizePoolCapacity(columns.entries, nowMs);
   const describedAccounts = accounts.map((account) => ({
     account,
     operator: describeClaudeOperatorState(account, nowMs),
@@ -1516,10 +1531,10 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
   }
   if (accounts.length > 0) {
     rows.push([
-      "average",
+      "pool",
       "--",
       "--",
-      ...columns.averageValues(),
+      ...columns.poolValues(pool),
       "--",
       "--",
       "--",
@@ -1529,9 +1544,7 @@ export function renderClaudeRedisAccountUsageStatus(result, { verbose = false } 
   return `${[
     `CLAUDE: ${countStatus("NO ROUTE") ? `${countStatus("NO ROUTE")} without a local route · ` : ""}${["PROXY DOWN", "PROXY STARTING", "PROXY UNKNOWN", "PROXY ERROR"].filter(status => countStatus(status)).map(status => `${countStatus(status)} ${status.toLowerCase()} · `).join("")}${countStatus("READY")} ready · ${countStatus("LIMITED")} limited · ${countStatus("IN USE")} in use · ${countStatus("NOT SIGNED IN") ? `${countStatus("NOT SIGNED IN")} not signed in · ` : ""}${countStatus("NEEDS YOU")} needs you · ${countStatus("UNKNOWN")} unknown`,
     ...formatStatusTable(rows),
-    formatWeeklyCapacityFreeingNextDayLine(
-      summarizeWeeklyCapacityFreeingNextDay(accounts.map((account) => findOverallWeeklyWindow(account.usage)), nowMs),
-    ),
+    ...formatPoolCapacityLines(pool, columns.poolOptions),
   ].join("\n")}\n`;
 }
 

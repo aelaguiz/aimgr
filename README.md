@@ -133,15 +133,16 @@ aim status --all-accounts
 aim cluster status
 ```
 
-The text tables hide blocked Codex and Claude accounts. Counts and averages use
-the displayed accounts. `aim status --all-accounts` includes blocked and unsigned-in
-accounts. `aim cluster status` combines every AIM machine into one table per provider:
-Codex accounts blocked on every responding machine are hidden; its average uses the displayed
+The text tables hide blocked Codex and Claude accounts. Counts use the displayed
+accounts. `aim status --all-accounts` includes blocked and unsigned-in
+accounts. `aim cluster status` combines every AIM machine into one table per provider.
+Codex accounts blocked on every responding machine are hidden, and the Codex pool uses the displayed
 ready accounts with usage readings. Each row shows its usage, how many machines have it signed in (`on`), and
 one `machines` cell naming only the exceptions: `all`, `all but mini-4, mini-5`, or the few machines
 with a login. A `!` after a name means it needs signing in again, `?` unknown. Usage columns no
 account has a reading for are left out. A grid above the tables counts each machine's own Claude
-and Codex logins. Machines that do not answer are named, marked `x` in that grid, left out of
+and Codex logins and shows the weekly capacity left on those accounts. The Codex summary also
+totals unused reset credits when reported. Machines that do not answer are named, marked `x` in that grid, left out of
 `machines`, and cause a nonzero exit. `aim status --json`
 retains all accounts.
 
@@ -159,11 +160,12 @@ aim note clear iphone_se_1 --provider anthropic
 The provider can be omitted for a label that belongs to only one provider.
 Notes require Redis and are not stored in machine-local status caches.
 
-Under the Codex and Claude tables, a `Next 24h` line says how much of that pool's weekly
-capacity comes back in the next 24 hours: the weekly usage on accounts whose weekly limit
-resets by then, as a share of every measured account's full week. It also shows how much of
-the pool is free now and how much will be free after those resets, before any new use.
-Blocked accounts are not in the pool and are left out.
+The `pool` row weights usage by plan size. Its `wk_in` shows the time until weekly
+resets return half of the capacity currently used. The lines below give total, used,
+and remaining capacity in Max 20x or Pro Max weeks. They show how much is open now,
+behind a five-hour limit, or on accounts at 95% weekly usage or more, and how much
+comes back at each horizon from six hours to five days. Readings over an hour old,
+missing weekly readings, and plans with no measured size are called out when present.
 
 Hourly usage and agent activity history (foreground process, stop with Ctrl-C):
 
@@ -860,7 +862,7 @@ Accounts whose access token has expired are never sent to Anthropic, and AIM doe
 accounts. Their last reading is shown for up to eight days with its age in `updated`: usage inside a
 window only rises through use, so the reading holds until the window resets, and a window whose
 reset time has passed reads `0%`. An unlocked account with a full window reads `LIMITED` with the
-time until it frees up, and automatic selection skips it.
+time until the limit resets, and automatic selection skips it.
 
 Each managed Claude session also records its own usage. AIM wraps the session's status line with
 `src/targets/claude-statusline-tap.sh`, which saves the five-hour and weekly usage Claude Code reads

@@ -4,6 +4,16 @@ import { normalizeLabel } from "../core/normalize.js";
 import { formatDurationRough, parseExpiresAtToMs } from "../core/time.js";
 import { formatAccountNote } from "./account-notes.js";
 
+// Measured from fleet transcripts: Claude 2026-11-24, Codex 2026-11-25.
+// psbrain: pods/executive/cfo/work/2026-11-25-aim-pool-capacity-view/
+export const PLAN_WEEK_WEIGHTS = Object.freeze({
+  claude: Object.freeze({ max_20x: 1, team: 0.46 }),
+  codex: Object.freeze({ promax: 1, pro: 0.46 }),
+});
+
+const HOUR_MS = 3_600_000;
+const RETURN_HORIZONS = [["6h", 6], ["12h", 12], ["24h", 24], ["2d", 48], ["3d", 72], ["5d", 120]];
+
 export function formatInteractiveLoginSummary(login) {
   const mode = normalizeInteractiveOAuthMode(login?.mode);
   if (mode === REAUTH_MODE_NATIVE_CLAUDE) {
@@ -87,58 +97,37 @@ export function formatStatusAccountResetCell(usage, index, now = Date.now()) {
   return formatStatusDeltaMsCell(readStatusAccountResetDeltaMs(usage, index, now));
 }
 
-export function averageStatusNumbers(values) {
-  const normalizedValues = (Array.isArray(values) ? values : []).filter((value) => Number.isFinite(value));
-  if (normalizedValues.length === 0) return null;
-  return normalizedValues.reduce((sum, value) => sum + value, 0) / normalizedValues.length;
+export function averageStatusNumbers(values, weights) {
+  let total = 0;
+  let totalWeight = 0;
+  for (const [index, value] of values.entries()) {
+    if (!Number.isFinite(value)) continue;
+    const weight = weights?.[index] ?? 1;
+    total += weight * value;
+    totalWeight += weight;
+  }
+  return totalWeight > 0 ? total / totalWeight : null;
 }
 
-export function buildStatusAverageAccountTableRow(accounts, now = Date.now(), { codex = false } = {}) {
-  const normalizedAccounts = Array.isArray(accounts) ? accounts : [];
+export function buildStatusPoolAccountTableRow(accounts, entries, summary, now, { codex = false } = {}) {
   const averageExpiryDeltaMs = averageStatusNumbers(
-    normalizedAccounts.map((account) => readStatusAccountExpiryDeltaMs(account?.credentials, now)),
+    accounts.map((account) => readStatusAccountExpiryDeltaMs(account?.credentials, now)),
   );
-  const averageFiveHourUsedPct = averageStatusNumbers(
-    normalizedAccounts.map((account) => readStatusAccountUsedPercent(account?.usage, 0)),
+  const sessionUsedPercent = averageStatusNumbers(
+    entries.map((entry) => entry.session?.usedPercent),
+    entries.map((entry) => entry.weight),
   );
-  const averageFiveHourResetDeltaMs = averageStatusNumbers(
-    normalizedAccounts.map((account) => readStatusAccountResetDeltaMs(account?.usage, 0, now)),
-  );
-  const averageWeeklyUsedPct = averageStatusNumbers(
-    normalizedAccounts.map((account) => readStatusAccountUsedPercent(account?.usage, codex ? 0 : 1)),
-  );
-  const averageWeeklyResetDeltaMs = averageStatusNumbers(
-    normalizedAccounts.map((account) => readStatusAccountResetDeltaMs(account?.usage, codex ? 0 : 1, now)),
-  );
-
-  if (codex) {
-    return [
-      "average",
-      "--",
-      "--",
-      "--",
-      "--",
-      Number.isFinite(averageExpiryDeltaMs) ? formatDurationRough(averageExpiryDeltaMs) : "--",
-      Number.isFinite(averageWeeklyUsedPct) ? `${Math.round(averageWeeklyUsedPct)}%` : "--",
-      formatStatusDeltaMsCell(averageWeeklyResetDeltaMs),
-      "--",
-      "all",
-      "--",
-      "-",
-    ];
-  }
 
   return [
-    "average",
+    "pool",
     "--",
     "--",
     "--",
     "--",
     Number.isFinite(averageExpiryDeltaMs) ? formatDurationRough(averageExpiryDeltaMs) : "--",
-    Number.isFinite(averageFiveHourUsedPct) ? `${Math.round(averageFiveHourUsedPct)}%` : "--",
-    formatStatusDeltaMsCell(averageFiveHourResetDeltaMs),
-    Number.isFinite(averageWeeklyUsedPct) ? `${Math.round(averageWeeklyUsedPct)}%` : "--",
-    formatStatusDeltaMsCell(averageWeeklyResetDeltaMs),
+    ...(codex ? [] : [Number.isFinite(sessionUsedPercent) ? `${Math.round(sessionUsedPercent)}%` : "--", "--"]),
+    summary.measured > 0 ? `${Math.round(100 * summary.used / summary.capacity)}%` : "--",
+    formatStatusDeltaMsCell(summary.halfBackMs),
     "--",
     "all",
     "--",
@@ -146,52 +135,115 @@ export function buildStatusAverageAccountTableRow(accounts, now = Date.now(), { 
   ];
 }
 
-const NEXT_DAY_MS = 24 * 3_600_000;
-
-// How much of the pool's weekly capacity comes back over the next 24 hours.
-// Each measured account is 100% of one account's week, so a 100%-used account
-// resetting tomorrow frees 1/N of the pool. A window whose reset already passed
-// has started over at zero; a window with no reset time frees nothing.
-export function summarizeWeeklyCapacityFreeingNextDay(windows, now = Date.now()) {
-  const list = Array.isArray(windows) ? windows : [];
+export function summarizePoolCapacity(entries, now) {
   let measured = 0;
-  let usedTotal = 0;
-  let freedTotal = 0;
-  let resetting = 0;
-  for (const window of list) {
-    const used = Number(window?.usedPercent);
-    if (!Number.isFinite(used)) continue;
+  let capacity = 0;
+  let used = 0;
+  let nearlyFull = 0;
+  let held = 0;
+  let open = 0;
+  let nextOpenMs = null;
+  let stale = 0;
+  let oldestAgeMs = 0;
+  const unknownPlans = new Set();
+  const resets = [];
+
+  for (const { weight, planKey, knownPlan, week, session, observedAtMs } of entries) {
+    if (!knownPlan && planKey) unknownPlans.add(planKey);
+    if (!Number.isFinite(week?.usedPercent)) continue;
     measured += 1;
-    const resetAt = Number(window?.resetAt);
-    const deltaMs = Number.isFinite(resetAt) ? resetAt - now : null;
-    if (deltaMs !== null && deltaMs <= 0) continue;
-    const usedPct = Math.max(0, Math.min(100, used));
-    usedTotal += usedPct;
-    if (deltaMs !== null && deltaMs <= NEXT_DAY_MS && usedPct > 0) {
-      resetting += 1;
-      freedTotal += usedPct;
+    capacity += weight;
+
+    const resetInMs = Number.isFinite(week.resetAt) ? week.resetAt - now : null;
+    const usedPercent = resetInMs !== null && resetInMs <= 0 ? 0 : week.usedPercent;
+    const accountUsed = weight * (usedPercent / 100);
+    const accountLeft = weight - accountUsed;
+    used += accountUsed;
+    if (resetInMs > 0 && accountUsed > 0) {
+      resets.push({ resetInMs, accountUsed });
+    }
+
+    if (usedPercent >= 95) {
+      nearlyFull += accountLeft;
+    } else if (session?.usedPercent >= 100 && session.resetAt > now) {
+      held += accountLeft;
+      const opensInMs = session.resetAt - now;
+      nextOpenMs = nextOpenMs === null ? opensInMs : Math.min(nextOpenMs, opensInMs);
+    } else {
+      open += accountLeft;
+    }
+
+    if (Number.isFinite(observedAtMs) && now - observedAtMs > HOUR_MS) {
+      stale += 1;
+      oldestAgeMs = Math.max(oldestAgeMs, now - observedAtMs);
     }
   }
+
+  const returns = Object.fromEntries(RETURN_HORIZONS.map(([label, hours]) => [
+    label,
+    resets.reduce((total, { resetInMs, accountUsed }) => (
+      resetInMs <= hours * HOUR_MS ? total + accountUsed : total
+    ), 0),
+  ]));
+  let returned = 0;
+  let halfBackMs = null;
+  for (const { resetInMs, accountUsed } of resets.sort((a, b) => a.resetInMs - b.resetInMs)) {
+    returned += accountUsed;
+    if (returned >= used / 2) {
+      halfBackMs = resetInMs;
+      break;
+    }
+  }
+
   return {
-    accounts: list.length,
+    accounts: entries.length,
     measured,
-    resetting,
-    freeNowPct: measured > 0 ? 100 - usedTotal / measured : null,
-    freedPct: measured > 0 ? freedTotal / measured : null,
+    capacity,
+    used,
+    left: capacity - used,
+    nearlyFull,
+    held,
+    open,
+    nextOpenMs,
+    returns,
+    halfBackMs,
+    stale,
+    oldestAgeMs,
+    unknownPlans: [...unknownPlans],
   };
 }
 
-export function formatWeeklyCapacityFreeingNextDayLine(summary, { excluded = "" } = {}) {
-  if (!summary || summary.measured === 0) return "Next 24h: no weekly usage readings in the pool";
+export function formatPoolCapacityLines(summary, { unit, weightNote, excluded }) {
+  if (summary.measured === 0) return ["Pool: no weekly usage readings"];
+  const units = (count) => count.toFixed(1);
+  const percent = (count) => Math.round(100 * count / summary.capacity);
+  const left = [
+    units(summary.open) !== "0.0" && `${units(summary.open)} open now`,
+    units(summary.held) !== "0.0" && `${units(summary.held)} behind a 5-hour limit (next opens in ${formatStatusDeltaMsCell(summary.nextOpenMs)})`,
+    units(summary.nearlyFull) !== "0.0" && `${units(summary.nearlyFull)} on accounts 95% or more used`,
+  ].filter(Boolean);
+  const returns = RETURN_HORIZONS.map(([label]) => `${units(summary.returns[label])} in ${label}`);
+  if (summary.halfBackMs !== null) {
+    returns.push(`half of what's used within ${formatStatusDeltaMsCell(summary.halfBackMs)}`);
+  }
+  const lines = [
+    `Pool: ${units(summary.capacity)} ${unit}${weightNote ? ` (${weightNote})` : ""} · ${units(summary.used)} used (${percent(summary.used)}%) · ${units(summary.left)} left (${percent(summary.left)}%)`,
+    `Left: ${left.join(" · ") || "nothing"}`,
+    `Comes back: ${returns.join(" · ")}`,
+  ];
+  if (summary.stale > 0) {
+    lines.push(`Readings: ${summary.stale} of ${summary.measured} are over an hour old (oldest ${formatStatusDeltaMsCell(summary.oldestAgeMs)}), so the pool is at least this used; aim cluster status reads every machine.`);
+  }
   const unmeasured = summary.accounts - summary.measured;
-  const scope = [
-    `${summary.resetting} of ${summary.measured} accounts reset`,
-    ...(unmeasured > 0 ? [`${unmeasured} without a reading not counted`] : []),
-    ...(excluded ? [excluded] : []),
-  ].join(", ");
-  const freeNow = Math.round(summary.freeNowPct);
-  const freeAfter = Math.round(summary.freeNowPct + summary.freedPct);
-  return `Next 24h: ${Math.round(summary.freedPct)}% of pool weekly capacity frees up (${scope}); ${freeNow}% free now, ${freeAfter}% after`;
+  const notCounted = [
+    unmeasured > 0 && `${unmeasured} ${unmeasured === 1 ? "account" : "accounts"} without a reading`,
+    excluded,
+  ].filter(Boolean);
+  if (notCounted.length > 0) lines.push(`Not counted: ${notCounted.join(", ")}`);
+  if (summary.unknownPlans.length > 0) {
+    lines.push(`Plans with no measured size, counted as 1: ${summary.unknownPlans.join(", ")}`);
+  }
+  return lines;
 }
 
 export function buildStatusAccountFlags(account) {
