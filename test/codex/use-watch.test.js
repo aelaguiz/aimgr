@@ -124,7 +124,7 @@ test("codex run rotates before launching the default yolo command", async () => 
     },
   });
 
-  assert.deepEqual(launch.args, ["-p", "yolo"]);
+  assert.deepEqual(launch.args, ["-c", 'service_tier="default"', "-p", "yolo"]);
   assert.match(output, /writer: "Reserved for Mac Mini 1"/);
   assert.equal(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id, "acct_2");
 });
@@ -159,9 +159,10 @@ test("codex run leaves the desktop app's ~/.codex login alone and launches from 
 
 test("codex run with an explicit label preserves selection and exact Codex arguments", async (t) => {
   const cases = [
-    { name: "default command", initialLabel: "writer", args: [], expected: ["-p", "yolo"] },
+    { name: "default command", initialLabel: "writer", args: [], expected: ["-c", 'service_tier="default"', "-p", "yolo"] },
     { name: "exec after explicit use", initialLabel: "boss", args: ["exec", "--model", "gpt-6-astra", "-c", 'model_reasoning_effort="xhigh"', "--json", "prompt with spaces\nand a newline"] },
     { name: "resume passthrough", initialLabel: "boss", args: ["exec", "resume", "thread-123", "--json", "continue"] },
+    { name: "a tier the caller names is kept", initialLabel: "boss", args: ["-p", "yolo", "-c", 'service_tier="fast"'], expected: ["-p", "yolo", "-c", 'service_tier="fast"'] },
   ];
   for (const scenario of cases) {
     await t.test(scenario.name, async (t) => {
@@ -186,7 +187,7 @@ test("codex run with an explicit label preserves selection and exact Codex argum
         },
       });
 
-      assert.deepEqual(launch.args, scenario.expected ?? scenario.args);
+      assert.deepEqual(launch.args, scenario.expected ?? ["-c", 'service_tier="default"', ...scenario.args]);
       assert.equal(probes, 0);
     });
   }
@@ -230,7 +231,7 @@ test("codex resume rotates before launching a yolo resume", async () => {
     },
   });
 
-  assert.deepEqual(launch.args, ["-p", "yolo", "resume", "thread-123"]);
+  assert.deepEqual(launch.args, ["-c", 'service_tier="default"', "-p", "yolo", "resume", "thread-123"]);
 });
 
 test("back-to-back Codex resumes launch with different accounts and show the selection", async () => {
@@ -247,7 +248,7 @@ test("back-to-back Codex resumes launch with different accounts and show the sel
         anthropic: {},
       }),
       runCodexInteractiveImpl: async ({ args }) => {
-        assert.deepEqual(args, ["-p", "yolo", "resume", "same-thread"]);
+        assert.deepEqual(args, ["-c", 'service_tier="default"', "-p", "yolo", "resume", "same-thread"]);
         launchedAccounts.push(JSON.parse(fs.readFileSync(activeCodexAuthFile(home), "utf8")).tokens.account_id);
         return { code: 0, signal: null };
       },
