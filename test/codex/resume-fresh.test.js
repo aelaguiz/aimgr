@@ -221,7 +221,7 @@ test("resume-fresh rotates, copies the thread into a new id, scrubs it, and resu
   const newId = copiedLines[0].payload.id;
   assert.equal(copiedLines[0].payload.session_id, newId);
   assert.notEqual(newId, SOURCE_THREAD);
-  assert.deepEqual(launched.args, ["-p", "yolo", "resume", newId]);
+  assert.deepEqual(launched.args, ["-c", 'service_tier="default"', "-p", "yolo", "resume", newId]);
   assert.equal(launched.env.CODEX_THREAD_ID, undefined);
   assert.equal(launched.env.HERDR_PANE_ID, "w1:p1");
   assert.equal(copiedLines[0].payload.forked_from_id, undefined);
@@ -257,7 +257,7 @@ test("resume-fresh chains: the copy becomes the next source and the account rota
     env: {},
     spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "" }),
     runCodexInteractiveImpl: async (request) => {
-      launches.push(request.args[3]);
+      launches.push(request.args[5]);
       return { code: 0, signal: null };
     },
   });
@@ -347,7 +347,7 @@ test("compacted sources copy by default with the memory intact; --drop-compactio
     assert.equal(text.includes("ENCRYPTED_COMPACTION_BLOB"), true, "memory survives by default");
     assert.equal(text.includes(SOURCE_THREAD), false);
     assert.equal(text.includes(TURN), false);
-    assert.equal(launched.args[3], JSON.parse(text.split("\n")[0]).payload.id);
+    assert.equal(launched.args[5], JSON.parse(text.split("\n")[0]).payload.id);
     assert.match(out, /1 compaction blob\(s\) kept/);
     assert.match(out, /still shared with the old account by design/);
   });
@@ -371,7 +371,7 @@ test("compacted sources copy by default with the memory intact; --drop-compactio
     assert.equal(text.includes("ENCRYPTED_COMPACTION_BLOB"), true);
     assert.equal(text.includes(SOURCE_THREAD), false);
     assert.equal(text.includes(TURN), false);
-    assert.equal(launched.args[3], JSON.parse(text.split("\n")[0]).payload.id);
+    assert.equal(launched.args[5], JSON.parse(text.split("\n")[0]).payload.id);
   });
 
   await t.test("--drop-compaction copies without the blob", async () => {
@@ -422,7 +422,7 @@ test("resume-fresh refuses bad ids but copies threads that spawned subagents", a
     const text = fs.readFileSync(copies[0], "utf8");
     assert.equal(text.includes(child), false, "the child thread id is retired");
     assert.equal(text.includes(SOURCE_THREAD), false);
-    assert.equal(launched.args[2], "resume");
+    assert.equal(launched.args[4], "resume");
     assert.match(out, /1 child thread id\(s\) retired/);
   });
 });

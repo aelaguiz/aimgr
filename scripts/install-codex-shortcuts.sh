@@ -14,20 +14,22 @@ const shortcuts = path.join(home, ".config", "aimgr", "codex-shortcuts.zsh");
 fs.mkdirSync(path.dirname(shortcuts), { recursive: true });
 const body = `# Installed by aimgr/scripts/install-codex-shortcuts.sh.
 # Every command selects a different eligible AIM account before launching.
-#   c   - new thread on a rotated account
-#   cf  - new thread on a rotated account, with Fast enabled for this launch
-#   cr  - rotate, carry the thread into a brand-new thread id, scrubbed, then resume the copy
+# These are for a person at a terminal, so they run in Fast. Every other launch (agents, pods, helpers) gets
+# Codex's standard tier from aim itself.
+#   c   - new thread on a rotated account, in Fast
+#   cf  - the same as c
+#   cr  - rotate, carry the thread into a brand-new thread id, scrubbed, then resume the copy, in Fast
 #         (no argument means: the most recent thread for this directory, like the old picker default)
-#   crf - same as cr, with Fast enabled for this launch
+#   crf - the same as cr
 # There is deliberately no same-thread resume shortcut: resuming an existing thread id on a
 # different account sends that thread id and session id to the Codex servers under the new
 # account, which links the two accounts. See CLAUDE.md, "Codex account rotation rule".
 unalias c cf cr crf crr 2>/dev/null || true
 unfunction crr 2>/dev/null || true
-c()   { command aim codex run "$@"; }
-cf()  { command aim codex run "$@" -- -p yolo -c 'service_tier="fast"'; }
-cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last; else command aim codex resume-fresh "$@"; fi }
-crf() { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last -- -c 'service_tier="fast"'; else command aim codex resume-fresh "$@" -- -c 'service_tier="fast"'; fi }
+c()   { command aim codex run "$@" -- -p yolo -c 'service_tier="fast"'; }
+cf()  { c "$@"; }
+cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last -- -c 'service_tier="fast"'; else command aim codex resume-fresh "$@" -- -c 'service_tier="fast"'; fi }
+crf() { cr "$@"; }
 `;
 const source = '[ ! -r "$HOME/.config/aimgr/codex-shortcuts.zsh" ] || source "$HOME/.config/aimgr/codex-shortcuts.zsh"';
 

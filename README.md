@@ -588,9 +588,14 @@ shortcuts on macOS or Linux with `bash scripts/install-codex-shortcuts.sh`
 (also run by `scripts/install-local-bin.sh`):
 
 ```zsh
-c()   { command aim codex run "$@"; }
-cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last; else command aim codex resume-fresh "$@"; fi }
+c()   { command aim codex run "$@" -- -p yolo -c 'service_tier="fast"'; }
+cr()  { if [ "$#" -eq 0 ]; then command aim codex resume-fresh --last -- -c 'service_tier="fast"'; else command aim codex resume-fresh "$@" -- -c 'service_tier="fast"'; fi }
 ```
+
+The shortcuts are for a person at a terminal, so they run in Codex's Fast tier. Every other launch, `aim codex run`
+and `resume-fresh` from agents, scripts and routines, gets `-c service_tier="default"` (the standard tier) from aim
+itself, unless its own arguments set `service_tier`. Since it is passed per launch, a tier a session wrote into
+`config.toml` or a profile file (toggling Fast does that) never reaches another session aim starts.
 
 The installer loads these definitions at the end of `.zshrc`, overriding older
 dotfile definitions that called Codex directly. New terminals pick them up

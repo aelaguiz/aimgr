@@ -86,6 +86,18 @@ async function handleRedisCodexUse(context) {
   if (result.activated.status === "blocked") setExitCode(1);
 }
 
+// Sessions run at Codex's standard tier unless the launch asks for another (Amir, 2026-11-27: pods "should not be
+// spending my Codex fast mode tokens"; his own c/cr shortcuts pass service_tier="fast"). Passed per launch, so a
+// tier written into a config or profile file, by a session that toggled Fast, reaches no session AI Manager starts.
+const STANDARD_TIER = ["-c", 'service_tier="default"'];
+
+export function withCodexServiceTier(args) {
+  const setsTier = args.some((arg, i) => /^service_tier\s*=/.test(String(arg))
+    && ["-c", "--config"].includes(String(args[i - 1]))
+    || /^--config=service_tier\s*=/.test(String(arg)));
+  return setsTier ? args : [...STANDARD_TIER, ...args];
+}
+
 function codexRunArgs({ positional, afterDoubleDash, homeDir }) {
   const passthrough = resolveCodexModelArgs(Array.isArray(afterDoubleDash) ? afterDoubleDash : [], { homeDir });
   const subcmd = String(positional[1] ?? "").trim().toLowerCase();
@@ -95,9 +107,9 @@ function codexRunArgs({ positional, afterDoubleDash, homeDir }) {
   }
   if (requestedResume) {
     const sessionId = subcmd === "resume" ? positional[2] : positional[3];
-    return ["-p", "yolo", "resume", ...(sessionId ? [String(sessionId)] : []), ...passthrough];
+    return withCodexServiceTier(["-p", "yolo", "resume", ...(sessionId ? [String(sessionId)] : []), ...passthrough]);
   }
-  return passthrough.length > 0 ? passthrough : ["-p", "yolo"];
+  return withCodexServiceTier(passthrough.length > 0 ? passthrough : ["-p", "yolo"]);
 }
 
 // Keep the selected account's prepared home through launch and handoff.
@@ -438,7 +450,7 @@ async function handleRedisCodexResumeFresh(context) {
       });
 
   // 6. Launch the new thread on the rotated account.
-  const args = ["-p", profileName, "resume", plan.newId, ...passthrough];
+  const args = withCodexServiceTier(["-p", profileName, "resume", plan.newId, ...passthrough]);
   const { label, previousLabel } = activation.activated.receipt;
   const noteOutput = args.includes("--json") ? context.stderr : stdout;
   if (activation.accountNote) noteOutput.write(`[aim] ${formatAccountNote({ provider: OPENAI_CODEX_PROVIDER, label, note: activation.accountNote })}\n`);
