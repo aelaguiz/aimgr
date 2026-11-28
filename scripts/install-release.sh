@@ -50,7 +50,11 @@ if [[ ! -f $release/.aimgr-release ]]; then
   rm -rf -- "$building"
   mkdir -p "$building"
   trap 'rm -rf -- "$building"' EXIT
-  git -C "$repo" archive "$commit" | tar -x -C "$building"
+  # BSD tar can finish before git writes the final padding to a pipe.
+  archive="$building/.aimgr-source.tar"
+  git -C "$repo" archive --format=tar --output="$archive" "$commit"
+  tar -xf "$archive" -C "$building"
+  rm -- "$archive"
   (cd "$building" && npm ci --no-audit --no-fund --loglevel=error >/dev/null) || fail "npm ci failed in the release for $commit"
   printf '%s\n' "$commit" >"$building/.aimgr-release"
   [[ -e $release ]] && mv -- "$release" "$data/releases/.incomplete-$commit-$$"
