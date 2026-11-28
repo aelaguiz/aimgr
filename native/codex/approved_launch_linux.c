@@ -9,7 +9,7 @@
 #include "../privacy/launch_linux.h"
 #include "maintenance_gate.h"
 #include "private_scratch.h"
-#include "profile_gc_linux.h"
+#include "../privacy/profile_gc_linux.h"
 
 static void deny_distribution_probe(FILE *out,char **environment) {
     /* Command::new("lsb_release") searches PATH. AppArmor checks a symlink's
@@ -89,7 +89,7 @@ int main(int argc,char **argv) {
     trusted_launcher_namespaces();
     unsigned char nonce[16];char hex[33];if (getentropy(nonce,sizeof(nonce))) fail("policy identity");
     for (int i=0;i<16;i++) snprintf(hex+2*i,3,"%02x",nonce[i]);
-    unsigned long long pid_namespace=codex_pid_namespace();
+    unsigned long long pid_namespace=profile_pid_namespace();
     if (pid_namespace) snprintf(profile,sizeof(profile),"aim-codex-p-%u-n%llu-%s",caller,pid_namespace,hex);
     else snprintf(profile,sizeof(profile),"aim-codex-p-%u-%s",caller,hex);
     snprintf(tools_profile,sizeof(tools_profile),"%s-tools",profile);
@@ -147,7 +147,7 @@ int main(int argc,char **argv) {
     // independent launches can compile/load together; exclusive maintenance
     // still waits until every launch has entered its enforcing profile.
     if (lock<0) fail("policy installation lock");
-    codex_prune_profiles(lock,pid_namespace);
+    prune_profiles(lock,"codex",pid_namespace);
     if (flock(lock,LOCK_SH)) fail("policy installation lock");
     parse_policy(policy,0);free(policy);install_uname();enter_profile();close(lock);drop();
     environ=private_environment;unset_environment("LD_PRELOAD");unset_environment("LD_AUDIT");

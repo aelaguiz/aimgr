@@ -14,6 +14,8 @@ export async function handleStatus(context) {
     connectRedisStoreImpl,
     readCodexEnvironmentImpl,
     readClaudeEnvironmentImpl,
+    runAgyNativeImpl,
+    readLocalAgyStatusImpl,
     nowMs,
   } = context;
   const redisStatus = await buildRedisStatusView({
@@ -24,6 +26,8 @@ export async function handleStatus(context) {
     connectRedisStoreImpl,
     readCodexEnvironmentImpl,
     readClaudeEnvironmentImpl,
+    runAgyNativeImpl,
+    readLocalAgyStatusImpl,
     nowMs,
     includeBlocked: opts.allAccounts === true,
   });

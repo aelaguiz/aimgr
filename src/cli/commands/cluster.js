@@ -44,7 +44,11 @@ async function remoteStatus(target) {
 
 export function parseRemoteStatus(output) {
   const [viewText, claudeText] = String(output ?? "").split(`\n${CLAUDE_STATUS_SEPARATOR}\n`);
-  return { view: JSON.parse(viewText), claude: JSON.parse(claudeText) };
+  if (claudeText === undefined) throw new Error("Incomplete status response.");
+  const view = JSON.parse(viewText);
+  let claude = null;
+  try { claude = JSON.parse(claudeText); } catch { /* The general status report can still be read. */ }
+  return { view, claude };
 }
 
 // Pace comes from the shared reading history, as it does for `aim status`.
@@ -92,17 +96,22 @@ export async function handleCluster(context) {
       fetchJsonWithTimeoutImpl: context.fetchJsonWithTimeoutImpl,
       connectRedisStoreImpl: context.connectRedisStoreImpl,
       readCodexEnvironmentImpl: context.readCodexEnvironmentImpl,
-      nowMs: context.nowMs,
+      readClaudeEnvironmentImpl: context.readClaudeEnvironmentImpl,
+      runAgyNativeImpl: context.runAgyNativeImpl,
+      readLocalAgyStatusImpl: context.readLocalAgyStatusImpl,
+      nowMs,
+      includeBlocked: true,
     });
     return { view: sanitizeForStatus(view), claude: claudeUsageStatus };
   });
   const results = await Promise.all(AIM_FLEET.map(async (machine) => {
     try {
       const status = machine.name === localMachine ? await runLocal() : parseRemoteStatus(await runRemote(machine.target));
-      if (!Array.isArray(status?.view?.accounts) || !Array.isArray(status?.claude?.accounts)) {
+      if (!Array.isArray(status?.view?.accounts)) {
         throw new Error("incomplete status response");
       }
-      return { ...machine, view: status.view, claude: status.claude };
+      const claude = Array.isArray(status.claude?.accounts) ? status.claude : null;
+      return { ...machine, view: status.view, claude };
     } catch (error) {
       // SSH stderr can contain paths or arbitrary remote output; report a bounded reason.
       const reason = error?.killed || error?.code === "ETIMEDOUT" ? "timed out"
@@ -112,14 +121,18 @@ export async function handleCluster(context) {
   }));
   if (opts.json) {
     const pools = buildClusterPools(results, { nowMs });
-    await recordClusterPoolPace(context, pools, nowMs);
+    const { claude, codex } = pools;
+    await recordClusterPoolPace(context, { claude, codex }, nowMs);
     stdout.write(`${JSON.stringify({
       checkedAtMs: nowMs,
-      machines: results.map(({ name, error }) => (error ? { name, error } : { name })),
+      machines: results.map(({ name, error, claude }) => ({
+        name,
+        ...(error ? { error } : !claude ? { claudeError: "status unavailable" } : {}),
+      })),
       pools,
     })}\n`);
   } else {
     stdout.write(renderClusterStatusText(results, { nowMs }));
   }
-  if (results.some((result) => result.error)) setExitCode(1);
+  if (results.some((result) => result.error || !result.claude)) setExitCode(1);
 }

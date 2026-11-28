@@ -37,6 +37,20 @@ export async function assertLocalClaudeProfileStopped(profileRef, { cgroupRoot =
   }
 }
 
+export function claudeNativeRouteMetadataPath(profileRef) {
+  return `/opt/aimgr-claude-proxy/${profileRef}.json`;
+}
+
+export function assertInstalledClaudeRouteMatches(profile, installed, platform) {
+  const denyDatagrams = profile.denyDatagrams === true;
+  const installedDenyDatagrams = Object.hasOwn(installed, "denyDatagrams") ? installed.denyDatagrams : false;
+  if (installed.socksHost !== profile.socksHost || installed.socksPort !== profile.socksPort
+      || (platform === "linux" && installedDenyDatagrams !== denyDatagrams)
+      || JSON.stringify([...(installed.expectedExits ?? [])].sort()) !== JSON.stringify([...profile.expectedExits].sort())) {
+    throw new ClaudeRouteError("native_proxy_mismatch", profile);
+  }
+}
+
 // R3/R5/R6: this JS preflight proves the assigned SOCKS route, not the native
 // enforcement boundary. The helper repeats the binding check under its lock
 // and probes the actual cgroup or PF/GID/TUN path before executing any child.
@@ -47,15 +61,13 @@ export async function prepareClaudeNativeRoute({ profile, command, args, nativeC
   if (!profile) throw new ClaudeRouteError("missing_proxy_assignment");
   if (!["linux", "darwin"].includes(platform)) throw new ClaudeRouteError("native_proxy_platform_unverified", profile);
   let installed;
-  try { installed = JSON.parse(await fs.readFile(`/opt/aimgr-claude-proxy/${profile.profileRef}.json`, "utf8")); }
+  try { installed = JSON.parse(await fs.readFile(claudeNativeRouteMetadataPath(profile.profileRef), "utf8")); }
   catch (cause) { throw new ClaudeRouteError("native_proxy_unavailable", { ...profile, cause }); }
-  if (installed.socksHost !== profile.socksHost || installed.socksPort !== profile.socksPort
-      || JSON.stringify([...(installed.expectedExits ?? [])].sort()) !== JSON.stringify([...profile.expectedExits].sort())) {
-    throw new ClaudeRouteError("native_proxy_mismatch", profile);
-  }
+  assertInstalledClaudeRouteMatches(profile, installed, platform);
   const timeoutMs = Number.isFinite(deadlineMs) ? Math.max(1, Math.min(8000, deadlineMs - Date.now())) : 8000;
   await checkClaudeRouteExit(profile, { timeoutMs, signal });
-  const binding = JSON.stringify({ label: profile.label, socksHost: profile.socksHost, socksPort: profile.socksPort, expectedExits: profile.expectedExits, nativeCommand });
+  const binding = JSON.stringify({ label: profile.label, socksHost: profile.socksHost, socksPort: profile.socksPort, expectedExits: profile.expectedExits,
+    nativeCommand, ...(profile.denyDatagrams === true ? { denyDatagrams: true } : {}) });
   if (platform === "darwin") {
     if (approvedPrivacyEntry) {
       if (!/^\/opt\/aimgr-claude-runtime\/artifacts\/[a-f0-9]{64}\/launcher$/.test(command)

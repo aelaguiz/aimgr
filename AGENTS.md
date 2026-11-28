@@ -1,6 +1,6 @@
 # aimgr agent notes
 
-`aim` coordinates AI account credentials (managed Redis Cloud over TLS) and launches Prime Agent, Claude, Codex and Grok sessions. `README.md` covers the credential side.
+`aim` coordinates AI account credentials (managed Redis Cloud over TLS) and launches Prime Agent, Claude, Codex, Grok and Antigravity sessions. `README.md` covers the credential side.
 
 ## Open issues and worklist
 

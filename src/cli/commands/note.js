@@ -4,6 +4,7 @@ import { normalizeLabel, normalizeProviderId } from "../../core/normalize.js";
 import { formatAccountNote } from "../../status/account-notes.js";
 import { readCodexAccountMetadata } from "../../coordination/codex-metadata.js";
 import { readClaudeAccountMetadata } from "../../coordination/claude-metadata.js";
+import { readAgyAccountMetadata } from "../../coordination/agy-metadata.js";
 
 export async function handleNote(context) {
   const { positional, opts, homeDir, connectRedisStoreImpl, stdout } = context;
@@ -21,7 +22,8 @@ export async function handleNote(context) {
   try {
     const records = [...runtime.snapshot.credentials,
       ...(await readCodexAccountMetadata(runtime.store)).map(record => ({ ...record, provider: "openai-codex" })),
-      ...await readClaudeAccountMetadata(runtime.store)];
+      ...await readClaudeAccountMetadata(runtime.store),
+      ...(await readAgyAccountMetadata(runtime.store)).map(record => ({ ...record, provider: "antigravity" }))];
     const matches = records.filter((record) => record.label === label
       && (!requestedProvider || record.provider === requestedProvider));
     if (!matches.length) throw new Error(`No managed account found for ${requestedProvider ? `${requestedProvider}:` : ""}${label}.`);

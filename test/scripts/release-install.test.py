@@ -5,6 +5,7 @@ Environment tests exercise the real provisioning code with filesystem ownership
 reported as root. No system runtime, provider credential or service is touched.
 """
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -96,6 +98,58 @@ class EnvironmentTests(unittest.TestCase):
             with self.assertRaises(BlockingIOError):
                 installer.ensure_claude_environment(self.root)
 
+    def test_linux_staging_stays_unprivileged_until_admission_for_each_provider(self):
+        for provider in ('claude', 'codex', 'agy'):
+            with self.subTest(provider=provider):
+                bundle = self.root.parent / provider
+                bundle.mkdir()
+                policy = dict(schema=1, version='1.0.0', platform='linux', arch='x64',
+                              vendorCommit='a' * 12, sourceCommit='a' * 40, settingsManifest=1)
+                files = {}
+                for name, role, body in ((provider, 'vendor', b'inert vendor'),
+                                         ('launcher', 'launcher', b'inert launcher'),
+                                         ('policy.json', 'policy', json.dumps(policy).encode())):
+                    (bundle / name).write_bytes(body)
+                    files[name] = dict(role=role, executable=role != 'policy', size=len(body),
+                                       sha256=hashlib.sha256(body).hexdigest())
+                write_json(bundle / 'approval.json', dict(manifest(provider), platform='linux', arch='x64',
+                           version='1.0.0', launcher='launcher', policy='policy.json', files=files))
+                runtime = self.root.parent / ('runtime-' + provider)
+                user = SimpleNamespace(pw_name='test-user', pw_uid=1234)
+                observations = []
+
+                def inspect_stage(traverse_mode):
+                    stage, = runtime.glob('.install-*')
+                    launcher, = stage.glob('artifacts/*/launcher')
+                    self.assertEqual(stat.S_IMODE(stage.stat().st_mode), traverse_mode)
+                    self.assertEqual(stat.S_IMODE(launcher.stat().st_mode), 0o755)
+                    self.assertEqual(list((runtime / 'artifacts').iterdir()), [])
+
+                def inspect(*args, **kwargs):
+                    command = args[0]
+                    if 'installStaging:true' in command[7]:
+                        inspect_stage(0o755)
+                        observations.append('eligible before publication')
+                        return SimpleNamespace(returncode=1 if reject else 0)
+                    launcher, = (runtime / 'artifacts').glob('*/launcher')
+                    self.assertEqual(stat.S_IMODE(launcher.stat().st_mode), 0o4755)
+                    observations.append('published with privilege')
+                    return SimpleNamespace(returncode=0)
+
+                with patch.object(installer.platform, 'system', return_value='Linux'), \
+                     patch.object(installer, 'linux_prerequisites', side_effect=lambda: inspect_stage(0o700)), \
+                     patch.object(installer, 'linux_immutable'), patch.object(installer.subprocess, 'run', side_effect=inspect):
+                    reject = True
+                    with self.assertRaisesRegex(RuntimeError, 'failed production artifact admission'):
+                        installer.install(bundle, '/bin/node', user, runtime=runtime, provider=provider)
+                    self.assertEqual(list((runtime / 'artifacts').iterdir()), [])
+                    self.assertEqual(list(runtime.glob('.install-*')), [])
+                    reject = False
+                    installer.install(bundle, '/bin/node', user, runtime=runtime, provider=provider)
+                self.assertEqual(stat.S_IMODE((runtime / 'policy.lock').stat().st_mode), 0o600)
+                self.assertEqual(observations, ['eligible before publication', 'eligible before publication',
+                                                'published with privilege'])
+
 
 class ChooserTests(unittest.TestCase):
     def setUp(self):
@@ -103,7 +157,7 @@ class ChooserTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.store, self.runtime = self.root / 'bundles', self.root / 'runtime'
-        for provider in ['claude', 'codex']:
+        for provider in ['claude', 'codex', 'agy']:
             write_json(self.store / provider / 'approval.json', manifest(provider))
 
     def choose(self, provider, status):
@@ -137,6 +191,23 @@ class ChooserTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('no approved codex', result.stderr)
 
+    def test_agy_runtime_is_optional_without_a_normal_use_bundle_on_this_platform(self):
+        bundle = self.store / 'agy' / 'approval.json'
+        for approval in (manifest('agy', kind='offsite-test'), dict(manifest('agy'), arch='other')):
+            write_json(bundle, approval)
+            result = self.choose('agy', dict(supported=True, runtime=None))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, '')
+        write_json(bundle, manifest('agy'))
+        result = self.choose('agy', dict(supported=False, runtime=None))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_agy_rejects_a_missing_runtime_report(self):
+        result = self.choose('agy', {})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('gave no runtime report', result.stderr)
+
 
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
@@ -145,7 +216,8 @@ class ReleaseTests(unittest.TestCase):
         self.home = Path(self.temp.name)
         self.checkout = self.home / 'checkout'
         (self.checkout / 'scripts').mkdir(parents=True)
-        shutil.copy(REPO / 'scripts/install-release.sh', self.checkout / 'scripts/install-release.sh')
+        for script in ['install-release.sh', 'check-install.sh']:
+            shutil.copy(REPO / 'scripts' / script, self.checkout / 'scripts' / script)
         self.bin = self.home / 'bin'
         self.bin.mkdir()
         self.data = self.home / 'data'
@@ -186,24 +258,42 @@ else:
     root = home / 'runtime' / provider / 'artifacts' / provider
     root.mkdir(parents=True, exist_ok=True)
     shutil.copy(bundle / 'approval.json', root / 'approval.json')
-    status = dict(selected=dict(available=True), activeArtifactSet=provider) if provider == 'claude' else dict(runtime=dict(artifactSet=provider), environmentProvisioned=True, policyReady=True)
+    if provider == 'claude':
+        status = dict(selected=dict(available=True), activeArtifactSet=provider)
+    elif provider == 'codex':
+        status = dict(runtime=dict(artifactSet=provider), environmentProvisioned=True, policyReady=True)
+    else:
+        status = dict(supported=True, runtime=dict(artifactSet=provider))
     (home / ('status-' + provider + '.json')).write_text(json.dumps(status))
 '''
-        for provider in ['claude', 'codex']:
+        for provider in ['claude', 'codex', 'agy']:
             (scripts / ('install-' + provider + '-runtime.py')).write_text(stub)
             write_json(self.data / 'runtime-bundles' / provider / 'approval.json', manifest(provider))
-        (scripts / 'install-local-bin.sh').write_text('printf "wrappers\\n" >> "$HOME/events"\n')
+        write_json(self.home / 'status-agy.json', dict(supported=True, runtime=None))
+        (scripts / 'install-local-bin.sh').write_text('''
+printf "wrappers\\n" >> "$HOME/events"
+mkdir -p "$XDG_BIN_HOME"
+release="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+for name in aim aimgr; do
+  printf '#!/bin/sh\\nexec "%s" "%s/bin/aimgr.js" "$@"\\n' "$AIMGR_NODE_BIN" "$release" > "$XDG_BIN_HOME/$name"
+  chmod +x "$XDG_BIN_HOME/$name"
+done
+''')
         (scripts / 'follow-release.py').write_text("import os, pathlib\nwith (pathlib.Path(os.environ['HOME'])/'events').open('a') as f: f.write('services\\n')\n")
 
     def run_install(self):
         return subprocess.run(['bash', str(self.checkout / 'scripts/install-release.sh')],
                               env=self.env, capture_output=True, text=True)
 
-    def test_fresh_install_activates_both_before_wrappers_and_repeat_keeps_identity(self):
+    def run_check(self):
+        return subprocess.run(['bash', str(self.checkout / 'scripts/check-install.sh')],
+                              env=self.env, capture_output=True, text=True)
+
+    def test_fresh_install_activates_runtimes_before_wrappers_and_repeat_keeps_identity(self):
         first = self.run_install()
         self.assertEqual(first.returncode, 0, first.stderr)
         events = (self.home / 'events').read_text().splitlines()
-        self.assertEqual(events, ['claude activate', 'codex activate', 'claude ensure', 'wrappers', 'services'])
+        self.assertEqual(events, ['claude activate', 'codex activate', 'agy activate', 'claude ensure', 'wrappers', 'services'])
         anchor = self.home / 'environment.json'
         before = anchor.read_bytes()
         # A second release uses the same runtime and must retain existing grants.
@@ -214,7 +304,7 @@ else:
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual((self.home / 'events').read_text().splitlines(), ['claude ensure', 'wrappers', 'services'])
         self.assertEqual(anchor.read_bytes(), before)
-        # Older active bundles may have no anchor; neither provider needs reactivation.
+        # Older active Claude bundles may have no anchor; no runtime needs reactivation.
         anchor.unlink()
         (self.home / 'events').write_text('')
         repaired = self.run_install()
@@ -227,6 +317,28 @@ else:
         result = self.run_install()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((self.home / 'events').read_text().splitlines(), ['claude activate', 'codex activate'])
+
+    def test_agy_install_failure_never_replaces_wrappers(self):
+        self.env['FAIL_PROVIDER'] = 'agy'
+        result = self.run_install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.home / 'events').read_text().splitlines(), ['claude activate', 'codex activate', 'agy activate'])
+
+    def test_check_requires_agy_only_if_an_approved_bundle_is_staged(self):
+        bundle = self.data / 'runtime-bundles' / 'agy' / 'approval.json'
+        bundle.unlink()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        write_json(bundle, manifest('agy'))
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('is not active', result.stderr)
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == '__main__':

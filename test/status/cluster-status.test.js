@@ -5,6 +5,8 @@ import path from "node:path";
 import { AIM_FLEET, CLAUDE_STATUS_SEPARATOR, parseRemoteStatus } from "../../src/cli/commands/cluster.js";
 import { renderStatusText } from "../../src/status/render.js";
 import { renderClusterStatusText } from "../../src/status/cluster-view.js";
+import { withAgyConnection } from "../../src/credentials/agy-local.js";
+import { AGY_STATUS_STALE_MS, readLocalAgyStatus } from "../../src/status/agy-view.js";
 import { runCli, runCliWithExitCode } from "../helpers/cli-runner.js";
 import { mkTempHome } from "../helpers/files.js";
 
@@ -83,6 +85,20 @@ test("all-accounts keeps blocked Codex and Claude accounts visible in their usua
 test("the fleet includes the old M1", () => {
   assert.deepEqual(AIM_FLEET.find((machine) => machine.name === "old-m1"),
     { name: "old-m1", target: "aelaguiz@amir-old-m1.fairy-salmon.ts.net" });
+});
+
+test("status --cluster is the same cluster status command", async () => {
+  const home = homeFor("mini-3");
+  const deps = {
+    nowImpl: () => NOW,
+    clusterLocalStatusImpl: async () => machineStatus(),
+    clusterRemoteStatusImpl: async () => remoteText(machineStatus()),
+  };
+  for (const format of [[], ["--json"]]) {
+    const normal = await runCliWithExitCode(["cluster", "status", "--home", home, ...format], deps);
+    const alias = await runCliWithExitCode(["status", "--cluster", "--home", home, ...format], deps);
+    assert.deepEqual(alias, normal);
+  }
 });
 
 test("the fleet includes Minis 3 to 5", () => {
@@ -232,6 +248,133 @@ test("cluster status names machines that did not answer, marks them in the machi
   assert.doesNotMatch(result.stdout, /secret stderr/);
 });
 
+test("cluster counts known Antigravity grant states from local and mixed-version remote status", async (t) => {
+  const home = homeFor("mini-3");
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const connection = path.join(home, ".aimgr", "agy", "workspace");
+  const grantDir = path.join(connection, "home", ".gemini", "antigravity-cli");
+  fs.mkdirSync(grantDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(connection, "connection.json"), '{"version":1,"label":"workspace"}', { mode: 0o600 });
+  fs.writeFileSync(path.join(grantDir, "antigravity-oauth-token"), "synthetic-secret", { mode: 0o600 });
+  const localDeps = {
+    readLocalAgyStatusImpl: (homeDir, options) => readLocalAgyStatus(homeDir, {
+      ...options, runtimeRoot: path.join(home, "missing-runtime"),
+    }),
+  };
+  const local = JSON.parse(await runCli(["status", "--json", "--home", home], localDeps));
+  assert.deepEqual(local.agy.connections.map(({ label, status }) => ({ label, status })), [{ label: "workspace", status: "ready" }]);
+
+  const report = (connections, runtime = "supported", localState = "available") => ({ runtime, localState, connections });
+  const result = await runCliWithExitCode(["cluster", "status", "--home", home], {
+    ...localDeps,
+    nowImpl: () => NOW,
+    clusterRemoteStatusImpl: async (target) => {
+      const { name } = AIM_FLEET.find((machine) => machine.target === target);
+      const status = machineStatus({ codexReady: name === "m3-max" });
+      if (name === "m3-36gb") throw Object.assign(new Error("synthetic-secret"), { code: 255 });
+      if (name === "m5") status.view.agy = report([]);
+      if (name === "home") status.view.agy = report([], "unsupported");
+      if (name === "mini-2") status.view.agy = report([{ label: "workspace", status: "needs-sign-in" }]);
+      if (name === "mini-4") status.view.agy = report([{ label: "workspace", status: "invalid-state" }]);
+      if (name === "m3-max") status.view.agy = report([{ label: "synthetic-secret@example.test", status: "ready" }]);
+      if (name === "studio") status.view.agy = report([{ label: "workspace", status: "unknown" }], "supported", "unavailable");
+      if (name === "old-m1") {
+        status.view.agy = report([{ label: "workspace", status: "not-enrolled", accountHome: "/synthetic-secret" }]);
+        return `${JSON.stringify(status.view)}\n${CLAUDE_STATUS_SEPARATOR}\n`;
+      }
+      return remoteText(status);
+    },
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(row(result.stdout, "workspace")["local grants"], "1/5");
+  assert.equal(row(result.stdout, "workspace")["grant on"], "mini-3");
+  assert.match(row(result.stdout, "workspace")["availability by machine"], /unsupported platform home.*sign-in required mini-2.*invalid local state mini-4/);
+  const agy = gridRow(result.stdout, "agy grants");
+  assert.equal(agy["mini-3"], local.agy.runtime === "supported" ? "1" : "1*");
+  assert.equal(agy["mini-5"], "old");
+  assert.equal(agy["m3-max"], "?");
+  assert.equal(agy["m3-36gb"], "x");
+  assert.equal(agy.studio, "?");
+  assert.equal(agy.home, "0*");
+  assert.equal(agy["mini-4"], "0+?");
+  assert.equal(gridRow(result.stdout, "codex")["m3-max"], "1");
+  assert.equal(gridRow(result.stdout, "claude left")["old-m1"], "x");
+  assert.match(result.stdout, /Claude status unavailable: mini-3, old-m1/);
+  assert.match(result.stdout, /m3-36gb: SSH connection failed/);
+  assert.doesNotMatch(result.stdout, /synthetic-secret/);
+});
+
+test("ordinary and cluster status refresh Antigravity quota on demand with a shared cache", async (t) => {
+  const home = homeFor("mini-3");
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const runtimeRoot = path.join(home, "runtime");
+  const artifactSet = "a".repeat(64);
+  const bundle = path.join(runtimeRoot, "artifacts", artifactSet);
+  fs.mkdirSync(bundle, { recursive: true });
+  fs.writeFileSync(path.join(runtimeRoot, "active.json"), JSON.stringify({ schema: 1, artifactSet }));
+  fs.writeFileSync(path.join(bundle, "approval.json"), JSON.stringify({ privacyAbi: "agy-privacy-v2" }));
+  for (const name of ["agy", "launcher", "policy.json"]) fs.writeFileSync(path.join(bundle, name), "");
+
+  const connection = path.join(home, ".aimgr", "agy", "workspace");
+  const accountHome = path.join(connection, "home");
+  const grantDir = path.join(accountHome, ".gemini", "antigravity-cli");
+  fs.mkdirSync(grantDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(connection, "connection.json"), '{"version":1,"label":"workspace"}', { mode: 0o600 });
+  fs.writeFileSync(path.join(grantDir, "antigravity-oauth-token"), "synthetic-secret", { mode: 0o600 });
+  let now = NOW;
+  let remaining = 0.82;
+  let reset = NOW + 60_000;
+  let failed = false;
+  const calls = [];
+  const deps = {
+    nowImpl: () => now,
+    readLocalAgyStatusImpl: (homeDir, options) => readLocalAgyStatus(homeDir, { ...options, platform: "darwin", arch: "arm64", runtimeRoot }),
+    clusterRemoteStatusImpl: async () => remoteText(machineStatus()),
+    runAgyNativeImpl(invocation) {
+      calls.push({ operation: invocation.operation, label: invocation.label, home: invocation.accountHome });
+      const { operation } = invocation;
+      if (failed) return { exitCode: 1 };
+      const data = operation === "usage" ? { groups: [{ name: "Gemini Models", buckets: [
+        { window: "weekly", remaining_fraction: remaining, reset_time: new Date(reset).toISOString() },
+      ] }] } : { plan_name: "Google AI Pro" };
+      return { exitCode: 0, statusReport: JSON.stringify({ status: "SUCCESS", num_turns: 0, conversation_id: "", command: { name: operation, data } }) };
+    },
+  };
+  const status = (...args) => runCliWithExitCode(["status", "--home", home, ...args], deps);
+  const operations = () => calls.map(({ operation }) => operation);
+  const initial = await status();
+  assert.match(initial.stdout, /workspace.*82% left/);
+  assert.deepEqual(calls, ["usage", "credits"].map((operation) => ({ operation, label: "workspace", home: fs.realpathSync(accountHome) })));
+  const localJson = JSON.parse((await status("--json")).stdout);
+  assert.deepEqual(localJson.pools.agy.accountRows[0].observation, localJson.agy.connections[0].observation);
+  assert.equal(localJson.pools.agy.accountRows[0].observation.buckets[0].remainingFraction, 0.82);
+  assert.match((await status("--cluster")).stdout, /workspace.*82% left/);
+  assert.equal(calls.length, 2);
+
+  now = reset;
+  reset = now + DAY;
+  remaining = 1;
+  assert.match((await status("--cluster")).stdout, /workspace.*100% left/);
+  assert.deepEqual(operations(), ["usage", "credits", "usage", "credits"]);
+
+  now += AGY_STATUS_STALE_MS;
+  await withAgyConnection(home, "workspace", async () => {
+    assert.match((await status()).stdout, /workspace.*in use.*100% left/);
+    assert.equal(calls.length, 4);
+  });
+  failed = true;
+  const fallback = await status();
+  assert.match(fallback.stdout, /workspace.*100% left.*stale/);
+  assert.deepEqual(operations(), ["usage", "credits", "usage", "credits", "usage"]);
+  await status("--cluster");
+  assert.equal(calls.length, 5);
+  now += AGY_STATUS_STALE_MS;
+  remaining = 0.77;
+  failed = false;
+  assert.match((await status()).stdout, /workspace.*77% left/);
+  assert.deepEqual(operations().slice(-2), ["usage", "credits"]);
+});
+
 test("the machines cell names the minority and keeps attention marks", () => {
   const names = ["a", "b", "c", "d", "e"];
   const statuses = {
@@ -262,9 +405,12 @@ test("cluster Claude drops usage columns no account has a reading for", () => {
   assert.ok(header(render([signedIn("alpha", 40, NOW), opus])).includes("Opus"));
 });
 
-test("remote status parsing needs both reports", () => {
+test("remote status parsing keeps general status if the Claude report is invalid", () => {
   const status = machineStatus();
   assert.deepEqual(parseRemoteStatus(remoteText(status)), status);
+  assert.deepEqual(parseRemoteStatus(`${JSON.stringify(status.view)}\n${CLAUDE_STATUS_SEPARATOR}\n`), {
+    ...status, claude: null,
+  });
   assert.throws(() => parseRemoteStatus(JSON.stringify(status.view)));
 });
 
@@ -277,13 +423,32 @@ test("cluster status rejects missing machine identity and unsupported arguments"
 test("cluster status --json gives one pool from every machine's freshest reading", async () => {
   const home = homeFor("m5");
   const stale = signedIn("alpha", 0, NOW - 5 * DAY);
+  const agy = (observedAtMs, remainingFraction, availability = "ready") => ({
+    runtime: "supported", localState: "available", connections: [{
+      label: "workspace", status: "ready", availability, accountHome: "route-secret-marker",
+      observation: { observedAtMs, buckets: [{ id: "gemini-weekly", remainingFraction }] },
+    }],
+  });
   const result = await runCliWithExitCode(["cluster", "status", "--json", "--home", home], {
     nowImpl: () => NOW,
     // This machine's own reading is days old and says the account is unused.
-    clusterLocalStatusImpl: async () => machineStatus({ alpha: stale }),
+    clusterLocalStatusImpl: async () => {
+      const status = machineStatus({ alpha: stale });
+      status.view.agy = agy(NOW - DAY, 0);
+      return status;
+    },
     clusterRemoteStatusImpl: async (target) => {
-      if (target.includes("mini-1")) return remoteText(machineStatus({ alpha: signedIn("alpha", 100, NOW), codexReady: true }));
+      if (target.includes("mini-1")) {
+        const status = machineStatus({ alpha: signedIn("alpha", 100, NOW), codexReady: true });
+        status.view.agy = agy(NOW, 0.8, "in-use");
+        return remoteText(status);
+      }
       if (target.includes("mini-2")) throw new Error("secret stderr");
+      if (target.includes("old-m1")) {
+        const status = machineStatus();
+        status.view.agy = { runtime: "unsupported", localState: "available", connections: [] };
+        return remoteText({ ...status, claude: null });
+      }
       return remoteText(machineStatus());
     },
   });
@@ -291,6 +456,9 @@ test("cluster status --json gives one pool from every machine's freshest reading
   const report = JSON.parse(result.stdout);
   assert.deepEqual(report.machines.find((machine) => machine.name === "mini-2"), { name: "mini-2", error: "status unavailable" });
   assert.deepEqual(report.machines.find((machine) => machine.name === "mini-1"), { name: "mini-1" });
+  assert.deepEqual(report.machines.find((machine) => machine.name === "old-m1"), {
+    name: "old-m1", claudeError: "status unavailable",
+  });
   const { claude, codex } = report.pools;
   assert.equal(claude.unit, "Max 20x weeks");
   assert.equal(claude.readings, "every machine");
@@ -301,5 +469,17 @@ test("cluster status --json gives one pool from every machine's freshest reading
   assert.equal(claude.accountRows.find((row) => row.label === "alpha").weekUsedPercent, 100);
   assert.equal(codex.unit, "Pro Max weeks");
   assert.equal(codex.counts.ready, 1);
-  assert.doesNotMatch(result.stdout, /secret stderr/);
+  assert.deepEqual(report.pools.agy, {
+    readings: "every machine",
+    accountRows: [{
+      label: "workspace",
+      observation: { observedAtMs: NOW, buckets: [{ id: "gemini-weekly", remainingFraction: 0.8 }] },
+      machines: {
+        m5: { status: "ready", availability: "ready" },
+        "mini-1": { status: "ready", availability: "in-use" },
+        "old-m1": { status: "not-enrolled", availability: "unsupported" },
+      },
+    }],
+  });
+  assert.doesNotMatch(result.stdout, /secret stderr|route-secret-marker/);
 });

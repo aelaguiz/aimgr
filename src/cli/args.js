@@ -120,6 +120,7 @@ export function parseArgs(argv) {
     afterDoubleDash: [],
   };
   const positional = [];
+  let clusterStatus = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -307,6 +308,10 @@ export function parseArgs(argv) {
       opts.compact = true;
       continue;
     }
+    if (arg === "--cluster" && argv[0] === "status") {
+      clusterStatus = true;
+      continue;
+    }
     if (arg === "--all-accounts") {
       if (argv[0] !== "status") throw new Error("Unknown option: --all-accounts");
       opts.allAccounts = true;
@@ -444,5 +449,9 @@ export function parseArgs(argv) {
     positional.push(arg);
   }
 
+  if (clusterStatus) {
+    if (positional.length !== 1) throw new Error("Usage: aim status --cluster");
+    return { opts, positional: ["cluster", "status"] };
+  }
   return { opts, positional };
 }

@@ -260,6 +260,7 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
     selectedCommand,
     pinnedArtifactSet,
     maintenance = false,
+    installStaging = false,
     platform = process.platform,
     arch = process.arch,
     fsImpl = fs,
@@ -335,10 +336,10 @@ export function createArtifactAdmission({ provider, runtimeRootDefault, privacyA
         const { fd, stat } = openProtected(path.join(root, name), fsImpl);
         try {
           // Linux's fixed native entry needs setuid solely to load AppArmor and
-          // install the syscall boundary before dropping every root ID. This is
-          // an ABI requirement on the one selected launcher, not permission for
-          // arbitrary helpers or vendor images to gain privilege (T02/T03).
-          const requiredPrivilege = platform === "linux" && name === manifest.launcher ? 0o4000 : 0;
+          // install the syscall boundary before dropping every root ID. The
+          // installer inspects its staging copy without setuid before granting
+          // that bit on the verified launcher (T02/T03).
+          const requiredPrivilege = !installStaging && platform === "linux" && name === manifest.launcher ? 0o4000 : 0;
           if (stat.size !== expected.size || Boolean(stat.mode & 0o111) !== expected.executable
             || (stat.mode & 0o6000) !== requiredPrivilege
             || (hashInstalledFiles && fileDigest(fd, fsImpl) !== expected.sha256)) {

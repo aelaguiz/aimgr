@@ -1,9 +1,13 @@
 import { OPENAI_CODEX_PROVIDER } from "../core/constants.js";
+import { formatAccountNote } from "./account-notes.js";
+import { parseAgyStatusReport } from "./agy-view.js";
 import { buildClaudeStatusAccountTable, describeClaudeOperatorState, formatClaudePlan, usageColumns } from "./claude-redis-view.js";
 import { buildStatusAccountTable } from "./render.js";
 import {
   PLAN_WEEK_WEIGHTS,
+  agyUsageColumns,
   buildStatusAccountFlags,
+  formatAgyAvailability,
   formatPoolCapacityLines,
   formatStatusAccountResetCell,
   formatStatusAccountUsedCell,
@@ -98,6 +102,17 @@ const signedInCount = (rows, machine) => (
   machine.error ? NO_ANSWER : String(rows.filter((row) => row.cells[machine.name] === "✓").length)
 );
 
+function agyGrantCount(machine) {
+  if (machine.error) return NO_ANSWER;
+  if (!Object.hasOwn(machine.view ?? {}, "agy")) return "old";
+  if (!machine.agy) return "?";
+  const { runtime, localState, connections } = machine.agy;
+  const present = connections.filter(({ status }) => status === "ready").length;
+  const hasInvalid = connections.some(({ status }) => status === "invalid-state");
+  const count = localState === "unavailable" ? "?" : `${present}${hasInvalid ? "+?" : ""}`;
+  return `${count}${runtime === "unsupported" ? "*" : ""}`;
+}
+
 function machineGrid(machines, claude, codex, nowMs) {
   const left = ({ rows, entries }, machine) => {
     if (machine.error) return NO_ANSWER;
@@ -106,10 +121,11 @@ function machineGrid(machines, claude, codex, nowMs) {
   };
   return formatStatusTable([
     ["signed in", ...machines.map((machine) => machine.name)],
-    ["claude", ...machines.map((machine) => signedInCount(claude.rows, machine))],
+    ["claude", ...machines.map((machine) => machine.claude ? signedInCount(claude.rows, machine) : NO_ANSWER)],
     ["codex", ...machines.map((machine) => signedInCount(codex.rows, machine))],
-    ["claude left", ...machines.map((machine) => left(claude, machine))],
+    ["claude left", ...machines.map((machine) => machine.claude ? left(claude, machine) : NO_ANSWER)],
     ["codex left", ...machines.map((machine) => left(codex, machine))],
+    ["agy grants", ...machines.map(agyGrantCount)],
   ]);
 }
 
@@ -228,6 +244,28 @@ function renderCodex(machines, { rows, entries }, answered, nowMs) {
   ];
 }
 
+function parseAgyMachines(reports) {
+  return reports.map((machine) => ({ ...machine, agy: parseAgyStatusReport(machine.view?.agy) }));
+}
+
+function agyRows(machines) {
+  return collectByLabel(machines, (machine) => machine.agy?.connections ?? []).map(([label, byMachine]) => ({
+    label,
+    byMachine,
+    observation: [...byMachine.values()].reduce((latest, { observation }) => (
+      observation && (!latest || observation.observedAtMs > latest.observedAtMs) ? observation : latest
+    ), null),
+  }));
+}
+
+function agyMachineConnection({ name, agy }, byMachine) {
+  const local = byMachine.get(name);
+  const status = local?.status ?? (agy.localState === "available" ? "not-enrolled" : "unknown");
+  const availability = agy.runtime === "unsupported" ? "unsupported"
+    : local?.availability ?? (local ? undefined : status);
+  return { status, ...(availability ? { availability } : {}), ...(local?.route ? { route: local.route } : {}) };
+}
+
 // The pools `aim status --json` reports for one machine, built here from every
 // machine's freshest reading of each account. A machine whose own logins have
 // lapsed cannot read usage and reports days-old figures as its pool, so this is
@@ -238,16 +276,78 @@ export function buildClusterPools(machines, { nowMs = Date.now() } = {}) {
     row.status === "ready" ? row.account : { ...row.account, plan: null, usage: null }
   ));
   const everyMachine = (pool) => ({ ...pool, readings: "every machine" });
+  const reportingAgy = parseAgyMachines(machines).filter((machine) => !machine.error && machine.agy);
   return {
     claude: everyMachine(buildClaudeStatusAccountTable({ accounts: claudeAccounts, checkedAtMs: nowMs }).pool),
     codex: everyMachine(buildStatusAccountTable(codexAccounts, nowMs, { codex: true }).pool),
+    agy: everyMachine({
+      accountRows: agyRows(reportingAgy).map(({ label, byMachine, observation }) => ({
+        label,
+        observation,
+        machines: Object.fromEntries(reportingAgy.map((machine) => (
+          [machine.name, agyMachineConnection(machine, byMachine)]
+        ))),
+      })),
+    }),
   };
 }
 
-export function renderClusterStatusText(machines, { nowMs = Date.now() } = {}) {
+const AGY_MACHINE_MARKS = { ready: "", "needs-sign-in": "!", "not-enrolled": "-", "invalid-state": "?" };
+
+function agyMachineAvailability(machines, byMachine) {
+  const groups = new Map();
+  for (const machine of machines) {
+    const availability = formatAgyAvailability(agyMachineConnection(machine, byMachine));
+    if (!groups.has(availability)) groups.set(availability, []);
+    groups.get(availability).push(machine.name);
+  }
+  return [...groups.entries()].map(([availability, names]) => `${availability} ${names.join(", ")}`).join(" · ") || "--";
+}
+
+function renderAgy(reportingAgy, nowMs) {
+  const reporterMachines = reportingAgy.filter((machine) => machine.agy.localState === "available");
+  const rows = agyRows(reportingAgy);
+  const hasAvailability = reportingAgy.some(({ agy }) => agy.connections.some((connection) => connection.availability));
+  const quota = agyUsageColumns(rows, nowMs);
+  const showUsage = hasAvailability || rows.some((row) => row.observation);
+  const lines = [`ANTIGRAVITY: ${rows.length} ${rows.length === 1 ? "connection" : "connections"}${quota.hasQuota ? "" : " · quota unavailable"}`];
+  if (rows.length === 0) return lines;
+  const table = [
+    ["account", "local grants", hasAvailability ? "grant on" : "machines",
+      ...(showUsage ? quota.headers : []), ...(hasAvailability ? ["availability by machine"] : [])],
+    ...rows.map(({ label, byMachine, observation }) => {
+      const states = reporterMachines.map(({ name }) => [name, byMachine.get(name)?.status ?? "not-enrolled"]);
+      const grants = states.filter(([, state]) => state === "ready").map(([name]) => name);
+      const known = states.filter(([, state]) => state !== "invalid-state").length;
+      const grantMachines = hasAvailability ? grants : states.map(([name, state]) => `${name}${AGY_MACHINE_MARKS[state]}`);
+      return [label, `${grants.length}/${known}`, grantMachines.join(", ") || "--",
+        ...(showUsage ? quota.values({ observation }) : []),
+        ...(hasAvailability ? [agyMachineAvailability(reportingAgy, byMachine)] : [])];
+    }),
+  ];
+  lines.push("local grants: grant files present / machines with known grant state");
+  if (!hasAvailability) lines.push("machines: name has a grant file · name! sign-in required · name- not enrolled · name? invalid local state");
+  lines.push(...formatStatusTable(table));
+  for (const { label } of rows) {
+    for (const { view } of reportingAgy) {
+      if (!Array.isArray(view.accountNotes)) continue;
+      const record = view.accountNotes.find((entry) => entry?.provider === "antigravity" && entry.label === label && typeof entry.note === "string");
+      if (!record) continue;
+      lines.push(formatAccountNote(record));
+      break;
+    }
+  }
+  return lines;
+}
+
+export function renderClusterStatusText(reports, { nowMs = Date.now() } = {}) {
+  const machines = parseAgyMachines(reports);
   const answered = machines.filter((machine) => !machine.error);
   const failed = machines.filter((machine) => machine.error);
-  const claude = claudeRows(machines, nowMs);
+  const claudeMachines = answered.filter((machine) => machine.claude);
+  const claudeUnavailable = answered.filter((machine) => !machine.claude);
+  const reportingAgy = answered.filter((machine) => machine.agy);
+  const claude = claudeRows(claudeMachines, nowMs);
   const codex = codexRows(machines);
   const columns = usageColumns(claude.map((row) => row.account), nowMs);
   const codexEntries = codex.map(({ status, account }) => {
@@ -270,10 +370,13 @@ export function renderClusterStatusText(machines, { nowMs = Date.now() } = {}) {
       + (failed.length ? ` · ${failed.map((machine) => `${machine.name}: ${machine.error}`).join(" · ")}` : ""),
     ...machineGrid(machines, claudePool, codexPool, nowMs),
     LEGEND,
+    "agy grants: local grant files · * unsupported platform · old older AIM · ? unknown · x no machine status",
     "",
-    ...renderClaude(machines, claude, answered.length, nowMs, columns),
+    ...renderClaude(claudeMachines, claude, claudeMachines.length, nowMs, columns),
+    ...(claudeUnavailable.length ? [`Claude status unavailable: ${claudeUnavailable.map(({ name }) => name).join(", ")}`] : []),
     "",
     ...renderCodex(machines, codexPool, answered.length, nowMs),
+    ...(reportingAgy.length ? ["", ...renderAgy(reportingAgy, nowMs)] : []),
   ];
   return `${lines.join("\n")}\n`;
 }

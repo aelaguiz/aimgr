@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Check that this machine runs the AI Manager install-release.sh installed from this checkout.
-# It reads files and runs `aim`, and never launches Claude, signs in or uses the network.
+# It reads files and runs `aim`, and never launches a provider, signs in or uses the network.
 set -euo pipefail
 
 repo="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,6 +27,10 @@ except ValueError:
 if (status.get("selected") or {}).get("available") is not True or status.get("refusal"):
     sys.exit("the reviewed Claude runtime is not available: %s" % (status.get("refusal") or "not selected"))
 ' || exit 1
+
+agy_bundle="$("$bin_dir/aim" agy privacy status --json 2>/dev/null |
+  /usr/bin/python3 -I "$release/scripts/choose-runtime.py" agy "$data/runtime-bundles" /opt/aimgr-agy-runtime)"
+[[ -z $agy_bundle ]] || fail "the reviewed Antigravity runtime in $agy_bundle is not active"
 
 for skill in "$release"/skills/*/; do
   name="$(basename -- "$skill")"

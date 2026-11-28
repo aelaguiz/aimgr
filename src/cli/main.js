@@ -13,6 +13,7 @@ const COMMAND_LOADERS = new Map([
   ["label", async () => (await import("./commands/repair.js")).handleLabel],
   ["rebalance", async () => (await import("./commands/rebalance.js")).handleRebalance],
   ["auth", async () => (await import("./commands/auth.js")).handleAuth],
+  ["agy", async () => (await import("./commands/agy.js")).handleAgy],
   ["codex", async () => (await import("./commands/codex.js")).handleCodex],
   ["hermes", async () => (await import("./commands/hermes.js")).handleHermes],
   ["claude", async () => (await import("./commands/claude.js")).handleClaude],

@@ -27,8 +27,9 @@ last commit that passed if either fails. The installer:
 1. Builds a fixed release from the checkout's commit in
    `~/.local/share/aimgr/releases/<commit>`, with its own `npm ci`. Uncommitted edits never go
    live, and pulling `main` changes nothing until the new release has installed.
-2. Activates the newest normal-use approved bundle for each of Claude and Codex in
+2. Activates the newest normal-use approved bundle for Claude, Codex and Antigravity in
    `~/.local/share/aimgr/runtime-bundles/` when its active runtime is older or unavailable.
+   Antigravity is available on Linux x64 and macOS arm64 with the platform's reviewed bundle.
    Codex activation also installs its administrator privacy policy. Claude's machine-local
    environment identity is created if missing and preserved on subsequent installs, including
    when its bundle does not need activation. A Mac keeps its running sessions. Linux Claude
@@ -145,6 +146,7 @@ aim status
 aim status --json
 aim status --compact
 aim status --all-accounts
+aim status --cluster
 aim cluster status
 aim cluster status --json
 ```
@@ -238,6 +240,14 @@ aim claude resume [<row-or-thread-id-or-name>] [--account <label>] [--switch-acc
 aim claude run (opus|fable|sonnet) [--resume]
 aim claude run <label> (opus|fable|sonnet) [--resume]
 aim claude run <label> [-- <claude args...>]
+aim agy login <label>
+aim agy status [<label>] [--json]
+aim agy privacy status [--json]
+aim agy refresh <label>
+aim agy run <label>
+aim agy run <label> -- --print <prompt>
+aim agy resume <label> <conversation-id> -- --print <prompt>
+aim agy logout <label>
 aim pi use
 # Explicit provider bindings; omitted providers remain unchanged
 aim pi use --codex <auto|label|off> --claude <fable|opus|sonnet|label|off>
@@ -251,6 +261,17 @@ aim prime resume <path-or-id> [--rotate]
 aim prime status
 aim prime uninstall [--provider <openai-codex|anthropic|xai>]
 ```
+
+Antigravity uses the official `agy` binary and one local native Google grant per
+connection label. Linux x64 and macOS arm64 use separate reviewed runtime bundles.
+`aim status` and `aim agy status` show local sign-in, launch readiness, and
+Antigravity rate limits. They use Google's CLI to refresh missing or expired
+quota for eligible local connections, reuse readings for five minutes, and keep
+the last successful reading and its timestamp if a refresh fails.
+`aim status --cluster` (also `aim cluster status`) uses the same refresh policy
+on each host and shows where each connection can run alongside its newest quota
+reading. Run `aim agy refresh <label>` to force a quota read for one account.
+[Using Antigravity with AI Manager](docs/ANTIGRAVITY.md).
 
 Run `aim claude resume` in a terminal to choose a local managed Claude session.
 The picker lists the most recently used sessions first, with their saved title

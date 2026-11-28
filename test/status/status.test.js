@@ -1,10 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
+import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
+import { ensureAgyAccountMetadata } from "../../src/coordination/agy-metadata.js";
+import { connectRedisStore } from "../../src/coordination/redis-store.js";
+import { supportsAgyPlatform } from "../../src/privacy/agy-artifacts.js";
+import { readLocalAgyStatus } from "../../src/status/agy-view.js";
 import { renderStatusText } from "../../src/status/render.js";
 import { renderStatusCompactText } from "../../src/status/table.js";
 import { writeLocalState } from "../../src/state/local-state.js";
 import { runCli } from "../helpers/cli-runner.js";
+import { FakeRedisClient } from "../helpers/fake-redis.js";
 import { mkTempHome, writeJson } from "../helpers/files.js";
 
 test("unconfigured status ignores legacy secrets and reports local target facts", async () => {
@@ -38,7 +45,82 @@ test("unconfigured status ignores legacy secrets and reports local target facts"
   assert.equal(parsed.codexCli.activeLabel, "boss");
   assert.equal(parsed.claudeCli.lastRunLabel, "writer");
   assert.deepEqual(parsed.accounts, []);
+  assert.deepEqual(parsed.agy.connections, []);
   assert.doesNotMatch(out, /LEGACY_ACCESS_SECRET|LEGACY_REFRESH_SECRET|legacy-account|retired/);
+});
+
+test("status reports Antigravity grant state, launch readiness and shared labels", async (t) => {
+  const home = mkTempHome();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const root = path.join(home, ".aimgr", "agy");
+  for (const label of ["connected", "signed-out", "invalid"]) {
+    const dir = path.join(root, label);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(dir, "connection.json"), JSON.stringify({
+      version: label === "invalid" ? 0 : 1,
+      label,
+      profileRef: "route-private-marker",
+    }), { mode: 0o600 });
+  }
+  const grantDir = path.join(root, "connected", "home", ".gemini", "antigravity-cli");
+  fs.mkdirSync(grantDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(grantDir, "antigravity-oauth-token"), "secret-native-grant-marker", { mode: 0o600 });
+
+  const client = new FakeRedisClient();
+  const keyPrefix = "aimgr:agy-status-test";
+  writeAimgrConfig({ homeDir: home, config: { redis: { url: "redis://fixture", keyPrefix } } });
+  const connect = () => connectRedisStore({ client, keyPrefix });
+  const store = await connect();
+  await ensureAgyAccountMetadata(store, { label: "remote-only" });
+  const cli = (format, connectRedisStoreImpl = connect) => runCli(["status", "--home", home, ...format], {
+    connectRedisStoreImpl,
+    fetchJsonWithTimeoutImpl: () => assert.fail("Status used provider networking"),
+    readLocalAgyStatusImpl: (homeDir, options) => readLocalAgyStatus(homeDir, {
+      ...options, runtimeRoot: path.join(home, "missing-runtime"),
+    }),
+  });
+  const [json, text, compact] = await Promise.all([cli(["--json"]), cli([]), cli(["--compact"])]);
+  const runtime = supportsAgyPlatform() ? "supported" : "unsupported";
+  const { agy, pools } = JSON.parse(json);
+  assert.equal(agy.runtime, runtime);
+  assert.equal(agy.localState, "available");
+  assert.deepEqual(agy.connections.map(({ label, status }) => ({ label, status })), [
+    { label: "connected", status: "ready" },
+    { label: "invalid", status: "invalid-state" },
+    { label: "remote-only", status: "not-enrolled" },
+    { label: "signed-out", status: "needs-sign-in" },
+  ]);
+  assert.deepEqual(pools.agy, {
+    readings: "this machine",
+    accountRows: agy.connections.map((connection) => ({ ...connection, observation: null })),
+  });
+  assert.match(text, /ANTIGRAVITY \(4\).*quota unavailable/);
+  assert.match(text, /connected\s+local grant present/);
+  assert.match(text, /signed-out\s+sign-in required/);
+  assert.match(text, /invalid\s+invalid local state/);
+  assert.match(text, /remote-only\s+not enrolled here/);
+  assert.match(compact, /quota=unavailable\nagy\/connected=local-grant-present.*\nagy\/invalid=invalid-local-state.*\nagy\/remote-only=not-enrolled-here.*\nagy\/signed-out=sign-in-required/);
+  for (const output of [json, text, compact]) assert.doesNotMatch(output, /route-private-marker|secret-native-grant-marker|antigravity-oauth-token/);
+
+  const offline = JSON.parse(await cli(["--json"], async () => { throw new Error("fixture Redis outage"); }));
+  assert.deepEqual(offline.agy, { ...agy, connections: agy.connections.filter(({ label }) => label !== "remote-only") });
+  assert.ok(["cache", "unavailable"].includes(offline.redis.status));
+
+  fs.chmodSync(root, 0o755);
+  const unsafe = JSON.parse(await cli(["--json"]));
+  assert.equal(unsafe.agy.runtime, runtime);
+  assert.equal(unsafe.agy.localState, "unavailable");
+  assert.deepEqual(unsafe.agy.connections.map(({ label, status }) => ({ label, status })), [{ label: "remote-only", status: "unknown" }]);
+  assert.equal(unsafe.redis.status, "live");
+  assert.ok(Array.isArray(unsafe.accounts));
+  assert.equal(readLocalAgyStatus(home, { platform: "darwin", arch: "x64" }).runtime, "unsupported");
+
+  fs.chmodSync(root, 0o700);
+  await client.sAdd(store.keys.agyAccountLabels(), "private-roster-address@example.test");
+  const corruptRoster = await cli(["--json"]);
+  assert.doesNotMatch(corruptRoster, /private-roster-address/);
+  assert.equal(JSON.parse(corruptRoster).redis.status, "live");
+  assert.deepEqual(JSON.parse(corruptRoster).agy, offline.agy);
 });
 
 test("plain status shows coordination provenance and canonical account facts", () => {

@@ -4,7 +4,7 @@
 #include <sys/vfs.h>
 #include <linux/magic.h>
 
-static unsigned long long codex_pid_namespace(void) {
+static unsigned long long profile_pid_namespace(void) {
     struct stat st;
     if (stat("/proc/self/ns/pid", &st)) return 0;
     return (unsigned long long)st.st_ino;
@@ -79,13 +79,13 @@ static int gc_tasks(struct gc_pair *pairs,size_t count) {
     }
     closedir(proc);return ok;
 }
-static void codex_prune_profiles(int lock,unsigned long long namespace) {
+static void prune_profiles(int lock,const char *provider,unsigned long long namespace) {
     if (!namespace || flock(lock,LOCK_EX|LOCK_NB)) return;
     struct gc_pair *pairs=NULL;size_t count=0;char *line=NULL;size_t cap=0;
     FILE *file=NULL;unsigned long long before,after,population_before,population_after;
     if (!gc_proc_complete(namespace)) goto done;
     file=fopen("/sys/kernel/security/apparmor/profiles","re");if (!file) goto done;
-    char prefix[96];snprintf(prefix,sizeof(prefix),"aim-codex-p-%u-n%llu-",caller,namespace);
+    char prefix[96];snprintf(prefix,sizeof(prefix),"aim-%s-p-%u-n%llu-",provider,caller,namespace);
     size_t length=strlen(prefix);
     while (getline(&line,&cap,file)>=0) {
         if (strncmp(line,prefix,length)) continue;
