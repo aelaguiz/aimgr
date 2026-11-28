@@ -33,13 +33,14 @@ async function publishEnrollment(redis, label, connectRedisStoreImpl = connectRe
 export async function handleAgy(context) {
   const { argv, opts, positional, env, stdout, stderr, setExitCode, cwd = process.cwd(), homeDir, nowMs = Date.now() } = context;
   const [, operation, label, ...extra] = positional;
+  const autoSelect = operation === "run" && label === undefined;
   const privacy = operation === "privacy";
   const resume = operation === "resume";
   const logout = operation === "logout";
   if (privacy && label !== "status") throw new Error("Usage: aim agy privacy status [--json]");
   if (!["login", "status", "refresh", "run", "resume", "logout", "privacy"].includes(operation)
-      || (label === undefined && operation !== "status") || extra.length !== Number(resume)) {
-    throw new Error("Use `aim agy login <label>`, `aim agy status [<label>] [--json]`, `aim agy refresh <label>`, `aim agy run <label> [-- --print <prompt>]`, `aim agy resume <label> <conversation-id> -- --print <prompt>`, or `aim agy logout <label>`.");
+      || (label === undefined && operation !== "status" && !autoSelect) || extra.length !== Number(resume)) {
+    throw new Error("Use `aim agy login <label>`, `aim agy status [<label>] [--json]`, `aim agy refresh <label>`, `aim agy run [label] [-- --print <prompt>]`, `aim agy resume <label> <conversation-id> [-- --print <prompt>]`, or `aim agy logout <label>`.");
   }
   const [sessionId] = extra;
   if (resume && !conversationId.test(sessionId)) throw new Error("Antigravity resume needs the native conversation UUID.");
@@ -71,16 +72,15 @@ export async function handleAgy(context) {
   }
 
   const runNative = context.runAgyNativeImpl ?? runAgyNative;
-  const configuredProfile = agyProfileRef(config, label);
-  const invocation = { operation, label, cwd, homeDir, config, env, stdout, stderr };
+  const invocation = { operation, cwd, homeDir, config, env, stdout, stderr };
   if (operation === "login") {
     const { redis } = config;
     const { alreadyEnrolled, archiveName } = await enrollAgyConnection(homeDir, label, async (accountHome, profileRef) => {
-      const result = await runNative({ ...invocation, profileRef, accountHome, args: [] });
+      const result = await runNative({ ...invocation, label, profileRef, accountHome, args: [] });
       if (result?.exitCode !== 0 || typeof result.account !== "string" || !result.account.trim()) {
         throw new Error(`Antigravity sign-in did not verify a Google account. Run \`aim agy login ${label}\` to try again.`);
       }
-    }, { profileRef: configuredProfile });
+    }, { profileRef: agyProfileRef(config, label) });
     let local = `Enrolled Antigravity connection ${label} locally.`;
     if (alreadyEnrolled) local = `Antigravity connection ${label} is already enrolled locally.`;
     else if (archiveName) local = `Signed in to Antigravity connection ${label} with a fresh local home.`;
@@ -95,7 +95,9 @@ export async function handleAgy(context) {
     return;
   }
 
-  await withAgyConnection(homeDir, label, async (connection) => {
+  async function useConnection(connection) {
+    const { label } = connection;
+    if (autoSelect && connection.status !== "ready") return;
     if (connection.status === "not-enrolled") throw new Error(`Run \`aim agy login ${label}\` to enroll this connection.`);
     if (connection.status === "needs-sign-in") {
       if (logout) {
@@ -106,12 +108,13 @@ export async function handleAgy(context) {
     }
     if (connection.status !== "ready") throw new Error(`Antigravity connection ${label} has invalid local state.`);
     const { accountHome, profileRef } = connection;
-    assertAgyRouteMatches(label, configuredProfile, profileRef);
+    assertAgyRouteMatches(label, agyProfileRef(config, label), profileRef);
     if (operation === "refresh") {
       writeAgyUsageCache(accountHome, await refreshAgyUsage(connection, usageOptions));
       return;
     }
-    const result = await runNative({ ...invocation, profileRef, accountHome, sessionId, args: opts.afterDoubleDash });
+    if (autoSelect) stderr.write(`Using Antigravity account ${label}.\n`);
+    const result = await runNative({ ...invocation, label, profileRef, accountHome, sessionId, args: opts.afterDoubleDash });
     if (result?.exitCode !== 0) {
       setExitCode(Number.isInteger(result?.exitCode) ? result.exitCode : 1);
     } else if (logout) {
@@ -121,7 +124,21 @@ export async function handleAgy(context) {
       clearAgyObservation(accountHome);
       stdout.write(`Antigravity connection ${label} signed out.\n`);
     }
-  });
+    return true;
+  }
+  if (autoSelect) {
+    const readStatus = context.readLocalAgyStatusImpl ?? readLocalAgyStatus;
+    const { connections } = readStatus(homeDir, { config });
+    const ready = connections.filter(row => row.availability === "ready");
+    // Vary the starting account so equally available accounts share fresh sessions.
+    const start = Math.floor(Math.random() * ready.length);
+    for (let offset = 0; offset < ready.length; offset += 1) {
+      const candidate = ready[(start + offset) % ready.length];
+      if (await withAgyConnection(homeDir, candidate.label, useConnection, { skipBusy: true })) return;
+    }
+    throw new Error("No Antigravity account is available on this machine. Run `aim agy status` to see why, or `aim agy login <label>` to add an account.");
+  }
+  await withAgyConnection(homeDir, label, useConnection);
   if (operation === "refresh") {
     const report = readLocalAgyStatus(homeDir, { config, label });
     stdout.write(`${renderLocalAgyStatusLines(report, nowMs).join("\n")}\n`);

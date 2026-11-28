@@ -244,9 +244,9 @@ aim agy login <label>
 aim agy status [<label>] [--json]
 aim agy privacy status [--json]
 aim agy refresh <label>
-aim agy run <label>
-aim agy run <label> -- --print <prompt>
-aim agy resume <label> <conversation-id> -- --print <prompt>
+aim agy run [label]
+aim agy run [label] -- --print <prompt>
+aim agy resume <label> <conversation-id> [-- --print <prompt>]
 aim agy logout <label>
 aim pi use
 # Explicit provider bindings; omitted providers remain unchanged

@@ -265,3 +265,28 @@ test("a signed-out ACP server cannot ask the chat to authenticate", async () => 
   assert.match(agent.error(), /requires a current Google sign-in/);
   assert.doesNotMatch(agent.error(), /private/);
 });
+
+test("interactive resume reopens only the listed conversation in the current workspace", async () => {
+  const input = new PassThrough();
+  const lines = ["continue", "/exit"];
+  const agent = mockAgy({
+    initialize: { result: initialize },
+    "session/list": { result: { sessions: [{ sessionId, cwd }] } },
+    "session/resume": { result: { sessionId } },
+    "session/prompt": { result: { stopReason: "end_turn" } },
+  });
+  const result = await agent.run({ args: [], label: "work", stdin: input,
+    stderr: { write(text) {
+      if (text === "agy> ") setImmediate(() => input.write(lines.shift() + "\n"));
+    } },
+  });
+  assert.deepEqual(result, { exitCode: 0 });
+  assert.deepEqual(agent.requests.map(row => row.method), ["initialize", "session/list", "session/resume", "session/prompt"]);
+  assert.equal(agent.requests.at(-1).params.sessionId, sessionId);
+
+  const other = mockAgy({ initialize: { result: initialize },
+    "session/list": { result: { sessions: [{ sessionId, cwd: "/different" }] } },
+  });
+  assert.deepEqual(await other.run({ args: [], stdin: input }), { exitCode: 1 });
+  assert.deepEqual(other.requests.map(row => row.method), ["initialize", "session/list"]);
+});

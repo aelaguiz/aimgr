@@ -4,7 +4,7 @@ Open development work is tracked in [GitHub Issues](https://github.com/aelaguiz/
 
 ## Current work
 
-- **[Run Antigravity from the default AI Manager on every fleet machine](https://github.com/aelaguiz/aimgr/issues/51).** Covers interactive and headless sessions, account enrollment, quota status, and installation on macOS and Linux. [Antigravity commands and account storage](docs/ANTIGRAVITY.md).
+- **[Run Antigravity from the default AI Manager on every fleet machine](https://github.com/aelaguiz/aimgr/issues/51).** Supports automatic local account selection, named launches, interactive and headless resume, account enrollment, quota status and installation on macOS and Linux. [Antigravity commands and account storage](docs/ANTIGRAVITY.md).
 
 - **[Keep Figma MCP signed in across managed Claude sessions — #43](https://github.com/aelaguiz/aimgr/issues/43).** One verified Figma grant per machine, with periodic native refresh and a managed MCP connection. See the [Figma MCP plan](docs/KEEP_FIGMA_MCP_SIGNED_IN_2026-11-25.md).
 

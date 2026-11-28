@@ -146,7 +146,7 @@ export async function runAgyNative({ operation, label, accountHome, cwd, homeDir
 } = {}) {
   const login = operation === "login";
   const logout = operation === "logout";
-  const interactive = operation === "run" && !args?.length;
+  const interactive = (operation === "run" || operation === "resume") && !args?.length;
   const acp = interactive || operation === "resume" || logout;
   const status = operation === "usage" || operation === "credits";
   const managed = acp || status;
@@ -154,7 +154,7 @@ export async function runAgyNative({ operation, label, accountHome, cwd, homeDir
   if (!login && !acp && !status && operation !== "run") throw new Error("Unsupported Antigravity operation.");
   if (status && args?.length) throw new Error("Antigravity quota checks take no native launch arguments.");
   if (interactive && !isInteractive) throw new Error("Antigravity chat requires an interactive terminal. Use `-- --print <prompt>` for headless runs.");
-  const printArgs = (operation === "run" && !interactive) || operation === "resume" ? printArguments(args, operation) : [];
+  const printArgs = !interactive && (operation === "run" || operation === "resume") ? printArguments(args, operation) : [];
   const nativeArgs = operation === "run" ? printArgs : [];
   const artifact = admitArtifact({ platform, arch });
   if (login && !isInteractive) throw new Error("Antigravity manual sign-in requires an interactive terminal.");
@@ -210,7 +210,7 @@ export async function runAgyNative({ operation, label, accountHome, cwd, homeDir
       };
       if (interactive) process.on("SIGINT", interrupt);
       try {
-        const result = await runAcp(child, { operation: interactive ? "interactive" : operation, label, sessionId, cwd: workspace,
+        const result = await runAcp(child, { operation: interactive && operation === "run" ? "interactive" : operation, label, sessionId, cwd: workspace,
           args: printArgs, stdout, stderr, signalChild });
         return interrupted ? { exitCode: 130 } : result;
       } finally {

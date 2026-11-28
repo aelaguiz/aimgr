@@ -1,7 +1,8 @@
 # Antigravity in AI Manager
 
-Run `aim agy status` to see which accounts can launch on this machine. Start a
-conversation in a project directory with the label shown in status.
+Run `aim agy run` from your project to start a conversation on an available account. AI Manager shows the selected label in the chat. Opening a second chat uses another available account. Each conversation stays with its original account.
+
+Use `aim agy status` to see which accounts can launch here. To select one by name, run
 
 ```sh
 aim agy run work
@@ -17,7 +18,7 @@ project uses that directory.
 | --- | --- |
 | `aim agy login work` | Enroll a Google account on this machine. |
 | `aim agy run work -- --print "Summarize the project"` | Print a single response and exit. |
-| `aim agy resume work <conversation-id> -- --print "Continue"` | Continue the exact conversation using the same account and machine. |
+| `aim agy resume work <conversation-id>` | Reopen the conversation in its original workspace with the same account and machine. Add `-- --print "Continue"` for one response. |
 | `aim agy status work` | Show the local grant, launch availability and Google's most recent quota reading. |
 | `aim agy privacy status` | Verify the selected local runtime offline. |
 | `aim agy refresh work` | Request a fresh quota reading. |

@@ -324,16 +324,16 @@ test("Antigravity roster rejects malformed labels at the Redis boundary", async 
   await assert.rejects(readAgyAccountMetadata(store), { message: "Antigravity roster contains an invalid label." });
 });
 
-test("Antigravity requires exact labels and status stays read-only for an empty or unsafe local store", async (t) => {
+test("Antigravity respects named labels and status stays read-only for an empty or unsafe local store", async (t) => {
   const deps = fixture(t);
   assert.deepEqual(JSON.parse(await runCli(["agy", "status", "--json"], deps)).connections, []);
   assert.match(await runCli(["agy", "status"], deps), new RegExp(`runtime platform ${runtime}.*quota unavailable`));
   assert.equal(fs.existsSync(path.dirname(deps.root)), false);
-  await assert.rejects(runCli(["agy", "run"], deps), /aim agy run <label>/);
+  await assert.rejects(runCli(["agy", "run"], deps), /No Antigravity account is available/);
   await assert.rejects(runCli(["agy", "run", "first", "--json"], deps), /after `--`/);
   await assert.rejects(runCli(["agy", "login", "../personal"], deps), /Use an Antigravity label/);
   await runCli(["agy", "login", "first"], { ...deps, runAgyNativeImpl: enroll });
-  await assert.rejects(runCli(["agy", "run"], deps), /aim agy run <label>/);
+  await assert.rejects(runCli(["agy", "run"], deps), /No Antigravity account is available/);
   await assert.rejects(runCli(["agy", "run", "other"], deps), /aim agy login other/);
 
   const first = path.join(deps.root, "first");
@@ -481,4 +481,47 @@ test("Antigravity keeps an enrolled route across config edits", async (t) => {
       return enroll(invocation);
     },
   });
+});
+
+test("simultaneous automatic launches select separate local accounts and a named launch stays pinned", async t => {
+  const deps = fixture(t);
+  for (const label of ["work", "personal"]) {
+    await runCli(["agy", "login", label], { ...deps, runAgyNativeImpl: enroll });
+  }
+  const entered = [];
+  // Return the same ready snapshot to both launches to exercise the acquisition race.
+  const ready = { connections: ["work", "personal"].map(label => ({ label, availability: "ready" })) };
+  let bothEntered, finish;
+  const started = new Promise(resolve => { bothEntered = resolve; });
+  const release = new Promise(resolve => { finish = resolve; });
+  const parallel = {
+    ...deps, readLocalAgyStatusImpl: () => ready,
+    async runAgyNativeImpl({ label, operation, accountHome }) {
+      assert.equal(operation, "run");
+      assert.equal(accountHome, path.join(deps.root, label, "home"));
+      entered.push(label);
+      if (entered.length === 2) bothEntered();
+      await release;
+      return { exitCode: 0 };
+    },
+  };
+  const runs = Promise.all([runCli(["agy", "run"], parallel), runCli(["agy", "run"], parallel)]);
+  try {
+    await Promise.race([started, runs.then(() => assert.fail("Expected two held sessions"))]);
+    assert.deepEqual(entered.toSorted(), ["personal", "work"]);
+    await assert.rejects(runCli(["agy", "run"], parallel), /No Antigravity account is available/);
+    await assert.rejects(runCli(["agy", "run", "personal"], parallel), /in progress for personal/);
+  } finally {
+    finish();
+    await runs;
+  }
+  const launched = [];
+  await assert.rejects(runCli(["agy", "run", "--", "--print", "hello"], {
+    ...parallel, runAgyNativeImpl({ label, args }) {
+      launched.push(label);
+      assert.deepEqual(args, ["--print", "hello"]);
+      throw new Error("native launch failed");
+    },
+  }), /native launch failed/);
+  assert.equal(launched.length, 1);
 });
