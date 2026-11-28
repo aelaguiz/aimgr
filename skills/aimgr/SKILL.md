@@ -1,9 +1,12 @@
 ---
 name: aimgr
-description: "Use AI Manager (the `aim` CLI) to launch a Claude, Codex, Prime, or Grok session on a pooled account, see which accounts are available, and pick an available one when the others are busy or rate-limited. Use when asked to launch or start a session through AI Manager or `aim`, to run Claude, Codex, Fable, Opus, Sol, Prime, or Grok on a managed account, or to find a free account. Not for developing the aimgr codebase itself, and not for credential enrollment, `aim login`, Redis administration, browser bindings, or scheduled routines — those are human or maintainer actions."
+description: "Use AI Manager (the `aim` CLI) to launch a Claude, Codex, Prime, Grok, or Antigravity session on a pooled account, see which accounts are available, and pick an available one when the others are busy or rate-limited. Use when asked to launch or start a session through AI Manager or `aim`, to run Claude, Codex, Fable, Opus, Sol, Prime, or Grok on a managed account, or to find a free account. Not for developing the aimgr codebase itself, and not for credential enrollment, `aim login`, Redis administration, browser bindings, or scheduled routines — those are human or maintainer actions."
 ---
 
 # AI Manager (`aim`)
+
+Antigravity uses the local account label named in `aim agy run <label>`. Use
+`aim agy status` for the labels available on this machine.
 
 AI Manager pools many provider accounts and launches coding-agent sessions on
 whichever one is healthy. You do three things with it: **launch a session**,

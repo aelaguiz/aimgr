@@ -1,4 +1,5 @@
 import { readClaudeAccountMetadata } from "../coordination/claude-metadata.js";
+import { readAgyAccountMetadata } from "../coordination/agy-metadata.js";
 import { readCachedClaudeAccountMetadata } from "../coordination/claude-runtime.js";
 import { readLocalClaudeCredential } from "../credentials/claude-local.js";
 import { readClaudeEnvironment } from "../privacy/claude-environment.js";
@@ -29,6 +30,9 @@ import { readClaudeCliTargetStatus } from "../targets/claude-status.js";
 import { readCodexCliTargetStatus } from "../targets/codex-cli.js";
 import { collectClaudeRedisAccountUsageStatus, formatClaudePlan } from "./claude-redis-view.js";
 import { describeClaudeEgress, projectClaudeEgress, claudeProxyHealthProblem, hasNoLocalClaudeRoute } from "./claude-egress.js";
+import { includeAgyRoster, parseAgyStatusReport } from "./agy-view.js";
+import { collectAgyUsageStatus } from "./agy-usage.js";
+import { supportsAgyPlatform } from "../privacy/agy-artifacts.js";
 import { readClaudeProxyHealth } from "./claude-proxy-health.js";
 import { claudeBindingRequiresProxy, readClaudeOfflineBinding } from "../network/claude-offline-binding.js";
 import { CLAUDE_ROUTE_ERROR_CODES } from "../network/claude-egress-policy.js";
@@ -354,7 +358,7 @@ function buildClaudeAccounts(claudeStatus) {
   });
 }
 
-function buildLocalOnlyView({ configRead, homeDir, env, nowMs, cachePath, status, error = null }) {
+function buildLocalOnlyView({ configRead, homeDir, env, nowMs, cachePath, status, error = null, agy }) {
   const localState = loadLocalState({ homeDir });
   const state = buildCoordinationView({ credentials: [], keyPrefix: configRead.config.redis.keyPrefix }, { localState });
   const targets = readLocalTargetFacts({ state, homeDir, env });
@@ -364,6 +368,7 @@ function buildLocalOnlyView({ configRead, homeDir, env, nowMs, cachePath, status
     statePath: "local-state",
     accounts: [],
     accountNotes: null,
+    agy,
     ...targets,
     redis: buildRedisSummary({ configRead, snapshot: null, cachePath, status, error }),
     redisCredentials: [],
@@ -383,20 +388,39 @@ export async function buildRedisStatusView({
   readCodexEnvironmentImpl = readCodexEnvironment,
   readClaudeEnvironmentImpl,
   includeBlocked = false,
+  runAgyNativeImpl,
+  readLocalAgyStatusImpl,
 } = {}) {
   const configRead = readAimgrConfig({ homeDir });
+  const localAgyStatus = collectAgyUsageStatus({
+    homeDir, config: configRead.config, env, nowMs, runAgyNativeImpl, readLocalAgyStatusImpl,
+  }).catch(() => ({
+    runtime: supportsAgyPlatform() ? "supported" : "unsupported",
+    localState: "unavailable",
+    connections: [],
+  }));
   const redisConfig = configRead.config.redis;
   const cachePath = resolveAimgrRedisCachePath({ homeDir });
   // These pools hold this machine's own readings only (see buildStatusPool).
   // The whole pool is `aim cluster status --json`.
   const withPools = (view, claudeUsageStatus) => {
     const tables = buildStatusAccountTables(view, { claudeUsageStatus, includeBlocked });
-    const pools = { claude: tables.claude.pool, codex: tables.codex.pool };
+    const agy = parseAgyStatusReport(view.agy);
+    const pools = {
+      claude: tables.claude.pool,
+      codex: tables.codex.pool,
+      agy: {
+        readings: "this machine",
+        accountRows: agy?.connections.map(({ observation, ...connection }) => ({
+          ...connection, observation: observation ?? null,
+        })) ?? [],
+      },
+    };
     return { used: true, view: { ...view, pools }, claudeUsageStatus, tables };
   };
   if (!redisConfig.url) {
     return withPools(
-      buildLocalOnlyView({ configRead, homeDir, env, nowMs, cachePath, status: "unconfigured" }),
+      buildLocalOnlyView({ configRead, homeDir, env, nowMs, cachePath, status: "unconfigured", agy: await localAgyStatus }),
       null,
     );
   }
@@ -413,10 +437,8 @@ export async function buildRedisStatusView({
     try { environment = readCodexEnvironmentImpl(); } catch { /* Codex setup cannot hide other providers. */ }
     snapshot.credentials.push(...await localCodexRecords({ store, homeDir, env, environment }));
     snapshot.credentials.push(...await readClaudeAccountMetadata(store));
+    const agyRoster = await readAgyAccountMetadata(store).catch(() => []);
     const notes = await readAccountNotes(store).catch(() => null);
-    const knownAccounts = new Set(snapshot.credentials.map((record) => `${record.provider}:${record.label}`));
-    const accountNotes = notes?.filter((record) => knownAccounts.has(`${record.provider}:${record.label}`))
-      .map(({ provider, label, note }) => ({ provider, label, note })) ?? null;
     const localState = loadLocalState({ homeDir });
     const state = buildCoordinationView(snapshot, { localState });
     state.codexEnvironment = environment;
@@ -487,12 +509,18 @@ export async function buildRedisStatusView({
       }),
       ...buildClaudeAccounts(claudeUsageStatus),
     ].sort((left, right) => left.label.localeCompare(right.label));
+    const agy = includeAgyRoster(await localAgyStatus, agyRoster);
+    const knownAccounts = new Set(snapshot.credentials.map((record) => `${record.provider}:${record.label}`));
+    for (const { label } of agy.connections) knownAccounts.add(`antigravity:${label}`);
+    const accountNotes = notes?.filter((record) => knownAccounts.has(`${record.provider}:${record.label}`))
+      .map(({ provider, label, note }) => ({ provider, label, note })) ?? null;
     const view = {
       generatedAt: new Date(nowMs).toISOString(),
       nowMs,
       statePath: `redis:${snapshot.keyPrefix}`,
       accounts,
       accountNotes,
+      agy,
       ...targets,
       redis: buildRedisSummary({ configRead, snapshot, cachePath }),
       redisCredentials: buildRedisCredentials(snapshot),
@@ -513,7 +541,8 @@ export async function buildRedisStatusView({
       }
     }
     const status = withPools(view, claudeUsageStatus);
-    await recordStatusPoolPace(store, status.view.pools, nowMs).catch(() => {
+    const { claude, codex } = status.view.pools;
+    await recordStatusPoolPace(store, { claude, codex }, nowMs).catch(() => {
       // A failed history read or write leaves the current readings available.
     });
     return status;
@@ -526,11 +555,13 @@ export async function buildRedisStatusView({
       cachePath,
       status: "unavailable",
       error: "unavailable",
+      agy: await localAgyStatus,
     });
     const cachedRaw = readCachedRedisStatusView({ homeDir, cachePath }).view;
     const cached = cachedRaw ? buildRedisDiagnosticCacheView(cachedRaw) : null;
     if (!cached) return withPools(localFallback, null);
     cached.accountNotes = null;
+    cached.agy = localFallback.agy;
 
     // Cached pool metadata is not evidence of a current local authorization.
     // In particular, logout or copying this cache cannot resurrect a grant.

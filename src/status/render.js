@@ -17,6 +17,7 @@ import {
   formatStatusTable,
   readStatusAccountResetCredits,
   renderCurrentCodexUsageText,
+  renderLocalAgyStatusLines,
 } from "./table.js";
 
 export function buildStatusAccountTable(accounts, now, { codex = false } = {}) {
@@ -141,6 +142,7 @@ export function renderStatusText(view, {
     } else {
       pushStatusAccountTable(lines, { heading: "CLAUDE ACCOUNTS", table: claude, now, includeBlocked });
     }
+    if (view.agy) lines.push("", ...renderLocalAgyStatusLines(view.agy, now));
   }
 
   const notes = renderAccountNotes(view?.accountNotes);

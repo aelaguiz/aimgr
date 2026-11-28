@@ -18,6 +18,7 @@ export function buildRedisKeys(keyPrefix) {
     accountNotes: () => `${prefix}accountNotes`,
     accountNote: ({ provider, label }) => `${prefix}accountNote:${provider}:${label}`,
     poolUsage: ({ pool, label }) => `${prefix}poolUsage:${pool}:${label}`,
+    agyAccountLabels: () => `${prefix}agy:accountLabels`,
   };
 }
 

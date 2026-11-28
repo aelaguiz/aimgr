@@ -7,8 +7,9 @@
 # changes nothing until the new release has installed. The steps:
 #
 #   1. Build ~/.local/share/aimgr/releases/<commit> from the commit, with its own `npm ci`.
-#   2. Activate the newest approved Claude and Codex runtimes in ~/.local/share/aimgr/runtime-bundles when
-#      the active one is older or this release can't use it. A Mac keeps its running sessions;
+#   2. Activate the newest approved Claude, Codex, and available Antigravity runtimes in
+#      ~/.local/share/aimgr/runtime-bundles when the active one is older or this release can't use it.
+#      A Mac keeps its running sessions.
 #      Linux refuses while any Claude session runs, and nothing here stops one.
 #      Provision a missing Claude environment identity even when activation is unnecessary.
 #   3. Point `aim` and `aimgr` at the release (scripts/install-local-bin.sh).
@@ -58,8 +59,8 @@ if [[ ! -f $release/.aimgr-release ]]; then
   say "Built release ${commit:0:12}"
 fi
 
-# 2. Both reviewed runtimes. Complete their prerequisites before replacing aim.
-for provider in claude codex; do
+# 2. Reviewed runtimes. Complete their prerequisites before replacing aim.
+for provider in claude codex agy; do
   status="$("$node_bin" "$release/bin/aimgr.js" "$provider" privacy status --json 2>/dev/null || true)"
   bundle="$(printf '%s' "$status" | /usr/bin/python3 -I "$release/scripts/choose-runtime.py" "$provider" "$data/runtime-bundles" "/opt/aimgr-$provider-runtime")"
   if [[ -n $bundle ]]; then

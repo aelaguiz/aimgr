@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Linux native-Claude TCP routing. Chrome is deliberately not attached here.
+"""Linux native routing. Chrome is deliberately not attached here.
 
 install reads a non-secret profile manifest on stdin; run inherits the caller's
 environment, working directory and file descriptors. SSH and sing-box remain
-outside Claude's cgroup. nftables redirects native TCP even without proxy env.
+outside each account's cgroup. Standard profiles redirect native TCP.
+Strict profiles can reach only their TCP SOCKS listener and resolve through it.
 """
 import json
 import ctypes
@@ -64,6 +65,21 @@ def probe(name):
     url = urllib.parse.urlsplit(profile.get("exitCheckUrl", "https://api.ipify.org?format=json"))
     if url.scheme not in ("http", "https") or not url.hostname or url.username:
         raise ValueError("invalid exit check URL")
+    if profile.get("denyDatagrams") is True:
+        # The admitted process cannot use host DNS. Check the same SOCKS path
+        # from its cgroup with proxy-side name resolution and ordinary TLS.
+        host = profile.get("socksHost", "127.0.0.1")
+        endpoint = f'[{host}]:{profile["socksPort"]}' if host == "::1" else f'{host}:{profile["socksPort"]}'
+        result = command(
+            ["/usr/bin/curl", "--disable", "--silent", "--show-error", "--fail",
+             "--max-time", "6", "--max-filesize", "1024", "--noproxy", "",
+             "--socks5-hostname", endpoint, "--proto", "=http,https",
+             "--write-out", "\n%{http_code}", "--url", url.geturl()],
+            env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+        body, _, status = result.stdout.rpartition("\n")
+        if status != "200" or json.loads(body).get("ip") not in profile["expectedExits"]:
+            raise ConnectionError("proxy exit mismatch")
+        return
     connection_type = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
     # Keep an ordinary slow exit lookup within the adapter's eight-second
     # overall deadline, allowing time for DNS and TLS setup.
@@ -111,15 +127,47 @@ def validate_name(name):
     return name
 
 
+def strict_route_chain(name, profile):
+    match = f'socket cgroupv2 level 2 "aimgr-claude/{name}"'
+    host = profile.get("socksHost", "127.0.0.1")
+    family = "ip6" if host == "::1" else "ip"
+    # Permit the single TCP endpoint before rejecting all other IP traffic,
+    # including loopback DNS, other local listeners and direct connections.
+    return [
+        f"chain strict_{name} {{",
+        "type filter hook output priority filter; policy accept;",
+        f"{match} {family} daddr {host} tcp dport {profile['socksPort']} accept",
+        f"{match} reject",
+        "}",
+    ]
+
+
+def require_route_rules(name, profile, rules):
+    if profile.get("denyDatagrams") is True:
+        expected = strict_route_chain(name, profile)
+        lines = [" ".join(line.split()) for line in rules.splitlines() if line.strip()]
+        if lines.count(expected[0]) == 1:
+            index = lines.index(expected[0])
+            if lines[index:index + len(expected)] == expected:
+                return
+        raise RuntimeError("strict native proxy rules are missing or differ from the installed binding")
+    if f'"aimgr-claude/{name}"' not in rules or f'redirect to :{profile["redirectPort"]}' not in rules:
+        raise RuntimeError("native proxy routing is not installed")
+
+
 def apply_routes(manifest):
     user = pwd.getpwnam(manifest["user"])
     profiles = manifest["profiles"]
     rules = ["table inet aimgr_claude {", "chain output { type nat hook output priority dstnat; policy accept;"]
+    strict = []
     CGROUP.mkdir(exist_ok=True)
     for name, profile in profiles.items():
         group = CGROUP / name
         group.mkdir(exist_ok=True)
         os.chown(group / "cgroup.procs", user.pw_uid, user.pw_gid)
+        if profile.get("denyDatagrams") is True:
+            strict.extend(strict_route_chain(name, profile))
+            continue
         match = f'socket cgroupv2 level 2 "aimgr-claude/{name}"'
         rules += [
             f'{match} ip daddr != 127.0.0.0/8 meta l4proto tcp redirect to :{profile["redirectPort"]} comment "{name}"',
@@ -127,7 +175,7 @@ def apply_routes(manifest):
         ]
     # Keep ordinary local services, including trusted AIM transports for a
     # different explicitly selected account. Hostile local relays are out of scope.
-    rules += ["}", "}"]
+    rules += ["}", *strict, "}"]
     exists = subprocess.run(["nft", "list", "table", "inet", "aimgr_claude"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     batch = ("delete table inet aimgr_claude\n" if exists else "") + "\n".join(rules) + "\n"
     command(["nft", "-f", "-"], input=batch, text=True)
@@ -161,11 +209,15 @@ def install():
             raise ValueError("SOCKS listener must be loopback")
         if not profile.get("expectedExits"):
             raise ValueError("approved exit IP addresses are required")
+        if type(profile.get("denyDatagrams", False)) is not bool:
+            raise ValueError("denyDatagrams must be a boolean")
         for key in ("socksPort", "redirectPort"):
             port = profile[key]
             if type(port) is not int or not 1 <= port <= 65535 or port in ports:
                 raise ValueError("ports must be valid and distinct across profiles")
             ports.add(port)
+        if profile.get("denyDatagrams") and profile["socksPort"] == 53:
+            raise ValueError("strict SOCKS listener cannot use the DNS port")
     # No admitted session can overlap this installation. Stop old listeners
     # before replacing config so admission also stays closed during activation.
     for name in profiles:
@@ -345,14 +397,15 @@ def run_child(name, expected_binding, argv):
     expected = json.loads(expected_binding)
     # Admission holds the installation lock. The JS preflight may have run
     # before an update, so compare the operation's binding here as well.
-    if any(profile.get(key, "127.0.0.1" if key == "socksHost" else None) != expected.get(key)
-           for key in ("socksHost", "socksPort")) or sorted(profile["expectedExits"]) != sorted(expected["expectedExits"]):
+    if (profile.get("socksHost", "127.0.0.1") != expected.get("socksHost")
+            or profile["socksPort"] != expected.get("socksPort")
+            or profile.get("denyDatagrams", False) is not expected.get("denyDatagrams", False)
+            or sorted(profile["expectedExits"]) != sorted(expected["expectedExits"])):
         raise RuntimeError("native proxy binding changed before launch")
     group = CGROUP / name
     # Inspect only our installed table. Never infer protection from proxy env.
     rules = command(["sudo", "-n", "nft", "list", "table", "inet", "aimgr_claude"], capture_output=True, text=True).stdout
-    if f'"aimgr-claude/{name}"' not in rules or f'redirect to :{profile["redirectPort"]}' not in rules:
-        raise RuntimeError("native proxy routing is not installed")
+    require_route_rules(name, profile, rules)
     require_existing_native_owners_routed(name, expected.get("nativeCommand", argv[0]))
     # A listening SOCKS socket does not establish that the native adapter is
     # forwarding. Prove the actual cgroup path before starting Claude.

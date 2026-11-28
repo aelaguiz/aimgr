@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { writeAimgrConfig } from "../../src/config/aimgr-config.js";
 import { connectRedisStore, importCredentialsSnapshot, readAccountNote, writeAccountNote } from "../../src/coordination/redis-store.js";
+import { ensureAgyAccountMetadata } from "../../src/coordination/agy-metadata.js";
 import { resolveAimgrRedisCachePath } from "../../src/io/paths.js";
 import { buildRedisStatusView } from "../../src/status/redis-view.js";
 import { renderStatusText } from "../../src/status/render.js";
@@ -97,4 +98,12 @@ test("provider status exposes the shared note in text and JSON", async () => {
   const grok = JSON.parse(await runCli(["grok", "inventory", "--json", "--home", home], deps));
   assert.equal(grok.rows[0].note, "Grok note");
   assert.match(await runCli(["grok", "inventory", "--home", home], deps), /Grok note/);
+});
+
+test("Antigravity notes apply only to that provider's roster label", async () => {
+  const { homes: [home], store, deps } = await fixture();
+  await ensureAgyAccountMetadata(store, { label: "iphone_se_1" });
+  await runCli(["note", "set", "iphone_se_1", "Work", "--provider", "antigravity", "--home", home], deps);
+  const status = JSON.parse(await runCli(["status", "--json", "--home", home], deps));
+  assert.deepEqual(status.accountNotes, [{ provider: "antigravity", label: "iphone_se_1", note: "Work" }]);
 });

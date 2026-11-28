@@ -3,6 +3,7 @@ import { BROWSER_MODE_AGENT_BROWSER, BROWSER_MODE_AIM_PROFILE, BROWSER_MODE_CHRO
 import { normalizeLabel } from "../core/normalize.js";
 import { formatDurationRough, parseExpiresAtToMs } from "../core/time.js";
 import { formatAccountNote } from "./account-notes.js";
+import { AGY_GRANT_STATE_TEXT, AGY_STATUS_STALE_MS } from "./agy-view.js";
 
 // Measured from fleet transcripts: Claude 2026-11-24, Codex 2026-11-25.
 // psbrain: pods/executive/cfo/work/2026-11-25-aim-pool-capacity-view/
@@ -337,6 +338,117 @@ export function formatStatusTable(rows) {
   ));
 }
 
+const AGY_AVAILABILITY_TEXT = {
+  ...AGY_GRANT_STATE_TEXT,
+  ready: "ready to launch",
+  "in-use": "in use",
+  limited: "limited",
+  unsupported: "unsupported platform",
+  "runtime-missing": "approved runtime missing",
+  "route-error": "required route blocked",
+};
+
+export function formatAgyAvailability(connection, { actions = false } = {}) {
+  if (!connection.availability) {
+    return connection.status === "ready" ? "local grant only" : AGY_GRANT_STATE_TEXT[connection.status];
+  }
+  const text = [AGY_AVAILABILITY_TEXT[connection.availability]];
+  if (connection.route === "unverified") text.push("route unverified");
+  if (actions) {
+    if (connection.availability === "needs-sign-in" && connection.status === "needs-sign-in") text.push("managed renewal unavailable");
+    if (connection.availability === "not-enrolled") text.push(`aim agy login ${connection.label}`);
+    if (connection.availability === "runtime-missing") text.push("install the approved runtime");
+    if (connection.availability === "route-error") text.push("check the assigned route");
+  }
+  return text.join(" · ");
+}
+
+const AGY_BUCKET_LABELS = {
+  "gemini-weekly": "Gemini weekly",
+  "gemini-5h": "Gemini 5h",
+  "claude-gpt-weekly": "Claude/GPT weekly",
+  "claude-gpt-5h": "Claude/GPT 5h",
+};
+
+function formatAgyQuotaBucket(bucket, now) {
+  if (!bucket) return "--";
+  const { remainingFraction, remainingAmount } = bucket;
+  const fraction = Number.isFinite(remainingFraction)
+    ? (remainingFraction > 0 && remainingFraction < 0.01 ? "<1%" : `${Math.round(remainingFraction * 100)}%`)
+    : null;
+  const amount = Number.isFinite(remainingAmount) ? String(remainingAmount) : null;
+  const remaining = fraction && amount ? `${fraction} left (${amount} remaining)`
+    : fraction || amount ? `${fraction ?? amount} left` : "remaining unknown";
+  const state = bucket.disabled ? "disabled" : remaining;
+  if (!Number.isFinite(bucket.resetAtMs)) return state;
+  const until = bucket.resetAtMs - now;
+  return `${state} · ${until > 0 ? `resets in ${formatDurationRough(until)}` : "reset elapsed"}`;
+}
+
+function formatAgyObservationAge(observation, now) {
+  if (!Number.isFinite(observation?.observedAtMs)) return "unobserved";
+  const age = Math.max(0, now - observation.observedAtMs);
+  return `${formatDurationRough(age)} ago${age >= AGY_STATUS_STALE_MS ? " · stale" : ""}`;
+}
+
+export function agyUsageColumns(connections, now) {
+  const observedIds = new Set(connections.flatMap(({ observation }) => observation?.buckets?.map(({ id }) => id) ?? []));
+  const knownIds = Object.keys(AGY_BUCKET_LABELS).filter((id) => observedIds.delete(id));
+  const ids = [...knownIds, ...observedIds];
+  return {
+    hasQuota: ids.length > 0,
+    headers: ["plan", ...ids.map((id) => AGY_BUCKET_LABELS[id] ?? id), "observed"],
+    values: ({ observation }) => [
+      observation?.plan ?? "--",
+      ...ids.map((id) => formatAgyQuotaBucket(observation?.buckets?.find((bucket) => bucket.id === id), now)),
+      formatAgyObservationAge(observation, now),
+    ],
+  };
+}
+
+export function renderLocalAgyStatusLines({ runtime, runtimeInstalled, localState, connections }, now) {
+  const quota = agyUsageColumns(connections, now);
+  const installed = runtimeInstalled === true ? " · runtime installed"
+    : runtimeInstalled === false ? " · runtime missing" : "";
+  const lines = [`ANTIGRAVITY (${connections.length}) · runtime platform ${runtime}${installed}${quota.hasQuota ? "" : " · quota unavailable"}`];
+  if (localState === "unavailable") lines.push("Local connection status unavailable.");
+  else if (connections.length === 0) lines.push("No Antigravity connections.");
+  if (connections.length > 0) {
+    lines.push(...formatStatusTable([
+      ["label", "local state", "availability", ...quota.headers],
+      ...connections.map((connection) => [
+        connection.label,
+        AGY_GRANT_STATE_TEXT[connection.status],
+        formatAgyAvailability(connection, { actions: true }),
+        ...quota.values(connection),
+      ]),
+    ]));
+  }
+  return lines;
+}
+
+function renderCompactAgyStatus(agy, now) {
+  if (!agy) return "";
+  const hasQuota = agy.connections.some(({ observation }) => observation?.buckets?.length);
+  const heading = [
+    `antigravity_runtime_platform=${agy.runtime}`,
+    ...(typeof agy.runtimeInstalled === "boolean" ? [`runtime_installed=${agy.runtimeInstalled}`] : []),
+    `local_state=${agy.localState}`,
+    ...(hasQuota ? [] : ["quota=unavailable"]),
+  ];
+  const lines = agy.connections.map((connection) => {
+    const { label, status, observation } = connection;
+    return [
+      `agy/${label}=${AGY_GRANT_STATE_TEXT[status].replaceAll(" ", "-")}`,
+      `availability=${JSON.stringify(formatAgyAvailability(connection, { actions: true }))}`,
+      ...(observation?.plan ? [`plan=${JSON.stringify(observation.plan)}`] : []),
+      ...(observation?.buckets ?? []).map((bucket) => `${bucket.id}=${JSON.stringify(formatAgyQuotaBucket(bucket, now))}`),
+      `observed=${JSON.stringify(formatAgyObservationAge(observation, now))}`,
+    ].join("  ");
+  });
+  return `${[heading.join("  "), ...lines].join("\n")}\n`;
+}
+
 export function renderStatusCompactText(view) {
   const redis = typeof view?.redis?.status === "string" ? view.redis.status : "unknown";
   const codex = resolveCurrentConfiguredCodexLabel(view) || "none";
@@ -350,9 +462,11 @@ export function renderStatusCompactText(view) {
   const noteLines = Array.isArray(view?.accountNotes)
     ? view.accountNotes.map((entry) => `note ${formatAccountNote(entry)}\n`).join("")
     : "account notes unavailable (Redis could not be read)\n";
+  const now = Number.isFinite(view?.nowMs) ? view.nowMs : Date.now();
+  const agyLines = renderCompactAgyStatus(view?.agy, now);
   return `redis=${redis}  accounts=${accounts}  codex=${codex}  claude_last=${claude}`
     + (Number.isFinite(cacheAgeMs) ? `  cache_age=${Math.floor(cacheAgeMs / 1000)}s` : "")
-    + "\n" + noteLines;
+    + "\n" + agyLines + noteLines;
 }
 
 export function resolveCurrentConfiguredCodexLabel(view) {

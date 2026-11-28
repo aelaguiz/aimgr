@@ -191,7 +191,11 @@ test("status JSON and text share pool capacity, counts, account details, and pac
   };
   const unavailable = JSON.parse(await runCli([...args, "--json"], deps));
   assert.equal(unavailable.redis.status, "live");
-  assert.deepEqual(unavailable.pools, { claude: { ...claude, pace: null }, codex: { ...codex, pace: null } });
+  assert.deepEqual(unavailable.pools, {
+    claude: { ...claude, pace: null },
+    codex: { ...codex, pace: null },
+    agy: { readings: "this machine", accountRows: [] },
+  });
 });
 
 test("Redis status view uses local Codex credentials, writes redacted cache, and has no session matrix", async () => {

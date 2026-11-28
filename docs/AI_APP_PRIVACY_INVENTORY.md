@@ -451,3 +451,16 @@ A change to a client version, launcher, identity store, telemetry setting, proxy
 Actual tokens, identity values, browser profiles and personal logs do not belong in the inventory. Use field names, formats, generic storage paths, public binary hashes and sanitized test receipts. Investigations of uncertain outbound behavior stay in the established sacrificial-account/offsite setup described in [AGENTS.md](../AGENTS.md#privacy-investigations-and-test-identities).
 
 This document is an awareness inventory. Its entries do not authorize new restrictions, credential migrations, installs, account changes, traffic interception or workflow reductions.
+
+## Antigravity CLI
+
+The native CLI stores its Google grant and conversation history in its local home.
+Each managed connection uses its own home on each machine. AI Manager shares the
+connection label and reports local readiness and quota. The Google CLI handles
+sign-in, refresh, and model requests. Only the selected vendor process needs its
+native grant. Its child tools must not have access to AI Manager's credentials.
+
+The signed-out Linux 1.5.11 client created a persistent installation ID and read
+an IDE installation ID when that file was accessible. These were local observations.
+The captured requests used a local fixture. They establish no claim about fields
+in encrypted requests to Google. [Antigravity integration](ANTIGRAVITY.md).

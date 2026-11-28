@@ -156,10 +156,10 @@ def reclaim_stopped_linux_profiles(uid, runtime=RUNTIME):
         os.close(descriptor)
 
 
-def write_atomic(file, data, published=None):
+def write_atomic(file, data, published=None, *, mode=0o644):
     fd, name = tempfile.mkstemp(prefix='.' + file.name + '-', dir=file.parent)
     try:
-        os.fchmod(fd, 0o644)
+        os.fchmod(fd, mode)
         with os.fdopen(fd, 'wb') as out:
             out.write(data); out.flush(); os.fsync(out.fileno())
         os.replace(name, file)
@@ -270,10 +270,10 @@ def activate_installed_bundle(user, target, runtime, published):
         write_atomic(runtime / 'active.json', (json.dumps({'schema': 1, 'artifactSet': target.name}) + '\n').encode(), published)
 
 
-def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='claude', activate_bundle=None, provision_clone=False):
-    # Both providers use the same byte-copy/admission transaction. Their
+def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='claude', activate_bundle=None, provision_clone=False, validate_bundle=None):
+    # Providers use the same byte-copy/admission transaction. Their
     # activation prerequisites remain separate; Claude's default is unchanged.
-    require(provider in ('claude', 'codex'), 'unsupported native provider')
+    require(provider in ('claude', 'codex', 'agy'), 'unsupported native provider')
     require(not provision_clone or (provider == 'claude' and activate), '--provision-clone requires Claude --activate on the destination machine')
     require(provider == 'claude' or not activate or activate_bundle is not None, 'missing provider activation prerequisites')
     title = provider.title()
@@ -319,7 +319,7 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='cl
         info = os.fstat(lockfd)
         require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and info.st_mode & 0o022 == 0, 'unsafe installation lock')
         fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        stage = Path(tempfile.mkdtemp(prefix='.install-', dir=runtime)); stage.chmod(0o755)
+        stage = Path(tempfile.mkdtemp(prefix='.install-', dir=runtime)); stage.chmod(0o700)
         staged = stage / 'artifacts' / artifact
         staged.mkdir(parents=True, mode=0o755)
         (stage / 'artifacts').chmod(0o755); staged.chmod(0o755)
@@ -335,24 +335,23 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='cl
             # Codex launch admission relies on this immutable installation.
             with source.open('rb') as inp, target.open('xb') as out:
                 shutil.copyfileobj(inp, out); out.flush(); os.fsync(out.fileno())
-            target.chmod(0o4755 if platform.system() == 'Linux' and name == 'launcher' else 0o755 if expected['executable'] else 0o644)
+            target.chmod(0o755 if expected['executable'] else 0o644)
             require(target.stat().st_size == expected['size'] and digest(target) == expected['sha256'], 'approved bytes changed during copying')
         write_atomic(staged / 'approval.json', approved_bytes)
         write_atomic(stage / 'active.json', (json.dumps({'schema': 1, 'artifactSet': artifact}) + '\n').encode())
-        module = (REPO / ('src/privacy/' + provider + '-artifacts.js')).as_uri()
-        # Reuse production schema, ownership/ACL, ABI, platform, hash and human
-        # approval checks. This is file inspection; it never executes Claude.
-        verify = f'const {{admit{title}Artifact}}=await import(process.argv[1]);admit{title}Artifact({{runtimeRoot:process.argv[2]}});'
-        # Root can read 0600 files and bypass access-denying ACLs. Admission
-        # must succeed for the actual runtime user before changing selection.
-        checked = as_user(verify, module, str(stage))
-        require(checked.returncode == 0, 'the complete bundle failed production artifact admission')
         policy = json.loads((staged / 'policy.json').read_bytes())
-        require(policy.get('schema') == 1 and policy.get('version') == manifest['version']
-                and policy.get('platform') == manifest['platform'] and policy.get('arch') == manifest['arch']
-                and (re.fullmatch(r'[a-f0-9]{12}', policy.get('vendorCommit', '')) if provider == 'claude'
-                     else re.fullmatch(r'[a-f0-9]{40}', policy.get('sourceCommit', '')) and policy.get('settingsManifest') == 1),
+        schema = policy.get('schema')
+        require(schema == 1 and (provider != 'agy' or type(schema) is int)
+                and policy.get('version') == manifest['version']
+                and policy.get('platform') == manifest['platform'] and policy.get('arch') == manifest['arch'],
                 'invalid native policy identity')
+        if provider == 'claude':
+            valid_source = re.fullmatch(r'[a-f0-9]{12}', policy.get('vendorCommit', ''))
+        else:
+            valid_source = re.fullmatch(r'[a-f0-9]{40}', policy.get('sourceCommit', ''))
+            if provider == 'codex':
+                valid_source = valid_source and policy.get('settingsManifest') == 1
+        require(valid_source, 'invalid native policy identity')
         if platform.system() == 'Linux':
             linux_prerequisites()
         else:
@@ -361,6 +360,19 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='cl
             verified = subprocess.run(['/usr/bin/codesign', '--verify', '--strict', str(staged / 'launcher')], capture_output=True, text=True)
             require(signature.returncode == 0 and verified.returncode == 0 and flags
                     and 'runtime' in flags.group(1).split(','), 'the Mac launcher lacks its approved hardened-runtime signature')
+        if validate_bundle is not None:
+            validate_bundle(staged)
+        module = (REPO / ('src/privacy/' + provider + '-artifacts.js')).as_uri()
+        # The ordinary user checks approval, ABI, ownership, ACLs and access
+        # against immutable bytes. The launcher remains unprivileged throughout
+        # this read/search window, and nothing in the bundle executes.
+        verify = f'const {{admit{title}Artifact}}=await import(process.argv[1]);admit{title}Artifact({{runtimeRoot:process.argv[2], installStaging:true}});'
+        stage.chmod(0o755)
+        try:
+            checked = as_user(verify, module, str(stage))
+        finally:
+            stage.chmod(0o700)
+        require(checked.returncode == 0, 'the complete bundle failed production artifact admission')
         target = runtime / 'artifacts' / artifact
         if target.exists():
             # Idempotence does not permit replacing immutable code. Verify all
@@ -378,6 +390,8 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='cl
             require((target / 'approval.json').read_bytes() == approved_bytes,
                     'this artifact already has another approval record; retain it and use the reviewed transition procedure')
         else:
+            if platform.system() == 'Linux':
+                (staged / 'launcher').chmod(0o4755)
             os.rename(staged, target); sync_directory(target.parent)
         # Inspect the REAL destination as the ordinary user, including its
         # ancestors. A valid staging sibling says nothing about a preexisting
@@ -388,7 +402,7 @@ def install(bundle, node, user, activate=False, runtime=RUNTIME, *, provider='cl
         checked = as_user(metadata, module, json.dumps(entries))
         require(checked.returncode == 0, 'the installed bundle is unsafe or unreadable by the runtime user')
         lock = runtime / 'policy.lock'
-        if not lock.exists() and not lock.is_symlink(): write_atomic(lock, b'')
+        if not lock.exists() and not lock.is_symlink(): write_atomic(lock, b'', mode=0o600)
         if platform.system() == 'Linux': linux_immutable(lock)
         if activate:
             if provider == 'claude': provision_claude_environment(runtime, provision_clone)

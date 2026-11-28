@@ -3,6 +3,19 @@
 Every form below comes from `aim --help`. If this file and `aim --help`
 disagree, the CLI is right.
 
+## Antigravity
+
+```sh
+aim agy status
+aim agy run <label>
+aim agy run <label> -- --print "Summarize the project"
+aim agy resume <label> <conversation-id> -- --print "Continue"
+```
+
+Run from the project directory. From your home directory the interactive command
+uses `~/workspace/antigravity/<label>`. Use the account shown by `aim agy status`
+on the machine that owns the conversation.
+
 ## Claude
 
 ```bash
