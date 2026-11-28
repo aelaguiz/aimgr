@@ -135,7 +135,7 @@ export function isAgyConnectionInUse(accountHome) {
   return lockfile.checkSync(path.dirname(accountHome), { realpath: false });
 }
 
-async function lockAgyConnection(root, label) {
+async function lockAgyConnection(root, label, skipBusy = false) {
   const connection = path.join(root, label);
   let release;
   let compromised = false;
@@ -145,7 +145,10 @@ async function lockAgyConnection(root, label) {
       onCompromised: () => { compromised = true; },
     });
   } catch (error) {
-    if (error.code === "ELOCKED") throw new Error(`An Antigravity operation is already in progress for ${label}.`);
+    if (error.code === "ELOCKED") {
+      if (skipBusy) return null;
+      throw new Error(`An Antigravity operation is already in progress for ${label}.`);
+    }
     throw stateError();
   }
   return {
@@ -154,11 +157,12 @@ async function lockAgyConnection(root, label) {
   };
 }
 
-export async function withAgyConnection(homeDir, label, useConnection) {
+export async function withAgyConnection(homeDir, label, useConnection, { skipBusy = false } = {}) {
   validateAgyLabel(label);
   const root = rootDirectory(homeDir);
   if (!root) return useConnection({ label, status: "not-enrolled" });
-  const lock = await lockAgyConnection(root, label);
+  const lock = await lockAgyConnection(root, label, skipBusy);
+  if (!lock) return;
   try {
     const result = await useConnection(inspectConnection(path.join(root, label), label));
     lock.assertHeld();

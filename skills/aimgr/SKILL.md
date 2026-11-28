@@ -5,8 +5,7 @@ description: "Use AI Manager (the `aim` CLI) to launch a Claude, Codex, Prime, G
 
 # AI Manager (`aim`)
 
-Antigravity uses the local account label named in `aim agy run <label>`. Use
-`aim agy status` for the labels available on this machine.
+Use `aim agy run` for an available local Antigravity account, or `aim agy run <label>` for a specific one. `aim agy status` shows which accounts are available on this machine.
 
 AI Manager pools many provider accounts and launches coding-agent sessions on
 whichever one is healthy. You do three things with it: **launch a session**,

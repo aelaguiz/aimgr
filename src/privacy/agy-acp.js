@@ -120,7 +120,7 @@ export async function runAgyAcp(child, {
   operation, label, sessionId, cwd, args = [], stdin = process.stdin,
   stdout = process.stdout, stderr = process.stderr, signalChild = signal => child.kill(signal),
 }) {
-  const interactive = operation === "interactive";
+  const interactive = operation === "interactive" || (operation === "resume" && args.length === 0);
   let pending;
   let failure;
   let nextId = 1;
@@ -302,7 +302,7 @@ export async function runAgyAcp(child, {
       if (typeof sessionId !== "string" || !sessionId || typeof cwd !== "string" || !cwd) {
         throw new AcpError("Antigravity resume requires a session ID and working directory.");
       }
-      if (args.length !== 1 || !printArg.startsWith(printPrefix) || printArg.length === printPrefix.length) {
+      if (!interactive && (args.length !== 1 || !printArg.startsWith(printPrefix) || printArg.length === printPrefix.length)) {
         throw new AcpError("Antigravity resume requires one --print prompt.");
       }
     }
@@ -312,16 +312,7 @@ export async function runAgyAcp(child, {
       if (!isObject(initialized.agentCapabilities?.auth?.logout)) throw new AcpError("Antigravity does not offer native logout.");
       const result = await request("logout", {});
       if (Object.keys(result).length) throw new AcpError("Antigravity did not confirm native logout.");
-    } else if (interactive) {
-      const created = await request("session/new", { cwd, mcpServers: [] });
-      sessionId = created.sessionId;
-      if (typeof sessionId !== "string" || !sessionId) throw new AcpError("Antigravity did not create a session.");
-      if (Array.isArray(created.configOptions)) configOptions = created.configOptions;
-      terminal = startTerminal({ input: stdin, output: stderr, label, sessionId, cwd, submit: prompt, selectModel,
-        cancel: () => { if (!failure) send({ method: "session/cancel", params: { sessionId } }); } });
-      await terminal.done;
-      if (failure) throw failure;
-    } else {
+    } else if (operation === "resume") {
       if (!isObject(initialized.agentCapabilities?.sessionCapabilities?.resume)) {
         throw new AcpError("Antigravity does not offer native session resume.");
       }
@@ -330,7 +321,19 @@ export async function runAgyAcp(child, {
       }
       const resumed = await request("session/resume", { sessionId, cwd, mcpServers: [] });
       if (resumed.sessionId !== sessionId) throw new AcpError("Antigravity did not confirm the requested session.");
-      await prompt(printArg.slice(printPrefix.length));
+      if (Array.isArray(resumed.configOptions)) configOptions = resumed.configOptions;
+      if (!interactive) await prompt(printArg.slice(printPrefix.length));
+    } else {
+      const created = await request("session/new", { cwd, mcpServers: [] });
+      sessionId = created.sessionId;
+      if (typeof sessionId !== "string" || !sessionId) throw new AcpError("Antigravity did not create a session.");
+      if (Array.isArray(created.configOptions)) configOptions = created.configOptions;
+    }
+    if (interactive) {
+      terminal = startTerminal({ input: stdin, output: stderr, label, sessionId, cwd, submit: prompt, selectModel,
+        cancel: () => { if (!failure) send({ method: "session/cancel", params: { sessionId } }); } });
+      await terminal.done;
+      if (failure) throw failure;
     }
     completed = true;
     return { exitCode: 0 };
